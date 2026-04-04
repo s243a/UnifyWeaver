@@ -56,6 +56,11 @@
 %         available (default: auto). This preserves the original
 %         predicate and adds a separate '$min' helper for bound
 %         shortest-path style queries.
+%       - effective_distance_accumulation(auto/false) - Emit a SWI
+%         helper for canonical counted PPV recursion that aggregates
+%         `sum((Metric+1)^(-N))` via `dimension_n/1` (default: auto).
+%         This is a narrow seeded accumulation helper used by the
+%         effective-distance benchmark surface.
 %  @arg ScriptCode Generated script as atom
 %
 %  @example Generate script for user predicates
@@ -79,12 +84,13 @@ generate_prolog_script(UserPredicates, Options, ScriptCode) :-
     ),
 
     % 1. Analyze what user code needs
-    analyze_dependencies(UserPredicates, Dependencies),
+    EnhancedOptions = [predicates(UserPredicates)|Options],
+    analyze_dependencies(UserPredicates, Dependencies0),
+    augment_generated_dependencies(UserPredicates, EnhancedOptions, Dependencies0, Dependencies),
 
     % 2. Generate dialect-specific script components
     dialect_shebang(Dialect, ShebangCode),
 
-    EnhancedOptions = [predicates(UserPredicates)|Options],
     dialect_header(Dialect, EnhancedOptions, HeaderCode),
 
     dialect_imports(Dialect, Dependencies, ImportsCode),
@@ -234,7 +240,8 @@ generate_predicate_code(Pred/Arity, Options, Code) :-
     ->  BaseCode0 = OptimizedCode
     ;   copy_predicate_clauses(Pred/Arity, BaseCode0)
     ),
-    maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode0, BaseCode),
+    maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode0, BaseCode1),
+    maybe_append_effective_distance_helper(Pred/Arity, Options, BaseCode1, BaseCode),
 
     % Apply constraints if specified
     (   option(constraints(Constraints), Options)
@@ -380,6 +387,15 @@ maybe_append_min_closure_helper(Pred/Arity, Options, BaseCode, Code) :-
     ;   Code = BaseCode
     ).
 
+maybe_append_effective_distance_helper(Pred/Arity, Options, BaseCode, Code) :-
+    option(effective_distance_accumulation(Setting), Options, auto),
+    (   Setting == false
+    ->  Code = BaseCode
+    ;   maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, HelperCode)
+    ->  atomic_list_concat([BaseCode, HelperCode], '\n\n', Code)
+    ;   Code = BaseCode
+    ).
+
 maybe_generate_min_closure_helper(Pred/Arity, Options, Code) :-
     option(dialect(Dialect), Options, swi),
     Dialect == swi,
@@ -454,6 +470,80 @@ maybe_generate_weighted_min_closure_helper(Pred/Arity, Code) :-
         [FirstRecPositive|RestRecPositives]),
     build_min_closure_code(Pred/Arity, BaseClauses, RecClauses, SignaturePositions,
         MetricPos, VisitedPos, 1, 1, BudgetMode, Code).
+
+maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, Code) :-
+    option(dialect(Dialect), Options, swi),
+    Dialect == swi,
+    effective_distance_dimension_available(Options),
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            user:clause(Head, Body0),
+            strip_codegen_module_qualifiers(Body0, Body)
+        ),
+        Clauses),
+    Clauses \= [],
+    partition(is_recursive_clause_for_pred(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos),
+    counted_ppv_driver_position(Pred, Arity, RecClauses, VisitedPos, DriverPos),
+    branch_pruning_mode_positions(Pred/Arity, VisitedPos, InvariantPositions),
+    branch_pruning_signature_positions(DriverPos, InvariantPositions, SignaturePositions),
+    min_closure_metric_position(Arity, VisitedPos, SignaturePositions, MetricPos),
+    maplist(min_closure_base_depth(MetricPos, VisitedPos), BaseClauses, BaseDepths),
+    sort(BaseDepths, [1]),
+    RecClauses = [FirstRec|RestRecClauses],
+    min_closure_recursive_shape(Pred, Arity, VisitedPos, MetricPos, FirstRec, 1, BudgetMode),
+    forall(member(RecClause, RestRecClauses),
+        min_closure_recursive_shape_compatible(Pred, Arity, VisitedPos, MetricPos,
+            1, BudgetMode, RecClause)),
+    build_effective_distance_accumulation_code(Pred/Arity, SignaturePositions,
+        DriverPos, MetricPos, VisitedPos, Code).
+
+effective_distance_dimension_available(Options) :-
+    option(predicates(UserPredicates), Options, []),
+    memberchk(dimension_n/1, UserPredicates),
+    !.
+effective_distance_dimension_available(_Options) :-
+    current_predicate(user:dimension_n/1).
+
+build_effective_distance_accumulation_code(Pred/Arity, SignaturePositions, DriverPos,
+        MetricPos, VisitedPos, Code) :-
+    atom_concat(Pred, '$effective_distance_sum', HelperName),
+    length(SignaturePositions, SignatureCount),
+    build_min_signature_vars(SignatureCount, SignatureArgs),
+    append(SignatureArgs, [WeightSum], HeadArgs),
+    HeadTerm =.. [HelperName|HeadArgs],
+    build_effective_distance_call_args(Arity, SignaturePositions, DriverPos,
+        MetricPos, VisitedPos, SignatureArgs, MetricVar, CallArgs),
+    PredCall =.. [Pred|CallArgs],
+    AggregateGoal = aggregate_all(sum(W),
+        (   PredCall,
+            TotalMetric is MetricVar + 1,
+            W is TotalMetric ** NegN
+        ),
+        WeightSum),
+    BodyGoals = [
+        dimension_n(N),
+        (NegN is -N),
+        AggregateGoal,
+        (WeightSum > 0)
+    ],
+    goals_to_body(BodyGoals, BodyTerm),
+    clause_term(HeadTerm, BodyTerm, ClauseTerm),
+    clauses_to_code([ClauseTerm], ClauseCode),
+    atomic_list_concat([
+        '% Mode-directed effective-distance accumulation helper for canonical counted per-path recursion.',
+        ClauseCode
+    ], '\n\n', Code).
+
+build_effective_distance_call_args(Arity, SignaturePositions, DriverPos, MetricPos,
+        VisitedPos, SignatureArgs, MetricVar, CallArgs) :-
+    length(CallArgs, Arity),
+    bind_positions_1based(SignaturePositions, SignatureArgs, CallArgs),
+    nth1(MetricPos, CallArgs, MetricVar),
+    nth1(DriverPos, CallArgs, DriverArg),
+    nth1(VisitedPos, CallArgs, [DriverArg]).
 
 counted_ppv_visited_position(Pred, Arity, RecClauses, VisitedPos) :-
     member(Head-Body, RecClauses),
@@ -1170,6 +1260,11 @@ select_positions_1based([Pos|Rest], List, [Elem|Elems]) :-
     nth1(Pos, List, Elem),
     select_positions_1based(Rest, List, Elems).
 
+bind_positions_1based([], [], _List).
+bind_positions_1based([Pos|RestPos], [Elem|RestElems], List) :-
+    nth1(Pos, List, Elem),
+    bind_positions_1based(RestPos, RestElems, List).
+
 %% generate_entry_point(+Options, -Code)
 %  Generate main entry point and initialization
 generate_entry_point(Options, Code) :-
@@ -1252,6 +1347,17 @@ analyze_dependencies(UserPredicates, Dependencies) :-
 
     % Remove duplicates
     sort(AllDeps, Dependencies).
+
+augment_generated_dependencies(UserPredicates, Options, Dependencies0, Dependencies) :-
+    (   generated_helper_requires_aggregate(UserPredicates, Options)
+    ->  sort([module(library(aggregate))|Dependencies0], Dependencies)
+    ;   Dependencies = Dependencies0
+    ).
+
+generated_helper_requires_aggregate(UserPredicates, Options) :-
+    member(Pred/Arity, UserPredicates),
+    maybe_generate_effective_distance_accumulation_helper(Pred/Arity, Options, _),
+    !.
 
 %% extract_dependencies_from_body(+Body, -Dependency)
 %  Extract dependencies from clause body

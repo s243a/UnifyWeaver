@@ -195,6 +195,34 @@ setup_weighted_min_unproven_fixture :-
         Cost is PrevCost + Step)),
     assertz(user:mode(test_weighted_min_ppv_reach(-, +, -, +))).
 
+setup_effective_distance_accumulation_fixture :-
+    cleanup_effective_distance_accumulation_fixture,
+    assertz(user:test_effective_edge(a, b)),
+    assertz(user:test_effective_edge(b, c)),
+    assertz(user:test_effective_edge(a, d)),
+    assertz(user:test_effective_edge(d, e)),
+    assertz(user:test_effective_edge(e, c)),
+    assertz(user:dimension_n(5)),
+    assertz(user:max_depth(4)),
+    assertz(user:(test_effective_ppv_reach(Cat, Parent, 1, Visited) :-
+        test_effective_edge(Cat, Parent),
+        \+ member(Parent, Visited))),
+    assertz(user:(test_effective_ppv_reach(Cat, Ancestor, Hops, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth), Depth < MaxD, !,
+        test_effective_edge(Cat, Mid),
+        \+ member(Mid, Visited),
+        test_effective_ppv_reach(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1)),
+    assertz(user:mode(test_effective_ppv_reach(-, +, -, +))).
+
+cleanup_effective_distance_accumulation_fixture :-
+    retractall(user:test_effective_edge(_, _)),
+    retractall(user:dimension_n(_)),
+    retractall(user:max_depth(_)),
+    retractall(user:test_effective_ppv_reach(_, _, _, _)),
+    retractall(user:mode(test_effective_ppv_reach(_, _, _, _))).
+
 build_execution_runtime_source(ModuleName, PredicateCode, Source) :-
     atomic_list_concat([
         'test_exec_edge(a, b).',
@@ -286,6 +314,35 @@ collect_generated_weighted_min_costs(Options, PredicateCode, Costs) :-
             Goal =.. ['test_weighted_min_ppv_reach$min', a, d, Cost],
             findall(Cost, ModuleName:Goal, Costs0),
             sort(Costs0, Costs)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+build_effective_distance_runtime_source(ModuleName, PredicateCode, Source) :-
+    atomic_list_concat([
+        'test_effective_edge(a, b).',
+        'test_effective_edge(b, c).',
+        'test_effective_edge(a, d).',
+        'test_effective_edge(d, e).',
+        'test_effective_edge(e, c).',
+        'dimension_n(5).',
+        'max_depth(4).'
+    ], '\n', FactsCode),
+    format(atom(Source),
+        ':- module(~q, []).~n:- use_module(library(lists)).~n:- use_module(library(aggregate)).~n~w~n~n~w~n',
+        [ModuleName, FactsCode, PredicateCode]).
+
+collect_generated_effective_distance_sums(Options, PredicateCode, Sums) :-
+    once(prolog_target:generate_predicate_code(test_effective_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_effective_ppv_runtime_, ModuleName),
+    build_effective_distance_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_effective_ppv_reach$effective_distance_sum', a, c, Sum],
+            findall(Sum, ModuleName:Goal, Sums0),
+            sort(Sums0, Sums)
         ),
         cleanup_temp_module_source(Path)
     ).
@@ -396,5 +453,30 @@ test(skips_weighted_min_closure_without_positive_step_proof,
          cleanup(cleanup_weighted_min_closure_fixture)]) :-
     once(generate_prolog_script([test_weighted_min_ppv_reach/4], [dialect(swi)], Code)),
     \+ sub_atom(Code, _, _, _, 'test_weighted_min_ppv_reach$min').
+
+test(emits_effective_distance_accumulation_helper_for_counted_ppv,
+        [setup(setup_effective_distance_accumulation_fixture),
+         cleanup(cleanup_effective_distance_accumulation_fixture)]) :-
+    Options = [
+        dialect(swi),
+        min_closure(false),
+        branch_pruning(false),
+        effective_distance_accumulation(auto),
+        predicates([dimension_n/1, max_depth/1, test_effective_ppv_reach/4])
+    ],
+    collect_generated_effective_distance_sums(Options, PredicateCode, [Actual]),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum')),
+    Expected is (3 ** -5) + (4 ** -5),
+    Delta is abs(Actual - Expected),
+    Delta < 1.0e-12.
+
+test(skips_effective_distance_accumulation_helper_when_disabled_explicitly,
+        [setup(setup_effective_distance_accumulation_fixture),
+         cleanup(cleanup_effective_distance_accumulation_fixture)]) :-
+    once(generate_prolog_script(
+        [dimension_n/1, max_depth/1, test_effective_ppv_reach/4],
+        [dialect(swi), effective_distance_accumulation(false)],
+        Code)),
+    \+ sub_atom(Code, _, _, _, 'test_effective_ppv_reach$effective_distance_sum').
 
 :- end_tests(prolog_target).
