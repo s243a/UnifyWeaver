@@ -27,6 +27,10 @@ Success criteria:
 
 ## Stage 2: Clarify Retention Modes In The Runtime
 
+Status:
+
+- implemented for streamed and replayable relation bindings in the current C# query runtime
+
 Work:
 
 - make the distinction clearer between:
@@ -45,6 +49,10 @@ Success criteria:
   external-materialized access
 
 ## Stage 3: Expand Streamed Ingestion Beyond Current DAG Cases
+
+Status:
+
+- started for scan-oriented and path-aware benchmark paths using the shared retention boundary
 
 Work:
 
