@@ -63,6 +63,40 @@ requested answer before recursing.
 - **Requires**: The visited argument must be identified from the actual
   per-path pattern, not guessed from the first `+` mode position
 
+### Benchmarking Toggle
+
+Branch pruning can be disabled explicitly at code-generation time:
+
+```prolog
+generate_prolog_script(
+    [category_ancestor/4],
+    [dialect(swi), branch_pruning(false)],
+    Code
+).
+```
+
+Use this when benchmarking the plain generated Prolog against the
+branch-pruned lowering. The generated predicate should preserve the same
+result set either way; only the helper predicates and pruning behavior
+change.
+
+### Fallback Diagnostics
+
+The branch-pruning lowering now emits opt-in debug traces explaining why
+it fell back to normal code generation.
+
+In SWI-Prolog:
+
+```prolog
+?- debug(prolog_branch_pruning).
+```
+
+That will surface reasons such as:
+- no concrete mode declaration for non-visited inputs
+- non-canonical per-path-visited body shape
+- no unique driver position across recursive clauses
+- invariant inputs not remaining fixed across recursion
+
 ## Current Performance
 
 At 10x scale (195 articles, 3932 edges, max-depth=10):

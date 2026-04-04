@@ -36,6 +36,10 @@ generate_prolog_script(
 ).
 ```
 
+**SWI-specific note:** mode-directed per-path branch pruning is available
+for canonical PPV recursion in the Prolog target. Disable it explicitly
+with `branch_pruning(false)` when benchmarking the non-pruned baseline.
+
 ### GNU Prolog
 
 **Identifier:** `gnu`
