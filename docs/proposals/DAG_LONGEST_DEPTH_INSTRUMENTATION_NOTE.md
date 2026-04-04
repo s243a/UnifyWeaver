@@ -250,6 +250,106 @@ allocates more bytes than the DFS path, so lowering allocation pressure may
 still help CPU/cache behavior. But the evidence so far does not support GC
 itself as the main bottleneck.
 
+
+## Follow-Up Experiment: Cross-Language Handwritten Baseline Breakdown
+
+A direct `10k` comparison was also run across the handwritten longest-depth
+baselines for:
+
+- `csharp-dfs`
+- `rust-dfs`
+- `go-dfs`
+
+All three generated programs were instrumented to report:
+
+- load time
+- solve time
+- emit time
+- total time
+
+For the C# baseline, the existing allocation/GC counters were also kept.
+
+### 10k Comparison
+
+#### C# DFS
+
+- `load_ms=20`
+- `solve_ms=7`
+- `emit_ms=7`
+- `total_ms=35`
+- `gc0_collections=0`
+- `gc1_collections=0`
+- `gc2_collections=0`
+- `allocated_bytes=7,880,720`
+- `project_count=500`
+
+#### Rust DFS
+
+- `load_ms=6`
+- `solve_ms=2`
+- `emit_ms=0`
+- `total_ms=9`
+- `project_count=500`
+
+#### Go DFS
+
+- `load_ms=6`
+- `solve_ms=2`
+- `emit_ms=0`
+- `total_ms=8`
+- `project_count=500`
+
+### Main Finding
+
+This confirms that the longest-depth gap is not only a query-engine issue.
+
+Even the handwritten C# DFS baseline is materially slower than the Rust and
+Go baselines on the same workload.
+
+More specifically:
+
+- the handwritten C# solver is slower in the core DP (`7 ms` vs `2 ms`)
+- but the bigger relative gap is in surrounding managed-runtime work,
+  especially load and emit
+- Rust and Go are both substantially cheaper in the full end-to-end path
+  even before the query engine enters the picture
+
+### Interpretation
+
+This sharpens the optimization story again.
+
+The remaining `csharp-query` vs `rust/go` gap should now be split into:
+
+1. **C# baseline gap**
+- the handwritten C# implementation is already slower than Rust and Go
+- so part of the end-to-end difference is language/runtime/data-structure
+  cost, not query-framework cost
+
+2. **Query-engine gap on top of C#**
+- the query path still adds further overhead beyond the handwritten C#
+  baseline
+
+That means future longest-depth work should ask two separate questions:
+
+- how much closer can we get `csharp-query` to handwritten `csharp-dfs`?
+- how much of the remaining `csharp-dfs` vs `rust/go` gap is worth chasing
+  at all, given broader managed-runtime costs?
+
+### Practical Implication
+
+The next optimization pass should probably stay measurement-first and keep
+those two baselines separate.
+
+For example:
+
+- C# data-structure/runtime tuning may help both `csharp-dfs` and
+  `csharp-query`
+- query-framework tuning only helps the second layer of the gap
+
+So this experiment supports the idea that not all remaining work should be
+framed as “query engine vs native code.” Some of it is simply “C# vs
+Rust/Go on this benchmark shape.”
+
 ## Questions Worth Handing To External Research
 
 If we want to ask Perplexity or another research assistant for ideas, the
@@ -283,3 +383,68 @@ Those notes explain:
 
 This note adds the first phase-level evidence for the remaining
 longest-depth bottleneck.
+
+### Follow-Up Experiment: Lighter-Weight Custom C# TSV Loader
+
+A lighter-weight handwritten C# loader was then tried for the
+`dependency_longest_depth` DFS baseline.
+
+It kept the original string-based graph representation, but changed the
+loader to:
+
+- use `StreamReader` directly
+- skip the header with one explicit read
+- scan each line manually for the tab separator
+- avoid `Enumerable.Select((line, i) => ...)` and `string.Split(...)`
+- pre-size dictionaries using a file-size heuristic
+
+This was compared against two earlier unsuccessful directions:
+
+- `Sep` integration
+- a heavier integerized two-pass loader
+
+#### Direct 10k C# DFS Result
+
+With the lighter-weight loader:
+
+- `load_ms=16`
+- `solve_ms=6`
+- `emit_ms=7`
+- `total_ms=30`
+- `gc0_collections=0`
+- `gc1_collections=0`
+- `gc2_collections=0`
+- `allocated_bytes=5,892,400`
+- `project_count=500`
+
+Compared with the earlier handwritten C# DFS baseline:
+
+- `load_ms=20 -> 16`
+- `solve_ms=7 -> 6`
+- `emit_ms=7 -> 7`
+- `total_ms=35 -> 30`
+- `allocated_bytes=7,880,720 -> 5,892,400`
+
+#### Interpretation
+
+This is the first clearly successful handwritten C# longest-depth loader
+optimization.
+
+It suggests that for this benchmark shape the next wins are more likely to
+come from:
+
+- reducing overhead in the existing string-based ingestion path
+- avoiding general-purpose parsing helpers that allocate extra objects
+- using tighter, benchmark-specific loader logic
+
+than from:
+
+- general-purpose parser libraries like `Sep`
+- or heavier multi-pass graph rewrites during load
+
+It also reinforces a broader point from the recent DAG work:
+
+- when the solve phase is relatively cheap, ingestion and setup overhead can
+  dominate the benchmark result
+- and that is exactly where both handwritten C# and the C# query engine tend
+  to lose most of their ground relative to Rust and Go
