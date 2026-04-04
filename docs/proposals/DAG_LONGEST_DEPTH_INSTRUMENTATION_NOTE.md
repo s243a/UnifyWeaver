@@ -108,6 +108,86 @@ Less promising immediate directions are:
 - more topological-order tuning
 - more suffix-depth recurrence changes
 
+## Follow-Up Experiment: String-Specialized Row Decoding
+
+After the instrumentation pass, a targeted experiment tried to reduce
+`build_graph` cost by adding a string-specialized fast path for
+`SeedGroupedDagLongestDepthNode`.
+
+The idea was:
+
+- the synthetic dependency benchmark uses string-valued edge rows
+- the current runtime path builds the graph from generic `object[]` rows
+- perhaps avoiding generic `object` lookups/casts would materially reduce
+  graph-build overhead
+
+The experiment was intentionally narrow:
+
+- keep the existing DAG recurrence unchanged
+- keep the same phase structure
+- only specialize graph construction and seed grouping when all relevant
+  values are strings
+
+### Result
+
+The specialized path was:
+
+- correct
+- benchmark-compatible
+- but slower end to end
+
+Full benchmark timings regressed to approximately:
+
+| Scale | C# Query |
+|---|---:|
+| `300` | `0.071s` |
+| `1k` | `0.073s` |
+| `5k` | `0.099s` |
+| `10k` | `0.114s` |
+
+Those numbers were worse than the current `main` baseline, so the change
+was reverted.
+
+### Interpretation
+
+This is useful because it narrows the bottleneck further.
+
+It suggests that the remaining graph-build cost is **not** solved by a
+simple “string instead of object” specialization layered on top of the
+current implementation.
+
+In practice, that fast path added enough extra checking and duplicated
+logic that it lost any benefit from typed dictionary access.
+
+So the next promising target is more likely:
+
+- lower-level fact-row access overhead
+- relation-provider / executor overhead around graph construction
+- or a more direct graph ingestion path
+
+and less likely:
+
+- another shallow specialization of the same graph-build loop
+
+## Questions Worth Handing To External Research
+
+If we want to ask Perplexity or another research assistant for ideas, the
+useful questions are now fairly concrete:
+
+1. For a DAG longest-path query over string-labeled edges, what exact
+   engineering techniques reduce graph-build overhead more reliably than
+   typed dictionary specialization?
+2. In query engines that ingest generic tuple rows, where do successful
+   DAG implementations usually win:
+   - row decoding
+   - symbol interning
+   - adjacency construction
+   - or result materialization?
+3. What are good exact designs for building a temporary DAG view from a
+   generic relation provider with minimal allocation?
+4. When the DP itself is cheap, what benchmark patterns typically expose
+   tuple/object overhead as the dominant cost in graph workloads?
+
 ## Relationship To Other Notes
 
 This note complements:
