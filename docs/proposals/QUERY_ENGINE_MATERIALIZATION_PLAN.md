@@ -53,6 +53,8 @@ Success criteria:
 Status:
 
 - started for scan-oriented and path-aware benchmark paths using the shared retention boundary
+- path-aware shortest-path operators now build compact operator-owned edge state
+  instead of consuming generic replayed edge tuples
 
 Work:
 

@@ -61,6 +61,8 @@ Examples:
 
 - DAG grouped reachability builds adjacency and grouped bitset/count state
 - DAG longest depth builds adjacency and scalar suffix-depth state
+- path-aware shortest-path operators can build compact source->targets edge state
+  instead of retaining generic edge tuples
 - other operators may request replay buffers or indexes when needed
 
 ### 3. External materialization fallback
@@ -104,8 +106,10 @@ For the current benchmark/runtime surface, the streamed path is:
 2. the runtime requests either `Streaming` or `Replayable` access
 3. replayable bindings can cache a reusable relation source instead of ad hoc `ToList()` calls
 4. DAG, scan, and path-aware operators read rows through that retention boundary
-5. the operator builds only the retained state it actually needs
-6. benchmark code avoids preloading raw facts into in-memory relations first
+5. path-aware shortest-path operators can build a compact edge-state cache
+   directly from streamed facts instead of generic replayed edge rows
+6. the operator builds only the retained state it actually needs
+7. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.
