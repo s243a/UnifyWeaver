@@ -302,7 +302,10 @@ test(wasm_allocator_has_bump_alloc) :-
     assertion(sub_atom(Template, _, _, _, '@wam_heap_ptr')),
     assertion(sub_atom(Template, _, _, _, 'define i32 @wam_alloc')),
     assertion(sub_atom(Template, _, _, _, 'define void @wam_alloc_rewind')),
-    assertion(sub_atom(Template, _, _, _, 'define void @wam_memcpy')).
+    assertion(sub_atom(Template, _, _, _, 'define void @wam_memcpy')),
+    % Pointer provenance: uses getelementptr from base, not raw inttoptr
+    assertion(sub_atom(Template, _, _, _, '@wam_linear_base')),
+    assertion(sub_atom(Template, _, _, _, 'getelementptr i8, i8* %base')).
 
 test(wasm_module_template_structure) :-
     wam_llvm_target:read_template_file(
@@ -313,16 +316,21 @@ test(wasm_module_template_structure) :-
 
 test(wasm_build_commands) :-
     build_wam_wasm_module('test.ll', 'test_out', Commands),
-    assertion(sub_atom(Commands, _, _, _, 'llc -march=wasm32')),
+    assertion(sub_atom(Commands, _, _, _, 'llc --mtriple=wasm32-unknown-unknown')),
     assertion(sub_atom(Commands, _, _, _, 'wasm-ld')),
     assertion(sub_atom(Commands, _, _, _, '--no-entry')),
-    assertion(sub_atom(Commands, _, _, _, '--export-all')).
+    assertion(sub_atom(Commands, _, _, _, '--export-all')),
+    % Toolchain check
+    assertion(sub_atom(Commands, _, _, _, 'command -v')).
 
 test(wasm_exports_generation) :-
     wam_llvm_target:generate_wasm_exports([parent/2, ancestor/2], ExportCode),
     assertion(sub_atom(ExportCode, _, _, _, '@parent_wasm')),
     assertion(sub_atom(ExportCode, _, _, _, '@ancestor_wasm')),
-    assertion(sub_atom(ExportCode, _, _, _, 'ret i32')).
+    assertion(sub_atom(ExportCode, _, _, _, 'ret i32')),
+    % Export visibility: dso_local + attribute group
+    assertion(sub_atom(ExportCode, _, _, _, 'dso_local')),
+    assertion(sub_atom(ExportCode, _, _, _, 'wasm-export-name')).
 
 % ============================================================================
 % Fix #3: lookup_label_index warning
@@ -332,5 +340,9 @@ test(lookup_label_warns_on_unknown, [true]) :-
     % Should succeed with Index=0 (and print a warning to stderr)
     wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),
     assertion(Index == 0).
+
+test(lookup_label_strict_throws, [throws(error(unknown_label(_), _))]) :-
+    wam_llvm_target:lookup_label_index(
+        'nonexistent_label', [], [wam_strict_labels(true)], _).
 
 :- end_tests(wam_llvm_target).

@@ -5,7 +5,15 @@
 ; Step: execute a single WAM instruction via switch dispatch
 {{step_function}}
 
-; Run loop: iterative (no musttail on WASM)
+; Run loop: iterative (no musttail — WASM has no guaranteed TCO).
+; This loop is semantically equivalent to the native musttail version:
+;   1. Check halted → success
+;   2. Fetch instruction at PC → failure if out of bounds
+;   3. Step (dispatch via switch) → on success, loop back to 1
+;   4. On step failure → backtrack (restore choice point, rewind trail)
+;   5. If backtrack succeeds → loop back to 1; else → failure
+; Choice point saves/restores are handled entirely within step() (try_me_else)
+; and backtrack(), so the loop body itself is stateless between iterations.
 define i1 @run_loop(%WamState* %vm) {
 entry:
   br label %loop

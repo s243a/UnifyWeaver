@@ -181,7 +181,9 @@ generate_wasm_exports(Predicates, ExportCode) :-
         atom_string(Pred, PredStr),
         format(atom(ExportFunc),
 '; WASM export: ~w/~w
-define i32 @~w_wasm() {
+; Visibility: dso_local ensures symbol is retained by wasm-ld.
+; The __export_name attribute maps to the WASM export name.
+define dso_local i32 @~w_wasm() #0 {
 entry:
   %vm = call %WamState* @wam_state_new(
     %Instruction* getelementptr ([0 x %Instruction], [0 x %Instruction]* null, i32 0, i32 0),
@@ -191,7 +193,13 @@ entry:
   ret i32 %ret
 }', [PredStr, Arity, PredStr])
     ), ExportFuncs),
-    atomic_list_concat(ExportFuncs, '\n\n', ExportCode).
+    atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
+    % Add WASM export attribute group
+    format(atom(ExportCode),
+'~w
+
+; WASM export attributes
+attributes #0 = { "wasm-export-name"="query" }', [ExportFuncsStr]).
 
 %% build_wam_wasm_module(+LLFile, +OutputName, -Commands)
 %  Generate shell commands to build a WASM module from the generated .ll file.
@@ -199,16 +207,27 @@ build_wam_wasm_module(LLFile, OutputName, Commands) :-
     format(atom(Commands),
 '#!/bin/bash
 # Build WAM WASM module from LLVM IR
-# Requires: LLVM toolchain (llc, wasm-ld)
+# Requires: LLVM toolchain with WASM backend:
+#   - llc (LLVM static compiler)
+#   - wasm-ld (WebAssembly linker, part of lld)
+# Install: apt install llvm lld  (or brew install llvm)
 
 set -e
 
+# Toolchain check
+for tool in llc wasm-ld; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Error: $tool not found. Install LLVM + lld." >&2
+        exit 1
+    fi
+done
+
 echo "Compiling ~w to WASM..."
 
-# Step 1: Compile to WASM object
-llc -march=wasm32 -filetype=obj ~w -o ~w.o
+# Step 1: Compile to WASM object (explicit triple for reproducibility)
+llc --mtriple=wasm32-unknown-unknown -filetype=obj ~w -o ~w.o
 
-# Step 2: Link to WASM module (no entry point — library mode)
+# Step 2: Link to WASM module (library mode, all symbols exported)
 wasm-ld --no-entry --export-all --allow-undefined ~w.o -o ~w.wasm
 
 # Step 3: Verify (optional)
@@ -1224,14 +1243,23 @@ resolve_llvm_literal(LabelMap, Parts, LLVMLit) :-
 %  with label names resolved to indices via LabelMap.
 
 %% lookup_label_index(+LabelName, +LabelMap, -Index)
-%  Find label index in map, or return 0 with a warning if not found.
+%  Find label index in map. Behaviour on unknown labels depends on context:
+%  - Default: warn on stderr, return 0 (for external predicate references)
+%  - With wam_strict_labels(true) in Options: throw an error
 lookup_label_index(LabelName, LabelMap, Index) :-
+    lookup_label_index(LabelName, LabelMap, [], Index).
+
+lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
-    ;   format(user_error,
-            'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
-            [LabelName]),
-        Index = 0
+    ;   (   option(wam_strict_labels(true), Options)
+        ->  throw(error(unknown_label(LabelName),
+                'Label not found in LabelMap — enable wam_strict_labels(false) to allow fallback'))
+        ;   format(user_error,
+                'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
+                [LabelName]),
+            Index = 0
+        )
     ).
 
 % Instructions that need label resolution:
