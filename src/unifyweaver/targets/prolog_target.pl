@@ -47,6 +47,9 @@
 %       - arguments(ArgSpec) - Command-line argument parsing
 %       - output_mode(Mode) - stdout, file, return
 %       - compile(true/false) - Generate compilation command for dialect
+%       - branch_pruning(auto/false) - Enable or disable SWI PPV pruning
+%         helpers (default: auto). Use false when benchmarking the
+%         non-pruned baseline or when comparing generated variants.
 %  @arg ScriptCode Generated script as atom
 %
 %  @example Generate script for user predicates

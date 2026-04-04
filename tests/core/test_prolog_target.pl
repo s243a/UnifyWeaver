@@ -104,6 +104,21 @@ cleanup_temp_module_source(Path) :-
     catch(unload_file(Path), _, true),
     catch(delete_file(Path), _, true).
 
+collect_generated_execution_hops(Options, PredicateCode, Hops) :-
+    once(prolog_target:generate_predicate_code(test_exec_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_exec_ppv_runtime_, ModuleName),
+    build_execution_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. [test_exec_ppv_reach, a, c, H, [a]],
+            findall(H, ModuleName:Goal, Hops0),
+            sort(Hops0, Hops)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
 test(emits_branch_pruning_helpers_for_parameterized_ppv,
         [setup(setup_branch_pruning_fixture),
          cleanup(cleanup_branch_pruning_fixture)]) :-
@@ -125,6 +140,13 @@ test(skips_branch_pruning_for_non_swi_dialect,
         [setup(setup_branch_pruning_fixture),
          cleanup(cleanup_branch_pruning_fixture)]) :-
     once(generate_prolog_script([test_ppv_reach/4], [dialect(gnu)], Code)),
+    \+ sub_atom(Code, _, _, _, 'test_ppv_reach$prune'),
+    \+ sub_atom(Code, _, _, _, 'test_ppv_reach$pruned').
+
+test(skips_branch_pruning_when_disabled_explicitly,
+        [setup(setup_branch_pruning_fixture),
+         cleanup(cleanup_branch_pruning_fixture)]) :-
+    once(generate_prolog_script([test_ppv_reach/4], [dialect(swi), branch_pruning(false)], Code)),
     \+ sub_atom(Code, _, _, _, 'test_ppv_reach$prune'),
     \+ sub_atom(Code, _, _, _, 'test_ppv_reach$pruned').
 
@@ -152,23 +174,21 @@ test(rename_recursive_calls_preserves_foreign_module_qualifiers) :-
 test(exec_generated_branch_pruned_code_preserves_results,
         [setup(setup_execution_branch_pruning_fixture),
          cleanup(cleanup_execution_branch_pruning_fixture)]) :-
-    once(prolog_target:generate_predicate_code(test_exec_ppv_reach/4, [dialect(swi)], PredicateCode)),
+    collect_generated_execution_hops([dialect(swi)], PredicateCode, Actual),
     once(sub_atom(PredicateCode, _, _, _, 'test_exec_ppv_reach$pruned')),
-    gensym(test_exec_ppv_runtime_, ModuleName),
-    build_execution_runtime_source(ModuleName, PredicateCode, Source),
-    write_temp_module_source(Source, Path),
-    setup_call_cleanup(
-        load_files(Path, []),
-        (
-            findall(H, user:test_exec_ppv_reach(a, c, H, [a]), Expected0),
-            sort(Expected0, Expected),
-            Goal =.. [test_exec_ppv_reach, a, c, H, [a]],
-            findall(H, ModuleName:Goal, Actual0),
-            sort(Actual0, Actual),
-            Expected == [2, 3],
-            Actual == Expected
-        ),
-        cleanup_temp_module_source(Path)
-    ).
+    findall(H, user:test_exec_ppv_reach(a, c, H, [a]), Expected0),
+    sort(Expected0, Expected),
+    Expected == [2, 3],
+    Actual == Expected.
+
+test(exec_generated_disabled_branch_pruning_matches_enabled_results,
+        [setup(setup_execution_branch_pruning_fixture),
+         cleanup(cleanup_execution_branch_pruning_fixture)]) :-
+    collect_generated_execution_hops([dialect(swi)], EnabledCode, Enabled),
+    collect_generated_execution_hops([dialect(swi), branch_pruning(false)], DisabledCode, Disabled),
+    once(sub_atom(EnabledCode, _, _, _, 'test_exec_ppv_reach$pruned')),
+    \+ sub_atom(DisabledCode, _, _, _, 'test_exec_ppv_reach$pruned'),
+    Enabled == [2, 3],
+    Disabled == Enabled.
 
 :- end_tests(prolog_target).
