@@ -12,7 +12,7 @@ pub struct TrailEntry {
     pub old_value: Option<Value>,
 }
 
-/// Choice point: saved state for backtracking.
+/// Choice point: saves state for backtracking.
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
     pub next_pc: usize,
@@ -20,7 +20,18 @@ pub struct ChoicePoint {
     pub stack: Vec<StackEntry>,
     pub cp: usize,
     pub trail: Vec<TrailEntry>,
+    /// Optional state for non-deterministic builtins
+    pub builtin_state: Option<BuiltinState>,
 }
+
+/// State for non-deterministic builtins
+#[derive(Clone, Debug)]
+pub struct BuiltinState {
+    pub name: String,
+    pub args: Vec<Value>,
+    pub data: Vec<Value>,
+}
+
 
 /// Stack entry: environment frames and unification contexts.
 #[derive(Clone, Debug)]
@@ -80,7 +91,7 @@ impl WamState {
 
     /// Get a register value. Yi registers are read from the environment frame.
     pub fn get_reg(&self, name: &str) -> Option<Value> {
-        if name.starts_with('Y') {
+        if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
             // Yi register: find in top environment frame
             for entry in &self.stack {
                 if let StackEntry::Env(_, y_regs) = entry {
@@ -95,7 +106,7 @@ impl WamState {
 
     /// Set a register value. Yi registers are written to the environment frame.
     pub fn put_reg(&mut self, name: &str, val: Value) {
-        if name.starts_with('Y') {
+        if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
             for entry in &mut self.stack {
                 if let StackEntry::Env(_, y_regs) = entry {
                     y_regs.insert(name.to_string(), val);
@@ -109,11 +120,48 @@ impl WamState {
 
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
-        let old = self.regs.get(key).cloned();
+        let old = self.get_reg(key);
         self.trail.push(TrailEntry {
             key: key.to_string(),
             old_value: old,
         });
+    }
+
+    /// Unify two values, potentially trailing bindings.
+    pub fn unify(&mut self, v1: &Value, v2: &Value) -> bool {
+        let dv1 = self.deref_heap(v1);
+        let dv2 = self.deref_heap(v2);
+        match (&dv1, &dv2) {
+            (Value::Unbound(n1), _) => {
+                self.trail_binding(n1);
+                self.put_reg(n1, dv2.clone());
+                true
+            }
+            (_, Value::Unbound(n2)) => {
+                self.trail_binding(n2);
+                self.put_reg(n2, dv1.clone());
+                true
+            }
+            (Value::Atom(a1), Value::Atom(a2)) => a1 == a2,
+            (Value::Integer(i1), Value::Integer(i2)) => i1 == i2,
+            (Value::Float(f1), Value::Float(f2)) => (f1 - f2).abs() < f64::EPSILON,
+            (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
+            (Value::Str(f1, a1), Value::Str(f2, a2)) => {
+                if f1 != f2 || a1.len() != a2.len() { return false; }
+                for (arg1, arg2) in a1.iter().zip(a2.iter()) {
+                    if !self.unify(arg1, arg2) { return false; }
+                }
+                true
+            }
+            (Value::List(l1), Value::List(l2)) => {
+                if l1.len() != l2.len() { return false; }
+                for (i1, i2) in l1.iter().zip(l2.iter()) {
+                    if !self.unify(i1, i2) { return false; }
+                }
+                true
+            }
+            _ => dv1 == dv2,
+        }
     }
 
     /// Extract sub-arguments from the heap starting at a given index.
@@ -123,20 +171,34 @@ impl WamState {
             .collect()
     }
 
-    /// Dereference a heap reference back to a Prolog term.
+    /// Dereference a heap reference or unbound variable back to its concrete value.
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
+            Value::Unbound(name) => {
+                if let Some(v) = self.get_reg(name) {
+                    if let Value::Unbound(name2) = &v {
+                        if name2 == name { return val.clone(); }
+                    }
+                    return self.deref_heap(&v);
+                }
+                val.clone()
+            }
             Value::Ref(addr) => {
-                if let Some(Value::Str(fn_str, _)) = self.heap.get(*addr) {
+                if let Some(Value::Str(full_str, _)) = self.heap.get(*addr) {
                     // Parse functor/arity from str(F/N) format
-                    if let Some(slash) = fn_str.find('/') {
-                        let functor = &fn_str[..slash];
-                        if let Ok(arity) = fn_str[slash + 1..].parse::<usize>() {
+                    let inner = if full_str.starts_with("str(") && full_str.ends_with(')') {
+                        &full_str[4..full_str.len() - 1]
+                    } else {
+                        full_str
+                    };
+                    if let Some(slash) = inner.rfind('/') {
+                        let functor = &inner[..slash];
+                        if let Ok(arity) = inner[slash + 1..].parse::<usize>() {
                             let args = self.heap_subargs(addr + 1, arity);
                             let derefed: Vec<Value> = args.iter()
                                 .map(|a| self.deref_heap(a))
                                 .collect();
-                            if functor == "." {
+                            if functor == "." || functor == "[|]" {
                                 // Reconstruct as list
                                 if derefed.len() == 2 {
                                     let head = derefed[0].clone();
@@ -145,6 +207,9 @@ impl WamState {
                                         Value::List(mut items) => {
                                             items.insert(0, head);
                                             return Value::List(items);
+                                        }
+                                        Value::Atom(ref s) if s == "[]" => {
+                                            return Value::List(vec![head]);
                                         }
                                         _ => return Value::List(vec![head, tail]),
                                     }

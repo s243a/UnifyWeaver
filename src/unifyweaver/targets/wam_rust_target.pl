@@ -100,7 +100,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
-                        self.heap.push(Value::Atom(format!("str({})", fn_str)));
+                        self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
@@ -109,7 +109,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
-                        if let Some(Value::Atom(s)) = self.heap.get(*addr) {
+                        if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
                             if s == &format!("str({})", fn_str) {
                                 let arity = fn_str.split(\'/\').nth(1)
                                     .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
@@ -132,7 +132,7 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
     Body = '                if let Some(val) = self.regs.get(ai).cloned() {
                     if val.is_unbound() {
                         let addr = self.heap.len();
-                        self.heap.push(Value::Atom("str(./2)".to_string()));
+                        self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), Value::Ref(addr));
                         self.stack.push(StackEntry::WriteCtx(2));
@@ -144,7 +144,7 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                             self.pc += 1; true
                         } else { false }
                     } else if let Value::Ref(addr) = &val {
-                        if let Some(Value::Atom(s)) = self.heap.get(*addr) {
+                        if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
                             if s == "str(./2)" {
                                 let args = self.heap_subargs(addr + 1, 2);
                                 self.stack.push(StackEntry::UnifyCtx(args));
@@ -257,14 +257,34 @@ wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
 
 wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
     Body = '                let addr = self.heap.len();
-                self.heap.push(Value::Atom(format!("str({})", fn_str)));
-                self.regs.insert(ai.clone(), Value::Ref(addr));
+                let ref_val = Value::Ref(addr);
+                self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
+                if let Some(val) = self.regs.get(ai) {
+                    if val.is_unbound() {
+                        let dv = self.deref_heap(val);
+                        if let Value::Unbound(name) = dv {
+                            self.trail_binding(&name);
+                            self.put_reg(&name, ref_val.clone());
+                        }
+                    }
+                }
+                self.regs.insert(ai.clone(), ref_val);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
     Body = '                let addr = self.heap.len();
-                self.heap.push(Value::Atom("str(./2)".to_string()));
-                self.regs.insert(ai.clone(), Value::Ref(addr));
+                let ref_val = Value::Ref(addr);
+                self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
+                if let Some(val) = self.regs.get(ai) {
+                    if val.is_unbound() {
+                        let dv = self.deref_heap(val);
+                        if let Value::Unbound(name) = dv {
+                            self.trail_binding(&name);
+                            self.put_reg(&name, ref_val.clone());
+                        }
+                    }
+                }
+                self.regs.insert(ai.clone(), ref_val);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
@@ -329,6 +349,7 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         stack: self.stack.clone(),
                         cp: self.cp,
                         trail: self.trail.clone(),
+                        builtin_state: None,
                     });
                     self.pc += 1; true
                 } else { false }'.
@@ -401,12 +422,22 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_backtrack_to_rust(BacktrackCode),
     compile_unwind_trail_to_rust(UnwindCode),
     compile_execute_builtin_to_rust(BuiltinCode),
+    compile_execute_arith_builtin_to_rust(ArithBuiltinCode),
+    compile_execute_io_builtin_to_rust(IoBuiltinCode),
+    compile_execute_type_builtin_to_rust(TypeBuiltinCode),
+    compile_execute_term_builtin_to_rust(TermBuiltinCode),
+    compile_resume_builtin_to_rust(ResumeCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
+        ArithBuiltinCode, '\n\n',
+        IoBuiltinCode, '\n\n',
+        TypeBuiltinCode, '\n\n',
+        TermBuiltinCode, '\n\n',
+        ResumeCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -426,10 +457,9 @@ compile_run_loop_to_rust(Code) :-
     }'.
 
 compile_backtrack_to_rust(Code) :-
-    Code = '    /// Restore state from the top choice point (does not pop it).
-    /// trust_me/retry_me_else handle choice point stack management.
+    Code = '    /// Restore state from the top choice point.
     pub fn backtrack(&mut self) -> bool {
-        if let Some(cp) = self.choice_points.last().cloned() {
+        if let Some(mut cp) = self.choice_points.pop() {
             self.pc = cp.next_pc;
             self.regs = cp.regs;
             self.stack = cp.stack;
@@ -437,12 +467,17 @@ compile_backtrack_to_rust(Code) :-
             // Unwind trail
             self.unwind_trail(&cp.trail);
             self.trail = cp.trail;
-            self.heap.clear();
+            
+            if let Some(state) = cp.builtin_state.take() {
+                // Resume non-deterministic builtin
+                return self.resume_builtin(state);
+            }
             true
         } else {
             false
         }
-    }'.
+    }
+'.
 
 compile_unwind_trail_to_rust(Code) :-
     Code = '    /// Undo bindings recorded since the saved trail state.
@@ -458,7 +493,22 @@ compile_unwind_trail_to_rust(Code) :-
 
 compile_execute_builtin_to_rust(Code) :-
     Code = '    /// Execute a built-in predicate by name.
-    fn execute_builtin(&mut self, op: &str, _arity: usize) -> bool {
+    pub fn execute_builtin(&mut self, op: &str, arity: usize) -> bool {
+        if self.execute_arith_builtin(op, arity) { return true; }
+        if self.execute_io_builtin(op, arity) { return true; }
+        if self.execute_type_builtin(op, arity) { return true; }
+        if self.execute_term_builtin(op, arity) { return true; }
+
+        match op {
+            "true/0" => { self.pc += 1; true }
+            "fail/0" => false,
+            "!/0" => { self.choice_points.clear(); self.pc += 1; true }
+            _ => false,
+        }
+    }'.
+
+compile_execute_arith_builtin_to_rust(Code) :-
+    Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
                 let expr = self.regs.get("A2").cloned().unwrap_or(Value::Integer(0));
@@ -507,9 +557,13 @@ compile_execute_builtin_to_rust(Code) :-
                 let v2 = self.regs.get("A2").cloned();
                 if v1 == v2 { self.pc += 1; true } else { false }
             }
-            "true/0" => { self.pc += 1; true }
-            "fail/0" => false,
-            "!/0" => { self.choice_points.clear(); self.pc += 1; true }
+            _ => false,
+        }
+    }'.
+
+compile_execute_io_builtin_to_rust(Code) :-
+    Code = '    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        match op {
             "write/1" | "display/1" => {
                 // Both use Display for now. Standard Prolog differentiates them:
                 // write/1 suppresses quoting, display/1 uses functional notation.
@@ -520,44 +574,107 @@ compile_execute_builtin_to_rust(Code) :-
                 } else { false }
             }
             "nl/0" => { println!(); self.pc += 1; true }
-            _ => {
-                // Check type checks and other unary/binary ops
-                if let Some(val) = self.regs.get("A1").cloned() {
-                    let ok = match op {
-                        "atom/1" => matches!(val, Value::Atom(_)),
-                        "integer/1" => matches!(val, Value::Integer(_)),
-                        "float/1" => matches!(val, Value::Float(_)),
-                        "number/1" => val.is_number(),
-                        "compound/1" => val.is_compound(),
-                        "var/1" => val.is_unbound(),
-                        "nonvar/1" => !val.is_unbound(),
-                        "is_list/1" => val.is_list(),
-                        _ => {
-                            // Support for basic list/term ops
-                            if let Some(val2) = self.regs.get("A2").cloned() {
-                                match op {
-                                    "member/2" => {
-                                        // Semi-deterministic: returns true once for any matching element.
-                                        // TODO: Requires choicepoint support for relational/backtracking use.
-                                        if let Value::List(items) = self.deref_heap(&val2) {
-                                            items.iter().any(|x| x == &val)
-                                        } else { false }
-                                    }
-                                    "append/3" => {
-                                        eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
-                                        false
-                                    }
-                                    _ => false,
-                                }
-                            } else { false }
+            _ => false,
+        }
+    }'.
+
+compile_execute_type_builtin_to_rust(Code) :-
+    Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        if let Some(val) = self.regs.get("A1").cloned() {
+            let ok = match op {
+                "atom/1" => matches!(val, Value::Atom(_)),
+                "integer/1" => matches!(val, Value::Integer(_)),
+                "float/1" => matches!(val, Value::Float(_)),
+                "number/1" => val.is_number(),
+                "compound/1" => val.is_compound(),
+                "var/1" => val.is_unbound(),
+                "nonvar/1" => !val.is_unbound(),
+                "is_list/1" => val.is_list(),
+                _ => return false,
+            };
+            if ok { self.pc += 1; true } else { false }
+        } else { false }
+    }'.
+
+compile_execute_term_builtin_to_rust(Code) :-
+    Code = '    fn execute_term_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        match op {
+            "member/2" => {
+                if let (Some(val1), Some(val2)) = (self.regs.get("A1").cloned(), self.regs.get("A2").cloned()) {
+                    if let Value::List(items) = self.deref_heap(&val2) {
+                        if items.is_empty() { return false; }
+                        
+                        // Push choice point for the rest of the list
+                        if items.len() > 1 {
+                            self.choice_points.push(ChoicePoint {
+                                next_pc: self.pc, // Stay on this instruction
+                                regs: self.regs.clone(),
+                                stack: self.stack.clone(),
+                                cp: self.cp,
+                                trail: self.trail.clone(),
+                                builtin_state: Some(BuiltinState {
+                                    name: "member/2".to_string(),
+                                    args: vec![val1.clone(), val2.clone()],
+                                    data: vec![Value::Integer(1)], // Start from index 1 next time
+                                }),
+                            });
                         }
-                    };
-                    if ok { self.pc += 1; true } else { false }
+                        
+                        // Try first element
+                        if self.unify(&val1, &items[0]) {
+                            self.pc += 1; true
+                        } else { false }
+                    } else { false }
                 } else { false }
             }
+            "append/3" => {
+                eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
+                false
+            }
+            _ => false,
         }
-    }
-'.
+    }'.
+
+compile_resume_builtin_to_rust(Code) :-
+    Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
+        match state.name.as_str() {
+            "member/2" => {
+                let val1 = state.args[0].clone();
+                let val2 = state.args[1].clone();
+                let idx = match state.data[0] {
+                    Value::Integer(n) => n as usize,
+                    _ => return false,
+                };
+                
+                if let Value::List(items) = self.deref_heap(&val2) {
+                    if idx >= items.len() { return false; }
+                    
+                    // Push choice point for the rest of the list if any
+                    if idx + 1 < items.len() {
+                        self.choice_points.push(ChoicePoint {
+                            next_pc: self.pc,
+                            regs: self.regs.clone(),
+                            stack: self.stack.clone(),
+                            cp: self.cp,
+                            trail: self.trail.clone(),
+                            builtin_state: Some(BuiltinState {
+                                name: "member/2".to_string(),
+                                args: state.args.clone(),
+                                data: vec![Value::Integer((idx + 1) as i64)],
+                            }),
+                        });
+                    }
+                    
+                    // Try current element
+                    if self.unify(&val1, &items[idx]) {
+                        self.pc += 1; true
+                    } else { false }
+                } else { false }
+            }
+            _ => false,
+        }
+    }'.
+
 
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
@@ -648,7 +765,9 @@ pub fn ~w(~w) -> bool {
     ];
     let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
-    let mut vm = WamState::new(code, labels);
+    vm.code = code;
+    vm.labels = labels;
+    vm.pc = 1;
 ~w
     vm.run()
 }', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ArgSetup]).
@@ -664,7 +783,7 @@ wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals) :-
 
 wam_lines_to_rust([], _, [], []).
 wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
-    split_string(Line, " \t", " \t", Parts),
+    split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
     ->  wam_lines_to_rust(Rest, PC, Instrs, Labels)
@@ -783,14 +902,44 @@ wam_line_to_rust_instr(["trust_me"], "Instruction::TrustMe").
 wam_line_to_rust_instr(["retry_me_else", Label], Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
-% Indexing instructions — skip for now (handled by label dispatch)
-wam_line_to_rust_instr(["switch_on_constant"|_], "/* switch_on_constant — handled via labels */").
-wam_line_to_rust_instr(["switch_on_structure"|_], "/* switch_on_structure — handled via labels */").
-wam_line_to_rust_instr(["switch_on_constant_a2"|_], "/* switch_on_constant_a2 — handled via labels */").
+% Indexing instructions
+wam_line_to_rust_instr(["switch_on_constant"|Entries], Rust) :-
+    maplist(parse_index_entry_constant, Entries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_structure"|Entries], Rust) :-
+    maplist(parse_index_entry_structure, Entries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnStructure(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], Rust) :-
+    maplist(parse_index_entry_constant, Entries, RustEntries),
+    atomic_list_concat(RustEntries, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
 % Fallback for unknown instructions
 wam_line_to_rust_instr(Parts, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), '/* unknown: ~w */', [Joined]).
+
+parse_index_entry_constant(Entry, Rust) :-
+    (   sub_string(Entry, Before, 1, After, ":")
+    ->  sub_string(Entry, 0, Before, _, ValStr),
+        sub_string(Entry, _, After, 0, Label),
+        (   number_string(N, ValStr)
+        ->  format(string(Rust), '(Value::Integer(~w), "~w".to_string())', [N, Label])
+        ;   ValStr = "true" -> format(string(Rust), '(Value::Bool(true), "~w".to_string())', [Label])
+        ;   ValStr = "false" -> format(string(Rust), '(Value::Bool(false), "~w".to_string())', [Label])
+        ;   format(string(Rust), '(Value::Atom("~w".to_string()), "~w".to_string())', [ValStr, Label])
+        )
+    ;   format(string(Rust), '(Value::Atom("~w".to_string()), "unknown".to_string())', [Entry])
+    ).
+
+parse_index_entry_structure(Entry, Rust) :-
+    (   sub_string(Entry, Before, 1, After, ":")
+    ->  sub_string(Entry, 0, Before, _, Functor),
+        sub_string(Entry, _, After, 0, Label),
+        format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
+    ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
+    ).
 
 clean_comma(Str, Clean) :-
     (   sub_string(Str, _, 1, 0, ",")
