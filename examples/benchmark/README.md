@@ -185,7 +185,7 @@ Tables:
 | `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
-| `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# DFS, Rust DFS, and Go DFS |
+| `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -402,27 +402,30 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.060s | 0.045s | 0.002s | 0.003s | match |
-| 1k | 0.097s | 0.051s | 0.007s | 0.009s | match |
-| 5k | 0.199s | 0.167s | 0.130s | 0.106s | match |
-| 10k | 0.485s | 0.511s | 0.572s | 0.457s | match |
+| 300 | 0.058s | 0.046s | 0.002s | 0.002s | match |
+| 1k | 0.088s | 0.050s | 0.007s | 0.007s | match |
+| 5k | 0.091s | 0.179s | 0.162s | 0.109s | match |
+| 10k | 0.103s | 0.517s | 0.573s | 0.463s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.75x | 0.04x | 0.05x |
-| 1k | 0.52x | 0.07x | 0.10x |
-| 5k | 0.84x | 0.65x | 0.53x |
-| 10k | 1.05x | 1.18x | 0.94x |
+| 300 | 0.78x | 0.04x | 0.04x |
+| 1k | 0.57x | 0.08x | 0.08x |
+| 5k | 1.97x | 1.78x | 1.20x |
+| 10k | 5.02x | 5.57x | 4.49x |
 
 Comparison note:
 
 - the current C# query path now uses a project-grouped reachability node
   rather than raw per-seed closure followed by regrouping
-- this changed the workload shape materially: the query engine is still
-  behind at `300` and `1k`, but is now close to parity at `5k` and
-  slightly ahead of C# DFS and Rust DFS at `10k`
+- the latest runtime-overhead pass pushes the final count aggregation
+  into the query runtime too, so the benchmark no longer materializes the
+  full `(project, reachable_dependency)` relation just to count it
+- this changed the cost profile materially: the query engine is still
+  behind at `300` and `1k`, but is now clearly ahead of all DFS targets
+  from `5k` onward
 - outputs still match across all four targets
 
 ### Cross-Target Dependency Longest-Depth Results
@@ -444,19 +447,19 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.063s | 0.041s | 0.002s | 0.002s | match |
-| 1k | 0.060s | 0.044s | 0.003s | 0.003s | match |
-| 5k | 0.098s | 0.051s | 0.006s | 0.006s | match |
-| 10k | 0.104s | 0.057s | 0.011s | 0.011s | match |
+| 300 | 0.059s | 0.043s | 0.002s | 0.002s | match |
+| 1k | 0.061s | 0.043s | 0.003s | 0.003s | match |
+| 5k | 0.089s | 0.051s | 0.006s | 0.006s | match |
+| 10k | 0.105s | 0.059s | 0.010s | 0.011s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.65x | 0.03x | 0.03x |
-| 1k | 0.73x | 0.05x | 0.05x |
-| 5k | 0.52x | 0.06x | 0.06x |
-| 10k | 0.55x | 0.10x | 0.11x |
+| 300 | 0.74x | 0.03x | 0.04x |
+| 1k | 0.71x | 0.04x | 0.05x |
+| 5k | 0.57x | 0.07x | 0.07x |
+| 10k | 0.56x | 0.10x | 0.11x |
 
 Comparison note:
 
