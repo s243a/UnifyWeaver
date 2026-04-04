@@ -294,6 +294,19 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes per-group root weight sums over all simple seed-to-root paths,
+    /// producing (group, root, weight_sum) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareWeightSumNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId Predicate,
+        double DistanceExponent,
+        int MaxDepth = 0
+    ) : PlanNode;
+
+    /// <summary>
     /// Computes a counted transitive closure while preventing cycles on each
     /// derivation path instead of deduplicating globally by node or tuple.
     /// </summary>
@@ -1096,6 +1109,7 @@ namespace UnifyWeaver.QueryRuntime
                 SeedGroupedTransitiveClosureNode closure => $"SeedGroupedTransitiveClosure edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
                 SeedGroupedTransitiveClosureCountNode closure => $"SeedGroupedTransitiveClosureCount edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
                 SeedGroupedDagLongestDepthNode closure => $"SeedGroupedDagLongestDepth edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
+                SeedGroupedPathAwareWeightSumNode closure => $"SeedGroupedPathAwareWeightSum edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} exponent={closure.DistanceExponent.ToString(CultureInfo.InvariantCulture)} maxDepth={closure.MaxDepth}",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode} positiveStep={closure.PositiveStepProven}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
@@ -1496,6 +1510,20 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedDepth, rows);
                 }
 
+                if (plan.Root is SeedGroupedPathAwareWeightSumNode seedGroupedPathAwareWeightSum)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareWeightSum(seedGroupedPathAwareWeightSum, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareWeightSum);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareWeightSum, rows);
+                }
+
                 if (plan.Root is PathAwareTransitiveClosureNode pathAwareClosure)
                 {
                     IEnumerable<object[]> rows;
@@ -1596,6 +1624,7 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.GroupedTransitiveClosureResults.Clear();
             _cacheContext.SeedGroupedTransitiveClosureCountResults.Clear();
             _cacheContext.SeedGroupedDagLongestDepthResults.Clear();
+            _cacheContext.SeedGroupedPathAwareWeightSumResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
             _cacheContext.GroupedTransitiveClosurePairProbeResults.Clear();
@@ -1705,6 +1734,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 case SeedGroupedDagLongestDepthNode closure:
                     result = ExecuteSeedGroupedDagLongestDepth(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareWeightSumNode closure:
+                    result = ExecuteSeedGroupedPathAwareWeightSum(closure, context);
                     break;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -2155,6 +2188,12 @@ namespace UnifyWeaver.QueryRuntime
                 case SeedGroupedDagLongestDepthNode closure:
                     predicates.Add(closure.EdgeRelation);
                     predicates.Add(closure.SeedRelation);
+                    return;
+
+                case SeedGroupedPathAwareWeightSumNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
                     return;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -7462,6 +7501,248 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareWeightSum(SeedGroupedPathAwareWeightSumNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareWeightSum");
+
+                var predicate = closure.Predicate;
+                var cacheKey = (closure.EdgeRelation, closure.SeedRelation, closure.RootRelation, predicate, closure.DistanceExponent, closure.MaxDepth);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}:roots={closure.RootRelation.Name}/{closure.RootRelation.Arity}:exp={closure.DistanceExponent.ToString(CultureInfo.InvariantCulture)}:max={closure.MaxDepth}";
+                if (context.SeedGroupedPathAwareWeightSumResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                foreach (var row in GetFactStream(closure.RootRelation, context))
+                {
+                    if (row is null || row.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var root = row[0];
+                    var rootKey = root ?? NullFactIndexKey;
+                    if (rootKeys.Add(rootKey))
+                    {
+                        rootValues[rootKey] = root;
+                    }
+                }
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareWeightSumResults[cacheKey] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+
+                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = row[0];
+                    var seed = row[1];
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                    {
+                        bucket = new List<object?>();
+                        groupedSeeds[groupKey] = bucket;
+                        groupValues.Add(group);
+                    }
+
+                    bucket.Add(seed);
+                    if (uniqueSeeds.Add(seed))
+                    {
+                        orderedUniqueSeeds.Add(seed);
+                    }
+                }
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareWeightSumResults[cacheKey] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+                var distanceWeightCache = new Dictionary<int, double>();
+                var nodeIds = new Dictionary<object, int>();
+                var nextNodeId = 0;
+
+                int GetNodeId(object? value)
+                {
+                    var key = value ?? NullFactIndexKey;
+                    if (nodeIds.TryGetValue(key, out var existing))
+                    {
+                        return existing;
+                    }
+
+                    var id = nextNodeId++;
+                    nodeIds[key] = id;
+                    return id;
+                }
+
+                double GetDistanceWeight(int distance)
+                {
+                    if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                    {
+                        return cachedWeight;
+                    }
+
+                    var weight = Math.Pow(distance, -closure.DistanceExponent);
+                    distanceWeightCache[distance] = weight;
+                    return weight;
+                }
+
+                var seedWeightSums = new Dictionary<object, Dictionary<object, double>>();
+                foreach (var seed in orderedUniqueSeeds)
+                {
+                    var weightSums = ComputePathAwareRootWeightSumsForSeed(seed, succIndex, rootKeys, closure.MaxDepth, GetNodeId, GetDistanceWeight);
+                    if (weightSums.Count > 0)
+                    {
+                        seedWeightSums[seed ?? NullFactIndexKey] = weightSums;
+                    }
+                }
+
+                var rows = new List<object[]>();
+                foreach (var group in groupValues)
+                {
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                    {
+                        continue;
+                    }
+
+                    Dictionary<object, double>? groupSums = null;
+                    foreach (var seed in seedsForGroup)
+                    {
+                        if (!seedWeightSums.TryGetValue(seed ?? NullFactIndexKey, out var rootSums))
+                        {
+                            continue;
+                        }
+
+                        groupSums ??= new Dictionary<object, double>();
+                        foreach (var entry in rootSums)
+                        {
+                            groupSums[entry.Key] = groupSums.TryGetValue(entry.Key, out var current) ? current + entry.Value : entry.Value;
+                        }
+                    }
+
+                    if (groupSums is null)
+                    {
+                        continue;
+                    }
+
+                    var orderedRoots = groupSums.Keys.ToList();
+                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                    foreach (var rootKey in orderedRoots)
+                    {
+                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupSums[rootKey] });
+                    }
+                }
+
+                context.SeedGroupedPathAwareWeightSumResults[cacheKey] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static Dictionary<object, double> ComputePathAwareRootWeightSumsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            HashSet<object> rootKeys,
+            int maxDepth,
+            Func<object?, int> getNodeId,
+            Func<int, double> getDistanceWeight)
+        {
+            var sums = new Dictionary<object, double>();
+
+            void AddContribution(object? root, int distance)
+            {
+                var rootKey = root ?? NullFactIndexKey;
+                var weight = getDistanceWeight(distance);
+                sums[rootKey] = sums.TryGetValue(rootKey, out var current) ? current + weight : weight;
+            }
+
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                AddContribution(seed, 1);
+            }
+
+            var initialPath = CompactVisitedPath.Create(getNodeId(seed));
+            var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Path)>();
+            stack.Push((seed, 0, initialPath));
+
+            while (stack.Count > 0)
+            {
+                var (current, depth, path) = stack.Pop();
+                var lookupKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                {
+                    continue;
+                }
+
+                for (var i = bucket.Targets.Count - 1; i >= 0; i--)
+                {
+                    var next = bucket.Targets[i];
+                    var nextId = getNodeId(next);
+                    if (path.Contains(nextId))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (maxDepth > 0 && nextDepth > maxDepth)
+                    {
+                        continue;
+                    }
+
+                    var nextKey = next ?? NullFactIndexKey;
+                    if (rootKeys.Contains(nextKey))
+                    {
+                        AddContribution(next, nextDepth + 1);
+                    }
+
+                    stack.Push((next, nextDepth, path.Extend(nextId)));
+                }
+            }
+
+            return sums;
         }
 
         private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
@@ -14776,6 +15057,8 @@ namespace UnifyWeaver.QueryRuntime
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
                 SeedGroupedDagLongestDepthResults = parent?.SeedGroupedDagLongestDepthResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareWeightSumResults = parent?.SeedGroupedPathAwareWeightSumResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
@@ -14838,6 +15121,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>> SeedGroupedTransitiveClosureCountResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>> SeedGroupedDagLongestDepthResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>> SeedGroupedPathAwareWeightSumResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
 

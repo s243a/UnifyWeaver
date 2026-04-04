@@ -14,45 +14,50 @@ and specification.
 
 ### Accumulated Prolog and Query Engine vs DFS Pipelines
 
-The effective-distance benchmark now has a generated accumulated Prolog
-path. It reuses `category_ancestor/4` once per unique category seed and
-uses a generated `'$effective_distance_sum'` helper to retain only
-per-seed summed path weights for article aggregation. On the current
-benchmark surface, that accumulated Prolog path is faster than the
-current C# query-engine path while still matching its output exactly.
+The effective-distance benchmark now has a dedicated C# query-runtime
+weight-sum path. Instead of materializing all `(seed, ancestor, hops)`
+rows and regrouping them in the benchmark harness, the runtime now:
+
+- streams `category_parent` and `article_category` into the engine
+- reuses path-aware edge state inside `QueryRuntime`
+- computes per-article/per-root weight sums directly
+- emits compact `(article, root, weight_sum)` rows for the final
+  `d_eff` calculation
+
+That moves the retained state into the engine and flips the old headline:
+the query engine is now faster than accumulated Prolog and all DFS
+pipelines across the full benchmark range while preserving the same
+all-path semantics.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **Prolog accumulated** | **0.353s** | **0.246s** | **0.852s** | **2.057s** |
-| C# Query Engine | 0.681s | 0.504s | 1.338s | 3.197s |
-| C# DFS pipeline | 0.48s | 1.27s | 5.48s | 10.15s |
-| Rust DFS pipeline | 0.35s | 1.47s | 7.30s | 13.67s |
-| Go DFS pipeline | 0.47s | 2.07s | 11.68s | 19.09s |
+| **C# Query Engine** | **0.211s** | **0.190s** | **0.351s** | **0.735s** |
+| Prolog accumulated | 0.361s | 0.249s | 0.823s | 2.038s |
+| C# DFS pipeline | 0.442s | 1.181s | 5.647s | 10.736s |
+| Rust DFS pipeline | 0.381s | 1.370s | 7.445s | 14.080s |
+| Go DFS pipeline | 0.483s | 2.066s | 11.864s | 19.701s |
 
-**Speedup of accumulated Prolog over the current C# query engine:**
+**Speedups of the current C# query engine:**
 
-| Scale | Speedup |
-|-------|---------|
-| 300 art | 1.93x |
-| 1K art | 2.05x |
-| 5K art | 1.57x |
-| 10K art | 1.55x |
+| Scale | vs Prolog accumulated | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------------------:|----------:|------------:|----------:|
+| 300 art | 1.71x | 2.09x | 1.80x | 2.29x |
+| 1K art | 1.31x | 6.23x | 7.23x | 10.87x |
+| 5K art | 2.35x | 16.10x | 21.23x | 33.80x |
+| 10K art | 2.77x | 14.60x | 19.15x | 26.80x |
 
 Semantic note:
 
-- The current C# query-engine benchmark path preserves per-path cycle
+- the current C# query-engine path still preserves per-path cycle
   checks without collapsing distinct simple paths that happen to reach
-  the same ancestor with the same hop count.
-- `benchmark_effective_distance.py` now compares the query-engine output
+  the same ancestor with the same hop count
+- `benchmark_effective_distance.py` compares the query-engine output
   against both the C# DFS reference and accumulated Prolog, reporting
-  `query_vs_csharp_dfs` and `query_vs_prolog_accumulated`.
-- the current `csharp-query` comparison is against the retention-mode-
-  updated runtime now merged on `main`.
-- Current post-fix runs report `query_vs_csharp_dfs = match` at
-  `300`, `1k`, `5k`, and `10k`.
-- Current accumulated Prolog runs also report
-  `query_vs_prolog_accumulated = match` at `300`, `1k`, `5k`, and
-  `10k`.
+  `query_vs_csharp_dfs` and `query_vs_prolog_accumulated`
+- current runs report `query_vs_csharp_dfs = match` at `300`, `1k`,
+  `5k`, and `10k`
+- current runs also report `query_vs_prolog_accumulated = match` at
+  `300`, `1k`, `5k`, and `10k`
 
 ### Why Seeded Closures Win
 
@@ -99,38 +104,34 @@ For historical context, the original DFS-only pipeline comparison:
 
 ### Key Findings
 
-1. **Accumulated Prolog is currently the fastest effective-distance path
-   on this benchmark surface** — it beats the current C# query-engine
-   path by `1.93x` at `300`, `2.05x` at `1k`, `1.57x` at `5k`, and
-   `1.55x` at `10k`.
+1. **The C# query engine is now the fastest effective-distance path on
+   this benchmark surface** — it beats accumulated Prolog by `1.71x` at
+   `300`, `1.31x` at `1k`, `2.35x` at `5k`, and `2.77x` at `10k`.
 
-2. **The C# query engine still beats the DFS baselines comfortably** —
-   it is `2.52x` faster than C# DFS at `1k`, `4.10x` at `5k`, and
-   `3.17x` at `10k`.
+2. **The C# query engine now beats the DFS baselines by a wide margin** —
+   at `10k` it is `14.60x` faster than C# DFS, `19.15x` faster than Rust
+   DFS, and `26.80x` faster than Go DFS.
 
-3. **Among the compiled DFS targets, C# still leads at scale** — at
-   `10k` it is faster than Rust DFS (`10.15s` vs `13.67s`) and much
-   faster than Go DFS (`19.09s`).
+3. **Retained-state strategy matters more than branch pruning on this
+   workload** — seeded reuse is the first big win, and moving per-article
+   root-weight aggregation into the query runtime removes the huge path-row
+   materialization cost that used to dominate the C# query path.
 
-4. **Retained-state strategy matters more than branch pruning on this
-   workload** — seeded reuse is the first big win, and pre-aggregating
-   per-seed weight sums cuts tuple count from `105287` to `462` at
-   `10k`, while pruning still stays mostly neutral.
+4. **Accumulated Prolog is still a useful retained-state reference** — it
+   keeps only per-seed weight sums (`462` tuples at `10k`), but the query
+   engine now reaches a better end-to-end result by combining streamed
+   ingestion with operator-owned retained state.
 
-5. **The current C# query-engine path is still materializing far more
-   tuples than accumulated Prolog on this workload** — at `10k`, the C#
-   query run emits `3616699` tuples versus `462` for accumulated Prolog.
-
-6. **The effective-distance path is now showing the right next design
-   direction** — specialized retained-state strategies for accumulation
-   workloads are more promising than further branch-pruning work here.
+5. **The current C# query-engine path now matches the intended ownership
+   boundary much more closely** — the parser streams tuples, and the engine
+   decides what retained form the effective-distance operator actually needs.
 
 ### Target Recommendations by Audience
 
 | Audience | Recommended Target | Why |
 |----------|-------------------|-----|
-| SWI / Prolog-first | Accumulated Prolog | Fastest current effective-distance path, with compact retained state |
-| Enterprise / .NET | C# Query Engine | Strong seeded runtime, broad query-engine surface |
+| SWI / Prolog-first | Accumulated Prolog | Strong retained-state reference and compact effective-distance helper |
+| Enterprise / .NET | C# Query Engine | Fastest current effective-distance path, with engine-owned retained state |
 | Cloud / DevOps | Go | Fast compile, good ecosystem |
 | Systems / Embedded | Rust | No runtime overhead, strong DFS baseline |
 
@@ -701,38 +702,32 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.715s | 0.371s | 0.487s | match |
-| 1k | 0.554s | 1.484s | 2.141s | match |
-| 5k | 1.673s | 7.905s | 12.509s | match |
-| 10k | 4.080s | 14.932s | 20.369s | match |
+| 300 | 0.200s | 0.388s | 0.480s | match |
+| 1k | 0.156s | 1.519s | 2.096s | match |
+| 5k | 0.331s | 7.853s | 12.002s | match |
+| 10k | 0.728s | 14.793s | 20.019s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 0.52x | 0.68x |
-| 1k | 2.68x | 3.87x |
-| 5k | 4.72x | 7.47x |
-| 10k | 3.66x | 4.99x |
+| 300 | 1.94x | 2.40x |
+| 1k | 9.76x | 13.46x |
+| 5k | 23.74x | 36.29x |
+| 10k | 20.32x | 27.49x |
 
 Comparison note:
 
-- the benchmark now includes a dedicated C# query-engine path
-- that path now uses `QueryRuntime` for both:
-  - the recursive `category_ancestor` expansion
-  - the outer grouped influence sum via `AggregateNode`
-- the C# benchmark package is now generated through
-  `generate_pipeline.py` as `target=csharp_query`, including:
-  - `Program.cs`
-  - `QueryRuntime.cs`
-  - `benchmark_qe.csproj`
+- the benchmark now uses the same retained-state idea as effective distance:
+  `QueryRuntime` emits compact `(article, root, weight_sum)` rows directly
+  instead of materializing all ancestor/hop rows and then summing them later
+- the remaining benchmark-side work is only the final per-root sum over those
+  compact article/root summaries
 - Rust and Go remain generated DFS/pipeline binaries
-- so this runner is intentionally a mixed execution-model comparison:
+- so this runner is still intentionally a mixed execution-model comparison:
   query engine versus non-query target pipelines
-- the remaining benchmark-only orchestration is now just build/run
-  invocation in the runner, not embedded C# workload or package wiring
-- the C# path is still weaker only at `300` and clearly faster from `1k`
-  onward on the current workload
+- the C# path is now faster at every tested scale, and the gap widens quickly
+  once the path-row materialization cost is removed
 
 ### Weighted `Min` Results
 
