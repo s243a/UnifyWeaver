@@ -71,7 +71,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     read_template_file('templates/targets/llvm_wam/runtime.ll.mustache', RuntimeTemplate),
     render_template(RuntimeTemplate, [
         step_function=StepFunc,
-        backtrack_function=HelpersCode
+        helper_functions=HelpersCode
     ], RuntimeFuncs),
 
     % Compile predicates (native or WAM fallback)
@@ -575,11 +575,11 @@ unwind_one:
   ; Load trail entry
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
-  %entry = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %new_ts
+  %te = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %new_ts
   ; Restore old value to register
-  %reg_ptr = getelementptr %TrailEntry, %TrailEntry* %entry, i32 0, i32 0
+  %reg_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 0
   %reg_idx = load i32, i32* %reg_ptr
-  %old_val_ptr = getelementptr %TrailEntry, %TrailEntry* %entry, i32 0, i32 1
+  %old_val_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 1
   %old_val = load %Value, %Value* %old_val_ptr
   call void @wam_set_reg(%WamState* %vm, i32 %reg_idx, %Value %old_val)
   br label %loop

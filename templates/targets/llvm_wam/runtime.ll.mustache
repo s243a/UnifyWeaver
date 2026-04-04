@@ -1,4 +1,4 @@
-; === WAM Runtime: Step + Run Loop ===
+; === WAM Runtime: Step + Run Loop + Helpers ===
 ; Transpiled from wam_runtime.pl step_wam/3 and run_loop/2
 
 ; Step: execute a single WAM instruction via switch dispatch
@@ -34,14 +34,5 @@ failure:
   ret i1 false
 }
 
-; Backtrack: restore state from the most recent choice point
-{{backtrack_function}}
-
-; Unwind trail: undo bindings back to a saved mark
-{{unwind_trail_function}}
-
-; Execute builtin: dispatch builtin_call instructions
-{{execute_builtin_function}}
-
-; Eval arithmetic: evaluate arithmetic expressions
-{{eval_arith_function}}
+; Backtrack, unwind_trail, execute_builtin, eval_arith
+{{helper_functions}}
