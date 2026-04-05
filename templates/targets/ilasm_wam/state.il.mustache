@@ -275,3 +275,110 @@ L_pst_empty:
 L_ps_empty:
     ret
 }
+
+// UnifyCtxNext: pop next arg from top UnifyCtx, auto-pop when exhausted.
+// Returns the arg Value, or null if no UnifyCtx on top.
+// Uses StackEntry.Aux as remaining count and StackEntry.Data as args array.
+// Reads Data[total - remaining], then decrements Aux.
+.method public instance class Value UnifyCtxNext() cil managed {
+    .maxstack 4
+    .locals init (class StackEntry top, int32 remaining, int32 idx, class Value arg)
+    // Check stack not empty and top is UnifyCtx (type=1)
+    ldarg.0
+    callvirt instance int32 WamState::PeekStackType()
+    ldc.i4.1
+    bne.un L_ucn_null
+    // Get top entry
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.1
+    sub
+    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    stloc.0
+    // remaining = Aux
+    ldloc.0
+    ldfld int32 StackEntry::Aux
+    stloc.1
+    ldloc.1
+    ldc.i4.0
+    ble L_ucn_null
+    // idx = Data.Length - remaining
+    ldloc.0
+    ldfld class Value[] StackEntry::Data
+    ldlen
+    conv.i4
+    ldloc.1
+    sub
+    stloc.2
+    // arg = Data[idx]
+    ldloc.0
+    ldfld class Value[] StackEntry::Data
+    ldloc.2
+    ldelem.ref
+    stloc.3
+    // Decrement remaining
+    ldloc.0
+    ldloc.1
+    ldc.i4.1
+    sub
+    stfld int32 StackEntry::Aux
+    // Auto-pop if exhausted
+    ldloc.0
+    ldfld int32 StackEntry::Aux
+    ldc.i4.0
+    bgt L_ucn_ret
+    ldarg.0
+    callvirt instance void WamState::PopStack()
+L_ucn_ret:
+    ldloc.3
+    ret
+L_ucn_null:
+    ldnull
+    ret
+}
+
+// WriteCtxDec: decrement top WriteCtx count, auto-pop when zero.
+// Returns remaining count (or 0 if no WriteCtx).
+.method public instance int32 WriteCtxDec() cil managed {
+    .maxstack 3
+    .locals init (class StackEntry top, int32 remaining)
+    ldarg.0
+    callvirt instance int32 WamState::PeekStackType()
+    ldc.i4.2
+    bne.un L_wcd_zero
+    // Get top entry
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.1
+    sub
+    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    stloc.0
+    // Decrement
+    ldloc.0
+    dup
+    ldfld int32 StackEntry::Aux
+    ldc.i4.1
+    sub
+    stfld int32 StackEntry::Aux
+    // Check if zero → pop
+    ldloc.0
+    ldfld int32 StackEntry::Aux
+    stloc.1
+    ldloc.1
+    ldc.i4.0
+    bgt L_wcd_ret
+    ldarg.0
+    callvirt instance void WamState::PopStack()
+    ldc.i4.0
+    ret
+L_wcd_ret:
+    ldloc.1
+    ret
+L_wcd_zero:
+    ldc.i4.0
+    ret
+}

@@ -390,10 +390,23 @@ wam_cil_case('L_unify_variable',
     callvirt instance int32 WamState::PeekStackType()
     ldc.i4.1                         // 1 = UnifyCtx
     bne.un L_uv_write
-    // Read mode: get next arg from UnifyCtx (via stack top Data array)
-    // For now, simplified: use write mode path (create unbound)
-    // TODO: full read mode with Data array indexing
-    br L_uv_write
+    // Read mode: pop next arg from UnifyCtx, store in Xn
+    ldarg.0
+    callvirt instance class Value WamState::UnifyCtxNext()
+    stloc.3
+    ldloc.3
+    brfalse L_uv_write              // null → fall through to write mode
+    ldarg.0
+    ldloc.0
+    callvirt instance void WamState::TrailBinding(int32)
+    ldarg.0
+    ldloc.0
+    ldloc.3
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret
 L_uv_write:
     // Write mode: create unbound var, push on heap, store in Xn
     ldarg.0
@@ -406,6 +419,9 @@ L_uv_write:
     ldarg.0
     ldloc.3
     callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance int32 WamState::WriteCtxDec()
     pop
     ldarg.0
     ldloc.0
@@ -429,12 +445,47 @@ wam_cil_case('L_unify_value',
     callvirt instance int32 WamState::PeekStackType()
     ldc.i4.1                         // 1 = UnifyCtx
     bne.un L_uvl_write
-    // Read mode placeholder: fall through to write
-    br L_uvl_write
+    // Read mode: pop expected arg, compare with register value
+    ldarg.0
+    callvirt instance class Value WamState::UnifyCtxNext()
+    stloc.3                          // expected
+    ldloc.3
+    brfalse L_uvl_write             // null → fall through to write
+    ldarg.0
+    ldloc.0
+    callvirt instance class Value WamState::GetReg(int32)
+    // Check: equal OR either unbound → succeed
+    dup
+    ldloc.3
+    callvirt instance bool Value::ValueEquals(class Value)
+    brtrue L_uvl_read_ok
+    // Check if expected is unbound
+    ldloc.3
+    callvirt instance bool Value::IsUnbound()
+    brtrue L_uvl_read_ok
+    // Check if actual is unbound → bind
+    dup
+    callvirt instance bool Value::IsUnbound()
+    brfalse L_uvl_fail
+    // Bind actual to expected
+    pop
+    ldarg.0
+    ldloc.0
+    callvirt instance void WamState::TrailBinding(int32)
+    ldarg.0
+    ldloc.0
+    ldloc.3
+    callvirt instance void WamState::SetReg(int32, class Value)
+L_uvl_read_ok:
+    pop                              // clean stack
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret
 L_uvl_write:
     // Write mode: push Xn value onto heap
-    ldloc.0
     ldarg.0
+    ldloc.0
     callvirt instance class Value WamState::GetReg(int32)
     stloc.3
     ldarg.0
@@ -442,8 +493,15 @@ L_uvl_write:
     callvirt instance int32 WamState::HeapPush(class Value)
     pop
     ldarg.0
+    callvirt instance int32 WamState::WriteCtxDec()
+    pop
+    ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
+    ret
+L_uvl_fail:
+    pop
+    ldc.i4.0
     ret').
 
 wam_cil_case('L_unify_constant',
@@ -452,14 +510,37 @@ wam_cil_case('L_unify_constant',
     callvirt instance int32 WamState::PeekStackType()
     ldc.i4.1
     bne.un L_uc_write
-    // Read mode placeholder: fall through to write
-    br L_uc_write
+    // Read mode: pop expected, check equality or unbound
+    ldarg.0
+    callvirt instance class Value WamState::UnifyCtxNext()
+    stloc.3
+    ldloc.3
+    brfalse L_uc_write              // null → fall through to write
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    newobj instance void IntegerValue::.ctor(int64)
+    ldloc.3
+    callvirt instance bool Value::ValueEquals(class Value)
+    brtrue L_uc_read_ok
+    ldloc.3
+    callvirt instance bool Value::IsUnbound()
+    brtrue L_uc_read_ok
+    ldc.i4.0
+    ret
+L_uc_read_ok:
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret
 L_uc_write:
     ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
     newobj instance void IntegerValue::.ctor(int64)
     callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance int32 WamState::WriteCtxDec()
     pop
     ldarg.0
     callvirt instance void WamState::IncPC()

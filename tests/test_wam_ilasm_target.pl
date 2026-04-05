@@ -255,10 +255,17 @@ test(get_structure_has_write_and_read_mode) :-
     compile_step_wam_to_cil([], StepCode),
     assertion(sub_atom(StepCode, _, _, _, 'L_gs_read:')).
 
-test(unify_variable_has_mode_dispatch) :-
+test(unify_variable_has_read_write_dispatch) :-
     compile_step_wam_to_cil([], StepCode),
     assertion(sub_atom(StepCode, _, _, _, 'PeekStackType')),
+    assertion(sub_atom(StepCode, _, _, _, 'UnifyCtxNext')),
+    assertion(sub_atom(StepCode, _, _, _, 'WriteCtxDec')),
     assertion(sub_atom(StepCode, _, _, _, 'UnboundValue')).
+
+test(unify_value_has_read_mode_equality) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'ValueEquals')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_uvl_fail')).
 
 test(write_ctx_pushed_by_structures) :-
     compile_step_wam_to_cil([], StepCode),
