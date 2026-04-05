@@ -98,16 +98,16 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 
 Scala and Clojure also appear in the Functional table above.
 
-### Compiler, Runtime & IR Targets
+### Web & Managed Language Targets
 
-| Pattern | LLVM | WASM | TypeScript | VB.NET |
-|---------|:----:|:----:|:----------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
+| Pattern | WASM | TypeScript | VB.NET |
+|---------|:----:|:----------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ |
 
 ### Scripting & Native Targets
 
@@ -120,18 +120,18 @@ Scala and Clojure also appear in the Functional table above.
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-### Assembly Language Targets
+### Assembly & IR Targets
 
-Low-level assembly and intermediate representation targets for JVM, .NET, and WebAssembly:
+Low-level assembly and intermediate representation targets:
 
-| Pattern | Jamaica (JVM) | Krakatau (JVM) | ILAsm (.NET) | WAT (WebAssembly) |
-|---------|:-------------:|:--------------:|:------------:|:------------------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
+| Pattern | Jamaica (JVM) | Krakatau (JVM) | ILAsm (.NET) | WAT (WASM) | LLVM IR | WAM |
+|---------|:-------------:|:--------------:|:------------:|:----------:|:-------:|:---:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ### UI Framework Targets
 
