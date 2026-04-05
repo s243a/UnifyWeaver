@@ -2455,6 +2455,7 @@ fn main() {{
 '''
 
 
+
 def generate_csharp_query_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
     roots = sorted(root_cats) if root_cats else ["Physics"]
     root_entries = ", ".join(f'"{root}"' for root in roots)
@@ -2472,6 +2473,32 @@ class Program
     const double N = {float(n)};
     const int MAX_DEPTH = {max_depth};
     static readonly HashSet<string> ROOTS = new(new[] {{ {root_entries} }}, StringComparer.Ordinal);
+
+    static PathAwareWeightSumStrategy ReadWeightSumStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_WEIGHT_SUM_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareWeightSumStrategy.LegacySeededRows,
+            "grouped" => PathAwareWeightSumStrategy.CompactGrouped,
+            _ => PathAwareWeightSumStrategy.Auto
+        }};
+    }}
+
+    static void PrintWeightSumStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
 
     static void Main(string[] args)
     {{
@@ -2506,9 +2533,15 @@ class Program
             null
         );
 
+        var weightSumStrategy = ReadWeightSumStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareWeightSumStrategy: weightSumStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -2531,10 +2564,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("root_category\tinfluence_score");
+        Console.WriteLine("root_category	influence_score");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Root}}\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Root}}	{{item.Score.ToString("F12", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2544,6 +2577,8 @@ class Program
         Console.Error.WriteLine($"article_count={{articles.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"root_count={{results.Count}}");
+        Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
+        PrintWeightSumStrategies(trace);
     }}
 }}
 '''
@@ -2565,6 +2600,32 @@ class Program
     const string ROOT_CATEGORY = "{root}";
     const double N = {float(n)};
     const int MAX_DEPTH = {max_depth};
+
+    static PathAwareWeightSumStrategy ReadWeightSumStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_WEIGHT_SUM_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareWeightSumStrategy.LegacySeededRows,
+            "grouped" => PathAwareWeightSumStrategy.CompactGrouped,
+            _ => PathAwareWeightSumStrategy.Auto
+        }};
+    }}
+
+    static void PrintWeightSumStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
 
     static void Main(string[] args)
     {{
@@ -2595,9 +2656,15 @@ class Program
             null
         );
 
+        var weightSumStrategy = ReadWeightSumStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
         var swExec = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareWeightSumStrategy: weightSumStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swExec.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -2614,10 +2681,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article\troot_category\teffective_distance");
+        Console.WriteLine("article	root_category	effective_distance");
         foreach (var (deff, article) in results)
         {{
-            Console.WriteLine($"{{article}}\t{{ROOT_CATEGORY}}\t{{deff.ToString(\"F6\", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{article}}	{{ROOT_CATEGORY}}	{{deff.ToString("F6", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2626,6 +2693,8 @@ class Program
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
+        PrintWeightSumStrategies(trace);
     }}
 
     static double ComputeDeff(double weightSum)
@@ -2634,8 +2703,6 @@ class Program
     }}
 }}
 '''
-
-
 
 def generate_csharp_query_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = sorted(root_cats)[0] if root_cats else "Physics"

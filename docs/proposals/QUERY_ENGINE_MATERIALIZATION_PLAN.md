@@ -80,10 +80,13 @@ Success criteria:
 Status:
 
 - started for shortest-path and weighted-shortest-path grouped minima
-- the runtime can now choose between compact grouped minima and legacy
-  seeded-row regrouping
+- started for effective-distance and category-influence grouped weight sums
+- the runtime can now choose between compact grouped summaries and legacy
+  seeded-row regrouping for both operator families
 - `QueryExecutorOptions.PathAwareGroupedMinStrategy` can force `Auto`,
-  `CompactGrouped`, or `LegacySeededRows` for benchmarking and validation
+  `CompactGrouped`, or `LegacySeededRows` for grouped minima benchmarking
+- `QueryExecutorOptions.PathAwareWeightSumStrategy` can force `Auto`,
+  `CompactGrouped`, or `LegacySeededRows` for grouped weight-sum benchmarking
 
 Work:
 
