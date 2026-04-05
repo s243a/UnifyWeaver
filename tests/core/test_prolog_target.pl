@@ -414,7 +414,7 @@ collect_generated_category_influence_sums(Options, PredicateCode, Sums) :-
     setup_call_cleanup(
         load_files(Path, []),
         (
-            Goal =.. ['test_influence_reach$power_sum', a, c, Sum],
+            Goal =.. ['test_influence_reach$power_sum_grouped', a, c, Sum],
             findall(Sum, ModuleName:Goal, Sums0),
             sort(Sums0, Sums)
         ),
@@ -567,6 +567,7 @@ test(emits_effective_distance_accumulation_helper_for_counted_ppv,
     ],
     collect_generated_effective_distance_sums(Options, PredicateCode, [Actual]),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$power_sum')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$power_sum_grouped')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum')),
     Expected is (3 ** -5) + (4 ** -5),
     Delta is abs(Actual - Expected),
@@ -591,7 +592,8 @@ test(emits_power_sum_helper_for_counted_non_ppv_closure,
         seeded_accumulation(auto),
         predicates([influence_dimension/1, max_depth/1, test_influence_reach/3])
     ],
-    collect_generated_category_influence_sums(Options, _PredicateCode, [Actual]),
+    collect_generated_category_influence_sums(Options, PredicateCode, [Actual]),
+    once(sub_atom(PredicateCode, _, _, _, 'test_influence_reach$power_sum_grouped')),
     Expected is (3 ** -5) + (3 ** -5),
     Delta is abs(Actual - Expected),
     Delta < 1.0e-12.
@@ -608,6 +610,7 @@ test(emits_sum_metric_helper_from_formula_metadata,
     ],
     collect_generated_sum_metric_sums(Options, PredicateCode, [Actual]),
     once(sub_atom(PredicateCode, _, _, _, 'test_sum_metric_reach$sum_metric')),
+    \+ sub_atom(PredicateCode, _, _, _, 'test_sum_metric_reach$sum_metric$grouped'),
     Actual =:= 4.
 
 :- end_tests(prolog_target).

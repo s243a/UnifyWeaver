@@ -741,11 +741,33 @@ Comparison note:
 - the C# path is now faster at every tested scale, and the gap widens quickly
   once the path-row materialization cost is removed
 
+Optional grouped-Prolog spot check:
+
+```bash
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k \
+    --targets csharp-query,rust-dfs,go-dfs,prolog-accumulated \
+    --repetitions 1
+```
+
+| Scale | C# Query | Rust DFS | Go DFS | Prolog Accumulated | Outputs |
+|-------|---------:|---------:|-------:|-------------------:|---------|
+| 300 | 0.649s | 0.391s | 0.485s | 1.739s | match |
+| 1k | 0.529s | 1.488s | 2.178s | 1.044s | match |
+
+This grouped Prolog path now uses the generated
+`category_ancestor$power_sum_grouped` helper rather than the generic
+per-root fallback. That makes the accumulated Prolog path viable again,
+but C# query is still clearly faster on this workload.
+
 ### Prolog Category-Influence Accumulation Results
 
-The generalized seeded accumulation helper can now be exercised on the
-category-influence workload too, using the cycle-safe PPV
-`category_ancestor/4` closure from the effective-distance workload.
+The category-influence benchmark now uses a generated grouped
+`power_sum_grouped` helper for the cycle-safe PPV `category_ancestor/4`
+closure from the effective-distance workload. The generic seeded
+accumulation helper remains available as the fallback path, but this
+grouped helper is the better fit for category influence because the
+consumer wants all root sums for a seed at once.
 
 Command:
 
@@ -758,20 +780,23 @@ Latest local results:
 
 | Scale | Seeded | Accumulated | Output Match | Note |
 |-------|-------:|------------:|--------------|------|
-| 300 | 1.874s | 37.847s | match | accumulated helper is much slower |
-| 1k | 1.065s | 27.206s | match | grouped helper remains much slower |
+| 300 | 1.892s | 1.890s | match | grouped helper reaches parity |
+| 1k | 1.056s | 1.118s | match | grouped helper stays close |
 
 Current interpretation:
 
-- the generalized seeded accumulation helper is semantically correct on
-  category influence
-- but this grouped `power_sum` helper is the wrong retained-state shape
-  for the workload
-- it recomputes grouped aggregates per seed and pays heavily for that:
-  - `300`: `query_ms 1311 -> 36991`
-  - `1k`: `query_ms 714 -> 26380`
-- the accumulated Prolog path is therefore exposed as an optional
-  benchmark target here, not the new default category-influence path
+- the specialized grouped helper is semantically correct on category
+  influence and dramatically better than the old generic accumulated
+  path
+- it still trades a higher query cost for much smaller retained state:
+  - `300`: tuple count `602808 -> 30968`
+  - `1k`: tuple count `352522 -> 10328`
+- that retained-state drop is enough to make accumulated Prolog roughly
+  competitive with the seeded baseline instead of catastrophically
+  slower
+- the generic seeded accumulation helper remains the right fallback for
+  workloads like effective distance where the grouped helper is not the
+  better consumer fit
 
 ### Weighted `Min` Results
 
