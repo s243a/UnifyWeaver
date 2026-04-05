@@ -481,6 +481,13 @@ namespace UnifyWeaver.QueryRuntime
         LegacySeededRows
     }
 
+    internal enum PathAwareGroupedSummaryStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
@@ -1419,8 +1426,8 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
-        private readonly PathAwareGroupedMinStrategy _pathAwareGroupedMinStrategy;
-        private readonly PathAwareWeightSumStrategy _pathAwareWeightSumStrategy;
+        private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
+        private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1434,8 +1441,8 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
-            _pathAwareGroupedMinStrategy = options.PathAwareGroupedMinStrategy;
-            _pathAwareWeightSumStrategy = options.PathAwareWeightSumStrategy;
+            _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
+            _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
         }
 
         public IEnumerable<object[]> Execute(
@@ -7606,15 +7613,32 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private PathAwareWeightSumStrategy ResolvePathAwareWeightSumStrategy(
+        private static PathAwareGroupedSummaryStrategy ToPathAwareGroupedSummaryStrategy(PathAwareGroupedMinStrategy strategy)
+            => strategy switch
+            {
+                PathAwareGroupedMinStrategy.CompactGrouped => PathAwareGroupedSummaryStrategy.CompactGrouped,
+                PathAwareGroupedMinStrategy.LegacySeededRows => PathAwareGroupedSummaryStrategy.LegacySeededRows,
+                _ => PathAwareGroupedSummaryStrategy.Auto
+            };
+
+        private static PathAwareGroupedSummaryStrategy ToPathAwareGroupedSummaryStrategy(PathAwareWeightSumStrategy strategy)
+            => strategy switch
+            {
+                PathAwareWeightSumStrategy.CompactGrouped => PathAwareGroupedSummaryStrategy.CompactGrouped,
+                PathAwareWeightSumStrategy.LegacySeededRows => PathAwareGroupedSummaryStrategy.LegacySeededRows,
+                _ => PathAwareGroupedSummaryStrategy.Auto
+            };
+
+        private static PathAwareGroupedSummaryStrategy ResolvePathAwareGroupedSummaryStrategy(
+            PathAwareGroupedSummaryStrategy configuredStrategy,
             int groupCount,
             int uniqueSeedCount,
             int rootCount,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
         {
-            if (_pathAwareWeightSumStrategy != PathAwareWeightSumStrategy.Auto)
+            if (configuredStrategy != PathAwareGroupedSummaryStrategy.Auto)
             {
-                return _pathAwareWeightSumStrategy;
+                return configuredStrategy;
             }
 
             var effectiveGroups = Math.Max(1, groupCount);
@@ -7624,8 +7648,19 @@ namespace UnifyWeaver.QueryRuntime
             var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
             var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
             return estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
-                ? PathAwareWeightSumStrategy.LegacySeededRows
-                : PathAwareWeightSumStrategy.CompactGrouped;
+                ? PathAwareGroupedSummaryStrategy.LegacySeededRows
+                : PathAwareGroupedSummaryStrategy.CompactGrouped;
+        }
+
+        private static void RecordPathAwareGroupedSummaryStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string nodeStrategyPrefix,
+            PathAwareGroupedSummaryStrategy strategy)
+        {
+            trace?.RecordStrategy(node, strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                ? $"{nodeStrategyPrefix}LegacySeededRows"
+                : $"{nodeStrategyPrefix}CompactGrouped");
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
@@ -7798,13 +7833,16 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareWeightSumStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
-                trace?.RecordStrategy(closure, selectedStrategy == PathAwareWeightSumStrategy.LegacySeededRows
-                    ? "SeedGroupedPathAwareWeightSumLegacySeededRows"
-                    : "SeedGroupedPathAwareWeightSumCompactGrouped");
+                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
+                    _pathAwareWeightSumStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds.Count,
+                    rootKeys.Count,
+                    succIndex);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selectedStrategy);
 
                 IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums;
-                if (selectedStrategy == PathAwareWeightSumStrategy.LegacySeededRows)
+                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
                     seedWeightSums = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context);
                 }
@@ -7963,28 +8001,6 @@ namespace UnifyWeaver.QueryRuntime
         }
 
 
-
-        private PathAwareGroupedMinStrategy ResolvePathAwareGroupedMinStrategy(
-            int groupCount,
-            int uniqueSeedCount,
-            int rootCount,
-            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
-        {
-            if (_pathAwareGroupedMinStrategy != PathAwareGroupedMinStrategy.Auto)
-            {
-                return _pathAwareGroupedMinStrategy;
-            }
-
-            var effectiveGroups = Math.Max(1, groupCount);
-            var effectiveSeeds = Math.Max(1, uniqueSeedCount);
-            var effectiveRoots = Math.Max(1, rootCount);
-            var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
-            var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
-            var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
-            return estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
-                ? PathAwareGroupedMinStrategy.LegacySeededRows
-                : PathAwareGroupedMinStrategy.CompactGrouped;
-        }
 
         private static int EstimatePathAwareNodeCount(IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
         {
@@ -8155,13 +8171,16 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareGroupedMinStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
-                trace?.RecordStrategy(closure, selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows
-                    ? "SeedGroupedPathAwareDepthMinLegacySeededRows"
-                    : "SeedGroupedPathAwareDepthMinCompactGrouped");
+                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
+                    _pathAwareGroupedMinStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds.Count,
+                    rootKeys.Count,
+                    succIndex);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selectedStrategy);
 
                 IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins;
-                if (selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows)
+                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
                     seedDepthMins = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
                 }
@@ -8381,13 +8400,16 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareGroupedMinStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
-                trace?.RecordStrategy(closure, selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows
-                    ? "SeedGroupedPathAwareAccumulationMinLegacySeededRows"
-                    : "SeedGroupedPathAwareAccumulationMinCompactGrouped");
+                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
+                    _pathAwareGroupedMinStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds.Count,
+                    rootKeys.Count,
+                    succIndex);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selectedStrategy);
 
                 IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
-                if (selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows)
+                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
                     seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
                 }
