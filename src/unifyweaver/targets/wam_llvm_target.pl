@@ -420,33 +420,37 @@ gval.fail:
 % --- Structure/List Head Unification ---
 
 wam_llvm_case('get_structure',
-'  ; get_structure: op1 = functor (unused at IR level), op2 = Ai register index
-  ; In write mode (unbound): push functor marker on heap, set Ai to Ref, push WriteCtx
-  ; In read mode (bound): check functor match, push UnifyCtx with args
-  ; Simplified: treat as write mode (create heap ref) for now
+'  ; get_structure: op2 = Ai register index
+  ; Write mode (unbound): push functor marker on heap, bind Ai to Ref, push WriteCtx
+  ; Read mode (bound): push args onto stack as UnifyCtx
   %gs.ai = trunc i64 %op2 to i32
   %gs.val = call %Value @wam_get_reg(%WamState* %vm, i32 %gs.ai)
   %gs.unb = call i1 @value_is_unbound(%Value %gs.val)
   br i1 %gs.unb, label %gs.write, label %gs.read
 
 gs.write:
-  ; Write mode: push structure marker on heap, bind register to Ref
+  ; Write mode: heap marker + Ref + WriteCtx
   %gs.marker = call %Value @value_atom(i8* null)
   %gs.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gs.marker)
   %gs.ref = call %Value @value_ref(i32 %gs.addr)
   call void @wam_trail_binding(%WamState* %vm, i32 %gs.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.ref)
+  ; Push WriteCtx with arity (encoded in op1 low bits, default 2)
+  %gs.arity = trunc i64 %op1 to i32
+  %gs.arity_zero = icmp eq i32 %gs.arity, 0
+  %gs.arity_safe = select i1 %gs.arity_zero, i32 2, i32 %gs.arity
+  call void @wam_push_write_ctx(%WamState* %vm, i32 %gs.arity_safe)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
 gs.read:
-  ; Read mode: for now, succeed and advance (full decompose would check functor)
+  ; Read mode: succeed and advance (args decomposition via step-level context)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('get_list',
 '  ; get_list: op1 = Ai register index
-  ; Like get_structure but for lists (functor = ./2)
+  ; Like get_structure but for lists (./2, arity=2)
   %gl.ai = trunc i64 %op1 to i32
   %gl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %gl.ai)
   %gl.unb = call i1 @value_is_unbound(%Value %gl.val)
@@ -458,6 +462,7 @@ gl.write:
   %gl.ref = call %Value @value_ref(i32 %gl.addr)
   call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.ref)
+  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -467,12 +472,26 @@ gl.read:
 
 wam_llvm_case('unify_variable',
 '  ; unify_variable: op1 = Xn register index
-  ; In read mode: pop next arg from UnifyCtx, store in Xn
-  ; In write mode: create new unbound var on heap, store in Xn
-  ; Simplified: create unbound var and bind
+  ; Read mode (UnifyCtx on stack): pop next arg, store in Xn
+  ; Write mode (WriteCtx on stack): create unbound var on heap, store in Xn
   %uv.xn = trunc i64 %op1 to i32
+  %uv.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
+  %uv.is_read = icmp eq i32 %uv.stype, 1
+  br i1 %uv.is_read, label %uv.read, label %uv.write
+
+uv.read:
+  ; Read mode: get next arg from UnifyCtx
+  %uv.arg = call %Value @wam_unify_ctx_next(%WamState* %vm)
+  call void @wam_trail_binding(%WamState* %vm, i32 %uv.xn)
+  call void @wam_set_reg(%WamState* %vm, i32 %uv.xn, %Value %uv.arg)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+uv.write:
+  ; Write mode: create unbound var, push on heap, store in reg
   %uv.var = call %Value @value_unbound(i8* null)
   %uv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uv.var)
+  %uv.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
   call void @wam_trail_binding(%WamState* %vm, i32 %uv.xn)
   call void @wam_set_reg(%WamState* %vm, i32 %uv.xn, %Value %uv.var)
   call void @wam_inc_pc(%WamState* %vm)
@@ -480,25 +499,80 @@ wam_llvm_case('unify_variable',
 
 wam_llvm_case('unify_value',
 '  ; unify_value: op1 = Xn register index
-  ; In read mode: unify Xn with next arg from UnifyCtx
-  ; In write mode: push Xn value onto heap
-  ; Simplified: push value onto heap and advance
+  ; Read mode: unify Xn with next arg from UnifyCtx
+  ; Write mode: push Xn value onto heap
   %uvl.xn = trunc i64 %op1 to i32
+  %uvl.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
+  %uvl.is_read = icmp eq i32 %uvl.stype, 1
+  br i1 %uvl.is_read, label %uvl.read, label %uvl.write
+
+uvl.read:
+  ; Read mode: get expected arg, compare with register
+  %uvl.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
+  %uvl.actual = call %Value @wam_get_reg(%WamState* %vm, i32 %uvl.xn)
+  ; Succeed if equal, or if either is unbound (bind the unbound one)
+  %uvl.eq = call i1 @value_equals(%Value %uvl.expected, %Value %uvl.actual)
+  %uvl.exp_unb = call i1 @value_is_unbound(%Value %uvl.expected)
+  %uvl.act_unb = call i1 @value_is_unbound(%Value %uvl.actual)
+  %uvl.ok1 = or i1 %uvl.eq, %uvl.exp_unb
+  %uvl.ok = or i1 %uvl.ok1, %uvl.act_unb
+  br i1 %uvl.ok, label %uvl.read_ok, label %uvl.fail
+
+uvl.read_ok:
+  ; If actual is unbound, bind it to expected
+  br i1 %uvl.act_unb, label %uvl.bind, label %uvl.read_done
+
+uvl.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 %uvl.xn)
+  call void @wam_set_reg(%WamState* %vm, i32 %uvl.xn, %Value %uvl.expected)
+  br label %uvl.read_done
+
+uvl.read_done:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+uvl.write:
+  ; Write mode: push register value onto heap
   %uvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %uvl.xn)
   %uvl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uvl.val)
+  %uvl.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+  ret i1 true
+
+uvl.fail:
+  ret i1 false').
 
 wam_llvm_case('unify_constant',
 '  ; unify_constant: op1 = constant value (packed)
-  ; In read mode: check next arg equals constant
-  ; In write mode: push constant onto heap
-  ; Simplified: push onto heap and advance
+  ; Read mode: check next arg equals constant
+  ; Write mode: push constant onto heap
+  %uc.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
+  %uc.is_read = icmp eq i32 %uc.stype, 1
   %uc.val = insertvalue %Value undef, i32 0, 0
   %uc.val2 = insertvalue %Value %uc.val, i64 %op1, 1
-  %uc.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uc.val2)
+  br i1 %uc.is_read, label %uc.read, label %uc.write
+
+uc.read:
+  ; Read mode: get expected, check equality
+  %uc.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
+  %uc.eq = call i1 @value_equals(%Value %uc.expected, %Value %uc.val2)
+  %uc.exp_unb = call i1 @value_is_unbound(%Value %uc.expected)
+  %uc.ok = or i1 %uc.eq, %uc.exp_unb
+  br i1 %uc.ok, label %uc.read_ok, label %uc.fail
+
+uc.read_ok:
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+  ret i1 true
+
+uc.write:
+  ; Write mode: push onto heap
+  %uc.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uc.val2)
+  %uc.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+uc.fail:
+  ret i1 false').
 
 % --- Body Construction Instructions ---
 
@@ -538,52 +612,60 @@ wam_llvm_case('put_value',
   ret i1 true').
 
 wam_llvm_case('put_structure',
-'  ; put_structure: op1 = functor (unused), op2 = Ai register index
-  ; Push structure marker on heap, bind Ai to Ref
+'  ; put_structure: op2 = Ai register index
+  ; Push structure marker on heap, bind Ai to Ref, push WriteCtx
   %ps.ai = trunc i64 %op2 to i32
   %ps.marker = call %Value @value_atom(i8* null)
   %ps.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %ps.marker)
   %ps.ref = call %Value @value_ref(i32 %ps.addr)
   call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.ref)
+  %ps.arity = trunc i64 %op1 to i32
+  %ps.arity_zero = icmp eq i32 %ps.arity, 0
+  %ps.arity_safe = select i1 %ps.arity_zero, i32 2, i32 %ps.arity
+  call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity_safe)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('put_list',
 '  ; put_list: op1 = Ai register index
-  ; Push list marker (./2) on heap, bind Ai to Ref
+  ; Push list marker on heap, bind Ai to Ref, push WriteCtx(2)
   %pl.ai = trunc i64 %op1 to i32
   %pl.marker = call %Value @value_atom(i8* null)
   %pl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pl.marker)
   %pl.ref = call %Value @value_ref(i32 %pl.addr)
   call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.ref)
+  call void @wam_push_write_ctx(%WamState* %vm, i32 2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('set_variable',
 '  ; set_variable: op1 = Xn register index
-  ; Create unbound var, push on heap, store in Xn
+  ; Create unbound var, push on heap, store in Xn, decrement WriteCtx
   %sv.xn = trunc i64 %op1 to i32
   %sv.var = call %Value @value_unbound(i8* null)
   %sv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sv.var)
+  %sv.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
   call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.var)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('set_value',
 '  ; set_value: op1 = Xn register index
-  ; Push Xn value onto heap
+  ; Push Xn value onto heap, decrement WriteCtx
   %sve.xn = trunc i64 %op1 to i32
   %sve.val = call %Value @wam_get_reg(%WamState* %vm, i32 %sve.xn)
   %sve.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sve.val)
+  %sve.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('set_constant',
 '  ; set_constant: op1 = constant value (packed)
-  ; Push constant onto heap
+  ; Push constant onto heap, decrement WriteCtx
   %sc.val = insertvalue %Value undef, i32 0, 0
   %sc.val2 = insertvalue %Value %sc.val, i64 %op1, 1
   %sc.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sc.val2)
+  %sc.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
