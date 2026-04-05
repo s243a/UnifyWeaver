@@ -199,7 +199,7 @@ Tables:
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
 | `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
-| `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root Prolog, and C#/Rust/Go DFS binaries |
+| `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root and root-bound Prolog variants, and C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -210,7 +210,7 @@ Tables:
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
 | `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, optional direct article/root helpers, and optional branch pruning |
-| `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, accumulated, and optional direct article/root Prolog effective-distance scripts and report phase/work metrics |
+| `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, accumulated, and optional direct article/root and root-bound Prolog effective-distance scripts and report phase/work metrics |
 | `generate_prolog_category_influence_benchmark.pl` | Generate standalone SWI-Prolog category-influence scripts using the PPV `category_ancestor/4` closure with optional seeded accumulation helpers |
 | `benchmark_prolog_category_influence.py` | Compare seeded and accumulated Prolog category-influence scripts and report phase/work metrics |
 | `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
@@ -416,6 +416,16 @@ Current interpretation:
   - `300`: `0.457s` vs `0.393s`
   - `1k`: `0.493s` vs `0.274s`
   - `5k`: `6.275s` vs `0.973s`
+- the new `root_accumulated` profiling path uses the generated
+  `category_ancestor$effective_distance_article_sum_by_root/3` and
+  `category_ancestor$effective_distance_article_sum_pairs_by_root/2`
+  helpers to benchmark the bound-root path directly
+- that root-bound path is competitive at smaller scales but not the best
+  default retained-state plan overall:
+  - `300`: `0.360s` vs accumulated `0.354s`
+  - `1k`: `0.236s` vs accumulated `0.288s`
+  - `5k`: `0.934s` vs accumulated `0.797s`
+  - `10k`: `2.629s` vs accumulated `1.943s`
 - pre-aggregating per-seed weight sums materially reduces retained state:
   - `1k`: tuple count `10976 -> 48`
   - `5k`: tuple count `41132 -> 151`
