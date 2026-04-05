@@ -68,6 +68,14 @@ test(clause_parallel_codegen) :-
     assertion(sub_string(Code, _, _, _, 'chan interface{}')),
     assertion(sub_string(Code, _, _, _, 'clause 1')),
     assertion(sub_string(Code, _, _, _, 'clause 2')),
+    % Context cancellation for goroutine leak prevention
+    assertion(sub_string(Code, _, _, _, 'context.WithCancel')),
+    assertion(sub_string(Code, _, _, _, 'cancel()')),
+    % Select-based send with cancellation check
+    assertion(sub_string(Code, _, _, _, 'ctx.Done()')),
+    assertion(sub_string(Code, _, _, _, 'select')),
+    % Panic recovery
+    assertion(sub_string(Code, _, _, _, 'recover()')),
     retract(clause_body_analysis:order_independent(node_color/2)).
 
 test(clause_parallel_has_close_channel) :-
@@ -75,6 +83,7 @@ test(clause_parallel_has_close_channel) :-
     Clauses = [test_cp(X) - (X = a), test_cp(X) - (X = b)],
     compile_clause_parallel_to_go(test_cp/1, Clauses, Code),
     assertion(sub_string(Code, _, _, _, 'close(results)')),
+    assertion(sub_string(Code, _, _, _, 'defer cancel()')),
     retract(clause_body_analysis:order_independent(test_cp/1)).
 
 test(clause_parallel_dispatched_from_native_body) :-

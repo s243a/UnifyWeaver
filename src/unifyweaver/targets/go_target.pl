@@ -21060,7 +21060,10 @@ compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
     format(string(Code),
 '\t// Clause-parallel execution: ~w clauses explored concurrently
 \t// Predicate declared order_independent — clause order does not affect result set
+\t// Uses context cancellation to prevent goroutine leaks on early return.
 ~w
+\tctx, cancel := context.WithCancel(context.Background())
+\tdefer cancel()
 \tresults := make(chan interface{}, ~w)
 \tvar wg sync.WaitGroup
 \twg.Add(~w)
@@ -21069,8 +21072,9 @@ compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
 \t\twg.Wait()
 \t\tclose(results)
 \t}()
-\t// Collect first result (deterministic use)
+\t// Collect first result; cancel signals remaining goroutines to exit
 \tfor r := range results {
+\t\tcancel()
 \t\treturn r
 \t}
 \tpanic("No matching clause for ~w")', [NumClauses, CaptureComment, NumClauses, NumClauses, BranchesBlock, PredStr]).
@@ -21089,8 +21093,13 @@ compile_clause_parallel_branches(PredSpec, [Head-Body|Rest], Idx, [BranchCode|Re
         format(string(BranchCode),
 '\tgo func() { // clause ~w
 \t\tdefer wg.Done()
+\t\tdefer func() { recover() }() // prevent panics from crashing program
 ~w
-\t\tresults <- result
+\t\tselect {
+\t\tcase <-ctx.Done():
+\t\t\treturn // cancelled — another clause already produced a result
+\t\tcase results <- result:
+\t\t}
 \t}()', [Idx, CondBlock])
     ;   % Clause didn't compile — skip with comment
         format(string(BranchCode),
