@@ -371,6 +371,10 @@ build_effective_distance_runtime_source(ModuleName, PredicateCode, Source) :-
         'test_effective_edge(a, d).',
         'test_effective_edge(d, e).',
         'test_effective_edge(e, c).',
+        'article_category(article_one, a).',
+        'article_category(article_one, d).',
+        'article_category(article_two, b).',
+        'article_category(article_three, c).',
         'dimension_n(5).',
         'max_depth(4).'
     ], '\n', FactsCode),
@@ -389,6 +393,21 @@ collect_generated_effective_distance_sums(Options, PredicateCode, Sums) :-
             Goal =.. ['test_effective_ppv_reach$effective_distance_sum_selected', a, c, Sum],
             findall(Sum, ModuleName:Goal, Sums0),
             sort(Sums0, Sums)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+collect_generated_effective_distance_article_sums(Options, PredicateCode, ArticleSums) :-
+    once(prolog_target:generate_predicate_code(test_effective_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_effective_article_runtime_, ModuleName),
+    build_effective_distance_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_effective_ppv_reach$effective_distance_article_sum', Article, c, Sum],
+            findall(Article-Sum, ModuleName:Goal, ArticleSums0),
+            sort(ArticleSums0, ArticleSums)
         ),
         cleanup_temp_module_source(Path)
     ).
@@ -572,9 +591,30 @@ test(emits_effective_distance_accumulation_helper_for_counted_ppv,
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum_bound')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum_selected')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum')),
     Expected is (3 ** -5) + (4 ** -5),
     Delta is abs(Actual - Expected),
     Delta < 1.0e-12.
+
+test(emits_effective_distance_article_sum_helper_for_bound_root_queries,
+        [setup(setup_effective_distance_accumulation_fixture),
+         cleanup(cleanup_effective_distance_accumulation_fixture)]) :-
+    Options = [
+        dialect(swi),
+        min_closure(false),
+        branch_pruning(false),
+        effective_distance_accumulation(auto),
+        predicates([dimension_n/1, max_depth/1, test_effective_ppv_reach/4])
+    ],
+    collect_generated_effective_distance_article_sums(Options, PredicateCode, ActualPairs),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum')),
+    ExpectedOne is (3 ** -5) + (3 ** -5) + (4 ** -5),
+    ExpectedTwo is 2 ** -5,
+    ActualPairs = [article_one-One, article_three-1.0, article_two-Two],
+    DeltaOne is abs(One - ExpectedOne),
+    DeltaTwo is abs(Two - ExpectedTwo),
+    DeltaOne < 1.0e-12,
+    DeltaTwo < 1.0e-12.
 
 test(skips_effective_distance_accumulation_helper_when_disabled_explicitly,
         [setup(setup_effective_distance_accumulation_fixture),
