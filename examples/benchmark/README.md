@@ -479,28 +479,28 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.093s | 0.112s | 0.468s | 0.364s | 0.484s | match |
-| 1k | 0.074s | 0.117s | 1.278s | 1.484s | 2.116s | match |
-| 5k | 0.110s | 0.273s | 5.889s | 8.009s | 12.535s | match |
-| 10k | 0.183s | 0.584s | 10.575s | 15.191s | 21.103s | match |
+| 300 | 0.095s | 0.131s | 0.500s | 0.437s | 0.478s | match |
+| 1k | 0.090s | 0.131s | 1.262s | 1.765s | 2.148s | match |
+| 5k | 0.121s | 0.254s | 5.822s | 8.109s | 12.126s | match |
+| 10k | 0.184s | 0.459s | 11.182s | 15.130s | 20.374s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | C# Query | 1.21x |
-| 1k | C# Query | 1.58x |
-| 5k | C# Query | 2.47x |
-| 10k | C# Query | 3.20x |
+| 300 | C# Query | 1.38x |
+| 1k | C# Query | 1.45x |
+| 5k | C# Query | 2.11x |
+| 10k | C# Query | 2.49x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 5.03x | 3.91x | 5.21x |
-| 1k | 17.24x | 20.02x | 28.55x |
-| 5k | 53.34x | 72.54x | 113.54x |
-| 10k | 57.86x | 83.12x | 115.47x |
+| 300 | 5.26x | 4.59x | 5.04x |
+| 1k | 14.03x | 19.62x | 23.88x |
+| 5k | 48.29x | 67.26x | 100.57x |
+| 10k | 60.64x | 82.06x | 110.49x |
 
 Comparison note:
 
@@ -510,6 +510,10 @@ Comparison note:
 - on the current one-root benchmark shape, the retained row count now
   collapses to the final article result count, which is why the C# query
   path improves so sharply at every tested scale
+- the new `Auto` selector currently chooses the compact grouped minima
+  path at every tested scale; forcing legacy seeded-row regrouping is
+  materially worse (`300`: `0.160s` vs `0.083s`, `10k`: `0.419s` vs
+  `0.161s`)
 - seeded Prolog `min` remains competitive, but the C# query engine is
   now faster at every tested scale, including `300`
 - output digests match across all five targets at every tested scale
@@ -529,28 +533,28 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.153s | 0.119s | 0.486s | 0.381s | 0.497s | match |
-| 1k | 0.128s | 0.122s | 1.365s | 1.487s | 2.203s | match |
-| 5k | 0.228s | 0.309s | 6.207s | 8.524s | 12.376s | match |
-| 10k | 0.361s | 0.505s | 11.272s | 15.719s | 21.160s | match |
+| 300 | 0.162s | 0.128s | 0.523s | 0.427s | 0.497s | match |
+| 1k | 0.147s | 0.125s | 1.402s | 1.762s | 2.186s | match |
+| 5k | 0.222s | 0.295s | 6.116s | 8.414s | 11.994s | match |
+| 10k | 0.347s | 0.514s | 11.450s | 16.019s | 20.289s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | Prolog Min | 1.29x |
-| 1k | Prolog Min | 1.04x |
-| 5k | C# Query | 1.36x |
-| 10k | C# Query | 1.40x |
+| 300 | Prolog Min | 1.26x |
+| 1k | Prolog Min | 1.17x |
+| 5k | C# Query | 1.33x |
+| 10k | C# Query | 1.48x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 3.17x | 2.49x | 3.25x |
-| 1k | 10.70x | 11.66x | 17.27x |
-| 5k | 27.27x | 37.45x | 54.38x |
-| 10k | 31.27x | 43.60x | 58.69x |
+| 300 | 3.24x | 2.64x | 3.07x |
+| 1k | 9.55x | 12.00x | 14.89x |
+| 5k | 27.60x | 37.97x | 54.12x |
+| 10k | 32.99x | 46.16x | 58.46x |
 
 Comparison note:
 
@@ -559,6 +563,9 @@ Comparison note:
   regrouping them afterward in the benchmark harness
 - on the current one-root benchmark shape, the retained row count now
   also collapses to the final article result count
+- the new `Auto` selector also chooses the compact grouped minima path
+  here; forcing legacy seeded-row regrouping regresses both ends of the
+  benchmark (`300`: `0.202s` vs `0.151s`, `10k`: `0.430s` vs `0.320s`)
 - seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
   query engine is now clearly faster from `5k` onward
 - the cross-target weighted benchmark normalizes floating-point outputs

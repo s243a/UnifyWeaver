@@ -77,6 +77,14 @@ Success criteria:
 
 ## Stage 4: Cost-Based Strategy Selection
 
+Status:
+
+- started for shortest-path and weighted-shortest-path grouped minima
+- the runtime can now choose between compact grouped minima and legacy
+  seeded-row regrouping
+- `QueryExecutorOptions.PathAwareGroupedMinStrategy` can force `Auto`,
+  `CompactGrouped`, or `LegacySeededRows` for benchmarking and validation
+
 Work:
 
 - use measured cost buckets to guide whether the engine prefers:
@@ -89,6 +97,7 @@ Work:
 Success criteria:
 
 - the materialization strategy is chosen where operator knowledge exists
+- measured comparisons can confirm when `Auto` picks the right retained form
 - eager fallback remains available but is no longer the default instinct
 
 ## Guardrails
@@ -109,3 +118,5 @@ Near-term implementation work should continue to prefer:
 - operator-owned retained state
 - external materialization only when the streamed/operator-owned path is not yet
   available or is measurably worse
+- heuristic or measured strategy selection when multiple operator-owned retained
+  forms are already available
