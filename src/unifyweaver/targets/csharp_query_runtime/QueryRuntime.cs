@@ -467,8 +467,16 @@ namespace UnifyWeaver.QueryRuntime
         IReadOnlyList<int>? InputPositions = null
     );
 
+    public enum PathAwareGroupedMinStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
+        PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
         int PairProbeCacheMaxEntries = 4096,
         int SeededCacheMaxEntries = 4096,
         int PairProbeCacheAdmissionMinCost = 0,
@@ -1403,6 +1411,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
+        private readonly PathAwareGroupedMinStrategy _pathAwareGroupedMinStrategy;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1416,6 +1425,7 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
+            _pathAwareGroupedMinStrategy = options.PathAwareGroupedMinStrategy;
         }
 
         public IEnumerable<object[]> Execute(
@@ -7829,6 +7839,110 @@ namespace UnifyWeaver.QueryRuntime
         }
 
 
+
+        private PathAwareGroupedMinStrategy ResolvePathAwareGroupedMinStrategy(
+            int groupCount,
+            int uniqueSeedCount,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            if (_pathAwareGroupedMinStrategy != PathAwareGroupedMinStrategy.Auto)
+            {
+                return _pathAwareGroupedMinStrategy;
+            }
+
+            var effectiveGroups = Math.Max(1, groupCount);
+            var effectiveSeeds = Math.Max(1, uniqueSeedCount);
+            var effectiveRoots = Math.Max(1, rootCount);
+            var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
+            var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
+            var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
+            return estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+                ? PathAwareGroupedMinStrategy.LegacySeededRows
+                : PathAwareGroupedMinStrategy.CompactGrouped;
+        }
+
+        private static int EstimatePathAwareNodeCount(IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            var nodes = new HashSet<object>();
+            foreach (var (key, bucket) in succIndex)
+            {
+                nodes.Add(key);
+                foreach (var target in bucket.Targets)
+                {
+                    nodes.Add(target ?? NullFactIndexKey);
+                }
+            }
+
+            return nodes.Count;
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
+            SeedGroupedPathAwareDepthMinNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, int>>();
+            }
+
+            var seededClosure = new PathAwareTransitiveClosureNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                closure.DirectSeedDepth,
+                1,
+                closure.MaxDepth,
+                TableMode.Min);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareTransitiveClosure(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var seedMinima = new Dictionary<object, Dictionary<object, int>>();
+
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedMinima[seedKey] = new Dictionary<object, int>
+                    {
+                        [seedKey] = closure.DirectSeedDepth
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedMinima.TryGetValue(seedKey, out var rootMins))
+                {
+                    rootMins = new Dictionary<object, int>();
+                    seedMinima[seedKey] = rootMins;
+                }
+
+                var value = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
+                if (!rootMins.TryGetValue(rootKey, out var current) || value < current)
+                {
+                    rootMins[rootKey] = value;
+                }
+            }
+
+            return seedMinima;
+        }
+
         private IEnumerable<object[]> ExecuteSeedGroupedPathAwareDepthMin(SeedGroupedPathAwareDepthMinNode closure, EvaluationContext? parentContext)
         {
             if (closure is null) throw new ArgumentNullException(nameof(closure));
@@ -7917,15 +8031,29 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
+                var selectedStrategy = ResolvePathAwareGroupedMinStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
+                trace?.RecordStrategy(closure, selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows
+                    ? "SeedGroupedPathAwareDepthMinLegacySeededRows"
+                    : "SeedGroupedPathAwareDepthMinCompactGrouped");
 
-                var seedDepthMins = new Dictionary<object, Dictionary<object, int>>();
-                foreach (var seed in orderedUniqueSeeds)
+                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins;
+                if (selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows)
                 {
-                    var mins = ComputePathAwareRootDepthMinsForSeed(seed, succIndex, rootKeys, closure.DirectSeedDepth, closure.MaxDepth);
-                    if (mins.Count > 0)
+                    seedDepthMins = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                }
+                else
+                {
+                    var directSeedMins = new Dictionary<object, Dictionary<object, int>>();
+                    foreach (var seed in orderedUniqueSeeds)
                     {
-                        seedDepthMins[seed ?? NullFactIndexKey] = mins;
+                        var mins = ComputePathAwareRootDepthMinsForSeed(seed, succIndex, rootKeys, closure.DirectSeedDepth, closure.MaxDepth);
+                        if (mins.Count > 0)
+                        {
+                            directSeedMins[seed ?? NullFactIndexKey] = mins;
+                        }
                     }
+
+                    seedDepthMins = directSeedMins;
                 }
 
                 var rows = new List<object[]>();
@@ -8129,32 +8257,44 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-
-                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
-                var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
-                PositiveStepEvaluator? stepEvaluator = null;
-                var usePositiveMinFastPath = closure.MaxDepth > 0 &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                var selectedStrategy = ResolvePathAwareGroupedMinStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
+                trace?.RecordStrategy(closure, selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows
+                    ? "SeedGroupedPathAwareAccumulationMinLegacySeededRows"
+                    : "SeedGroupedPathAwareAccumulationMinCompactGrouped");
 
                 IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
-                if (usePositiveMinFastPath)
+                if (selectedStrategy == PathAwareGroupedMinStrategy.LegacySeededRows)
                 {
-                    var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
-                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
-                    foreach (var seed in orderedUniqueSeeds)
-                    {
-                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator!, directSeedValue, closure.MaxDepth);
-                        if (mins.Count > 0)
-                        {
-                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
-                        }
-                    }
-
-                    seedMinima = fastSeedMinima;
+                    seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
                 }
                 else
                 {
-                    seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                    var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                    var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
+                    PositiveStepEvaluator? stepEvaluator = null;
+                    var usePositiveMinFastPath = closure.MaxDepth > 0 &&
+                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+
+                    if (usePositiveMinFastPath)
+                    {
+                        var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
+                        var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                        foreach (var seed in orderedUniqueSeeds)
+                        {
+                            var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator!, directSeedValue, closure.MaxDepth);
+                            if (mins.Count > 0)
+                            {
+                                fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                            }
+                        }
+
+                        seedMinima = fastSeedMinima;
+                    }
+                    else
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
+                        seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                    }
                 }
 
                 var rows = new List<object[]>();

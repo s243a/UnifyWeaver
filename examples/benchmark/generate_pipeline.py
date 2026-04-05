@@ -2636,6 +2636,7 @@ class Program
 '''
 
 
+
 def generate_csharp_query_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = sorted(root_cats)[0] if root_cats else "Physics"
 
@@ -2651,6 +2652,32 @@ class Program
 {{
     const string ROOT_CATEGORY = "{root}";
     const int MAX_DEPTH = {max_depth};
+
+    static PathAwareGroupedMinStrategy ReadPathMinStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_PATH_MIN_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareGroupedMinStrategy.LegacySeededRows,
+            "grouped" => PathAwareGroupedMinStrategy.CompactGrouped,
+            _ => PathAwareGroupedMinStrategy.Auto
+        }};
+    }}
+
+    static void PrintPathMinStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareDepthMinNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
 
     static void Main(string[] args)
     {{
@@ -2681,9 +2708,15 @@ class Program
             null
         );
 
+        var pathMinStrategy = ReadPathMinStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareGroupedMinStrategy: pathMinStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -2699,10 +2732,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article\troot_category\tshortest_path");
+        Console.WriteLine("article	root_category	shortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance}}");
+            Console.WriteLine($"{{item.Article}}	{{ROOT_CATEGORY}}	{{item.Distance}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2711,9 +2744,12 @@ class Program
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
+        PrintPathMinStrategies(trace);
     }}
 }}
 '''
+
 
 
 def generate_csharp_query_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
@@ -2732,6 +2768,32 @@ class Program
 {{
     const string ROOT_CATEGORY = "{root}";
     const int MAX_DEPTH = {max_depth};
+
+    static PathAwareGroupedMinStrategy ReadPathMinStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_PATH_MIN_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareGroupedMinStrategy.LegacySeededRows,
+            "grouped" => PathAwareGroupedMinStrategy.CompactGrouped,
+            _ => PathAwareGroupedMinStrategy.Auto
+        }};
+    }}
+
+    static void PrintPathMinStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareAccumulationMinNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
 
     static void Main(string[] args)
     {{
@@ -2762,7 +2824,7 @@ class Program
                 continue;
             }}
 
-            var parts = line.Split('\t', 2);
+            var parts = line.Split('	', 2);
             if (parts.Length != 2)
             {{
                 continue;
@@ -2802,9 +2864,15 @@ class Program
             null
         );
 
+        var pathMinStrategy = ReadPathMinStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan).ToList();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareGroupedMinStrategy: pathMinStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -2820,10 +2888,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article\troot_category\tweighted_shortest_path");
+        Console.WriteLine("article	root_category	weighted_shortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Article}}	{{ROOT_CATEGORY}}	{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2832,10 +2900,11 @@ class Program
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
+        PrintPathMinStrategies(trace);
     }}
 }}
 '''
-
 
 def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"

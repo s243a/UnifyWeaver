@@ -65,6 +65,9 @@ Examples:
   instead of retaining generic edge tuples
 - shortest-path and weighted-shortest-path operators can emit compact
   `(group, root, min_value)` summaries instead of retaining full seeded path rows
+- where both grouped minima and legacy seeded-row regrouping are available, the
+  runtime can choose between them heuristically and still expose an explicit
+  override via `QueryExecutorOptions.PathAwareGroupedMinStrategy`
 - effective-distance and category-influence operators can build compact
   `(group, root, weight_sum)` summaries instead of retaining full path rows
 - other operators may request replay buffers or indexes when needed
@@ -114,10 +117,12 @@ For the current benchmark/runtime surface, the streamed path is:
    directly from streamed facts instead of generic replayed edge rows
 6. shortest-path and weighted-shortest-path operators can emit compact
    grouped root minima directly from streamed edge/seed inputs
-7. effective-distance and category-influence operators can emit compact
+7. where grouped minima and legacy seeded-row regrouping both exist, the runtime
+   can select between them heuristically or via an explicit executor option
+8. effective-distance and category-influence operators can emit compact
    grouped root-weight summaries directly from streamed edge/seed inputs
-8. the operator builds only the retained state it actually needs
-9. benchmark code avoids preloading raw facts into in-memory relations first
+9. the operator builds only the retained state it actually needs
+10. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.
