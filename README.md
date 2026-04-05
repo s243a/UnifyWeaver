@@ -33,6 +33,27 @@ UnifyWeaver supports multiple compilation strategies depending on the target and
 | **Generator-Based** | Lazy evaluation via Python generators with memoization | Python |
 | **Declarative Output** | SQL queries for external database execution | SQL |
 | **Symbolic WAM** | Low-level abstract machine instructions for complex unification/backtracking | WAM (Hub) |
+| **WAM Transpilation** | WAM instructions compiled to target-language WAM virtual machine implementations | C, Rust, Go, LLVM, JVM, ILAsm, Elixir |
+
+### WAM Transpilation Targets
+
+Several targets support a **hybrid WAM** compilation path: Prolog is first compiled to WAM (Warren Abstract Machine) instructions, then those instructions are transpiled into a complete WAM virtual machine implementation in the target language. This provides full unification and backtracking semantics.
+
+| Target | WAM Module | Format | State Representation | Run Loop |
+|--------|-----------|--------|---------------------|----------|
+| **C** | `wam_c_target` | Single | Structs + tagged unions, manual memory | `while` loop |
+| **Rust** | `wam_rust_target` | Single | `HashMap`/`Vec`, `enum WamValue` | `loop` + `match` |
+| **Go** | `wam_go_target` | Single | `map[string]interface{}`, slices | `for` loop + `switch` |
+| **LLVM** | `wam_llvm_target` | Single | SSA registers, stack alloca | Basic blocks + `br` |
+| **JVM** | `wam_jvm_target` | Dual (Jamaica / Krakatau) | `HashMap`/`ArrayList` fields | `while` + `tableswitch` |
+| **ILAsm (.NET)** | `wam_ilasm_target` | Single | `Dictionary`/`List` fields | `br` loop + `switch` |
+| **Elixir** | `wam_elixir_target` | Single | `%WamState{}` struct, immutable maps | Recursive `run/1` |
+
+Each WAM target includes:
+- **26 instruction arms** covering head unification, body construction, control flow, and choice points
+- **Helper functions**: run loop, backtrack, trail unwinding, unification, builtin dispatch
+- **Full project generation**: source files, headers/configs, and build files
+- **Dedicated test suite** validating instruction coverage, code idioms, and runtime assembly
 
 ## Recursion Pattern Support
 
@@ -77,7 +98,7 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 
 Scala and Clojure also appear in the Functional table above.
 
-### Compiler & Runtime Targets
+### Compiler, Runtime & IR Targets
 
 | Pattern | LLVM | WASM | TypeScript | VB.NET |
 |---------|:----:|:----:|:----------:|:------:|
@@ -98,6 +119,30 @@ Scala and Clojure also appear in the Functional table above.
 | **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### Assembly Language Targets
+
+Low-level assembly and intermediate representation targets for JVM, .NET, and WebAssembly:
+
+| Pattern | Jamaica (JVM) | Krakatau (JVM) | ILAsm (.NET) | WAT (WebAssembly) |
+|---------|:-------------:|:--------------:|:------------:|:------------------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
+
+### UI Framework Targets
+
+| Pattern | Flutter | React Native | SwiftUI | Vue |
+|---------|:-------:|:------------:|:-------:|:---:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
 
 ### Python Family Targets
 
@@ -125,7 +170,7 @@ All Python variants share the core `python_target` recursion support and add spe
 | If you need... | Use |
 |----------------|-----|
 | Shell scripts for Unix pipelines | **Bash** |
-| Standalone binary, no runtime deps | **Go** or **Rust** |
+| Standalone binary, no runtime deps | **Go**, **Rust**, or **C** |
 | Complex recursion in .NET apps | **C# Query Runtime** |
 | Database views and analytics | **SQL** |
 | Python ecosystem integration | **Python** |
@@ -133,6 +178,11 @@ All Python variants share the core `python_target` recursion support and add spe
 | BEAM VM with OTP concurrency | **Elixir** |
 | Lightweight text processing | **AWK** |
 | Prolog dialect transpilation | **Prolog** |
+| JVM bytecode (assembler-level) | **Jamaica** or **Krakatau** |
+| .NET IL bytecode | **ILAsm** |
+| WebAssembly (text format) | **WAT** |
+| LLVM IR for custom backends | **LLVM** |
+| Full WAM unification/backtracking | Any **WAM hybrid** target |
 
 ## Type Annotations
 
