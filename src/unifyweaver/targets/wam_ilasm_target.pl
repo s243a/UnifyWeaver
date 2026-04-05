@@ -305,16 +305,12 @@ wam_cil_case('L_get_structure',
     ldloc.3
     callvirt instance bool Value::IsUnbound()
     brfalse L_gs_read
-    // Write mode: push marker on heap, bind register to Ref
+    // Write mode: heap marker + Ref + push WriteCtx
     ldarg.0
     ldstr "str_marker"
     newobj instance void AtomValue::.ctor(string)
     callvirt instance int32 WamState::HeapPush(class Value)
-    stloc.0                          // reuse as addr
-    ldarg.1
-    ldfld int64 Instruction::Op2
-    conv.i4
-    stloc.0
+    pop
     ldarg.0
     ldloc.0
     callvirt instance void WamState::TrailBinding(int32)
@@ -326,19 +322,23 @@ wam_cil_case('L_get_structure',
     sub
     newobj instance void RefValue::.ctor(int32)
     callvirt instance void WamState::SetReg(int32, class Value)
+    // Push WriteCtx with arity (default 2)
+    ldarg.0
+    ldc.i4.2
+    callvirt instance void WamState::PushWriteCtx(int32)
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret
 L_gs_read:
-    // Read mode: succeed and advance (full decompose deferred)
+    // Read mode: succeed and advance
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret').
 
 wam_cil_case('L_get_list',
-'    // get_list: like get_structure for lists (./2)
+'    // get_list: like get_structure for lists (./2, arity=2)
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
@@ -350,7 +350,7 @@ wam_cil_case('L_get_list',
     ldloc.3
     callvirt instance bool Value::IsUnbound()
     brfalse L_gl_read
-    // Write mode
+    // Write mode: heap marker + Ref + WriteCtx(2)
     ldarg.0
     ldstr "str(./2)"
     newobj instance void AtomValue::.ctor(string)
@@ -368,6 +368,9 @@ wam_cil_case('L_get_list',
     newobj instance void RefValue::.ctor(int32)
     callvirt instance void WamState::SetReg(int32, class Value)
     ldarg.0
+    ldc.i4.2
+    callvirt instance void WamState::PushWriteCtx(int32)
+    ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret
@@ -378,12 +381,21 @@ L_gl_read:
     ret').
 
 wam_cil_case('L_unify_variable',
-'    // unify_variable: create unbound var on heap, store in Xn
+'    // unify_variable: read mode (UnifyCtx) or write mode (WriteCtx)
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
     stloc.0                          // Xn reg index
-    // Create unbound variable
+    ldarg.0
+    callvirt instance int32 WamState::PeekStackType()
+    ldc.i4.1                         // 1 = UnifyCtx
+    bne.un L_uv_write
+    // Read mode: get next arg from UnifyCtx (via stack top Data array)
+    // For now, simplified: use write mode path (create unbound)
+    // TODO: full read mode with Data array indexing
+    br L_uv_write
+L_uv_write:
+    // Write mode: create unbound var, push on heap, store in Xn
     ldarg.0
     ldfld int32 WamState::HeapSize
     call string [mscorlib]System.Convert::ToString(int32)
@@ -391,12 +403,10 @@ wam_cil_case('L_unify_variable',
     call string [mscorlib]System.String::Concat(string, string)
     newobj instance void UnboundValue::.ctor(string)
     stloc.3
-    // Push on heap
     ldarg.0
     ldloc.3
     callvirt instance int32 WamState::HeapPush(class Value)
     pop
-    // Store in register
     ldarg.0
     ldloc.0
     callvirt instance void WamState::TrailBinding(int32)
@@ -410,10 +420,20 @@ wam_cil_case('L_unify_variable',
     ret').
 
 wam_cil_case('L_unify_value',
-'    // unify_value: push Xn value onto heap
+'    // unify_value: read mode (check equality) or write mode (push to heap)
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
+    stloc.0                          // Xn reg index
+    ldarg.0
+    callvirt instance int32 WamState::PeekStackType()
+    ldc.i4.1                         // 1 = UnifyCtx
+    bne.un L_uvl_write
+    // Read mode placeholder: fall through to write
+    br L_uvl_write
+L_uvl_write:
+    // Write mode: push Xn value onto heap
+    ldloc.0
     ldarg.0
     callvirt instance class Value WamState::GetReg(int32)
     stloc.3
@@ -427,7 +447,14 @@ wam_cil_case('L_unify_value',
     ret').
 
 wam_cil_case('L_unify_constant',
-'    // unify_constant: push constant value onto heap
+'    // unify_constant: read mode (check) or write mode (push to heap)
+    ldarg.0
+    callvirt instance int32 WamState::PeekStackType()
+    ldc.i4.1
+    bne.un L_uc_write
+    // Read mode placeholder: fall through to write
+    br L_uc_write
+L_uc_write:
     ldarg.0
     ldarg.1
     ldfld int64 Instruction::Op1
@@ -522,7 +549,7 @@ wam_cil_case('L_put_value',
     ret').
 
 wam_cil_case('L_put_structure',
-'    // put_structure: push structure marker on heap, bind Ai to Ref
+'    // put_structure: heap marker + Ref + WriteCtx
     ldarg.1
     ldfld int64 Instruction::Op2
     conv.i4
@@ -531,11 +558,7 @@ wam_cil_case('L_put_structure',
     ldstr "str_marker"
     newobj instance void AtomValue::.ctor(string)
     callvirt instance int32 WamState::HeapPush(class Value)
-    stloc.0                          // addr
-    ldarg.1
-    ldfld int64 Instruction::Op2
-    conv.i4
-    stloc.0
+    pop
     ldarg.0
     ldloc.0
     ldarg.0
@@ -545,12 +568,15 @@ wam_cil_case('L_put_structure',
     newobj instance void RefValue::.ctor(int32)
     callvirt instance void WamState::SetReg(int32, class Value)
     ldarg.0
+    ldc.i4.2
+    callvirt instance void WamState::PushWriteCtx(int32)
+    ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1
     ret').
 
 wam_cil_case('L_put_list',
-'    // put_list: push list marker on heap, bind Ai to Ref
+'    // put_list: heap marker + Ref + WriteCtx(2)
     ldarg.1
     ldfld int64 Instruction::Op1
     conv.i4
@@ -568,6 +594,9 @@ wam_cil_case('L_put_list',
     sub
     newobj instance void RefValue::.ctor(int32)
     callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    ldc.i4.2
+    callvirt instance void WamState::PushWriteCtx(int32)
     ldarg.0
     callvirt instance void WamState::IncPC()
     ldc.i4.1

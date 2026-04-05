@@ -194,3 +194,84 @@ L_not_found:
     ret
     .locals init (int32 addr)
 }
+
+// === Stack Context Helpers (for compound term read/write mode) ===
+
+// PushUnifyCtx: push UnifyCtx (type=1) with args array
+.method public instance void PushUnifyCtx(class Value[] args) cil managed {
+    .maxstack 4
+    newobj instance void StackEntry::.ctor()
+    dup
+    ldc.i4.1
+    stfld int32 StackEntry::Type      // type = 1 (UnifyCtx)
+    dup
+    ldarg.1
+    ldlen
+    conv.i4
+    stfld int32 StackEntry::Aux       // remaining arg count
+    dup
+    ldarg.1
+    stfld class Value[] StackEntry::Data
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(class StackEntry)
+    ret
+}
+
+// PushWriteCtx: push WriteCtx (type=2) with write count
+.method public instance void PushWriteCtx(int32 count) cil managed {
+    .maxstack 4
+    newobj instance void StackEntry::.ctor()
+    dup
+    ldc.i4.2
+    stfld int32 StackEntry::Type      // type = 2 (WriteCtx)
+    dup
+    ldarg.1
+    stfld int32 StackEntry::Aux       // write count
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::Add(class StackEntry)
+    ret
+}
+
+// PeekStackType: return type of top stack entry (-1 if empty)
+.method public instance int32 PeekStackType() cil managed {
+    .maxstack 2
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.0
+    ble L_pst_empty
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.1
+    sub
+    callvirt instance class StackEntry class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Item(int32)
+    ldfld int32 StackEntry::Type
+    ret
+L_pst_empty:
+    ldc.i4.m1
+    ret
+}
+
+// PopStack: remove top stack entry
+.method public instance void PopStack() cil managed {
+    .maxstack 3
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.0
+    ble L_ps_empty
+    ldarg.0
+    ldfld class [mscorlib]System.Collections.Generic.List`1<class StackEntry> WamState::Stack
+    dup
+    callvirt instance int32 class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::get_Count()
+    ldc.i4.1
+    sub
+    callvirt instance void class [mscorlib]System.Collections.Generic.List`1<class StackEntry>::RemoveAt(int32)
+L_ps_empty:
+    ret
+}

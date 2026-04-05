@@ -255,9 +255,22 @@ test(get_structure_has_write_and_read_mode) :-
     compile_step_wam_to_cil([], StepCode),
     assertion(sub_atom(StepCode, _, _, _, 'L_gs_read:')).
 
-test(unify_variable_creates_unbound) :-
+test(unify_variable_has_mode_dispatch) :-
     compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'PeekStackType')),
     assertion(sub_atom(StepCode, _, _, _, 'UnboundValue')).
+
+test(write_ctx_pushed_by_structures) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'PushWriteCtx')).
+
+test(state_template_has_context_helpers) :-
+    wam_ilasm_target:read_template_file(
+        'templates/targets/ilasm_wam/state.il.mustache', Template),
+    assertion(sub_atom(Template, _, _, _, 'PushUnifyCtx')),
+    assertion(sub_atom(Template, _, _, _, 'PushWriteCtx')),
+    assertion(sub_atom(Template, _, _, _, 'PeekStackType')),
+    assertion(sub_atom(Template, _, _, _, 'PopStack')).
 
 test(atom_table_reset) :-
     cil_atom_table_reset,
