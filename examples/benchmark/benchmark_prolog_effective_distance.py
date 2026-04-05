@@ -6,6 +6,8 @@ Targets:
   - prolog-seeded : generated Prolog using seeded counted closure reuse
   - prolog-pruned : generated Prolog using seeded closure reuse plus branch pruning
   - prolog-accumulated : generated Prolog using seeded pre-aggregated weight sums
+  - prolog-article-accumulated : generated Prolog using the experimental
+    direct article/root weight-sum helper
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="prolog-seeded,prolog-pruned,prolog-accumulated",
-        help="Comma-separated targets: prolog-seeded,prolog-pruned,prolog-accumulated",
+        help="Comma-separated targets: prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated",
     )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
@@ -69,7 +71,7 @@ def available_targets(requested: list[str]) -> list[str]:
     if shutil.which("swipl") is None:
         print("skip prolog effective-distance benchmark: swipl not found", file=sys.stderr)
         return []
-    supported = {"prolog-seeded", "prolog-pruned", "prolog-accumulated"}
+    supported = {"prolog-seeded", "prolog-pruned", "prolog-accumulated", "prolog-article-accumulated"}
     targets: list[str] = []
     for target in requested:
         if target not in supported:
@@ -125,15 +127,19 @@ def print_summary(results: list[RunResult]) -> None:
         seeded = find_result(entries, "prolog-seeded")
         pruned = find_result(entries, "prolog-pruned")
         accumulated = find_result(entries, "prolog-accumulated")
+        article_accumulated = find_result(entries, "prolog-article-accumulated")
         print_pair_match_status(scale, "seeded_vs_pruned", seeded, pruned)
         print_pair_match_status(scale, "seeded_vs_accumulated", seeded, accumulated)
         print_pair_match_status(scale, "pruned_vs_accumulated", pruned, accumulated)
+        print_pair_match_status(scale, "seeded_vs_article_accumulated", seeded, article_accumulated)
         print_speedup(scale, "speedup_pruned_vs_seeded", seeded, pruned)
         print_speedup(scale, "speedup_accumulated_vs_seeded", seeded, accumulated)
         print_speedup(scale, "speedup_accumulated_vs_pruned", pruned, accumulated)
+        print_speedup(scale, "speedup_article_accumulated_vs_seeded", seeded, article_accumulated)
         print_phase_metrics(scale, "seeded_metrics", seeded)
         print_phase_metrics(scale, "pruned_metrics", pruned)
         print_phase_metrics(scale, "accumulated_metrics", accumulated)
+        print_phase_metrics(scale, "article_accumulated_metrics", article_accumulated)
 
 
 def main() -> int:
@@ -167,6 +173,10 @@ def main() -> int:
                 elif target == "prolog-accumulated":
                     commands[target] = build_generated_script(
                         temp_root, scale, "accumulated", "effective_distance_accumulated.pl"
+                    )
+                elif target == "prolog-article-accumulated":
+                    commands[target] = build_generated_script(
+                        temp_root, scale, "article_accumulated", "effective_distance_article_accumulated.pl"
                     )
                 else:
                     raise ValueError(f"unsupported target: {target}")

@@ -500,10 +500,15 @@ maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, Code) :-
     ->  Grouped = some(GroupedCode)
     ;   Grouped = none
     ),
+    (   Bound = some(_),
+        Grouped = some(_),
+        build_effective_distance_consumer_code(Pred/Arity, Shape, Formula, ConsumerCode)
+    ;   true
+    ),
     build_seeded_accumulation_selected_code(Pred/Arity, Shape, Formula, Bound, Grouped,
         SelectedCode),
     findall(Part,
-        (   member(Part0, [BaseCode, BoundCode, GroupedCode, SelectedCode]),
+        (   member(Part0, [BaseCode, BoundCode, GroupedCode, ConsumerCode, SelectedCode]),
             nonvar(Part0),
             Part = Part0
         ),
@@ -871,6 +876,133 @@ build_specialized_grouped_sum_pairs_clauses(SumPairsName, TakeSameKeyName, Claus
     TakeDoneHead =.. [TakeSameKeyName, RemainingPairs, _IgnoredKey1, WeightSum, WeightSum, RemainingPairs],
     clause_term(TakeDoneHead, true, TakeDoneClause),
     Clauses = [EmptyClause, RecClause, TakeEmptyClause, TakeSameClause, TakeDoneClause].
+
+build_effective_distance_consumer_code(Pred/_Arity,
+        accumulation_shape([1, 2], 1, _MetricPos, _VisitedInfo),
+        Formula, Code) :-
+    effective_distance_suffix_from_formula(Formula, EffectiveSuffix),
+    build_bound_alias_suffixes([EffectiveSuffix], [EffectiveBoundSuffix]),
+    helper_name_for_suffix(Pred, EffectiveBoundSuffix, EffectiveBoundHelperName),
+    build_grouped_alias_suffixes([EffectiveSuffix], [EffectiveGroupedSuffix]),
+    helper_name_for_suffix(Pred, EffectiveGroupedSuffix, EffectiveGroupedHelperName),
+    helper_name_for_suffix(Pred, effective_distance_article_sum, ArticleSumHelperName),
+    helper_name_for_suffix(Pred, effective_distance_article_sum_root_grouped, RootGroupedName),
+    helper_name_for_suffix(Pred, effective_distance_article_sum_article_grouped, ArticleGroupedName),
+    atom_concat(ArticleSumHelperName, '$sum_pairs', SumPairsName),
+    atom_concat(ArticleSumHelperName, '$take_same_key', TakeSameKeyName),
+    build_effective_distance_consumer_clauses(ArticleSumHelperName, RootGroupedName,
+        ArticleGroupedName, EffectiveBoundHelperName, EffectiveGroupedHelperName,
+        SumPairsName, TakeSameKeyName, Clauses, TableDeclCode),
+    clauses_to_code(Clauses, ClauseCode),
+    atomic_list_concat([
+        '% Effective-distance grouped consumer helper for compact (article, root, weight_sum) rows.',
+        TableDeclCode,
+        ClauseCode
+    ], '\n\n', Code).
+
+effective_distance_suffix_from_formula(
+        accumulation_formula(power_sum, _ParamPred, _Offset, PrimarySuffix, AliasSuffixes),
+        EffectiveSuffix) :-
+    member(EffectiveSuffix, [PrimarySuffix|AliasSuffixes]),
+    EffectiveSuffix == effective_distance_sum.
+
+build_effective_distance_consumer_clauses(ArticleSumHelperName, RootGroupedName,
+        ArticleGroupedName, EffectiveBoundHelperName, EffectiveGroupedHelperName,
+        SumPairsName, TakeSameKeyName, Clauses, TableDeclCode) :-
+    build_effective_distance_consumer_entry_clauses(ArticleSumHelperName, RootGroupedName,
+        ArticleGroupedName, EntryClauses),
+    build_effective_distance_consumer_root_grouped_clause(RootGroupedName,
+        EffectiveBoundHelperName, SumPairsName, RootGroupedClause),
+    build_effective_distance_consumer_article_grouped_clause(ArticleGroupedName,
+        EffectiveGroupedHelperName, SumPairsName, ArticleGroupedClause),
+    build_specialized_grouped_sum_pairs_clauses(SumPairsName, TakeSameKeyName, SumPairClauses),
+    append(EntryClauses, [RootGroupedClause, ArticleGroupedClause], Clauses0),
+    append(Clauses0, SumPairClauses, Clauses),
+    RootTableSpec =.. [RootGroupedName, +, -],
+    ArticleTableSpec =.. [ArticleGroupedName, +, -],
+    format(atom(TableDeclCode), ':- table ~q.~n:- table ~q.',
+        [RootTableSpec, ArticleTableSpec]).
+
+build_effective_distance_consumer_entry_clauses(ArticleSumHelperName, RootGroupedName,
+        ArticleGroupedName, Clauses) :-
+    RootHead =.. [ArticleSumHelperName, Article, Root, WeightSum],
+    RootGroupedCall =.. [RootGroupedName, Root, ArticlePairs],
+    RootBody = (
+        nonvar(Root),
+        !,
+        RootGroupedCall,
+        member(Article-WeightSum, ArticlePairs)
+    ),
+    clause_term(RootHead, RootBody, RootClause),
+    ArticleHead =.. [ArticleSumHelperName, Article, Root, WeightSum],
+    ArticleGroupedCall =.. [ArticleGroupedName, Article, RootPairs],
+    ArticleBody = (
+        var(Root),
+        nonvar(Article),
+        !,
+        ArticleGroupedCall,
+        member(Root-WeightSum, RootPairs)
+    ),
+    clause_term(ArticleHead, ArticleBody, ArticleClause),
+    EnumerateHead =.. [ArticleSumHelperName, Article, Root, WeightSum],
+    EnumerateBody = (
+        var(Root),
+        var(Article),
+        setof(Article0, Cat0^article_category(Article0, Cat0), Articles),
+        member(Article, Articles),
+        ArticleGroupedCall,
+        member(Root-WeightSum, RootPairs)
+    ),
+    clause_term(EnumerateHead, EnumerateBody, EnumerateClause),
+    Clauses = [RootClause, ArticleClause, EnumerateClause].
+
+build_effective_distance_consumer_root_grouped_clause(RootGroupedName,
+        EffectiveBoundHelperName, SumPairsName, ClauseTerm) :-
+    Head =.. [RootGroupedName, Root, ArticlePairs],
+    SeedCatsGoal = setof(Cat, Article^article_category(Article, Cat), SeedCats),
+    EffectiveBoundCall =.. [EffectiveBoundHelperName, Cat, Root, Weight],
+    SeedPairsGoal = findall(Cat-Weight,
+        (   member(Cat, SeedCats),
+            Cat \= Root,
+            EffectiveBoundCall
+        ),
+        SeedPairs),
+    SumPairsCall =.. [SumPairsName, SortedPairs, ArticlePairs],
+    Body = (
+        SeedCatsGoal,
+        SeedPairsGoal,
+        findall(Article-Weight,
+            (   article_category(Article, Root),
+                Weight = 1.0
+            ;   article_category(Article, Cat),
+                member(Cat-Weight, SeedPairs)
+            ),
+            RawPairs),
+        RawPairs \= [],
+        keysort(RawPairs, SortedPairs),
+        SumPairsCall
+    ),
+    clause_term(Head, Body, ClauseTerm).
+
+build_effective_distance_consumer_article_grouped_clause(ArticleGroupedName,
+        EffectiveGroupedHelperName, SumPairsName, ClauseTerm) :-
+    Head =.. [ArticleGroupedName, Article, RootPairs],
+    EffectiveGroupedCall =.. [EffectiveGroupedHelperName, Cat, Root, Weight],
+    DirectRootWeight = 1.0,
+    SumPairsCall =.. [SumPairsName, SortedPairs, RootPairs],
+    Body = (
+        findall(Root-Weight,
+            (   article_category(Article, Root),
+                Weight = DirectRootWeight
+            ;   article_category(Article, Cat),
+                EffectiveGroupedCall
+            ),
+            RawPairs),
+        RawPairs \= [],
+        keysort(RawPairs, SortedPairs),
+        SumPairsCall
+    ),
+    clause_term(Head, Body, ClauseTerm).
 
 helper_name_for_suffix(Pred, Suffix, HelperName) :-
     format(atom(HelperName), '~w$~w', [Pred, Suffix]).

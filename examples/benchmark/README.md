@@ -31,8 +31,8 @@ all-path semantics.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **C# Query Engine** | **0.211s** | **0.190s** | **0.351s** | **0.735s** |
-| Prolog accumulated | 0.361s | 0.249s | 0.823s | 2.038s |
+| **C# Query Engine** | **0.238s** | **0.154s** | **0.361s** | **0.758s** |
+| Prolog accumulated | 0.381s | 0.301s | 0.928s | 2.296s |
 | C# DFS pipeline | 0.442s | 1.181s | 5.647s | 10.736s |
 | Rust DFS pipeline | 0.381s | 1.370s | 7.445s | 14.080s |
 | Go DFS pipeline | 0.483s | 2.066s | 11.864s | 19.701s |
@@ -105,8 +105,8 @@ For historical context, the original DFS-only pipeline comparison:
 ### Key Findings
 
 1. **The C# query engine is now the fastest effective-distance path on
-   this benchmark surface** — it beats accumulated Prolog by `1.71x` at
-   `300`, `1.31x` at `1k`, `2.35x` at `5k`, and `2.77x` at `10k`.
+   this benchmark surface** — it beats accumulated Prolog by `1.60x` at
+   `300`, `1.96x` at `1k`, `2.57x` at `5k`, and `3.03x` at `10k`.
 
 2. **The C# query engine now beats the DFS baselines by a wide margin** —
    at `10k` it is `14.60x` faster than C# DFS, `19.15x` faster than Rust
@@ -118,11 +118,17 @@ For historical context, the original DFS-only pipeline comparison:
    materialization cost that used to dominate the C# query path.
 
 4. **Accumulated Prolog is still a useful retained-state reference** — it
-   keeps only per-seed weight sums (`462` tuples at `10k`), but the query
-   engine now reaches a better end-to-end result by combining streamed
-   ingestion with operator-owned retained state.
+   keeps only per-seed weight sums (`48` tuples at `1k`, `151` at `5k`,
+   `462` at `10k`), but the query engine still reaches a better end-to-end
+   result by combining streamed ingestion with operator-owned retained
+   state.
 
-5. **The current C# query-engine path now matches the intended ownership
+5. **The new direct article/root Prolog helper is currently experimental**
+   — it emits compact `(article, root, weight_sum)` rows directly, but it
+   is slower than the seed-accumulated path on this workload, so it
+   remains an optional benchmark variant rather than the default.
+
+6. **The current C# query-engine path now matches the intended ownership
    boundary much more closely** — the parser streams tuples, and the engine
    decides what retained form the effective-distance operator actually needs.
 
@@ -189,7 +195,7 @@ Tables:
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
 | `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
-| `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, and C#/Rust/Go DFS binaries |
+| `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root Prolog, and C#/Rust/Go DFS binaries |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -199,8 +205,8 @@ Tables:
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
 | `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
-| `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, and optional branch pruning |
-| `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, and accumulated Prolog effective-distance scripts and report phase/work metrics |
+| `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, optional direct article/root helpers, and optional branch pruning |
+| `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, accumulated, and optional direct article/root Prolog effective-distance scripts and report phase/work metrics |
 | `generate_prolog_category_influence_benchmark.pl` | Generate standalone SWI-Prolog category-influence scripts using the PPV `category_ancestor/4` closure with optional seeded accumulation helpers |
 | `benchmark_prolog_category_influence.py` | Compare seeded and accumulated Prolog category-influence scripts and report phase/work metrics |
 | `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
@@ -387,10 +393,10 @@ Latest local results:
 
 | Scale | Seeded | Pruned | Accumulated | Output Match | Note |
 |-------|--------|--------|-------------|--------------|------|
-| 300 | 0.368s | 0.443s | 0.406s | match | selected helper routes bound queries to the new bound fast path |
-| 1k | 0.348s | 0.309s | 0.287s | match | bound fast path now wins clearly |
-| 5k | 1.125s | 1.282s | 0.910s | match | accumulated remains best |
-| 10k | 2.715s | 2.675s | 2.276s | match | accumulated stays best at the largest tested scale |
+| 300 | 0.380s | 0.416s | 0.369s | match | accumulated edges out seeded once load is amortized |
+| 1k | 0.293s | 0.364s | 0.257s | match | accumulated remains the best Prolog path |
+| 5k | 1.176s | 1.096s | 0.850s | match | retained-state reduction dominates |
+| 10k | 2.627s | 2.577s | 2.249s | match | accumulated stays best at the largest tested scale |
 
 Current interpretation:
 
@@ -399,6 +405,13 @@ Current interpretation:
 - the accumulated variant now uses the generated selected helper surface,
   which routes bound root queries to a dedicated bound-key fast path
   instead of paying the generic helper's key-enumeration overhead
+- the experimental `article_accumulated` variant now uses the generated
+  `category_ancestor$effective_distance_article_sum` helper to emit
+  compact `(article, root, weight_sum)` rows directly, but it is slower
+  than `accumulated` on this workload:
+  - `300`: `0.457s` vs `0.393s`
+  - `1k`: `0.493s` vs `0.274s`
+  - `5k`: `6.275s` vs `0.973s`
 - pre-aggregating per-seed weight sums materially reduces retained state:
   - `1k`: tuple count `10976 -> 48`
   - `5k`: tuple count `41132 -> 151`
