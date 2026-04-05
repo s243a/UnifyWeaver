@@ -211,7 +211,7 @@ benchmark_results_line(accumulated, '    compute_effective_distance_results_from
 
 benchmark_weight_sum_query_line(seeded, '    fail.').
 benchmark_weight_sum_query_line(pruned, '    fail.').
-benchmark_weight_sum_query_line(accumulated, '    ''category_ancestor$power_sum''(Cat, Root, WeightSum).').
+benchmark_weight_sum_query_line(accumulated, '    ''category_ancestor$effective_distance_sum_selected''(Cat, Root, WeightSum).').
 
 benchmark_mode_line(seeded, '    format(user_error, ''mode=seeded~n'', []),').
 benchmark_mode_line(pruned, '    format(user_error, ''mode=pruned~n'', []),').
