@@ -226,4 +226,25 @@ test(state_template_has_array_clone) :-
     assertion(sub_atom(Template, _, _, _, 'SetReg')),
     assertion(sub_atom(Template, _, _, _, 'TrailBinding')).
 
+% ============================================================================
+% Atom table reset
+% ============================================================================
+
+test(atom_table_reset) :-
+    cil_atom_table_reset,
+    wam_ilasm_target:cil_intern_atom(reset_test_a, IdA),
+    wam_ilasm_target:cil_intern_atom(reset_test_b, IdB),
+    assertion(IdA == 1),
+    assertion(IdB == 2),
+    % Reset and verify IDs restart
+    cil_atom_table_reset,
+    wam_ilasm_target:cil_intern_atom(reset_test_c, IdC),
+    assertion(IdC == 1).
+
+test(state_template_documents_heap_push) :-
+    wam_ilasm_target:read_template_file(
+        'templates/targets/ilasm_wam/state.il.mustache', Template),
+    assertion(sub_atom(Template, _, _, _, 'HeapPush')),
+    assertion(sub_atom(Template, _, _, _, 'compound term construction')).
+
 :- end_tests(wam_ilasm_target).

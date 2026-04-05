@@ -29,7 +29,8 @@
     wam_instruction_to_cil_literal/2,   % +WamInstr, -CILLiteral
     wam_line_to_cil_literal/2,          % +Parts, -CILLit
     write_wam_ilasm_project/3,          % +Predicates, +Options, +OutputFile
-    builtin_op_to_cil_id/2             % +OpName, -IntId
+    builtin_op_to_cil_id/2,            % +OpName, -IntId
+    cil_atom_table_reset/0             % Reset atom table between compilations
 ]).
 
 :- use_module(library(lists)).
@@ -1056,6 +1057,15 @@ wam_instruction_to_cil_literal(Instr, Lit) :-
 :- dynamic cil_atom_table_entry/2.
 :- dynamic cil_atom_table_next_id/1.
 cil_atom_table_next_id(1).
+
+%% cil_atom_table_reset
+%  Clear the atom table between top-level compilation calls.
+%  Prevents atom ID bleed-through in long-running sessions or
+%  multi-module transpilation.
+cil_atom_table_reset :-
+    retractall(cil_atom_table_entry(_, _)),
+    retractall(cil_atom_table_next_id(_)),
+    assertz(cil_atom_table_next_id(1)).
 
 cil_intern_atom(AtomName, Id) :-
     (   cil_atom_table_entry(AtomName, Id)

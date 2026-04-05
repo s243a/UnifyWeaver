@@ -170,7 +170,11 @@ L_not_found:
     ret
 }
 
-// HeapPush: push value onto heap, return address
+// HeapPush: push value onto heap, return address.
+// Used by compound term construction (put_structure, set_variable, set_value,
+// set_constant) and structure unification (get_structure, get_list).
+// Currently these step cases are stub TODOs — HeapPush is ready for when
+// they are implemented.
 .method public instance int32 HeapPush(class Value val) cil managed {
     .maxstack 3
     ldarg.0
