@@ -49,6 +49,28 @@ func (v *Compound) Equals(other Value) bool {
 	return true
 }
 
+type Structure struct {
+	Functor string
+	Arity   int
+	Args    []Value
+}
+func (v *Structure) valueTag() {}
+func (v *Structure) String() string {
+	return fmt.Sprintf("%s/%d", v.Functor, v.Arity)
+}
+func (v *Structure) Equals(other Value) bool {
+	o, ok := other.(*Structure)
+	if !ok || v.Functor != o.Functor || v.Arity != o.Arity {
+		return false
+	}
+	for i, a := range v.Args {
+		if !valueEquals(a, o.Args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 type List struct { Elements []Value }
 func (v *List) valueTag() {}
 func (v *List) String() string { return fmt.Sprintf("%v", v.Elements) }
@@ -80,6 +102,55 @@ func (v *Unbound) Equals(other Value) bool {
 func isUnbound(v Value) bool {
 	_, ok := v.(*Unbound)
 	return ok
+}
+
+func isAtom(v Value) bool {
+	_, ok := v.(*Atom)
+	return ok
+}
+
+func isInteger(v Value) bool {
+	_, ok := v.(*Integer)
+	return ok
+}
+
+func isFloat(v Value) bool {
+	_, ok := v.(*Float)
+	return ok
+}
+
+func isNumber(v Value) bool {
+	switch v.(type) {
+	case *Integer, *Float:
+		return true
+	}
+	return false
+}
+
+func isCompound(v Value) bool {
+	switch v.(type) {
+	case *Compound, *Structure:
+		return true
+	}
+	return false
+}
+
+func isStructure(v Value) bool {
+	_, ok := v.(*Structure)
+	return ok
+}
+
+func isList(v Value) bool {
+	_, ok := v.(*List)
+	return ok
+}
+
+func isAtomic(v Value) bool {
+	switch v.(type) {
+	case *Atom, *Integer, *Float:
+		return true
+	}
+	return false
 }
 
 func valueEquals(a, b Value) bool {

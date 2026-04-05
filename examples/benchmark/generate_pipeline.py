@@ -2464,7 +2464,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
 
@@ -2487,155 +2486,62 @@ class Program
 
         var provider = new InMemoryRelationProvider();
         var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weight_sum", 3);
 
         provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {{
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }}
-
-            categories.Add(parts[1]);
-        }}
-
-        swLoad.Stop();
-
-        var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.All),
-            true,
-            new int[] {{ 0 }}
-        );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var categories in articleCategories.Values)
-        {{
-            foreach (var category in categories)
-            {{
-                uniqueSeeds.Add(category);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds
-            .OrderBy(category => category, StringComparer.Ordinal)
-            .Select(category => new object[] {{ category }})
-            .ToList();
-
-        var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
-        swQuery.Stop();
-
-        var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {{
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }}
-
-            bucket.Add((ancestor, hops));
-        }}
-
-        var rootId = new PredicateId("root_category", 1);
-        var weightId = new PredicateId("article_root_weight", 3);
-        var resultId = new PredicateId("category_influence", 2);
-
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
         foreach (var root in ROOTS.OrderBy(x => x, StringComparer.Ordinal))
         {{
             provider.AddFact(rootId, root);
         }}
 
-        foreach (var (_, categories) in articleCategories.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
-        {{
-            foreach (var category in categories)
-            {{
-                if (ROOTS.Contains(category))
-                {{
-                    provider.AddFact(weightId, "_", category, 1.0);
-                }}
+        swLoad.Stop();
 
-                if (!ancestorIndex.TryGetValue(category, out var ancestors))
-                {{
-                    continue;
-                }}
-
-                foreach (var (ancestor, hops) in ancestors)
-                {{
-                    if (!ROOTS.Contains(ancestor))
-                    {{
-                        continue;
-                    }}
-
-                    var distance = hops + 1;
-                    var weight = Math.Pow(distance, -N);
-                    provider.AddFact(weightId, "_", ancestor, weight);
-                }}
-            }}
-        }}
-
-        var aggregatePlan = new QueryPlan(
+        var plan = new QueryPlan(
             resultId,
-            new ProjectionNode(
-                new SelectionNode(
-                    new AggregateNode(
-                        new RelationScanNode(rootId),
-                        weightId,
-                        AggregateOperation.Sum,
-                        tuple => new object[] {{ Wildcard.Value, tuple[0], Wildcard.Value }},
-                        Array.Empty<int>(),
-                        2,
-                        2),
-                    tuple => QueryExecutor.CompareValues(tuple[1], 0) > 0),
-                tuple => new object[] {{ tuple[0], tuple[1] }}),
+            new SeedGroupedPathAwareWeightSumNode(edgeId, seedId, rootId, resultId, N, MAX_DEPTH),
             false,
             null
         );
 
-        var aggregateRows = executor.Execute(aggregatePlan).ToList();
-        swAgg.Stop();
-        swTotal.Stop();
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var rows = executor.Execute(plan).ToList();
+        swQuery.Stop();
 
-        var results = aggregateRows
-            .Select(row => (
-                Root: row[0]?.ToString() ?? "",
-                Score: Convert.ToDouble(row[1], CultureInfo.InvariantCulture)))
+        var swAgg = Stopwatch.StartNew();
+        var scores = new Dictionary<string, double>(StringComparer.Ordinal);
+        var articles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var article = row[0]?.ToString() ?? "";
+            var root = row[1]?.ToString() ?? "";
+            var weightSum = Convert.ToDouble(row[2], CultureInfo.InvariantCulture);
+            articles.Add(article);
+            scores[root] = scores.TryGetValue(root, out var current) ? current + weightSum : weightSum;
+        }}
+
+        var results = scores
+            .Select(kvp => (Root: kvp.Key, Score: kvp.Value))
             .OrderByDescending(item => item.Score)
             .ThenBy(item => item.Root, StringComparer.Ordinal)
             .ToList();
+        swAgg.Stop();
+        swTotal.Stop();
 
-        Console.WriteLine("root_category\\tinfluence_score");
+        Console.WriteLine("root_category\tinfluence_score");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Root}}\\t{{item.Score.ToString("F12", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Root}}\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
+        Console.Error.WriteLine($"article_count={{articles.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"root_count={{results.Count}}");
     }}
@@ -2650,7 +2556,7 @@ def generate_csharp_query_effective_distance(article_cats, category_parents, roo
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
+using System.Globalization;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
 
@@ -2669,137 +2575,61 @@ class Program
         }}
 
         var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
 
         var provider = new InMemoryRelationProvider();
         var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>();
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weight_sum", 3);
 
-        var swLoad = Stopwatch.StartNew();
         provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {{
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }}
-
-            categories.Add(parts[1]);
-        }}
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        provider.AddFact(rootId, ROOT_CATEGORY);
         swLoad.Stop();
 
         var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH),
-            true,
-            new int[] {{ 0 }}
+            resultId,
+            new SeedGroupedPathAwareWeightSumNode(edgeId, seedId, rootId, resultId, N, MAX_DEPTH),
+            false,
+            null
         );
 
-        var uniqueSeeds = new HashSet<string>();
-        foreach (var categories in articleCategories.Values)
-        {{
-            foreach (var category in categories)
-            {{
-                uniqueSeeds.Add(category);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds.Select(category => new object[] {{ category }}).ToList();
-
         var swExec = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider);
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var rows = executor.Execute(plan).ToList();
         swExec.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>();
-        foreach (var row in rows)
-        {{
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2]);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }}
-
-            bucket.Add((ancestor, hops));
-        }}
-
-        var results = new List<(double Deff, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x))
-        {{
-            var allHops = new List<int>();
-            foreach (var category in articleCategories[article])
-            {{
-                if (category == ROOT_CATEGORY)
-                {{
-                    allHops.Add(1);
-                }}
-
-                if (ancestorIndex.TryGetValue(category, out var ancestors))
-                {{
-                    foreach (var (ancestor, hops) in ancestors)
-                    {{
-                        if (ancestor == ROOT_CATEGORY)
-                        {{
-                            allHops.Add(hops + 1);
-                        }}
-                    }}
-                }}
-            }}
-
-            if (allHops.Count > 0)
-            {{
-                results.Add((ComputeDeff(allHops), article));
-            }}
-        }}
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                WeightSum: Convert.ToDouble(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .Select(item => (Deff: ComputeDeff(item.WeightSum), Article: item.Article))
+            .OrderBy(item => item.Deff)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
         swAgg.Stop();
+        swTotal.Stop();
 
-        results.Sort((a, b) =>
-        {{
-            var cmp = a.Deff.CompareTo(b.Deff);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        }});
-
-        Console.WriteLine("article\\troot_category\\teffective_distance");
+        Console.WriteLine("article\troot_category\teffective_distance");
         foreach (var (deff, article) in results)
         {{
-            Console.WriteLine($"{{article}}\\t{{ROOT_CATEGORY}}\\t{{deff:F6}}");
+            Console.WriteLine($"{{article}}\t{{ROOT_CATEGORY}}\t{{deff.ToString(\"F6\", CultureInfo.InvariantCulture)}}");
         }}
 
-        swTotal.Stop();
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"query_ms={{swExec.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
     }}
 
-    static double ComputeDeff(List<int> hops)
+    static double ComputeDeff(double weightSum)
     {{
-        if (hops.Count == 0)
-        {{
-            return double.PositiveInfinity;
-        }}
-
-        var weightSum = hops.Sum(h => Math.Pow(h, -N));
         return weightSum > 0 ? Math.Pow(weightSum, -1.0 / N) : double.PositiveInfinity;
     }}
 }}

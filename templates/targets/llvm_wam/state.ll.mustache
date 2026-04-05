@@ -221,3 +221,183 @@ lookup:
 not_found:
   ret i32 -1
 }
+
+; === Stack Context Helpers (for compound term read/write mode) ===
+
+; Push a UnifyCtx (type=1) with args array and arg count
+define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %ss
+  ; type = 1 (UnifyCtx)
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  store i32 1, i32* %type_ptr
+  ; aux = count (number of args remaining)
+  %count_ext = zext i32 %count to i64
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  store i64 %count_ext, i64* %aux_ptr
+  ; data = args pointer
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* %args, %Value** %data_ptr
+  %new_ss = add i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Push a WriteCtx (type=2) with write count
+define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %ss
+  ; type = 2 (WriteCtx)
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  store i32 2, i32* %type_ptr
+  ; aux = count
+  %count_ext = zext i32 %count to i64
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  store i64 %count_ext, i64* %aux_ptr
+  %new_ss = add i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Peek top stack entry type (returns -1 if empty)
+define i32 @wam_peek_stack_type(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %ret_empty, label %peek
+
+peek:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  ret i32 %type
+
+ret_empty:
+  ret i32 -1
+}
+
+; Get UnifyCtx: return next arg from top UnifyCtx, decrement count, auto-pop when exhausted
+; Returns the arg Value, or {tag=6, payload=0} (unbound sentinel) if no ctx
+define %Value @wam_unify_ctx_next(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %no_ctx, label %check
+
+check:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_unify = icmp eq i32 %type, 1
+  br i1 %is_unify, label %get_arg, label %no_ctx
+
+get_arg:
+  ; Read aux (remaining count) and data (args pointer)
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count = load i64, i64* %aux_ptr
+  %count32 = trunc i64 %count to i32
+  %has_args = icmp sgt i32 %count32, 0
+  br i1 %has_args, label %pop_arg, label %no_ctx
+
+pop_arg:
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  %args = load %Value*, %Value** %data_ptr
+  ; Calculate offset: total_args - remaining = index of next arg
+  ; We use a simple scheme: data points to start, aux counts down
+  ; Actually, we need an index. Store consumed count differently.
+  ; Simpler: use aux as index into args, increment after read
+  %idx = sub i32 %count32, %count32  ; start from 0...
+  ; Actually, let's use aux as remaining count and shift the pointer
+  %arg_ptr = load %Value, %Value* %args
+  ; Advance data pointer
+  %next_args = getelementptr %Value, %Value* %args, i32 1
+  store %Value* %next_args, %Value** %data_ptr
+  ; Decrement count
+  %new_count = sub i64 %count, 1
+  store i64 %new_count, i64* %aux_ptr
+  ; Auto-pop if exhausted
+  %exhausted = icmp eq i64 %new_count, 0
+  br i1 %exhausted, label %pop_entry, label %ret_arg
+
+pop_entry:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  br label %ret_arg
+
+ret_arg:
+  ret %Value %arg_ptr
+
+no_ctx:
+  ; Return unbound sentinel
+  %sentinel = insertvalue %Value { i32 6, i64 0 }, i64 0, 1
+  ret %Value %sentinel
+}
+
+; Decrement WriteCtx count; auto-pop when exhausted. Returns remaining count.
+define i32 @wam_write_ctx_dec(%WamState* %vm) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %empty = icmp sle i32 %ss, 0
+  br i1 %empty, label %ret_zero, label %check
+
+check:
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
+  %type = load i32, i32* %type_ptr
+  %is_write = icmp eq i32 %type, 2
+  br i1 %is_write, label %dec, label %ret_zero
+
+dec:
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count = load i64, i64* %aux_ptr
+  %new_count = sub i64 %count, 1
+  store i64 %new_count, i64* %aux_ptr
+  %exhausted = icmp eq i64 %new_count, 0
+  br i1 %exhausted, label %pop, label %ret_remaining
+
+pop:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  ret i32 0
+
+ret_remaining:
+  %rem = trunc i64 %new_count to i32
+  ret i32 %rem
+
+ret_zero:
+  ret i32 0
+}
+
+; Pop top stack entry
+define void @wam_pop_stack(%WamState* %vm) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %not_empty = icmp sgt i32 %ss, 0
+  br i1 %not_empty, label %do_pop, label %done
+
+do_pop:
+  %new_ss = sub i32 %ss, 1
+  store i32 %new_ss, i32* %ss_ptr
+  br label %done
+
+done:
+  ret void
+}
