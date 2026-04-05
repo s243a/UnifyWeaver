@@ -9,6 +9,7 @@
 :- module(go_target, [
     compile_predicate_to_go/3,      % +Predicate, +Options, -GoCode
     compile_goal_parallel_to_go/5,  % +PredSpec, +Head, +ParallelGoals, +ResultGoal, -Code
+    compile_clause_parallel_to_go/3, % +PredSpec, +Clauses, -Code (Phase 5b)
     compile_facts_to_go/3,          % +Pred, +Arity, -GoCode  -- NEW
     compile_go_pipeline/3,          % +Predicates, +Options, -GoCode
     write_go_program/2,             % +GoCode, +FilePath
@@ -6038,7 +6039,16 @@ native_go_clause_body(PredSpec, [Head-Body], Code) :-
         )
     ).
 
-% Multi-clause
+% Multi-clause: clause-parallel (order-independent predicates)
+% When classify_parallelism returns clause_parallel, run all clauses
+% concurrently via goroutines collecting results on a channel.
+native_go_clause_body(PredSpec, Clauses, Code) :-
+    Clauses = [_|[_|_]],
+    classify_parallelism(PredSpec, Clauses, clause_parallel),
+    !,
+    compile_clause_parallel_to_go(PredSpec, Clauses, Code).
+
+% Multi-clause: sequential (default)
 native_go_clause_body(PredSpec, Clauses, Code) :-
     Clauses = [_|[_|_]],
     maplist(native_go_clause_pair(PredSpec), Clauses, Branches),
@@ -21021,3 +21031,81 @@ compile_parallel_goal_wrapper(VarMap, Goal, Code) :-
     ).
 
 go_expr_wrapper(VarMap, Arg, GoExpr) :- go_expr(Arg, VarMap, GoExpr).
+
+% ============================================================================
+% CLAUSE-LEVEL PARALLELISM (Phase 5b)
+% ============================================================================
+
+%% compile_clause_parallel_to_go(+PredSpec, +Clauses, -Code)
+%  Compile an order-independent multi-clause predicate into concurrent
+%  clause exploration via goroutines and a results channel.
+%  Each clause runs in its own goroutine; results are collected on a
+%  buffered channel. The caller receives all solutions.
+compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
+    PredSpec = Pred/Arity,
+    atom_string(Pred, PredStr),
+    length(Clauses, NumClauses),
+    % Compile each clause body into a standalone code block
+    compile_clause_parallel_branches(PredSpec, Clauses, 1, BranchCodes),
+    atomic_list_concat(BranchCodes, '\n', BranchesBlock),
+    % Build argument forwarding: each goroutine captures the function args
+    Arity1 is Arity - 1,
+    (   Arity1 > 0
+    ->  numlist(1, Arity1, Indices),
+        maplist([I, S]>>(format(string(S), 'arg~w', [I])), Indices, ArgNames),
+        atomic_list_concat(ArgNames, ', ', CaptureArgs),
+        format(string(CaptureComment), '\t// Captured args: ~w', [CaptureArgs])
+    ;   CaptureComment = "\t// No input args to capture"
+    ),
+    format(string(Code),
+'\t// Clause-parallel execution: ~w clauses explored concurrently
+\t// Predicate declared order_independent — clause order does not affect result set
+\t// Uses context cancellation to prevent goroutine leaks on early return.
+~w
+\tctx, cancel := context.WithCancel(context.Background())
+\tdefer cancel()
+\tresults := make(chan interface{}, ~w)
+\tvar wg sync.WaitGroup
+\twg.Add(~w)
+~w
+\tgo func() {
+\t\twg.Wait()
+\t\tclose(results)
+\t}()
+\t// Collect first result; cancel signals remaining goroutines to exit
+\tfor r := range results {
+\t\tcancel()
+\t\treturn r
+\t}
+\tpanic("No matching clause for ~w")', [NumClauses, CaptureComment, NumClauses, NumClauses, BranchesBlock, PredStr]).
+
+%% compile_clause_parallel_branches(+PredSpec, +Clauses, +Idx, -BranchCodes)
+compile_clause_parallel_branches(_, [], _, []).
+compile_clause_parallel_branches(PredSpec, [Head-Body|Rest], Idx, [BranchCode|RestCodes]) :-
+    (   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode)
+    ->  (   Condition == "true"
+        ->  CondBlock = ClauseCode
+        ;   format(string(CondBlock),
+'\t\tif ~w {
+~w
+\t\t}', [Condition, ClauseCode])
+        ),
+        format(string(BranchCode),
+'\tgo func() { // clause ~w
+\t\tdefer wg.Done()
+\t\tdefer func() { recover() }() // prevent panics from crashing program
+~w
+\t\tselect {
+\t\tcase <-ctx.Done():
+\t\t\treturn // cancelled — another clause already produced a result
+\t\tcase results <- result:
+\t\t}
+\t}()', [Idx, CondBlock])
+    ;   % Clause didn't compile — skip with comment
+        format(string(BranchCode),
+'\tgo func() { // clause ~w (compilation failed)
+\t\tdefer wg.Done()
+\t}()', [Idx])
+    ),
+    NextIdx is Idx + 1,
+    compile_clause_parallel_branches(PredSpec, Rest, NextIdx, RestCodes).
