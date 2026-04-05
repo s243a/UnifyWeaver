@@ -759,22 +759,23 @@ python examples/benchmark/benchmark_category_influence_cross_target.py \
 
 | Scale | C# Query | Rust DFS | Go DFS | Prolog Accumulated | Outputs |
 |-------|---------:|---------:|-------:|-------------------:|---------|
-| 300 | 0.649s | 0.391s | 0.485s | 1.739s | match |
-| 1k | 0.529s | 1.488s | 2.178s | 1.044s | match |
+| 300 | 0.222s | 0.381s | 0.487s | 1.748s | match |
+| 1k | 0.149s | 1.506s | 2.133s | 1.050s | match |
 
-This grouped Prolog path now uses the generated
-`category_ancestor$power_sum_grouped` helper rather than the generic
-per-root fallback. That makes the accumulated Prolog path viable again,
-but C# query is still clearly faster on this workload.
+This grouped Prolog path now calls the generated
+`category_ancestor$power_sum_selected` helper. When the root is
+unbound, that selector routes to the grouped helper rather than the
+generic per-root fallback. That makes the accumulated Prolog path viable
+again, but C# query is still clearly faster on this workload.
 
 ### Prolog Category-Influence Accumulation Results
 
-The category-influence benchmark now uses a generated grouped
-`power_sum_grouped` helper for the cycle-safe PPV `category_ancestor/4`
-closure from the effective-distance workload. The generic seeded
-accumulation helper remains available as the fallback path, but this
-grouped helper is the better fit for category influence because the
-consumer wants all root sums for a seed at once.
+The category-influence benchmark now uses the generated
+`category_ancestor$power_sum_selected` helper for the cycle-safe PPV
+`category_ancestor/4` closure from the effective-distance workload.
+Because the root argument is left unbound in this workload, the selected
+helper routes to the grouped fast path automatically. The generic seeded
+accumulation helper remains available as the fallback path.
 
 Command:
 
@@ -787,8 +788,8 @@ Latest local results:
 
 | Scale | Seeded | Accumulated | Output Match | Note |
 |-------|-------:|------------:|--------------|------|
-| 300 | 1.892s | 1.890s | match | grouped helper reaches parity |
-| 1k | 1.056s | 1.118s | match | grouped helper stays close |
+| 300 | 1.770s | 1.868s | match | selected helper keeps grouped path close |
+| 1k | 1.175s | 1.231s | match | selected helper stays close |
 
 Current interpretation:
 

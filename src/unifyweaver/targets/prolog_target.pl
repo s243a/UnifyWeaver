@@ -59,7 +59,8 @@
 %       - seeded_accumulation(auto/false) - Emit SWI helper predicates
 %         for canonical counted recursive closures that aggregate over
 %         the derived metric (default: auto). This currently supports
-%         `power_sum` and `sum_metric` helper formulas, and may emit an
+%         `power_sum` and `sum_metric` helper formulas, emits a
+%         query-aware `*_selected` helper surface, and may emit an
 %         additional grouped `power_sum_grouped` helper when the
 %         canonical `(seed, key, metric)` shape is recognized.
 %       - effective_distance_accumulation(auto/false) - Legacy alias for
@@ -492,8 +493,14 @@ maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, Code) :-
     ),
     build_seeded_accumulation_code(Pred/Arity, Shape, Formula, BaseCode),
     (   build_specialized_seeded_accumulation_code(Pred/Arity, Shape, Formula, SpecializedCode)
-    ->  atomic_list_concat([BaseCode, SpecializedCode], '\n\n', Code)
-    ;   Code = BaseCode
+    ->  Specialized = some(SpecializedCode)
+    ;   Specialized = none
+    ),
+    build_seeded_accumulation_selected_code(Pred/Arity, Shape, Formula, Specialized,
+        SelectedCode),
+    (   Specialized = some(SpecializedCode)
+    ->  atomic_list_concat([BaseCode, SpecializedCode, SelectedCode], '\n\n', Code)
+    ;   atomic_list_concat([BaseCode, SelectedCode], '\n\n', Code)
     ).
 
 seeded_accumulation_formula(Pred/Arity, Options, Formula) :-
@@ -648,6 +655,50 @@ build_grouped_alias_suffixes([], []).
 build_grouped_alias_suffixes([Suffix|Rest], [GroupedSuffix|GroupedRest]) :-
     format(atom(GroupedSuffix), '~w_grouped', [Suffix]),
     build_grouped_alias_suffixes(Rest, GroupedRest).
+
+selected_suffix_for_suffix(Suffix, SelectedSuffix) :-
+    format(atom(SelectedSuffix), '~w_selected', [Suffix]).
+
+selected_suffixes_for_suffixes([], []).
+selected_suffixes_for_suffixes([Suffix|Rest], [SelectedSuffix|SelectedRest]) :-
+    selected_suffix_for_suffix(Suffix, SelectedSuffix),
+    selected_suffixes_for_suffixes(Rest, SelectedRest).
+
+build_seeded_accumulation_selected_code(Pred/_Arity,
+        accumulation_shape(SignaturePositions, _DriverPos, _MetricPos, _VisitedInfo),
+        accumulation_formula(_FormulaKind, _ParamPred, _Offset, PrimarySuffix, AliasSuffixes),
+        Specialized, Code) :-
+    helper_name_for_suffix(Pred, PrimarySuffix, PrimaryName),
+    selected_suffix_for_suffix(PrimarySuffix, SelectedPrimarySuffix),
+    helper_name_for_suffix(Pred, SelectedPrimarySuffix, SelectedPrimaryName),
+    length(SignaturePositions, SignatureCount),
+    build_seeded_accumulation_selected_primary_clause(SignatureCount, SelectedPrimaryName,
+        PrimaryName, Specialized, ClauseTerm),
+    selected_suffixes_for_suffixes(AliasSuffixes, SelectedAliasSuffixes),
+    build_seeded_accumulation_alias_clauses(Pred, SelectedPrimaryName, SelectedAliasSuffixes,
+        SignatureCount, AliasClauses),
+    append([ClauseTerm], AliasClauses, Clauses),
+    clauses_to_code(Clauses, ClauseCode),
+    atomic_list_concat([
+        '% Query-aware seeded accumulation selector helper.',
+        ClauseCode
+    ], '\n\n', Code).
+
+build_seeded_accumulation_selected_primary_clause(2, SelectedPrimaryName, PrimaryName,
+        some(_SpecializedCode), ClauseTerm) :-
+    atom_concat(PrimaryName, '_grouped', GroupedPrimaryName),
+    Head =.. [SelectedPrimaryName, SeedArg, KeyArg, WeightSum],
+    GenericCall =.. [PrimaryName, SeedArg, KeyArg, WeightSum],
+    GroupedCall =.. [GroupedPrimaryName, SeedArg, KeyArg, WeightSum],
+    Body = (nonvar(KeyArg) -> GenericCall ; GroupedCall),
+    clause_term(Head, Body, ClauseTerm).
+build_seeded_accumulation_selected_primary_clause(SignatureCount, SelectedPrimaryName,
+        PrimaryName, _Specialized, ClauseTerm) :-
+    build_min_signature_vars(SignatureCount, SignatureArgs),
+    append(SignatureArgs, [_WeightSum], HeadArgs),
+    Head =.. [SelectedPrimaryName|HeadArgs],
+    PrimaryCall =.. [PrimaryName|HeadArgs],
+    clause_term(Head, PrimaryCall, ClauseTerm).
 
 build_specialized_grouped_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
         accumulation_formula(FormulaKind, ParamPred, Offset, _PrimarySuffix, AliasSuffixes),
