@@ -27,24 +27,25 @@ rows and regrouping them in the benchmark harness, the runtime now:
 That moves the retained state into the engine and flips the old headline:
 the query engine is now faster than accumulated Prolog and all DFS
 pipelines across the full benchmark range while preserving the same
-all-path semantics.
+all-path semantics. It also now supports cost-guided selection between
+compact grouped weight sums and the legacy seeded-row regrouping path.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **C# Query Engine** | **0.211s** | **0.190s** | **0.351s** | **0.735s** |
-| Prolog accumulated | 0.361s | 0.249s | 0.823s | 2.038s |
-| C# DFS pipeline | 0.442s | 1.181s | 5.647s | 10.736s |
-| Rust DFS pipeline | 0.381s | 1.370s | 7.445s | 14.080s |
-| Go DFS pipeline | 0.483s | 2.066s | 11.864s | 19.701s |
+| **C# Query Engine** | **0.224s** | **0.182s** | **0.406s** | **0.695s** |
+| Prolog accumulated | 0.349s | 0.236s | 0.856s | 1.942s |
+| C# DFS pipeline | 0.437s | 1.313s | 5.634s | 10.196s |
+| Rust DFS pipeline | 0.365s | 1.638s | 7.164s | 13.782s |
+| Go DFS pipeline | 0.469s | 1.971s | 11.302s | 19.074s |
 
 **Speedups of the current C# query engine:**
 
 | Scale | vs Prolog accumulated | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------------------:|----------:|------------:|----------:|
-| 300 art | 1.71x | 2.09x | 1.80x | 2.29x |
-| 1K art | 1.31x | 6.23x | 7.23x | 10.87x |
-| 5K art | 2.35x | 16.10x | 21.23x | 33.80x |
-| 10K art | 2.77x | 14.60x | 19.15x | 26.80x |
+| 300 art | 1.56x | 1.95x | 1.63x | 2.09x |
+| 1K art | 1.30x | 7.21x | 9.00x | 10.83x |
+| 5K art | 2.11x | 13.88x | 17.65x | 27.84x |
+| 10K art | 2.79x | 14.67x | 19.83x | 27.46x |
 
 Semantic note:
 
@@ -105,17 +106,20 @@ For historical context, the original DFS-only pipeline comparison:
 ### Key Findings
 
 1. **The C# query engine is now the fastest effective-distance path on
-   this benchmark surface** — it beats accumulated Prolog by `1.71x` at
-   `300`, `1.31x` at `1k`, `2.35x` at `5k`, and `2.77x` at `10k`.
+   this benchmark surface** — it beats accumulated Prolog by `1.56x` at
+   `300`, `1.30x` at `1k`, `2.11x` at `5k`, and `2.79x` at `10k`.
 
 2. **The C# query engine now beats the DFS baselines by a wide margin** —
-   at `10k` it is `14.60x` faster than C# DFS, `19.15x` faster than Rust
-   DFS, and `26.80x` faster than Go DFS.
+   at `10k` it is `14.67x` faster than C# DFS, `19.83x` faster than Rust
+   DFS, and `27.46x` faster than Go DFS.
 
 3. **Retained-state strategy matters more than branch pruning on this
    workload** — seeded reuse is the first big win, and moving per-article
    root-weight aggregation into the query runtime removes the huge path-row
-   materialization cost that used to dominate the C# query path.
+   materialization cost that used to dominate the C# query path. The new
+   `Auto` selector also chooses the compact grouped weight-sum path on the
+   tested scales; forcing legacy seeded-row regrouping is dramatically
+   worse (`300`: `0.726s` vs `0.275s`, `10k`: `3.106s` vs `0.828s`).
 
 4. **Accumulated Prolog is still a useful retained-state reference** — it
    keeps only per-seed weight sums (`462` tuples at `10k`), but the query
@@ -733,19 +737,19 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.200s | 0.388s | 0.480s | match |
-| 1k | 0.156s | 1.519s | 2.096s | match |
-| 5k | 0.331s | 7.853s | 12.002s | match |
-| 10k | 0.728s | 14.793s | 20.019s | match |
+| 300 | 0.207s | 0.484s | 0.495s | match |
+| 1k | 0.170s | 1.608s | 2.096s | match |
+| 5k | 0.382s | 8.125s | 11.640s | match |
+| 10k | 0.718s | 14.767s | 19.544s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 1.94x | 2.40x |
-| 1k | 9.76x | 13.46x |
-| 5k | 23.74x | 36.29x |
-| 10k | 20.32x | 27.49x |
+| 300 | 2.33x | 2.39x |
+| 1k | 9.48x | 12.35x |
+| 5k | 21.26x | 30.45x |
+| 10k | 20.55x | 27.20x |
 
 Comparison note:
 
@@ -754,6 +758,9 @@ Comparison note:
   instead of materializing all ancestor/hop rows and then summing them later
 - the remaining benchmark-side work is only the final per-root sum over those
   compact article/root summaries
+- the new `Auto` selector also chooses the compact grouped weight-sum path
+  here; forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
+  vs `0.237s`, `10k`: `2.998s` vs `0.829s`)
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is still intentionally a mixed execution-model comparison:
   query engine versus non-query target pipelines

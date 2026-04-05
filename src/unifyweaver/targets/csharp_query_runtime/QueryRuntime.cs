@@ -474,9 +474,17 @@ namespace UnifyWeaver.QueryRuntime
         LegacySeededRows
     }
 
+    public enum PathAwareWeightSumStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
+        PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
         int PairProbeCacheMaxEntries = 4096,
         int SeededCacheMaxEntries = 4096,
         int PairProbeCacheAdmissionMinCost = 0,
@@ -1412,6 +1420,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
         private readonly PathAwareGroupedMinStrategy _pathAwareGroupedMinStrategy;
+        private readonly PathAwareWeightSumStrategy _pathAwareWeightSumStrategy;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1426,6 +1435,7 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
             _pathAwareGroupedMinStrategy = options.PathAwareGroupedMinStrategy;
+            _pathAwareWeightSumStrategy = options.PathAwareWeightSumStrategy;
         }
 
         public IEnumerable<object[]> Execute(
@@ -7596,6 +7606,105 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private PathAwareWeightSumStrategy ResolvePathAwareWeightSumStrategy(
+            int groupCount,
+            int uniqueSeedCount,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            if (_pathAwareWeightSumStrategy != PathAwareWeightSumStrategy.Auto)
+            {
+                return _pathAwareWeightSumStrategy;
+            }
+
+            var effectiveGroups = Math.Max(1, groupCount);
+            var effectiveSeeds = Math.Max(1, uniqueSeedCount);
+            var effectiveRoots = Math.Max(1, rootCount);
+            var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
+            var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
+            var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
+            return estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+                ? PathAwareWeightSumStrategy.LegacySeededRows
+                : PathAwareWeightSumStrategy.CompactGrouped;
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
+            SeedGroupedPathAwareWeightSumNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, double>>();
+            }
+
+            var seededClosure = new PathAwareTransitiveClosureNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                1,
+                1,
+                closure.MaxDepth,
+                TableMode.All);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareTransitiveClosure(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var distanceWeightCache = new Dictionary<int, double>();
+
+            double GetDistanceWeight(int distance)
+            {
+                if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                {
+                    return cachedWeight;
+                }
+
+                var weight = Math.Pow(distance, -closure.DistanceExponent);
+                distanceWeightCache[distance] = weight;
+                return weight;
+            }
+
+            var seedWeightSums = new Dictionary<object, Dictionary<object, double>>();
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedWeightSums[seedKey] = new Dictionary<object, double>
+                    {
+                        [seedKey] = GetDistanceWeight(1)
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedWeightSums.TryGetValue(seedKey, out var rootSums))
+                {
+                    rootSums = new Dictionary<object, double>();
+                    seedWeightSums[seedKey] = rootSums;
+                }
+
+                var distance = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
+                var weight = GetDistanceWeight(distance);
+                rootSums[rootKey] = rootSums.TryGetValue(rootKey, out var current) ? current + weight : weight;
+            }
+
+            return seedWeightSums;
+        }
+
         private IEnumerable<object[]> ExecuteSeedGroupedPathAwareWeightSum(SeedGroupedPathAwareWeightSumNode closure, EvaluationContext? parentContext)
         {
             if (closure is null) throw new ArgumentNullException(nameof(closure));
@@ -7689,43 +7798,58 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var distanceWeightCache = new Dictionary<int, double>();
-                var nodeIds = new Dictionary<object, int>();
-                var nextNodeId = 0;
+                var selectedStrategy = ResolvePathAwareWeightSumStrategy(groupValues.Count, orderedUniqueSeeds.Count, rootKeys.Count, succIndex);
+                trace?.RecordStrategy(closure, selectedStrategy == PathAwareWeightSumStrategy.LegacySeededRows
+                    ? "SeedGroupedPathAwareWeightSumLegacySeededRows"
+                    : "SeedGroupedPathAwareWeightSumCompactGrouped");
 
-                int GetNodeId(object? value)
+                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums;
+                if (selectedStrategy == PathAwareWeightSumStrategy.LegacySeededRows)
                 {
-                    var key = value ?? NullFactIndexKey;
-                    if (nodeIds.TryGetValue(key, out var existing))
-                    {
-                        return existing;
-                    }
-
-                    var id = nextNodeId++;
-                    nodeIds[key] = id;
-                    return id;
+                    seedWeightSums = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context);
                 }
-
-                double GetDistanceWeight(int distance)
+                else
                 {
-                    if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                    var distanceWeightCache = new Dictionary<int, double>();
+                    var nodeIds = new Dictionary<object, int>();
+                    var nextNodeId = 0;
+
+                    int GetNodeId(object? value)
                     {
-                        return cachedWeight;
+                        var key = value ?? NullFactIndexKey;
+                        if (nodeIds.TryGetValue(key, out var existing))
+                        {
+                            return existing;
+                        }
+
+                        var id = nextNodeId++;
+                        nodeIds[key] = id;
+                        return id;
                     }
 
-                    var weight = Math.Pow(distance, -closure.DistanceExponent);
-                    distanceWeightCache[distance] = weight;
-                    return weight;
-                }
-
-                var seedWeightSums = new Dictionary<object, Dictionary<object, double>>();
-                foreach (var seed in orderedUniqueSeeds)
-                {
-                    var weightSums = ComputePathAwareRootWeightSumsForSeed(seed, succIndex, rootKeys, closure.MaxDepth, GetNodeId, GetDistanceWeight);
-                    if (weightSums.Count > 0)
+                    double GetDistanceWeight(int distance)
                     {
-                        seedWeightSums[seed ?? NullFactIndexKey] = weightSums;
+                        if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                        {
+                            return cachedWeight;
+                        }
+
+                        var weight = Math.Pow(distance, -closure.DistanceExponent);
+                        distanceWeightCache[distance] = weight;
+                        return weight;
                     }
+
+                    var directSeedWeightSums = new Dictionary<object, Dictionary<object, double>>();
+                    foreach (var seed in orderedUniqueSeeds)
+                    {
+                        var weightSums = ComputePathAwareRootWeightSumsForSeed(seed, succIndex, rootKeys, closure.MaxDepth, GetNodeId, GetDistanceWeight);
+                        if (weightSums.Count > 0)
+                        {
+                            directSeedWeightSums[seed ?? NullFactIndexKey] = weightSums;
+                        }
+                    }
+
+                    seedWeightSums = directSeedWeightSums;
                 }
 
                 var rows = new List<object[]>();
