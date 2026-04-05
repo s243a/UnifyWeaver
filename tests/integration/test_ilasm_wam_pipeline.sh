@@ -150,21 +150,58 @@ test_ilasm_verify() {
         return
     fi
 
-    log_info "Test 6: ilasm assembly of generated CIL"
+    log_info "Test 6: ilasm assembly of full generated CIL"
 
-    # Assemble the types template + runtime into a single .il
     cd "$PROJECT_ROOT"
-    cat templates/targets/ilasm_wam/types.il.mustache > "$OUTPUT_DIR/full_module.il"
-    sed -i 's/{{[^}]*}}//g' "$OUTPUT_DIR/full_module.il"
+
+    # Generate a complete assembly from Prolog — types + state + runtime + wrapper
+    swipl -g "
+        use_module('src/unifyweaver/targets/wam_ilasm_target'),
+        compile_step_wam_to_cil([], StepCode),
+        compile_wam_helpers_to_cil([], HelpersCode),
+        open('$OUTPUT_DIR/full_module.il', write, S),
+        format(S, '.assembly extern mscorlib {}~n', []),
+        format(S, '.assembly WamTest {}~n~n', []),
+        format(S, '.class public auto ansi WamTest.Program extends [mscorlib]System.Object {~n~n', []),
+        format(S, '~w~n~n', [StepCode]),
+        format(S, '~w~n~n', [HelpersCode]),
+        format(S, '} // end class~n', []),
+        close(S),
+        halt
+    " 2>/dev/null
+
+    if [ ! -f "$OUTPUT_DIR/full_module.il" ]; then
+        log_fail "Full module CIL generation failed"
+        return
+    fi
 
     ILASM_OUTPUT=$(ilasm "$OUTPUT_DIR/full_module.il" /dll /output="$OUTPUT_DIR/test.dll" 2>&1)
     ILASM_RC=$?
 
     if [ $ILASM_RC -eq 0 ]; then
-        log_pass "ilasm assembled types template successfully"
+        log_pass "ilasm assembled full generated module successfully"
+        # Optional: run dotnet-ilverify or peverify
+        if command -v dotnet-ilverify >/dev/null 2>&1; then
+            VERIFY_OUTPUT=$(dotnet-ilverify "$OUTPUT_DIR/test.dll" 2>&1)
+            if [ $? -eq 0 ]; then
+                log_pass "dotnet-ilverify passed"
+            else
+                log_fail "dotnet-ilverify: errors found"
+                echo "$VERIFY_OUTPUT" | head -5
+            fi
+        elif command -v peverify >/dev/null 2>&1; then
+            VERIFY_OUTPUT=$(peverify "$OUTPUT_DIR/test.dll" 2>&1)
+            if [ $? -eq 0 ]; then
+                log_pass "peverify passed"
+            else
+                log_fail "peverify: errors found"
+                echo "$VERIFY_OUTPUT" | head -5
+            fi
+        fi
     else
-        log_fail "ilasm assembly failed"
-        echo "$ILASM_OUTPUT" | head -5
+        ERR_COUNT=$(echo "$ILASM_OUTPUT" | grep -ci "error" 2>/dev/null || echo 0)
+        log_fail "ilasm assembly: $ERR_COUNT errors"
+        echo "$ILASM_OUTPUT" | grep -i "error" | head -5
     fi
 }
 

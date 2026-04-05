@@ -310,6 +310,24 @@ in parallel with Phase 2 after Phase 0 is complete.
 5. **No pointer provenance issues**: All references are managed by
    the CLR — no `inttoptr`/`getelementptr` reasoning needed.
 
+## Future Optimizations
+
+### `List<T>` vs Pre-sized Arrays
+
+The current implementation uses `List<StackEntry>`, `List<TrailEntry>`,
+and `List<ChoicePoint>` for the WAM stack, trail, and choice point
+collections. This is idiomatic CLR code and correct, but each `Add()`
+call may trigger GC-visible allocation when the list resizes.
+
+For high-performance WAM execution, these could be replaced with
+pre-sized arrays (e.g., `StackEntry[256]`) and integer stack pointers,
+matching the LLVM target's approach. This would reduce GC pressure at
+the cost of a fixed capacity limit (or manual resize logic).
+
+The trade-off: `List<T>` is simpler, correct, and sufficient for the
+bootstrapping runtime. Pre-sized arrays are a performance optimization
+to consider once profiling shows GC pause times are significant.
+
 ## Future Extensions
 
 Once the CIL WAM pipeline works:
