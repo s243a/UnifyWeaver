@@ -48,6 +48,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
+WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
 
 
 @dataclass
@@ -74,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-accumulated",
     )
     parser.add_argument(
         "--repetitions",
@@ -133,13 +134,35 @@ def build_prolog_effective_distance(root: Path, scale: str, variant: str) -> lis
     return ["swipl", "-q", "-s", str(script_path)]
 
 
+def build_wam_rust_effective_distance(root: Path, scale: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / "wam_rust" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+        ],
+        cwd=ROOT,
+    )
+    run_command(["cargo", "build", "--release"], cwd=project_dir)
+    binary = project_dir / "target" / "release" / "hybrid_ed_bench"
+    scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+    return [str(binary), str(scale_dir)]
+
+
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
     times: list[float] = []
     last_stdout = ""
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-"):
+        if target.startswith("prolog-") or target.startswith("wam-"):
             result = run_command(command)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
@@ -169,6 +192,7 @@ def print_summary(results: list[RunResult]) -> None:
         prolog_accumulated = find_result(entries, "prolog-accumulated")
         prolog_article_accumulated = find_result(entries, "prolog-article-accumulated")
         prolog_root_accumulated = find_result(entries, "prolog-root-accumulated")
+        wam_rust_accumulated = find_result(entries, "wam-rust-accumulated")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
 
         if len(dfs_like) > 1:
@@ -179,6 +203,8 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_prolog_accumulated", qe, prolog_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_article_accumulated", qe, prolog_article_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_root_accumulated", qe, prolog_root_accumulated)
+        print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
+        print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_prolog_seeded", prolog_seeded, qe)
@@ -186,12 +212,14 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_prolog_accumulated", prolog_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_article_accumulated", prolog_article_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_root_accumulated", prolog_root_accumulated, qe)
+        print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
         print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
         print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
         print_phase_metrics(scale, "prolog-accumulated-metrics", prolog_accumulated)
         print_phase_metrics(scale, "prolog-article-accumulated-metrics", prolog_article_accumulated)
         print_phase_metrics(scale, "prolog-root-accumulated-metrics", prolog_root_accumulated)
+        print_phase_metrics(scale, "wam-rust-accumulated-metrics", wam_rust_accumulated)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -242,6 +270,8 @@ def main() -> int:
                 continue
             elif target == "prolog-root-accumulated":
                 continue
+            elif target == "wam-rust-accumulated":
+                continue
             else:
                 raise ValueError(f"unsupported target: {target}")
 
@@ -258,6 +288,8 @@ def main() -> int:
                     command = build_prolog_effective_distance(temp_root, scale, "article_accumulated")
                 elif target == "prolog-root-accumulated":
                     command = build_prolog_effective_distance(temp_root, scale, "root_accumulated")
+                elif target == "wam-rust-accumulated":
+                    command = build_wam_rust_effective_distance(temp_root, scale)
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))

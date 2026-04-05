@@ -362,6 +362,10 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
+                        cp.regs = self.regs.clone();
+                        cp.stack = self.stack.clone();
+                        cp.cp = self.cp;
+                        cp.trail = self.trail.clone();
                     }
                     self.pc += 1; true
                 } else { false }'.
@@ -426,6 +430,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_io_builtin_to_rust(IoBuiltinCode),
     compile_execute_type_builtin_to_rust(TypeBuiltinCode),
     compile_execute_term_builtin_to_rust(TermBuiltinCode),
+    compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
     compile_resume_builtin_to_rust(ResumeCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
@@ -437,6 +442,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         IoBuiltinCode, '\n\n',
         TypeBuiltinCode, '\n\n',
         TermBuiltinCode, '\n\n',
+        MetaBuiltinCode, '\n\n',
         ResumeCode, '\n\n',
         ArithCode
     ], RustCode).
@@ -456,10 +462,12 @@ compile_run_loop_to_rust(Code) :-
         }
     }'.
 
-compile_backtrack_to_rust(Code) :-
-    Code = '    /// Restore state from the top choice point.
+compile_backtrack_to_rust(Code0) :-
+    Code0 = '    /// Restore state from the top choice point without popping it.
+    /// In standard WAM semantics, the choice point is kept alive so that
+    /// retry_me_else can update its next_pc.  Only trust_me pops it.
     pub fn backtrack(&mut self) -> bool {
-        if let Some(mut cp) = self.choice_points.pop() {
+        if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
             self.regs = cp.regs;
             self.stack = cp.stack;
@@ -467,9 +475,10 @@ compile_backtrack_to_rust(Code) :-
             // Unwind trail
             self.unwind_trail(&cp.trail);
             self.trail = cp.trail;
-            
-            if let Some(state) = cp.builtin_state.take() {
-                // Resume non-deterministic builtin
+
+            if let Some(state) = cp.builtin_state {
+                // Pop for non-deterministic builtins (they manage their own state)
+                self.choice_points.pop();
                 return self.resume_builtin(state);
             }
             true
@@ -498,6 +507,7 @@ compile_execute_builtin_to_rust(Code) :-
         if self.execute_io_builtin(op, arity) { return true; }
         if self.execute_type_builtin(op, arity) { return true; }
         if self.execute_term_builtin(op, arity) { return true; }
+        if self.execute_meta_builtin(op, arity) { return true; }
 
         match op {
             "true/0" => { self.pc += 1; true }
@@ -627,6 +637,27 @@ compile_execute_term_builtin_to_rust(Code) :-
                     } else { false }
                 } else { false }
             }
+            "length/2" => {
+                let list_val = self.regs.get("A1").cloned().unwrap_or(Value::List(vec![]));
+                let derefed = self.deref_heap(&list_val);
+                let len = match &derefed {
+                    Value::List(items) => items.len() as i64,
+                    _ => return false,
+                };
+                let len_val = Value::Integer(len);
+                let lhs = self.regs.get("A2").cloned();
+                match lhs {
+                    Some(v) if v.is_unbound() => {
+                        self.trail_binding("A2");
+                        self.regs.insert("A2".to_string(), len_val);
+                        self.pc += 1; true
+                    }
+                    Some(Value::Integer(n)) if n == len => {
+                        self.pc += 1; true
+                    }
+                    _ => false,
+                }
+            }
             "append/3" => {
                 eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
                 false
@@ -676,6 +707,68 @@ compile_resume_builtin_to_rust(Code) :-
     }'.
 
 
+compile_execute_meta_builtin_to_rust(Code) :-
+    Code = '    /// Execute meta-predicates that require goal evaluation.
+    fn execute_meta_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        match op {
+            "\\\\+/1" => {
+                // Negation-as-failure: \\+(Goal)
+                // Goal is in A1 as a Str(functor, args) or via label dispatch.
+                // Save state, try the goal, negate the result.
+                let goal = self.regs.get("A1").cloned();
+                let goal = goal.map(|v| self.deref_heap(&v));
+                match goal {
+                    Some(Value::Str(functor, args)) => {
+                        // Save VM state
+                        let saved_regs = self.regs.clone();
+                        let saved_stack = self.stack.clone();
+                        let saved_trail = self.trail.clone();
+                        let saved_cp = self.cp;
+                        let saved_pc = self.pc;
+                        let saved_choice_points = self.choice_points.clone();
+                        let saved_heap = self.heap.clone();
+
+                        // Try as builtin first
+                        let pred_key = format!("{}", functor);
+                        let arity = args.len();
+                        for (i, arg) in args.iter().enumerate() {
+                            self.set_reg(&format!("A{}", i + 1), arg.clone());
+                        }
+
+                        let goal_succeeded = if self.execute_builtin(&pred_key, arity) {
+                            true
+                        } else if let Some(&target_pc) = self.labels.get(&pred_key) {
+                            // Try as a compiled predicate via label dispatch
+                            self.pc = target_pc;
+                            self.cp = 0;
+                            self.run()
+                        } else {
+                            false
+                        };
+
+                        // Restore state regardless
+                        self.regs = saved_regs;
+                        self.stack = saved_stack;
+                        self.trail = saved_trail;
+                        self.cp = saved_cp;
+                        self.choice_points = saved_choice_points;
+                        self.heap = saved_heap;
+
+                        // Negate: if goal succeeded, \\+ fails; if goal failed, \\+ succeeds
+                        if goal_succeeded {
+                            false
+                        } else {
+                            self.pc = saved_pc + 1;
+                            true
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }'.
+
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
     /// TODO: Implement a dual integer/float arithmetic path for better performance and precision.
@@ -697,6 +790,8 @@ compile_eval_arith_to_rust(Code) :-
                 // Try register dereference
                 if name.starts_with(\'A\') || name.starts_with(\'X\') || name.starts_with(\'Y\') {
                     self.get_reg(name).and_then(|v| self.eval_arith(&v))
+                } else if let Ok(n) = name.parse::<f64>() {
+                    Some(n)
                 } else { None }
             }
             _ => None,
@@ -884,18 +979,21 @@ wam_line_to_rust_instr(["allocate"], "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], "Instruction::Deallocate").
 wam_line_to_rust_instr(["call", P, N], Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
-        'Instruction::Call("~w".to_string(), ~w)', [CP, Num]).
+        'Instruction::Call("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["execute", P], Rust) :-
+    escape_rust_string(P, EP),
     format(string(Rust),
-        'Instruction::Execute("~w".to_string())', [P]).
+        'Instruction::Execute("~w".to_string())', [EP]).
 wam_line_to_rust_instr(["proceed"], "Instruction::Proceed").
 wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
+    escape_rust_string(COp, ECOp),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
-        'Instruction::BuiltinCall("~w".to_string(), ~w)', [COp, Num]).
+        'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
 wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
@@ -947,6 +1045,22 @@ clean_comma(Str, Clean) :-
     ->  sub_string(Str, 0, _, 1, Clean)
     ;   Clean = Str
     ).
+
+%% escape_rust_string(+In, -Out)
+%  Escapes backslashes and double-quotes for embedding in a Rust string literal.
+escape_rust_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", Parts),
+    atomics_to_string(Parts, "\\\\", Escaped1),
+    split_string(Escaped1, "\"", "", Parts2),
+    atomics_to_string(Parts2, "\\\"", Out).
+
+atomics_to_string([], _, "").
+atomics_to_string([X], _, X).
+atomics_to_string([X, Y|Rest], Sep, Result) :-
+    atomics_to_string([Y|Rest], Sep, Tail),
+    string_concat(X, Sep, XSep),
+    string_concat(XSep, Tail, Result).
 
 build_rust_wam_arg_list(0, "vm: &mut WamState") :- !.
 build_rust_wam_arg_list(Arity, ArgList) :-
