@@ -198,7 +198,8 @@ wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
 wam_instruction_to_go_literal(builtin_call(Op, N), GoLiteral) :-
-    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [Op, N]).
+    escape_go_string(Op, EscapedOp),
+    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedOp, N]).
 
 wam_instruction_to_go_literal(try_me_else(Label), GoLiteral) :-
     format(atom(GoLiteral), '&TryMeElse{Label: "~w"}', [Label]).
@@ -242,6 +243,7 @@ go_struct_case(Functor-Label, Case) :-
 %  slice and label map.
 compile_wam_predicate_to_go(Pred/Arity, WamCode, _Options, GoCode) :-
     atom_string(Pred, PredStr),
+    capitalize_atom(Pred, CapPred),
     %% Parse WAM code lines into instruction terms
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
@@ -261,7 +263,12 @@ var ~wCode = []Instruction{
 var ~wLabels = map[string]int{
 ~w
 }
-', [PredStr, Arity, PredStr, EntriesStr, PredStr, LabelsStr]).
+', [PredStr, Arity, CapPred, EntriesStr, CapPred, LabelsStr]).
+
+capitalize_atom(Atom, Cap) :-
+    atom_codes(Atom, [First|Rest]),
+    code_type(FirstUpper, to_upper(First)),
+    atom_codes(Cap, [FirstUpper|Rest]).
 
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, [], []).
@@ -285,9 +292,16 @@ wam_lines_to_go([Line|Rest], PC, GoLits, Labels) :-
     ).
 
 %% wam_line_to_go_literal(+Parts, -GoLit)
+%% parse_string_to_go_val(+Str, -GoVal)
+parse_string_to_go_val(Str, GoVal) :-
+    (   number_string(N, Str)
+    ->  go_value_literal(N, GoVal)
+    ;   go_value_literal(Str, GoVal)
+    ).
+
 wam_line_to_go_literal(["get_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
-    go_value_literal(CC, GoVal),
+    parse_string_to_go_val(CC, GoVal),
     format(atom(GoLit), '&GetConstant{C: ~w, Ai: "~w"}', [GoVal, CAi]).
 wam_line_to_go_literal(["get_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
@@ -309,12 +323,12 @@ wam_line_to_go_literal(["unify_value", Xn], GoLit) :-
     format(atom(GoLit), '&UnifyValue{Xn: "~w"}', [CXn]).
 wam_line_to_go_literal(["unify_constant", C], GoLit) :-
     clean_comma(C, CC),
-    go_value_literal(CC, GoVal),
+    parse_string_to_go_val(CC, GoVal),
     format(atom(GoLit), '&UnifyConstant{C: ~w}', [GoVal]).
 
 wam_line_to_go_literal(["put_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
-    go_value_literal(CC, GoVal),
+    parse_string_to_go_val(CC, GoVal),
     format(atom(GoLit), '&PutConstant{C: ~w, Ai: "~w"}', [GoVal, CAi]).
 wam_line_to_go_literal(["put_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
@@ -336,7 +350,7 @@ wam_line_to_go_literal(["set_value", Xn], GoLit) :-
     format(atom(GoLit), '&SetValue{Xn: "~w"}', [CXn]).
 wam_line_to_go_literal(["set_constant", C], GoLit) :-
     clean_comma(C, CC),
-    go_value_literal(CC, GoVal),
+    parse_string_to_go_val(CC, GoVal),
     format(atom(GoLit), '&SetConstant{C: ~w}', [GoVal]).
 
 wam_line_to_go_literal(["allocate"], '&Allocate{}').
@@ -350,7 +364,8 @@ wam_line_to_go_literal(["execute", P], GoLit) :-
 wam_line_to_go_literal(["proceed"], '&Proceed{}').
 wam_line_to_go_literal(["builtin_call", Op, N], GoLit) :-
     clean_comma(Op, COp), clean_comma(N, CN),
-    format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [COp, CN]).
+    escape_go_string(COp, EscapedOp),
+    format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedOp, CN]).
 
 wam_line_to_go_literal(["try_me_else", L], GoLit) :-
     clean_comma(L, CL),
@@ -463,29 +478,21 @@ wam_go_case('GetStructure', '        val, ok := vm.Regs[i.Ai]
         if !ok { return false }
         if isUnbound(val) {
             addr := len(vm.Heap)
-            vm.Heap = append(vm.Heap, &Atom{Name: "str(" + i.Functor + ")"})
+            arity := parseFunctorArity(i.Functor)
+            s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
+            vm.Heap = append(vm.Heap, s)
+            vm.CurrentStruct = s
+            vm.CurrentList = nil
             vm.trailBinding(i.Ai)
             vm.Regs[i.Ai] = &Ref{Addr: addr}
-            arity := parseFunctorArity(i.Functor)
             vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
             vm.PC++
             return true
         }
-        if ref, ok := val.(*Ref); ok {
-            if atom, ok := vm.Heap[ref.Addr].(*Atom); ok {
-                if atom.Name == "str("+i.Functor+")" {
-                    arity := parseFunctorArity(i.Functor)
-                    args := vm.heapSubargs(ref.Addr+1, arity)
-                    vm.Stack = append(vm.Stack, &UnifyCtx{Args: args})
-                    vm.PC++
-                    return true
-                }
-            }
-        }
-        if f, args := decompose(val); f != "" {
-            check := fmt.Sprintf("%s/%d", f, len(args))
-            if check == i.Functor {
-                vm.Stack = append(vm.Stack, &UnifyCtx{Args: args})
+        val = vm.deref(val)
+        if s, ok := val.(*Structure); ok {
+            if s.Functor == i.Functor {
+                vm.Stack = append(vm.Stack, &UnifyCtx{Args: s.Args})
                 vm.PC++
                 return true
             }
@@ -496,17 +503,19 @@ wam_go_case('GetList', '        val, ok := vm.Regs[i.Ai]
         if !ok { return false }
         if isUnbound(val) {
             addr := len(vm.Heap)
-            vm.Heap = append(vm.Heap, &Atom{Name: "str(./2)"})
+            l := &List{Elements: make([]Value, 2)}
+            vm.Heap = append(vm.Heap, l)
+            vm.CurrentList = l
+            vm.CurrentStruct = nil
             vm.trailBinding(i.Ai)
             vm.Regs[i.Ai] = &Ref{Addr: addr}
             vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
             vm.PC++
             return true
         }
+        val = vm.deref(val)
         if list, ok := val.(*List); ok && len(list.Elements) > 0 {
-            head := list.Elements[0]
-            tail := &List{Elements: list.Elements[1:]}
-            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{head, tail}})
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
             vm.PC++
             return true
         }
@@ -525,8 +534,19 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             addr := len(vm.Heap)
             v := &Unbound{Name: fmt.Sprintf("_H%d", addr)}
             vm.Heap = append(vm.Heap, v)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = v
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = v
+            }
             wctx.N--
-            if wctx.N == 0 { vm.popStack() }
+            if wctx.N == 0 { 
+                vm.popStack() 
+                vm.CurrentStruct = nil
+                vm.CurrentList = nil
+            }
             vm.putReg(i.Xn, v)
             vm.PC++
             return true
@@ -538,8 +558,7 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
             ctx.Args = ctx.Args[1:]
             if len(ctx.Args) == 0 { vm.popStack() }
             actual := vm.getReg(i.Xn)
-            if valueEquals(expected, actual) || isUnbound(expected) || isUnbound(actual) {
-                if isUnbound(actual) { vm.putReg(i.Xn, expected) }
+            if vm.Unify(expected, actual) {
                 vm.PC++
                 return true
             }
@@ -548,8 +567,19 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
             val := vm.getReg(i.Xn)
             vm.Heap = append(vm.Heap, val)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = val
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = val
+            }
             wctx.N--
-            if wctx.N == 0 { vm.popStack() }
+            if wctx.N == 0 { 
+                vm.popStack() 
+                vm.CurrentStruct = nil
+                vm.CurrentList = nil
+            }
             vm.PC++
             return true
         }
@@ -559,7 +589,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             expected := ctx.Args[0]
             ctx.Args = ctx.Args[1:]
             if len(ctx.Args) == 0 { vm.popStack() }
-            if valueEquals(expected, i.C) || isUnbound(expected) {
+            if valueEquals(vm.deref(expected), i.C) {
                 vm.PC++
                 return true
             }
@@ -567,8 +597,19 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
         }
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
             vm.Heap = append(vm.Heap, i.C)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = i.C
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = i.C
+            }
             wctx.N--
-            if wctx.N == 0 { vm.popStack() }
+            if wctx.N == 0 { 
+                vm.popStack() 
+                vm.CurrentStruct = nil
+                vm.CurrentList = nil
+            }
             vm.PC++
             return true
         }
@@ -592,15 +633,21 @@ wam_go_case('PutValue', '        val := vm.getReg(i.Xn)
         return true').
 
 wam_go_case('PutStructure', '        addr := len(vm.Heap)
-        vm.Heap = append(vm.Heap, &Atom{Name: "str(" + i.Functor + ")"})
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
         arity := parseFunctorArity(i.Functor)
+        s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
+        vm.Heap = append(vm.Heap, s)
+        vm.CurrentStruct = s
+        vm.CurrentList = nil
+        vm.Regs[i.Ai] = &Ref{Addr: addr}
         vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
         vm.PC++
         return true').
 
 wam_go_case('PutList', '        addr := len(vm.Heap)
-        vm.Heap = append(vm.Heap, &Atom{Name: "str(./2)"})
+        l := &List{Elements: make([]Value, 2)}
+        vm.Heap = append(vm.Heap, l)
+        vm.CurrentList = l
+        vm.CurrentStruct = nil
         vm.Regs[i.Ai] = &Ref{Addr: addr}
         vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
         vm.PC++
@@ -609,16 +656,79 @@ wam_go_case('PutList', '        addr := len(vm.Heap)
 wam_go_case('SetVariable', '        addr := len(vm.Heap)
         v := &Unbound{Name: fmt.Sprintf("_H%d", addr)}
         vm.Heap = append(vm.Heap, v)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = v
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentStruct = nil
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = v
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentList = nil
+                }
+            }
+        }
         vm.putReg(i.Xn, v)
         vm.PC++
         return true').
 
 wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
         vm.Heap = append(vm.Heap, val)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = val
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentStruct = nil
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = val
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentList = nil
+                }
+            }
+        }
         vm.PC++
         return true').
 
 wam_go_case('SetConstant', '        vm.Heap = append(vm.Heap, i.C)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = i.C
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentStruct = nil
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = i.C
+                wctx.N--
+                if wctx.N == 0 { 
+                    vm.popStack() 
+                    vm.CurrentList = nil
+                }
+            }
+        }
         vm.PC++
         return true').
 
@@ -822,32 +932,9 @@ func (vm *WamState) CollectResults() []Value {
 		if !ok {
 			break
 		}
-		results = append(results, val)
+		results = append(results, vm.deref(val))
 	}
 	return results
-}
-
-// backtrack restores state from the most recent choice point.
-func (vm *WamState) backtrack() bool {
-    if len(vm.ChoicePoints) == 0 {
-        return false
-    }
-    cp := vm.ChoicePoints[len(vm.ChoicePoints)-1]
-    vm.unwindTrail(cp.TrailMark)
-    vm.Regs = copyMap(cp.Regs)
-    vm.PC = cp.NextPC
-    vm.CP = cp.CP
-    vm.Halted = false
-    return true
-}
-
-// unwindTrail restores bindings back to the given trail mark.
-func (vm *WamState) unwindTrail(mark int) {
-    for len(vm.Trail) > mark {
-        entry := vm.Trail[len(vm.Trail)-1]
-        vm.Trail = vm.Trail[:len(vm.Trail)-1]
-        delete(vm.Regs, entry.Var)
-    }
 }
 
 // fetch retrieves the instruction at the current PC.
@@ -858,3 +945,10 @@ func (vm *WamState) fetch() Instruction {
     return nil
 }
 ', []).
+
+%% escape_go_string(+Atom, -Escaped)
+%  Escapes backslashes for Go string literals.
+escape_go_string(Atom, Escaped) :-
+    atom_string(Atom, Str),
+    split_string(Str, "\\", "", Parts),
+    atomic_list_concat(Parts, "\\\\", Escaped).

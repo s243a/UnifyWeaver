@@ -1,6 +1,10 @@
 package {{package_name}}
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"strconv"
+)
 
 type TrailEntry struct {
 	Var string
@@ -44,6 +48,8 @@ type WamState struct {
 	Trail        []TrailEntry
 	ChoicePoints []ChoicePoint
 	Halted       bool
+	CurrentStruct *Structure
+	CurrentList   *List
 }
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
@@ -124,6 +130,8 @@ func (vm *WamState) Clone() *WamState {
 		Trail:        make([]TrailEntry, len(vm.Trail)),
 		ChoicePoints: make([]ChoicePoint, len(vm.ChoicePoints)),
 		Halted:       vm.Halted,
+		CurrentStruct: vm.CurrentStruct,
+		CurrentList:   vm.CurrentList,
 	}
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
@@ -136,12 +144,8 @@ func (vm *WamState) ForkAtChoicePoint() *WamState {
 	if len(vm.ChoicePoints) == 0 {
 		return nil
 	}
-	// The forked state will start from the last choice point
 	clone := vm.Clone()
 	if clone.backtrack() {
-		// Remove the alternative branch from ORIGINAL VM so it doesn't try it
-		// In WamState, backtrack() updates PC to NextPC.
-		// We want the original VM to KEEP its current branch but LOSE the choice point.
 		vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
 		return clone
 	}
@@ -157,15 +161,27 @@ func copyMap(m map[string]Value) map[string]Value {
 }
 
 func parseFunctorArity(f string) int {
-	var name string
-	var arity int
-	// Handle str(f/n) format used in WAM Go target
-	if n, _ := fmt.Sscanf(f, "str(%[^/]/%d)", &name, &arity); n == 2 {
+	// Handle str(f/n) format
+	if strings.HasPrefix(f, "str(") && strings.HasSuffix(f, ")") {
+		f = f[4 : len(f)-1]
+	}
+	parts := strings.Split(f, "/")
+	if len(parts) >= 2 {
+		arity, _ := strconv.Atoi(parts[len(parts)-1])
 		return arity
 	}
-	// Fallback for plain f/n
-	fmt.Sscanf(f, "%[^/]/%d", &name, &arity)
-	return arity
+	return 0
+}
+
+func parseFunctorName(f string) string {
+	if strings.HasPrefix(f, "str(") && strings.HasSuffix(f, ")") {
+		f = f[4 : len(f)-1]
+	}
+	parts := strings.Split(f, "/")
+	if len(parts) >= 2 {
+		return strings.Join(parts[:len(parts)-1], "/")
+	}
+	return f
 }
 
 func decompose(v Value) (string, []Value) {
@@ -173,7 +189,9 @@ func decompose(v Value) (string, []Value) {
 	case *Atom:
 		return t.Name, nil
 	case *Compound:
-		return t.Functor, t.Args
+		return parseFunctorName(t.Functor), t.Args
+	case *Structure:
+		return parseFunctorName(t.Functor), t.Args
 	case *List:
 		if len(t.Elements) > 0 {
 			head := t.Elements[0]
@@ -185,51 +203,173 @@ func decompose(v Value) (string, []Value) {
 	return "", nil
 }
 
+func (vm *WamState) Deref(v Value) Value {
+	return vm.deref(v)
+}
+
+func (vm *WamState) deref(v Value) Value {
+	for {
+		if r, ok := v.(*Ref); ok {
+			v = vm.Heap[r.Addr]
+		} else if u, ok := v.(*Unbound); ok {
+			if boundVal, exists := vm.Regs[u.Name]; exists && boundVal != v {
+				v = boundVal
+			} else {
+				return v
+			}
+		} else {
+			return v
+		}
+	}
+}
+
+func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
+	v = vm.deref(v)
+	switch t := v.(type) {
+	case *Integer:
+		return float64(t.Val), true
+	case *Float:
+		return t.Val, true
+	}
+	
+	f, args := decompose(v)
+	if len(args) == 2 {
+		a, okA := vm.evalArithmetic(args[0])
+		b, okB := vm.evalArithmetic(args[1])
+		if !okA || !okB {
+			return 0, false
+		}
+		switch f {
+		case "+":
+			return a + b, true
+		case "-":
+			return a - b, true
+		case "*":
+			return a * b, true
+		case "/":
+			if b == 0 { return 0, false }
+			return a / b, true
+		case "//":
+			if b == 0 { return 0, false }
+			return float64(int64(a) / int64(b)), true
+		case "mod":
+			if b == 0 { return 0, false }
+			return float64(int64(a) % int64(b)), true
+		}
+	}
+	return 0, false
+}
+
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
+	arg1 := vm.getReg("A1")
+	var arg2, arg3 Value
+	if arity >= 2 { arg2 = vm.getReg("A2") }
+	if arity >= 3 { arg3 = vm.getReg("A3") }
+
 	switch op {
 	case "write/1":
-		arg1 := vm.getReg("A1")
-		fmt.Print(arg1.String())
+		fmt.Print(vm.deref(arg1).String())
 		return true
 	case "nl/0":
 		fmt.Println()
 		return true
+	case "true/0":
+		return true
+	case "fail/0":
+		return false
+	case "!/0":
+		vm.ChoicePoints = nil
+		return true
+	case "is/2":
+		val, ok := vm.evalArithmetic(arg2)
+		if !ok { return false }
+		return vm.Unify(arg1, &Float{Val: val})
+
+	case "=:=/2" :
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 == v2
+	case "=\\=/2" :
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 != v2
 	case "</2":
-		arg1 := vm.getReg("A1")
-		arg2 := vm.getReg("A2")
-		v1, ok1 := arg1.(*Integer)
-		v2, ok2 := arg2.(*Integer)
-		if ok1 && ok2 {
-			return v1.Val < v2.Val
-		}
-		return false
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 < v2
 	case ">/2":
-		arg1 := vm.getReg("A1")
-		arg2 := vm.getReg("A2")
-		v1, ok1 := arg1.(*Integer)
-		v2, ok2 := arg2.(*Integer)
-		if ok1 && ok2 {
-			return v1.Val > v2.Val
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 > v2
+	case "=< /2":
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 <= v2
+	case ">=/2":
+		v1, ok1 := vm.evalArithmetic(arg1)
+		v2, ok2 := vm.evalArithmetic(arg2)
+		return ok1 && ok2 && v1 >= v2
+
+	case "var/1": return isUnbound(vm.deref(arg1))
+	case "nonvar/1": return !isUnbound(vm.deref(arg1))
+	case "atom/1": return isAtom(vm.deref(arg1))
+	case "integer/1": return isInteger(vm.deref(arg1))
+	case "float/1": return isFloat(vm.deref(arg1))
+	case "number/1": return isNumber(vm.deref(arg1))
+	case "compound/1": return isCompound(vm.deref(arg1))
+	case "atomic/1": return isAtomic(vm.deref(arg1))
+
+	case "==/2": return valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "\\==/2": return !valueEquals(vm.deref(arg1), vm.deref(arg2))
+	case "\\=/2":
+		clone := vm.Clone()
+		return !clone.Unify(arg1, arg2)
+	case "\\+/1":
+		goal := vm.deref(arg1)
+		f, args := decompose(goal)
+		if f != "" {
+			oldA1, hasA1 := vm.Regs["A1"]
+			oldA2, hasA2 := vm.Regs["A2"]
+			oldA3, hasA3 := vm.Regs["A3"]
+			if len(args) > 0 { vm.Regs["A1"] = args[0] }
+			if len(args) > 1 { vm.Regs["A2"] = args[1] }
+			if len(args) > 2 { vm.Regs["A3"] = args[2] }
+			opName := fmt.Sprintf("%s/%d", f, len(args))
+			res := vm.executeBuiltin(opName, len(args))
+			if hasA1 { vm.Regs["A1"] = oldA1 } else { delete(vm.Regs, "A1") }
+			if hasA2 { vm.Regs["A2"] = oldA2 } else { delete(vm.Regs, "A2") }
+			if hasA3 { vm.Regs["A3"] = oldA3 } else { delete(vm.Regs, "A3") }
+			return !res
 		}
 		return false
+
+	case "length/2":
+		l, ok := vm.deref(arg2).(*Integer)
+		if !ok { return false }
+		list, ok := vm.deref(arg1).(*List)
+		if !ok { return false }
+		return int64(len(list.Elements)) == l.Val
+	case "member/2":
+		list, ok := vm.deref(arg2).(*List)
+		if !ok { return false }
+		for _, e := range list.Elements {
+			if vm.Unify(arg1, e) { return true }
+		}
+		return false
+	case "append/3":
+		l1, ok1 := vm.deref(arg1).(*List)
+		l2, ok2 := vm.deref(arg2).(*List)
+		if !ok1 || !ok2 { return false }
+		combined := &List{Elements: append(l1.Elements, l2.Elements...)}
+		return vm.Unify(arg3, combined)
 	}
 	return false
 }
 
 func (vm *WamState) Unify(v1, v2 Value) bool {
-	if v1 == nil || v2 == nil {
-		return v1 == v2
-	}
+	v1 = vm.deref(v1)
+	v2 = vm.deref(v2)
 
-	// Follow references
-	if r1, ok := v1.(*Ref); ok {
-		return vm.Unify(vm.Heap[r1.Addr], v2)
-	}
-	if r2, ok := v2.(*Ref); ok {
-		return vm.Unify(v1, vm.Heap[r2.Addr])
-	}
-
-	// Handle unbound variables
 	if u1, ok := v1.(*Unbound); ok {
 		vm.trailBinding(u1.Name)
 		vm.putReg(u1.Name, v2)
@@ -241,12 +381,10 @@ func (vm *WamState) Unify(v1, v2 Value) bool {
 		return true
 	}
 
-	// Atomic equality
 	if valueEquals(v1, v2) {
 		return true
 	}
 
-	// Structural unification
 	f1, args1 := decompose(v1)
 	f2, args2 := decompose(v2)
 	if f1 != "" && f1 == f2 && len(args1) == len(args2) {
@@ -259,4 +397,25 @@ func (vm *WamState) Unify(v1, v2 Value) bool {
 	}
 
 	return false
+}
+
+func (vm *WamState) backtrack() bool {
+    if len(vm.ChoicePoints) == 0 {
+        return false
+    }
+    cp := vm.ChoicePoints[len(vm.ChoicePoints)-1]
+    vm.unwindTrail(cp.TrailMark)
+    vm.Regs = copyMap(cp.Regs)
+    vm.PC = cp.NextPC
+    vm.CP = cp.CP
+    vm.Halted = false
+    return true
+}
+
+func (vm *WamState) unwindTrail(mark int) {
+    for len(vm.Trail) > mark {
+        entry := vm.Trail[len(vm.Trail)-1]
+        vm.Trail = vm.Trail[:len(vm.Trail)-1]
+        delete(vm.Regs, entry.Var)
+    }
 }
