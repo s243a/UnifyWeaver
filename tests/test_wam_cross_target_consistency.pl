@@ -44,14 +44,14 @@ test(register_abi_full_range) :-
     % Verify all 32 register slots are consistent
     numlist(1, 16, AIndices),
     forall(member(I, AIndices), (
-        atom_concat('A', I, RegName),
+        format(atom(RegName), 'A~w', [I]),
         reg_name_to_index(RegName, LIdx),
         cil_reg_name_to_index(RegName, CIdx),
         assertion(LIdx == CIdx)
     )),
     numlist(1, 16, XIndices),
     forall(member(I, XIndices), (
-        atom_concat('X', I, RegName),
+        format(atom(RegName), 'X~w', [I]),
         reg_name_to_index(RegName, LIdx),
         cil_reg_name_to_index(RegName, CIdx),
         assertion(LIdx == CIdx)
@@ -165,22 +165,31 @@ canonical_instruction_tag(trust_me, 24).
 
 test(llvm_instruction_tags_in_switch) :-
     compile_step_wam_to_llvm([], StepCode),
-    % Verify key tags appear in the switch statement
-    forall(canonical_instruction_tag(_, Tag), (
-        format(atom(TagStr), 'i32 ~w, label', [Tag]),
+    % Verify all 25 tags appear in the switch with anchored pattern "i32 N, label %name"
+    forall(canonical_instruction_tag(Instr, Tag), (
+        format(atom(TagStr), 'i32 ~w, label %', [Tag]),
         (   sub_atom(StepCode, _, _, _, TagStr)
         ->  true
-        ;   format(user_error, 'LLVM missing tag: ~w~n', [Tag]),
+        ;   format(user_error, 'LLVM missing tag ~w for ~w~n', [Tag, Instr]),
             fail
         )
     )).
 
 test(ilasm_instruction_tags_in_switch) :-
     compile_step_wam_to_cil([], StepCode),
-    % ILAsm switch lists labels in order — the switch itself covers tags 0-24
+    % Verify all 25 instructions have labeled cases in the switch
+    % ILAsm switch lists labels positionally (index = tag), so we verify
+    % each instruction's L_ label AND the switch keyword
     assertion(sub_atom(StepCode, _, _, _, 'switch (')),
-    assertion(sub_atom(StepCode, _, _, _, 'L_get_constant')),
-    assertion(sub_atom(StepCode, _, _, _, 'L_trust_me')).
+    forall(canonical_instruction_tag(Instr, _), (
+        atom_string(Instr, InstrStr),
+        format(atom(Label), 'L_~w:', [InstrStr]),
+        (   sub_atom(StepCode, _, _, _, Label)
+        ->  true
+        ;   format(user_error, 'ILAsm missing label for ~w~n', [Instr]),
+            fail
+        )
+    )).
 
 % ============================================================================
 % Instruction lowering: LLVM and ILAsm produce consistent literals
@@ -189,24 +198,22 @@ test(ilasm_instruction_tags_in_switch) :-
 test(allocate_literal_consistent) :-
     wam_instruction_to_llvm_literal(allocate, LLVMLit),
     wam_instruction_to_cil_literal(allocate, CILLit),
-    % Both should encode tag 16
-    assertion(sub_atom(LLVMLit, _, _, _, '16')),
-    assertion(sub_atom(CILLit, _, _, _, '16')).
+    % Both should encode tag 16 exactly
+    assertion(LLVMLit == '{ i32 16, i64 0, i64 0 }'),
+    assertion(CILLit == 'new Instruction(16, 0L, 0L)').
 
 test(proceed_literal_consistent) :-
     wam_instruction_to_llvm_literal(proceed, LLVMLit),
     wam_instruction_to_cil_literal(proceed, CILLit),
-    assertion(sub_atom(LLVMLit, _, _, _, '20')),
-    assertion(sub_atom(CILLit, _, _, _, '20')).
+    assertion(LLVMLit == '{ i32 20, i64 0, i64 0 }'),
+    assertion(CILLit == 'new Instruction(20, 0L, 0L)').
 
 test(get_variable_literal_tag_consistent) :-
     wam_instruction_to_llvm_literal(get_variable('X1', 'A1'), LLVMLit),
     wam_instruction_to_cil_literal(get_variable('X1', 'A1'), CILLit),
-    % Both should have tag 1, X1=16, A1=0
-    assertion(sub_atom(LLVMLit, _, _, _, '1')),
-    assertion(sub_atom(LLVMLit, _, _, _, '16')),
-    assertion(sub_atom(CILLit, _, _, _, '1')),
-    assertion(sub_atom(CILLit, _, _, _, '16')).
+    % Both should have tag=1, op1=16 (X1), op2=0 (A1)
+    assertion(LLVMLit == '{ i32 1, i64 16, i64 0 }'),
+    assertion(CILLit == 'new Instruction(1, 16L, 0L)').
 
 % ============================================================================
 % Type mappings: both targets map the same Prolog types
