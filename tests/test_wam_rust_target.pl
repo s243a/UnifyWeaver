@@ -33,6 +33,23 @@ fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
 
+check_brace_balance(String) :-
+    string_chars(String, Chars),
+    count_chars(Chars, '{', Open),
+    count_chars(Chars, '}', Close),
+    (   Open == Close
+    ->  true
+    ;   format(user_error, 'Brace imbalance: { (~w) vs } (~w)~n', [Open, Close]),
+        fail
+    ).
+
+count_chars([], _, 0).
+count_chars([C|Rest], C, N) :-
+    !, count_chars(Rest, C, N1),
+    N is N1 + 1.
+count_chars([_|Rest], C, N) :-
+    count_chars(Rest, C, N).
+
 %% Tests
 
 test_step_wam_generation :-
@@ -122,6 +139,8 @@ test_builtin_dispatch :-
     Test = 'WAM-Rust: builtin dispatch covers all ops',
     (   compile_wam_helpers_to_rust([], Code),
         atom_string(Code, S),
+        % Check for balanced braces
+        check_brace_balance(S),
         sub_string(S, _, _, _, 'is/2'),
         sub_string(S, _, _, _, 'result.round()'),
         sub_string(S, _, _, _, '>/2'),
@@ -135,7 +154,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'atom/1'),
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
-        sub_string(S, _, _, _, 'backtracking use'),
+        sub_string(S, _, _, _, 'builtin_state'),
         sub_string(S, _, _, _, 'eprintln!')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
