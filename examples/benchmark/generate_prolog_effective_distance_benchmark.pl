@@ -12,7 +12,7 @@ main :-
     (   Argv = [FactsPath, OutputPath, VariantAtom]
     ->  true
     ;   format(user_error,
-            'Usage: swipl -q -s generate_prolog_effective_distance_benchmark.pl -- <facts.pl> <output-script> <seeded|pruned|accumulated|article_accumulated>~n',
+            'Usage: swipl -q -s generate_prolog_effective_distance_benchmark.pl -- <facts.pl> <output-script> <seeded|pruned|accumulated|article_accumulated|root_accumulated>~n',
             []),
         halt(1)
     ),
@@ -62,9 +62,17 @@ parse_variant('article_accumulated', article_accumulated, [
         seeded_accumulation(auto)
     ]) :-
     !.
+parse_variant('root_accumulated', root_accumulated, [
+        dialect(swi),
+        entry_point(run_benchmark),
+        branch_pruning(false),
+        min_closure(false),
+        seeded_accumulation(auto)
+    ]) :-
+    !.
 parse_variant(Atom, _, _) :-
     format(user_error,
-        'Unsupported effective-distance benchmark variant: ~w (expected seeded, pruned, accumulated, or article_accumulated)~n',
+        'Unsupported effective-distance benchmark variant: ~w (expected seeded, pruned, accumulated, article_accumulated, or root_accumulated)~n',
         [Atom]),
     halt(1).
 
@@ -74,6 +82,7 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
     benchmark_results_line(Variant, ResultsLine),
     benchmark_weight_sum_query_line(Variant, WeightSumQueryLine),
     benchmark_article_weight_sum_query_line(Variant, ArticleWeightSumQueryLine),
+    benchmark_article_weight_sum_by_root_query_line(Variant, ArticleWeightSumByRootQueryLine),
     benchmark_mode_line(Variant, ModeLine),
     Lines = [
         ':- use_module(library(aggregate)).',
@@ -140,6 +149,17 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    ),',
         '    aggregate_all(count, bench_article_weight_sum(_, _, _), TupleCount).',
         '',
+        'build_root_article_weight_sum_index(Root, SeedCount, TupleCount) :-',
+        '    clear_seed_indexes,',
+        '    collect_seed_categories(Seeds),',
+        '    length(Seeds, SeedCount),',
+        '    article_weight_sum_by_root_query(Root, ArticlePairs),',
+        '    forall(',
+        '        member(Article-WeightSum, ArticlePairs),',
+        '        assertz(bench_article_weight_sum(Article, Root, WeightSum))',
+        '    ),',
+        '    aggregate_all(count, bench_article_weight_sum(_, _, _), TupleCount).',
+        '',
         'seeded_article_root_hops(Article, Root, 1) :-',
         '    article_category(Article, Root).',
         'seeded_article_root_hops(Article, Root, Hops) :-',
@@ -160,6 +180,15 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '',
         'article_weight_sum_query(Article, Root, WeightSum) :-',
         ArticleWeightSumQueryLine,
+        '',
+        'article_weight_sum_by_root_query(Root, ArticlePairs) :-',
+        ArticleWeightSumByRootQueryLine,
+        '',
+        'root_accumulated_prepare(Root, SeedCount, TupleCount, ArticlePairs) :-',
+        '    collect_seed_categories(Seeds),',
+        '    length(Seeds, SeedCount),',
+        '    article_weight_sum_by_root_query(Root, ArticlePairs),',
+        '    length(ArticlePairs, TupleCount).',
         '',
         'compute_effective_distance_results_from_hops(Root, Results) :-',
         '    collect_articles(Articles),',
@@ -199,6 +228,17 @@ benchmark_driver_code(Variant, FactsPath, Code) :-
         '    InvN is -1 / N,',
         '    findall(Deff-Article,',
         '        (   bench_article_weight_sum(Article, Root, WeightSum),',
+        '            WeightSum > 0,',
+        '            Deff is WeightSum ** InvN',
+        '        ),',
+        '        Pairs),',
+        '    sort(Pairs, Results).',
+        '',
+        'compute_effective_distance_results_from_root_pairs(ArticlePairs, Results) :-',
+        '    dimension_n(N),',
+        '    InvN is -1 / N,',
+        '    findall(Deff-Article,',
+        '        (   member(Article-WeightSum, ArticlePairs),',
         '            WeightSum > 0,',
         '            Deff is WeightSum ** InvN',
         '        ),',
@@ -246,23 +286,35 @@ benchmark_index_build_line(seeded, '    build_seed_hops_index(Root, SeedCount, T
 benchmark_index_build_line(pruned, '    build_seed_hops_index(Root, SeedCount, TupleCount),').
 benchmark_index_build_line(accumulated, '    build_seed_weight_sum_index(Root, SeedCount, TupleCount),').
 benchmark_index_build_line(article_accumulated, '    build_article_weight_sum_index(Root, SeedCount, TupleCount),').
+benchmark_index_build_line(root_accumulated, '    root_accumulated_prepare(Root, SeedCount, TupleCount, RootArticlePairs),').
 
 benchmark_results_line(seeded, '    compute_effective_distance_results_from_hops(Root, Results),').
 benchmark_results_line(pruned, '    compute_effective_distance_results_from_hops(Root, Results),').
 benchmark_results_line(accumulated, '    compute_effective_distance_results_from_weight_sums(Root, Results),').
 benchmark_results_line(article_accumulated, '    compute_effective_distance_results_from_article_sums(Root, Results),').
+benchmark_results_line(root_accumulated, '    compute_effective_distance_results_from_root_pairs(RootArticlePairs, Results),').
 
 benchmark_weight_sum_query_line(seeded, '    fail.').
 benchmark_weight_sum_query_line(pruned, '    fail.').
 benchmark_weight_sum_query_line(accumulated, '    ''category_ancestor$effective_distance_sum_selected''(Cat, Root, WeightSum).').
 benchmark_weight_sum_query_line(article_accumulated, '    ''category_ancestor$effective_distance_sum_selected''(Cat, Root, WeightSum).').
+benchmark_weight_sum_query_line(root_accumulated, '    ''category_ancestor$effective_distance_sum_selected''(Cat, Root, WeightSum).').
 
 benchmark_article_weight_sum_query_line(seeded, '    fail.').
 benchmark_article_weight_sum_query_line(pruned, '    fail.').
 benchmark_article_weight_sum_query_line(accumulated, '    fail.').
 benchmark_article_weight_sum_query_line(article_accumulated, '    ''category_ancestor$effective_distance_article_sum''(Article, Root, WeightSum).').
+benchmark_article_weight_sum_query_line(root_accumulated, '    fail.').
+
+benchmark_article_weight_sum_by_root_query_line(seeded, '    fail.').
+benchmark_article_weight_sum_by_root_query_line(pruned, '    fail.').
+benchmark_article_weight_sum_by_root_query_line(accumulated, '    fail.').
+benchmark_article_weight_sum_by_root_query_line(article_accumulated, '    fail.').
+benchmark_article_weight_sum_by_root_query_line(root_accumulated,
+    '    ''category_ancestor$effective_distance_article_sum_pairs_by_root''(Root, ArticlePairs).').
 
 benchmark_mode_line(seeded, '    format(user_error, ''mode=seeded~n'', []),').
 benchmark_mode_line(pruned, '    format(user_error, ''mode=pruned~n'', []),').
 benchmark_mode_line(accumulated, '    format(user_error, ''mode=accumulated~n'', []),').
 benchmark_mode_line(article_accumulated, '    format(user_error, ''mode=article_accumulated~n'', []),').
+benchmark_mode_line(root_accumulated, '    format(user_error, ''mode=root_accumulated~n'', []),').

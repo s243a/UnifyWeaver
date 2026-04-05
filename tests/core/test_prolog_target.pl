@@ -412,6 +412,36 @@ collect_generated_effective_distance_article_sums(Options, PredicateCode, Articl
         cleanup_temp_module_source(Path)
     ).
 
+collect_generated_effective_distance_root_article_sums(Options, PredicateCode, ArticleSums) :-
+    once(prolog_target:generate_predicate_code(test_effective_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_effective_root_runtime_, ModuleName),
+    build_effective_distance_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_effective_ppv_reach$effective_distance_article_sum_by_root', c, Article, Sum],
+            findall(Article-Sum, ModuleName:Goal, ArticleSums0),
+            sort(ArticleSums0, ArticleSums)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
+collect_generated_effective_distance_root_pairs(Options, PredicateCode, ArticlePairs) :-
+    once(prolog_target:generate_predicate_code(test_effective_ppv_reach/4, Options, PredicateCode)),
+    gensym(test_effective_root_pairs_runtime_, ModuleName),
+    build_effective_distance_runtime_source(ModuleName, PredicateCode, Source),
+    write_temp_module_source(Source, Path),
+    setup_call_cleanup(
+        load_files(Path, []),
+        (
+            Goal =.. ['test_effective_ppv_reach$effective_distance_article_sum_pairs_by_root', c, Pairs],
+            once(ModuleName:Goal),
+            sort(Pairs, ArticlePairs)
+        ),
+        cleanup_temp_module_source(Path)
+    ).
+
 build_category_influence_runtime_source(ModuleName, PredicateCode, Source) :-
     atomic_list_concat([
         'test_influence_edge(a, b).',
@@ -592,6 +622,8 @@ test(emits_effective_distance_accumulation_helper_for_counted_ppv,
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum_bound')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_sum_selected')),
     once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum_by_root')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum_pairs_by_root')),
     Expected is (3 ** -5) + (4 ** -5),
     Delta is abs(Actual - Expected),
     Delta < 1.0e-12.
@@ -615,6 +647,33 @@ test(emits_effective_distance_article_sum_helper_for_bound_root_queries,
     DeltaTwo is abs(Two - ExpectedTwo),
     DeltaOne < 1.0e-12,
     DeltaTwo < 1.0e-12.
+
+test(emits_effective_distance_root_bound_helper_for_profiling_and_fast_paths,
+        [setup(setup_effective_distance_accumulation_fixture),
+         cleanup(cleanup_effective_distance_accumulation_fixture)]) :-
+    Options = [
+        dialect(swi),
+        min_closure(false),
+        branch_pruning(false),
+        effective_distance_accumulation(auto),
+        predicates([dimension_n/1, max_depth/1, test_effective_ppv_reach/4])
+    ],
+    collect_generated_effective_distance_root_article_sums(Options, PredicateCode, ActualPairs),
+    collect_generated_effective_distance_root_pairs(Options, _PairsCode, PairList),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum_by_root')),
+    once(sub_atom(PredicateCode, _, _, _, 'test_effective_ppv_reach$effective_distance_article_sum_pairs_by_root')),
+    ExpectedOne is (3 ** -5) + (3 ** -5) + (4 ** -5),
+    ExpectedTwo is 2 ** -5,
+    ActualPairs = [article_one-One, article_three-1.0, article_two-Two],
+    PairList = [article_one-OnePair, article_three-1.0, article_two-TwoPair],
+    DeltaOne is abs(One - ExpectedOne),
+    DeltaTwo is abs(Two - ExpectedTwo),
+    DeltaOnePair is abs(OnePair - ExpectedOne),
+    DeltaTwoPair is abs(TwoPair - ExpectedTwo),
+    DeltaOne < 1.0e-12,
+    DeltaTwo < 1.0e-12,
+    DeltaOnePair < 1.0e-12,
+    DeltaTwoPair < 1.0e-12.
 
 test(skips_effective_distance_accumulation_helper_when_disabled_explicitly,
         [setup(setup_effective_distance_accumulation_fixture),
