@@ -492,15 +492,25 @@ maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, Code) :-
     ;   seeded_accumulation_counted_shape(Pred/Arity, Shape)
     ),
     build_seeded_accumulation_code(Pred/Arity, Shape, Formula, BaseCode),
-    (   build_specialized_seeded_accumulation_code(Pred/Arity, Shape, Formula, SpecializedCode)
-    ->  Specialized = some(SpecializedCode)
-    ;   Specialized = none
+    (   build_bound_seeded_accumulation_code(Pred/Arity, Shape, Formula, BoundCode)
+    ->  Bound = some(BoundCode)
+    ;   Bound = none
     ),
-    build_seeded_accumulation_selected_code(Pred/Arity, Shape, Formula, Specialized,
+    (   build_specialized_seeded_accumulation_code(Pred/Arity, Shape, Formula, GroupedCode)
+    ->  Grouped = some(GroupedCode)
+    ;   Grouped = none
+    ),
+    build_seeded_accumulation_selected_code(Pred/Arity, Shape, Formula, Bound, Grouped,
         SelectedCode),
-    (   Specialized = some(SpecializedCode)
-    ->  atomic_list_concat([BaseCode, SpecializedCode, SelectedCode], '\n\n', Code)
-    ;   atomic_list_concat([BaseCode, SelectedCode], '\n\n', Code)
+    findall(Part,
+        (   member(Part0, [BaseCode, BoundCode, GroupedCode, SelectedCode]),
+            nonvar(Part0),
+            Part = Part0
+        ),
+        Parts),
+    (   Parts = [Only]
+    ->  Code = Only
+    ;   atomic_list_concat(Parts, '\n\n', Code)
     ).
 
 seeded_accumulation_formula(Pred/Arity, Options, Formula) :-
@@ -656,6 +666,11 @@ build_grouped_alias_suffixes([Suffix|Rest], [GroupedSuffix|GroupedRest]) :-
     format(atom(GroupedSuffix), '~w_grouped', [Suffix]),
     build_grouped_alias_suffixes(Rest, GroupedRest).
 
+build_bound_alias_suffixes([], []).
+build_bound_alias_suffixes([Suffix|Rest], [BoundSuffix|BoundRest]) :-
+    format(atom(BoundSuffix), '~w_bound', [Suffix]),
+    build_bound_alias_suffixes(Rest, BoundRest).
+
 selected_suffix_for_suffix(Suffix, SelectedSuffix) :-
     format(atom(SelectedSuffix), '~w_selected', [Suffix]).
 
@@ -667,13 +682,17 @@ selected_suffixes_for_suffixes([Suffix|Rest], [SelectedSuffix|SelectedRest]) :-
 build_seeded_accumulation_selected_code(Pred/_Arity,
         accumulation_shape(SignaturePositions, _DriverPos, _MetricPos, _VisitedInfo),
         accumulation_formula(_FormulaKind, _ParamPred, _Offset, PrimarySuffix, AliasSuffixes),
-        Specialized, Code) :-
+        Bound, Grouped, Code) :-
     helper_name_for_suffix(Pred, PrimarySuffix, PrimaryName),
+    build_bound_alias_suffixes([PrimarySuffix], [BoundPrimarySuffix]),
+    helper_name_for_suffix(Pred, BoundPrimarySuffix, BoundPrimaryName),
+    build_grouped_alias_suffixes([PrimarySuffix], [GroupedPrimarySuffix]),
+    helper_name_for_suffix(Pred, GroupedPrimarySuffix, GroupedPrimaryName),
     selected_suffix_for_suffix(PrimarySuffix, SelectedPrimarySuffix),
     helper_name_for_suffix(Pred, SelectedPrimarySuffix, SelectedPrimaryName),
     length(SignaturePositions, SignatureCount),
     build_seeded_accumulation_selected_primary_clause(SignatureCount, SelectedPrimaryName,
-        PrimaryName, Specialized, ClauseTerm),
+        PrimaryName, BoundPrimaryName, Bound, GroupedPrimaryName, Grouped, ClauseTerm),
     selected_suffixes_for_suffixes(AliasSuffixes, SelectedAliasSuffixes),
     build_seeded_accumulation_alias_clauses(Pred, SelectedPrimaryName, SelectedAliasSuffixes,
         SignatureCount, AliasClauses),
@@ -685,20 +704,94 @@ build_seeded_accumulation_selected_code(Pred/_Arity,
     ], '\n\n', Code).
 
 build_seeded_accumulation_selected_primary_clause(2, SelectedPrimaryName, PrimaryName,
-        some(_SpecializedCode), ClauseTerm) :-
-    atom_concat(PrimaryName, '_grouped', GroupedPrimaryName),
+        BoundPrimaryName, Bound, GroupedPrimaryName, Grouped, ClauseTerm) :-
     Head =.. [SelectedPrimaryName, SeedArg, KeyArg, WeightSum],
     GenericCall =.. [PrimaryName, SeedArg, KeyArg, WeightSum],
-    GroupedCall =.. [GroupedPrimaryName, SeedArg, KeyArg, WeightSum],
-    Body = (nonvar(KeyArg) -> GenericCall ; GroupedCall),
+    build_seeded_accumulation_selected_bound_call(BoundPrimaryName, Bound,
+        SeedArg, KeyArg, WeightSum, GenericCall, BoundCall),
+    build_seeded_accumulation_selected_grouped_call(GroupedPrimaryName, Grouped,
+        SeedArg, KeyArg, WeightSum, GenericCall, GroupedCall),
+    Body = (nonvar(KeyArg) -> BoundCall ; GroupedCall),
     clause_term(Head, Body, ClauseTerm).
 build_seeded_accumulation_selected_primary_clause(SignatureCount, SelectedPrimaryName,
-        PrimaryName, _Specialized, ClauseTerm) :-
+        PrimaryName, _BoundPrimaryName, _Bound, _GroupedPrimaryName, _Grouped, ClauseTerm) :-
     build_min_signature_vars(SignatureCount, SignatureArgs),
     append(SignatureArgs, [_WeightSum], HeadArgs),
     Head =.. [SelectedPrimaryName|HeadArgs],
     PrimaryCall =.. [PrimaryName|HeadArgs],
     clause_term(Head, PrimaryCall, ClauseTerm).
+
+build_seeded_accumulation_selected_bound_call(BoundPrimaryName, some(_BoundCode),
+        SeedArg, KeyArg, WeightSum, _GenericCall, BoundCall) :-
+    BoundCall =.. [BoundPrimaryName, SeedArg, KeyArg, WeightSum].
+build_seeded_accumulation_selected_bound_call(_BoundPrimaryName, none,
+        _SeedArg, _KeyArg, _WeightSum, GenericCall, GenericCall).
+
+build_seeded_accumulation_selected_grouped_call(GroupedPrimaryName, some(_GroupedCode),
+        SeedArg, KeyArg, WeightSum, _GenericCall, GroupedCall) :-
+    GroupedCall =.. [GroupedPrimaryName, SeedArg, KeyArg, WeightSum].
+build_seeded_accumulation_selected_grouped_call(_GroupedPrimaryName, none,
+        _SeedArg, _KeyArg, _WeightSum, GenericCall, GenericCall).
+
+build_bound_seeded_accumulation_code(Pred/Arity,
+        accumulation_shape([1, 2], 1, MetricPos, VisitedInfo),
+        accumulation_formula(FormulaKind, ParamPred, Offset, PrimarySuffix, AliasSuffixes),
+        Code) :-
+    memberchk(FormulaKind, [power_sum, sum_metric]),
+    build_bound_alias_suffixes([PrimarySuffix|AliasSuffixes],
+        [BoundPrimarySuffix|BoundAliasSuffixes]),
+    helper_name_for_suffix(Pred, BoundPrimarySuffix, HelperName),
+    build_bound_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
+        accumulation_formula(FormulaKind, ParamPred, Offset,
+            BoundPrimarySuffix, BoundAliasSuffixes),
+        HelperName, MetricPos, Clauses),
+    clauses_to_code(Clauses, ClauseCode),
+    atomic_list_concat([
+        '% Bound-key seeded accumulation helper for canonical counted recursion.',
+        ClauseCode
+    ], '\n\n', Code).
+
+build_bound_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
+        accumulation_formula(FormulaKind, ParamPred, Offset, _PrimarySuffix, AliasSuffixes),
+        HelperName, MetricPos, Clauses) :-
+    Head =.. [HelperName, SeedArg, KeyArg, WeightSum],
+    build_seeded_accumulation_call_args(Arity, [1, 2], 1, MetricPos, VisitedInfo,
+        [SeedArg, KeyArg], MetricVar, CallArgs),
+    PredCall =.. [Pred|CallArgs],
+    build_bound_seeded_accumulation_body_goals(FormulaKind, ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightSum, BodyGoals),
+    goals_to_body(BodyGoals, BodyTerm),
+    clause_term(Head, BodyTerm, ClauseTerm),
+    build_seeded_accumulation_alias_clauses(Pred, HelperName, AliasSuffixes, 2, AliasClauses),
+    append([ClauseTerm], AliasClauses, Clauses).
+
+build_bound_seeded_accumulation_body_goals(power_sum, ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightSum, BodyGoals) :-
+    ParamCall =.. [ParamPred, N],
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    append([PredCall], OffsetGoals, AggregateGoals0),
+    append(AggregateGoals0, [(W is WeightedMetric ** NegN)], AggregateGoals),
+    goals_to_body(AggregateGoals, AggregateBody),
+    AggregateGoal = aggregate_all(sum(W), AggregateBody, WeightSum),
+    BodyGoals = [
+        nonvar(KeyArg),
+        ParamCall,
+        (NegN is -N),
+        AggregateGoal,
+        (WeightSum > 0)
+    ].
+build_bound_seeded_accumulation_body_goals(sum_metric, _ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightSum, BodyGoals) :-
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    append([PredCall], OffsetGoals, AggregateGoals0),
+    append(AggregateGoals0, [(W is WeightedMetric)], AggregateGoals),
+    goals_to_body(AggregateGoals, AggregateBody),
+    AggregateGoal = aggregate_all(sum(W), AggregateBody, WeightSum),
+    BodyGoals = [
+        nonvar(KeyArg),
+        AggregateGoal,
+        (WeightSum > 0)
+    ].
 
 build_specialized_grouped_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
         accumulation_formula(FormulaKind, ParamPred, Offset, _PrimarySuffix, AliasSuffixes),
