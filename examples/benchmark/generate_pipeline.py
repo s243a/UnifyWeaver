@@ -2500,6 +2500,21 @@ class Program
         }}
     }}
 
+    static void PrintWeightSumPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
     static void Main(string[] args)
     {{
         if (args.Length < 2)
@@ -2564,10 +2579,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("root_category	influence_score");
+        Console.WriteLine("root_category\tinfluence_score");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Root}}	{{item.Score.ToString("F12", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Root}}\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2579,6 +2594,7 @@ class Program
         Console.Error.WriteLine($"root_count={{results.Count}}");
         Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
         PrintWeightSumStrategies(trace);
+        PrintWeightSumPhases(trace);
     }}
 }}
 '''
@@ -2624,6 +2640,21 @@ class Program
             .OrderBy(s => s.Strategy, StringComparer.Ordinal))
         {{
             Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintWeightSumPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
 
@@ -2681,10 +2712,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article	root_category	effective_distance");
+        Console.WriteLine("article\troot_category\teffective_distance");
         foreach (var (deff, article) in results)
         {{
-            Console.WriteLine($"{{article}}	{{ROOT_CATEGORY}}	{{deff.ToString("F6", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{article}}\t{{ROOT_CATEGORY}}\t{{deff.ToString(\"F6\", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2695,6 +2726,7 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
         PrintWeightSumStrategies(trace);
+        PrintWeightSumPhases(trace);
     }}
 
     static double ComputeDeff(double weightSum)
@@ -2743,6 +2775,21 @@ class Program
             .OrderBy(s => s.Strategy, StringComparer.Ordinal))
         {{
             Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintPathMinPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareDepthMinNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
 
@@ -2799,10 +2846,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article	root_category	shortest_path");
+        Console.WriteLine("article\troot_category\tshortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}	{{ROOT_CATEGORY}}	{{item.Distance}}");
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2813,10 +2860,10 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
         PrintPathMinStrategies(trace);
+        PrintPathMinPhases(trace);
     }}
 }}
 '''
-
 
 
 def generate_csharp_query_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
@@ -2862,6 +2909,21 @@ class Program
         }}
     }}
 
+    static void PrintPathMinPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareAccumulationMinNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
     static void Main(string[] args)
     {{
         if (args.Length < 2)
@@ -2891,7 +2953,7 @@ class Program
                 continue;
             }}
 
-            var parts = line.Split('	', 2);
+            var parts = line.Split('\t', 2);
             if (parts.Length != 2)
             {{
                 continue;
@@ -2955,10 +3017,10 @@ class Program
         swAgg.Stop();
         swTotal.Stop();
 
-        Console.WriteLine("article	root_category	weighted_shortest_path");
+        Console.WriteLine("article\troot_category\tweighted_shortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}	{{ROOT_CATEGORY}}	{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -2969,9 +3031,11 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
         PrintPathMinStrategies(trace);
+        PrintPathMinPhases(trace);
     }}
 }}
 '''
+
 
 def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"

@@ -89,7 +89,10 @@ Status:
 - `QueryExecutorOptions.PathAwareWeightSumStrategy` can force `Auto`,
   `CompactGrouped`, or `LegacySeededRows` for grouped weight-sum benchmarking
 - the current implementation shares one grouped-summary heuristic/resolution
-  path internally while keeping per-family override knobs for benchmarking
+  path internally, now records measured cost buckets at the retention
+  decision points, and keeps per-family override knobs for benchmarking
+- the current selector only runs bounded measured probes in ambiguous cases;
+  obvious shapes still short-circuit structurally
 
 Work:
 

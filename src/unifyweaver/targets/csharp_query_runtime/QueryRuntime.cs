@@ -488,6 +488,10 @@ namespace UnifyWeaver.QueryRuntime
         LegacySeededRows
     }
 
+    internal readonly record struct PathAwareGroupedSummarySelection(
+        PathAwareGroupedSummaryStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
@@ -7629,36 +7633,153 @@ namespace UnifyWeaver.QueryRuntime
                 _ => PathAwareGroupedSummaryStrategy.Auto
             };
 
-        private static PathAwareGroupedSummaryStrategy ResolvePathAwareGroupedSummaryStrategy(
-            PathAwareGroupedSummaryStrategy configuredStrategy,
-            int groupCount,
-            int uniqueSeedCount,
-            int rootCount,
-            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        private static TimeSpan MeasureElapsed(Action action)
         {
-            if (configuredStrategy != PathAwareGroupedSummaryStrategy.Auto)
-            {
-                return configuredStrategy;
-            }
+            var stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            return stopwatch.Elapsed;
+        }
 
-            var effectiveGroups = Math.Max(1, groupCount);
-            var effectiveSeeds = Math.Max(1, uniqueSeedCount);
-            var effectiveRoots = Math.Max(1, rootCount);
-            var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
-            var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
-            var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
-            return estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+        private static T MeasurePhase<T>(QueryExecutionTrace? trace, PlanNode node, string phase, Func<T> action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var result = action();
+            stopwatch.Stop();
+            trace?.RecordPhase(node, phase, stopwatch.Elapsed);
+            return result;
+        }
+
+        private static void MeasurePhase(QueryExecutionTrace? trace, PlanNode node, string phase, Action action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            trace?.RecordPhase(node, phase, stopwatch.Elapsed);
+        }
+
+        private static PathAwareGroupedSummaryStrategy ResolveStructuralPathAwareGroupedSummaryStrategy(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows) =>
+            estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
                 ? PathAwareGroupedSummaryStrategy.LegacySeededRows
                 : PathAwareGroupedSummaryStrategy.CompactGrouped;
+
+        private static bool ShouldProbePathAwareGroupedSummaryStrategy(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows,
+            int uniqueSeedCount)
+        {
+            if (uniqueSeedCount < 2)
+            {
+                return false;
+            }
+
+            var lowerBound = Math.Max(64L, estimatedGroupedRows * 2L);
+            var upperBound = Math.Max(256L, estimatedGroupedRows * 8L);
+            return estimatedLegacyRows > lowerBound && estimatedLegacyRows < upperBound;
+        }
+
+        private static PathAwareGroupedSummaryStrategy ResolveMeasuredPathAwareGroupedSummaryStrategy(
+            int totalSeedCount,
+            int sampleSeedCount,
+            TimeSpan compactProbe,
+            TimeSpan legacyProbe,
+            long estimatedGroupedRows,
+            long estimatedLegacyRows)
+        {
+            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+            if (sampleSeedCount <= 0 || totalSeedCount <= 0)
+            {
+                return structuralStrategy;
+            }
+
+            var compactTicks = compactProbe == TimeSpan.MaxValue
+                ? double.PositiveInfinity
+                : compactProbe.Ticks * (double)totalSeedCount / sampleSeedCount;
+            var legacyTicks = legacyProbe == TimeSpan.MaxValue
+                ? double.PositiveInfinity
+                : legacyProbe.Ticks * (double)totalSeedCount / sampleSeedCount;
+
+            if (double.IsInfinity(compactTicks) && !double.IsInfinity(legacyTicks))
+            {
+                return PathAwareGroupedSummaryStrategy.LegacySeededRows;
+            }
+
+            if (double.IsInfinity(legacyTicks) && !double.IsInfinity(compactTicks))
+            {
+                return PathAwareGroupedSummaryStrategy.CompactGrouped;
+            }
+
+            if (compactTicks <= 0d || legacyTicks <= 0d || (double.IsInfinity(compactTicks) && double.IsInfinity(legacyTicks)))
+            {
+                return structuralStrategy;
+            }
+
+            return legacyTicks <= compactTicks
+                ? PathAwareGroupedSummaryStrategy.LegacySeededRows
+                : PathAwareGroupedSummaryStrategy.CompactGrouped;
+        }
+
+        private static PathAwareGroupedSummarySelection ResolvePathAwareGroupedSummaryStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareGroupedSummaryStrategy configuredStrategy,
+            int groupCount,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
+        {
+            return MeasurePhase(trace, node, "strategy_select", () =>
+            {
+                if (configuredStrategy != PathAwareGroupedSummaryStrategy.Auto)
+                {
+                    return new PathAwareGroupedSummarySelection(configuredStrategy, "ConfiguredOverride");
+                }
+
+                var uniqueSeedCount = orderedUniqueSeeds.Count;
+                var effectiveGroups = Math.Max(1, groupCount);
+                var effectiveSeeds = Math.Max(1, uniqueSeedCount);
+                var effectiveRoots = Math.Max(1, rootCount);
+                var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
+                var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
+                var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
+                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+
+                if (measureCompactProbe is null || measureLegacyProbe is null ||
+                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount))
+                {
+                    return new PathAwareGroupedSummarySelection(structuralStrategy, "Structural");
+                }
+
+                var sampleSeedCount = Math.Min(uniqueSeedCount, 4);
+                var sampleSeeds = orderedUniqueSeeds.Take(sampleSeedCount).ToList();
+                var compactProbe = measureCompactProbe(sampleSeeds);
+                trace?.RecordPhase(node, "strategy_probe_compact_grouped", compactProbe);
+                var legacyProbe = measureLegacyProbe(sampleSeeds);
+                trace?.RecordPhase(node, "strategy_probe_legacy_seeded_rows", legacyProbe);
+
+                var measuredStrategy = ResolveMeasuredPathAwareGroupedSummaryStrategy(
+                    uniqueSeedCount,
+                    sampleSeedCount,
+                    compactProbe,
+                    legacyProbe,
+                    estimatedGroupedRows,
+                    estimatedLegacyRows);
+                return new PathAwareGroupedSummarySelection(measuredStrategy, "MeasuredProbe");
+            });
         }
 
         private static void RecordPathAwareGroupedSummaryStrategy(
             QueryExecutionTrace? trace,
             PlanNode node,
             string nodeStrategyPrefix,
-            PathAwareGroupedSummaryStrategy strategy)
+            PathAwareGroupedSummarySelection selection)
         {
-            trace?.RecordStrategy(node, strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}Selection{selection.DecisionMode}");
+            trace?.RecordStrategy(node, selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                 ? $"{nodeStrategyPrefix}LegacySeededRows"
                 : $"{nodeStrategyPrefix}CompactGrouped");
         }
@@ -7773,20 +7894,23 @@ namespace UnifyWeaver.QueryRuntime
 
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
-                foreach (var row in GetFactStream(closure.RootRelation, context))
+                MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    if (row is null || row.Length == 0)
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
 
-                    var root = row[0];
-                    var rootKey = root ?? NullFactIndexKey;
-                    if (rootKeys.Add(rootKey))
-                    {
-                        rootValues[rootKey] = root;
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
                     }
-                }
+                });
 
                 if (rootKeys.Count == 0)
                 {
@@ -7799,30 +7923,32 @@ namespace UnifyWeaver.QueryRuntime
                 var groupValues = new List<object?>();
                 var uniqueSeeds = new HashSet<object?>();
                 var orderedUniqueSeeds = new List<object?>();
-
-                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    if (row is null || row.Length < 2)
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
 
-                    var group = row[0];
-                    var seed = row[1];
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
-                    {
-                        bucket = new List<object?>();
-                        groupedSeeds[groupKey] = bucket;
-                        groupValues.Add(group);
-                    }
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
 
-                    bucket.Add(seed);
-                    if (uniqueSeeds.Add(seed))
-                    {
-                        orderedUniqueSeeds.Add(seed);
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
                     }
-                }
+                });
 
                 if (groupValues.Count == 0)
                 {
@@ -7833,20 +7959,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
-                    _pathAwareWeightSumStrategy,
-                    groupValues.Count,
-                    orderedUniqueSeeds.Count,
-                    rootKeys.Count,
-                    succIndex);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selectedStrategy);
 
-                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums;
-                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
-                {
-                    seedWeightSums = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context);
-                }
-                else
+                Dictionary<object, Dictionary<object, double>> BuildCompactSeedWeightSums(IReadOnlyList<object?> seeds)
                 {
                     var distanceWeightCache = new Dictionary<int, double>();
                     var nodeIds = new Dictionary<object, int>();
@@ -7878,7 +7992,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     var directSeedWeightSums = new Dictionary<object, Dictionary<object, double>>();
-                    foreach (var seed in orderedUniqueSeeds)
+                    foreach (var seed in seeds)
                     {
                         var weightSums = ComputePathAwareRootWeightSumsForSeed(seed, succIndex, rootKeys, closure.MaxDepth, GetNodeId, GetDistanceWeight);
                         if (weightSums.Count > 0)
@@ -7887,45 +8001,74 @@ namespace UnifyWeaver.QueryRuntime
                         }
                     }
 
-                    seedWeightSums = directSeedWeightSums;
+                    return directSeedWeightSums;
                 }
 
-                var rows = new List<object[]>();
-                foreach (var group in groupValues)
-                {
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
-                    {
-                        continue;
-                    }
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = BuildCompactSeedWeightSums(sampleSeeds));
 
-                    Dictionary<object, double>? groupSums = null;
-                    foreach (var seed in seedsForGroup)
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
+                    _pathAwareWeightSumStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds,
+                    rootKeys.Count,
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selection);
+
+                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                    ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, double>>)ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context))
+                    : MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, double>>)BuildCompactSeedWeightSums(orderedUniqueSeeds));
+
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
+                {
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
                     {
-                        if (!seedWeightSums.TryGetValue(seed ?? NullFactIndexKey, out var rootSums))
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
                         {
                             continue;
                         }
 
-                        groupSums ??= new Dictionary<object, double>();
-                        foreach (var entry in rootSums)
+                        Dictionary<object, double>? groupSums = null;
+                        foreach (var seed in seedsForGroup)
                         {
-                            groupSums[entry.Key] = groupSums.TryGetValue(entry.Key, out var current) ? current + entry.Value : entry.Value;
+                            if (!seedWeightSums.TryGetValue(seed ?? NullFactIndexKey, out var rootSums))
+                            {
+                                continue;
+                            }
+
+                            groupSums ??= new Dictionary<object, double>();
+                            foreach (var entry in rootSums)
+                            {
+                                groupSums[entry.Key] = groupSums.TryGetValue(entry.Key, out var current) ? current + entry.Value : entry.Value;
+                            }
+                        }
+
+                        if (groupSums is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupSums.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupSums[rootKey] });
                         }
                     }
 
-                    if (groupSums is null)
-                    {
-                        continue;
-                    }
-
-                    var orderedRoots = groupSums.Keys.ToList();
-                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
-                    foreach (var rootKey in orderedRoots)
-                    {
-                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupSums[rootKey] });
-                    }
-                }
+                    return builtRows;
+                });
 
                 context.SeedGroupedPathAwareWeightSumResults[cacheKey] = rows;
                 return rows;
@@ -8112,20 +8255,23 @@ namespace UnifyWeaver.QueryRuntime
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
-                foreach (var row in GetFactStream(closure.RootRelation, context))
+                MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    if (row is null || row.Length == 0)
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
 
-                    var root = row[0];
-                    var rootKey = root ?? NullFactIndexKey;
-                    if (rootKeys.Add(rootKey))
-                    {
-                        rootValues[rootKey] = root;
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
                     }
-                }
+                });
 
                 if (rootKeys.Count == 0)
                 {
@@ -8138,29 +8284,32 @@ namespace UnifyWeaver.QueryRuntime
                 var groupValues = new List<object?>();
                 var uniqueSeeds = new HashSet<object?>();
                 var orderedUniqueSeeds = new List<object?>();
-                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    if (row is null || row.Length < 2)
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
 
-                    var group = row[0];
-                    var seed = row[1];
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
-                    {
-                        bucket = new List<object?>();
-                        groupedSeeds[groupKey] = bucket;
-                        groupValues.Add(group);
-                    }
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
 
-                    bucket.Add(seed);
-                    if (uniqueSeeds.Add(seed))
-                    {
-                        orderedUniqueSeeds.Add(seed);
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
                     }
-                }
+                });
 
                 if (groupValues.Count == 0)
                 {
@@ -8171,23 +8320,11 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
-                    _pathAwareGroupedMinStrategy,
-                    groupValues.Count,
-                    orderedUniqueSeeds.Count,
-                    rootKeys.Count,
-                    succIndex);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selectedStrategy);
 
-                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins;
-                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
-                {
-                    seedDepthMins = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
-                }
-                else
+                Dictionary<object, Dictionary<object, int>> BuildCompactSeedDepthMins(IReadOnlyList<object?> seeds)
                 {
                     var directSeedMins = new Dictionary<object, Dictionary<object, int>>();
-                    foreach (var seed in orderedUniqueSeeds)
+                    foreach (var seed in seeds)
                     {
                         var mins = ComputePathAwareRootDepthMinsForSeed(seed, succIndex, rootKeys, closure.DirectSeedDepth, closure.MaxDepth);
                         if (mins.Count > 0)
@@ -8196,48 +8333,77 @@ namespace UnifyWeaver.QueryRuntime
                         }
                     }
 
-                    seedDepthMins = directSeedMins;
+                    return directSeedMins;
                 }
 
-                var rows = new List<object[]>();
-                foreach (var group in groupValues)
-                {
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
-                    {
-                        continue;
-                    }
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = BuildCompactSeedDepthMins(sampleSeeds));
 
-                    Dictionary<object, int>? groupMins = null;
-                    foreach (var seed in seedsForGroup)
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
+                    _pathAwareGroupedMinStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds,
+                    rootKeys.Count,
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selection);
+
+                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                    ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, int>>)ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context))
+                    : MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, int>>)BuildCompactSeedDepthMins(orderedUniqueSeeds));
+
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
+                {
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
                     {
-                        if (!seedDepthMins.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
                         {
                             continue;
                         }
 
-                        groupMins ??= new Dictionary<object, int>();
-                        foreach (var entry in rootMins)
+                        Dictionary<object, int>? groupMins = null;
+                        foreach (var seed in seedsForGroup)
                         {
-                            if (!groupMins.TryGetValue(entry.Key, out var current) || entry.Value < current)
+                            if (!seedDepthMins.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
                             {
-                                groupMins[entry.Key] = entry.Value;
+                                continue;
                             }
+
+                            groupMins ??= new Dictionary<object, int>();
+                            foreach (var entry in rootMins)
+                            {
+                                if (!groupMins.TryGetValue(entry.Key, out var current) || entry.Value < current)
+                                {
+                                    groupMins[entry.Key] = entry.Value;
+                                }
+                            }
+                        }
+
+                        if (groupMins is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupMins.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
                         }
                     }
 
-                    if (groupMins is null)
-                    {
-                        continue;
-                    }
-
-                    var orderedRoots = groupMins.Keys.ToList();
-                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
-                    foreach (var rootKey in orderedRoots)
-                    {
-                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
-                    }
-                }
+                    return builtRows;
+                });
 
                 context.SeedGroupedPathAwareDepthMinResults[closure] = rows;
                 return rows;
@@ -8341,20 +8507,23 @@ namespace UnifyWeaver.QueryRuntime
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
-                foreach (var row in GetFactStream(closure.RootRelation, context))
+                MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    if (row is null || row.Length == 0)
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
 
-                    var root = row[0];
-                    var rootKey = root ?? NullFactIndexKey;
-                    if (rootKeys.Add(rootKey))
-                    {
-                        rootValues[rootKey] = root;
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
                     }
-                }
+                });
 
                 if (rootKeys.Count == 0)
                 {
@@ -8367,29 +8536,32 @@ namespace UnifyWeaver.QueryRuntime
                 var groupValues = new List<object?>();
                 var uniqueSeeds = new HashSet<object?>();
                 var orderedUniqueSeeds = new List<object?>();
-                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    if (row is null || row.Length < 2)
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
                     {
-                        continue;
-                    }
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
 
-                    var group = row[0];
-                    var seed = row[1];
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
-                    {
-                        bucket = new List<object?>();
-                        groupedSeeds[groupKey] = bucket;
-                        groupValues.Add(group);
-                    }
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
 
-                    bucket.Add(seed);
-                    if (uniqueSeeds.Add(seed))
-                    {
-                        orderedUniqueSeeds.Add(seed);
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
                     }
-                }
+                });
 
                 if (groupValues.Count == 0)
                 {
@@ -8400,88 +8572,141 @@ namespace UnifyWeaver.QueryRuntime
 
                 orderedUniqueSeeds.Sort(CompareCacheSeedValues);
                 groupValues.Sort(CompareCacheSeedValues);
-                var selectedStrategy = ResolvePathAwareGroupedSummaryStrategy(
+
+                Dictionary<object, List<object[]>>? auxIndex = null;
+                PositiveStepEvaluator? stepEvaluator = null;
+                var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
+                var positiveFastPathPrepared = false;
+                var usePositiveMinFastPath = false;
+
+                void EnsurePositiveMinFastPathPrepared()
+                {
+                    if (positiveFastPathPrepared)
+                    {
+                        return;
+                    }
+
+                    positiveFastPathPrepared = true;
+                    var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetFactsList(closure.AuxiliaryRelation, context));
+                    auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
+                    usePositiveMinFastPath = closure.MaxDepth > 0 &&
+                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                }
+
+                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds)
+                {
+                    EnsurePositiveMinFastPathPrepared();
+                    if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                    {
+                        return new Dictionary<object, Dictionary<object, object>>();
+                    }
+
+                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                    foreach (var seed in seeds)
+                    {
+                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
+                        if (mins.Count > 0)
+                        {
+                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                        }
+                    }
+
+                    return fastSeedMinima;
+                }
+
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() =>
+                    {
+                        EnsurePositiveMinFastPathPrepared();
+                        if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                        {
+                            return;
+                        }
+
+                        _ = BuildCompactSeedMinima(sampleSeeds);
+                    });
+
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
                     _pathAwareGroupedMinStrategy,
                     groupValues.Count,
-                    orderedUniqueSeeds.Count,
+                    orderedUniqueSeeds,
                     rootKeys.Count,
-                    succIndex);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selectedStrategy);
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selection);
 
                 IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
-                if (selectedStrategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
+                if (selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
-                    seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                    seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                 }
                 else
                 {
-                    var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
-                    var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
-                    PositiveStepEvaluator? stepEvaluator = null;
-                    var usePositiveMinFastPath = closure.MaxDepth > 0 &&
-                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
-
-                    if (usePositiveMinFastPath)
+                    EnsurePositiveMinFastPathPrepared();
+                    if (usePositiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
                     {
-                        var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
-                        var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
-                        foreach (var seed in orderedUniqueSeeds)
-                        {
-                            var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator!, directSeedValue, closure.MaxDepth);
-                            if (mins.Count > 0)
-                            {
-                                fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
-                            }
-                        }
-
-                        seedMinima = fastSeedMinima;
+                        seedMinima = MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds));
                     }
                     else
                     {
                         trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
-                        seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                        seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                     }
                 }
 
-                var rows = new List<object[]>();
-                foreach (var group in groupValues)
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
                 {
-                    var groupKey = group ?? NullFactIndexKey;
-                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
                     {
-                        continue;
-                    }
-
-                    Dictionary<object, object>? groupMins = null;
-                    foreach (var seed in seedsForGroup)
-                    {
-                        if (!seedMinima.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
                         {
                             continue;
                         }
 
-                        groupMins ??= new Dictionary<object, object>();
-                        foreach (var entry in rootMins)
+                        Dictionary<object, object>? groupMins = null;
+                        foreach (var seed in seedsForGroup)
                         {
-                            if (!groupMins.TryGetValue(entry.Key, out var current) || CompareValues(entry.Value, current) < 0)
+                            if (!seedMinima.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
                             {
-                                groupMins[entry.Key] = entry.Value;
+                                continue;
                             }
+
+                            groupMins ??= new Dictionary<object, object>();
+                            foreach (var entry in rootMins)
+                            {
+                                if (!groupMins.TryGetValue(entry.Key, out var current) || CompareValues(entry.Value, current) < 0)
+                                {
+                                    groupMins[entry.Key] = entry.Value;
+                                }
+                            }
+                        }
+
+                        if (groupMins is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupMins.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
                         }
                     }
 
-                    if (groupMins is null)
-                    {
-                        continue;
-                    }
-
-                    var orderedRoots = groupMins.Keys.ToList();
-                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
-                    foreach (var rootKey in orderedRoots)
-                    {
-                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
-                    }
-                }
+                    return builtRows;
+                });
 
                 context.SeedGroupedPathAwareAccumulationMinResults[closure] = rows;
                 return rows;

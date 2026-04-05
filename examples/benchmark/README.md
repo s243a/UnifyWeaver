@@ -30,7 +30,10 @@ pipelines across the full benchmark range while preserving the same
 all-path semantics. It also now supports cost-guided selection between
 compact grouped weight sums and the legacy seeded-row regrouping path,
 using the same grouped-summary policy layer that now also drives the
-shortest-path minima family.
+shortest-path minima family. That policy now records measured cost buckets
+like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
+`group_reduce`, while only running bounded probes when the structural signal
+is ambiguous.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -537,7 +540,9 @@ Comparison note:
 - the new `Auto` selector currently chooses the compact grouped minima
   path at every tested scale; this now flows through the same grouped-summary
   policy layer used by grouped weight sums, while still preserving the
-  per-family override knob. Forcing legacy seeded-row regrouping is
+  per-family override knob. Trace output now exposes measured buckets such as
+  `load_roots`, `load_seeds`, `strategy_select`, `build_compact_grouped`, and
+  `group_reduce`. Forcing legacy seeded-row regrouping is
   materially worse (`300`: `0.160s` vs `0.083s`, `10k`: `0.419s` vs
   `0.161s`)
 - seeded Prolog `min` remains competitive, but the C# query engine is
@@ -591,7 +596,8 @@ Comparison note:
   also collapses to the final article result count
 - the new `Auto` selector also chooses the compact grouped minima path
   here; this now uses the same grouped-summary policy layer as shortest
-  path while keeping a separate benchmark override
+  path while keeping a separate benchmark override, and the same measured
+  buckets are available under trace for this family too
 - forcing legacy seeded-row regrouping regresses both ends of the
   benchmark (`300`: `0.202s` vs `0.151s`, `10k`: `0.430s` vs `0.320s`)
 - seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
@@ -778,7 +784,9 @@ Comparison note:
 - the remaining benchmark-side work is only the final per-root sum over those
   compact article/root summaries
 - the new `Auto` selector also chooses the compact grouped weight-sum path
-  here; forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
+  here; trace output now exposes measured buckets such as `load_roots`,
+  `load_seeds`, `strategy_select`, `build_compact_grouped`, and
+  `group_reduce`. Forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
   vs `0.237s`, `10k`: `2.998s` vs `0.829s`)
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is still intentionally a mixed execution-model comparison:
