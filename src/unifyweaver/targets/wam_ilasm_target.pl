@@ -290,12 +290,154 @@ L_gv_fail:
     ldc.i4.0
     ret').
 
-% Stubs for structure/list/unify (complex — simplified for initial impl)
-wam_cil_case('L_get_structure', '    // TODO: get_structure\n    ldc.i4.0\n    ret').
-wam_cil_case('L_get_list', '    // TODO: get_list\n    ldc.i4.0\n    ret').
-wam_cil_case('L_unify_variable', '    // TODO: unify_variable\n    ldc.i4.0\n    ret').
-wam_cil_case('L_unify_value', '    // TODO: unify_value\n    ldc.i4.0\n    ret').
-wam_cil_case('L_unify_constant', '    // TODO: unify_constant\n    ldc.i4.0\n    ret').
+% --- Structure/List Head Unification ---
+
+wam_cil_case('L_get_structure',
+'    // get_structure: write mode (unbound) or read mode (bound)
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    stloc.0                          // Ai reg index
+    ldarg.0
+    ldloc.0
+    callvirt instance class Value WamState::GetReg(int32)
+    stloc.3                          // val
+    ldloc.3
+    callvirt instance bool Value::IsUnbound()
+    brfalse L_gs_read
+    // Write mode: push marker on heap, bind register to Ref
+    ldarg.0
+    ldstr "str_marker"
+    newobj instance void AtomValue::.ctor(string)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    stloc.0                          // reuse as addr
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    stloc.0
+    ldarg.0
+    ldloc.0
+    callvirt instance void WamState::TrailBinding(int32)
+    ldarg.0
+    ldloc.0
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    ldc.i4.1
+    sub
+    newobj instance void RefValue::.ctor(int32)
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret
+L_gs_read:
+    // Read mode: succeed and advance (full decompose deferred)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_get_list',
+'    // get_list: like get_structure for lists (./2)
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    stloc.0                          // Ai reg index
+    ldarg.0
+    ldloc.0
+    callvirt instance class Value WamState::GetReg(int32)
+    stloc.3
+    ldloc.3
+    callvirt instance bool Value::IsUnbound()
+    brfalse L_gl_read
+    // Write mode
+    ldarg.0
+    ldstr "str(./2)"
+    newobj instance void AtomValue::.ctor(string)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    ldloc.0
+    callvirt instance void WamState::TrailBinding(int32)
+    ldarg.0
+    ldloc.0
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    ldc.i4.1
+    sub
+    newobj instance void RefValue::.ctor(int32)
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret
+L_gl_read:
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_unify_variable',
+'    // unify_variable: create unbound var on heap, store in Xn
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    stloc.0                          // Xn reg index
+    // Create unbound variable
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    call string [mscorlib]System.Convert::ToString(int32)
+    ldstr "_H"
+    call string [mscorlib]System.String::Concat(string, string)
+    newobj instance void UnboundValue::.ctor(string)
+    stloc.3
+    // Push on heap
+    ldarg.0
+    ldloc.3
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    // Store in register
+    ldarg.0
+    ldloc.0
+    callvirt instance void WamState::TrailBinding(int32)
+    ldarg.0
+    ldloc.0
+    ldloc.3
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_unify_value',
+'    // unify_value: push Xn value onto heap
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    ldarg.0
+    callvirt instance class Value WamState::GetReg(int32)
+    stloc.3
+    ldarg.0
+    ldloc.3
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_unify_constant',
+'    // unify_constant: push constant value onto heap
+    ldarg.0
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    newobj instance void IntegerValue::.ctor(int64)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
 
 % --- Body Construction Instructions ---
 
@@ -379,11 +521,113 @@ wam_cil_case('L_put_value',
     ldc.i4.1
     ret').
 
-wam_cil_case('L_put_structure', '    // TODO: put_structure\n    ldc.i4.0\n    ret').
-wam_cil_case('L_put_list', '    // TODO: put_list\n    ldc.i4.0\n    ret').
-wam_cil_case('L_set_variable', '    // TODO: set_variable\n    ldc.i4.0\n    ret').
-wam_cil_case('L_set_value', '    // TODO: set_value\n    ldc.i4.0\n    ret').
-wam_cil_case('L_set_constant', '    // TODO: set_constant\n    ldc.i4.0\n    ret').
+wam_cil_case('L_put_structure',
+'    // put_structure: push structure marker on heap, bind Ai to Ref
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    stloc.0                          // Ai reg index
+    ldarg.0
+    ldstr "str_marker"
+    newobj instance void AtomValue::.ctor(string)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    stloc.0                          // addr
+    ldarg.1
+    ldfld int64 Instruction::Op2
+    conv.i4
+    stloc.0
+    ldarg.0
+    ldloc.0
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    ldc.i4.1
+    sub
+    newobj instance void RefValue::.ctor(int32)
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_put_list',
+'    // put_list: push list marker on heap, bind Ai to Ref
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    stloc.0                          // Ai reg index
+    ldarg.0
+    ldstr "str(./2)"
+    newobj instance void AtomValue::.ctor(string)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    ldloc.0
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    ldc.i4.1
+    sub
+    newobj instance void RefValue::.ctor(int32)
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_set_variable',
+'    // set_variable: create unbound var, push on heap, store in Xn
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    stloc.0                          // Xn reg index
+    ldarg.0
+    ldfld int32 WamState::HeapSize
+    call string [mscorlib]System.Convert::ToString(int32)
+    ldstr "_H"
+    call string [mscorlib]System.String::Concat(string, string)
+    newobj instance void UnboundValue::.ctor(string)
+    stloc.3
+    ldarg.0
+    ldloc.3
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    ldloc.0
+    ldloc.3
+    callvirt instance void WamState::SetReg(int32, class Value)
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_set_value',
+'    // set_value: push Xn value onto heap
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    conv.i4
+    ldarg.0
+    callvirt instance class Value WamState::GetReg(int32)
+    stloc.3
+    ldarg.0
+    ldloc.3
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
+
+wam_cil_case('L_set_constant',
+'    // set_constant: push constant onto heap
+    ldarg.0
+    ldarg.1
+    ldfld int64 Instruction::Op1
+    newobj instance void IntegerValue::.ctor(int64)
+    callvirt instance int32 WamState::HeapPush(class Value)
+    pop
+    ldarg.0
+    callvirt instance void WamState::IncPC()
+    ldc.i4.1
+    ret').
 
 % --- Control Instructions ---
 
