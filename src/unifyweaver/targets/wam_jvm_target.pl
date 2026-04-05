@@ -25,6 +25,9 @@
     jvm_wam_method_header/6,            % +OutputFmt, +Name, +Descriptor, +SL, +LL, -Code
     jvm_wam_method_footer/2,            % +OutputFmt, -Code
     jvm_wam_invoke/6,                   % +OutputFmt, +Kind, +Class, +Method, +Desc, -Instr
+    jvm_wam_field_decl/5,               % +OutputFmt, +Access, +Name, +Type, -Code
+    jvm_wam_getfield/5,                 % +OutputFmt, +Class, +Field, +TypeDesc, -Instr
+    jvm_wam_putfield/5,                 % +OutputFmt, +Class, +Field, +TypeDesc, -Instr
     wam_jvm_case/2                      % +InstrName, -BodyCode
 ]).
 
