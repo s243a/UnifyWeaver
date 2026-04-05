@@ -474,10 +474,10 @@ deref_heap(ref(Addr), State, Term) :- !,
     (   (Entry = str(FN) ; Entry = FN)
     ->  (   (atom(Entry) ; (Entry = str(AN), atom(AN)))
         ->  atom_string(FN, FNStr),
-            (   sub_atom(FNStr, _, 1, After, '/')
+            (   once(sub_atom(FNStr, _, 1, After, '/'))
             ->  sub_atom(FNStr, _, After, 0, ArStr),
                 atom_number(ArStr, Arity),
-                (   sub_atom(FNStr, Before, 1, _, '/')
+                (   once(sub_atom(FNStr, Before, 1, _, '/'))
                 ->  sub_atom(FNStr, 0, Before, _, F)
                 ;   F = FN
                 ),
@@ -518,7 +518,7 @@ is_y_reg(Reg) :- atom(Reg), sub_atom(Reg, 0, 1, _, 'Y').
 get_reg_val(Reg, R, S, Val) :-
     (   get_reg(Reg, R, S, V)
     ->  Val = V
-    ;   Val = unbound_missing
+    ;   Val = '_Vunbound'
     ).
 
 get_reg(Reg, _R, Stack, Val) :-
@@ -533,7 +533,7 @@ put_reg(Reg, Val, R, NR, Stack, Stack) :- put_assoc(Reg, R, Val, NR).
 update_top_env([env(CP, YRegs)|Rest], Reg, Val, [env(CP, NewYRegs)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
 
 get_arity(FN, Arity) :-
-    (   sub_atom(FN, _, 1, After, '/')
+    (   once(sub_atom(FN, _, 1, After, '/'))
     ->  sub_atom(FN, _, After, 0, ArStr),
         atom_number(ArStr, Arity)
     ;   Arity = 0
