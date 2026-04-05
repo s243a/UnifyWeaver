@@ -362,6 +362,10 @@ test(get_structure_has_write_and_read_mode) :-
     assertion(sub_atom(StepCode, _, _, _, 'gs.write:')),
     assertion(sub_atom(StepCode, _, _, _, 'gs.read:')).
 
+test(unify_variable_creates_unbound) :-
+    compile_step_wam_to_llvm([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'value_unbound')).
+
 test(lookup_label_warns_on_unknown, [true]) :-
     % Should succeed with Index=0 (and print a warning to stderr)
     wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),
