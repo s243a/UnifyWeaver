@@ -59,7 +59,9 @@
 %       - seeded_accumulation(auto/false) - Emit SWI helper predicates
 %         for canonical counted recursive closures that aggregate over
 %         the derived metric (default: auto). This currently supports
-%         `power_sum` and `sum_metric` helper formulas.
+%         `power_sum` and `sum_metric` helper formulas, and may emit an
+%         additional grouped `power_sum_grouped` helper when the
+%         canonical `(seed, key, metric)` shape is recognized.
 %       - effective_distance_accumulation(auto/false) - Legacy alias for
 %         seeded_accumulation/1 retained for compatibility with the
 %         effective-distance benchmark surface.
@@ -488,7 +490,11 @@ maybe_generate_seeded_accumulation_helper(Pred/Arity, Options, Code) :-
     (   seeded_accumulation_ppv_shape(Pred/Arity, Shape)
     ;   seeded_accumulation_counted_shape(Pred/Arity, Shape)
     ),
-    build_seeded_accumulation_code(Pred/Arity, Shape, Formula, Code).
+    build_seeded_accumulation_code(Pred/Arity, Shape, Formula, BaseCode),
+    (   build_specialized_seeded_accumulation_code(Pred/Arity, Shape, Formula, SpecializedCode)
+    ->  atomic_list_concat([BaseCode, SpecializedCode], '\n\n', Code)
+    ;   Code = BaseCode
+    ).
 
 seeded_accumulation_formula(Pred/Arity, Options, Formula) :-
     (   current_predicate(user:accumulation_formula/2),
@@ -615,6 +621,112 @@ build_seeded_accumulation_code(Pred/Arity,
         '% Mode-directed seeded accumulation helper for canonical counted recursion.',
         ClauseCode
     ], '\n\n', Code).
+
+build_specialized_seeded_accumulation_code(Pred/Arity,
+        accumulation_shape([1, 2], 1, 3, VisitedInfo),
+        accumulation_formula(FormulaKind, ParamPred, Offset, PrimarySuffix, AliasSuffixes),
+        Code) :-
+    FormulaKind == power_sum,
+    build_grouped_alias_suffixes([PrimarySuffix|AliasSuffixes],
+        [GroupedPrimarySuffix|GroupedAliasSuffixes]),
+    helper_name_for_suffix(Pred, GroupedPrimarySuffix, HelperName),
+    atom_concat(HelperName, '$grouped', GroupedName),
+    atom_concat(GroupedName, '$sum_pairs', SumPairsName),
+    atom_concat(GroupedName, '$take_same_key', TakeSameKeyName),
+    build_specialized_grouped_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
+        accumulation_formula(FormulaKind, ParamPred, Offset,
+            GroupedPrimarySuffix, GroupedAliasSuffixes),
+        HelperName, GroupedName, SumPairsName, TakeSameKeyName, Clauses, TableDeclCode),
+    clauses_to_code(Clauses, ClauseCode),
+    atomic_list_concat([
+        '% Specialized mode-directed seeded accumulation helper for grouped counted recursion.',
+        TableDeclCode,
+        ClauseCode
+    ], '\n\n', Code).
+
+build_grouped_alias_suffixes([], []).
+build_grouped_alias_suffixes([Suffix|Rest], [GroupedSuffix|GroupedRest]) :-
+    format(atom(GroupedSuffix), '~w_grouped', [Suffix]),
+    build_grouped_alias_suffixes(Rest, GroupedRest).
+
+build_specialized_grouped_seeded_accumulation_clauses(Pred/Arity, VisitedInfo,
+        accumulation_formula(FormulaKind, ParamPred, Offset, _PrimarySuffix, AliasSuffixes),
+        HelperName, GroupedName, SumPairsName, TakeSameKeyName, Clauses, TableDeclCode) :-
+    HelperHead =.. [HelperName, SeedArg, KeyArg, WeightSum],
+    GroupedCall =.. [GroupedName, SeedArg, PairSums],
+    HelperBody = (GroupedCall, member(KeyArg-WeightSum, PairSums)),
+    clause_term(HelperHead, HelperBody, HelperClause),
+    build_specialized_grouped_pairs_clause(Pred/Arity, VisitedInfo, FormulaKind, ParamPred,
+        Offset, GroupedName, SumPairsName, GroupedClause),
+    build_specialized_grouped_sum_pairs_clauses(SumPairsName, TakeSameKeyName, SumPairsClauses),
+    build_seeded_accumulation_alias_clauses(Pred, HelperName, AliasSuffixes, 2, AliasClauses),
+    append([HelperClause, GroupedClause], SumPairsClauses, Clauses0),
+    append(Clauses0, AliasClauses, Clauses),
+    TableSpec =.. [GroupedName, +, -],
+    format(atom(TableDeclCode), ':- table ~q.', [TableSpec]).
+
+build_specialized_grouped_pairs_clause(Pred/Arity, VisitedInfo, FormulaKind, ParamPred, Offset,
+        GroupedName, SumPairsName, ClauseTerm) :-
+    build_seeded_accumulation_call_args(Arity, [1, 2], 1, 3, VisitedInfo,
+        [SeedArg, KeyArg], MetricVar, CallArgs),
+    PredCall =.. [Pred|CallArgs],
+    build_specialized_grouped_seeded_accumulation_body_goals(FormulaKind, ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightVar, SetupGoals, EnumGoals),
+    goals_to_body(EnumGoals, EnumBody),
+    append(SetupGoals, [
+        findall(KeyArg-WeightVar, EnumBody, RawPairs),
+        (RawPairs \= []),
+        keysort(RawPairs, SortedPairs),
+        SumPairsCall
+    ], BodyGoals),
+    SumPairsCall =.. [SumPairsName, SortedPairs, PairSums],
+    goals_to_body(BodyGoals, BodyTerm),
+    GroupedHead =.. [GroupedName, SeedArg, PairSums],
+    clause_term(GroupedHead, BodyTerm, ClauseTerm).
+
+build_specialized_grouped_seeded_accumulation_body_goals(power_sum, ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightVar, SetupGoals, EnumGoals) :-
+    ParamCall =.. [ParamPred, N],
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    SetupGoals = [
+        ParamCall,
+        (NegN is -N)
+    ],
+    append([PredCall], OffsetGoals, EnumGoals0),
+    append(EnumGoals0, [
+        nonvar(KeyArg),
+        (WeightVar is WeightedMetric ** NegN)
+    ], EnumGoals).
+build_specialized_grouped_seeded_accumulation_body_goals(sum_metric, _ParamPred, Offset,
+        PredCall, KeyArg, MetricVar, WeightVar, [], EnumGoals) :-
+    accumulation_metric_with_offset_goal(MetricVar, Offset, WeightedMetric, OffsetGoals),
+    append([PredCall], OffsetGoals, EnumGoals0),
+    append(EnumGoals0, [
+        nonvar(KeyArg),
+        (WeightVar is WeightedMetric)
+    ], EnumGoals).
+
+build_specialized_grouped_sum_pairs_clauses(SumPairsName, TakeSameKeyName, Clauses) :-
+    EmptyHead =.. [SumPairsName, [], []],
+    clause_term(EmptyHead, true, EmptyClause),
+    RecHead =.. [SumPairsName, [Key-Weight|RestPairs], [Key-WeightSum|GroupedPairs]],
+    TakeSameKeyCall =.. [TakeSameKeyName, RestPairs, Key, Weight, WeightSum, RemainingPairs],
+    NextSumPairsCall =.. [SumPairsName, RemainingPairs, GroupedPairs],
+    RecBody = (TakeSameKeyCall, NextSumPairsCall),
+    clause_term(RecHead, RecBody, RecClause),
+    TakeEmptyHead =.. [TakeSameKeyName, [], _IgnoredKey0, Acc, Acc, []],
+    clause_term(TakeEmptyHead, true, TakeEmptyClause),
+    TakeSameHead =.. [TakeSameKeyName, [Key-Weight|RestPairs], Key, Acc0, WeightSum, RemainingPairs],
+    TakeSameBody = (
+        !,
+        Acc1 is Acc0 + Weight,
+        TakeSameKeyCall1
+    ),
+    TakeSameKeyCall1 =.. [TakeSameKeyName, RestPairs, Key, Acc1, WeightSum, RemainingPairs],
+    clause_term(TakeSameHead, TakeSameBody, TakeSameClause),
+    TakeDoneHead =.. [TakeSameKeyName, RemainingPairs, _IgnoredKey1, WeightSum, WeightSum, RemainingPairs],
+    clause_term(TakeDoneHead, true, TakeDoneClause),
+    Clauses = [EmptyClause, RecClause, TakeEmptyClause, TakeSameClause, TakeDoneClause].
 
 helper_name_for_suffix(Pred, Suffix, HelperName) :-
     format(atom(HelperName), '~w$~w', [Pred, Suffix]).

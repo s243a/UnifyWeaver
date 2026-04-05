@@ -704,28 +704,24 @@ Command:
 
 ```bash
 python examples/benchmark/benchmark_category_influence_cross_target.py \
-    --scales 300,1k,5k,10k \
-    --targets csharp-query,rust-dfs,go-dfs \
+    --scales 300,1k \
+    --targets csharp-query,rust-dfs,go-dfs,prolog-accumulated \
     --repetitions 1
 ```
 
 Latest local results:
 
-| Scale | C# Query | Rust DFS | Go DFS | Outputs |
-|-------|---------:|---------:|-------:|---------|
-| 300 | 0.715s | 0.371s | 0.487s | match |
-| 1k | 0.554s | 1.484s | 2.141s | match |
-| 5k | 1.673s | 7.905s | 12.509s | match |
-| 10k | 4.080s | 14.932s | 20.369s | match |
+| Scale | C# Query | Rust DFS | Go DFS | Prolog Accumulated | Outputs |
+|-------|---------:|---------:|-------:|-------------------:|---------|
+| 300 | 0.649s | 0.391s | 0.485s | 1.739s | match |
+| 1k | 0.529s | 1.488s | 2.178s | 1.044s | match |
 
 Speedups of C# query engine:
 
-| Scale | vs Rust DFS | vs Go DFS |
-|-------|------------:|----------:|
-| 300 | 0.52x | 0.68x |
-| 1k | 2.68x | 3.87x |
-| 5k | 4.72x | 7.47x |
-| 10k | 3.66x | 4.99x |
+| Scale | vs Rust DFS | vs Go DFS | vs Prolog Accumulated |
+|-------|------------:|----------:|----------------------:|
+| 300 | 0.60x | 0.75x | 2.68x |
+| 1k | 2.81x | 4.12x | 1.97x |
 
 Comparison note:
 
@@ -743,14 +739,21 @@ Comparison note:
   query engine versus non-query target pipelines
 - the remaining benchmark-only orchestration is now just build/run
   invocation in the runner, not embedded C# workload or package wiring
-- the C# path is still weaker only at `300` and clearly faster from `1k`
-  onward on the current workload
+- the Prolog accumulated path now uses the generated grouped
+  `category_ancestor$power_sum_grouped` helper rather than the generic
+  per-root fallback
+- that cuts Prolog from the earlier pathological category-influence
+  behavior down to the same rough order of magnitude as the seeded
+  baseline, but C# query is still clearly faster on this workload
 
 ### Prolog Category-Influence Accumulation Results
 
-The generalized seeded accumulation helper can now be exercised on the
-category-influence workload too, using the cycle-safe PPV
-`category_ancestor/4` closure from the effective-distance workload.
+The category-influence benchmark now uses a generated grouped
+`power_sum_grouped` helper for the cycle-safe PPV `category_ancestor/4`
+closure from the effective-distance workload. The generic seeded
+accumulation helper remains available as the fallback path, but this
+grouped helper is the better fit for category influence because the
+consumer wants all root sums for a seed at once.
 
 Command:
 
@@ -763,20 +766,23 @@ Latest local results:
 
 | Scale | Seeded | Accumulated | Output Match | Note |
 |-------|-------:|------------:|--------------|------|
-| 300 | 1.874s | 37.847s | match | accumulated helper is much slower |
-| 1k | 1.065s | 27.206s | match | grouped helper remains much slower |
+| 300 | 1.892s | 1.890s | match | grouped helper reaches parity |
+| 1k | 1.056s | 1.118s | match | grouped helper stays close |
 
 Current interpretation:
 
-- the generalized seeded accumulation helper is semantically correct on
-  category influence
-- but this grouped `power_sum` helper is the wrong retained-state shape
-  for the workload
-- it recomputes grouped aggregates per seed and pays heavily for that:
-  - `300`: `query_ms 1311 -> 36991`
-  - `1k`: `query_ms 714 -> 26380`
-- the accumulated Prolog path is therefore exposed as an optional
-  benchmark target here, not the new default category-influence path
+- the specialized grouped helper is semantically correct on category
+  influence and dramatically better than the old generic accumulated
+  path
+- it still trades a higher query cost for much smaller retained state:
+  - `300`: tuple count `602808 -> 30968`
+  - `1k`: tuple count `352522 -> 10328`
+- that retained-state drop is enough to make accumulated Prolog roughly
+  competitive with the seeded baseline instead of catastrophically
+  slower
+- the generic seeded accumulation helper remains the right fallback for
+  workloads like effective distance where the grouped helper is not the
+  better consumer fit
 
 ### Weighted `Min` Results
 
