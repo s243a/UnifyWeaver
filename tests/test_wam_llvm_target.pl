@@ -336,6 +336,32 @@ test(wasm_exports_generation) :-
 % Fix #3: lookup_label_index warning
 % ============================================================================
 
+% ============================================================================
+% Compound term instruction cases in step dispatch
+% ============================================================================
+
+test(step_has_compound_instructions) :-
+    compile_step_wam_to_llvm([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'get_structure:')),
+    assertion(sub_atom(StepCode, _, _, _, 'get_list:')),
+    assertion(sub_atom(StepCode, _, _, _, 'unify_variable:')),
+    assertion(sub_atom(StepCode, _, _, _, 'unify_value:')),
+    assertion(sub_atom(StepCode, _, _, _, 'unify_constant:')),
+    assertion(sub_atom(StepCode, _, _, _, 'put_structure:')),
+    assertion(sub_atom(StepCode, _, _, _, 'put_list:')),
+    assertion(sub_atom(StepCode, _, _, _, 'set_variable:')),
+    assertion(sub_atom(StepCode, _, _, _, 'set_value:')),
+    assertion(sub_atom(StepCode, _, _, _, 'set_constant:')).
+
+test(compound_instrs_use_heap_push) :-
+    compile_step_wam_to_llvm([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'wam_heap_push')).
+
+test(get_structure_has_write_and_read_mode) :-
+    compile_step_wam_to_llvm([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'gs.write:')),
+    assertion(sub_atom(StepCode, _, _, _, 'gs.read:')).
+
 test(lookup_label_warns_on_unknown, [true]) :-
     % Should succeed with Index=0 (and print a warning to stderr)
     wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),

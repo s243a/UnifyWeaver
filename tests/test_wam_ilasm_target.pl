@@ -230,6 +230,35 @@ test(state_template_has_array_clone) :-
 % Atom table reset
 % ============================================================================
 
+% ============================================================================
+% Compound term instruction cases in step dispatch
+% ============================================================================
+
+test(step_has_compound_instructions) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'L_get_structure:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_get_list:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_unify_variable:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_unify_value:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_unify_constant:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_put_structure:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_put_list:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_set_variable:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_set_value:')),
+    assertion(sub_atom(StepCode, _, _, _, 'L_set_constant:')).
+
+test(compound_instrs_use_heap_push) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'HeapPush')).
+
+test(get_structure_has_write_and_read_mode) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'L_gs_read:')).
+
+test(unify_variable_creates_unbound) :-
+    compile_step_wam_to_cil([], StepCode),
+    assertion(sub_atom(StepCode, _, _, _, 'UnboundValue')).
+
 test(atom_table_reset) :-
     cil_atom_table_reset,
     wam_ilasm_target:cil_intern_atom(reset_test_a, IdA),
