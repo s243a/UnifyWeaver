@@ -28,7 +28,9 @@ That moves the retained state into the engine and flips the old headline:
 the query engine is now faster than accumulated Prolog and all DFS
 pipelines across the full benchmark range while preserving the same
 all-path semantics. It also now supports cost-guided selection between
-compact grouped weight sums and the legacy seeded-row regrouping path.
+compact grouped weight sums and the legacy seeded-row regrouping path,
+using the same grouped-summary policy layer that now also drives the
+shortest-path minima family.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -533,7 +535,9 @@ Comparison note:
   collapses to the final article result count, which is why the C# query
   path improves so sharply at every tested scale
 - the new `Auto` selector currently chooses the compact grouped minima
-  path at every tested scale; forcing legacy seeded-row regrouping is
+  path at every tested scale; this now flows through the same grouped-summary
+  policy layer used by grouped weight sums, while still preserving the
+  per-family override knob. Forcing legacy seeded-row regrouping is
   materially worse (`300`: `0.160s` vs `0.083s`, `10k`: `0.419s` vs
   `0.161s`)
 - seeded Prolog `min` remains competitive, but the C# query engine is
@@ -586,7 +590,9 @@ Comparison note:
 - on the current one-root benchmark shape, the retained row count now
   also collapses to the final article result count
 - the new `Auto` selector also chooses the compact grouped minima path
-  here; forcing legacy seeded-row regrouping regresses both ends of the
+  here; this now uses the same grouped-summary policy layer as shortest
+  path while keeping a separate benchmark override
+- forcing legacy seeded-row regrouping regresses both ends of the
   benchmark (`300`: `0.202s` vs `0.151s`, `10k`: `0.430s` vs `0.320s`)
 - seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
   query engine is now clearly faster from `5k` onward

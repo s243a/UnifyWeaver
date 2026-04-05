@@ -66,13 +66,15 @@ Examples:
 - shortest-path and weighted-shortest-path operators can emit compact
   `(group, root, min_value)` summaries instead of retaining full seeded path rows
 - where both grouped minima and legacy seeded-row regrouping are available, the
-  runtime can choose between them heuristically and still expose an explicit
-  override via `QueryExecutorOptions.PathAwareGroupedMinStrategy`
+  runtime can choose between them through a shared grouped-summary policy
+  layer and still expose an explicit override via
+  `QueryExecutorOptions.PathAwareGroupedMinStrategy`
 - effective-distance and category-influence operators can build compact
   `(group, root, weight_sum)` summaries instead of retaining full path rows
 - where grouped weight sums and legacy seeded-row regrouping both exist, the
-  runtime can choose between them heuristically and still expose an explicit
-  override via `QueryExecutorOptions.PathAwareWeightSumStrategy`
+  runtime can choose between them through that same grouped-summary policy
+  layer and still expose an explicit override via
+  `QueryExecutorOptions.PathAwareWeightSumStrategy`
 - other operators may request replay buffers or indexes when needed
 
 ### 3. External materialization fallback
@@ -121,11 +123,13 @@ For the current benchmark/runtime surface, the streamed path is:
 6. shortest-path and weighted-shortest-path operators can emit compact
    grouped root minima directly from streamed edge/seed inputs
 7. where grouped minima and legacy seeded-row regrouping both exist, the runtime
-   can select between them heuristically or via an explicit executor option
+   can select between them through a shared grouped-summary policy layer or
+   via an explicit executor option
 8. effective-distance and category-influence operators can emit compact
    grouped root-weight summaries directly from streamed edge/seed inputs
 9. where grouped weight sums and legacy seeded-row regrouping both exist, the
-   runtime can select between them heuristically or via an explicit executor option
+   runtime can select between them through that same grouped-summary policy
+   layer or via an explicit executor option
 10. the operator builds only the retained state it actually needs
 11. benchmark code avoids preloading raw facts into in-memory relations first
 
