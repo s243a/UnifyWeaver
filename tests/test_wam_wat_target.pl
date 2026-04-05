@@ -58,7 +58,7 @@ test(encode_get_variable) :-
 
 test(step_dispatch_generated) :-
     compile_step_wam_to_wat([], StepCode),
-    assertion(sub_string(StepCode, _, _, _, "$step")),
+    assertion(sub_string(StepCode, _, _, _, "br_table")),
     assertion(sub_string(StepCode, _, _, _, "$do_get_constant")),
     assertion(sub_string(StepCode, _, _, _, "$do_proceed")),
     assertion(sub_string(StepCode, _, _, _, "$do_trust_me")).

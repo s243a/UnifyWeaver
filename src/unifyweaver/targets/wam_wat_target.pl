@@ -42,6 +42,12 @@ wam_trail_base(66560).    % 65536 + 1024
 wam_stack_base(73728).    % 65536 + 8192
 wam_heap_base(131072).    % page 2
 
+% Register and choice point geometry (derived from register count)
+wam_num_regs(64).
+wam_val_size(12).         % bytes per tagged value
+%% wam_cp_size = 12 (metadata: next_pc + trail_mark + saved_cp) + num_regs * val_size
+wam_cp_size(Size) :- wam_num_regs(N), wam_val_size(V), Size is 12 + N * V.
+
 % Tag constants
 tag_atom(0).
 tag_integer(1).
@@ -467,7 +473,23 @@ gen_do_func(Tag-Body, Code) :-
 ~w)', [Name, Body]).
 
 gen_step_function(Cases, Code) :-
-    gen_if_chain(Cases, ChainCode),
+    %% Generate br_table dispatch with nested blocks.
+    %% WAT br_table jumps to block N (counting from innermost).
+    %% We nest blocks so that tag 0 breaks to the outermost (first to close),
+    %% and after each block close we call the corresponding do_ function.
+    length(Cases, N),
+    MaxTag is N - 1,
+    %% br_table labels: $b0 $b1 ... $bN $default
+    numlist(0, MaxTag, TagNums),
+    maplist(br_label, TagNums, BrLabels),
+    atomic_list_concat(BrLabels, ' ', BrTableStr),
+    %% Opening nested blocks (innermost = highest tag)
+    maplist(open_block, TagNums, OpenBlocks),
+    reverse(OpenBlocks, RevOpenBlocks),
+    atomic_list_concat(RevOpenBlocks, '\n', OpenBlocksStr),
+    %% Closing blocks + dispatch calls (outermost first = tag 0)
+    maplist(close_and_call, Cases, CloseBlocks),
+    atomic_list_concat(CloseBlocks, '\n', CloseBlocksStr),
     format(atom(Code),
 '(func $step (param $code_base i32) (param $pc i32) (result i32)
   (local $tag i32)
@@ -476,18 +498,23 @@ gen_step_function(Cases, Code) :-
   (local.set $tag (call $fetch_instr_tag (local.get $code_base) (local.get $pc)))
   (local.set $op1 (call $fetch_instr_op1 (local.get $code_base) (local.get $pc)))
   (local.set $op2 (call $fetch_instr_op2 (local.get $code_base) (local.get $pc)))
+  (block $default
+~w
+    (br_table ~w $default (local.get $tag))
+  )
 ~w
   (i32.const 0)
-)', [ChainCode]).
+)', [OpenBlocksStr, BrTableStr, CloseBlocksStr]).
 
-gen_if_chain([], '').
-gen_if_chain([Tag-_|Rest], Code) :-
+br_label(N, Label) :- format(atom(Label), '$b~w', [N]).
+open_block(N, Block) :- format(atom(Block), '    (block $b~w', [N]).
+
+close_and_call(Tag-_, Code) :-
     instr_tag(Name, Tag),
-    gen_if_chain(Rest, RestCode),
     format(atom(Code),
-'  (if (i32.eq (local.get $tag) (i32.const ~w))
-    (then (return (call $do_~w (local.get $op1) (local.get $op2)))))
-~w', [Tag, Name, RestCode]).
+'  ) ;; $b~w (~w)
+  (return (call $do_~w (local.get $op1) (local.get $op2)))',
+        [Tag, Name, Name]).
 
 % ============================================================================
 % PHASE 2: Instruction case bodies (WAT S-expressions)
@@ -760,6 +787,10 @@ wam_wat_case(trust_me,
 
 %% compile_wam_helpers_to_wat(+Options, -WatCode)
 compile_wam_helpers_to_wat(_Options, WatCode) :-
+    wam_cp_size(CPSize),
+    wam_num_regs(NumRegs),
+    wam_val_size(ValSize),
+    RegBytes is NumRegs * ValSize,
     format(atom(WatCode),
 ';; --- Run loop ---
 (func $run_loop (param $code_base i32) (param $num_instrs i32) (result i32)
@@ -799,7 +830,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (if (i32.eqz (local.get $n))
     (then (return (i32.const 0))))
   ;; Choice point layout in stack: [next_pc:i32][trail_mark:i32][saved_cp:i32][64 regs x 12 bytes]
-  ;; Size = 12 + 768 = 780 bytes per choice point
+  ;; Size = ~w bytes per choice point (12 metadata + ~w regs x 12)
   ;; Pop the latest choice point (stored before env frames in stack)
   ;; For simplicity, choice points stored at fixed offsets from cp_count
   ;; TODO: implement full choice point stack
@@ -843,12 +874,12 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 
 ;; --- Choice point management ---
 ;; Choice points stored in a dedicated area starting at offset 98304 (page 1.5)
-;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][64 regs: 768 bytes +12] = 780 bytes
+;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][~w regs: ~w bytes +12] = ~w bytes
 
 (func $cp_base_offset (result i32) (i32.const 98304))
 
 (func $cp_offset (param $idx i32) (result i32)
-  (i32.add (call $cp_base_offset) (i32.mul (local.get $idx) (i32.const 780))))
+  (i32.add (call $cp_base_offset) (i32.mul (local.get $idx) (i32.const ~w))))
 
 (func $push_choice_point (param $next_pc i32)
   (local $n i32) (local $off i32) (local $i i32)
@@ -862,7 +893,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $i (i32.const 0))
   (block $done
     (loop $save
-      (br_if $done (i32.ge_u (local.get $i) (i32.const 64)))
+      (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_from_reg (local.get $i)
         (i32.add (i32.add (local.get $off) (i32.const 12))
                  (i32.mul (local.get $i) (i32.const 12))))
@@ -900,7 +931,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $i (i32.const 0))
   (block $done
     (loop $restore
-      (br_if $done (i32.ge_u (local.get $i) (i32.const 64)))
+      (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_to_reg (local.get $i)
         (i32.add (i32.add (local.get $off) (i32.const 12))
                  (i32.mul (local.get $i) (i32.const 12))))
@@ -1006,7 +1037,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   )
   (i32.const 0)
 )
-', []).
+', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
 
 %% compile_wam_runtime_to_wat(+Options, -WatCode)
 compile_wam_runtime_to_wat(Options, WatCode) :-
