@@ -387,21 +387,26 @@ Latest local results:
 
 | Scale | Seeded | Pruned | Accumulated | Output Match | Note |
 |-------|--------|--------|-------------|--------------|------|
-| 300 | 0.349s | 0.352s | 0.370s | match | accumulated is close, but the helper overhead is still visible at the smallest scale |
-| 1k | 0.283s | 0.305s | 0.238s | match | accumulated wins clearly |
-| 5k | 1.084s | 1.170s | 0.829s | match | generated accumulation helper cuts aggregation cost materially |
-| 10k | 2.563s | 2.453s | 2.134s | match | accumulated stays best, pruning remains mostly neutral |
+| 300 | 0.368s | 0.443s | 0.406s | match | selected helper routes bound queries to the new bound fast path |
+| 1k | 0.348s | 0.309s | 0.287s | match | bound fast path now wins clearly |
+| 5k | 1.125s | 1.282s | 0.910s | match | accumulated remains best |
+| 10k | 2.715s | 2.675s | 2.276s | match | accumulated stays best at the largest tested scale |
 
 Current interpretation:
 
 - seeded closure reuse is the real win on effective distance
 - branch pruning does not currently reduce tuple count or inferences on this workload
-- the accumulated variant now uses a generated Prolog helper rather than
-  benchmark-side ad hoc aggregation
+- the accumulated variant now uses the generated selected helper surface,
+  which routes bound root queries to a dedicated bound-key fast path
+  instead of paying the generic helper's key-enumeration overhead
 - pre-aggregating per-seed weight sums materially reduces retained state:
   - `1k`: tuple count `10976 -> 48`
   - `5k`: tuple count `41132 -> 151`
   - `10k`: tuple count `105287 -> 462`
+- the bound-key fast path also reduces query work for accumulated Prolog:
+  - `1k`: inferences `4078570 -> 3686379`
+  - `5k`: inferences `16176114 -> 14105020`
+  - `10k`: inferences `40693380 -> 37778802`
 - the seeded, pruned, and accumulated variants are semantically identical at all tested scales
 
 ### Prolog Branch-Pruning Results
