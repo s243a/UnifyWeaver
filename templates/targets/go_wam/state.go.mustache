@@ -208,9 +208,12 @@ func (vm *WamState) Deref(v Value) Value {
 }
 
 func (vm *WamState) deref(v Value) Value {
-	for {
+	// Depth limit guards against circular ref chains from bugs.
+	for i := 0; i < 10000; i++ {
 		if r, ok := v.(*Ref); ok {
-			v = vm.Heap[r.Addr]
+			next := vm.Heap[r.Addr]
+			if next == v { return v }
+			v = next
 		} else if u, ok := v.(*Unbound); ok {
 			if boundVal, exists := vm.Regs[u.Name]; exists && boundVal != v {
 				v = boundVal
@@ -221,6 +224,7 @@ func (vm *WamState) deref(v Value) Value {
 			return v
 		}
 	}
+	return v
 }
 
 func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
@@ -366,6 +370,8 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	return false
 }
 
+// Unify implements standard WAM unification without occurs check,
+// matching ISO Prolog semantics (unify_with_occurs_check/2 is separate).
 func (vm *WamState) Unify(v1, v2 Value) bool {
 	v1 = vm.deref(v1)
 	v2 = vm.deref(v2)
@@ -409,6 +415,8 @@ func (vm *WamState) backtrack() bool {
     vm.PC = cp.NextPC
     vm.CP = cp.CP
     vm.Halted = false
+    vm.CurrentStruct = nil
+    vm.CurrentList = nil
     return true
 }
 

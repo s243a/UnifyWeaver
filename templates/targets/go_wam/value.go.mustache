@@ -60,7 +60,15 @@ func (v *Structure) String() string {
 }
 func (v *Structure) Equals(other Value) bool {
 	o, ok := other.(*Structure)
-	return ok && v.Functor == o.Functor && v.Arity == o.Arity
+	if !ok || v.Functor != o.Functor || v.Arity != o.Arity {
+		return false
+	}
+	for i, a := range v.Args {
+		if !valueEquals(a, o.Args[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type List struct { Elements []Value }
