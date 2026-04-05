@@ -63,6 +63,8 @@ Examples:
 - DAG longest depth builds adjacency and scalar suffix-depth state
 - path-aware shortest-path operators can build compact source->targets edge state
   instead of retaining generic edge tuples
+- shortest-path and weighted-shortest-path operators can emit compact
+  `(group, root, min_value)` summaries instead of retaining full seeded path rows
 - effective-distance and category-influence operators can build compact
   `(group, root, weight_sum)` summaries instead of retaining full path rows
 - other operators may request replay buffers or indexes when needed
@@ -110,10 +112,12 @@ For the current benchmark/runtime surface, the streamed path is:
 4. DAG, scan, and path-aware operators read rows through that retention boundary
 5. path-aware shortest-path operators can build a compact edge-state cache
    directly from streamed facts instead of generic replayed edge rows
-6. effective-distance and category-influence operators can emit compact
+6. shortest-path and weighted-shortest-path operators can emit compact
+   grouped root minima directly from streamed edge/seed inputs
+7. effective-distance and category-influence operators can emit compact
    grouped root-weight summaries directly from streamed edge/seed inputs
-7. the operator builds only the retained state it actually needs
-8. benchmark code avoids preloading raw facts into in-memory relations first
+8. the operator builds only the retained state it actually needs
+9. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

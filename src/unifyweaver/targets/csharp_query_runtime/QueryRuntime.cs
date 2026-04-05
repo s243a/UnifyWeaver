@@ -307,6 +307,36 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Computes per-group minimum root depths, producing
+    /// (group, root, min_depth) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareDepthMinNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId Predicate,
+        int DirectSeedDepth = 1,
+        int MaxDepth = 0
+    ) : PlanNode;
+
+    /// <summary>
+    /// Computes per-group minimum accumulated root values, producing
+    /// (group, root, min_value) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareAccumulationMinNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId AuxiliaryRelation,
+        PredicateId Predicate,
+        ArithmeticExpression BaseExpression,
+        ArithmeticExpression RecursiveExpression,
+        object DirectSeedValue,
+        int MaxDepth = 0,
+        bool PositiveStepProven = false
+    ) : PlanNode;
+
+    /// <summary>
     /// Computes a counted transitive closure while preventing cycles on each
     /// derivation path instead of deduplicating globally by node or tuple.
     /// </summary>
@@ -1110,6 +1140,8 @@ namespace UnifyWeaver.QueryRuntime
                 SeedGroupedTransitiveClosureCountNode closure => $"SeedGroupedTransitiveClosureCount edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
                 SeedGroupedDagLongestDepthNode closure => $"SeedGroupedDagLongestDepth edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
                 SeedGroupedPathAwareWeightSumNode closure => $"SeedGroupedPathAwareWeightSum edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} exponent={closure.DistanceExponent.ToString(CultureInfo.InvariantCulture)} maxDepth={closure.MaxDepth}",
+                SeedGroupedPathAwareDepthMinNode closure => $"SeedGroupedPathAwareDepthMin edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} directSeedDepth={closure.DirectSeedDepth} maxDepth={closure.MaxDepth}",
+                SeedGroupedPathAwareAccumulationMinNode closure => $"SeedGroupedPathAwareAccumulationMin edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} positiveStep={closure.PositiveStepProven}",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode} positiveStep={closure.PositiveStepProven}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
@@ -1524,6 +1556,34 @@ namespace UnifyWeaver.QueryRuntime
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareWeightSum, rows);
                 }
 
+                if (plan.Root is SeedGroupedPathAwareDepthMinNode seedGroupedPathAwareDepthMin)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareDepthMin(seedGroupedPathAwareDepthMin, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareDepthMin);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareDepthMin, rows);
+                }
+
+                if (plan.Root is SeedGroupedPathAwareAccumulationMinNode seedGroupedPathAwareAccumulationMin)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareAccumulationMin(seedGroupedPathAwareAccumulationMin, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareAccumulationMin);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareAccumulationMin, rows);
+                }
+
                 if (plan.Root is PathAwareTransitiveClosureNode pathAwareClosure)
                 {
                     IEnumerable<object[]> rows;
@@ -1625,6 +1685,8 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.SeedGroupedTransitiveClosureCountResults.Clear();
             _cacheContext.SeedGroupedDagLongestDepthResults.Clear();
             _cacheContext.SeedGroupedPathAwareWeightSumResults.Clear();
+            _cacheContext.SeedGroupedPathAwareDepthMinResults.Clear();
+            _cacheContext.SeedGroupedPathAwareAccumulationMinResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
             _cacheContext.GroupedTransitiveClosurePairProbeResults.Clear();
@@ -1738,6 +1800,14 @@ namespace UnifyWeaver.QueryRuntime
 
                 case SeedGroupedPathAwareWeightSumNode closure:
                     result = ExecuteSeedGroupedPathAwareWeightSum(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareDepthMinNode closure:
+                    result = ExecuteSeedGroupedPathAwareDepthMin(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareAccumulationMinNode closure:
+                    result = ExecuteSeedGroupedPathAwareAccumulationMin(closure, context);
                     break;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -2194,6 +2264,19 @@ namespace UnifyWeaver.QueryRuntime
                     predicates.Add(closure.EdgeRelation);
                     predicates.Add(closure.SeedRelation);
                     predicates.Add(closure.RootRelation);
+                    return;
+
+                case SeedGroupedPathAwareDepthMinNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
+                    return;
+
+                case SeedGroupedPathAwareAccumulationMinNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
+                    predicates.Add(closure.AuxiliaryRelation);
                     return;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -7743,6 +7826,532 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return sums;
+        }
+
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareDepthMin(SeedGroupedPathAwareDepthMinNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareDepthMin");
+
+                if (context.SeedGroupedPathAwareDepthMinResults.TryGetValue(closure, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                foreach (var row in GetFactStream(closure.RootRelation, context))
+                {
+                    if (row is null || row.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var root = row[0];
+                    var rootKey = root ?? NullFactIndexKey;
+                    if (rootKeys.Add(rootKey))
+                    {
+                        rootValues[rootKey] = root;
+                    }
+                }
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareDepthMinResults[closure] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = row[0];
+                    var seed = row[1];
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                    {
+                        bucket = new List<object?>();
+                        groupedSeeds[groupKey] = bucket;
+                        groupValues.Add(group);
+                    }
+
+                    bucket.Add(seed);
+                    if (uniqueSeeds.Add(seed))
+                    {
+                        orderedUniqueSeeds.Add(seed);
+                    }
+                }
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareDepthMinResults[closure] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+
+                var seedDepthMins = new Dictionary<object, Dictionary<object, int>>();
+                foreach (var seed in orderedUniqueSeeds)
+                {
+                    var mins = ComputePathAwareRootDepthMinsForSeed(seed, succIndex, rootKeys, closure.DirectSeedDepth, closure.MaxDepth);
+                    if (mins.Count > 0)
+                    {
+                        seedDepthMins[seed ?? NullFactIndexKey] = mins;
+                    }
+                }
+
+                var rows = new List<object[]>();
+                foreach (var group in groupValues)
+                {
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                    {
+                        continue;
+                    }
+
+                    Dictionary<object, int>? groupMins = null;
+                    foreach (var seed in seedsForGroup)
+                    {
+                        if (!seedDepthMins.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                        {
+                            continue;
+                        }
+
+                        groupMins ??= new Dictionary<object, int>();
+                        foreach (var entry in rootMins)
+                        {
+                            if (!groupMins.TryGetValue(entry.Key, out var current) || entry.Value < current)
+                            {
+                                groupMins[entry.Key] = entry.Value;
+                            }
+                        }
+                    }
+
+                    if (groupMins is null)
+                    {
+                        continue;
+                    }
+
+                    var orderedRoots = groupMins.Keys.ToList();
+                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                    foreach (var rootKey in orderedRoots)
+                    {
+                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
+                    }
+                }
+
+                context.SeedGroupedPathAwareDepthMinResults[closure] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static Dictionary<object, int> ComputePathAwareRootDepthMinsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            HashSet<object> rootKeys,
+            int directSeedDepth,
+            int maxDepth)
+        {
+            var mins = new Dictionary<object, int>();
+
+            void Record(object? root, int depth)
+            {
+                var rootKey = root ?? NullFactIndexKey;
+                if (!mins.TryGetValue(rootKey, out var current) || depth < current)
+                {
+                    mins[rootKey] = depth;
+                }
+            }
+
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                Record(seed, directSeedDepth);
+            }
+
+            var visited = new Dictionary<object, int> { [seedKey] = 0 };
+            var queue = new Queue<(object? Node, int Depth)>();
+            queue.Enqueue((seed, 0));
+
+            while (queue.Count > 0)
+            {
+                var (current, depth) = queue.Dequeue();
+                if (maxDepth > 0 && depth >= maxDepth)
+                {
+                    continue;
+                }
+
+                var currentKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(currentKey, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var next in bucket.Targets)
+                {
+                    var nextDepth = depth + 1;
+                    var nextKey = next ?? NullFactIndexKey;
+                    if (visited.TryGetValue(nextKey, out var bestDepth) && bestDepth <= nextDepth)
+                    {
+                        continue;
+                    }
+
+                    visited[nextKey] = nextDepth;
+                    if (rootKeys.Contains(nextKey))
+                    {
+                        Record(next, directSeedDepth + nextDepth);
+                    }
+
+                    queue.Enqueue((next, nextDepth));
+                }
+            }
+
+            return mins;
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareAccumulationMin(SeedGroupedPathAwareAccumulationMinNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMin");
+
+                if (context.SeedGroupedPathAwareAccumulationMinResults.TryGetValue(closure, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                foreach (var row in GetFactStream(closure.RootRelation, context))
+                {
+                    if (row is null || row.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var root = row[0];
+                    var rootKey = root ?? NullFactIndexKey;
+                    if (rootKeys.Add(rootKey))
+                    {
+                        rootValues[rootKey] = root;
+                    }
+                }
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareAccumulationMinResults[closure] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+                foreach (var row in GetFactStream(closure.SeedRelation, context))
+                {
+                    if (row is null || row.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = row[0];
+                    var seed = row[1];
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                    {
+                        bucket = new List<object?>();
+                        groupedSeeds[groupKey] = bucket;
+                        groupValues.Add(group);
+                    }
+
+                    bucket.Add(seed);
+                    if (uniqueSeeds.Add(seed))
+                    {
+                        orderedUniqueSeeds.Add(seed);
+                    }
+                }
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareAccumulationMinResults[closure] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+
+                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
+                PositiveStepEvaluator? stepEvaluator = null;
+                var usePositiveMinFastPath = closure.MaxDepth > 0 &&
+                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+
+                IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
+                if (usePositiveMinFastPath)
+                {
+                    var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
+                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                    foreach (var seed in orderedUniqueSeeds)
+                    {
+                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator!, directSeedValue, closure.MaxDepth);
+                        if (mins.Count > 0)
+                        {
+                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                        }
+                    }
+
+                    seedMinima = fastSeedMinima;
+                }
+                else
+                {
+                    seedMinima = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context);
+                }
+
+                var rows = new List<object[]>();
+                foreach (var group in groupValues)
+                {
+                    var groupKey = group ?? NullFactIndexKey;
+                    if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                    {
+                        continue;
+                    }
+
+                    Dictionary<object, object>? groupMins = null;
+                    foreach (var seed in seedsForGroup)
+                    {
+                        if (!seedMinima.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                        {
+                            continue;
+                        }
+
+                        groupMins ??= new Dictionary<object, object>();
+                        foreach (var entry in rootMins)
+                        {
+                            if (!groupMins.TryGetValue(entry.Key, out var current) || CompareValues(entry.Value, current) < 0)
+                            {
+                                groupMins[entry.Key] = entry.Value;
+                            }
+                        }
+                    }
+
+                    if (groupMins is null)
+                    {
+                        continue;
+                    }
+
+                    var orderedRoots = groupMins.Keys.ToList();
+                    orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                    foreach (var rootKey in orderedRoots)
+                    {
+                        rows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
+                    }
+                }
+
+                context.SeedGroupedPathAwareAccumulationMinResults[closure] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, object>> ExecuteSeedGroupedPathAwareAccumulationMinFallback(
+            SeedGroupedPathAwareAccumulationMinNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, object>>();
+            }
+
+            var seededClosure = new PathAwareAccumulationNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                closure.AuxiliaryRelation,
+                closure.BaseExpression,
+                closure.RecursiveExpression,
+                closure.MaxDepth,
+                TableMode.Min,
+                closure.PositiveStepProven);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareAccumulation(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var seedMinima = new Dictionary<object, Dictionary<object, object>>();
+
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedMinima[seedKey] = new Dictionary<object, object>
+                    {
+                        [seedKey] = closure.DirectSeedValue
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedMinima.TryGetValue(seedKey, out var rootMins))
+                {
+                    rootMins = new Dictionary<object, object>();
+                    seedMinima[seedKey] = rootMins;
+                }
+
+                var value = row[2];
+                if (!rootMins.TryGetValue(rootKey, out var current) || CompareValues(value, current) < 0)
+                {
+                    rootMins[rootKey] = value;
+                }
+            }
+
+            return seedMinima;
+        }
+
+        private static Dictionary<object, double> ComputePositiveMinRootAccumulationsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            ISet<object> rootKeys,
+            PositiveStepEvaluator stepEvaluator,
+            double directSeedValue,
+            int maxDepth)
+        {
+            var mins = new Dictionary<object, double>();
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                mins[seedKey] = directSeedValue;
+            }
+
+            var depthCosts = new List<Dictionary<object?, double>>(maxDepth + 1)
+            {
+                new Dictionary<object?, double> { [seed] = 0d }
+            };
+
+            for (var depth = 0; depth < maxDepth && depth < depthCosts.Count; depth++)
+            {
+                var currentLayer = depthCosts[depth];
+                if (currentLayer.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var (current, currentCost) in currentLayer)
+                {
+                    var currentKey = current ?? NullFactIndexKey;
+                    if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    while (depthCosts.Count <= nextDepth)
+                    {
+                        depthCosts.Add(new Dictionary<object?, double>());
+                    }
+
+                    var nextLayer = depthCosts[nextDepth];
+                    for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    {
+                        var next = edgeBucket.Targets[edgeIndex];
+                        var nextKey = next ?? NullFactIndexKey;
+                        for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                        {
+                            var auxRow = auxBucket[auxIndexPos];
+                            if (auxRow is null || auxRow.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var step = stepEvaluator(current!, next!, auxRow[1]!);
+                            var nextCost = currentCost + step;
+                            if (!nextLayer.TryGetValue(next, out var existingCost) || nextCost < existingCost)
+                            {
+                                nextLayer[next] = nextCost;
+                            }
+
+                            if (!rootKeys.Contains(nextKey))
+                            {
+                                continue;
+                            }
+
+                            if (!mins.TryGetValue(nextKey, out var currentMin) || nextCost < currentMin)
+                            {
+                                mins[nextKey] = nextCost;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return mins;
         }
 
         private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
@@ -15059,6 +15668,10 @@ namespace UnifyWeaver.QueryRuntime
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
                 SeedGroupedPathAwareWeightSumResults = parent?.SeedGroupedPathAwareWeightSumResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareDepthMinResults = parent?.SeedGroupedPathAwareDepthMinResults
+                    ?? new Dictionary<SeedGroupedPathAwareDepthMinNode, IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareAccumulationMinResults = parent?.SeedGroupedPathAwareAccumulationMinResults
+                    ?? new Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
@@ -15123,6 +15736,10 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>> SeedGroupedDagLongestDepthResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>> SeedGroupedPathAwareWeightSumResults { get; }
+
+            public Dictionary<SeedGroupedPathAwareDepthMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareDepthMinResults { get; }
+
+            public Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareAccumulationMinResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
 

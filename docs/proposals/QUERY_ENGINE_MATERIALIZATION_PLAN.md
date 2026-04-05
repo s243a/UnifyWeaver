@@ -55,6 +55,9 @@ Status:
 - started for scan-oriented and path-aware benchmark paths using the shared retention boundary
 - path-aware shortest-path operators now build compact operator-owned edge state
   instead of consuming generic replayed edge tuples
+- shortest-path and weighted-shortest-path operators now emit compact
+  operator-owned `(group, root, min_value)` summaries instead of consuming
+  broad seeded path rows plus benchmark-side regrouping
 - effective-distance and category-influence operators now build compact
   operator-owned `(group, root, weight_sum)` state instead of consuming
   generic path rows plus benchmark-side regrouping

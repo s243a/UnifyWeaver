@@ -2643,7 +2643,7 @@ def generate_csharp_query_shortest_path(article_cats, category_parents, root_cat
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
+using System.Globalization;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
 
@@ -2665,130 +2665,50 @@ class Program
 
         var provider = new InMemoryRelationProvider();
         var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>();
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_shortest_path", 3);
 
         provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {{
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }}
-
-            categories.Add(parts[1]);
-        }}
-
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        provider.AddFact(rootId, ROOT_CATEGORY);
         swLoad.Stop();
 
         var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH, TableMode.Min),
-            true,
-            new int[] {{ 0 }}
+            resultId,
+            new SeedGroupedPathAwareDepthMinNode(edgeId, seedId, rootId, resultId, 1, MAX_DEPTH),
+            false,
+            null
         );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var categories in articleCategories.Values)
-        {{
-            foreach (var category in categories)
-            {{
-                uniqueSeeds.Add(category);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds
-            .OrderBy(category => category, StringComparer.Ordinal)
-            .Select(category => new object[] {{ category }})
-            .ToList();
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var rows = executor.Execute(plan).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {{
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2]);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }}
-
-            bucket.Add((ancestor, hops));
-        }}
-
-        var results = new List<(int Distance, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x, StringComparer.Ordinal))
-        {{
-            int? best = null;
-            foreach (var category in articleCategories[article])
-            {{
-                if (category == ROOT_CATEGORY)
-                {{
-                    best = best is null ? 1 : Math.Min(best.Value, 1);
-                }}
-
-                if (!ancestorIndex.TryGetValue(category, out var ancestors))
-                {{
-                    continue;
-                }}
-
-                foreach (var (ancestor, hops) in ancestors)
-                {{
-                    if (ancestor != ROOT_CATEGORY)
-                    {{
-                        continue;
-                    }}
-
-                    var dist = hops + 1;
-                    best = best is null ? dist : Math.Min(best.Value, dist);
-                }}
-            }}
-
-            if (best is not null)
-            {{
-                results.Add((best.Value, article));
-            }}
-        }}
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                Distance: Convert.ToInt32(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
         swAgg.Stop();
         swTotal.Stop();
 
-        results.Sort((a, b) =>
-        {{
-            var cmp = a.Distance.CompareTo(b.Distance);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        }});
-
-        Console.WriteLine("article\\troot_category\\tshortest_path");
+        Console.WriteLine("article\troot_category\tshortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}\\t{{ROOT_CATEGORY}}\\t{{item.Distance}}");
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
     }}
@@ -2826,13 +2746,15 @@ class Program
 
         var provider = new InMemoryRelationProvider();
         var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_weighted_shortest", 3);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weighted_shortest_path", 3);
         var weightId = new PredicateId("category_weight", 2);
-        var articleCategories = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
         var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
 
         provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
         {{
             if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
@@ -2840,7 +2762,7 @@ class Program
                 continue;
             }}
 
-            var parts = line.Split('\\t', 2);
+            var parts = line.Split('\t', 2);
             if (parts.Length != 2)
             {{
                 continue;
@@ -2857,135 +2779,57 @@ class Program
             provider.AddFact(weightId, source, weight);
         }}
 
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {{
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {{
-                continue;
-            }}
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {{
-                continue;
-            }}
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {{
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }}
-
-            categories.Add(parts[1]);
-        }}
-
+        provider.AddFact(rootId, ROOT_CATEGORY);
         swLoad.Stop();
 
         var plan = new QueryPlan(
-            predId,
-            new PathAwareAccumulationNode(
+            resultId,
+            new SeedGroupedPathAwareAccumulationMinNode(
                 edgeId,
-                predId,
+                seedId,
+                rootId,
                 weightId,
+                resultId,
                 new ColumnExpression(3),
                 new BinaryArithmeticExpression(
                     ArithmeticBinaryOperator.Add,
                     new ColumnExpression(2),
                     new ColumnExpression(3)),
+                0.0,
                 MAX_DEPTH,
-                TableMode.Min,
                 true),
-            true,
-            new int[] {{ 0 }}
+            false,
+            null
         );
-
-        var uniqueSeeds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var categories in articleCategories.Values)
-        {{
-            foreach (var category in categories)
-            {{
-                uniqueSeeds.Add(category);
-            }}
-        }}
-
-        var seedParams = uniqueSeeds
-            .OrderBy(category => category, StringComparer.Ordinal)
-            .Select(category => new object[] {{ category }})
-            .ToList();
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var rows = executor.Execute(plan).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, double Weight)>>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {{
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var weight = Convert.ToDouble(row[2], CultureInfo.InvariantCulture);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {{
-                bucket = new List<(string, double)>();
-                ancestorIndex[source] = bucket;
-            }}
-
-            bucket.Add((ancestor, weight));
-        }}
-
-        var results = new List<(double Distance, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x, StringComparer.Ordinal))
-        {{
-            double? best = null;
-            foreach (var category in articleCategories[article])
-            {{
-                if (category == ROOT_CATEGORY)
-                {{
-                    best = best is null ? 0.0 : Math.Min(best.Value, 0.0);
-                }}
-
-                if (!ancestorIndex.TryGetValue(category, out var ancestors))
-                {{
-                    continue;
-                }}
-
-                foreach (var (ancestor, weight) in ancestors)
-                {{
-                    if (ancestor != ROOT_CATEGORY)
-                    {{
-                        continue;
-                    }}
-
-                    best = best is null ? weight : Math.Min(best.Value, weight);
-                }}
-            }}
-
-            if (best is not null)
-            {{
-                results.Add((best.Value, article));
-            }}
-        }}
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                Distance: Convert.ToDouble(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
         swAgg.Stop();
         swTotal.Stop();
 
-        results.Sort((a, b) =>
-        {{
-            var cmp = a.Distance.CompareTo(b.Distance);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        }});
-
-        Console.WriteLine("article\\troot_category\\tweighted_shortest_path");
+        Console.WriteLine("article\troot_category\tweighted_shortest_path");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Article}}\\t{{ROOT_CATEGORY}}\\t{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance.ToString("F12", CultureInfo.InvariantCulture)}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
         Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
-        Console.Error.WriteLine($"seed_count={{seedParams.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"article_count={{results.Count}}");
     }}

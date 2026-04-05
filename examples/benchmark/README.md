@@ -479,35 +479,39 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.170s | 0.117s | 0.489s | 0.388s | 0.501s | match |
-| 1k | 0.105s | 0.121s | 1.243s | 1.469s | 2.109s | match |
-| 5k | 0.187s | 0.277s | 5.777s | 7.648s | 12.378s | match |
-| 10k | 0.429s | 0.535s | 10.408s | 14.443s | 20.399s | match |
+| 300 | 0.093s | 0.112s | 0.468s | 0.364s | 0.484s | match |
+| 1k | 0.074s | 0.117s | 1.278s | 1.484s | 2.116s | match |
+| 5k | 0.110s | 0.273s | 5.889s | 8.009s | 12.535s | match |
+| 10k | 0.183s | 0.584s | 10.575s | 15.191s | 21.103s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | Prolog Min | 1.45x |
-| 1k | C# Query | 1.16x |
-| 5k | C# Query | 1.48x |
-| 10k | C# Query | 1.25x |
+| 300 | C# Query | 1.21x |
+| 1k | C# Query | 1.58x |
+| 5k | C# Query | 2.47x |
+| 10k | C# Query | 3.20x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 2.87x | 2.28x | 2.95x |
-| 1k | 11.87x | 14.02x | 20.13x |
-| 5k | 30.86x | 40.85x | 66.12x |
-| 10k | 24.24x | 33.63x | 47.50x |
+| 300 | 5.03x | 3.91x | 5.21x |
+| 1k | 17.24x | 20.02x | 28.55x |
+| 5k | 53.34x | 72.54x | 113.54x |
+| 10k | 57.86x | 83.12x | 115.47x |
 
 Comparison note:
 
-- seeded Prolog `min` is now competitive with the C# query engine on
-  this shortest-path workload: it wins at `300`, trails only slightly at
-  `1k`, and remains within about `1.25x` to `1.48x` of the C# query
-  engine at `5k` and `10k`
+- the query runtime now emits compact `(article, root, min_depth)` rows
+  directly instead of materializing broad seeded ancestor rows and then
+  regrouping them in the benchmark harness
+- on the current one-root benchmark shape, the retained row count now
+  collapses to the final article result count, which is why the C# query
+  path improves so sharply at every tested scale
+- seeded Prolog `min` remains competitive, but the C# query engine is
+  now faster at every tested scale, including `300`
 - output digests match across all five targets at every tested scale
 
 ### Cross-Target Weighted Shortest-Path Results
@@ -525,35 +529,38 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.180s | 0.118s | 0.497s | 0.363s | 0.540s | match |
-| 1k | 0.137s | 0.140s | 1.352s | 1.526s | 2.238s | match |
-| 5k | 0.217s | 0.280s | 5.973s | 7.869s | 12.033s | match |
-| 10k | 0.391s | 0.509s | 10.975s | 14.789s | 19.974s | match |
+| 300 | 0.153s | 0.119s | 0.486s | 0.381s | 0.497s | match |
+| 1k | 0.128s | 0.122s | 1.365s | 1.487s | 2.203s | match |
+| 5k | 0.228s | 0.309s | 6.207s | 8.524s | 12.376s | match |
+| 10k | 0.361s | 0.505s | 11.272s | 15.719s | 21.160s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | Prolog Min | 1.52x |
-| 1k | C# Query | 1.02x |
-| 5k | C# Query | 1.29x |
-| 10k | C# Query | 1.30x |
+| 300 | Prolog Min | 1.29x |
+| 1k | Prolog Min | 1.04x |
+| 5k | C# Query | 1.36x |
+| 10k | C# Query | 1.40x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 2.77x | 2.02x | 3.01x |
-| 1k | 9.84x | 11.10x | 16.28x |
-| 5k | 27.55x | 36.29x | 55.49x |
-| 10k | 28.08x | 37.84x | 51.11x |
+| 300 | 3.17x | 2.49x | 3.25x |
+| 1k | 10.70x | 11.66x | 17.27x |
+| 5k | 27.27x | 37.45x | 54.38x |
+| 10k | 31.27x | 43.60x | 58.69x |
 
 Comparison note:
 
-- seeded Prolog `min` is now competitive with the C# query engine on
-  the weighted shortest-path workload too: it wins at `300`, is
-  effectively tied at `1k`, and remains within about `1.29x` to `1.30x`
-  of the C# query engine at `5k` and `10k`
+- the query runtime now emits compact `(article, root, min_weight)` rows
+  directly instead of materializing broad seeded weighted-path rows and
+  regrouping them afterward in the benchmark harness
+- on the current one-root benchmark shape, the retained row count now
+  also collapses to the final article result count
+- seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
+  query engine is now clearly faster from `5k` onward
 - the cross-target weighted benchmark normalizes floating-point outputs
   with a tolerance appropriate for cross-language evaluation order
   differences
