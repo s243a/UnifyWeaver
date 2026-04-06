@@ -227,34 +227,65 @@ fn load_single_column(path: &str) -> Vec<String> {
     vals
 }
 
-/// Build WAM fact instructions for a 2-column relation and append to code/labels.
+/// Build WAM fact instructions for a 2-column relation with first-argument indexing.
+/// Groups facts by first argument and emits a SwitchOnConstant dispatch table
+/// followed by per-group try/retry/trust chains.
 fn append_fact2(
     code: &mut Vec<Instruction>,
     labels: &mut HashMap<String, usize>,
     pred_name: &str,
     pairs: &[(String, String)],
 ) {
+    use std::collections::BTreeMap;
     if pairs.is_empty() { return; }
-    let base = code.len();
-    labels.insert(format!("{}/2", pred_name), base + 1);
-    for (i, (a, b)) in pairs.iter().enumerate() {
-        labels.insert(format!("{}_{}", pred_name, i), code.len() + 1);
-        if pairs.len() > 1 {
-            if i == 0 {
-                code.push(Instruction::TryMeElse(format!("{}_{}", pred_name, i + 1)));
-            } else if i == pairs.len() - 1 {
-                code.push(Instruction::TrustMe);
-            } else {
-                code.push(Instruction::RetryMeElse(format!("{}_{}", pred_name, i + 1)));
-            }
-        }
-        code.push(Instruction::GetConstant(Value::Atom(a.clone()), "A1".to_string()));
-        code.push(Instruction::GetConstant(Value::Atom(b.clone()), "A2".to_string()));
-        code.push(Instruction::Proceed);
+
+    // Group facts by first argument
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (a, b) in pairs {
+        groups.entry(a.clone()).or_default().push(b.clone());
     }
+
+    // Entry point: SwitchOnConstant dispatch on A1
+    let entry_pc = code.len() + 1;
+    labels.insert(format!("{}/2", pred_name), entry_pc);
+
+    // Build dispatch table entries (will be filled with labels after emitting groups)
+    let mut dispatch: Vec<(Value, String)> = Vec::new();
+    let switch_idx = code.len();
+    code.push(Instruction::Proceed); // placeholder — replaced below
+
+    // Emit per-group fact chains
+    for (key, values) in &groups {
+        let group_label = format!("{}_g_{}", pred_name, key);
+        dispatch.push((Value::Atom(key.clone()), group_label.clone()));
+        labels.insert(group_label, code.len() + 1);
+
+        for (i, b) in values.iter().enumerate() {
+            let fact_label = format!("{}_g_{}_{}", pred_name, key, i);
+            labels.insert(fact_label, code.len() + 1);
+
+            if values.len() > 1 {
+                if i == 0 {
+                    code.push(Instruction::TryMeElse(
+                        format!("{}_g_{}_{}", pred_name, key, i + 1)));
+                } else if i == values.len() - 1 {
+                    code.push(Instruction::TrustMe);
+                } else {
+                    code.push(Instruction::RetryMeElse(
+                        format!("{}_g_{}_{}", pred_name, key, i + 1)));
+                }
+            }
+            code.push(Instruction::GetConstant(Value::Atom(key.clone()), "A1".to_string()));
+            code.push(Instruction::GetConstant(Value::Atom(b.clone()), "A2".to_string()));
+            code.push(Instruction::Proceed);
+        }
+    }
+
+    // Replace the placeholder with the actual SwitchOnConstant
+    code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
-/// Build WAM fact instructions for a 1-column relation and append to code/labels.
+/// Build WAM fact instructions for a 1-column relation with first-argument indexing.
 fn append_fact1(
     code: &mut Vec<Instruction>,
     labels: &mut HashMap<String, usize>,
@@ -262,21 +293,24 @@ fn append_fact1(
     values: &[String],
 ) {
     if values.is_empty() { return; }
-    labels.insert(format!("{}/1", pred_name), code.len() + 1);
+
+    let entry_pc = code.len() + 1;
+    labels.insert(format!("{}/1", pred_name), entry_pc);
+
+    // For 1-column facts, SwitchOnConstant dispatch is a direct jump
+    let mut dispatch: Vec<(Value, String)> = Vec::new();
+    let switch_idx = code.len();
+    code.push(Instruction::Proceed); // placeholder
+
     for (i, val) in values.iter().enumerate() {
-        labels.insert(format!("{}_{}", pred_name, i), code.len() + 1);
-        if values.len() > 1 {
-            if i == 0 {
-                code.push(Instruction::TryMeElse(format!("{}_{}", pred_name, i + 1)));
-            } else if i == values.len() - 1 {
-                code.push(Instruction::TrustMe);
-            } else {
-                code.push(Instruction::RetryMeElse(format!("{}_{}", pred_name, i + 1)));
-            }
-        }
+        let fact_label = format!("{}_{}", pred_name, i);
+        dispatch.push((Value::Atom(val.clone()), fact_label.clone()));
+        labels.insert(fact_label, code.len() + 1);
         code.push(Instruction::GetConstant(Value::Atom(val.clone()), "A1".to_string()));
         code.push(Instruction::Proceed);
     }
+
+    code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
 fn main() {

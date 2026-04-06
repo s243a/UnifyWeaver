@@ -370,7 +370,8 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
 % --- Indexing Instructions ---
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
@@ -379,8 +380,11 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                                 }
                             }
                         }
+                        // No match in dispatch table — fail (no fallthrough)
+                        return false;
                     }
                 }
+                // Unbound A1: skip dispatch, advance to next instruction
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
