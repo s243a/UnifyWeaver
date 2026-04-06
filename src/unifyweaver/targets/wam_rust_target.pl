@@ -347,11 +347,12 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                     self.choice_points.push(ChoicePoint {
                         next_pc,
                         regs: self.regs.clone(),
-                        stack: self.stack.clone(),
                         cp: self.cp,
-                        trail: self.trail.clone(),
-                        builtin_state: None,
+                        stack_len: self.stack.len(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
                         bindings: self.bindings.clone(),
+                        builtin_state: None,
                         cut_barrier: self.cut_barrier,
                     });
                     self.pc += 1; true
@@ -491,22 +492,21 @@ compile_backtrack_to_rust(Code0) :-
         if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
 
-            // 1. Unwind ONLY the bindings table from trail entries.
-            //    Register entries are skipped because cp.regs is the
-            //    authoritative snapshot — unwind_trail must not clobber
-            //    registers that cp.regs will restore.
-            self.unwind_trail_bindings_only(&cp.trail);
+            // 1. Unwind trail entries added since the choice point.
+            self.unwind_trail_bindings_only(cp.trail_len);
 
-            // 2. Restore everything from the snapshot.
+            // 2. Truncate stack, trail, and heap to saved depths.
+            self.stack.truncate(cp.stack_len);
+            self.trail.truncate(cp.trail_len);
+            self.heap.truncate(cp.heap_len);
+
+            // 3. Restore registers, bindings, and control state.
             self.regs = cp.regs;
-            self.stack = cp.stack;
             self.cp = cp.cp;
-            self.trail = cp.trail;
             self.bindings = cp.bindings;
             self.cut_barrier = cp.cut_barrier;
 
             if let Some(state) = cp.builtin_state {
-                // Pop for non-deterministic builtins (they manage their own state)
                 self.choice_points.pop();
                 return self.resume_builtin(state);
             }
@@ -518,12 +518,10 @@ compile_backtrack_to_rust(Code0) :-
 '.
 
 compile_unwind_trail_to_rust(Code) :-
-    Code = '    /// Undo only binding-table entries from the trail.
-    /// Register entries are skipped because backtrack() restores regs
-    /// wholesale from the choice point snapshot (cp.regs is authoritative).
-    fn unwind_trail_bindings_only(&mut self, saved: &[TrailEntry]) {
-        if self.trail.len() <= saved.len() { return; }
-        let new_entries = self.trail.len() - saved.len();
+    Code = '    /// Undo only binding-table entries from trail entries added since saved_len.
+    fn unwind_trail_bindings_only(&mut self, saved_len: usize) {
+        if self.trail.len() <= saved_len { return; }
+        let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
             if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
                 match &entry.old_value {
@@ -531,7 +529,6 @@ compile_unwind_trail_to_rust(Code) :-
                     None => { self.bindings.remove(binding_key); }
                 }
             }
-            // Intentionally skip register entries — cp.regs handles those
         }
     }'.
 
@@ -653,17 +650,18 @@ compile_execute_term_builtin_to_rust(Code) :-
                         // Push choice point for the rest of the list
                         if items.len() > 1 {
                             self.choice_points.push(ChoicePoint {
-                                next_pc: self.pc, // Stay on this instruction
+                                next_pc: self.pc,
                                 regs: self.regs.clone(),
-                                stack: self.stack.clone(),
                                 cp: self.cp,
-                                trail: self.trail.clone(),
+                                stack_len: self.stack.len(),
+                                trail_len: self.trail.len(),
+                                heap_len: self.heap.len(),
+                                bindings: self.bindings.clone(),
                                 builtin_state: Some(BuiltinState {
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
-                                    data: vec![Value::Integer(1)], // Start from index 1 next time
+                                    data: vec![Value::Integer(1)],
                                 }),
-                                bindings: self.bindings.clone(),
                                 cut_barrier: self.cut_barrier,
                             });
                         }
@@ -724,16 +722,17 @@ compile_resume_builtin_to_rust(Code) :-
                         self.choice_points.push(ChoicePoint {
                             next_pc: self.pc,
                             regs: self.regs.clone(),
-                            stack: self.stack.clone(),
                             cp: self.cp,
-                            trail: self.trail.clone(),
+                            stack_len: self.stack.len(),
+                            trail_len: self.trail.len(),
+                            heap_len: self.heap.len(),
+                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
-                            bindings: self.bindings.clone(),
-                                cut_barrier: self.cut_barrier,
+                            cut_barrier: self.cut_barrier,
                         });
                     }
                     
@@ -766,17 +765,18 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         // the goal failed, so \\+ succeeds.
                         let cp_depth = self.choice_points.len();
                         self.choice_points.push(ChoicePoint {
-                            next_pc: 0, // sentinel: handled specially below
+                            next_pc: 0,
                             regs: self.regs.clone(),
-                            stack: self.stack.clone(),
                             cp: self.cp,
-                            trail: self.trail.clone(),
+                            stack_len: self.stack.len(),
+                            trail_len: self.trail.len(),
+                            heap_len: self.heap.len(),
+                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "naf_succeed".to_string(),
                                 args: vec![Value::Integer(naf_pc as i64)],
                                 data: vec![],
                             }),
-                            bindings: self.bindings.clone(),
                             cut_barrier: self.cut_barrier,
                         });
 

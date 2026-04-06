@@ -17,13 +17,17 @@ pub struct TrailEntry {
 pub struct ChoicePoint {
     pub next_pc: usize,
     pub regs: HashMap<String, Value>,
-    pub stack: Vec<StackEntry>,
     pub cp: usize,
-    pub trail: Vec<TrailEntry>,
+    /// Saved stack depth — backtrack truncates stack to this length.
+    pub stack_len: usize,
+    /// Saved trail depth — backtrack unwinds trail entries beyond this point.
+    pub trail_len: usize,
+    /// Saved heap depth — backtrack truncates heap to this length.
+    pub heap_len: usize,
+    /// Saved bindings snapshot — needed because bindings is a HashMap (can't truncate).
+    pub bindings: HashMap<String, Value>,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
-    /// Saved variable bindings for backtracking.
-    pub bindings: HashMap<String, Value>,
     /// Saved cut barrier for backtracking.
     pub cut_barrier: usize,
 }
