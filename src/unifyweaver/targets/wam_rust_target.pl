@@ -753,57 +753,73 @@ compile_execute_meta_builtin_to_rust(Code) :-
     fn execute_meta_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "\\\\+/1" => {
-                // Negation-as-failure: \\+(Goal)
-                // Goal is in A1 as a Str(functor, args) or via label dispatch.
-                // Save state, try the goal, negate the result.
+                // Negation-as-failure using WAM choice point mechanism.
+                // Push a choice point that will succeed if the goal fails.
+                // If the goal succeeds, cut and fail (negation).
                 let goal = self.regs.get("A1").cloned();
                 let goal = goal.map(|v| self.deref_heap(&v));
                 match goal {
                     Some(Value::Str(functor, args)) => {
-                        // Save VM state
-                        let saved_regs = self.regs.clone();
-                        let saved_stack = self.stack.clone();
-                        let saved_trail = self.trail.clone();
-                        let saved_cp = self.cp;
-                        let saved_pc = self.pc;
-                        let saved_choice_points = self.choice_points.clone();
-                        let saved_heap = self.heap.clone();
-                        let saved_bindings = self.bindings.clone();
+                        let naf_pc = self.pc; // current BuiltinCall pc
 
-                        // Try as builtin first
+                        // Push a NAF choice point: if we backtrack here,
+                        // the goal failed, so \\+ succeeds.
+                        let cp_depth = self.choice_points.len();
+                        self.choice_points.push(ChoicePoint {
+                            next_pc: 0, // sentinel: handled specially below
+                            regs: self.regs.clone(),
+                            stack: self.stack.clone(),
+                            cp: self.cp,
+                            trail: self.trail.clone(),
+                            builtin_state: Some(BuiltinState {
+                                name: "naf_succeed".to_string(),
+                                args: vec![Value::Integer(naf_pc as i64)],
+                                data: vec![],
+                            }),
+                            bindings: self.bindings.clone(),
+                            cut_barrier: self.cut_barrier,
+                        });
+
+                        // Set up the goal call
                         let pred_key = format!("{}", functor);
                         let arity = args.len();
                         for (i, arg) in args.iter().enumerate() {
                             self.set_reg(&format!("A{}", i + 1), arg.clone());
                         }
 
-                        let goal_succeeded = if self.execute_builtin(&pred_key, arity) {
-                            true
-                        } else if let Some(&target_pc) = self.labels.get(&pred_key) {
-                            // Try as a compiled predicate via label dispatch
-                            self.pc = target_pc;
-                            self.cp = 0;
-                            self.run()
-                        } else {
-                            false
-                        };
-
-                        // Restore state regardless
-                        self.regs = saved_regs;
-                        self.stack = saved_stack;
-                        self.trail = saved_trail;
-                        self.cp = saved_cp;
-                        self.choice_points = saved_choice_points;
-                        self.heap = saved_heap;
-                        self.bindings = saved_bindings;
-
-                        // Negate: if goal succeeded, \\+ fails; if goal failed, \\+ succeeds
-                        if goal_succeeded {
-                            false
-                        } else {
-                            self.pc = saved_pc + 1;
-                            true
+                        // Try as builtin first
+                        if self.execute_builtin(&pred_key, arity) {
+                            // Goal succeeded → \\+ fails.
+                            // Remove the NAF choice point and any nested ones.
+                            self.choice_points.truncate(cp_depth);
+                            return false;
                         }
+
+                        // Try as compiled predicate via label dispatch
+                        if let Some(&target_pc) = self.labels.get(&pred_key) {
+                            self.pc = target_pc;
+                            self.cp = 0; // halt sentinel for sub-run
+                            let goal_ok = self.run();
+                            if goal_ok {
+                                // Goal succeeded → \\+ fails.
+                                // Remove the NAF choice point and any nested ones.
+                                self.choice_points.truncate(cp_depth);
+                                return false;
+                            }
+                            // Goal failed → backtrack will reach our NAF CP
+                            // (it may already have been reached by run()''s backtrack)
+                        }
+
+                        // Goal failed entirely. The NAF CP should still be on the stack
+                        // (or was already consumed by backtrack). Either way, \\+ succeeds.
+                        // Clean up: ensure the NAF CP is removed if still present.
+                        if self.choice_points.len() > cp_depth {
+                            self.choice_points.truncate(cp_depth);
+                        }
+                        // Restore state from the NAF CP we pushed
+                        // (backtrack may have already done this, but be safe)
+                        self.pc = naf_pc + 1;
+                        true
                     }
                     _ => false,
                 }
@@ -811,6 +827,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
             _ => false,
         }
     }'.
+
+compile_resume_naf_to_rust(Code) :-
+    Code = ''.
 
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
