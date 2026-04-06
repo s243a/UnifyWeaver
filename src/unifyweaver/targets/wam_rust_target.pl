@@ -308,6 +308,7 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
+                self.cut_barrier = self.choice_points.len();
                 self.stack.push(StackEntry::Env(self.cp, HashMap::new()));
                 self.pc += 1; true'.
 
@@ -351,6 +352,7 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         trail: self.trail.clone(),
                         builtin_state: None,
                         bindings: self.bindings.clone(),
+                        cut_barrier: self.cut_barrier,
                     });
                     self.pc += 1; true
                 } else { false }'.
@@ -477,6 +479,7 @@ compile_backtrack_to_rust(Code0) :-
             self.unwind_trail(&cp.trail);
             self.trail = cp.trail;
             self.bindings = cp.bindings;
+            self.cut_barrier = cp.cut_barrier;
 
             if let Some(state) = cp.builtin_state {
                 // Pop for non-deterministic builtins (they manage their own state)
@@ -525,7 +528,7 @@ compile_execute_builtin_to_rust(Code) :-
         match op {
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
-            "!/0" => { self.choice_points.clear(); self.pc += 1; true }
+            "!/0" => { self.choice_points.truncate(self.cut_barrier); self.pc += 1; true }
             _ => false,
         }
     }'.
@@ -642,6 +645,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                     data: vec![Value::Integer(1)], // Start from index 1 next time
                                 }),
                                 bindings: self.bindings.clone(),
+                                cut_barrier: self.cut_barrier,
                             });
                         }
                         
@@ -710,6 +714,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
                             bindings: self.bindings.clone(),
+                                cut_barrier: self.cut_barrier,
                         });
                     }
                     

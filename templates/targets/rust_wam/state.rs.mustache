@@ -24,6 +24,8 @@ pub struct ChoicePoint {
     pub builtin_state: Option<BuiltinState>,
     /// Saved variable bindings for backtracking.
     pub bindings: HashMap<String, Value>,
+    /// Saved cut barrier for backtracking.
+    pub cut_barrier: usize,
 }
 
 /// State for non-deterministic builtins
@@ -74,6 +76,9 @@ pub struct WamState {
     pub bindings: HashMap<String, Value>,
     /// Counter for generating unique variable names.
     pub var_counter: usize,
+    /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
+    /// !/0 truncates choice_points to this depth instead of clearing all.
+    pub cut_barrier: usize,
 }
 
 impl WamState {
@@ -91,6 +96,7 @@ impl WamState {
             labels,
             bindings: HashMap::new(),
             var_counter: 0,
+            cut_barrier: 0,
         }
     }
 
@@ -135,6 +141,7 @@ impl WamState {
         self.bindings.clear();
         self.cp = 0;
         self.var_counter = 0;
+        self.cut_barrier = 0;
     }
 
     /// Get a register value. Yi registers are read from the environment frame.
