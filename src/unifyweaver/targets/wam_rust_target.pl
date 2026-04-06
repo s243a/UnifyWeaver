@@ -375,14 +375,28 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
     Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
-                        for (key, label) in table {
-                            if *key == val {
-                                if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                        // Binary search for Atom keys (table is sorted from BTreeMap)
+                        if let Value::Atom(ref needle) = val {
+                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
+                                if let Value::Atom(s) = k { s.as_str() } else { "" }
+                            }) {
+                                Ok(idx) => {
+                                    if let Some(&pc) = self.labels.get(&table[idx].1) {
+                                        self.pc = pc; return true;
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            // Fallback linear scan for non-Atom values
+                            for (key, label) in table {
+                                if *key == val {
+                                    if let Some(&pc) = self.labels.get(label) {
+                                        self.pc = pc; return true;
+                                    }
                                 }
                             }
                         }
-                        // No match in dispatch table — fail (no fallthrough)
                         return false;
                     }
                 }
