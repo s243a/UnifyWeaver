@@ -349,7 +349,11 @@ fn main() {
             loop {
                 let succeeded = vm.run();
                 if succeeded {
-                    if let Some(hops_val) = vm.regs.get("A3").cloned() {
+                    // Read Hops from the binding table, not A3 directly.
+                    // A3 gets overwritten by recursive calls, but the original
+                    // Unbound("Hops") variable is bound via bind_var.
+                    if let Some(hops_val) = vm.bindings.get("Hops").cloned()
+                        .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
                         let hops = match &hops_val {
                             Value::Integer(h) => *h as f64,
                             Value::Float(h) => *h,
