@@ -370,6 +370,7 @@ fn main() {
 
         // Reset VM mutable state (code/labels are shared, not cloned)
         vm.reset_query();
+        vm.step_limit = 500_000; // cap exploration per seed category
 
         vm.set_reg("A1", Value::Atom(cat.clone()));
         vm.set_reg("A2", Value::Atom(root.clone()));
@@ -380,6 +381,7 @@ fn main() {
             vm.pc = pc;
             vm.cp = 0;
 
+            let mut solutions = 0u32;
             loop {
                 let succeeded = vm.run();
                 if succeeded {
@@ -399,7 +401,11 @@ fn main() {
                         };
                         let d = hops + 1.0;
                         weight_sum += d.powf(neg_n);
+                        solutions += 1;
                     }
+                    // Safety limit: deep paths contribute negligibly to d_eff
+                    // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
+                    if solutions > 10000 { break; }
                     if !vm.backtrack() { break; }
                 } else {
                     break;

@@ -79,6 +79,10 @@ pub struct WamState {
     /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
     /// !/0 truncates choice_points to this depth instead of clearing all.
     pub cut_barrier: usize,
+    /// Step counter for limiting exploration on dense cyclic graphs.
+    pub step_count: u64,
+    /// Maximum steps per query (0 = unlimited).
+    pub step_limit: u64,
 }
 
 impl WamState {
@@ -97,6 +101,8 @@ impl WamState {
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
+            step_count: 0,
+            step_limit: 0,
         }
     }
 
@@ -142,6 +148,7 @@ impl WamState {
         self.cp = 0;
         self.var_counter = 0;
         self.cut_barrier = 0;
+        self.step_count = 0;
     }
 
     /// Get a register value. Yi registers are read from the environment frame.

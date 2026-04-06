@@ -465,14 +465,18 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     ], RustCode).
 
 compile_run_loop_to_rust(Code) :-
-    Code = '    /// Main execution loop. Runs until halt (pc=0) or failure.
+    Code = '    /// Main execution loop. Runs until halt (pc=0), failure, or step limit.
     pub fn run(&mut self) -> bool {
         loop {
             if self.pc == 0 { return true; }
+            if self.step_limit > 0 && self.step_count >= self.step_limit {
+                return false;
+            }
             if let Some(instr) = self.fetch().cloned() {
                 if !self.step(&instr) {
                     if !self.backtrack() { return false; }
                 }
+                self.step_count += 1;
             } else {
                 return false;
             }
