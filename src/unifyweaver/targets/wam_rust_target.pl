@@ -276,19 +276,16 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let ref_val = Value::Ref(addr);
-                self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
-                if let Some(val) = self.regs.get(ai) {
-                    if val.is_unbound() {
-                        let dv = self.deref_heap(val);
-                        if let Value::Unbound(name) = dv {
-                            self.trail_binding(&name);
-                            self.put_reg(&name, ref_val.clone());
-                        }
-                    }
-                }
-                self.regs.insert(ai.clone(), ref_val);
+    Body = '                // Enter list-write mode. The next two SetValue/SetConstant
+                // instructions provide the head and tail of [H|T].
+                // We record which register to store the result in, and
+                // use the heap as a scratch area: push a sentinel, then
+                // collect two values; after the second, build the list.
+                let marker = self.heap.len();
+                self.heap.push(Value::Atom("__list_head__".to_string()));
+                self.heap.push(Value::Atom("__list_tail__".to_string()));
+                self.regs.insert(ai.clone(), Value::Integer(marker as i64));
+                self.stack.push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
@@ -300,12 +297,12 @@ wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
     Body = '                if let Some(val) = self.get_reg(xn) {
-                    self.heap.push(val);
+                    self.set_heap_or_list(val);
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
-    Body = '                self.heap.push(c.clone());
+    Body = '                self.set_heap_or_list(c.clone());
                 self.pc += 1; true'.
 
 % --- Control Instructions ---

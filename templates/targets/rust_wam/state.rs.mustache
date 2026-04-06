@@ -171,6 +171,56 @@ impl WamState {
         }
     }
 
+    /// Push a value to the heap, or into a list being constructed via PutList.
+    /// When a WriteCtx is on the stack, the first call fills the head slot
+    /// and the second fills the tail slot, then builds the Value::List and
+    /// stores it in the register that PutList recorded.
+    pub fn set_heap_or_list(&mut self, val: Value) {
+        if let Some(StackEntry::WriteCtx(marker)) = self.stack.last().cloned() {
+            // We're in list-write mode. Check which slot to fill.
+            if let Value::Atom(ref s) = self.heap[marker] {
+                if s == "__list_head__" {
+                    // First SetValue: fill the head
+                    self.heap[marker] = val;
+                    return;
+                }
+            }
+            if let Value::Atom(ref s) = self.heap[marker + 1] {
+                if s == "__list_tail__" {
+                    // Second SetValue: fill the tail, build the list
+                    self.heap[marker + 1] = val;
+                    let head = self.heap[marker].clone();
+                    let tail = self.heap[marker + 1].clone();
+
+                    // Build [Head | Tail] as a Value::List
+                    let list = match tail {
+                        Value::List(mut items) => {
+                            items.insert(0, head);
+                            Value::List(items)
+                        }
+                        _ => Value::List(vec![head, tail]),
+                    };
+
+                    // Find which register PutList stored the marker in
+                    // and update it with the constructed list
+                    let marker_val = Value::Integer(marker as i64);
+                    let reg_key = self.regs.iter()
+                        .find(|(_, v)| **v == marker_val)
+                        .map(|(k, _)| k.clone());
+                    if let Some(key) = reg_key {
+                        self.regs.insert(key, list);
+                    }
+
+                    // Pop the WriteCtx
+                    self.stack.pop();
+                    return;
+                }
+            }
+        }
+        // Default: just push to heap
+        self.heap.push(val);
+    }
+
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
         let old = self.get_reg(key);
@@ -182,17 +232,16 @@ impl WamState {
 
     /// Unify two values, potentially trailing bindings.
     pub fn unify(&mut self, v1: &Value, v2: &Value) -> bool {
-        let dv1 = self.deref_heap(v1);
-        let dv2 = self.deref_heap(v2);
+        let dv1 = self.deref_var(&self.deref_heap(v1));
+        let dv2 = self.deref_var(&self.deref_heap(v2));
         match (&dv1, &dv2) {
+            (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => true,
             (Value::Unbound(n1), _) => {
-                self.trail_binding(n1);
-                self.put_reg(n1, dv2.clone());
+                self.bind_var(n1, dv2.clone());
                 true
             }
             (_, Value::Unbound(n2)) => {
-                self.trail_binding(n2);
-                self.put_reg(n2, dv1.clone());
+                self.bind_var(n2, dv1.clone());
                 true
             }
             (Value::Atom(a1), Value::Atom(a2)) => a1 == a2,
