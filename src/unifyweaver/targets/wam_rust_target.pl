@@ -523,9 +523,9 @@ compile_execute_arith_builtin_to_rust(Code) :-
     Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
-                let expr = self.regs.get("A2").cloned().unwrap_or(Value::Integer(0));
+                let expr = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
                 if let Some(result) = self.eval_arith(&expr) {
-                    let lhs = self.regs.get("A1").cloned();
+                    let lhs = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
                     // Bind as integer if result is very close to a whole number
                     let final_val = if (result.round() - result).abs() < f64::EPSILON {
                         Value::Integer(result.round() as i64)
@@ -533,9 +533,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
                         Value::Float(result)
                     };
                     match lhs {
-                        Some(v) if v.is_unbound() => {
+                        Some(Value::Unbound(ref var_name)) => {
                             self.trail_binding("A1");
-                            self.regs.insert("A1".to_string(), final_val);
+                            self.regs.insert("A1".to_string(), final_val.clone());
+                            self.bind_var(var_name, final_val);
                             self.pc += 1; true
                         }
                         Some(Value::Integer(n)) if (n as f64) == result => {
@@ -549,8 +550,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             ">/2" | "</2" | ">=/2" | "=</2" | "=:=/2" | "=\\\\=/2" => {
-                let v1 = self.regs.get("A1").cloned().and_then(|v| self.eval_arith(&v));
-                let v2 = self.regs.get("A2").cloned().and_then(|v| self.eval_arith(&v));
+                let v1 = self.regs.get("A1").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
+                let v2 = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
                 if let (Some(n1), Some(n2)) = (v1, v2) {
                     let ok = match op {
                         ">/2" => n1 > n2,
@@ -648,11 +649,12 @@ compile_execute_term_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 let len_val = Value::Integer(len);
-                let lhs = self.regs.get("A2").cloned();
+                let lhs = self.regs.get("A2").cloned().map(|v| self.deref_var(&v));
                 match lhs {
-                    Some(v) if v.is_unbound() => {
+                    Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding("A2");
-                        self.regs.insert("A2".to_string(), len_val);
+                        self.regs.insert("A2".to_string(), len_val.clone());
+                        self.bind_var(var_name, len_val);
                         self.pc += 1; true
                     }
                     Some(Value::Integer(n)) if n == len => {
