@@ -53,12 +53,14 @@ compile_step_arm(ArmCode) :-
 % --- Head Unification Instructions ---
 
 wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
-    Body = '                let val = self.regs.get(ai).cloned();
+    Body = '                let raw_val = self.regs.get(ai).cloned();
+                let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
-                    Some(v) if v.is_unbound() => {
+                    Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), c.clone());
+                        self.bind_var(var_name, c.clone());
                         self.pc += 1;
                         true
                     }
@@ -66,7 +68,8 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
-    Body = '                if let Some(val) = self.regs.get(ai).cloned() {
+    Body = '                if let Some(raw) = self.regs.get(ai).cloned() {
+                    let val = self.deref_var(&raw);
                     self.trail_binding(xn);
                     self.put_reg(xn, val);
                     self.pc += 1;
@@ -241,7 +244,8 @@ wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_V{}", self.pc));
+    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter));
+                self.var_counter += 1;
                 self.trail_binding(xn);
                 self.trail_binding(ai);
                 self.put_reg(xn, var.clone());
@@ -350,6 +354,7 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         cp: self.cp,
                         trail: self.trail.clone(),
                         builtin_state: None,
+                        bindings: self.bindings.clone(),
                     });
                     self.pc += 1; true
                 } else { false }'.
@@ -362,10 +367,6 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
                     if let Some(cp) = self.choice_points.last_mut() {
                         cp.next_pc = next_pc;
-                        cp.regs = self.regs.clone();
-                        cp.stack = self.stack.clone();
-                        cp.cp = self.cp;
-                        cp.trail = self.trail.clone();
                     }
                     self.pc += 1; true
                 } else { false }'.
@@ -475,6 +476,7 @@ compile_backtrack_to_rust(Code0) :-
             // Unwind trail
             self.unwind_trail(&cp.trail);
             self.trail = cp.trail;
+            self.bindings = cp.bindings;
 
             if let Some(state) = cp.builtin_state {
                 // Pop for non-deterministic builtins (they manage their own state)
@@ -627,6 +629,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                     args: vec![val1.clone(), val2.clone()],
                                     data: vec![Value::Integer(1)], // Start from index 1 next time
                                 }),
+                                bindings: self.bindings.clone(),
                             });
                         }
                         
@@ -693,6 +696,7 @@ compile_resume_builtin_to_rust(Code) :-
                                 args: state.args.clone(),
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
+                            bindings: self.bindings.clone(),
                         });
                     }
                     
@@ -727,6 +731,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         let saved_pc = self.pc;
                         let saved_choice_points = self.choice_points.clone();
                         let saved_heap = self.heap.clone();
+                        let saved_bindings = self.bindings.clone();
 
                         // Try as builtin first
                         let pred_key = format!("{}", functor);
@@ -753,6 +758,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         self.cp = saved_cp;
                         self.choice_points = saved_choice_points;
                         self.heap = saved_heap;
+                        self.bindings = saved_bindings;
 
                         // Negate: if goal succeeded, \\+ fails; if goal failed, \\+ succeeds
                         if goal_succeeded {

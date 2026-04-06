@@ -334,14 +334,8 @@ fn main() {
     for cat in &seed_cats {
         let mut weight_sum: f64 = 0.0;
 
-        // Reset VM for this query
-        vm.code = all_code.clone();
-        vm.labels = all_labels.clone();
-        vm.regs.clear();
-        vm.stack.clear();
-        vm.trail.clear();
-        vm.choice_points.clear();
-        vm.heap.clear();
+        // Reset VM mutable state (code/labels are shared, not cloned)
+        vm.reset_query();
 
         vm.set_reg("A1", Value::Atom(cat.clone()));
         vm.set_reg("A2", Value::Atom(root.clone()));

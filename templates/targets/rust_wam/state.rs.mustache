@@ -22,6 +22,8 @@ pub struct ChoicePoint {
     pub trail: Vec<TrailEntry>,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
+    /// Saved variable bindings for backtracking.
+    pub bindings: HashMap<String, Value>,
 }
 
 /// State for non-deterministic builtins
@@ -66,6 +68,12 @@ pub struct WamState {
     pub code: Vec<Instruction>,
     /// Label → PC mapping.
     pub labels: HashMap<String, usize>,
+    /// Variable binding table: maps Unbound variable names to their bound values.
+    /// This simulates the WAM heap's shared binding semantics when PutVariable
+    /// creates a variable that's stored in both a Y-register and an A-register.
+    pub bindings: HashMap<String, Value>,
+    /// Counter for generating unique variable names.
+    pub var_counter: usize,
 }
 
 impl WamState {
@@ -81,6 +89,8 @@ impl WamState {
             choice_points: Vec::new(),
             code,
             labels,
+            bindings: HashMap::new(),
+            var_counter: 0,
         }
     }
 
@@ -89,19 +99,56 @@ impl WamState {
         self.regs.insert(name.to_string(), val);
     }
 
-    /// Get a register value. Yi registers are read from the environment frame.
-    pub fn get_reg(&self, name: &str) -> Option<Value> {
-        if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            // Yi register: find in top environment frame
-            for entry in &self.stack {
-                if let StackEntry::Env(_, y_regs) = entry {
-                    return y_regs.get(name).cloned();
+    /// Dereference an Unbound variable through the binding table.
+    /// Follows chains: if Unbound("X") → Unbound("Y") → Atom("hello"), returns Atom("hello").
+    pub fn deref_var(&self, val: &Value) -> Value {
+        match val {
+            Value::Unbound(name) => {
+                if let Some(bound) = self.bindings.get(name) {
+                    self.deref_var(bound)
+                } else {
+                    val.clone()
                 }
             }
-            None
+            _ => val.clone(),
+        }
+    }
+
+    /// Bind an unbound variable name to a value in the binding table.
+    pub fn bind_var(&mut self, var_name: &str, val: Value) {
+        self.bindings.insert(var_name.to_string(), val);
+    }
+
+    /// Reset mutable query state without cloning code/labels.
+    pub fn reset_query(&mut self) {
+        self.regs.clear();
+        self.stack.clear();
+        self.trail.clear();
+        self.choice_points.clear();
+        self.heap.clear();
+        self.bindings.clear();
+        self.cp = 0;
+        self.var_counter = 0;
+    }
+
+    /// Get a register value. Yi registers are read from the environment frame.
+    /// Unbound values are dereferenced through the binding table.
+    pub fn get_reg(&self, name: &str) -> Option<Value> {
+        let raw = if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            // Yi register: find in top environment frame
+            let mut found = None;
+            for entry in &self.stack {
+                if let StackEntry::Env(_, y_regs) = entry {
+                    found = y_regs.get(name).cloned();
+                    break;
+                }
+            }
+            found
         } else {
             self.regs.get(name).cloned()
-        }
+        };
+        // Dereference through the binding table
+        raw.map(|v| self.deref_var(&v))
     }
 
     /// Set a register value. Yi registers are written to the environment frame.
