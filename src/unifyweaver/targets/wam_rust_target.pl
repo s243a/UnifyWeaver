@@ -492,12 +492,23 @@ compile_backtrack_to_rust(Code0) :-
 
 compile_unwind_trail_to_rust(Code) :-
     Code = '    /// Undo bindings recorded since the saved trail state.
+    /// Handles both register entries (key = "A1", "Y2", etc.) and
+    /// binding-table entries (key = "__binding__<var_name>").
     fn unwind_trail(&mut self, saved: &[TrailEntry]) {
         let new_entries = self.trail.len() - saved.len();
         for entry in self.trail.iter().rev().take(new_entries) {
-            match &entry.old_value {
-                Some(val) => { self.regs.insert(entry.key.clone(), val.clone()); }
-                None => { self.regs.remove(&entry.key); }
+            if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
+                // Undo a variable binding table entry
+                match &entry.old_value {
+                    Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
+                    None => { self.bindings.remove(binding_key); }
+                }
+            } else {
+                // Undo a register entry
+                match &entry.old_value {
+                    Some(val) => { self.regs.insert(entry.key.clone(), val.clone()); }
+                    None => { self.regs.remove(&entry.key); }
+                }
             }
         }
     }'.
