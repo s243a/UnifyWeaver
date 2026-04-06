@@ -472,11 +472,17 @@ compile_backtrack_to_rust(Code0) :-
     pub fn backtrack(&mut self) -> bool {
         if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
+
+            // 1. Unwind ONLY the bindings table from trail entries.
+            //    Register entries are skipped because cp.regs is the
+            //    authoritative snapshot — unwind_trail must not clobber
+            //    registers that cp.regs will restore.
+            self.unwind_trail_bindings_only(&cp.trail);
+
+            // 2. Restore everything from the snapshot.
             self.regs = cp.regs;
             self.stack = cp.stack;
             self.cp = cp.cp;
-            // Unwind trail
-            self.unwind_trail(&cp.trail);
             self.trail = cp.trail;
             self.bindings = cp.bindings;
             self.cut_barrier = cp.cut_barrier;
@@ -494,26 +500,20 @@ compile_backtrack_to_rust(Code0) :-
 '.
 
 compile_unwind_trail_to_rust(Code) :-
-    Code = '    /// Undo bindings recorded since the saved trail state.
-    /// Handles both register entries (key = "A1", "Y2", etc.) and
-    /// binding-table entries (key = "__binding__<var_name>").
-    fn unwind_trail(&mut self, saved: &[TrailEntry]) {
+    Code = '    /// Undo only binding-table entries from the trail.
+    /// Register entries are skipped because backtrack() restores regs
+    /// wholesale from the choice point snapshot (cp.regs is authoritative).
+    fn unwind_trail_bindings_only(&mut self, saved: &[TrailEntry]) {
         if self.trail.len() <= saved.len() { return; }
         let new_entries = self.trail.len() - saved.len();
         for entry in self.trail.iter().rev().take(new_entries) {
             if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
-                // Undo a variable binding table entry
                 match &entry.old_value {
                     Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
                     None => { self.bindings.remove(binding_key); }
                 }
-            } else {
-                // Undo a register entry
-                match &entry.old_value {
-                    Some(val) => { self.regs.insert(entry.key.clone(), val.clone()); }
-                    None => { self.regs.remove(&entry.key); }
-                }
             }
+            // Intentionally skip register entries — cp.regs handles those
         }
     }'.
 
