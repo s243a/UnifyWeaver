@@ -498,6 +498,7 @@ compile_unwind_trail_to_rust(Code) :-
     /// Handles both register entries (key = "A1", "Y2", etc.) and
     /// binding-table entries (key = "__binding__<var_name>").
     fn unwind_trail(&mut self, saved: &[TrailEntry]) {
+        if self.trail.len() <= saved.len() { return; }
         let new_entries = self.trail.len() - saved.len();
         for entry in self.trail.iter().rev().take(new_entries) {
             if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
