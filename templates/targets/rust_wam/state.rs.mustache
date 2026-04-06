@@ -171,50 +171,79 @@ impl WamState {
         }
     }
 
-    /// Push a value to the heap, or into a list being constructed via PutList.
-    /// When a WriteCtx is on the stack, the first call fills the head slot
-    /// and the second fills the tail slot, then builds the Value::List and
-    /// stores it in the register that PutList recorded.
+    /// Push a value to the heap, or fill a slot in a structure/list under construction.
+    /// When a WriteCtx(marker) is on the stack, fills the next unfilled arg slot
+    /// at heap[marker+1..]. When all slots are filled, builds the final value
+    /// and pops the WriteCtx.
     pub fn set_heap_or_list(&mut self, val: Value) {
         if let Some(StackEntry::WriteCtx(marker)) = self.stack.last().cloned() {
-            // We're in list-write mode. Check which slot to fill.
-            if let Value::Atom(ref s) = self.heap[marker] {
-                if s == "__list_head__" {
-                    // First SetValue: fill the head
+            // Find the next unfilled slot after the header at heap[marker]
+            let header = self.heap[marker].clone();
+            match &header {
+                Value::Atom(s) if s == "__list_head__" => {
+                    // PutList mode: heap[marker]=head, heap[marker+1]=tail
                     self.heap[marker] = val;
                     return;
                 }
-            }
-            if let Value::Atom(ref s) = self.heap[marker + 1] {
-                if s == "__list_tail__" {
-                    // Second SetValue: fill the tail, build the list
-                    self.heap[marker + 1] = val;
-                    let head = self.heap[marker].clone();
-                    let tail = self.heap[marker + 1].clone();
-
-                    // Build [Head | Tail] as a Value::List
-                    let list = match tail {
-                        Value::List(mut items) => {
-                            items.insert(0, head);
-                            Value::List(items)
+                Value::Atom(s) if s != "__list_head__" && s != "__list_tail__" && s != "__struct_arg__" => {
+                    // Head already filled (not a placeholder) — fill tail
+                    if let Value::Atom(ref ts) = self.heap[marker + 1] {
+                        if ts == "__list_tail__" {
+                            self.heap[marker + 1] = val;
+                            let head = self.heap[marker].clone();
+                            let tail = self.heap[marker + 1].clone();
+                            let list = match tail {
+                                Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                                _ => Value::List(vec![head, tail]),
+                            };
+                            // Update the register holding Ref(marker) or Integer(marker)
+                            let ref_val = Value::Ref(marker);
+                            let int_val = Value::Integer(marker as i64);
+                            let reg_key = self.regs.iter()
+                                .find(|(_, v)| **v == ref_val || **v == int_val)
+                                .map(|(k, _)| k.clone());
+                            if let Some(key) = reg_key { self.regs.insert(key, list); }
+                            self.stack.pop();
+                            return;
                         }
-                        _ => Value::List(vec![head, tail]),
-                    };
-
-                    // Find which register PutList stored the marker in
-                    // and update it with the constructed list
-                    let marker_val = Value::Integer(marker as i64);
-                    let reg_key = self.regs.iter()
-                        .find(|(_, v)| **v == marker_val)
-                        .map(|(k, _)| k.clone());
-                    if let Some(key) = reg_key {
-                        self.regs.insert(key, list);
                     }
-
-                    // Pop the WriteCtx
-                    self.stack.pop();
-                    return;
                 }
+                Value::Str(functor, _) => {
+                    // PutStructure mode: fill next __struct_arg__ slot
+                    let arity: usize = functor.split('/').last()
+                        .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    for i in 1..=arity {
+                        if let Value::Atom(ref s) = self.heap[marker + i] {
+                            if s == "__struct_arg__" {
+                                self.heap[marker + i] = val.clone();
+                                // Check if all args are now filled
+                                let all_filled = (1..=arity).all(|j| {
+                                    if let Value::Atom(ref s2) = self.heap[marker + j] {
+                                        s2 != "__struct_arg__"
+                                    } else { true }
+                                });
+                                if all_filled {
+                                    // Build the Str with all args
+                                    let args: Vec<Value> = (1..=arity)
+                                        .map(|j| self.heap[marker + j].clone())
+                                        .collect();
+                                    self.heap[marker] = Value::Str(functor.clone(), args.clone());
+                                    // Update register holding Ref(marker)
+                                    let ref_val = Value::Ref(marker);
+                                    let reg_key = self.regs.iter()
+                                        .find(|(_, v)| **v == ref_val)
+                                        .map(|(k, _)| k.clone());
+                                    if let Some(key) = reg_key {
+                                        self.regs.insert(key, Value::Str(functor.clone(), args));
+                                    }
+                                    self.stack.pop();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         // Default: just push to heap

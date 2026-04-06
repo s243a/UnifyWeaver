@@ -260,19 +260,18 @@ wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let ref_val = Value::Ref(addr);
-                self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
-                if let Some(val) = self.regs.get(ai) {
-                    if val.is_unbound() {
-                        let dv = self.deref_heap(val);
-                        if let Value::Unbound(name) = dv {
-                            self.trail_binding(&name);
-                            self.put_reg(&name, ref_val.clone());
-                        }
-                    }
+    Body = '                // Parse arity from functor string (e.g. "member/2" -> arity=2)
+                let arity: usize = fn_str.split(''/'').last()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+                // Reserve heap slots for the structure header + args
+                let addr = self.heap.len();
+                self.heap.push(Value::Str(fn_str.clone(), vec![])); // placeholder
+                for _ in 0..arity {
+                    self.heap.push(Value::Atom("__struct_arg__".to_string()));
                 }
-                self.regs.insert(ai.clone(), ref_val);
+                // Enter structure-write mode: next N SetValue/SetConstant calls fill args
+                self.stack.push(StackEntry::WriteCtx(addr));
+                self.regs.insert(ai.clone(), Value::Ref(addr));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
@@ -815,21 +814,26 @@ compile_eval_arith_to_rust(Code) :-
     }
 
     fn eval_arith_compound(&self, op: &str, args: &[Value]) -> Option<f64> {
+        // Strip arity suffix from functor (e.g. "+/2" -> "+")
+        let bare_op = if let Some(slash) = op.rfind(''/'') {
+            &op[..slash]
+        } else { op };
         if args.len() == 2 {
             let a = self.eval_arith(&args[0])?;
             let b = self.eval_arith(&args[1])?;
-            match op {
+            match bare_op {
                 "+" => Some(a + b),
                 "-" => Some(a - b),
                 "*" => Some(a * b),
                 "/" if b != 0.0 => Some(a / b),
                 "//" if b != 0.0 => Some((a / b).floor()),
                 "mod" if b != 0.0 => Some(a % b),
+                "**" => Some(a.powf(b)),
                 _ => None,
             }
         } else if args.len() == 1 {
             let a = self.eval_arith(&args[0])?;
-            match op {
+            match bare_op {
                 "-" => Some(-a),
                 "abs" => Some(a.abs()),
                 _ => None,
