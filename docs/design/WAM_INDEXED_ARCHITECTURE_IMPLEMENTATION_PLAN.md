@@ -30,13 +30,13 @@ execution).
 to native types.
 
 ### Tasks
-- [ ] Create `wam_dict.pl` module with `dict_new/1`, `dict_lookup/3`,
+- [x] Create `wam_dict.pl` module with `dict_new/1`, `dict_lookup/3`,
       `dict_insert/4`, `dict_from_list/2`, `dict_to_list/2`, `dict_keys/2`
-- [ ] Implement using SWI-Prolog `assoc` as default backend
-- [ ] Add `dict_lookup_or_fail/3` (fails if key not found) and
+- [x] Implement using SWI-Prolog `assoc` as default backend
+- [x] Add `dict_lookup_or_fail/3` (fails if key not found) and
       `dict_lookup_default/4` (returns default)
-- [ ] Write tests for dictionary operations
-- [ ] Document target mappings (Haskell `Data.Map`, Rust `HashMap`, etc.)
+- [x] Write tests for dictionary operations
+- [x] Document target mappings (Haskell `Data.Map`, Rust `HashMap`, etc.)
 
 ### Acceptance Criteria
 - All existing WAM E2E tests pass with `dict_*` replacing direct `assoc` calls
@@ -48,12 +48,12 @@ to native types.
 instruction chains.
 
 ### Tasks
-- [ ] Add `fact_tables` field to WAM state (dict of predicate → fact table)
-- [ ] Create `load_facts/3` — takes a predicate, finds all `clause(Head, true)`
+- [x] Add `fact_tables` field to WAM state (dict of predicate → fact table)
+- [x] Create `load_facts/3` — takes a predicate, finds all `clause(Head, true)`
       facts, builds indexed dict grouped by first argument
-- [ ] Update `call` instruction handling: if target is a fact predicate,
+- [x] Update `call` instruction handling: if target is a fact predicate,
       dispatch to `call_fact/N` instead of jumping to WAM code
-- [ ] Implement `call_fact/N` with first-argument lookup, multi-value iteration,
+- [x] Implement `call_fact/N` with first-argument lookup, multi-value iteration,
       and choice point for backtracking through matches
 - [ ] Remove fact predicates from WAM compilation in `wam_target.pl` —
       they should be excluded from `compile_predicate_to_wam/3` output
@@ -71,13 +71,13 @@ instruction chains.
 only bodies remain as WAM instructions.
 
 ### Tasks
-- [ ] Analyze rule heads to extract constant/variable patterns per argument
-- [ ] Generate dispatch code: `match A3 == 1 → body1 ; → body2`
-- [ ] Remove `get_constant`, `get_variable`, `get_value` from body code
-- [ ] Remove `allocate`/`deallocate` from body code — handle at dispatch level
-- [ ] Remove `try_me_else`/`retry_me_else`/`trust_me` — clause selection
+- [x] Analyze rule heads to extract constant/variable patterns per argument
+- [x] Generate dispatch code: `match A3 == 1 → body1 ; → body2`
+- [x] Remove `get_constant`, `get_variable`, `get_value` from body code
+- [x] Remove `allocate`/`deallocate`` from body code — handle at dispatch level
+- [x] Remove `try_me_else`/`retry_me_else`/`trust_me` — clause selection
       handled by rule dispatcher
-- [ ] Body code starts after the last head instruction, ends at `proceed`
+- [x] Body code starts after the last head instruction, ends at `proceed`
 
 ### Acceptance Criteria
 - `category_ancestor/4` compiles to 2 rule entries with body-only WAM code
