@@ -2,6 +2,7 @@
 // Date: {{date}}
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -16,12 +17,21 @@ pub struct TrailEntry {
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
     pub next_pc: usize,
-    pub regs: HashMap<String, Value>,
-    pub stack: Vec<StackEntry>,
+    /// Saved argument registers (A1..An).
+    pub saved_args: Vec<(String, Value)>,
     pub cp: usize,
-    pub trail: Vec<TrailEntry>,
+    /// Saved stack snapshot (Rc clone = O(1), copy-on-write on mutation).
+    pub stack: Rc<Vec<StackEntry>>,
+    /// Saved trail depth — backtrack unwinds + truncates to this point.
+    pub trail_len: usize,
+    /// Saved heap depth — backtrack truncates to this point.
+    pub heap_len: usize,
+    /// Saved bindings snapshot for correct restoration on backtrack.
+    pub bindings: HashMap<String, Value>,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
+    /// Saved cut barrier for backtracking.
+    pub cut_barrier: usize,
 }
 
 /// State for non-deterministic builtins
@@ -53,7 +63,9 @@ pub struct WamState {
     /// Register file: Ai (argument), Xi (temporary), mapped by name.
     pub regs: HashMap<String, Value>,
     /// Stack: environment frames and unification contexts.
-    pub stack: Vec<StackEntry>,
+    /// Wrapped in Rc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
+    pub stack: Rc<Vec<StackEntry>>,
+    // Note: use self.smut() for mutable stack access (Rc::make_mut).
     /// Heap: term construction area.
     pub heap: Vec<Value>,
     /// Trail: binding history for backtracking.
@@ -66,6 +78,19 @@ pub struct WamState {
     pub code: Vec<Instruction>,
     /// Label → PC mapping.
     pub labels: HashMap<String, usize>,
+    /// Variable binding table: maps Unbound variable names to their bound values.
+    /// This simulates the WAM heap's shared binding semantics when PutVariable
+    /// creates a variable that's stored in both a Y-register and an A-register.
+    pub bindings: HashMap<String, Value>,
+    /// Counter for generating unique variable names.
+    pub var_counter: usize,
+    /// Cut barrier: choice point stack depth at the most recent neck/Allocate.
+    /// !/0 truncates choice_points to this depth instead of clearing all.
+    pub cut_barrier: usize,
+    /// Step counter for limiting exploration on dense cyclic graphs.
+    pub step_count: u64,
+    /// Maximum steps per query (0 = unlimited).
+    pub step_limit: u64,
 }
 
 impl WamState {
@@ -74,14 +99,25 @@ impl WamState {
         WamState {
             pc: 1,
             regs: HashMap::new(),
-            stack: Vec::new(),
+            stack: Rc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
             cp: 0, // 0 = halt
             choice_points: Vec::new(),
             code,
             labels,
+            bindings: HashMap::new(),
+            var_counter: 0,
+            cut_barrier: 0,
+            step_count: 0,
+            step_limit: 0,
         }
+    }
+
+    /// Mutable access to stack (triggers copy-on-write if shared).
+    #[inline]
+    fn smut(&mut self) -> &mut Vec<StackEntry> {
+        Rc::make_mut(&mut self.stack)
     }
 
     /// Set an argument register.
@@ -89,25 +125,70 @@ impl WamState {
         self.regs.insert(name.to_string(), val);
     }
 
-    /// Get a register value. Yi registers are read from the environment frame.
-    pub fn get_reg(&self, name: &str) -> Option<Value> {
-        if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            // Yi register: find in top environment frame
-            for entry in &self.stack {
-                if let StackEntry::Env(_, y_regs) = entry {
-                    return y_regs.get(name).cloned();
+    /// Dereference an Unbound variable through the binding table.
+    /// Follows chains: if Unbound("X") → Unbound("Y") → Atom("hello"), returns Atom("hello").
+    pub fn deref_var(&self, val: &Value) -> Value {
+        match val {
+            Value::Unbound(name) => {
+                if let Some(bound) = self.bindings.get(name) {
+                    self.deref_var(bound)
+                } else {
+                    val.clone()
                 }
             }
-            None
-        } else {
-            self.regs.get(name).cloned()
+            _ => val.clone(),
         }
     }
 
-    /// Set a register value. Yi registers are written to the environment frame.
+    /// Bind an unbound variable name to a value in the binding table.
+    /// Also records a trail entry so that backtracking can undo this binding.
+    pub fn bind_var(&mut self, var_name: &str, val: Value) {
+        let old = self.bindings.get(var_name).cloned();
+        self.trail.push(TrailEntry {
+            key: format!("__binding__{}", var_name),
+            old_value: old,
+        });
+        self.bindings.insert(var_name.to_string(), val);
+    }
+
+    /// Reset mutable query state without cloning code/labels.
+    pub fn reset_query(&mut self) {
+        self.regs.clear();
+        self.stack = Rc::new(Vec::new());
+        self.trail.clear();
+        self.choice_points.clear();
+        self.heap.clear();
+        self.bindings.clear();
+        self.cp = 0;
+        self.var_counter = 0;
+        self.cut_barrier = 0;
+        self.step_count = 0;
+    }
+
+    /// Get a register value. Yi registers are read from the environment frame.
+    /// Unbound values are dereferenced through the binding table.
+    pub fn get_reg(&self, name: &str) -> Option<Value> {
+        let raw = if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            // Yi register: find in the TOPMOST (most recent) environment frame
+            let mut found = None;
+            for entry in self.stack.iter().rev() {
+                if let StackEntry::Env(_, y_regs) = entry {
+                    found = y_regs.get(name).cloned();
+                    break;
+                }
+            }
+            found
+        } else {
+            self.regs.get(name).cloned()
+        };
+        // Dereference through the binding table
+        raw.map(|v| self.deref_var(&v))
+    }
+
+    /// Set a register value. Yi registers are written to the topmost environment frame.
     pub fn put_reg(&mut self, name: &str, val: Value) {
         if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            for entry in &mut self.stack {
+            for entry in self.smut().iter_mut().rev() {
                 if let StackEntry::Env(_, y_regs) = entry {
                     y_regs.insert(name.to_string(), val);
                     return;
@@ -117,6 +198,99 @@ impl WamState {
             self.regs.insert(name.to_string(), val);
         }
     }
+
+    /// Push a value to the heap, or fill a slot in a structure/list under construction.
+    /// When a WriteCtx(marker) is on the stack, fills the next unfilled arg slot
+    /// at heap[marker+1..]. When all slots are filled, builds the final value
+    /// and pops the WriteCtx.
+    pub fn set_heap_or_list(&mut self, val: Value) {
+        if let Some(StackEntry::WriteCtx(marker)) = self.stack.last().cloned() {
+            // Find the next unfilled slot after the header at heap[marker]
+            let header = self.heap[marker].clone();
+            match &header {
+                Value::Atom(s) if s == "__list_head__" => {
+                    // PutList mode: heap[marker]=head, heap[marker+1]=tail
+                    self.heap[marker] = val;
+                    return;
+                }
+                Value::Atom(s) if s != "__list_head__" && s != "__list_tail__" && s != "__struct_arg__" => {
+                    // Head already filled (not a placeholder) — fill tail
+                    if let Value::Atom(ref ts) = self.heap[marker + 1] {
+                        if ts == "__list_tail__" {
+                            self.heap[marker + 1] = val;
+                            let head = self.heap[marker].clone();
+                            let tail = self.heap[marker + 1].clone();
+                            let list = match tail {
+                                Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                                _ => Value::List(vec![head, tail]),
+                            };
+                            // Update the register holding Ref(marker) or Integer(marker)
+                            let ref_val = Value::Ref(marker);
+                            let int_val = Value::Integer(marker as i64);
+                            let reg_key = self.regs.iter()
+                                .find(|(_, v)| **v == ref_val || **v == int_val)
+                                .map(|(k, _)| k.clone());
+                            if let Some(key) = reg_key { self.regs.insert(key, list); }
+                            self.smut().pop();
+                            return;
+                        }
+                    }
+                }
+                Value::Str(functor, _) => {
+                    // PutStructure mode: fill next __struct_arg__ slot
+                    let arity: usize = functor.split('/').last()
+                        .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    for i in 1..=arity {
+                        if let Value::Atom(ref s) = self.heap[marker + i] {
+                            if s == "__struct_arg__" {
+                                self.heap[marker + i] = val.clone();
+                                // Check if all args are now filled
+                                let all_filled = (1..=arity).all(|j| {
+                                    if let Value::Atom(ref s2) = self.heap[marker + j] {
+                                        s2 != "__struct_arg__"
+                                    } else { true }
+                                });
+                                if all_filled {
+                                    // Build the Str with all args
+                                    let args: Vec<Value> = (1..=arity)
+                                        .map(|j| self.heap[marker + j].clone())
+                                        .collect();
+                                    self.heap[marker] = Value::Str(functor.clone(), args.clone());
+                                    // Update register holding Ref(marker)
+                                    let ref_val = Value::Ref(marker);
+                                    let reg_key = self.regs.iter()
+                                        .find(|(_, v)| **v == ref_val)
+                                        .map(|(k, _)| k.clone());
+                                    if let Some(key) = reg_key {
+                                        self.regs.insert(key, Value::Str(functor.clone(), args));
+                                    }
+                                    self.smut().pop();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Default: just push to heap
+        self.heap.push(val);
+    }
+
+    /// Save argument/temporary registers (A*, X*) as a compact Vec.
+    fn save_regs(&self) -> Vec<(String, Value)> {
+        self.regs.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Restore argument/temporary registers from a saved snapshot.
+    fn restore_regs(&mut self, saved: &[(String, Value)]) {
+        self.regs.clear();
+        for (k, v) in saved {
+            self.regs.insert(k.clone(), v.clone());
+        }
+    }
+
 
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {
@@ -129,17 +303,16 @@ impl WamState {
 
     /// Unify two values, potentially trailing bindings.
     pub fn unify(&mut self, v1: &Value, v2: &Value) -> bool {
-        let dv1 = self.deref_heap(v1);
-        let dv2 = self.deref_heap(v2);
+        let dv1 = self.deref_var(&self.deref_heap(v1));
+        let dv2 = self.deref_var(&self.deref_heap(v2));
         match (&dv1, &dv2) {
+            (Value::Unbound(n1), Value::Unbound(n2)) if n1 == n2 => true,
             (Value::Unbound(n1), _) => {
-                self.trail_binding(n1);
-                self.put_reg(n1, dv2.clone());
+                self.bind_var(n1, dv2.clone());
                 true
             }
             (_, Value::Unbound(n2)) => {
-                self.trail_binding(n2);
-                self.put_reg(n2, dv1.clone());
+                self.bind_var(n2, dv1.clone());
                 true
             }
             (Value::Atom(a1), Value::Atom(a2)) => a1 == a2,

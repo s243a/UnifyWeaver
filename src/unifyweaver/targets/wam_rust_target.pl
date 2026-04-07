@@ -53,12 +53,14 @@ compile_step_arm(ArmCode) :-
 % --- Head Unification Instructions ---
 
 wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
-    Body = '                let val = self.regs.get(ai).cloned();
+    Body = '                let raw_val = self.regs.get(ai).cloned();
+                let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
-                    Some(v) if v.is_unbound() => {
+                    Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), c.clone());
+                        self.bind_var(var_name, c.clone());
                         self.pc += 1;
                         true
                     }
@@ -66,7 +68,8 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
-    Body = '                if let Some(val) = self.regs.get(ai).cloned() {
+    Body = '                if let Some(raw) = self.regs.get(ai).cloned() {
+                    let val = self.deref_var(&raw);
                     self.trail_binding(xn);
                     self.put_reg(xn, val);
                     self.pc += 1;
@@ -105,7 +108,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         self.regs.insert(ai.clone(), Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.stack.push(StackEntry::WriteCtx(arity));
+                        self.smut().push(StackEntry::WriteCtx(arity));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
@@ -114,7 +117,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                                 let arity = fn_str.split(\'/\').nth(1)
                                     .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                                 let args = self.heap_subargs(addr + 1, arity);
-                                self.stack.push(StackEntry::UnifyCtx(args));
+                                self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
                             } else { false }
                         } else { false }
@@ -122,7 +125,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         // Read mode on Prolog compound
                         let check = format!("{}/{}", f, args.len());
                         if check == *fn_str {
-                            self.stack.push(StackEntry::UnifyCtx(args.to_vec()));
+                            self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
                         } else { false }
                     } else { false }
@@ -135,11 +138,11 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), Value::Ref(addr));
-                        self.stack.push(StackEntry::WriteCtx(2));
+                        self.smut().push(StackEntry::WriteCtx(2));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
                         if let Some((head, tail)) = items.split_first() {
-                            self.stack.push(StackEntry::UnifyCtx(
+                            self.smut().push(StackEntry::UnifyCtx(
                                 vec![head.clone(), Value::List(tail.to_vec())]));
                             self.pc += 1; true
                         } else { false }
@@ -147,7 +150,7 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
                             if s == "str(./2)" {
                                 let args = self.heap_subargs(addr + 1, 2);
-                                self.stack.push(StackEntry::UnifyCtx(args));
+                                self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
                             } else { false }
                         } else { false }
@@ -158,9 +161,9 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
     Body = '                if let Some(StackEntry::UnifyCtx(args)) = self.stack.last().cloned() {
                     if let Some(arg) = args.first().cloned() {
                         let rest: Vec<Value> = args[1..].to_vec();
-                        self.stack.pop();
+                        self.smut().pop();
                         if !rest.is_empty() {
-                            self.stack.push(StackEntry::UnifyCtx(rest));
+                            self.smut().push(StackEntry::UnifyCtx(rest));
                         }
                         self.trail_binding(xn);
                         self.put_reg(xn, arg);
@@ -171,8 +174,8 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         let addr = self.heap.len();
                         let var = Value::Unbound(format!("_H{}", addr));
                         self.heap.push(var.clone());
-                        self.stack.pop();
-                        if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                        self.smut().pop();
+                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                         self.put_reg(xn, var);
                         self.pc += 1; true
                     } else { false }
@@ -194,9 +197,9 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         };
                         if ok {
                             let rest: Vec<Value> = args[1..].to_vec();
-                            self.stack.pop();
+                            self.smut().pop();
                             if !rest.is_empty() {
-                                self.stack.push(StackEntry::UnifyCtx(rest));
+                                self.smut().push(StackEntry::UnifyCtx(rest));
                             }
                             self.pc += 1; true
                         } else { false }
@@ -205,8 +208,8 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                     if n > 0 {
                         if let Some(val) = self.get_reg(xn) {
                             self.heap.push(val);
-                            self.stack.pop();
-                            if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                            self.smut().pop();
+                            if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                             self.pc += 1; true
                         } else { false }
                     } else { false }
@@ -217,9 +220,9 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                     if let Some(arg) = args.first().cloned() {
                         if arg == *c || arg.is_unbound() {
                             let rest: Vec<Value> = args[1..].to_vec();
-                            self.stack.pop();
+                            self.smut().pop();
                             if !rest.is_empty() {
-                                self.stack.push(StackEntry::UnifyCtx(rest));
+                                self.smut().push(StackEntry::UnifyCtx(rest));
                             }
                             self.pc += 1; true
                         } else { false }
@@ -227,8 +230,8 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                 } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
                     if n > 0 {
                         self.heap.push(c.clone());
-                        self.stack.pop();
-                        if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                        self.smut().pop();
+                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                         self.pc += 1; true
                     } else { false }
                 } else { false }'.
@@ -241,7 +244,8 @@ wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
-    Body = '                let var = Value::Unbound(format!("_V{}", self.pc));
+    Body = '                let var = Value::Unbound(format!("_V{}", self.var_counter));
+                self.var_counter += 1;
                 self.trail_binding(xn);
                 self.trail_binding(ai);
                 self.put_reg(xn, var.clone());
@@ -256,35 +260,31 @@ wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let ref_val = Value::Ref(addr);
-                self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
-                if let Some(val) = self.regs.get(ai) {
-                    if val.is_unbound() {
-                        let dv = self.deref_heap(val);
-                        if let Value::Unbound(name) = dv {
-                            self.trail_binding(&name);
-                            self.put_reg(&name, ref_val.clone());
-                        }
-                    }
+    Body = '                // Parse arity from functor string (e.g. "member/2" -> arity=2)
+                let arity: usize = fn_str.split(''/'').last()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+                // Reserve heap slots for the structure header + args
+                let addr = self.heap.len();
+                self.heap.push(Value::Str(fn_str.clone(), vec![])); // placeholder
+                for _ in 0..arity {
+                    self.heap.push(Value::Atom("__struct_arg__".to_string()));
                 }
-                self.regs.insert(ai.clone(), ref_val);
+                // Enter structure-write mode: next N SetValue/SetConstant calls fill args
+                self.smut().push(StackEntry::WriteCtx(addr));
+                self.regs.insert(ai.clone(), Value::Ref(addr));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
-    Body = '                let addr = self.heap.len();
-                let ref_val = Value::Ref(addr);
-                self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
-                if let Some(val) = self.regs.get(ai) {
-                    if val.is_unbound() {
-                        let dv = self.deref_heap(val);
-                        if let Value::Unbound(name) = dv {
-                            self.trail_binding(&name);
-                            self.put_reg(&name, ref_val.clone());
-                        }
-                    }
-                }
-                self.regs.insert(ai.clone(), ref_val);
+    Body = '                // Enter list-write mode. The next two SetValue/SetConstant
+                // instructions provide the head and tail of [H|T].
+                // We record which register to store the result in, and
+                // use the heap as a scratch area: push a sentinel, then
+                // collect two values; after the second, build the list.
+                let marker = self.heap.len();
+                self.heap.push(Value::Atom("__list_head__".to_string()));
+                self.heap.push(Value::Atom("__list_tail__".to_string()));
+                self.regs.insert(ai.clone(), Value::Integer(marker as i64));
+                self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
@@ -296,23 +296,25 @@ wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
     Body = '                if let Some(val) = self.get_reg(xn) {
-                    self.heap.push(val);
+                    self.set_heap_or_list(val);
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
-    Body = '                self.heap.push(c.clone());
+    Body = '                self.set_heap_or_list(c.clone());
                 self.pc += 1; true'.
 
 % --- Control Instructions ---
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
-                self.stack.push(StackEntry::Env(self.cp, HashMap::new()));
+                self.cut_barrier = self.choice_points.len();
+                let saved_cp = self.cp;
+                self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::Deallocate', Body) :-
-    Body = '                if let Some(StackEntry::Env(old_cp, _)) = self.stack.pop() {
+    Body = '                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
                     self.cp = old_cp;
                     self.pc += 1; true
                 } else { false }'.
@@ -345,11 +347,14 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
                     self.choice_points.push(ChoicePoint {
                         next_pc,
-                        regs: self.regs.clone(),
-                        stack: self.stack.clone(),
+                        saved_args: self.save_regs(),
                         cp: self.cp,
-                        trail: self.trail.clone(),
+                        stack: self.stack.clone(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        bindings: self.bindings.clone(),
                         builtin_state: None,
+                        cut_barrier: self.cut_barrier,
                     });
                     self.pc += 1; true
                 } else { false }'.
@@ -369,17 +374,35 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
 % --- Indexing Instructions ---
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
                     if !val.is_unbound() {
-                        for (key, label) in table {
-                            if *key == val {
-                                if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                        // Binary search for Atom keys (table is sorted from BTreeMap)
+                        if let Value::Atom(ref needle) = val {
+                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
+                                if let Value::Atom(s) = k { s.as_str() } else { "" }
+                            }) {
+                                Ok(idx) => {
+                                    if let Some(&pc) = self.labels.get(&table[idx].1) {
+                                        self.pc = pc; return true;
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            // Fallback linear scan for non-Atom values
+                            for (key, label) in table {
+                                if *key == val {
+                                    if let Some(&pc) = self.labels.get(label) {
+                                        self.pc = pc; return true;
+                                    }
                                 }
                             }
                         }
+                        return false;
                     }
                 }
+                // Unbound A1: skip dispatch, advance to next instruction
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
@@ -426,6 +449,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_io_builtin_to_rust(IoBuiltinCode),
     compile_execute_type_builtin_to_rust(TypeBuiltinCode),
     compile_execute_term_builtin_to_rust(TermBuiltinCode),
+    compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
     compile_resume_builtin_to_rust(ResumeCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
@@ -437,39 +461,52 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         IoBuiltinCode, '\n\n',
         TypeBuiltinCode, '\n\n',
         TermBuiltinCode, '\n\n',
+        MetaBuiltinCode, '\n\n',
         ResumeCode, '\n\n',
         ArithCode
     ], RustCode).
 
 compile_run_loop_to_rust(Code) :-
-    Code = '    /// Main execution loop. Runs until halt (pc=0) or failure.
+    Code = '    /// Main execution loop. Runs until halt (pc=0), failure, or step limit.
     pub fn run(&mut self) -> bool {
         loop {
             if self.pc == 0 { return true; }
+            if self.step_limit > 0 && self.step_count >= self.step_limit {
+                return false;
+            }
             if let Some(instr) = self.fetch().cloned() {
                 if !self.step(&instr) {
                     if !self.backtrack() { return false; }
                 }
+                self.step_count += 1;
             } else {
                 return false;
             }
         }
     }'.
 
-compile_backtrack_to_rust(Code) :-
-    Code = '    /// Restore state from the top choice point.
+compile_backtrack_to_rust(Code0) :-
+    Code0 = '    /// Restore state from the top choice point without popping it.
     pub fn backtrack(&mut self) -> bool {
-        if let Some(mut cp) = self.choice_points.pop() {
+        if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
-            self.regs = cp.regs;
+
+            // 1. Unwind bindings from trail entries added since the CP.
+            self.unwind_trail_bindings_only(cp.trail_len);
+
+            // 2. Restore stack (full clone), truncate trail and heap.
             self.stack = cp.stack;
+            self.trail.truncate(cp.trail_len);
+            self.heap.truncate(cp.heap_len);
+
+            // 3. Restore registers, bindings, and control state.
+            self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
-            // Unwind trail
-            self.unwind_trail(&cp.trail);
-            self.trail = cp.trail;
-            
-            if let Some(state) = cp.builtin_state.take() {
-                // Resume non-deterministic builtin
+            self.bindings = cp.bindings;
+            self.cut_barrier = cp.cut_barrier;
+
+            if let Some(state) = cp.builtin_state {
+                self.choice_points.pop();
                 return self.resume_builtin(state);
             }
             true
@@ -480,13 +517,16 @@ compile_backtrack_to_rust(Code) :-
 '.
 
 compile_unwind_trail_to_rust(Code) :-
-    Code = '    /// Undo bindings recorded since the saved trail state.
-    fn unwind_trail(&mut self, saved: &[TrailEntry]) {
-        let new_entries = self.trail.len() - saved.len();
+    Code = '    /// Undo only binding-table entries from trail entries added since saved_len.
+    fn unwind_trail_bindings_only(&mut self, saved_len: usize) {
+        if self.trail.len() <= saved_len { return; }
+        let new_entries = self.trail.len() - saved_len;
         for entry in self.trail.iter().rev().take(new_entries) {
-            match &entry.old_value {
-                Some(val) => { self.regs.insert(entry.key.clone(), val.clone()); }
-                None => { self.regs.remove(&entry.key); }
+            if let Some(binding_key) = entry.key.strip_prefix("__binding__") {
+                match &entry.old_value {
+                    Some(val) => { self.bindings.insert(binding_key.to_string(), val.clone()); }
+                    None => { self.bindings.remove(binding_key); }
+                }
             }
         }
     }'.
@@ -498,11 +538,12 @@ compile_execute_builtin_to_rust(Code) :-
         if self.execute_io_builtin(op, arity) { return true; }
         if self.execute_type_builtin(op, arity) { return true; }
         if self.execute_term_builtin(op, arity) { return true; }
+        if self.execute_meta_builtin(op, arity) { return true; }
 
         match op {
             "true/0" => { self.pc += 1; true }
             "fail/0" => false,
-            "!/0" => { self.choice_points.clear(); self.pc += 1; true }
+            "!/0" => { self.choice_points.truncate(self.cut_barrier); self.pc += 1; true }
             _ => false,
         }
     }'.
@@ -511,9 +552,9 @@ compile_execute_arith_builtin_to_rust(Code) :-
     Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
-                let expr = self.regs.get("A2").cloned().unwrap_or(Value::Integer(0));
+                let expr = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
                 if let Some(result) = self.eval_arith(&expr) {
-                    let lhs = self.regs.get("A1").cloned();
+                    let lhs = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
                     // Bind as integer if result is very close to a whole number
                     let final_val = if (result.round() - result).abs() < f64::EPSILON {
                         Value::Integer(result.round() as i64)
@@ -521,9 +562,10 @@ compile_execute_arith_builtin_to_rust(Code) :-
                         Value::Float(result)
                     };
                     match lhs {
-                        Some(v) if v.is_unbound() => {
+                        Some(Value::Unbound(ref var_name)) => {
                             self.trail_binding("A1");
-                            self.regs.insert("A1".to_string(), final_val);
+                            self.regs.insert("A1".to_string(), final_val.clone());
+                            self.bind_var(var_name, final_val);
                             self.pc += 1; true
                         }
                         Some(Value::Integer(n)) if (n as f64) == result => {
@@ -537,8 +579,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             ">/2" | "</2" | ">=/2" | "=</2" | "=:=/2" | "=\\\\=/2" => {
-                let v1 = self.regs.get("A1").cloned().and_then(|v| self.eval_arith(&v));
-                let v2 = self.regs.get("A2").cloned().and_then(|v| self.eval_arith(&v));
+                let v1 = self.regs.get("A1").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
+                let v2 = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
                 if let (Some(n1), Some(n2)) = (v1, v2) {
                     let ok = match op {
                         ">/2" => n1 > n2,
@@ -607,25 +649,50 @@ compile_execute_term_builtin_to_rust(Code) :-
                         // Push choice point for the rest of the list
                         if items.len() > 1 {
                             self.choice_points.push(ChoicePoint {
-                                next_pc: self.pc, // Stay on this instruction
-                                regs: self.regs.clone(),
+                                next_pc: self.pc,
+                                saved_args: self.save_regs(),
                                 stack: self.stack.clone(),
                                 cp: self.cp,
-                                trail: self.trail.clone(),
+                                trail_len: self.trail.len(),
+                                heap_len: self.heap.len(),
+                                bindings: self.bindings.clone(),
                                 builtin_state: Some(BuiltinState {
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
-                                    data: vec![Value::Integer(1)], // Start from index 1 next time
+                                    data: vec![Value::Integer(1)],
                                 }),
+                                cut_barrier: self.cut_barrier,
                             });
                         }
-                        
+
                         // Try first element
                         if self.unify(&val1, &items[0]) {
                             self.pc += 1; true
                         } else { false }
                     } else { false }
                 } else { false }
+            }
+            "length/2" => {
+                let list_val = self.regs.get("A1").cloned().unwrap_or(Value::List(vec![]));
+                let derefed = self.deref_heap(&list_val);
+                let len = match &derefed {
+                    Value::List(items) => items.len() as i64,
+                    _ => return false,
+                };
+                let len_val = Value::Integer(len);
+                let lhs = self.regs.get("A2").cloned().map(|v| self.deref_var(&v));
+                match lhs {
+                    Some(Value::Unbound(ref var_name)) => {
+                        self.trail_binding("A2");
+                        self.regs.insert("A2".to_string(), len_val.clone());
+                        self.bind_var(var_name, len_val);
+                        self.pc += 1; true
+                    }
+                    Some(Value::Integer(n)) if n == len => {
+                        self.pc += 1; true
+                    }
+                    _ => false,
+                }
             }
             "append/3" => {
                 eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
@@ -653,15 +720,18 @@ compile_resume_builtin_to_rust(Code) :-
                     if idx + 1 < items.len() {
                         self.choice_points.push(ChoicePoint {
                             next_pc: self.pc,
-                            regs: self.regs.clone(),
+                            saved_args: self.save_regs(),
                             stack: self.stack.clone(),
                             cp: self.cp,
-                            trail: self.trail.clone(),
+                            trail_len: self.trail.len(),
+                            heap_len: self.heap.len(),
+                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
                                 data: vec![Value::Integer((idx + 1) as i64)],
                             }),
+                            cut_barrier: self.cut_barrier,
                         });
                     }
                     
@@ -675,6 +745,102 @@ compile_resume_builtin_to_rust(Code) :-
         }
     }'.
 
+
+compile_execute_meta_builtin_to_rust(Code) :-
+    Code = '    /// Execute meta-predicates that require goal evaluation.
+    fn execute_meta_builtin(&mut self, op: &str, _arity: usize) -> bool {
+        match op {
+            "\\\\+/1" => {
+                // Negation-as-failure using WAM choice point mechanism.
+                // Push a choice point that will succeed if the goal fails.
+                // If the goal succeeds, cut and fail (negation).
+                let goal = self.regs.get("A1").cloned();
+                let goal = goal.map(|v| self.deref_heap(&v));
+                match goal {
+                    Some(Value::Str(functor, args)) if functor == "member/2" && args.len() == 2 => {
+                        // Fast path for \\+(member(X, List)) — direct list scan,
+                        // no choice points, no builtin dispatch overhead.
+                        let needle = self.deref_var(&args[0]);
+                        let haystack = self.deref_var(&args[1]);
+                        let found = match &haystack {
+                            Value::List(items) => items.iter().any(|item| {
+                                let di = self.deref_var(item);
+                                di == needle
+                            }),
+                            _ => false,
+                        };
+                        // Negate: if found, \\+ fails; if not found, \\+ succeeds
+                        if found { return false; }
+                        self.pc += 1;
+                        return true;
+                    }
+                    Some(Value::Str(functor, args)) => {
+                        let naf_pc = self.pc;
+
+                        // Push a NAF choice point for general goals.
+                        let cp_depth = self.choice_points.len();
+                        self.choice_points.push(ChoicePoint {
+                            next_pc: 0,
+                            stack: self.stack.clone(),
+                            saved_args: self.save_regs(),
+                            cp: self.cp,
+                            trail_len: self.trail.len(),
+                            heap_len: self.heap.len(),
+                            bindings: self.bindings.clone(),
+                            builtin_state: Some(BuiltinState {
+                                name: "naf_succeed".to_string(),
+                                args: vec![Value::Integer(naf_pc as i64)],
+                                data: vec![],
+                            }),
+                            cut_barrier: self.cut_barrier,
+                        });
+
+                        let pred_key = format!("{}", functor);
+                        let arity = args.len();
+                        for (i, arg) in args.iter().enumerate() {
+                            self.set_reg(&format!("A{}", i + 1), arg.clone());
+                        }
+
+                        if self.execute_builtin(&pred_key, arity) {
+                            self.choice_points.truncate(cp_depth);
+                            return false;
+                        }
+
+                        // Try as compiled predicate via label dispatch
+                        if let Some(&target_pc) = self.labels.get(&pred_key) {
+                            self.pc = target_pc;
+                            self.cp = 0; // halt sentinel for sub-run
+                            let goal_ok = self.run();
+                            if goal_ok {
+                                // Goal succeeded → \\+ fails.
+                                // Remove the NAF choice point and any nested ones.
+                                self.choice_points.truncate(cp_depth);
+                                return false;
+                            }
+                            // Goal failed → backtrack will reach our NAF CP
+                            // (it may already have been reached by run()''s backtrack)
+                        }
+
+                        // Goal failed entirely. The NAF CP should still be on the stack
+                        // (or was already consumed by backtrack). Either way, \\+ succeeds.
+                        // Clean up: ensure the NAF CP is removed if still present.
+                        if self.choice_points.len() > cp_depth {
+                            self.choice_points.truncate(cp_depth);
+                        }
+                        // Restore state from the NAF CP we pushed
+                        // (backtrack may have already done this, but be safe)
+                        self.pc = naf_pc + 1;
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }'.
+
+compile_resume_naf_to_rust(Code) :-
+    Code = ''.
 
 compile_eval_arith_to_rust(Code) :-
     Code = '    /// Evaluate an arithmetic expression to a float.
@@ -697,6 +863,8 @@ compile_eval_arith_to_rust(Code) :-
                 // Try register dereference
                 if name.starts_with(\'A\') || name.starts_with(\'X\') || name.starts_with(\'Y\') {
                     self.get_reg(name).and_then(|v| self.eval_arith(&v))
+                } else if let Ok(n) = name.parse::<f64>() {
+                    Some(n)
                 } else { None }
             }
             _ => None,
@@ -704,21 +872,26 @@ compile_eval_arith_to_rust(Code) :-
     }
 
     fn eval_arith_compound(&self, op: &str, args: &[Value]) -> Option<f64> {
+        // Strip arity suffix from functor (e.g. "+/2" -> "+")
+        let bare_op = if let Some(slash) = op.rfind(''/'') {
+            &op[..slash]
+        } else { op };
         if args.len() == 2 {
             let a = self.eval_arith(&args[0])?;
             let b = self.eval_arith(&args[1])?;
-            match op {
+            match bare_op {
                 "+" => Some(a + b),
                 "-" => Some(a - b),
                 "*" => Some(a * b),
                 "/" if b != 0.0 => Some(a / b),
                 "//" if b != 0.0 => Some((a / b).floor()),
                 "mod" if b != 0.0 => Some(a % b),
+                "**" => Some(a.powf(b)),
                 _ => None,
             }
         } else if args.len() == 1 {
             let a = self.eval_arith(&args[0])?;
-            match op {
+            match bare_op {
                 "-" => Some(-a),
                 "abs" => Some(a.abs()),
                 _ => None,
@@ -884,18 +1057,21 @@ wam_line_to_rust_instr(["allocate"], "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], "Instruction::Deallocate").
 wam_line_to_rust_instr(["call", P, N], Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
-        'Instruction::Call("~w".to_string(), ~w)', [CP, Num]).
+        'Instruction::Call("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["execute", P], Rust) :-
+    escape_rust_string(P, EP),
     format(string(Rust),
-        'Instruction::Execute("~w".to_string())', [P]).
+        'Instruction::Execute("~w".to_string())', [EP]).
 wam_line_to_rust_instr(["proceed"], "Instruction::Proceed").
 wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
+    escape_rust_string(COp, ECOp),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
-        'Instruction::BuiltinCall("~w".to_string(), ~w)', [COp, Num]).
+        'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
 wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
@@ -947,6 +1123,22 @@ clean_comma(Str, Clean) :-
     ->  sub_string(Str, 0, _, 1, Clean)
     ;   Clean = Str
     ).
+
+%% escape_rust_string(+In, -Out)
+%  Escapes backslashes and double-quotes for embedding in a Rust string literal.
+escape_rust_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", Parts),
+    atomics_to_string(Parts, "\\\\", Escaped1),
+    split_string(Escaped1, "\"", "", Parts2),
+    atomics_to_string(Parts2, "\\\"", Out).
+
+atomics_to_string([], _, "").
+atomics_to_string([X], _, X).
+atomics_to_string([X, Y|Rest], Sep, Result) :-
+    atomics_to_string([Y|Rest], Sep, Tail),
+    string_concat(X, Sep, XSep),
+    string_concat(XSep, Tail, Result).
 
 build_rust_wam_arg_list(0, "vm: &mut WamState") :- !.
 build_rust_wam_arg_list(Arity, ArgList) :-
