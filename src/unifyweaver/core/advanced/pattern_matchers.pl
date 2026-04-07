@@ -724,10 +724,12 @@ is_per_path_visited_pattern(Name, Arity, Clauses, VisitedPos) :-
     between(1, Arity, VisitedPos),
     nth1(VisitedPos, RecArgs, VisitedVar),
     var(VisitedVar),
-    % Check: body has \+ member(_, VisitedVar)
-    body_has_negated_member(RecBody, VisitedVar),
-    % Check: body has [_|VisitedVar] passed to recursive call
-    body_has_cons_in_recursive_call(RecBody, Name, VisitedPos, VisitedVar),
+    % Check: body has the ordered unique-path shape
+    %   StepGoal,
+    %   PreGoals...,
+    %   \+ member(_, Visited),
+    %   pred(..., [_|Visited]),
+    body_has_ordered_per_path_shape(RecBody, Name, RecArgs, VisitedPos, VisitedVar),
     !.
 
 %% is_recursive_clause_for_ppv(+Name, +Clause)
@@ -743,16 +745,51 @@ body_has_negated_member((_, Rest), ListVar) :- !,
 body_has_negated_member(\+ member(_, Var), ListVar) :-
     Var == ListVar.
 
-%% body_has_cons_in_recursive_call(+Body, +Name, +Pos, +VisitedVar)
-%%   True if the recursive call to Name has [_|VisitedVar] at position Pos.
-body_has_cons_in_recursive_call(Body, Name, Pos, VisitedVar) :-
+%% body_has_ordered_per_path_shape(+Body, +Name, +HeadArgs, +Pos, +VisitedVar)
+%%   True if Body begins with a step-like goal whose first argument is a
+%%   head variable and whose later argument becomes the recursive driver's
+%%   next value, followed by optional helper goals, then \+ member(_, VisitedVar),
+%%   and later a recursive call passing [Next|VisitedVar] at position Pos.
+body_has_ordered_per_path_shape(Body, Name, HeadArgs, Pos, VisitedVar) :-
     extract_goals_ppv(Body, Goals),
+    append([StepGoal|_BeforeNegTail], [NegGoal|AfterNeg], Goals),
+    negated_member_goal_for_ppv(NegGoal, VisitedVar, NextVar),
+    step_goal_for_ppv(StepGoal, Name, HeadArgs, NextVar),
+    goals_have_driver_cons_recursive_call(AfterNeg, Name, Pos, VisitedVar, NextVar).
+
+negated_member_goal_for_ppv(\+ member(NextVar, Var), VisitedVar, NextVar) :-
+    Var == VisitedVar.
+negated_member_goal_for_ppv(not(member(NextVar, Var)), VisitedVar, NextVar) :-
+    Var == VisitedVar.
+
+step_goal_for_ppv(Goal, Name, HeadArgs, NextVar) :-
+    callable(Goal),
+    Goal \= (\+ _),
+    Goal \= not(_),
+    Goal =.. [Functor|Args],
+    Functor \= Name,
+    Functor \= member,
+    Args = [DriverVar|RestArgs],
+    var(DriverVar),
+    member_samevar(DriverVar, HeadArgs),
+    member_samevar(NextVar, RestArgs),
+    var(NextVar),
+    NextVar \== DriverVar.
+
+goals_have_driver_cons_recursive_call(Goals, Name, Pos, VisitedVar, NextVar) :-
     member(RecCall, Goals),
     RecCall =.. [Name|CallArgs],
+    CallArgs = [NextVar|_],
     nth1(Pos, CallArgs, CallArg),
     nonvar(CallArg),
-    CallArg = [_|Tail],
+    CallArg = [NextVar|Tail],
     Tail == VisitedVar.
+
+member_samevar(Var, [Candidate|_]) :-
+    Candidate == Var,
+    !.
+member_samevar(Var, [_|Rest]) :-
+    member_samevar(Var, Rest).
 
 %% extract_goals_ppv(+Body, -Goals)
 extract_goals_ppv((A, B), Goals) :- !,

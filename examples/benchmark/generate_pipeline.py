@@ -25,6 +25,20 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
+
+CSHARP_BENCHMARK_PROJECT = """\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+"""
+
 
 def load_facts(facts_path):
     """Load facts from Prolog file."""
@@ -1151,6 +1165,825 @@ class ShortestPathBenchmark
 '''
 
 
+def generate_go_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return f'''// Dependency reach-count benchmark (Go)
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+func collectDependencies(node string, adj map[string][]string, seen map[string]bool) {{
+\tif seen[node] {{
+\t\treturn
+\t}}
+\tseen[node] = true
+\tfor _, dep := range adj[node] {{
+\t\tcollectDependencies(dep, adj, seen)
+\t}}
+}}
+
+type projectResult struct {{
+\tproject string
+\tcount   int
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tprojectDeps := loadTSVPairs(os.Args[2])
+
+\tvar projects []string
+\tfor project := range projectDeps {{
+\t\tprojects = append(projects, project)
+\t}}
+\tsort.Strings(projects)
+
+\tresults := make([]projectResult, 0, len(projects))
+\tfor _, project := range projects {{
+\t\tseen := make(map[string]bool)
+\t\tfor _, dep := range projectDeps[project] {{
+\t\t\tcollectDependencies(dep, adj, seen)
+\t\t}}
+\t\tresults = append(results, projectResult{{project: project, count: len(seen)}})
+\t}}
+
+\tresults = results[:0+len(results)]
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].count != results[j].count {{
+\t\t\treturn results[i].count < results[j].count
+\t\t}}
+\t\treturn results[i].project < results[j].project
+\t}})
+
+\tfmt.Println("project\\tdependency_reach_count")
+\tfor _, result := range results {{
+\t\tfmt.Printf("%s\\t%d\\n", result.project, result.count)
+\t}}
+}}
+'''
+
+
+def generate_rust_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return '''// Dependency reach-count benchmark (Rust)
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }
+    }
+    map
+}
+
+fn collect_dependencies(node: &str, adj: &HashMap<String, Vec<String>>, seen: &mut HashSet<String>) {
+    if !seen.insert(node.to_string()) {
+        return;
+    }
+    if let Some(deps) = adj.get(node) {
+        for dep in deps {
+            collect_dependencies(dep, adj, seen);
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: {} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }
+
+    let adj = load_tsv_pairs(&args[1]);
+    let project_deps = load_tsv_pairs(&args[2]);
+
+    let mut projects: Vec<&String> = project_deps.keys().collect();
+    projects.sort();
+
+    let mut results: Vec<(i32, String)> = Vec::new();
+    for project in projects {
+        let mut seen = HashSet::new();
+        if let Some(deps) = project_deps.get(project) {
+            for dep in deps {
+                collect_dependencies(dep, &adj, &mut seen);
+            }
+        }
+        results.push((seen.len() as i32, project.to_string()));
+    }
+
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    println!("project\tdependency_reach_count");
+    for (count, project) in results {
+        println!("{}\t{}", project, count);
+    }
+}
+'''
+
+
+def generate_csharp_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return '''// Dependency reach-count benchmark (C#)
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+
+class Program
+{
+    static Dictionary<string, List<string>> LoadTsvPairs(string path)
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (line, i) in File.ReadLines(path).Select((l, i) => (l, i)))
+        {
+            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
+            {
+                continue;
+            }
+
+            var parts = line.Split('\t', 2);
+            if (parts.Length != 2)
+            {
+                continue;
+            }
+
+            if (!map.TryGetValue(parts[0], out var bucket))
+            {
+                bucket = new List<string>();
+                map[parts[0]] = bucket;
+            }
+
+            bucket.Add(parts[1]);
+        }
+
+        return map;
+    }
+
+    static void CollectDependencies(string node, Dictionary<string, List<string>> adj, HashSet<string> seen)
+    {
+        if (!seen.Add(node))
+        {
+            return;
+        }
+
+        if (!adj.TryGetValue(node, out var deps))
+        {
+            return;
+        }
+
+        foreach (var dep in deps)
+        {
+            CollectDependencies(dep, adj, seen);
+        }
+    }
+
+    static void Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }
+
+        var adj = LoadTsvPairs(args[0]);
+        var projectDeps = LoadTsvPairs(args[1]);
+        var results = new List<(int Count, string Project)>();
+
+        foreach (var project in projectDeps.Keys.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var dep in projectDeps[project])
+            {
+                CollectDependencies(dep, adj, seen);
+            }
+
+            results.Add((seen.Count, project));
+        }
+
+        results.Sort((a, b) =>
+        {
+            var cmp = a.Count.CompareTo(b.Count);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        });
+
+        Console.WriteLine("project\tdependency_reach_count");
+        foreach (var (count, project) in results)
+        {
+            Console.WriteLine($"{project}\t{count}");
+        }
+    }
+}
+'''
+
+
+def generate_csharp_query_dependency_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    depth_bound = max(max_depth, 20000)
+    return f'''// Dependency reach-count benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const int MAX_DEPTH = {depth_bound};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("project_dependency", 2);
+        var predId = new PredicateId("dependency_reach", 2);
+        var projects = new HashSet<string>(StringComparer.Ordinal);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var line in File.ReadLines(args[1]).Skip(1))
+        {{
+            var tab = line.IndexOf('\t');
+            if (tab > 0)
+            {{
+                projects.Add(line[..tab]);
+            }}
+        }}
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new SeedGroupedTransitiveClosureCountNode(edgeId, seedId, predId),
+            true
+        );
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var results = new List<(int Count, string Project)>(rows.Count);
+        foreach (var row in rows)
+        {{
+            var project = row[0]?.ToString() ?? "";
+            var count = Convert.ToInt32(row[1]);
+            results.Add((count, project));
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Count.CompareTo(b.Count);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("project\\tdependency_reach_count");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Project}}\\t{{item.Count}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"seed_count={{projects.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"project_count={{results.Count}}");
+        if (trace is not null)
+        {{
+            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+            {{
+                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            }}
+        }}
+    }}
+}}
+'''
+
+
+def generate_go_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return r'''// Dependency longest-depth benchmark (Go)
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+func loadTSVPairs(path string) map[string][]string {
+	m := make(map[string][]string)
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot open %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	first := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if first {
+			first = false
+			if strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {
+				continue
+			}
+		}
+		parts := strings.SplitN(line, "	", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = append(m[parts[0]], parts[1])
+		}
+	}
+	return m
+}
+
+func longestDepth(node string, adj map[string][]string, memo map[string]int) int {
+	if depth, ok := memo[node]; ok {
+		return depth
+	}
+	best := 1
+	for _, dep := range adj[node] {
+		candidate := 1 + longestDepth(dep, adj, memo)
+		if candidate > best {
+			best = candidate
+		}
+	}
+	memo[node] = best
+	return best
+}
+
+type projectResult struct {
+	project string
+	depth   int
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	totalStart := time.Now()
+	loadStart := time.Now()
+	adj := loadTSVPairs(os.Args[1])
+	projectDeps := loadTSVPairs(os.Args[2])
+	loadElapsed := time.Since(loadStart)
+
+	solveStart := time.Now()
+	memo := make(map[string]int)
+	var projects []string
+	for project := range projectDeps {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+
+	results := make([]projectResult, 0, len(projects))
+	for _, project := range projects {
+		best := 0
+		for _, dep := range projectDeps[project] {
+			depth := longestDepth(dep, adj, memo)
+			if depth > best {
+				best = depth
+			}
+		}
+		results = append(results, projectResult{project: project, depth: best})
+	}
+	solveElapsed := time.Since(solveStart)
+
+	emitStart := time.Now()
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].depth != results[j].depth {
+			return results[i].depth < results[j].depth
+		}
+		return results[i].project < results[j].project
+	})
+
+	fmt.Println("project	dependency_longest_depth")
+	for _, result := range results {
+		fmt.Printf("%s\t%d\n", result.project, result.depth)
+	}
+	emitElapsed := time.Since(emitStart)
+	totalElapsed := time.Since(totalStart)
+
+	fmt.Fprintf(os.Stderr, "load_ms=%d\n", loadElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "solve_ms=%d\n", solveElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "emit_ms=%d\n", emitElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "total_ms=%d\n", totalElapsed.Milliseconds())
+	fmt.Fprintf(os.Stderr, "project_count=%d\n", len(results))
+}
+'''
+
+
+
+def generate_rust_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return r'''// Dependency longest-depth benchmark (Rust)
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::time::Instant;
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        if parts.len() == 2 {
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }
+    }
+    map
+}
+
+fn longest_depth(node: &str, adj: &HashMap<String, Vec<String>>, memo: &mut HashMap<String, i32>) -> i32 {
+    if let Some(depth) = memo.get(node) {
+        return *depth;
+    }
+    let mut best = 1;
+    if let Some(deps) = adj.get(node) {
+        for dep in deps {
+            let candidate = 1 + longest_depth(dep, adj, memo);
+            if candidate > best {
+                best = candidate;
+            }
+        }
+    }
+    memo.insert(node.to_string(), best);
+    best
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: {} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }
+
+    let total_start = Instant::now();
+    let load_start = Instant::now();
+    let adj = load_tsv_pairs(&args[1]);
+    let project_deps = load_tsv_pairs(&args[2]);
+    let load_elapsed = load_start.elapsed();
+
+    let solve_start = Instant::now();
+    let mut memo: HashMap<String, i32> = HashMap::new();
+    let mut projects: Vec<&String> = project_deps.keys().collect();
+    projects.sort();
+
+    let mut results: Vec<(i32, String)> = Vec::new();
+    for project in projects {
+        let mut best = 0;
+        if let Some(deps) = project_deps.get(project) {
+            for dep in deps {
+                let depth = longest_depth(dep, &adj, &mut memo);
+                if depth > best {
+                    best = depth;
+                }
+            }
+        }
+        results.push((best, project.to_string()));
+    }
+    let solve_elapsed = solve_start.elapsed();
+
+    let emit_start = Instant::now();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    println!("project	dependency_longest_depth");
+    for (depth, project) in results.iter() {
+        println!("{}	{}", project, depth);
+    }
+    let emit_elapsed = emit_start.elapsed();
+    let total_elapsed = total_start.elapsed();
+
+    eprintln!("load_ms={}", load_elapsed.as_millis());
+    eprintln!("solve_ms={}", solve_elapsed.as_millis());
+    eprintln!("emit_ms={}", emit_elapsed.as_millis());
+    eprintln!("total_ms={}", total_elapsed.as_millis());
+    eprintln!("project_count={}", results.len());
+}
+'''
+
+
+
+def generate_csharp_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    return """// Dependency longest-depth benchmark (C#)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+
+class Program
+{
+    static int EstimateRows(string path, int avgBytesPerRow)
+    {
+        var length = new FileInfo(path).Length;
+        var estimate = (int)Math.Max(16, length / Math.Max(1, avgBytesPerRow));
+        return estimate;
+    }
+
+    static Dictionary<string, List<string>> LoadTsvPairs(string path)
+    {
+        var estimatedRows = EstimateRows(path, 24);
+        var map = new Dictionary<string, List<string>>(Math.Max(estimatedRows / 3, 16), StringComparer.Ordinal);
+        using var reader = new StreamReader(path);
+        _ = reader.ReadLine();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            var span = line.AsSpan();
+            var tab = span.IndexOf('	');
+            if (tab <= 0 || tab >= span.Length - 1)
+            {
+                continue;
+            }
+
+            var left = span.Slice(0, tab).ToString();
+            var right = span.Slice(tab + 1).ToString();
+
+            if (!map.TryGetValue(left, out var bucket))
+            {
+                bucket = new List<string>(4);
+                map[left] = bucket;
+            }
+
+            bucket.Add(right);
+        }
+
+        return map;
+    }
+
+    static int LongestDepth(string node, Dictionary<string, List<string>> adj, Dictionary<string, int> memo)
+    {
+        if (memo.TryGetValue(node, out var cached))
+        {
+            return cached;
+        }
+
+        var best = 1;
+        if (adj.TryGetValue(node, out var deps))
+        {
+            foreach (var dep in deps)
+            {
+                var candidate = 1 + LongestDepth(dep, adj, memo);
+                if (candidate > best)
+                {
+                    best = candidate;
+                }
+            }
+        }
+
+        memo[node] = best;
+        return best;
+    }
+
+    static void Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var gc0Before = GC.CollectionCount(0);
+        var gc1Before = GC.CollectionCount(1);
+        var gc2Before = GC.CollectionCount(2);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(true);
+        var swTotal = Stopwatch.StartNew();
+
+        var swLoad = Stopwatch.StartNew();
+        var adj = LoadTsvPairs(args[0]);
+        var projectDeps = LoadTsvPairs(args[1]);
+        swLoad.Stop();
+
+        var swSolve = Stopwatch.StartNew();
+        var memo = new Dictionary<string, int>(adj.Count, StringComparer.Ordinal);
+        var projectIds = projectDeps.Keys.ToList();
+        projectIds.Sort(StringComparer.Ordinal);
+        var results = new List<(int Depth, string Project)>(projectIds.Count);
+
+        foreach (var project in projectIds)
+        {
+            var best = 0;
+            foreach (var dep in projectDeps[project])
+            {
+                var depth = LongestDepth(dep, adj, memo);
+                if (depth > best)
+                {
+                    best = depth;
+                }
+            }
+
+            results.Add((best, project));
+        }
+
+        results.Sort((a, b) =>
+        {
+            var cmp = a.Depth.CompareTo(b.Depth);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        });
+        swSolve.Stop();
+
+        var swEmit = Stopwatch.StartNew();
+        Console.WriteLine("project	dependency_longest_depth");
+        foreach (var (depth, project) in results)
+        {
+            Console.WriteLine($"{project}	{depth}");
+        }
+
+        swEmit.Stop();
+        swTotal.Stop();
+        Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"solve_ms={swSolve.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"emit_ms={swEmit.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
+        Console.Error.WriteLine($"gc0_collections={GC.CollectionCount(0) - gc0Before}");
+        Console.Error.WriteLine($"gc1_collections={GC.CollectionCount(1) - gc1Before}");
+        Console.Error.WriteLine($"gc2_collections={GC.CollectionCount(2) - gc2Before}");
+        Console.Error.WriteLine($"allocated_bytes={GC.GetTotalAllocatedBytes(false) - allocatedBefore}");
+        Console.Error.WriteLine($"project_count={results.Count}");
+    }
+}
+"""
+
+
+
+def generate_csharp_query_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    depth_bound = max(max_depth, 20000)
+    return f"""// Dependency longest-depth benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const int MAX_DEPTH = {depth_bound};
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var gc0Before = GC.CollectionCount(0);
+        var gc1Before = GC.CollectionCount(1);
+        var gc2Before = GC.CollectionCount(2);
+        var allocatedBefore = GC.GetTotalAllocatedBytes(true);
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("project_dependency", 2);
+        var predId = new PredicateId("dependency_longest_depth", 2);
+        var projects = new HashSet<string>(StringComparer.Ordinal);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var line in File.ReadLines(args[1]).Skip(1))
+        {{
+            var tab = line.IndexOf('\t');
+            if (tab > 0)
+            {{
+                projects.Add(line[..tab]);
+            }}
+        }}
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            predId,
+            new SeedGroupedDagLongestDepthNode(edgeId, seedId, predId),
+            true
+        );
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var results = new List<(int Depth, string Project)>(rows.Count);
+        foreach (var row in rows)
+        {{
+            var project = row[0]?.ToString() ?? "";
+            var depth = Convert.ToInt32(row[1]);
+            results.Add((depth, project));
+        }}
+        swAgg.Stop();
+        swTotal.Stop();
+
+        results.Sort((a, b) =>
+        {{
+            var cmp = a.Depth.CompareTo(b.Depth);
+            return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
+        }});
+
+        Console.WriteLine("project\tdependency_longest_depth");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Project}}\t{{item.Depth}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"gc0_collections={{GC.CollectionCount(0) - gc0Before}}");
+        Console.Error.WriteLine($"gc1_collections={{GC.CollectionCount(1) - gc1Before}}");
+        Console.Error.WriteLine($"gc2_collections={{GC.CollectionCount(2) - gc2Before}}");
+        Console.Error.WriteLine($"allocated_bytes={{GC.GetTotalAllocatedBytes(false) - allocatedBefore}}");
+        Console.Error.WriteLine($"seed_count={{projects.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"project_count={{results.Count}}");
+        if (trace is not null)
+        {{
+            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
+            {{
+                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
+            }}
+        }}
+    }}
+}}
+"""
+
+
 def generate_go_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -1398,6 +2231,812 @@ fn main() {{
 '''
 
 
+def generate_go_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    roots = sorted(root_cats) if root_cats else ["Physics"]
+    root_entries = ", ".join(f'"{root}": true' for root in roots)
+
+    return f'''// Category influence benchmark (Go)
+package main
+
+import (
+\t"bufio"
+\t"fmt"
+\t"math"
+\t"os"
+\t"sort"
+\t"strings"
+)
+
+const N = {float(n)}
+const MAX_DEPTH = {max_depth}
+
+var ROOTS = map[string]bool{{{root_entries}}}
+
+func loadTSVPairs(path string) map[string][]string {{
+\tm := make(map[string][]string)
+\tf, err := os.Open(path)
+\tif err != nil {{
+\t\tfmt.Fprintf(os.Stderr, "Cannot open %s: %v\\n", path, err)
+\t\tos.Exit(1)
+\t}}
+\tdefer f.Close()
+\tscanner := bufio.NewScanner(f)
+\tfirst := true
+\tfor scanner.Scan() {{
+\t\tline := scanner.Text()
+\t\tif first {{
+\t\t\tfirst = false
+\t\t\tif strings.HasPrefix(line, "article") || strings.HasPrefix(line, "child") {{
+\t\t\t\tcontinue
+\t\t\t}}
+\t\t}}
+\t\tparts := strings.SplitN(line, "\\t", 2)
+\t\tif len(parts) == 2 {{
+\t\t\tm[parts[0]] = append(m[parts[0]], parts[1])
+\t\t}}
+\t}}
+\treturn m
+}}
+
+type pathResult struct {{
+\tancestor string
+\thops int
+}}
+
+func categoryAncestorPaths(cat string, visited map[string]bool, adj map[string][]string, depth int) []pathResult {{
+\tif visited[cat] || depth >= MAX_DEPTH {{
+\t\treturn nil
+\t}}
+\tnewVisited := make(map[string]bool, len(visited)+1)
+\tfor k, v := range visited {{
+\t\tnewVisited[k] = v
+\t}}
+\tnewVisited[cat] = true
+
+\tvar results []pathResult
+\tfor _, parent := range adj[cat] {{
+\t\tif !newVisited[parent] {{
+\t\t\tresults = append(results, pathResult{{parent, 1}})
+\t\t\tfor _, sub := range categoryAncestorPaths(parent, newVisited, adj, depth+1) {{
+\t\t\t\tresults = append(results, pathResult{{sub.ancestor, sub.hops + 1}})
+\t\t\t}}
+\t\t}}
+\t}}
+\treturn results
+}}
+
+type rootScore struct {{
+\troot string
+\tscore float64
+}}
+
+func main() {{
+\tif len(os.Args) < 3 {{
+\t\tfmt.Fprintf(os.Stderr, "Usage: %s <category_parent.tsv> <article_category.tsv>\\n", os.Args[0])
+\t\tos.Exit(1)
+\t}}
+
+\tadj := loadTSVPairs(os.Args[1])
+\tartCats := loadTSVPairs(os.Args[2])
+\tinfluence := make(map[string]float64)
+
+\tfor article, cats := range artCats {{
+\t\t_ = article
+\t\tfor _, cat := range cats {{
+\t\t\tif ROOTS[cat] {{
+\t\t\t\tinfluence[cat] += 1.0
+\t\t\t}}
+\t\t\tfor _, pr := range categoryAncestorPaths(cat, map[string]bool{{}}, adj, 0) {{
+\t\t\t\tif ROOTS[pr.ancestor] {{
+\t\t\t\t\tdistance := float64(pr.hops + 1)
+\t\t\t\t\tinfluence[pr.ancestor] += math.Pow(distance, -N)
+\t\t\t\t}}
+\t\t\t}}
+\t\t}}
+\t}}
+
+\tvar results []rootScore
+\tfor root, score := range influence {{
+\t\tif score > 0 {{
+\t\t\tresults = append(results, rootScore{{root, score}})
+\t\t}}
+\t}}
+
+\tsort.Slice(results, func(i, j int) bool {{
+\t\tif results[i].score != results[j].score {{
+\t\t\treturn results[i].score > results[j].score
+\t\t}}
+\t\treturn results[i].root < results[j].root
+\t}})
+
+\tfmt.Println("root_category\\tinfluence_score")
+\tfor _, r := range results {{
+\t\tfmt.Printf("%s\\t%.12f\\n", r.root, r.score)
+\t}}
+}}
+'''
+
+
+def generate_rust_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    roots = sorted(root_cats) if root_cats else ["Physics"]
+    root_lines = "\n".join(f'    roots.insert("{root}".to_string());' for root in roots)
+
+    return f'''// Category influence benchmark (Rust)
+use std::collections::{{HashMap, HashSet}};
+use std::env;
+use std::fs;
+use std::io::{{BufRead, BufReader}};
+
+const N: f64 = {float(n)};
+const MAX_DEPTH: usize = {max_depth};
+
+fn load_tsv_pairs(path: &str) -> HashMap<String, Vec<String>> {{
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let file = fs::File::open(path).unwrap_or_else(|e| panic!("Cannot open {{}}: {{}}", path, e));
+    let reader = BufReader::new(file);
+    for (i, line) in reader.lines().enumerate() {{
+        let line = line.unwrap();
+        if (i == 0) && (line.starts_with("article") || line.starts_with("child")) {{
+            continue;
+        }}
+        let parts: Vec<&str> = line.splitn(2, '\\t').collect();
+        if parts.len() == 2 {{
+            map.entry(parts[0].to_string()).or_insert_with(Vec::new).push(parts[1].to_string());
+        }}
+    }}
+    map
+}}
+
+fn category_ancestor_paths(
+    cat: &str,
+    visited: &HashSet<String>,
+    adj: &HashMap<String, Vec<String>>,
+    depth: usize,
+) -> Vec<(String, i32)> {{
+    if visited.contains(cat) || depth >= MAX_DEPTH {{
+        return Vec::new();
+    }}
+    let mut new_visited = visited.clone();
+    new_visited.insert(cat.to_string());
+
+    let mut results = Vec::new();
+    if let Some(neighbors) = adj.get(cat) {{
+        for nb in neighbors {{
+            if !new_visited.contains(nb.as_str()) {{
+                results.push((nb.clone(), 1));
+                for (ancestor, h) in category_ancestor_paths(nb, &new_visited, adj, depth + 1) {{
+                    results.push((ancestor, h + 1));
+                }}
+            }}
+        }}
+    }}
+    results
+}}
+
+fn main() {{
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {{
+        eprintln!("Usage: {{}} <category_parent.tsv> <article_category.tsv>", args[0]);
+        std::process::exit(1);
+    }}
+
+    let adj = load_tsv_pairs(&args[1]);
+    let art_cats = load_tsv_pairs(&args[2]);
+    let mut roots: HashSet<String> = HashSet::new();
+{root_lines}
+    let mut influence: HashMap<String, f64> = HashMap::new();
+
+    for (_article, cats) in &art_cats {{
+        for cat in cats {{
+            if roots.contains(cat) {{
+                *influence.entry(cat.clone()).or_insert(0.0) += 1.0;
+            }}
+            let visited = HashSet::new();
+            for (ancestor, h) in category_ancestor_paths(cat, &visited, &adj, 0) {{
+                if roots.contains(&ancestor) {{
+                    let distance = (h + 1) as f64;
+                    *influence.entry(ancestor).or_insert(0.0) += distance.powf(-N);
+                }}
+            }}
+        }}
+    }}
+
+    let mut results: Vec<(String, f64)> = influence
+        .into_iter()
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
+
+    println!("root_category\\tinfluence_score");
+    for (root, score) in results {{
+        println!("{{}}\\t{{:.12}}", root, score);
+    }}
+}}
+'''
+
+
+
+def generate_csharp_query_category_influence(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    roots = sorted(root_cats) if root_cats else ["Physics"]
+    root_entries = ", ".join(f'"{root}"' for root in roots)
+
+    return f'''// Category influence benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const double N = {float(n)};
+    const int MAX_DEPTH = {max_depth};
+    static readonly HashSet<string> ROOTS = new(new[] {{ {root_entries} }}, StringComparer.Ordinal);
+
+    static PathAwareWeightSumStrategy ReadWeightSumStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_WEIGHT_SUM_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareWeightSumStrategy.LegacySeededRows,
+            "grouped" => PathAwareWeightSumStrategy.CompactGrouped,
+            _ => PathAwareWeightSumStrategy.Auto
+        }};
+    }}
+
+    static void PrintWeightSumStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintWeightSumPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weight_sum", 3);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var root in ROOTS.OrderBy(x => x, StringComparer.Ordinal))
+        {{
+            provider.AddFact(rootId, root);
+        }}
+
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            resultId,
+            new SeedGroupedPathAwareWeightSumNode(edgeId, seedId, rootId, resultId, N, MAX_DEPTH),
+            false,
+            null
+        );
+
+        var weightSumStrategy = ReadWeightSumStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareWeightSumStrategy: weightSumStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var scores = new Dictionary<string, double>(StringComparer.Ordinal);
+        var articles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {{
+            var article = row[0]?.ToString() ?? "";
+            var root = row[1]?.ToString() ?? "";
+            var weightSum = Convert.ToDouble(row[2], CultureInfo.InvariantCulture);
+            articles.Add(article);
+            scores[root] = scores.TryGetValue(root, out var current) ? current + weightSum : weightSum;
+        }}
+
+        var results = scores
+            .Select(kvp => (Root: kvp.Key, Score: kvp.Value))
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Root, StringComparer.Ordinal)
+            .ToList();
+        swAgg.Stop();
+        swTotal.Stop();
+
+        Console.WriteLine("root_category\tinfluence_score");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Root}}\t{{item.Score.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"article_count={{articles.Count}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"root_count={{results.Count}}");
+        Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
+        PrintWeightSumStrategies(trace);
+        PrintWeightSumPhases(trace);
+    }}
+}}
+'''
+
+
+def generate_csharp_query_effective_distance(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Effective distance benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const double N = {float(n)};
+    const int MAX_DEPTH = {max_depth};
+
+    static PathAwareWeightSumStrategy ReadWeightSumStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_WEIGHT_SUM_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareWeightSumStrategy.LegacySeededRows,
+            "grouped" => PathAwareWeightSumStrategy.CompactGrouped,
+            _ => PathAwareWeightSumStrategy.Auto
+        }};
+    }}
+
+    static void PrintWeightSumStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintWeightSumPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareWeightSumNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weight_sum", 3);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        provider.AddFact(rootId, ROOT_CATEGORY);
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            resultId,
+            new SeedGroupedPathAwareWeightSumNode(edgeId, seedId, rootId, resultId, N, MAX_DEPTH),
+            false,
+            null
+        );
+
+        var weightSumStrategy = ReadWeightSumStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
+        var swExec = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareWeightSumStrategy: weightSumStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swExec.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                WeightSum: Convert.ToDouble(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .Select(item => (Deff: ComputeDeff(item.WeightSum), Article: item.Article))
+            .OrderBy(item => item.Deff)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
+        swAgg.Stop();
+        swTotal.Stop();
+
+        Console.WriteLine("article\troot_category\teffective_distance");
+        foreach (var (deff, article) in results)
+        {{
+            Console.WriteLine($"{{article}}\t{{ROOT_CATEGORY}}\t{{deff.ToString(\"F6\", CultureInfo.InvariantCulture)}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swExec.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
+        PrintWeightSumStrategies(trace);
+        PrintWeightSumPhases(trace);
+    }}
+
+    static double ComputeDeff(double weightSum)
+    {{
+        return weightSum > 0 ? Math.Pow(weightSum, -1.0 / N) : double.PositiveInfinity;
+    }}
+}}
+'''
+
+def generate_csharp_query_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Shortest path to root benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static PathAwareGroupedMinStrategy ReadPathMinStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_PATH_MIN_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareGroupedMinStrategy.LegacySeededRows,
+            "grouped" => PathAwareGroupedMinStrategy.CompactGrouped,
+            _ => PathAwareGroupedMinStrategy.Auto
+        }};
+    }}
+
+    static void PrintPathMinStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareDepthMinNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintPathMinPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareDepthMinNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_shortest_path", 3);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        provider.AddFact(rootId, ROOT_CATEGORY);
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            resultId,
+            new SeedGroupedPathAwareDepthMinNode(edgeId, seedId, rootId, resultId, 1, MAX_DEPTH),
+            false,
+            null
+        );
+
+        var pathMinStrategy = ReadPathMinStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareGroupedMinStrategy: pathMinStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                Distance: Convert.ToInt32(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
+        swAgg.Stop();
+        swTotal.Stop();
+
+        Console.WriteLine("article\troot_category\tshortest_path");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
+        PrintPathMinStrategies(trace);
+        PrintPathMinPhases(trace);
+    }}
+}}
+'''
+
+
+def generate_csharp_query_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
+    root = sorted(root_cats)[0] if root_cats else "Physics"
+
+    return f'''// Weighted shortest path to root benchmark (C# query engine)
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+
+class Program
+{{
+    const string ROOT_CATEGORY = "{root}";
+    const int MAX_DEPTH = {max_depth};
+
+    static PathAwareGroupedMinStrategy ReadPathMinStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_PATH_MIN_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "legacy" => PathAwareGroupedMinStrategy.LegacySeededRows,
+            "grouped" => PathAwareGroupedMinStrategy.CompactGrouped,
+            _ => PathAwareGroupedMinStrategy.Auto
+        }};
+    }}
+
+    static void PrintPathMinStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedPathAwareAccumulationMinNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintPathMinPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedPathAwareAccumulationMinNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
+    static void Main(string[] args)
+    {{
+        if (args.Length < 2)
+        {{
+            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
+            Environment.Exit(1);
+        }}
+
+        var swTotal = Stopwatch.StartNew();
+        var swLoad = Stopwatch.StartNew();
+
+        var provider = new InMemoryRelationProvider();
+        var edgeId = new PredicateId("category_parent", 2);
+        var seedId = new PredicateId("article_category", 2);
+        var rootId = new PredicateId("root_category", 1);
+        var resultId = new PredicateId("article_root_weighted_shortest_path", 3);
+        var weightId = new PredicateId("category_weight", 2);
+        var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
+        var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
+
+        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
+        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
+        {{
+            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
+            {{
+                continue;
+            }}
+
+            var parts = line.Split('\t', 2);
+            if (parts.Length != 2)
+            {{
+                continue;
+            }}
+
+            sourceNodes.Add(parts[0]);
+            outDegree[parts[0]] = outDegree.TryGetValue(parts[0], out var degree) ? degree + 1 : 1;
+        }}
+
+        foreach (var source in sourceNodes)
+        {{
+            outDegree.TryGetValue(source, out var degree);
+            var weight = 1.0 + Math.Log(Math.Max(1, degree), 5.0);
+            provider.AddFact(weightId, source, weight);
+        }}
+
+        provider.AddFact(rootId, ROOT_CATEGORY);
+        swLoad.Stop();
+
+        var plan = new QueryPlan(
+            resultId,
+            new SeedGroupedPathAwareAccumulationMinNode(
+                edgeId,
+                seedId,
+                rootId,
+                weightId,
+                resultId,
+                new ColumnExpression(3),
+                new BinaryArithmeticExpression(
+                    ArithmeticBinaryOperator.Add,
+                    new ColumnExpression(2),
+                    new ColumnExpression(3)),
+                0.0,
+                MAX_DEPTH,
+                true),
+            false,
+            null
+        );
+
+        var pathMinStrategy = ReadPathMinStrategy();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
+        QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
+
+        var swQuery = Stopwatch.StartNew();
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            PathAwareGroupedMinStrategy: pathMinStrategy));
+        var rows = executor.Execute(plan, trace: trace).ToList();
+        swQuery.Stop();
+
+        var swAgg = Stopwatch.StartNew();
+        var results = rows
+            .Select(row => (
+                Article: row[0]?.ToString() ?? "",
+                Root: row[1]?.ToString() ?? "",
+                Distance: Convert.ToDouble(row[2], CultureInfo.InvariantCulture)))
+            .Where(item => string.Equals(item.Root, ROOT_CATEGORY, StringComparison.Ordinal))
+            .OrderBy(item => item.Distance)
+            .ThenBy(item => item.Article, StringComparer.Ordinal)
+            .ToList();
+        swAgg.Stop();
+        swTotal.Stop();
+
+        Console.WriteLine("article\troot_category\tweighted_shortest_path");
+        foreach (var item in results)
+        {{
+            Console.WriteLine($"{{item.Article}}\t{{ROOT_CATEGORY}}\t{{item.Distance.ToString(\"F12\", CultureInfo.InvariantCulture)}}");
+        }}
+
+        Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"query_ms={{swQuery.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"aggregation_ms={{swAgg.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"total_ms={{swTotal.ElapsedMilliseconds}}");
+        Console.Error.WriteLine($"tuple_count={{rows.Count}}");
+        Console.Error.WriteLine($"article_count={{results.Count}}");
+        Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
+        PrintPathMinStrategies(trace);
+        PrintPathMinPhases(trace);
+    }}
+}}
+'''
+
+
 def generate_csharp_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
     root = list(root_cats)[0] if root_cats else "Physics"
 
@@ -1522,18 +3161,60 @@ GENERATORS = {
         'go': generate_go_effective_distance,
         'rust': generate_rust_effective_distance,
         'csharp': generate_csharp_effective_distance,
+        'csharp_query': generate_csharp_query_effective_distance,
     },
     'shortest_path_to_root': {
         'go': generate_go_shortest_path,
         'rust': generate_rust_shortest_path,
         'csharp': generate_csharp_shortest_path,
+        'csharp_query': generate_csharp_query_shortest_path,
+    },
+    'dependency_depth': {
+        'go': generate_go_dependency_depth,
+        'rust': generate_rust_dependency_depth,
+        'csharp': generate_csharp_dependency_depth,
+        'csharp_query': generate_csharp_query_dependency_depth,
+    },
+    'dependency_longest_depth': {
+        'go': generate_go_dependency_longest_depth,
+        'rust': generate_rust_dependency_longest_depth,
+        'csharp': generate_csharp_dependency_longest_depth,
+        'csharp_query': generate_csharp_query_dependency_longest_depth,
     },
     'weighted_shortest_path': {
         'go': generate_go_weighted_shortest_path,
         'rust': generate_rust_weighted_shortest_path,
         'csharp': generate_csharp_weighted_shortest_path,
+        'csharp_query': generate_csharp_query_weighted_shortest_path,
+    },
+    'category_influence': {
+        'csharp_query': generate_csharp_query_category_influence,
+        'go': generate_go_category_influence,
+        'rust': generate_rust_category_influence,
     },
 }
+
+
+def write_output_artifacts(target, code, output=None, output_dir=None):
+    if output_dir:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if target in {"csharp", "csharp_query"}:
+            (out_dir / "Program.cs").write_text(code, encoding="utf-8")
+            if target == "csharp_query":
+                (out_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
+            (out_dir / "benchmark.csproj").write_text(CSHARP_BENCHMARK_PROJECT, encoding="utf-8")
+            return
+
+        ext = {"go": ".go", "rust": ".rs"}.get(target)
+        if ext is None:
+            raise ValueError(f"Unsupported packaged target: {target}")
+        (out_dir / f"generated{ext}").write_text(code, encoding="utf-8")
+        return
+
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(code, encoding="utf-8")
 
 
 def main():
@@ -1549,7 +3230,8 @@ def main():
         help="Benchmark workload to generate",
     )
     parser.add_argument("--target", required=True, help="Target language")
-    parser.add_argument("--output", required=True, help="Output file path")
+    parser.add_argument("--output", help="Output file path")
+    parser.add_argument("--output-dir", help="Output directory for packaged targets")
     parser.add_argument("--n", type=float, default=5, help="Dimensionality parameter")
     parser.add_argument("--max-depth", type=int, default=10,
                         help="Max DFS depth (paths beyond this are trimmed; "
@@ -1571,11 +3253,13 @@ def main():
     code = generator(article_cats, category_parents, root_cats,
                      n=int(args.n), max_depth=args.max_depth)
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w') as f:
-        f.write(code)
+    if bool(args.output) == bool(args.output_dir):
+        print("Exactly one of --output or --output-dir is required", file=sys.stderr)
+        sys.exit(2)
 
-    print(f"Generated {args.target} pipeline: {args.output}")
+    write_output_artifacts(args.target, code, args.output, args.output_dir)
+
+    print(f"Generated {args.target} pipeline: {args.output_dir or args.output}")
     print(f"  Articles: {len(article_cats)}")
     print(f"  Category edges: {sum(len(v) for v in category_parents.values())}")
     print(f"  Root: {args.root}")

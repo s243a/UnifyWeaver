@@ -4739,6 +4739,84 @@ test(invariant_per_path_visited_function_input_checks_with_typr, [condition(typr
     retractall(user:category_ancestor_limited_fn(_, _, _, _, _)),
     retractall(user:mode(category_ancestor_limited_fn(_, _, _, _, _))).
 
+test(invariant_guarded_per_path_visited_output_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_guarded(_, _, _, _, _)),
+    retractall(user:mode(category_ancestor_guarded(_, _, _, _, _))),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:mode(category_ancestor_guarded(+, +, -, -, +))),
+    assertz(user:(category_ancestor_guarded(Cat, Limit, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        Allowed is Limit - 1,
+        Parent =< Allowed,
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_guarded(Cat, Limit, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        Allowed is Limit - 1,
+        Mid =< Allowed,
+        \+ member(Mid, Visited),
+        category_ancestor_guarded(Mid, Limit, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    once(recursive_compiler:compile_recursive(category_ancestor_guarded/5, [target(typr), typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_guarded(_, _, _, _, _)),
+    retractall(user:mode(category_ancestor_guarded(_, _, _, _, _))).
+
+test(per_path_count_aggregate_checks_with_typr, [condition(typr_cli_available)]) :-
+    clear_type_declarations,
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_countable(_, _, _, _)),
+    retractall(user:category_path_count(_, _)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:category_parent(a, c)),
+    assertz(user:category_parent(b, c)),
+    assertz(user:(category_ancestor_countable(Cat, Parent, 1, Visited) :-
+        category_parent(Cat, Parent),
+        \+ member(Parent, Visited)
+    )),
+    assertz(user:(category_ancestor_countable(Cat, Ancestor, Hops, Visited) :-
+        category_parent(Cat, Mid),
+        \+ member(Mid, Visited),
+        category_ancestor_countable(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1
+    )),
+    assertz(user:(category_path_count(Cat, Count) :-
+        aggregate_all(count, category_ancestor_countable(Cat, _, _, [Cat]), Count)
+    )),
+    assertz(type_declarations:uw_type(category_parent/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_parent/2, 2, atom)),
+    assertz(type_declarations:uw_type(category_path_count/2, 1, atom)),
+    assertz(type_declarations:uw_type(category_path_count/2, 2, integer)),
+    assertz(type_declarations:uw_return_type(category_path_count/2, integer)),
+    once(compile_predicate_to_typr(category_path_count/2, [typed_mode(explicit)], Code)),
+    setup_call_cleanup(
+        create_smoke_project(ProjectDir),
+        (
+            write_generated_typr_program(ProjectDir, Code),
+            run_typr(ProjectDir, ['check']),
+            maybe_build_with_r(ProjectDir)
+        ),
+        delete_directory_and_contents(ProjectDir)
+    ),
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor_countable(_, _, _, _)),
+    retractall(user:category_path_count(_, _)).
+
 :- end_tests(typr_toolchain).
 
 typr_cli_available :-

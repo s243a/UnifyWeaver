@@ -33,6 +33,27 @@ UnifyWeaver supports multiple compilation strategies depending on the target and
 | **Generator-Based** | Lazy evaluation via Python generators with memoization | Python |
 | **Declarative Output** | SQL queries for external database execution | SQL |
 | **Symbolic WAM** | Low-level abstract machine instructions for complex unification/backtracking | WAM (Hub) |
+| **WAM Transpilation** | WAM instructions compiled to target-language WAM virtual machine implementations | C, Rust, Go, LLVM, JVM, ILAsm, Elixir |
+
+### WAM Transpilation Targets
+
+Several targets support a **hybrid WAM** compilation path: Prolog is first compiled to WAM (Warren Abstract Machine) instructions, then those instructions are transpiled into a complete WAM virtual machine implementation in the target language. This provides full unification and backtracking semantics.
+
+| Target | WAM Module | Format | State Representation | Run Loop |
+|--------|-----------|--------|---------------------|----------|
+| **C** | `wam_c_target` | Single | Structs + tagged unions, manual memory | `while` loop |
+| **Rust** | `wam_rust_target` | Single | `HashMap`/`Vec`, `enum WamValue` | `loop` + `match` |
+| **Go** | `wam_go_target` | Single | `map[string]interface{}`, slices | `for` loop + `switch` |
+| **LLVM** | `wam_llvm_target` | Single | SSA registers, stack alloca | Basic blocks + `br` |
+| **JVM** | `wam_jvm_target` | Dual (Jamaica / Krakatau) | `HashMap`/`ArrayList` fields | `while` + `tableswitch` |
+| **ILAsm (.NET)** | `wam_ilasm_target` | Single | `Dictionary`/`List` fields | `br` loop + `switch` |
+| **Elixir** | `wam_elixir_target` | Single | `%WamState{}` struct, immutable maps | Recursive `run/1` |
+
+Each WAM target includes:
+- **26 instruction arms** covering head unification, body construction, control flow, and choice points
+- **Helper functions**: run loop, backtrack, trail unwinding, unification, builtin dispatch
+- **Full project generation**: source files, headers/configs, and build files
+- **Dedicated test suite** validating instruction coverage, code idioms, and runtime assembly
 
 ## Recursion Pattern Support
 
@@ -77,16 +98,16 @@ Targets for functional / FP-oriented languages with pattern matching and immutab
 
 Scala and Clojure also appear in the Functional table above.
 
-### Compiler & Runtime Targets
+### Web & Managed Language Targets
 
-| Pattern | LLVM | WASM | TypeScript | VB.NET |
-|---------|:----:|:----:|:----------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
+| Pattern | WASM | TypeScript | VB.NET |
+|---------|:----:|:----------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ |
 
 ### Scripting & Native Targets
 
@@ -98,6 +119,30 @@ Scala and Clojure also appear in the Functional table above.
 | **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### Assembly & IR Targets
+
+Low-level assembly and intermediate representation targets:
+
+| Pattern | Jamaica (JVM) | Krakatau (JVM) | ILAsm (.NET) | WAT (WASM) | LLVM IR | WAM |
+|---------|:-------------:|:--------------:|:------------:|:----------:|:-------:|:---:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### UI Framework Targets
+
+| Pattern | Flutter | React Native | SwiftUI | Vue |
+|---------|:-------:|:------------:|:-------:|:---:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ |
 
 ### Python Family Targets
 
@@ -125,7 +170,7 @@ All Python variants share the core `python_target` recursion support and add spe
 | If you need... | Use |
 |----------------|-----|
 | Shell scripts for Unix pipelines | **Bash** |
-| Standalone binary, no runtime deps | **Go** or **Rust** |
+| Standalone binary, no runtime deps | **Go**, **Rust**, or **C** |
 | Complex recursion in .NET apps | **C# Query Runtime** |
 | Database views and analytics | **SQL** |
 | Python ecosystem integration | **Python** |
@@ -133,6 +178,11 @@ All Python variants share the core `python_target` recursion support and add spe
 | BEAM VM with OTP concurrency | **Elixir** |
 | Lightweight text processing | **AWK** |
 | Prolog dialect transpilation | **Prolog** |
+| JVM bytecode (assembler-level) | **Jamaica** or **Krakatau** |
+| .NET IL bytecode | **ILAsm** |
+| WebAssembly (text format) | **WAT** |
+| LLVM IR for custom backends | **LLVM** |
+| Full WAM unification/backtracking | Any **WAM hybrid** target |
 
 ## Type Annotations
 
@@ -248,12 +298,16 @@ includes:
   seeded step relation and detected `Visited` position lower to a native TypR
   recursive worker that returns nested pair results with one direct node
   output and one or more additive numeric outputs; this path now supports one
-  recursion-driving input plus conservative invariant non-visited inputs, and
-  it also emits a native
+  recursion-driving input plus conservative invariant non-visited inputs,
+  including one helper/guard segment between the step relation and recursive
+  call, and it also emits a native
   `*_from_vectors` runtime helper, native `input(stdin|file|vfs|function)`
   wrappers, and declared scalar or conservative pair-shaped runtime node
   parsing such as `integer`, `number`, `pair(integer, integer)`, and
-  `pair(number, number)` over the same step-relation shape
+  `pair(number, number)` over the same step-relation shape; the first
+  conservative path-aware aggregation slice also now stays native for
+  `aggregate_all(count, per_path_goal, N)` wrappers over that supported
+  per-path worker path
 - accumulator-style tail-recursive predicates such as `factorial_acc/3`,
   lowered to TypR functions that use native TypR loop bodies instead of
   relabeled standalone R scripts
@@ -404,6 +458,10 @@ TypR annotation modes are regression-covered too:
 - current CLI validation boundary: `infer` and `off` are covered with
   `typr check`; the current `typr build` path still expects typed function
   signatures more often than the checker does
+- per-path unique-path work also has a dedicated TypR design note:
+  [docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md](docs/design/TYPR_PER_PATH_UNIQUE_PATH_DESIGN.md)
+  which now records the first counted aggregation slice as landed and points
+  next toward grouped or min-style path-aware aggregation
 
 Worked example:
 - [Typed R/TypR Return Types](docs/examples/typed_r_typr_return_types.md)

@@ -4,10 +4,12 @@
 // emitted by the forthcoming csharp_query target.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
 using System.IO;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
@@ -32,6 +34,35 @@ namespace UnifyWeaver.QueryRuntime
     public interface IRelationProvider
     {
         IEnumerable<object[]> GetFacts(PredicateId predicate);
+    }
+
+    public enum RelationRetentionMode
+    {
+        Streaming,
+        Replayable,
+        ExternalMaterialized
+    }
+
+    public readonly record struct DelimitedRelationSource(
+        string InputPath,
+        char Delimiter = '	',
+        int SkipRows = 1,
+        int ExpectedWidth = 2);
+
+    public interface IReplayableRelationSource
+    {
+        IEnumerable<object[]> Stream();
+        List<object[]> Materialize();
+    }
+
+    public readonly record struct RelationBinding(
+        RelationRetentionMode Mode,
+        DelimitedRelationSource? DelimitedSource = null,
+        IReplayableRelationSource? ReplayableSource = null);
+
+    public interface IRetentionAwareRelationProvider : IRelationProvider
+    {
+        bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding);
     }
 
     /// <summary>
@@ -232,6 +263,80 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Propagates group labels from an external seed relation across a plain
+    /// transitive closure edge relation, producing (group, reachable) rows.
+    /// </summary>
+    public sealed record SeedGroupedTransitiveClosureNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId Predicate
+    ) : PlanNode;
+
+    /// <summary>
+    /// Propagates group labels from an external seed relation across a plain
+    /// transitive closure edge relation, producing (group, reachable_count)
+    /// rows directly.
+    /// </summary>
+    public sealed record SeedGroupedTransitiveClosureCountNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId Predicate
+    ) : PlanNode;
+
+    /// <summary>
+    /// Computes the maximum DAG depth reachable from grouped seed nodes,
+    /// producing (group, depth) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedDagLongestDepthNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId Predicate
+    ) : PlanNode;
+
+    /// <summary>
+    /// Computes per-group root weight sums over all simple seed-to-root paths,
+    /// producing (group, root, weight_sum) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareWeightSumNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId Predicate,
+        double DistanceExponent,
+        int MaxDepth = 0
+    ) : PlanNode;
+
+    /// <summary>
+    /// Computes per-group minimum root depths, producing
+    /// (group, root, min_depth) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareDepthMinNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId Predicate,
+        int DirectSeedDepth = 1,
+        int MaxDepth = 0
+    ) : PlanNode;
+
+    /// <summary>
+    /// Computes per-group minimum accumulated root values, producing
+    /// (group, root, min_value) rows directly.
+    /// </summary>
+    public sealed record SeedGroupedPathAwareAccumulationMinNode(
+        PredicateId EdgeRelation,
+        PredicateId SeedRelation,
+        PredicateId RootRelation,
+        PredicateId AuxiliaryRelation,
+        PredicateId Predicate,
+        ArithmeticExpression BaseExpression,
+        ArithmeticExpression RecursiveExpression,
+        object DirectSeedValue,
+        int MaxDepth = 0,
+        bool PositiveStepProven = false
+    ) : PlanNode;
+
+    /// <summary>
     /// Computes a counted transitive closure while preventing cycles on each
     /// derivation path instead of deduplicating globally by node or tuple.
     /// </summary>
@@ -362,8 +467,35 @@ namespace UnifyWeaver.QueryRuntime
         IReadOnlyList<int>? InputPositions = null
     );
 
+    public enum PathAwareGroupedMinStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
+    public enum PathAwareWeightSumStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
+    internal enum PathAwareGroupedSummaryStrategy
+    {
+        Auto,
+        CompactGrouped,
+        LegacySeededRows
+    }
+
+    internal readonly record struct PathAwareGroupedSummarySelection(
+        PathAwareGroupedSummaryStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
+        PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
+        PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
         int PairProbeCacheMaxEntries = 4096,
         int SeededCacheMaxEntries = 4096,
         int PairProbeCacheAdmissionMinCost = 0,
@@ -413,6 +545,13 @@ namespace UnifyWeaver.QueryRuntime
         int Iteration,
         int DeltaRows,
         int TotalRows
+    );
+
+    public sealed record QueryPhaseTrace(
+        int NodeId,
+        string NodeType,
+        string Phase,
+        TimeSpan Elapsed
     );
 
     public sealed class QueryExecutionTrace
@@ -467,6 +606,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly Dictionary<(string Cache, string Key), CacheStats> _cacheStats = new();
         private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
         private readonly List<QueryFixpointIterationTrace> _fixpointIterations = new();
+        private readonly Dictionary<(PlanNode Node, string Phase), TimeSpan> _phases = new(new PlanNodeStrategyComparer());
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -585,6 +725,27 @@ namespace UnifyWeaver.QueryRuntime
                 totalRows));
         }
 
+        internal void RecordPhase(PlanNode node, string phase, TimeSpan elapsed)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (phase is null) throw new ArgumentNullException(nameof(phase));
+            if (elapsed <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            _ = GetOrAdd(node);
+            var key = (node, phase);
+            if (_phases.TryGetValue(key, out var existing))
+            {
+                _phases[key] = existing + elapsed;
+            }
+            else
+            {
+                _phases.Add(key, elapsed);
+            }
+        }
+
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
@@ -678,6 +839,23 @@ namespace UnifyWeaver.QueryRuntime
                 .OrderBy(s => s.NodeId)
                 .ThenBy(s => s.Predicate, StringComparer.Ordinal)
                 .ThenBy(s => s.Iteration)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryPhaseTrace> SnapshotPhases()
+        {
+            return _phases
+                .Select(kvp =>
+                {
+                    var node = kvp.Key.Node;
+                    return new QueryPhaseTrace(
+                        GetOrAdd(node).Id,
+                        node.GetType().Name,
+                        kvp.Key.Phase,
+                        kvp.Value);
+                })
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Phase, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -845,6 +1023,9 @@ namespace UnifyWeaver.QueryRuntime
                     case UnitNode:
                     case TransitiveClosureNode:
                     case GroupedTransitiveClosureNode:
+                    case SeedGroupedTransitiveClosureNode:
+                    case SeedGroupedTransitiveClosureCountNode:
+                    case SeedGroupedDagLongestDepthNode:
                     case PathAwareTransitiveClosureNode:
                     case PathAwareAccumulationNode:
                         return;
@@ -982,6 +1163,12 @@ namespace UnifyWeaver.QueryRuntime
                 OffsetNode offset => $"Offset count={offset.Count}",
                 TransitiveClosureNode closure => $"TransitiveClosure edge={closure.EdgeRelation}",
                 GroupedTransitiveClosureNode closure => $"GroupedTransitiveClosure edge={closure.EdgeRelation} groups=[{string.Join(",", closure.GroupIndices)}]",
+                SeedGroupedTransitiveClosureNode closure => $"SeedGroupedTransitiveClosure edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
+                SeedGroupedTransitiveClosureCountNode closure => $"SeedGroupedTransitiveClosureCount edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
+                SeedGroupedDagLongestDepthNode closure => $"SeedGroupedDagLongestDepth edge={closure.EdgeRelation} seeds={closure.SeedRelation}",
+                SeedGroupedPathAwareWeightSumNode closure => $"SeedGroupedPathAwareWeightSum edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} exponent={closure.DistanceExponent.ToString(CultureInfo.InvariantCulture)} maxDepth={closure.MaxDepth}",
+                SeedGroupedPathAwareDepthMinNode closure => $"SeedGroupedPathAwareDepthMin edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} directSeedDepth={closure.DirectSeedDepth} maxDepth={closure.MaxDepth}",
+                SeedGroupedPathAwareAccumulationMinNode closure => $"SeedGroupedPathAwareAccumulationMin edge={closure.EdgeRelation} seeds={closure.SeedRelation} roots={closure.RootRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} positiveStep={closure.PositiveStepProven}",
                 PathAwareTransitiveClosureNode closure => $"PathAwareTransitiveClosure edge={closure.EdgeRelation} base={closure.BaseDepth} increment={closure.DepthIncrement} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode}",
                 PathAwareAccumulationNode closure => $"PathAwareAccumulation edge={closure.EdgeRelation} aux={closure.AuxiliaryRelation} maxDepth={closure.MaxDepth} mode={closure.AccumulatorMode} positiveStep={closure.PositiveStepProven}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
@@ -1035,9 +1222,117 @@ namespace UnifyWeaver.QueryRuntime
     /// Currently supports non-recursive plans; recursion-aware fixpoint
     /// iteration will be layered on later.
     /// </summary>
-    public sealed class InMemoryRelationProvider : IRelationProvider
+    internal static class DelimitedRelationReader
+    {
+        public static IEnumerable<object[]> ReadRows(DelimitedRelationSource source)
+        {
+            using var reader = OpenSequentialReader(source.InputPath);
+            for (var i = 0; i < source.SkipRows; i++)
+            {
+                if (reader.ReadLine() is null)
+                {
+                    yield break;
+                }
+            }
+
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (!TrySplitTwoColumnLine(line, source.Delimiter, out var left, out var right))
+                {
+                    continue;
+                }
+
+                yield return new object[] { left, right };
+            }
+        }
+
+        public static StreamReader OpenSequentialReader(string path) =>
+            new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
+
+        public static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
+        {
+            var span = line.AsSpan();
+            var split = span.IndexOf(delimiter);
+            if (split <= 0 || split >= span.Length - 1)
+            {
+                left = string.Empty;
+                right = string.Empty;
+                return false;
+            }
+
+            left = span.Slice(0, split).ToString();
+            right = span.Slice(split + 1).ToString();
+            return true;
+        }
+    }
+
+    internal sealed class ReplayableRelationSource : IReplayableRelationSource
+    {
+        private readonly Func<IEnumerable<object[]>> _factory;
+        private readonly object _gate = new();
+        private List<object[]>? _buffer;
+
+        public ReplayableRelationSource(Func<IEnumerable<object[]>> factory)
+        {
+            _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+        }
+
+        public IEnumerable<object[]> Stream() => Materialize();
+
+        public List<object[]> Materialize()
+        {
+            if (_buffer is not null)
+            {
+                return _buffer;
+            }
+
+            lock (_gate)
+            {
+                _buffer ??= _factory().ToList();
+                return _buffer;
+            }
+        }
+    }
+
+    internal sealed class PathAwareSuccessorBucket
+    {
+        public PathAwareSuccessorBucket(object? source)
+        {
+            Source = source;
+        }
+
+        public object? Source { get; }
+
+        public List<object?> Targets { get; } = new();
+    }
+
+    internal sealed class PathAwareEdgeState
+    {
+        public PathAwareEdgeState(
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
+            IReadOnlyList<object?> seeds)
+        {
+            Successors = successors;
+            Seeds = seeds;
+        }
+
+        public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
+
+        public IReadOnlyList<object?> Seeds { get; }
+    }
+
+    public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
     {
         private readonly Dictionary<PredicateId, List<object[]>> _store = new();
+        private readonly Dictionary<PredicateId, DelimitedRelationSource> _delimitedSources = new();
+        private readonly Dictionary<PredicateId, IReplayableRelationSource> _replayableSources = new();
+
+        public void RegisterDelimitedSource(PredicateId predicate, DelimitedRelationSource source)
+        {
+            _delimitedSources[predicate] = source;
+            _replayableSources.Remove(predicate);
+        }
 
         public void AddFact(PredicateId predicate, params object[] values)
         {
@@ -1063,6 +1358,7 @@ namespace UnifyWeaver.QueryRuntime
                 _store[predicate] = list;
             }
             list.Add(tuple);
+            _replayableSources.Remove(predicate);
         }
 
         public IEnumerable<object[]> GetFacts(PredicateId predicate)
@@ -1071,7 +1367,53 @@ namespace UnifyWeaver.QueryRuntime
             {
                 return list;
             }
+            if (_delimitedSources.TryGetValue(predicate, out var source))
+            {
+                return DelimitedRelationReader.ReadRows(source);
+            }
             return Array.Empty<object[]>();
+        }
+
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (preferredMode == RelationRetentionMode.Streaming &&
+                _delimitedSources.TryGetValue(predicate, out var streamingSource))
+            {
+                binding = new RelationBinding(RelationRetentionMode.Streaming, streamingSource);
+                return true;
+            }
+
+            if (preferredMode == RelationRetentionMode.Replayable)
+            {
+                if (!_replayableSources.TryGetValue(predicate, out var replayableSource))
+                {
+                    if (_delimitedSources.TryGetValue(predicate, out var replayableDelimitedSource))
+                    {
+                        replayableSource = new ReplayableRelationSource(() => DelimitedRelationReader.ReadRows(replayableDelimitedSource));
+                        _replayableSources[predicate] = replayableSource;
+                    }
+                    else if (_store.TryGetValue(predicate, out var replayableList))
+                    {
+                        replayableSource = new ReplayableRelationSource(() => replayableList);
+                        _replayableSources[predicate] = replayableSource;
+                    }
+                }
+
+                if (replayableSource is not null)
+                {
+                    binding = new RelationBinding(RelationRetentionMode.Replayable, ReplayableSource: replayableSource);
+                    return true;
+                }
+            }
+
+            if (preferredMode == RelationRetentionMode.ExternalMaterialized && _store.ContainsKey(predicate))
+            {
+                binding = new RelationBinding(RelationRetentionMode.ExternalMaterialized);
+                return true;
+            }
+
+            binding = default;
+            return false;
         }
     }
 
@@ -1088,6 +1430,8 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
+        private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
+        private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
 
         public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
@@ -1101,6 +1445,8 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
+            _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
+            _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
         }
 
         public IEnumerable<object[]> Execute(
@@ -1183,6 +1529,90 @@ namespace UnifyWeaver.QueryRuntime
                     var activeTrace = context.Trace;
                     activeTrace?.RecordInvocation(groupedClosure);
                     return activeTrace is null ? rows : activeTrace.WrapEnumeration(groupedClosure, rows);
+                }
+
+                if (plan.Root is SeedGroupedTransitiveClosureNode seedGroupedClosure)
+                {
+                    var rows = ExecuteSeedGroupedTransitiveClosure(seedGroupedClosure, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedClosure);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedClosure, rows);
+                }
+
+                if (plan.Root is SeedGroupedTransitiveClosureCountNode seedGroupedCount)
+                {
+                    var rows = ExecuteSeedGroupedTransitiveClosureCount(seedGroupedCount, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedCount);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedCount, rows);
+                }
+
+                if (plan.Root is SeedGroupedDagLongestDepthNode seedGroupedDepth)
+                {
+                    var rows = ExecuteSeedGroupedDagLongestDepth(seedGroupedDepth, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedDepth);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedDepth, rows);
+                }
+
+                if (plan.Root is SeedGroupedPathAwareWeightSumNode seedGroupedPathAwareWeightSum)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareWeightSum(seedGroupedPathAwareWeightSum, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareWeightSum);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareWeightSum, rows);
+                }
+
+                if (plan.Root is SeedGroupedPathAwareDepthMinNode seedGroupedPathAwareDepthMin)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareDepthMin(seedGroupedPathAwareDepthMin, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareDepthMin);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareDepthMin, rows);
+                }
+
+                if (plan.Root is SeedGroupedPathAwareAccumulationMinNode seedGroupedPathAwareAccumulationMin)
+                {
+                    var rows = ExecuteSeedGroupedPathAwareAccumulationMin(seedGroupedPathAwareAccumulationMin, context);
+                    var contextCancellationToken = context.CancellationToken;
+                    if (contextCancellationToken.CanBeCanceled)
+                    {
+                        rows = WithCancellation(rows, contextCancellationToken);
+                    }
+
+                    var activeTrace = context.Trace;
+                    activeTrace?.RecordInvocation(seedGroupedPathAwareAccumulationMin);
+                    return activeTrace is null ? rows : activeTrace.WrapEnumeration(seedGroupedPathAwareAccumulationMin, rows);
                 }
 
                 if (plan.Root is PathAwareTransitiveClosureNode pathAwareClosure)
@@ -1273,6 +1703,8 @@ namespace UnifyWeaver.QueryRuntime
 
             _cacheContext.Facts.Clear();
             _cacheContext.FactSources.Clear();
+            _cacheContext.ReplayableFactSources.Clear();
+            _cacheContext.PathAwareEdgeStates.Clear();
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
@@ -1281,6 +1713,11 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.TransitiveClosureSeededByTargetResults.Clear();
             _cacheContext.TransitiveClosurePairProbeResults.Clear();
             _cacheContext.GroupedTransitiveClosureResults.Clear();
+            _cacheContext.SeedGroupedTransitiveClosureCountResults.Clear();
+            _cacheContext.SeedGroupedDagLongestDepthResults.Clear();
+            _cacheContext.SeedGroupedPathAwareWeightSumResults.Clear();
+            _cacheContext.SeedGroupedPathAwareDepthMinResults.Clear();
+            _cacheContext.SeedGroupedPathAwareAccumulationMinResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededResults.Clear();
             _cacheContext.GroupedTransitiveClosureSeededByTargetResults.Clear();
             _cacheContext.GroupedTransitiveClosurePairProbeResults.Clear();
@@ -1312,7 +1749,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 case RelationScanNode scan:
                     result = context is null
-                        ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
+                        ? GetFactStream(scan.Relation, context)
                         : GetFactsList(scan.Relation, context);
                     break;
 
@@ -1378,6 +1815,30 @@ namespace UnifyWeaver.QueryRuntime
 
                 case GroupedTransitiveClosureNode closure:
                     result = ExecuteGroupedTransitiveClosure(closure, context);
+                    break;
+
+                case SeedGroupedTransitiveClosureNode closure:
+                    result = ExecuteSeedGroupedTransitiveClosure(closure, context);
+                    break;
+
+                case SeedGroupedTransitiveClosureCountNode closure:
+                    result = ExecuteSeedGroupedTransitiveClosureCount(closure, context);
+                    break;
+
+                case SeedGroupedDagLongestDepthNode closure:
+                    result = ExecuteSeedGroupedDagLongestDepth(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareWeightSumNode closure:
+                    result = ExecuteSeedGroupedPathAwareWeightSum(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareDepthMinNode closure:
+                    result = ExecuteSeedGroupedPathAwareDepthMin(closure, context);
+                    break;
+
+                case SeedGroupedPathAwareAccumulationMinNode closure:
+                    result = ExecuteSeedGroupedPathAwareAccumulationMin(closure, context);
                     break;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -1546,7 +2007,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is null)
             {
-                return (_provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()).Where(tuple =>
+                return GetFactStream(scan.Relation, context).Where(tuple =>
                     tuple is not null && TupleMatchesPattern(tuple, scan.Pattern));
             }
 
@@ -1813,6 +2274,40 @@ namespace UnifyWeaver.QueryRuntime
 
                 case GroupedTransitiveClosureNode closure:
                     predicates.Add(closure.EdgeRelation);
+                    return;
+
+                case SeedGroupedTransitiveClosureNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    return;
+
+                case SeedGroupedTransitiveClosureCountNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    return;
+
+                case SeedGroupedDagLongestDepthNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    return;
+
+                case SeedGroupedPathAwareWeightSumNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
+                    return;
+
+                case SeedGroupedPathAwareDepthMinNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
+                    return;
+
+                case SeedGroupedPathAwareAccumulationMinNode closure:
+                    predicates.Add(closure.EdgeRelation);
+                    predicates.Add(closure.SeedRelation);
+                    predicates.Add(closure.RootRelation);
+                    predicates.Add(closure.AuxiliaryRelation);
                     return;
 
                 case PathAwareTransitiveClosureNode closure:
@@ -5285,12 +5780,161 @@ namespace UnifyWeaver.QueryRuntime
             return output;
         }
 
+        private bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (_provider is IRetentionAwareRelationProvider retentionAwareProvider &&
+                retentionAwareProvider.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
+        }
+
+        private bool TryGetDelimitedSource(PredicateId predicate, RelationRetentionMode preferredMode, out DelimitedRelationSource source)
+        {
+            if (TryBindRelation(predicate, preferredMode, out var binding) && binding.DelimitedSource is { } delimitedSource)
+            {
+                source = delimitedSource;
+                return true;
+            }
+
+            source = default;
+            return false;
+        }
+
+        private bool TryGetReplayableSource(PredicateId predicate, EvaluationContext? context, out IReplayableRelationSource source)
+        {
+            if (context is not null && context.ReplayableFactSources.TryGetValue(predicate, out var cached))
+            {
+                source = cached;
+                return true;
+            }
+
+            if (TryBindRelation(predicate, RelationRetentionMode.Replayable, out var binding) &&
+                binding.ReplayableSource is { } replayableSource)
+            {
+                if (context is not null)
+                {
+                    context.ReplayableFactSources[predicate] = replayableSource;
+                }
+
+                source = replayableSource;
+                return true;
+            }
+
+            source = default!;
+            return false;
+        }
+
+        private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
+        {
+            if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
+            {
+                return replayableSource.Stream();
+            }
+
+            if (TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var source))
+            {
+                return DelimitedRelationReader.ReadRows(source);
+            }
+
+            if (TryGetReplayableSource(predicate, context, out replayableSource))
+            {
+                return replayableSource.Stream();
+            }
+
+            return _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+        }
+
+        private List<object[]> MaterializeFacts(PredicateId predicate, EvaluationContext? context)
+        {
+            if (TryGetReplayableSource(predicate, context, out var replayableSource))
+            {
+                return replayableSource.Materialize();
+            }
+
+            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+            return factsSource as List<object[]> ?? factsSource.ToList();
+        }
+
+        private PathAwareEdgeState GetPathAwareEdgeState(PredicateId predicate, EvaluationContext context)
+        {
+            if (context.PathAwareEdgeStates.TryGetValue(predicate, out var cached))
+            {
+                context.Trace?.RecordCacheLookup("PathAwareEdgeState", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                return cached;
+            }
+
+            context.Trace?.RecordCacheLookup("PathAwareEdgeState", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
+
+            var successors = new Dictionary<object, PathAwareSuccessorBucket>();
+            var seeds = new List<object?>();
+            var seenSeeds = new HashSet<object?>();
+
+            void AddEdge(object? source, object? target)
+            {
+                var lookupKey = source ?? NullFactIndexKey;
+                if (!successors.TryGetValue(lookupKey, out var bucket))
+                {
+                    bucket = new PathAwareSuccessorBucket(source);
+                    successors[lookupKey] = bucket;
+                }
+
+                bucket.Targets.Add(target);
+                if (seenSeeds.Add(source))
+                {
+                    seeds.Add(source);
+                }
+            }
+
+            if (TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource))
+            {
+                using var reader = DelimitedRelationReader.OpenSequentialReader(delimitedSource.InputPath);
+                for (var i = 0; i < delimitedSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        break;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, delimitedSource.Delimiter, out var left, out var right))
+                    {
+                        continue;
+                    }
+
+                    AddEdge(left, right);
+                }
+            }
+            else
+            {
+                foreach (var edge in GetFactStream(predicate, context))
+                {
+                    if (edge is null || edge.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    AddEdge(edge[0], edge[1]);
+                }
+            }
+
+            seeds.Sort(CompareCacheSeedValues);
+            var state = new PathAwareEdgeState(successors, seeds);
+            context.PathAwareEdgeStates[predicate] = state;
+            return state;
+        }
+
         private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
         {
             if (context is null)
             {
-                var source = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
-                return source as List<object[]> ?? source.ToList();
+                return MaterializeFacts(predicate, context);
             }
 
             if (context.Facts.TryGetValue(predicate, out var cached))
@@ -5310,8 +5954,7 @@ namespace UnifyWeaver.QueryRuntime
                 missTrace.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
             }
 
-            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
-            var facts = factsSource as List<object[]> ?? factsSource.ToList();
+            var facts = MaterializeFacts(predicate, context);
             context.Facts[predicate] = facts;
             return facts;
         }
@@ -5320,7 +5963,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (context is null)
             {
-                return new HashSet<object[]>(_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>(), StructuralArrayComparer.Instance);
+                return new HashSet<object[]>(MaterializeFacts(predicate, context), StructuralArrayComparer.Instance);
             }
 
             if (context.FactSets.TryGetValue(predicate, out var cached))
@@ -6974,6 +7617,1254 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private static PathAwareGroupedSummaryStrategy ToPathAwareGroupedSummaryStrategy(PathAwareGroupedMinStrategy strategy)
+            => strategy switch
+            {
+                PathAwareGroupedMinStrategy.CompactGrouped => PathAwareGroupedSummaryStrategy.CompactGrouped,
+                PathAwareGroupedMinStrategy.LegacySeededRows => PathAwareGroupedSummaryStrategy.LegacySeededRows,
+                _ => PathAwareGroupedSummaryStrategy.Auto
+            };
+
+        private static PathAwareGroupedSummaryStrategy ToPathAwareGroupedSummaryStrategy(PathAwareWeightSumStrategy strategy)
+            => strategy switch
+            {
+                PathAwareWeightSumStrategy.CompactGrouped => PathAwareGroupedSummaryStrategy.CompactGrouped,
+                PathAwareWeightSumStrategy.LegacySeededRows => PathAwareGroupedSummaryStrategy.LegacySeededRows,
+                _ => PathAwareGroupedSummaryStrategy.Auto
+            };
+
+        private static TimeSpan MeasureElapsed(Action action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            return stopwatch.Elapsed;
+        }
+
+        private static T MeasurePhase<T>(QueryExecutionTrace? trace, PlanNode node, string phase, Func<T> action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var result = action();
+            stopwatch.Stop();
+            trace?.RecordPhase(node, phase, stopwatch.Elapsed);
+            return result;
+        }
+
+        private static void MeasurePhase(QueryExecutionTrace? trace, PlanNode node, string phase, Action action)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            action();
+            stopwatch.Stop();
+            trace?.RecordPhase(node, phase, stopwatch.Elapsed);
+        }
+
+        private static PathAwareGroupedSummaryStrategy ResolveStructuralPathAwareGroupedSummaryStrategy(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows) =>
+            estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+                ? PathAwareGroupedSummaryStrategy.LegacySeededRows
+                : PathAwareGroupedSummaryStrategy.CompactGrouped;
+
+        private static bool ShouldProbePathAwareGroupedSummaryStrategy(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows,
+            int uniqueSeedCount)
+        {
+            if (uniqueSeedCount < 2)
+            {
+                return false;
+            }
+
+            var lowerBound = Math.Max(64L, estimatedGroupedRows * 2L);
+            var upperBound = Math.Max(256L, estimatedGroupedRows * 8L);
+            return estimatedLegacyRows > lowerBound && estimatedLegacyRows < upperBound;
+        }
+
+        private static PathAwareGroupedSummaryStrategy ResolveMeasuredPathAwareGroupedSummaryStrategy(
+            int totalSeedCount,
+            int sampleSeedCount,
+            TimeSpan compactProbe,
+            TimeSpan legacyProbe,
+            long estimatedGroupedRows,
+            long estimatedLegacyRows)
+        {
+            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+            if (sampleSeedCount <= 0 || totalSeedCount <= 0)
+            {
+                return structuralStrategy;
+            }
+
+            var compactTicks = compactProbe == TimeSpan.MaxValue
+                ? double.PositiveInfinity
+                : compactProbe.Ticks * (double)totalSeedCount / sampleSeedCount;
+            var legacyTicks = legacyProbe == TimeSpan.MaxValue
+                ? double.PositiveInfinity
+                : legacyProbe.Ticks * (double)totalSeedCount / sampleSeedCount;
+
+            if (double.IsInfinity(compactTicks) && !double.IsInfinity(legacyTicks))
+            {
+                return PathAwareGroupedSummaryStrategy.LegacySeededRows;
+            }
+
+            if (double.IsInfinity(legacyTicks) && !double.IsInfinity(compactTicks))
+            {
+                return PathAwareGroupedSummaryStrategy.CompactGrouped;
+            }
+
+            if (compactTicks <= 0d || legacyTicks <= 0d || (double.IsInfinity(compactTicks) && double.IsInfinity(legacyTicks)))
+            {
+                return structuralStrategy;
+            }
+
+            return legacyTicks <= compactTicks
+                ? PathAwareGroupedSummaryStrategy.LegacySeededRows
+                : PathAwareGroupedSummaryStrategy.CompactGrouped;
+        }
+
+        private static PathAwareGroupedSummarySelection ResolvePathAwareGroupedSummaryStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareGroupedSummaryStrategy configuredStrategy,
+            int groupCount,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
+        {
+            return MeasurePhase(trace, node, "strategy_select", () =>
+            {
+                if (configuredStrategy != PathAwareGroupedSummaryStrategy.Auto)
+                {
+                    return new PathAwareGroupedSummarySelection(configuredStrategy, "ConfiguredOverride");
+                }
+
+                var uniqueSeedCount = orderedUniqueSeeds.Count;
+                var effectiveGroups = Math.Max(1, groupCount);
+                var effectiveSeeds = Math.Max(1, uniqueSeedCount);
+                var effectiveRoots = Math.Max(1, rootCount);
+                var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
+                var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
+                var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
+                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+
+                if (measureCompactProbe is null || measureLegacyProbe is null ||
+                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount))
+                {
+                    return new PathAwareGroupedSummarySelection(structuralStrategy, "Structural");
+                }
+
+                var sampleSeedCount = Math.Min(uniqueSeedCount, 4);
+                var sampleSeeds = orderedUniqueSeeds.Take(sampleSeedCount).ToList();
+                var compactProbe = measureCompactProbe(sampleSeeds);
+                trace?.RecordPhase(node, "strategy_probe_compact_grouped", compactProbe);
+                var legacyProbe = measureLegacyProbe(sampleSeeds);
+                trace?.RecordPhase(node, "strategy_probe_legacy_seeded_rows", legacyProbe);
+
+                var measuredStrategy = ResolveMeasuredPathAwareGroupedSummaryStrategy(
+                    uniqueSeedCount,
+                    sampleSeedCount,
+                    compactProbe,
+                    legacyProbe,
+                    estimatedGroupedRows,
+                    estimatedLegacyRows);
+                return new PathAwareGroupedSummarySelection(measuredStrategy, "MeasuredProbe");
+            });
+        }
+
+        private static void RecordPathAwareGroupedSummaryStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string nodeStrategyPrefix,
+            PathAwareGroupedSummarySelection selection)
+        {
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}Selection{selection.DecisionMode}");
+            trace?.RecordStrategy(node, selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                ? $"{nodeStrategyPrefix}LegacySeededRows"
+                : $"{nodeStrategyPrefix}CompactGrouped");
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
+            SeedGroupedPathAwareWeightSumNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, double>>();
+            }
+
+            var seededClosure = new PathAwareTransitiveClosureNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                1,
+                1,
+                closure.MaxDepth,
+                TableMode.All);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareTransitiveClosure(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var distanceWeightCache = new Dictionary<int, double>();
+
+            double GetDistanceWeight(int distance)
+            {
+                if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                {
+                    return cachedWeight;
+                }
+
+                var weight = Math.Pow(distance, -closure.DistanceExponent);
+                distanceWeightCache[distance] = weight;
+                return weight;
+            }
+
+            var seedWeightSums = new Dictionary<object, Dictionary<object, double>>();
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedWeightSums[seedKey] = new Dictionary<object, double>
+                    {
+                        [seedKey] = GetDistanceWeight(1)
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedWeightSums.TryGetValue(seedKey, out var rootSums))
+                {
+                    rootSums = new Dictionary<object, double>();
+                    seedWeightSums[seedKey] = rootSums;
+                }
+
+                var distance = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
+                var weight = GetDistanceWeight(distance);
+                rootSums[rootKey] = rootSums.TryGetValue(rootKey, out var current) ? current + weight : weight;
+            }
+
+            return seedWeightSums;
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareWeightSum(SeedGroupedPathAwareWeightSumNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareWeightSum");
+
+                var predicate = closure.Predicate;
+                var cacheKey = (closure.EdgeRelation, closure.SeedRelation, closure.RootRelation, predicate, closure.DistanceExponent, closure.MaxDepth);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}:roots={closure.RootRelation.Name}/{closure.RootRelation.Arity}:exp={closure.DistanceExponent.ToString(CultureInfo.InvariantCulture)}:max={closure.MaxDepth}";
+                if (context.SeedGroupedPathAwareWeightSumResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                MeasurePhase(trace, closure, "load_roots", () =>
+                {
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    {
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
+                    }
+                });
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareWeightSumResults[cacheKey] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+                MeasurePhase(trace, closure, "load_seeds", () =>
+                {
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    {
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
+
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
+                    }
+                });
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareWeightSumResults[cacheKey] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+
+                Dictionary<object, Dictionary<object, double>> BuildCompactSeedWeightSums(IReadOnlyList<object?> seeds)
+                {
+                    var distanceWeightCache = new Dictionary<int, double>();
+                    var nodeIds = new Dictionary<object, int>();
+                    var nextNodeId = 0;
+
+                    int GetNodeId(object? value)
+                    {
+                        var key = value ?? NullFactIndexKey;
+                        if (nodeIds.TryGetValue(key, out var existing))
+                        {
+                            return existing;
+                        }
+
+                        var id = nextNodeId++;
+                        nodeIds[key] = id;
+                        return id;
+                    }
+
+                    double GetDistanceWeight(int distance)
+                    {
+                        if (distanceWeightCache.TryGetValue(distance, out var cachedWeight))
+                        {
+                            return cachedWeight;
+                        }
+
+                        var weight = Math.Pow(distance, -closure.DistanceExponent);
+                        distanceWeightCache[distance] = weight;
+                        return weight;
+                    }
+
+                    var directSeedWeightSums = new Dictionary<object, Dictionary<object, double>>();
+                    foreach (var seed in seeds)
+                    {
+                        var weightSums = ComputePathAwareRootWeightSumsForSeed(seed, succIndex, rootKeys, closure.MaxDepth, GetNodeId, GetDistanceWeight);
+                        if (weightSums.Count > 0)
+                        {
+                            directSeedWeightSums[seed ?? NullFactIndexKey] = weightSums;
+                        }
+                    }
+
+                    return directSeedWeightSums;
+                }
+
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = BuildCompactSeedWeightSums(sampleSeeds));
+
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
+                    _pathAwareWeightSumStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds,
+                    rootKeys.Count,
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selection);
+
+                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                    ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, double>>)ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context))
+                    : MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, double>>)BuildCompactSeedWeightSums(orderedUniqueSeeds));
+
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
+                {
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
+                    {
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                        {
+                            continue;
+                        }
+
+                        Dictionary<object, double>? groupSums = null;
+                        foreach (var seed in seedsForGroup)
+                        {
+                            if (!seedWeightSums.TryGetValue(seed ?? NullFactIndexKey, out var rootSums))
+                            {
+                                continue;
+                            }
+
+                            groupSums ??= new Dictionary<object, double>();
+                            foreach (var entry in rootSums)
+                            {
+                                groupSums[entry.Key] = groupSums.TryGetValue(entry.Key, out var current) ? current + entry.Value : entry.Value;
+                            }
+                        }
+
+                        if (groupSums is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupSums.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupSums[rootKey] });
+                        }
+                    }
+
+                    return builtRows;
+                });
+
+                context.SeedGroupedPathAwareWeightSumResults[cacheKey] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static Dictionary<object, double> ComputePathAwareRootWeightSumsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            HashSet<object> rootKeys,
+            int maxDepth,
+            Func<object?, int> getNodeId,
+            Func<int, double> getDistanceWeight)
+        {
+            var sums = new Dictionary<object, double>();
+
+            void AddContribution(object? root, int distance)
+            {
+                var rootKey = root ?? NullFactIndexKey;
+                var weight = getDistanceWeight(distance);
+                sums[rootKey] = sums.TryGetValue(rootKey, out var current) ? current + weight : weight;
+            }
+
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                AddContribution(seed, 1);
+            }
+
+            var initialPath = CompactVisitedPath.Create(getNodeId(seed));
+            var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Path)>();
+            stack.Push((seed, 0, initialPath));
+
+            while (stack.Count > 0)
+            {
+                var (current, depth, path) = stack.Pop();
+                var lookupKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                {
+                    continue;
+                }
+
+                for (var i = bucket.Targets.Count - 1; i >= 0; i--)
+                {
+                    var next = bucket.Targets[i];
+                    var nextId = getNodeId(next);
+                    if (path.Contains(nextId))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (maxDepth > 0 && nextDepth > maxDepth)
+                    {
+                        continue;
+                    }
+
+                    var nextKey = next ?? NullFactIndexKey;
+                    if (rootKeys.Contains(nextKey))
+                    {
+                        AddContribution(next, nextDepth + 1);
+                    }
+
+                    stack.Push((next, nextDepth, path.Extend(nextId)));
+                }
+            }
+
+            return sums;
+        }
+
+
+
+        private static int EstimatePathAwareNodeCount(IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            var nodes = new HashSet<object>();
+            foreach (var (key, bucket) in succIndex)
+            {
+                nodes.Add(key);
+                foreach (var target in bucket.Targets)
+                {
+                    nodes.Add(target ?? NullFactIndexKey);
+                }
+            }
+
+            return nodes.Count;
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
+            SeedGroupedPathAwareDepthMinNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, int>>();
+            }
+
+            var seededClosure = new PathAwareTransitiveClosureNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                closure.DirectSeedDepth,
+                1,
+                closure.MaxDepth,
+                TableMode.Min);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareTransitiveClosure(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var seedMinima = new Dictionary<object, Dictionary<object, int>>();
+
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedMinima[seedKey] = new Dictionary<object, int>
+                    {
+                        [seedKey] = closure.DirectSeedDepth
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedMinima.TryGetValue(seedKey, out var rootMins))
+                {
+                    rootMins = new Dictionary<object, int>();
+                    seedMinima[seedKey] = rootMins;
+                }
+
+                var value = Convert.ToInt32(row[2], CultureInfo.InvariantCulture);
+                if (!rootMins.TryGetValue(rootKey, out var current) || value < current)
+                {
+                    rootMins[rootKey] = value;
+                }
+            }
+
+            return seedMinima;
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareDepthMin(SeedGroupedPathAwareDepthMinNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareDepthMin");
+
+                if (context.SeedGroupedPathAwareDepthMinResults.TryGetValue(closure, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                MeasurePhase(trace, closure, "load_roots", () =>
+                {
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    {
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
+                    }
+                });
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareDepthMinResults[closure] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+                MeasurePhase(trace, closure, "load_seeds", () =>
+                {
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    {
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
+
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
+                    }
+                });
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareDepthMinResults[closure] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+
+                Dictionary<object, Dictionary<object, int>> BuildCompactSeedDepthMins(IReadOnlyList<object?> seeds)
+                {
+                    var directSeedMins = new Dictionary<object, Dictionary<object, int>>();
+                    foreach (var seed in seeds)
+                    {
+                        var mins = ComputePathAwareRootDepthMinsForSeed(seed, succIndex, rootKeys, closure.DirectSeedDepth, closure.MaxDepth);
+                        if (mins.Count > 0)
+                        {
+                            directSeedMins[seed ?? NullFactIndexKey] = mins;
+                        }
+                    }
+
+                    return directSeedMins;
+                }
+
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = BuildCompactSeedDepthMins(sampleSeeds));
+
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
+                    _pathAwareGroupedMinStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds,
+                    rootKeys.Count,
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selection);
+
+                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                    ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, int>>)ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context))
+                    : MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, int>>)BuildCompactSeedDepthMins(orderedUniqueSeeds));
+
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
+                {
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
+                    {
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                        {
+                            continue;
+                        }
+
+                        Dictionary<object, int>? groupMins = null;
+                        foreach (var seed in seedsForGroup)
+                        {
+                            if (!seedDepthMins.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                            {
+                                continue;
+                            }
+
+                            groupMins ??= new Dictionary<object, int>();
+                            foreach (var entry in rootMins)
+                            {
+                                if (!groupMins.TryGetValue(entry.Key, out var current) || entry.Value < current)
+                                {
+                                    groupMins[entry.Key] = entry.Value;
+                                }
+                            }
+                        }
+
+                        if (groupMins is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupMins.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
+                        }
+                    }
+
+                    return builtRows;
+                });
+
+                context.SeedGroupedPathAwareDepthMinResults[closure] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static Dictionary<object, int> ComputePathAwareRootDepthMinsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            HashSet<object> rootKeys,
+            int directSeedDepth,
+            int maxDepth)
+        {
+            var mins = new Dictionary<object, int>();
+
+            void Record(object? root, int depth)
+            {
+                var rootKey = root ?? NullFactIndexKey;
+                if (!mins.TryGetValue(rootKey, out var current) || depth < current)
+                {
+                    mins[rootKey] = depth;
+                }
+            }
+
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                Record(seed, directSeedDepth);
+            }
+
+            var visited = new Dictionary<object, int> { [seedKey] = 0 };
+            var queue = new Queue<(object? Node, int Depth)>();
+            queue.Enqueue((seed, 0));
+
+            while (queue.Count > 0)
+            {
+                var (current, depth) = queue.Dequeue();
+                if (maxDepth > 0 && depth >= maxDepth)
+                {
+                    continue;
+                }
+
+                var currentKey = current ?? NullFactIndexKey;
+                if (!succIndex.TryGetValue(currentKey, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var next in bucket.Targets)
+                {
+                    var nextDepth = depth + 1;
+                    var nextKey = next ?? NullFactIndexKey;
+                    if (visited.TryGetValue(nextKey, out var bestDepth) && bestDepth <= nextDepth)
+                    {
+                        continue;
+                    }
+
+                    visited[nextKey] = nextDepth;
+                    if (rootKeys.Contains(nextKey))
+                    {
+                        Record(next, directSeedDepth + nextDepth);
+                    }
+
+                    queue.Enqueue((next, nextDepth));
+                }
+            }
+
+            return mins;
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedPathAwareAccumulationMin(SeedGroupedPathAwareAccumulationMinNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 3)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMin");
+
+                if (context.SeedGroupedPathAwareAccumulationMinResults.TryGetValue(closure, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
+
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
+                var rootKeys = new HashSet<object>();
+                var rootValues = new Dictionary<object, object?>();
+                MeasurePhase(trace, closure, "load_roots", () =>
+                {
+                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    {
+                        if (row is null || row.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        var root = row[0];
+                        var rootKey = root ?? NullFactIndexKey;
+                        if (rootKeys.Add(rootKey))
+                        {
+                            rootValues[rootKey] = root;
+                        }
+                    }
+                });
+
+                if (rootKeys.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareAccumulationMinResults[closure] = empty;
+                    return empty;
+                }
+
+                var groupedSeeds = new Dictionary<object, List<object?>>();
+                var groupValues = new List<object?>();
+                var uniqueSeeds = new HashSet<object?>();
+                var orderedUniqueSeeds = new List<object?>();
+                MeasurePhase(trace, closure, "load_seeds", () =>
+                {
+                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    {
+                        if (row is null || row.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var group = row[0];
+                        var seed = row[1];
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var bucket))
+                        {
+                            bucket = new List<object?>();
+                            groupedSeeds[groupKey] = bucket;
+                            groupValues.Add(group);
+                        }
+
+                        bucket.Add(seed);
+                        if (uniqueSeeds.Add(seed))
+                        {
+                            orderedUniqueSeeds.Add(seed);
+                        }
+                    }
+                });
+
+                if (groupValues.Count == 0)
+                {
+                    var empty = Array.Empty<object[]>();
+                    context.SeedGroupedPathAwareAccumulationMinResults[closure] = empty;
+                    return empty;
+                }
+
+                orderedUniqueSeeds.Sort(CompareCacheSeedValues);
+                groupValues.Sort(CompareCacheSeedValues);
+
+                Dictionary<object, List<object[]>>? auxIndex = null;
+                PositiveStepEvaluator? stepEvaluator = null;
+                var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
+                var positiveFastPathPrepared = false;
+                var usePositiveMinFastPath = false;
+
+                void EnsurePositiveMinFastPathPrepared()
+                {
+                    if (positiveFastPathPrepared)
+                    {
+                        return;
+                    }
+
+                    positiveFastPathPrepared = true;
+                    var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetFactsList(closure.AuxiliaryRelation, context));
+                    auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
+                    usePositiveMinFastPath = closure.MaxDepth > 0 &&
+                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                }
+
+                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds)
+                {
+                    EnsurePositiveMinFastPathPrepared();
+                    if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                    {
+                        return new Dictionary<object, Dictionary<object, object>>();
+                    }
+
+                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                    foreach (var seed in seeds)
+                    {
+                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
+                        if (mins.Count > 0)
+                        {
+                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                        }
+                    }
+
+                    return fastSeedMinima;
+                }
+
+                TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() =>
+                    {
+                        EnsurePositiveMinFastPathPrepared();
+                        if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                        {
+                            return;
+                        }
+
+                        _ = BuildCompactSeedMinima(sampleSeeds);
+                    });
+
+                TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
+                    MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, sampleSeeds, rootKeys, context));
+
+                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    closure,
+                    _pathAwareGroupedMinStrategy,
+                    groupValues.Count,
+                    orderedUniqueSeeds,
+                    rootKeys.Count,
+                    succIndex,
+                    MeasureCompactProbe,
+                    MeasureLegacyProbe);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selection);
+
+                IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
+                if (selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
+                {
+                    seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                        (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
+                }
+                else
+                {
+                    EnsurePositiveMinFastPathPrepared();
+                    if (usePositiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
+                    {
+                        seedMinima = MeasurePhase(trace, closure, "build_compact_grouped", () =>
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds));
+                    }
+                    else
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
+                        seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
+                    }
+                }
+
+                var rows = MeasurePhase(trace, closure, "group_reduce", () =>
+                {
+                    var builtRows = new List<object[]>();
+                    foreach (var group in groupValues)
+                    {
+                        var groupKey = group ?? NullFactIndexKey;
+                        if (!groupedSeeds.TryGetValue(groupKey, out var seedsForGroup))
+                        {
+                            continue;
+                        }
+
+                        Dictionary<object, object>? groupMins = null;
+                        foreach (var seed in seedsForGroup)
+                        {
+                            if (!seedMinima.TryGetValue(seed ?? NullFactIndexKey, out var rootMins))
+                            {
+                                continue;
+                            }
+
+                            groupMins ??= new Dictionary<object, object>();
+                            foreach (var entry in rootMins)
+                            {
+                                if (!groupMins.TryGetValue(entry.Key, out var current) || CompareValues(entry.Value, current) < 0)
+                                {
+                                    groupMins[entry.Key] = entry.Value;
+                                }
+                            }
+                        }
+
+                        if (groupMins is null)
+                        {
+                            continue;
+                        }
+
+                        var orderedRoots = groupMins.Keys.ToList();
+                        orderedRoots.Sort((left, right) => CompareCacheSeedValues(rootValues[left], rootValues[right]));
+                        foreach (var rootKey in orderedRoots)
+                        {
+                            builtRows.Add(new object[] { group!, rootValues[rootKey]!, groupMins[rootKey] });
+                        }
+                    }
+
+                    return builtRows;
+                });
+
+                context.SeedGroupedPathAwareAccumulationMinResults[closure] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IReadOnlyDictionary<object, Dictionary<object, object>> ExecuteSeedGroupedPathAwareAccumulationMinFallback(
+            SeedGroupedPathAwareAccumulationMinNode closure,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            ISet<object> rootKeys,
+            EvaluationContext context)
+        {
+            if (orderedUniqueSeeds.Count == 0)
+            {
+                return new Dictionary<object, Dictionary<object, object>>();
+            }
+
+            var seededClosure = new PathAwareAccumulationNode(
+                closure.EdgeRelation,
+                closure.Predicate,
+                closure.AuxiliaryRelation,
+                closure.BaseExpression,
+                closure.RecursiveExpression,
+                closure.MaxDepth,
+                TableMode.Min,
+                closure.PositiveStepProven);
+            var seedParams = orderedUniqueSeeds.Select(seed => new object[] { seed! }).ToList();
+            var rows = ExecuteSeededPathAwareAccumulation(seededClosure, new[] { 0 }, seedParams, context).ToList();
+            var seedMinima = new Dictionary<object, Dictionary<object, object>>();
+
+            foreach (var seed in orderedUniqueSeeds)
+            {
+                var seedKey = seed ?? NullFactIndexKey;
+                if (rootKeys.Contains(seedKey))
+                {
+                    seedMinima[seedKey] = new Dictionary<object, object>
+                    {
+                        [seedKey] = closure.DirectSeedValue
+                    };
+                }
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < 3)
+                {
+                    continue;
+                }
+
+                var seed = row[0];
+                var root = row[1];
+                var rootKey = root ?? NullFactIndexKey;
+                if (!rootKeys.Contains(rootKey))
+                {
+                    continue;
+                }
+
+                var seedKey = seed ?? NullFactIndexKey;
+                if (!seedMinima.TryGetValue(seedKey, out var rootMins))
+                {
+                    rootMins = new Dictionary<object, object>();
+                    seedMinima[seedKey] = rootMins;
+                }
+
+                var value = row[2];
+                if (!rootMins.TryGetValue(rootKey, out var current) || CompareValues(value, current) < 0)
+                {
+                    rootMins[rootKey] = value;
+                }
+            }
+
+            return seedMinima;
+        }
+
+        private static Dictionary<object, double> ComputePositiveMinRootAccumulationsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            ISet<object> rootKeys,
+            PositiveStepEvaluator stepEvaluator,
+            double directSeedValue,
+            int maxDepth)
+        {
+            var mins = new Dictionary<object, double>();
+            var seedKey = seed ?? NullFactIndexKey;
+            if (rootKeys.Contains(seedKey))
+            {
+                mins[seedKey] = directSeedValue;
+            }
+
+            var depthCosts = new List<Dictionary<object?, double>>(maxDepth + 1)
+            {
+                new Dictionary<object?, double> { [seed] = 0d }
+            };
+
+            for (var depth = 0; depth < maxDepth && depth < depthCosts.Count; depth++)
+            {
+                var currentLayer = depthCosts[depth];
+                if (currentLayer.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var (current, currentCost) in currentLayer)
+                {
+                    var currentKey = current ?? NullFactIndexKey;
+                    if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    while (depthCosts.Count <= nextDepth)
+                    {
+                        depthCosts.Add(new Dictionary<object?, double>());
+                    }
+
+                    var nextLayer = depthCosts[nextDepth];
+                    for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    {
+                        var next = edgeBucket.Targets[edgeIndex];
+                        var nextKey = next ?? NullFactIndexKey;
+                        for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                        {
+                            var auxRow = auxBucket[auxIndexPos];
+                            if (auxRow is null || auxRow.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var step = stepEvaluator(current!, next!, auxRow[1]!);
+                            var nextCost = currentCost + step;
+                            if (!nextLayer.TryGetValue(next, out var existingCost) || nextCost < existingCost)
+                            {
+                                nextLayer[next] = nextCost;
+                            }
+
+                            if (!rootKeys.Contains(nextKey))
+                            {
+                                continue;
+                            }
+
+                            if (!mins.TryGetValue(nextKey, out var currentMin) || nextCost < currentMin)
+                            {
+                                mins[nextKey] = nextCost;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return mins;
+        }
+
         private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
         {
             if (closure is null) throw new ArgumentNullException(nameof(closure));
@@ -6985,30 +8876,11 @@ namespace UnifyWeaver.QueryRuntime
                 var trace = context.Trace;
                 trace?.RecordStrategy(closure, "PathAwareTransitiveClosure");
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
-                var seeds = new List<object?>();
-                var seenSeeds = new HashSet<object?>();
-
-                foreach (var edge in edges)
-                {
-                    if (edge is null || edge.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    var seed = edge[0];
-                    if (seenSeeds.Add(seed))
-                    {
-                        seeds.Add(seed);
-                    }
-                }
-
-                seeds.Sort(CompareCacheSeedValues);
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
                 var totalRows = new List<object[]>();
-                foreach (var seed in seeds)
+                foreach (var seed in edgeState.Seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7036,8 +8908,7 @@ namespace UnifyWeaver.QueryRuntime
                 var trace = context.Trace;
                 trace?.RecordStrategy(closure, "PathAwareTransitiveClosureSeeded");
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
 
@@ -7063,7 +8934,7 @@ namespace UnifyWeaver.QueryRuntime
                 var totalRows = new List<object[]>();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, succIndex, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
                 }
 
                 return totalRows;
@@ -7076,7 +8947,7 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void AppendPathAwareRowsForSeed(
             object? seed,
-            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
@@ -7097,15 +8968,9 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                for (var i = bucket.Count - 1; i >= 0; i--)
+                for (var i = bucket.Targets.Count - 1; i >= 0; i--)
                 {
-                    var edge = bucket[i];
-                    if (edge is null || edge.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    var next = edge[1];
+                    var next = bucket.Targets[i];
                     if (visited.Contains(next))
                     {
                         continue;
@@ -7177,33 +9042,16 @@ namespace UnifyWeaver.QueryRuntime
                 var trace = context.Trace;
                 trace?.RecordStrategy(closure, "PathAwareAccumulation");
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
                 var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
-                var seeds = new List<object?>();
-                var seenSeeds = new HashSet<object?>();
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
                     TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
 
-                foreach (var edge in edges)
-                {
-                    if (edge is null || edge.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    var seed = edge[0];
-                    if (seenSeeds.Add(seed))
-                    {
-                        seeds.Add(seed);
-                    }
-                }
-
-                seeds.Sort(CompareCacheSeedValues);
                 var totalRows = new List<object[]>();
-                foreach (var seed in seeds)
+                foreach (var seed in edgeState.Seeds)
                 {
                     if (usePositiveMinFastPath)
                     {
@@ -7240,8 +9088,8 @@ namespace UnifyWeaver.QueryRuntime
                 var trace = context.Trace;
                 trace?.RecordStrategy(closure, "PathAwareAccumulationSeeded");
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context);
+                var succIndex = edgeState.Successors;
                 var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 var seeds = new List<object?>();
@@ -7297,7 +9145,7 @@ namespace UnifyWeaver.QueryRuntime
         // visited-state frontier with dynamic programming over (node, depth).
         private void AppendPositiveMinAccumulationRowsForSeed(
             object? seed,
-            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             PositiveStepEvaluator stepEvaluator,
             ICollection<object[]> output,
@@ -7338,15 +9186,9 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     var nextLayer = depthCosts[nextDepth];
-                    for (var edgeIndex = edgeBucket.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
                     {
-                        var edge = edgeBucket[edgeIndex];
-                        if (edge is null || edge.Length < 2)
-                        {
-                            continue;
-                        }
-
-                        var next = edge[1];
+                        var next = edgeBucket.Targets[edgeIndex];
                         for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                         {
                             var auxRow = auxBucket[auxIndexPos];
@@ -7384,7 +9226,7 @@ namespace UnifyWeaver.QueryRuntime
         private bool TryCreatePositiveAdditiveStepEvaluator(
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
-            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             bool positiveStepProven,
             out PositiveStepEvaluator? evaluator)
@@ -7413,13 +9255,8 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                foreach (var edge in edgeBucket)
+                foreach (var next in edgeBucket.Targets)
                 {
-                    if (edge is null || edge.Length < 2)
-                    {
-                        continue;
-                    }
-
                     foreach (var auxRow in auxBucket)
                     {
                         if (auxRow is null || auxRow.Length < 2)
@@ -7427,7 +9264,7 @@ namespace UnifyWeaver.QueryRuntime
                             continue;
                         }
 
-                        var evalTuple = new object[] { edge[0]!, edge[1]!, 0, auxRow[1]! };
+                        var evalTuple = new object[] { edgeBucket.Source!, next!, 0, auxRow[1]! };
                         var stepObject = EvaluateArithmeticExpression(stepExpression, evalTuple);
                         double step;
                         try
@@ -7514,7 +9351,7 @@ namespace UnifyWeaver.QueryRuntime
 
         private void AppendPathAwareAccumulationRowsForSeed(
             object? seed,
-            IReadOnlyDictionary<object, List<object[]>> succIndex,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
@@ -7568,15 +9405,9 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                for (var edgeIndex = edgeBucket.Count - 1; edgeIndex >= 0; edgeIndex--)
+                for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
                 {
-                    var edge = edgeBucket[edgeIndex];
-                    if (edge is null || edge.Length < 2)
-                    {
-                        continue;
-                    }
-
-                    var next = edge[1];
+                    var next = edgeBucket.Targets[edgeIndex];
                     var nextId = GetNodeId(next);
                     if (visited.Contains(nextId))
                     {
@@ -7950,6 +9781,1606 @@ namespace UnifyWeaver.QueryRuntime
             finally
             {
                 context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedTransitiveClosure(SeedGroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosure");
+
+                var predicate = closure.Predicate;
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}";
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var seeds = GetFactsList(closure.SeedRelation, context);
+
+                const int MaxDagNodeCount = 16384;
+                const int MaxDagGroupCount = 4096;
+                const int MinDagGroupCount = 64;
+                const int MinDagEdgeCount = 8192;
+                if (seeds.Count >= MinDagGroupCount &&
+                    edges.Count >= MinDagEdgeCount &&
+                    TryBuildProjectGroupedDagReachRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out var dagRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosure", traceKey, hit: false, built: true);
+                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureDag");
+                    return dagRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedTransitiveClosure", traceKey, hit: false, built: true);
+
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var totalRows = new List<object[]>();
+                var delta = new List<object[]>();
+
+                foreach (var seed in seeds)
+                {
+                    if (seed is null || seed.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = seed[0];
+                    var node = seed[1];
+                    var key = new object[] { group!, node! };
+                    if (visited.Add(new RowWrapper(key)))
+                    {
+                        totalRows.Add((object[])key.Clone());
+                        delta.Add(key);
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var node = pair[1];
+                        var lookupKey = node ?? NullFactIndexKey;
+                        if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+                            var nextKey = new object[] { pair[0], next! };
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                totalRows.Add((object[])nextKey.Clone());
+                                nextDelta.Add(nextKey);
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedTransitiveClosureCount(SeedGroupedTransitiveClosureCountNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCount");
+
+                var predicate = closure.Predicate;
+                var cacheKey = (closure.EdgeRelation, closure.SeedRelation, predicate);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}";
+                if (context.SeedGroupedTransitiveClosureCountResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                const int MaxDagNodeCount = 16384;
+                const int MaxDagGroupCount = 4096;
+                const int MinDagGroupCount = 64;
+                const int MinDagEdgeCount = 8192;
+                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
+                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
+                    TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out var streamedDagRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
+                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDagStreamed");
+                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = streamedDagRows;
+                    return streamedDagRows;
+                }
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var seeds = GetFactsList(closure.SeedRelation, context);
+                if (seeds.Count >= MinDagGroupCount &&
+                    edges.Count >= MinDagEdgeCount &&
+                    TryBuildProjectGroupedDagReachCountRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out var dagRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
+                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDag");
+                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = dagRows;
+                    return dagRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
+
+                var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+                var visited = new HashSet<RowWrapper>(wrapperComparer);
+                var groupCounts = new Dictionary<object?, int>();
+                var delta = new List<object[]>();
+
+                foreach (var seed in seeds)
+                {
+                    if (seed is null || seed.Length < 2)
+                    {
+                        continue;
+                    }
+
+                    var group = seed[0];
+                    var node = seed[1];
+                    var key = new object[] { group!, node! };
+                    if (visited.Add(new RowWrapper(key)))
+                    {
+                        delta.Add(key);
+                        groupCounts[group] = groupCounts.TryGetValue(group, out var count) ? count + 1 : 1;
+                    }
+                }
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, visited.Count);
+
+                while (delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+
+                    foreach (var pair in delta)
+                    {
+                        var node = pair[1];
+                        var lookupKey = node ?? NullFactIndexKey;
+                        if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var edge in bucket)
+                        {
+                            if (edge is null || edge.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var next = edge[1];
+                            var nextKey = new object[] { pair[0], next! };
+                            if (visited.Add(new RowWrapper(nextKey)))
+                            {
+                                nextDelta.Add(nextKey);
+                                var group = pair[0];
+                                groupCounts[group] = groupCounts.TryGetValue(group, out var count) ? count + 1 : 1;
+                            }
+                        }
+                    }
+
+                    delta = nextDelta;
+                    trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, visited.Count);
+                }
+
+                var rows = groupCounts
+                    .Select(kvp => new object[] { kvp.Key!, kvp.Value })
+                    .ToList();
+                context.SeedGroupedTransitiveClosureCountResults[cacheKey] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteSeedGroupedDagLongestDepth(SeedGroupedDagLongestDepthNode closure, EvaluationContext? parentContext)
+        {
+            if (closure is null) throw new ArgumentNullException(nameof(closure));
+
+            var width = closure.Predicate.Arity;
+            if (width < 2)
+            {
+                return Array.Empty<object[]>();
+            }
+
+            var context = parentContext ?? new EvaluationContext();
+            context.FixpointDepth++;
+            try
+            {
+                var trace = context.Trace;
+                trace?.RecordStrategy(closure, "SeedGroupedDagLongestDepth");
+
+                var predicate = closure.Predicate;
+                var cacheKey = (closure.EdgeRelation, closure.SeedRelation, predicate);
+                var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}";
+                if (context.SeedGroupedDagLongestDepthResults.TryGetValue(cacheKey, out var cachedRows))
+                {
+                    trace?.RecordCacheLookup("SeedGroupedDagLongestDepth", traceKey, hit: true, built: false);
+                    return cachedRows;
+                }
+
+                trace?.RecordCacheLookup("SeedGroupedDagLongestDepth", traceKey, hit: false, built: true);
+
+                const int MaxDagNodeCount = 65536;
+                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
+                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
+                    TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out var streamedRows))
+                {
+                    context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
+                    return streamedRows;
+                }
+
+                var edges = GetFactsList(closure.EdgeRelation, context);
+                var seeds = GetFactsList(closure.SeedRelation, context);
+                if (!TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out var rows))
+                {
+                    throw new InvalidOperationException("SeedGroupedDagLongestDepthNode requires an acyclic edge relation.");
+                }
+
+                context.SeedGroupedDagLongestDepthResults[cacheKey] = rows;
+                return rows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
+        }
+
+        private static bool TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(
+            DelimitedRelationSource edgeSource,
+            DelimitedRelationSource seedSource,
+            int minEdgeCount,
+            int minGroupCount,
+            int maxNodeCount,
+            int maxGroupCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            var globalNodeIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var globalSuccessors = new List<List<int>>();
+
+            int GetGlobalNodeId(string value)
+            {
+                if (globalNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = globalSuccessors.Count;
+                globalNodeIds.Add(value, id);
+                globalSuccessors.Add(new List<int>());
+                return id;
+            }
+
+            var edgeCount = 0;
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
+            {
+                for (var i = 0; i < edgeSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return false;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    {
+                        continue;
+                    }
+
+                    var fromId = GetGlobalNodeId(left);
+                    var toId = GetGlobalNodeId(right);
+                    globalSuccessors[fromId].Add(toId);
+                    edgeCount++;
+                }
+            }
+
+            if (edgeCount < minEdgeCount || globalSuccessors.Count == 0 || globalSuccessors.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var groupValues = new List<string>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
+            {
+                for (var i = 0; i < seedSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return false;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    {
+                        continue;
+                    }
+
+                    if (!globalNodeIds.TryGetValue(node, out var nodeId))
+                    {
+                        continue;
+                    }
+
+                    if (!groupIds.TryGetValue(group, out var groupId))
+                    {
+                        groupId = groupValues.Count;
+                        if (groupId >= maxGroupCount)
+                        {
+                            return false;
+                        }
+
+                        groupIds.Add(group, groupId);
+                        groupValues.Add(group);
+                    }
+
+                    seedPairs.Add((groupId, nodeId));
+                }
+            }
+
+            if (groupValues.Count < minGroupCount || seedPairs.Count == 0)
+            {
+                return false;
+            }
+
+            return TryBuildProjectGroupedDagReachCountRowsFromGraph(globalSuccessors, groupValues, seedPairs, maxNodeCount, out rows);
+        }
+
+        private static bool TryBuildProjectGroupedDagReachCountRowsFromGraph(
+            List<List<int>> globalSuccessors,
+            List<string> groupValues,
+            List<(int GroupId, int NodeId)> seedPairs,
+            int maxNodeCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            var included = new bool[globalSuccessors.Count];
+            var queue = new Queue<int>();
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (included[nodeId])
+                {
+                    continue;
+                }
+
+                included[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in globalSuccessors[nodeId])
+                {
+                    if (included[next])
+                    {
+                        continue;
+                    }
+
+                    included[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isIncluded in included)
+            {
+                if (isIncluded)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0 || includedCount > maxNodeCount)
+            {
+                return false;
+            }
+
+            var localIds = new int[included.Length];
+            Array.Fill(localIds, -1);
+            var localSuccessors = new List<List<int>>(includedCount);
+            var localIndegree = new int[includedCount];
+            var nextLocalId = 0;
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                localIds[globalId] = nextLocalId;
+                localSuccessors.Add(new List<int>());
+                nextLocalId++;
+            }
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                var fromLocalId = localIds[globalId];
+                foreach (var nextGlobalId in globalSuccessors[globalId])
+                {
+                    if (!included[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    var toLocalId = localIds[nextGlobalId];
+                    localSuccessors[fromLocalId].Add(toLocalId);
+                    localIndegree[toLocalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>();
+            for (var i = 0; i < localIndegree.Length; i++)
+            {
+                if (localIndegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var localId = topoQueue.Dequeue();
+                topo.Add(localId);
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    localIndegree[successorLocalId]--;
+                    if (localIndegree[successorLocalId] == 0)
+                    {
+                        topoQueue.Enqueue(successorLocalId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+
+            var wordCount = (groupValues.Count + 63) >> 6;
+            var nodeGroupBits = new ulong[includedCount][];
+            for (var i = 0; i < includedCount; i++)
+            {
+                nodeGroupBits[i] = new ulong[wordCount];
+            }
+
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                var localNodeId = localIds[nodeId];
+                nodeGroupBits[localNodeId][groupId >> 6] |= 1UL << (groupId & 63);
+            }
+
+            foreach (var localId in topo)
+            {
+                var sourceBits = nodeGroupBits[localId];
+                if (IsZeroWordArray(sourceBits))
+                {
+                    continue;
+                }
+
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    OrInto(nodeGroupBits[successorLocalId], sourceBits);
+                }
+            }
+
+            var counts = new int[groupValues.Count];
+            for (var localId = 0; localId < includedCount; localId++)
+            {
+                var bits = nodeGroupBits[localId];
+                for (var wordIndex = 0; wordIndex < bits.Length; wordIndex++)
+                {
+                    var word = bits[wordIndex];
+                    while (word != 0)
+                    {
+                        var bit = BitOperations.TrailingZeroCount(word);
+                        var groupId = (wordIndex << 6) + bit;
+                        if (groupId < counts.Length)
+                        {
+                            counts[groupId]++;
+                        }
+                        word &= word - 1;
+                    }
+                }
+            }
+
+            rows = new List<object[]>(groupValues.Count);
+            for (var groupId = 0; groupId < groupValues.Count; groupId++)
+            {
+                rows.Add(new object[] { groupValues[groupId], counts[groupId] });
+            }
+
+            return true;
+        }
+
+        private static bool TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(
+            PlanNode traceNode,
+            QueryExecutionTrace? trace,
+            DelimitedRelationSource edgeSource,
+            DelimitedRelationSource seedSource,
+            int maxNodeCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            var phaseStopwatch = Stopwatch.StartNew();
+            var nodeIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var nodeValues = new List<string>();
+            var successors = new List<List<int>>();
+
+            int GetNodeId(string value)
+            {
+                if (nodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = successors.Count;
+                nodeIds.Add(value, id);
+                nodeValues.Add(value);
+                successors.Add(new List<int>());
+                return id;
+            }
+
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
+            {
+                for (var i = 0; i < edgeSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return false;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    {
+                        continue;
+                    }
+
+                    var fromId = GetNodeId(left);
+                    var toId = GetNodeId(right);
+                    successors[fromId].Add(toId);
+                }
+            }
+
+            if (successors.Count == 0 || successors.Count > maxNodeCount)
+            {
+                return false;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "build_graph", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var groupValues = new List<string>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
+            {
+                for (var i = 0; i < seedSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return false;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    {
+                        continue;
+                    }
+
+                    if (!nodeIds.TryGetValue(node, out var nodeId))
+                    {
+                        continue;
+                    }
+
+                    if (!groupIds.TryGetValue(group, out var groupId))
+                    {
+                        groupId = groupValues.Count;
+                        groupIds.Add(group, groupId);
+                        groupValues.Add(group);
+                    }
+
+                    seedPairs.Add((groupId, nodeId));
+                }
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "seed_grouping", phaseStopwatch.Elapsed);
+
+            return TryBuildSeedGroupedDagLongestDepthRowsFromGraph(traceNode, trace, successors, nodeValues, groupValues, seedPairs, maxNodeCount, out rows);
+        }
+
+        private static bool TryBuildSeedGroupedDagLongestDepthRowsFromGraph(
+            PlanNode traceNode,
+            QueryExecutionTrace? trace,
+            List<List<int>> successors,
+            List<string> nodeValues,
+            List<string> groupValues,
+            List<(int GroupId, int NodeId)> seedPairs,
+            int maxNodeCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            var phaseStopwatch = Stopwatch.StartNew();
+            var reachable = new bool[successors.Count];
+            var queue = new Queue<int>(seedPairs.Count);
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (reachable[nodeId])
+                {
+                    continue;
+                }
+
+                reachable[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in successors[nodeId])
+                {
+                    if (reachable[next])
+                    {
+                        continue;
+                    }
+
+                    reachable[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isReachable in reachable)
+            {
+                if (isReachable)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0 || includedCount > maxNodeCount)
+            {
+                return false;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "reachable_cone", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var indegree = new int[successors.Count];
+            for (var globalId = 0; globalId < successors.Count; globalId++)
+            {
+                if (!reachable[globalId])
+                {
+                    continue;
+                }
+
+                foreach (var nextGlobalId in successors[globalId])
+                {
+                    if (!reachable[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    indegree[nextGlobalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>(includedCount);
+            for (var i = 0; i < successors.Count; i++)
+            {
+                if (reachable[i] && indegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var nodeId = topoQueue.Dequeue();
+                topo.Add(nodeId);
+                foreach (var successorId in successors[nodeId])
+                {
+                    if (!reachable[successorId])
+                    {
+                        continue;
+                    }
+
+                    indegree[successorId]--;
+                    if (indegree[successorId] == 0)
+                    {
+                        topoQueue.Enqueue(successorId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "topological_order", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var depths = new int[successors.Count];
+            for (var i = topo.Count - 1; i >= 0; i--)
+            {
+                var nodeId = topo[i];
+                var best = 1;
+                foreach (var successorId in successors[nodeId])
+                {
+                    if (!reachable[successorId])
+                    {
+                        continue;
+                    }
+
+                    var candidate = depths[successorId] + 1;
+                    if (candidate > best)
+                    {
+                        best = candidate;
+                    }
+                }
+
+                depths[nodeId] = best;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "suffix_depth_dp", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var groupBest = new int[groupValues.Count];
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                if (!reachable[nodeId])
+                {
+                    continue;
+                }
+
+                var depth = depths[nodeId];
+                if (depth > groupBest[groupId])
+                {
+                    groupBest[groupId] = depth;
+                }
+            }
+
+            rows = new List<object[]>(groupValues.Count);
+            for (var groupId = 0; groupId < groupValues.Count; groupId++)
+            {
+                rows.Add(new object[] { groupValues[groupId], groupBest[groupId] });
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "group_reduction", phaseStopwatch.Elapsed);
+
+            return true;
+        }
+
+        private static bool TryBuildProjectGroupedDagReachRows(
+            IReadOnlyList<object[]> edges,
+            IReadOnlyList<object[]> seeds,
+            int maxNodeCount,
+            int maxGroupCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            if (edges.Count == 0 || seeds.Count == 0)
+            {
+                return false;
+            }
+
+            var globalNodeIds = new Dictionary<object?, int>();
+            var globalSuccessors = new List<List<int>>();
+            var nodeValues = new List<object?>();
+
+            int GetGlobalNodeId(object? value)
+            {
+                if (globalNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = nodeValues.Count;
+                globalNodeIds.Add(value, id);
+                nodeValues.Add(value);
+                globalSuccessors.Add(new List<int>());
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetGlobalNodeId(edge[0]);
+                var toId = GetGlobalNodeId(edge[1]);
+                globalSuccessors[fromId].Add(toId);
+            }
+
+            if (nodeValues.Count == 0 || nodeValues.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var globalIndegree = new int[nodeValues.Count];
+            for (var i = 0; i < globalSuccessors.Count; i++)
+            {
+                foreach (var next in globalSuccessors[i])
+                {
+                    globalIndegree[next]++;
+                }
+            }
+
+            var groupIds = new Dictionary<object?, int>();
+            var groupValues = new List<object?>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!globalNodeIds.TryGetValue(seed[1], out var nodeId))
+                {
+                    continue;
+                }
+
+                if (!groupIds.TryGetValue(seed[0], out var groupId))
+                {
+                    groupId = groupValues.Count;
+                    if (groupId >= maxGroupCount)
+                    {
+                        return false;
+                    }
+
+                    groupIds.Add(seed[0], groupId);
+                    groupValues.Add(seed[0]);
+                }
+
+                seedPairs.Add((groupId, nodeId));
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+
+            var included = new bool[nodeValues.Count];
+            var queue = new Queue<int>();
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (included[nodeId])
+                {
+                    continue;
+                }
+
+                included[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in globalSuccessors[nodeId])
+                {
+                    if (included[next])
+                    {
+                        continue;
+                    }
+
+                    included[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isIncluded in included)
+            {
+                if (isIncluded)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0 || includedCount > maxNodeCount)
+            {
+                return false;
+            }
+
+            var localIds = new int[nodeValues.Count];
+            Array.Fill(localIds, -1);
+            var localNodeValues = new object?[includedCount];
+            var localSuccessors = new List<List<int>>(includedCount);
+            var localIndegree = new int[includedCount];
+            var nextLocalId = 0;
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                localIds[globalId] = nextLocalId;
+                localNodeValues[nextLocalId] = nodeValues[globalId];
+                localSuccessors.Add(new List<int>());
+                nextLocalId++;
+            }
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                var fromLocalId = localIds[globalId];
+                foreach (var nextGlobalId in globalSuccessors[globalId])
+                {
+                    if (!included[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    var toLocalId = localIds[nextGlobalId];
+                    localSuccessors[fromLocalId].Add(toLocalId);
+                    localIndegree[toLocalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>();
+            for (var i = 0; i < localIndegree.Length; i++)
+            {
+                if (localIndegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var localId = topoQueue.Dequeue();
+                topo.Add(localId);
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    localIndegree[successorLocalId]--;
+                    if (localIndegree[successorLocalId] == 0)
+                    {
+                        topoQueue.Enqueue(successorLocalId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+
+            var wordCount = (groupValues.Count + 63) >> 6;
+            var nodeGroupBits = new ulong[includedCount][];
+            for (var i = 0; i < includedCount; i++)
+            {
+                nodeGroupBits[i] = new ulong[wordCount];
+            }
+
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                var localNodeId = localIds[nodeId];
+                nodeGroupBits[localNodeId][groupId >> 6] |= 1UL << (groupId & 63);
+            }
+
+            foreach (var localId in topo)
+            {
+                var sourceBits = nodeGroupBits[localId];
+                if (IsZeroWordArray(sourceBits))
+                {
+                    continue;
+                }
+
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    OrInto(nodeGroupBits[successorLocalId], sourceBits);
+                }
+            }
+
+            rows = new List<object[]>(Math.Max(includedCount, seedPairs.Count));
+            for (var localId = 0; localId < includedCount; localId++)
+            {
+                var nodeValue = localNodeValues[localId];
+                var bits = nodeGroupBits[localId];
+                for (var wordIndex = 0; wordIndex < bits.Length; wordIndex++)
+                {
+                    var word = bits[wordIndex];
+                    while (word != 0)
+                    {
+                        var bit = BitOperations.TrailingZeroCount(word);
+                        var groupId = (wordIndex << 6) + bit;
+                        if (groupId < groupValues.Count)
+                        {
+                            rows.Add(new object[] { groupValues[groupId]!, nodeValue! });
+                        }
+
+                        word &= word - 1;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool TryBuildProjectGroupedDagReachCountRows(
+            IReadOnlyList<object[]> edges,
+            IReadOnlyList<object[]> seeds,
+            int maxNodeCount,
+            int maxGroupCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            if (edges.Count == 0 || seeds.Count == 0)
+            {
+                return false;
+            }
+
+            var globalNodeIds = new Dictionary<object?, int>();
+            var globalSuccessors = new List<List<int>>();
+
+            int GetGlobalNodeId(object? value)
+            {
+                if (globalNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = globalSuccessors.Count;
+                globalNodeIds.Add(value, id);
+                globalSuccessors.Add(new List<int>());
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetGlobalNodeId(edge[0]);
+                var toId = GetGlobalNodeId(edge[1]);
+                globalSuccessors[fromId].Add(toId);
+            }
+
+            if (globalSuccessors.Count == 0 || globalSuccessors.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var groupIds = new Dictionary<object?, int>();
+            var groupValues = new List<object?>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!globalNodeIds.TryGetValue(seed[1], out var nodeId))
+                {
+                    continue;
+                }
+
+                if (!groupIds.TryGetValue(seed[0], out var groupId))
+                {
+                    groupId = groupValues.Count;
+                    if (groupId >= maxGroupCount)
+                    {
+                        return false;
+                    }
+
+                    groupIds.Add(seed[0], groupId);
+                    groupValues.Add(seed[0]);
+                }
+
+                seedPairs.Add((groupId, nodeId));
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+
+            var included = new bool[globalSuccessors.Count];
+            var queue = new Queue<int>();
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (included[nodeId])
+                {
+                    continue;
+                }
+
+                included[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in globalSuccessors[nodeId])
+                {
+                    if (included[next])
+                    {
+                        continue;
+                    }
+
+                    included[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isIncluded in included)
+            {
+                if (isIncluded)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0 || includedCount > maxNodeCount)
+            {
+                return false;
+            }
+
+            var localIds = new int[included.Length];
+            Array.Fill(localIds, -1);
+            var localSuccessors = new List<List<int>>(includedCount);
+            var localIndegree = new int[includedCount];
+            var nextLocalId = 0;
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                localIds[globalId] = nextLocalId;
+                localSuccessors.Add(new List<int>());
+                nextLocalId++;
+            }
+
+            for (var globalId = 0; globalId < included.Length; globalId++)
+            {
+                if (!included[globalId])
+                {
+                    continue;
+                }
+
+                var fromLocalId = localIds[globalId];
+                foreach (var nextGlobalId in globalSuccessors[globalId])
+                {
+                    if (!included[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    var toLocalId = localIds[nextGlobalId];
+                    localSuccessors[fromLocalId].Add(toLocalId);
+                    localIndegree[toLocalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>();
+            for (var i = 0; i < localIndegree.Length; i++)
+            {
+                if (localIndegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var localId = topoQueue.Dequeue();
+                topo.Add(localId);
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    localIndegree[successorLocalId]--;
+                    if (localIndegree[successorLocalId] == 0)
+                    {
+                        topoQueue.Enqueue(successorLocalId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+
+            var wordCount = (groupValues.Count + 63) >> 6;
+            var nodeGroupBits = new ulong[includedCount][];
+            for (var i = 0; i < includedCount; i++)
+            {
+                nodeGroupBits[i] = new ulong[wordCount];
+            }
+
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                var localNodeId = localIds[nodeId];
+                nodeGroupBits[localNodeId][groupId >> 6] |= 1UL << (groupId & 63);
+            }
+
+            foreach (var localId in topo)
+            {
+                var sourceBits = nodeGroupBits[localId];
+                if (IsZeroWordArray(sourceBits))
+                {
+                    continue;
+                }
+
+                foreach (var successorLocalId in localSuccessors[localId])
+                {
+                    OrInto(nodeGroupBits[successorLocalId], sourceBits);
+                }
+            }
+
+            var counts = new int[groupValues.Count];
+            for (var localId = 0; localId < includedCount; localId++)
+            {
+                var bits = nodeGroupBits[localId];
+                for (var wordIndex = 0; wordIndex < bits.Length; wordIndex++)
+                {
+                    var word = bits[wordIndex];
+                    while (word != 0)
+                    {
+                        var bit = BitOperations.TrailingZeroCount(word);
+                        var groupId = (wordIndex << 6) + bit;
+                        if (groupId < counts.Length)
+                        {
+                            counts[groupId]++;
+                        }
+
+                        word &= word - 1;
+                    }
+                }
+            }
+
+            rows = new List<object[]>(groupValues.Count);
+            for (var groupId = 0; groupId < groupValues.Count; groupId++)
+            {
+                rows.Add(new object[] { groupValues[groupId]!, counts[groupId] });
+            }
+
+            return true;
+        }
+
+        private static bool TryBuildSeedGroupedDagLongestDepthRows(
+            PlanNode traceNode,
+            QueryExecutionTrace? trace,
+            IReadOnlyList<object[]> edges,
+            IReadOnlyList<object[]> seeds,
+            int maxNodeCount,
+            out List<object[]> rows)
+        {
+            rows = new List<object[]>();
+            if (edges.Count == 0 || seeds.Count == 0)
+            {
+                return false;
+            }
+
+            var phaseStopwatch = Stopwatch.StartNew();
+            var nodeIds = new Dictionary<object?, int>();
+            var successors = new List<List<int>>();
+
+            int GetNodeId(object? value)
+            {
+                if (nodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = successors.Count;
+                nodeIds.Add(value, id);
+                successors.Add(new List<int>());
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetNodeId(edge[0]);
+                var toId = GetNodeId(edge[1]);
+                successors[fromId].Add(toId);
+            }
+
+            if (successors.Count == 0 || successors.Count > maxNodeCount)
+            {
+                return false;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "build_graph", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var groupIds = new Dictionary<object?, int>();
+            var groupValues = new List<object?>();
+            var seedPairs = new List<(int GroupId, int NodeId)>();
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!nodeIds.TryGetValue(seed[1], out var nodeId))
+                {
+                    continue;
+                }
+
+                if (!groupIds.TryGetValue(seed[0], out var groupId))
+                {
+                    groupId = groupValues.Count;
+                    groupIds.Add(seed[0], groupId);
+                    groupValues.Add(seed[0]);
+                }
+
+                seedPairs.Add((groupId, nodeId));
+            }
+
+            if (seedPairs.Count == 0)
+            {
+                return true;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "seed_grouping", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var reachable = new bool[successors.Count];
+            var queue = new Queue<int>(seedPairs.Count);
+            foreach (var (_, nodeId) in seedPairs)
+            {
+                if (reachable[nodeId])
+                {
+                    continue;
+                }
+
+                reachable[nodeId] = true;
+                queue.Enqueue(nodeId);
+            }
+
+            while (queue.Count > 0)
+            {
+                var nodeId = queue.Dequeue();
+                foreach (var next in successors[nodeId])
+                {
+                    if (reachable[next])
+                    {
+                        continue;
+                    }
+
+                    reachable[next] = true;
+                    queue.Enqueue(next);
+                }
+            }
+
+            var includedCount = 0;
+            foreach (var isReachable in reachable)
+            {
+                if (isReachable)
+                {
+                    includedCount++;
+                }
+            }
+
+            if (includedCount == 0)
+            {
+                return true;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "reachable_cone", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var indegree = new int[successors.Count];
+            for (var globalId = 0; globalId < successors.Count; globalId++)
+            {
+                if (!reachable[globalId])
+                {
+                    continue;
+                }
+
+                foreach (var nextGlobalId in successors[globalId])
+                {
+                    if (!reachable[nextGlobalId])
+                    {
+                        continue;
+                    }
+
+                    indegree[nextGlobalId]++;
+                }
+            }
+
+            var topoQueue = new Queue<int>(includedCount);
+            for (var i = 0; i < successors.Count; i++)
+            {
+                if (reachable[i] && indegree[i] == 0)
+                {
+                    topoQueue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(includedCount);
+            while (topoQueue.Count > 0)
+            {
+                var nodeId = topoQueue.Dequeue();
+                topo.Add(nodeId);
+                foreach (var successorId in successors[nodeId])
+                {
+                    if (!reachable[successorId])
+                    {
+                        continue;
+                    }
+
+                    indegree[successorId]--;
+                    if (indegree[successorId] == 0)
+                    {
+                        topoQueue.Enqueue(successorId);
+                    }
+                }
+            }
+
+            if (topo.Count != includedCount)
+            {
+                return false;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "topological_order", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var depths = new int[successors.Count];
+            for (var i = topo.Count - 1; i >= 0; i--)
+            {
+                var nodeId = topo[i];
+                var best = 1;
+                foreach (var successorId in successors[nodeId])
+                {
+                    if (!reachable[successorId])
+                    {
+                        continue;
+                    }
+
+                    var candidate = depths[successorId] + 1;
+                    if (candidate > best)
+                    {
+                        best = candidate;
+                    }
+                }
+
+                depths[nodeId] = best;
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "suffix_depth_dp", phaseStopwatch.Elapsed);
+
+            phaseStopwatch.Restart();
+            var groupBest = new int[groupValues.Count];
+            foreach (var (groupId, nodeId) in seedPairs)
+            {
+                if (!reachable[nodeId])
+                {
+                    continue;
+                }
+
+                var depth = depths[nodeId];
+                if (depth > groupBest[groupId])
+                {
+                    groupBest[groupId] = depth;
+                }
+            }
+
+            rows = new List<object[]>(groupValues.Count);
+            for (var groupId = 0; groupId < groupValues.Count; groupId++)
+            {
+                rows.Add(new object[] { groupValues[groupId]!, groupBest[groupId] });
+            }
+            phaseStopwatch.Stop();
+            trace?.RecordPhase(traceNode, "group_reduction", phaseStopwatch.Elapsed);
+
+            return true;
+        }
+
+        private static bool IsZeroWordArray(ulong[] words)
+        {
+            for (var i = 0; i < words.Length; i++)
+            {
+                if (words[i] != 0UL)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void OrInto(ulong[] target, ulong[] source)
+        {
+            for (var i = 0; i < target.Length; i++)
+            {
+                target[i] |= source[i];
             }
         }
 
@@ -10787,6 +14218,61 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
 
+                const int MaxDagBitsetNodeCount = 16384;
+                const int MinDagBitsetSeedCount = 128;
+                const int MinDagBitsetEdgeCount = 8192;
+                if (seeds.Count >= MinDagBitsetSeedCount &&
+                    edges.Count >= MinDagBitsetEdgeCount &&
+                    TryBuildDagReachabilityBitsets(edges, MaxDagBitsetNodeCount, out var dagNodeIds, out var dagNodesById, out var dagReachability))
+                {
+                    trace?.RecordStrategy(closure, "TransitiveClosureSeededDagBitset");
+                    var dagRows = new List<object[]>();
+
+                    foreach (var seed in seeds)
+                    {
+                        if (!dagNodeIds.TryGetValue(seed, out var seedId))
+                        {
+                            continue;
+                        }
+
+                        var reachable = dagReachability[seedId];
+                        for (var targetId = 0; targetId < reachable.Length; targetId++)
+                        {
+                            if (!reachable[targetId])
+                            {
+                                continue;
+                            }
+
+                            dagRows.Add(new object[] { seed!, dagNodesById[targetId]! });
+                        }
+                    }
+
+                    if (canReuseSeededCache)
+                    {
+                        if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var dagStoreBySeed))
+                        {
+                            dagStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            context.TransitiveClosureSeededResults.Add(cacheKey, dagStoreBySeed);
+                        }
+
+                        var admitSeededCache = ShouldAdmitSeededCacheRows(
+                            dagRows.Count,
+                            seeds.Count,
+                            useRowsPerSeedGate: true);
+                        TryAdmitLruBoundedRowWrapperCacheEntry(
+                            dagStoreBySeed,
+                            new RowWrapper(seedsKey),
+                            dagRows,
+                            _seededCacheMaxEntries,
+                            admitSeededCache,
+                            trace,
+                            "TransitiveClosureSeeded",
+                            traceKey);
+                    }
+
+                    return dagRows;
+                }
+
                 const int MaxMemoizedSeedCount = 32;
                 var canMemoizeSeeds =
                     _cacheContext is not null &&
@@ -11018,6 +14504,111 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private static bool TryBuildDagReachabilityBitsets(
+            IReadOnlyList<object[]> edges,
+            int maxNodeCount,
+            out Dictionary<object?, int> nodeIds,
+            out object?[] nodesById,
+            out BitArray[] reachability)
+        {
+            var localNodeIds = new Dictionary<object?, int>();
+            nodeIds = localNodeIds;
+            nodesById = Array.Empty<object?>();
+            reachability = Array.Empty<BitArray>();
+
+            if (edges.Count == 0)
+            {
+                return false;
+            }
+
+            var successors = new List<List<int>>();
+            var indegree = new List<int>();
+            var nodeValues = new List<object?>();
+
+            int GetNodeId(object? value)
+            {
+                if (localNodeIds.TryGetValue(value, out var id))
+                {
+                    return id;
+                }
+
+                id = nodeValues.Count;
+                localNodeIds.Add(value, id);
+                nodeValues.Add(value);
+                successors.Add(new List<int>());
+                indegree.Add(0);
+                return id;
+            }
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                var fromId = GetNodeId(edge[0]);
+                var toId = GetNodeId(edge[1]);
+                successors[fromId].Add(toId);
+                indegree[toId]++;
+            }
+
+            if (nodeValues.Count == 0 || nodeValues.Count > maxNodeCount)
+            {
+                return false;
+            }
+
+            var queue = new Queue<int>();
+            for (var i = 0; i < indegree.Count; i++)
+            {
+                if (indegree[i] == 0)
+                {
+                    queue.Enqueue(i);
+                }
+            }
+
+            var topo = new List<int>(nodeValues.Count);
+            while (queue.Count > 0)
+            {
+                var id = queue.Dequeue();
+                topo.Add(id);
+                foreach (var next in successors[id])
+                {
+                    indegree[next]--;
+                    if (indegree[next] == 0)
+                    {
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+
+            if (topo.Count != nodeValues.Count)
+            {
+                return false;
+            }
+
+            reachability = new BitArray[nodeValues.Count];
+            for (var i = 0; i < reachability.Length; i++)
+            {
+                reachability[i] = new BitArray(nodeValues.Count);
+            }
+
+            for (var index = topo.Count - 1; index >= 0; index--)
+            {
+                var nodeId = topo[index];
+                var bits = reachability[nodeId];
+                foreach (var next in successors[nodeId])
+                {
+                    bits[next] = true;
+                    bits.Or(reachability[next]);
+                }
+            }
+
+            nodesById = nodeValues.ToArray();
+            nodeIds = localNodeIds;
+            return true;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosureByTarget(
@@ -12567,6 +16158,8 @@ namespace UnifyWeaver.QueryRuntime
                 FixpointDepth = parent?.FixpointDepth ?? 0;
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
+                ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
+                PathAwareEdgeStates = parent?.PathAwareEdgeStates ?? new Dictionary<PredicateId, PathAwareEdgeState>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
@@ -12580,6 +16173,16 @@ namespace UnifyWeaver.QueryRuntime
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>>();
                 GroupedTransitiveClosureResults = parent?.GroupedTransitiveClosureResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>>();
+                SeedGroupedTransitiveClosureCountResults = parent?.SeedGroupedTransitiveClosureCountResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                SeedGroupedDagLongestDepthResults = parent?.SeedGroupedDagLongestDepthResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareWeightSumResults = parent?.SeedGroupedPathAwareWeightSumResults
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareDepthMinResults = parent?.SeedGroupedPathAwareDepthMinResults
+                    ?? new Dictionary<SeedGroupedPathAwareDepthMinNode, IReadOnlyList<object[]>>();
+                SeedGroupedPathAwareAccumulationMinResults = parent?.SeedGroupedPathAwareAccumulationMinResults
+                    ?? new Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
@@ -12619,6 +16222,10 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<PredicateId, PlanNode> FactSources { get; }
 
+            public Dictionary<PredicateId, IReplayableRelationSource> ReplayableFactSources { get; }
+
+            public Dictionary<PredicateId, PathAwareEdgeState> PathAwareEdgeStates { get; }
+
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
             public Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>> FactIndices { get; }
@@ -12634,6 +16241,16 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>> TransitiveClosurePairProbeResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), IReadOnlyList<object[]>> GroupedTransitiveClosureResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>> SeedGroupedTransitiveClosureCountResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId Predicate), IReadOnlyList<object[]>> SeedGroupedDagLongestDepthResults { get; }
+
+            public Dictionary<(PredicateId EdgeRelation, PredicateId SeedRelation, PredicateId RootRelation, PredicateId Predicate, double DistanceExponent, int MaxDepth), IReadOnlyList<object[]>> SeedGroupedPathAwareWeightSumResults { get; }
+
+            public Dictionary<SeedGroupedPathAwareDepthMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareDepthMinResults { get; }
+
+            public Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareAccumulationMinResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
 

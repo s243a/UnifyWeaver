@@ -2616,7 +2616,8 @@ build_aggregate_node(GroupSpecs, HeadSpec, Term0, InputNode, VarMapIn, WidthIn, 
     ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
         fail
     ),
-    (   plain_relation_goal(Goal, Pred, Args)
+    (   plain_relation_goal(Goal, Pred, Args),
+        \+ aggregate_goal_requires_subplan(Pred, Args)
     ->  build_simple_aggregate_node(GroupSpecs, HeadSpec, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar,
             InputNode, VarMapIn, WidthIn, RelationsIn,
             NodeOut, VarMapOut, WidthOut, RelationsOut)
@@ -2624,6 +2625,11 @@ build_aggregate_node(GroupSpecs, HeadSpec, Term0, InputNode, VarMapIn, WidthIn, 
             InputNode, VarMapIn, WidthIn, RelationsIn,
             NodeOut, VarMapOut, WidthOut, RelationsOut)
     ).
+
+aggregate_goal_requires_subplan(Pred, Args) :-
+    length(Args, Arity),
+    query_predicate_has_rule(Pred/Arity),
+    \+ query_materialized_relation(Pred/Arity).
 
 parse_query_aggregate_term(aggregate_all(OpTerm, Goal, Result), all, Op, Goal, _GroupTerm, ValueVar, Result) :-
     nonvar(Goal),

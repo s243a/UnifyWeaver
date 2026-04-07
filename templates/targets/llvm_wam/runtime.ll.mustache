@@ -1,0 +1,38 @@
+; === WAM Runtime: Step + Run Loop + Helpers ===
+; Transpiled from wam_runtime.pl step_wam/3 and run_loop/2
+
+; Step: execute a single WAM instruction via switch dispatch
+{{step_function}}
+
+; Run loop: execute instructions until halt or failure (musttail trampoline)
+define i1 @run_loop(%WamState* %vm) {
+entry:
+  %halted = call i1 @wam_is_halted(%WamState* %vm)
+  br i1 %halted, label %success, label %fetch_instr
+
+fetch_instr:
+  %instr = call %Instruction* @wam_fetch(%WamState* %vm)
+  %null_check = icmp eq %Instruction* %instr, null
+  br i1 %null_check, label %failure, label %do_step
+
+do_step:
+  %ok = call i1 @step(%WamState* %vm, %Instruction* %instr)
+  br i1 %ok, label %continue, label %try_backtrack
+
+continue:
+  %result = musttail call i1 @run_loop(%WamState* %vm)
+  ret i1 %result
+
+try_backtrack:
+  %bt_ok = call i1 @backtrack(%WamState* %vm)
+  br i1 %bt_ok, label %continue, label %failure
+
+success:
+  ret i1 true
+
+failure:
+  ret i1 false
+}
+
+; Backtrack, unwind_trail, execute_builtin, eval_arith
+{{helper_functions}}

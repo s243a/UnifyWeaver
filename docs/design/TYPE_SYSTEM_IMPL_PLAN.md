@@ -148,12 +148,16 @@ bring-up.
   moved-input variants, and weighted variants such as
   `category_ancestor_weight/5`, with compile-time fact seeding, a detected
   `Visited` position, one recursion-driving input plus conservative invariant
-  non-visited inputs, and native TypR nested pair results for the direct node
-  output plus one or more additive numeric outputs; the same slice now also
-  emits a native `*_from_vectors` runtime helper, native
+  non-visited inputs, including one helper/guard segment between the step
+  relation and recursive call, and native TypR nested pair results for the
+  direct node output plus one or more additive numeric outputs; the same
+  slice now also emits a native `*_from_vectors` runtime helper, native
   `input(stdin|file|vfs|function)` wrappers, and declared scalar or
   conservative pair-shaped runtime node parsing such as `integer`, `number`,
-  `pair(integer, integer)`, and `pair(number, number)`
+  `pair(integer, integer)`, and `pair(number, number)`; the first
+  conservative path-aware aggregation slice also now stays native for
+  `aggregate_all(count, per_path_goal, N)` wrappers over that supported
+  per-path worker path
 - `uw_return_type/2` support for TypR generic predicates so declared return
   types replace weak `Any` fallbacks where possible
 - `r`-target return-type constraints enabled by default when metadata exists,

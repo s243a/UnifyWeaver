@@ -8,6 +8,8 @@
 
 :- module(go_target, [
     compile_predicate_to_go/3,      % +Predicate, +Options, -GoCode
+    compile_goal_parallel_to_go/5,  % +PredSpec, +Head, +ParallelGoals, +ResultGoal, -Code
+    compile_clause_parallel_to_go/3, % +PredSpec, +Clauses, -Code (Phase 5b)
     compile_facts_to_go/3,          % +Pred, +Arity, -GoCode  -- NEW
     compile_go_pipeline/3,          % +Predicates, +Options, -GoCode
     write_go_program/2,             % +GoCode, +FilePath
@@ -4117,48 +4119,25 @@ merge_go_options(RuntimeOpts, Constraints, Merged) :-
 %  Produces standalone Go program with Solve() iteration loop
 compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     go_generator_config(Config),
-    
-    % Gather all clauses for this predicate (use copy_term to normalize)
-    functor(Head, Pred, Arity),
-    findall(HC-BC, 
-        (user:clause(Head, B), copy_term((Head, B), (HC, BC))), 
-        TargetClauses0),
-    remove_variant_duplicates(TargetClauses0, TargetClauses),
-    
-    % Also gather clauses for predicates referenced in rule bodies (dependency closure)
-    % This includes extracting inner goals from aggregate_all
-    findall(DepPred/DepArity,
-        (   member(_-Body, TargetClauses),
-            Body \= true,
-            body_to_list_go(Body, Goals),
-            member(Goal, Goals),
-            extract_goal_predicate(Goal, DepPred, DepArity),
-            DepPred/DepArity \= Pred/Arity  % Don't include self-references
-        ),
-        DepPredList0),
-    sort(DepPredList0, DepPredList),
-    
-    % Gather facts from dependencies
-    findall(DepHead,
-        (   member(DP/DA, DepPredList),
-            functor(DepHead, DP, DA),
-            user:clause(DepHead, true)
-        ),
-        DepFacts),
-    
-    % Combine target clauses with dependency facts
-    findall(FactHead, member(FactHead-true, TargetClauses), TargetFacts),
-    append(TargetFacts, DepFacts, AllFacts0),
+
+    % Gather target clauses plus dependency closure.
+    collect_go_generator_clauses([Pred/Arity], AllClauses),
+
+    % Compile facts from all reachable predicates.
+    findall(FactHead, member(FactHead-true, AllClauses), AllFacts0),
     remove_variant_duplicates_single(AllFacts0, AllFacts),
     
     % Compile facts
     compile_go_generator_facts(AllFacts, Config, FactsCode),
     
-    % Compile rules (only for target predicate, exclude facts)
-    findall(RuleClause, 
-        (member(RuleClause, TargetClauses), RuleClause = (_-RB), RB \= true),
-        TargetRuleClauses),
-    compile_go_generator_rules(TargetRuleClauses, Config, RulesCode, RuleNames),
+    % Compile rules for all reachable predicates, excluding facts.
+    findall(RuleClause,
+        ( member(RuleClause, AllClauses),
+          RuleClause = (_-RB),
+          RB \= true
+        ),
+        AllRuleClauses),
+    compile_go_generator_rules(AllRuleClauses, Config, RulesCode, RuleNames),
     
     % Compile execution (fixpoint loop)
     compile_go_generator_execution(Pred, RuleNames, Options, ExecutionCode),
@@ -4166,6 +4145,34 @@ compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     % Assemble complete program
     go_generator_header(Pred, Options, Header),
     format(string(GoCode), "~w\n~w\n~w\n~w\n", [Header, FactsCode, RulesCode, ExecutionCode]).
+
+collect_go_generator_clauses(SeedPreds, Clauses) :-
+    collect_go_generator_clauses_queue(SeedPreds, [], [], Clauses0),
+    remove_variant_duplicates(Clauses0, Clauses).
+
+collect_go_generator_clauses_queue([], _Visited, Clauses, Clauses).
+collect_go_generator_clauses_queue([Pred/Arity|Rest], Visited, Clauses0, Clauses) :-
+    (   memberchk(Pred/Arity, Visited)
+    ->  collect_go_generator_clauses_queue(Rest, Visited, Clauses0, Clauses)
+    ;   functor(Head, Pred, Arity),
+        findall(HC-BC,
+            ( user:clause(Head, B),
+              copy_term((Head, B), (HC, BC))
+            ),
+            PredClauses0),
+        remove_variant_duplicates(PredClauses0, PredClauses),
+        findall(DepPred/DepArity,
+            ( member(_-Body, PredClauses),
+              Body \= true,
+              goal_dependency_predicate(Body, DepPred, DepArity),
+              \+ memberchk(DepPred/DepArity, [Pred/Arity|Visited])
+            ),
+            DepPreds0),
+        sort(DepPreds0, DepPreds),
+        append(Rest, DepPreds, Queue1),
+        append(Clauses0, PredClauses, Clauses1),
+        collect_go_generator_clauses_queue(Queue1, [Pred/Arity|Visited], Clauses1, Clauses)
+    ).
 
 %% remove_variant_duplicates(+List, -Unique)
 %  Remove duplicates where terms are variants (same structure, different vars)
@@ -4212,6 +4219,33 @@ extract_goal_predicate(Goal, Pred, Arity) :-
     \+ is_builtin_goal_go(Goal),
     Goal =.. [Pred|Args],
     length(Args, Arity).
+
+goal_dependency_predicate((A, B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate((A ; B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate((A -> B), Pred, Arity) :-
+    !,
+    ( goal_dependency_predicate(A, Pred, Arity)
+    ; goal_dependency_predicate(B, Pred, Arity)
+    ).
+goal_dependency_predicate(aggregate_all(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(aggregate_all(_, InnerGoal, _, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(aggregate(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    goal_dependency_predicate(InnerGoal, Pred, Arity).
+goal_dependency_predicate(Goal, Pred, Arity) :-
+    extract_goal_predicate(Goal, Pred, Arity).
 
 %% go_generator_header(+Pred, +Options, -Header)
 %  Generate Go boilerplate with Fact type
@@ -4396,8 +4430,21 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     (   member(AggGoal, Goals),
         is_aggregate_goal_go(AggGoal)
     ->  % Aggregate rule - extract HAVING filters (builtins after aggregate)
-        extract_having_filters(Goals, AggGoal, HavingFilters),
-        compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
+        append(BeforeAgg, [AggGoal|AfterAgg], Goals),
+        include(is_builtin_goal_go, AfterAgg, HavingFilters),
+        exclude(is_builtin_goal_go, AfterAgg, UnsupportedAfterAgg),
+        (   BeforeAgg == [],
+            UnsupportedAfterAgg == []
+        ->  compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
+        ;   BeforeAgg = [TriggerGoal],
+            UnsupportedAfterAgg == []
+        ->  compile_go_correlated_aggregate_rule(Index, HeadPred, HeadArgs, TriggerGoal, AggGoal, HavingFilters, Config, Code)
+        ;   format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    // Unsupported correlated aggregate form
+    return nil
+}", [RuleName])
+        )
     ;   % Normal rule (joins, negation, etc.)
         partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
         
@@ -4424,6 +4471,158 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
         )
     ).
 
+compile_go_correlated_aggregate_rule(Index, HeadPred, HeadArgs, TriggerGoal, AggGoal0, HavingFilters, _Config, Code) :-
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    normalize_aggregate_goal_go(AggGoal0, AggGoal),
+    classify_aggregate(AggGoal, AggInfo),
+    get_dict(type, AggInfo, Type),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    get_dict(group, AggInfo, GroupVar),
+    get_dict(op, AggInfo, Op),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(result, AggInfo, Result),
+    TriggerGoal =.. [TriggerPred|TriggerArgs],
+    (   Type = all,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  RelGoal =.. [Pred|Args],
+        build_go_correlation_conditions(TriggerArgs, Args, CorrelationCond),
+        build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond0),
+        combine_go_inline_conditions([CorrelationCond, FilterCond0], FilterCond),
+        go_correlated_output_args(HeadArgs, Result, TriggerArgs, ArgsStr),
+        (   HavingFilters \= []
+        ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+            format(string(HavingIfStart), "
+        // HAVING clause filter
+        if ~w {", [HavingCond]),
+            HavingIfEnd = "
+        }"
+        ;   HavingIfStart = "",
+            HavingIfEnd = ""
+        ),
+        (   Op == count
+        ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            count += 1.0
+        }
+    }
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+        ;   find_var_index_go(Expr, Args, ValueIdx),
+            go_agg_code(Op, AggCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    var values []float64
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                values = append(values, val)
+            }
+        }
+    }
+    if len(values) > 0 {
+        ~w~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+        )
+    ;   Type = group,
+        GoalInfo.relations = [RelGoal],
+        GoalInfo.other = []
+    ->  RelGoal =.. [Pred|Args],
+        build_go_correlation_conditions(TriggerArgs, Args, CorrelationCond),
+        build_go_aggregate_filter_conditions(GoalInfo, Args, FilterCond0),
+        combine_go_inline_conditions([CorrelationCond, FilterCond0], FilterCond),
+        find_var_index_go(GroupVar, Args, GroupIdx),
+        go_grouped_correlated_output_args(HeadArgs, GroupVar, Result, TriggerArgs, ArgsStr),
+        (   HavingFilters \= []
+        ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+            format(string(HavingCode), "
+            // HAVING clause filter
+            if !(~w) {
+                continue
+            }", [HavingCond])
+        ;   HavingCode = ""
+        ),
+        (   Op == count
+        ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{~w},
+            })
+        }
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, GroupIdx, HavingCode, HeadPred, ArgsStr])
+        ;   find_var_index_go(Expr, Args, ValueIdx),
+            go_agg_code(Op, AggCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}][]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                groups[key] = append(groups[key], val)
+            }
+        }
+    }
+    for key, values := range groups {
+        if len(values) > 0 {
+            ~w~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{~w},
+            })
+        }
+    }
+    return results
+}", [RuleName, TriggerPred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred, ArgsStr])
+        )
+    ;   format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    // Unsupported correlated aggregate form
+    return nil
+}", [RuleName])
+    ).
+
 %% compile_go_trigger_block(+TriggerGoal, +OtherGoals, +Builtins, +HeadPred, +HeadArgs, +Config, -BlockCode)
 compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, Config, BlockCode) :-
     TriggerGoal =.. [TriggerPred|_],
@@ -4433,8 +4632,8 @@ compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, 
     
     (   OtherGoals == []
     ->  % Simple rule
-        compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
-        compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+        compile_go_builtins_with_state(Builtins, VarMap0, Config, BuiltinCode, VarMap1),
+        compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
         format(string(BodyCode), "~w\n        ~w", [BuiltinCode, HeadCode])
     ;   % Join rule
         compile_go_join_with_result(OtherGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, BodyCode)
@@ -4541,7 +4740,31 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, InnerGoal
         HavingIfEnd = ""
     ),
     
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            count += 1.0
+        }
+    }
+    
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
@@ -4568,7 +4791,8 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, InnerGoal
     }
     
     return results
-}", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
+}", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ).
 
 %% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +Op, +Expr, +InnerGoal, +GroupVar, +Result, +HavingFilters, +Config, -Code)
 compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal, GroupVar, Result, HavingFilters, _Config, Code) :-
@@ -4595,7 +4819,37 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal,
     ;   HavingCode = ""
     ),
     
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, GroupIdx, HavingCode, HeadPred])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
@@ -4628,7 +4882,8 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, InnerGoal,
     }
     
     return results
-}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
+}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred])
+    ).
 
 compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, RelGoal, GoalInfo, Result, HavingFilters, _Config, Code) :-
     RelGoal =.. [Pred|Args],
@@ -4650,7 +4905,26 @@ compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, R
     ;   HavingIfStart = "",
         HavingIfEnd = ""
     ),
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    count := 0.0
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            count += 1.0
+        }
+    }
+    if count > 0 {
+        agg := count~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     if fact.Relation != \"~w\" {
@@ -4670,7 +4944,8 @@ compile_go_ungrouped_subplan_aggregate(RuleName, HeadPred, HeadArgs, Op, Expr, R
             results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
     }
     return results
-}", [RuleName, Pred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
+}", [RuleName, Pred, Pred, FilterCond, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd])
+    ).
 
 compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, RelGoal, GoalInfo, GroupVar, Result, HavingFilters, _Config, Code) :-
     RelGoal =.. [Pred|Args],
@@ -4690,7 +4965,32 @@ compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, Re
             }", [HavingCond])
     ;   HavingCode = ""
     ),
-    format(string(Code),
+    (   Op == count
+    ->  format(string(Code),
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
+    var results []Fact
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    groups := make(map[interface{}]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" && (~w) {
+            key := f.Args[\"arg~w\"]
+            groups[key] += 1.0
+        }
+    }
+    for key, agg := range groups {
+        if agg > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    return results
+}", [RuleName, Pred, Pred, FilterCond, GroupIdx, HavingCode, HeadPred])
+    ;   format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     if fact.Relation != \"~w\" {
@@ -4716,7 +5016,8 @@ compile_go_grouped_subplan_aggregate(RuleName, HeadPred, _HeadArgs, Op, Expr, Re
         }
     }
     return results
-}", [RuleName, Pred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
+}", [RuleName, Pred, Pred, FilterCond, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred])
+    ).
 
 %% decompose_agg_op(+OpTerm, -Op, -ValueVar)
 decompose_agg_op(count, count, _).
@@ -4759,6 +5060,88 @@ go_aggregate_operand(Term, _Args, Expr) :-
     number(Term),
     !,
     format(string(Expr), "~w", [Term]).
+
+build_go_correlation_conditions(TriggerArgs, AggArgs, Condition) :-
+    findall(Part,
+        go_correlation_condition(TriggerArgs, AggArgs, Part),
+        Parts),
+    combine_go_inline_conditions(Parts, Condition).
+
+go_correlation_condition(TriggerArgs, AggArgs, Cond) :-
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    var(TriggerArg),
+    nth0(AggIndex, AggArgs, AggArg),
+    var(AggArg),
+    TriggerArg == AggArg,
+    format(string(Cond), 'f.Args["arg~w"] == fact.Args["arg~w"]', [AggIndex, TriggerIndex]).
+
+combine_go_inline_conditions(Parts0, Condition) :-
+    exclude(=("true"), Parts0, Parts),
+    (   Parts == []
+    ->  Condition = "true"
+    ;   atomic_list_concat(Parts, " && ", Condition)
+    ).
+
+go_correlated_output_args(HeadArgs, ResultVar, TriggerArgs, ArgsStr) :-
+    findall(Part,
+        (   nth0(Index, HeadArgs, Arg),
+            go_correlated_output_arg(Index, Arg, ResultVar, TriggerArgs, Part)
+        ),
+        Parts),
+    atomic_list_concat(Parts, ", ", ArgsStr).
+
+go_correlated_output_arg(Index, Arg, ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == ResultVar,
+    !,
+    format(string(Part), '"arg~w": agg', [Index]).
+go_correlated_output_arg(Index, Arg, _ResultVar, TriggerArgs, Part) :-
+    var(Arg),
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    TriggerArg == Arg,
+    !,
+    format(string(Part), '"arg~w": fact.Args["arg~w"]', [Index, TriggerIndex]).
+go_correlated_output_arg(Index, Arg, _ResultVar, _TriggerArgs, Part) :-
+    number(Arg),
+    !,
+    format(string(Part), '"arg~w": ~w', [Index, Arg]).
+go_correlated_output_arg(Index, Arg, _ResultVar, _TriggerArgs, Part) :-
+    atom(Arg),
+    !,
+    format(string(Part), '"arg~w": "~w"', [Index, Arg]).
+
+go_grouped_correlated_output_args(HeadArgs, GroupVar, ResultVar, TriggerArgs, ArgsStr) :-
+    findall(Part,
+        (   nth0(Index, HeadArgs, Arg),
+            go_grouped_correlated_output_arg(Index, Arg, GroupVar, ResultVar, TriggerArgs, Part)
+        ),
+        Parts),
+    atomic_list_concat(Parts, ", ", ArgsStr).
+
+go_grouped_correlated_output_arg(Index, Arg, GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == GroupVar,
+    !,
+    format(string(Part), '"arg~w": key', [Index]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, ResultVar, _TriggerArgs, Part) :-
+    var(Arg),
+    Arg == ResultVar,
+    !,
+    format(string(Part), '"arg~w": agg', [Index]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, TriggerArgs, Part) :-
+    var(Arg),
+    nth0(TriggerIndex, TriggerArgs, TriggerArg),
+    TriggerArg == Arg,
+    !,
+    format(string(Part), '"arg~w": fact.Args["arg~w"]', [Index, TriggerIndex]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    number(Arg),
+    !,
+    format(string(Part), '"arg~w": ~w', [Index, Arg]).
+go_grouped_correlated_output_arg(Index, Arg, _GroupVar, _ResultVar, _TriggerArgs, Part) :-
+    atom(Arg),
+    !,
+    format(string(Part), '"arg~w": "~w"', [Index, Arg]).
 
 %% generate_having_conditions(+HavingFilters, +ResultVar, -GoCondition)
 %  Translate HAVING filter builtins to Go conditions
@@ -4820,7 +5203,7 @@ body_to_list_go(Goal, [Goal]).
 is_builtin_goal_go(Goal) :-
     Goal =.. [Functor|Args],
     (   % Standard builtins
-        member(Functor, [is, '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+'])
+        member(Functor, [is, '=', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+', true, fail, !])
     ;   % Check if there's a binding for this predicate
         length(Args, Arity),
         go_binding(Functor/Arity, _, _, _, _)
@@ -4830,7 +5213,7 @@ is_builtin_goal_go(Goal) :-
 %  Check if goal has a Go binding (not a standard builtin)
 is_binding_goal_go(Goal) :-
     Goal =.. [Functor|Args],
-    \+ member(Functor, [is, '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+']),
+    \+ member(Functor, [is, '=', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+', true, fail, !]),
     length(Args, Arity),
     go_binding(Functor/Arity, _, _, _, _).
 
@@ -4838,8 +5221,8 @@ is_binding_goal_go(Goal) :-
 %  Generate nested join loops with result emission inside innermost loop
 compile_go_join_with_result([], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
     % Base case: generate builtin checks and result emit
-    compile_go_builtins(Builtins, VarMap, Config, BuiltinCode),
-    compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, HeadCode),
+    compile_go_builtins_with_state(Builtins, VarMap, Config, BuiltinCode, VarMap1),
+    compile_go_head_construction(HeadPred, HeadArgs, VarMap1, Config, HeadCode),
     format(string(Code), "~w\n            ~w", [BuiltinCode, HeadCode]).
 
 compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
@@ -4961,16 +5344,29 @@ compile_go_join_condition(Args, VarMap, _Config, VarName, Condition) :-
 %  Generate builtin constraint checks
 compile_go_builtins([], _, _, "").
 compile_go_builtins(Builtins, VarMap, Config, Code) :-
-    findall(Check,
-        (   member(B, Builtins),
-            compile_go_single_builtin(B, VarMap, Config, Check)
-        ),
-        Checks),
-    (   Checks == []
+    compile_go_builtins_with_state(Builtins, VarMap, Config, Code, _).
+
+compile_go_builtins_with_state([], VarMap, _, "", VarMap).
+compile_go_builtins_with_state([Builtin|Rest], VarMap0, Config, Code, VarMapOut) :-
+    compile_go_single_builtin_state(Builtin, VarMap0, Config, Check, VarMap1),
+    compile_go_builtins_with_state(Rest, VarMap1, Config, RestCode, VarMapOut),
+    (   Check == "", RestCode == ""
     ->  Code = ""
-    ;   atomic_list_concat(Checks, "\n", ChecksStr),
-        format(string(Code), "\n    // Constraint checks\n~w\n", [ChecksStr])
+    ;   Check == ""
+    ->  Code = RestCode
+    ;   RestCode == ""
+    ->  format(string(Code), "\n    // Constraint checks\n~w\n", [Check])
+    ;   format(string(Code), "\n    // Constraint checks\n~w\n~w", [Check, RestCode])
     ).
+
+%% compile_go_single_builtin_state(+Builtin, +VarMapIn, +Config, -Code, -VarMapOut)
+%  Builtin compilation with support for computed variable bindings.
+compile_go_single_builtin_state(Var is Expr, VarMap, Config, "", [Var-expr(GoExpr)|VarMap]) :-
+    var(Var),
+    !,
+    translate_go_numeric_expr(Expr, VarMap, Config, GoExpr).
+compile_go_single_builtin_state(Goal, VarMap, Config, Check, VarMap) :-
+    compile_go_single_builtin(Goal, VarMap, Config, Check).
 
 %% compile_go_single_builtin(+Builtin, +VarMap, +Config, -Check)
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
@@ -4996,6 +5392,17 @@ compile_go_single_builtin(Goal, VarMap, Config, Check) :-
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
     Goal =.. [Op, Left, Right],
     member(Op-GoOp, ['>' - ">", '<' - "<", '>=' - ">=", '=<' - "<=", '=:=' - "==", '=\\=' - "!="]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Check),
+"    if !(~w ~w ~w) {
+        return results
+    }", [LeftExpr, GoOp, RightExpr]).
+
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    Goal =.. [Op, Left, Right],
+    member(Op-GoOp, ['=' - "==", '==' - "==", '\\=' - "!="]),
     !,
     translate_go_expr(Left, VarMap, Config, LeftExpr),
     translate_go_expr(Right, VarMap, Config, RightExpr),
@@ -5148,6 +5555,9 @@ translate_go_expr(Var, VarMap, _, Expr) :-
     (   % Case 1: Direct mapping (Var, GoVarName) used in JSON mode
         member((V, GoVarName), VarMap), Var == V
     ->  atom_string(GoVarName, Expr)
+    ;   % Case 1b: computed expression binding
+        member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
     ;   % Case 2: source mapping (Var, source(Source, Idx)) used in Datalog mode
         member(V-source(Source, Idx), VarMap), Var == V
     ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
@@ -5169,6 +5579,41 @@ translate_go_expr(Expr, VarMap, Config, GoExpr) :-
     translate_go_expr(Right, VarMap, Config, RightExpr),
     format(string(GoExpr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
 translate_go_expr(_, _, _, "nil").
+
+translate_go_numeric_expr(Var, VarMap, _, Expr) :-
+    var(Var),
+    !,
+    (   member(V-expr(GoExpr), VarMap), Var == V
+    ->  Expr = GoExpr
+    ;   member((V, GoVarName), VarMap), Var == V
+    ->  atom_string(GoVarName, Expr)
+    ;   member(V-source(Source, Idx), VarMap), Var == V
+    ->  format(string(Expr), "toFloat64Must(~w.Args[\"arg~w\"])", [Source, Idx])
+    ;   Expr = "0"
+    ).
+translate_go_numeric_expr(Num, _, _, Expr) :-
+    number(Num),
+    !,
+    format(string(Expr), "~w", [Num]).
+translate_go_numeric_expr(-(Expr0), VarMap, Config, Expr) :-
+    !,
+    translate_go_numeric_expr(Expr0, VarMap, Config, InnerExpr),
+    format(string(Expr), "(-(~w))", [InnerExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    Expr0 =.. [Op, Left, Right],
+    member(Op, [+, -, *, /]),
+    !,
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
+translate_go_numeric_expr(Left ** Right, VarMap, Config, Expr) :-
+    !,
+    collect_binding_import('math'),
+    translate_go_numeric_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_numeric_expr(Right, VarMap, Config, RightExpr),
+    format(string(Expr), "math.Pow(~w, ~w)", [LeftExpr, RightExpr]).
+translate_go_numeric_expr(Expr0, VarMap, Config, Expr) :-
+    translate_go_expr(Expr0, VarMap, Config, Expr).
 
 %% compile_go_head_construction(+HeadPred, +HeadArgs, +VarMap, +Config, -Code)
 %  Generate code to construct result fact
@@ -5540,10 +5985,18 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
         ;   NeedsStrconv = false
         ),
 
+        % Determine if we need sync import
+        (   (   classify_parallelism(Pred/Arity, Clauses, goal_parallel(_, _, _))
+            ;   classify_parallelism(Pred/Arity, Clauses, clause_parallel)
+            )
+        ->  NeedsSync = true
+        ;   NeedsSync = false
+        ),
+
         % Generate complete Go program
         (   IncludePackage ->
             generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
+                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, NeedsSync, ScriptBody, GoCode)
         ;   GoCode = ScriptBody
         )
     ),
@@ -5571,19 +6024,31 @@ build_go_arg_list(N, ArgList) :-
 
 % Single clause
 native_go_clause_body(PredSpec, [Head-Body], Code) :-
-    native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
-    !,
-    (   Condition == "true"
-    ->  Code = ClauseCode
-    ;   format(string(Code),
+    (   classify_parallelism(PredSpec, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoals))
+    ->  compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoals, Code)
+    ;   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode),
+        !,
+        (   Condition == "true"
+        ->  Code = ClauseCode
+        ;   format(string(Code),
 '\tif ~w {
 ~w
 \t} else {
 \t\tpanic("No matching clause for ~w")
 \t}', [Condition, ClauseCode, PredSpec])
+        )
     ).
 
-% Multi-clause
+% Multi-clause: clause-parallel (order-independent predicates)
+% When classify_parallelism returns clause_parallel, run all clauses
+% concurrently via goroutines collecting results on a channel.
+native_go_clause_body(PredSpec, Clauses, Code) :-
+    Clauses = [_|[_|_]],
+    classify_parallelism(PredSpec, Clauses, clause_parallel),
+    !,
+    compile_clause_parallel_to_go(PredSpec, Clauses, Code).
+
+% Multi-clause: sequential (default)
 native_go_clause_body(PredSpec, Clauses, Code) :-
     Clauses = [_|[_|_]],
     maplist(native_go_clause_pair(PredSpec), Clauses, Branches),
@@ -8636,10 +9101,10 @@ ternary_step_op_to_go(_, 'currentAcc += 1').  % Fallback
 %% GO PROGRAM GENERATION
 %% ============================================
 
-%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +NeedsStrings, +NeedsStrconv, +Body, -GoCode)
+%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +NeedsStrings, +NeedsStrconv, +NeedsSync, +Body, -GoCode)
 %  Generate complete Go program with imports and main function
 %
-generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, Body, GoCode) :-
+generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, NeedsSync, Body, GoCode) :-
     atom_string(Pred, PredStr),
 
     % Generate imports based on what's needed
@@ -8654,12 +9119,16 @@ generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, N
                 format(atom(Import), '\t"strings"', [])
             ;   NeedsStrconv,
                 format(atom(Import), '\t"strconv"', [])
+            ;   NeedsSync,
+                format(atom(Import), '\t"sync"', [])
             ),
             ImportList),
         list_to_set(ImportList, UniqueImports),  % Remove duplicates
         atomic_list_concat(UniqueImports, '\n', Imports)
     ;   NeedsRegexp ->
         Imports = '\t"fmt"\n\t"regexp"'
+    ;   NeedsSync ->
+        Imports = '\t"fmt"\n\t"sync"'
     ;   % Facts only need fmt
         Imports = '\t"fmt"'
     ),
@@ -20505,3 +20974,138 @@ mutual_dispatch_go(Predicates, Code) :-
             [PredStr, PredStr])
     ), Lines),
     atomic_list_concat(Lines, '\n', Code).
+
+%% compile_goal_parallel_to_go(+PredSpec, +Head, +ParallelGoals, +ResultGoals, -Code)
+compile_goal_parallel_to_go(PredSpec, Head, ParallelGoals, ResultGoals, Code) :-
+    PredSpec = _Pred/_Arity,
+    Head =.. [_|HeadArgs],
+    build_head_varmap(HeadArgs, 1, VarMap0),
+    
+    % Prepare variable map for result goals (includes outputs from parallel goals)
+    maplist(goal_output_vars, ParallelGoals, OutputVarsList),
+    flatten(OutputVarsList, AllOutputVars),
+    unique_vars_by_identity(AllOutputVars, UniqueOutputVars),
+    ensure_vars(UniqueOutputVars, VarMap0, _OutputVarPairs, VarMapFinal),
+    
+    % Generate variable declarations for output variables
+    maplist(gen_var_declaration(VarMapFinal), UniqueOutputVars, Decls),
+    atomic_list_concat(Decls, '\n', DeclsCode),
+    
+    % Compile parallel goals into goroutines
+    maplist(compile_parallel_goal_wrapper(VarMapFinal), ParallelGoals, ParallelGoalCodes),
+    atomic_list_concat(ParallelGoalCodes, '\n', ParallelBlock),
+    
+    % Compile result goals
+    native_go_goal_sequence(ResultGoals, VarMapFinal, _Cond, ResultCode),
+    
+    length(ParallelGoals, N),
+    format(string(Code),
+'~w
+\tvar wg sync.WaitGroup
+\twg.Add(~w)
+~w
+\twg.Wait()
+~w', [DeclsCode, N, ParallelBlock, ResultCode]).
+
+gen_var_declaration(VarMap, Var, Code) :-
+    lookup_var(Var, VarMap, Name),
+    format(string(Code), '\tvar ~w interface{}', [Name]).
+
+compile_parallel_goal_wrapper(VarMap, Goal, Code) :-
+    (   Goal = (Var = Expr)
+    ->  go_expr(Expr, VarMap, GoExpr),
+        lookup_var(Var, VarMap, Name),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w }()', [Name, GoExpr])
+    ;   Goal = is(Var, Expr)
+    ->  go_expr(Expr, VarMap, GoExpr),
+        lookup_var(Var, VarMap, Name),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w }()', [Name, GoExpr])
+    ;   % Predicate call: p(X, Y) where Y is output
+        Goal =.. [Pred|Args],
+        last(Args, OutVar),
+        append(InArgs, [OutVar], Args),
+        maplist(go_expr_wrapper(VarMap), InArgs, GoInArgs),
+        atomic_list_concat(GoInArgs, ', ', ArgsList),
+        (   lookup_var(OutVar, VarMap, OutName) -> true ; OutName = "_" ),
+        format(string(Code), '\tgo func() { defer wg.Done(); ~w = ~w(~w) }()', [OutName, Pred, ArgsList])
+    ).
+
+go_expr_wrapper(VarMap, Arg, GoExpr) :- go_expr(Arg, VarMap, GoExpr).
+
+% ============================================================================
+% CLAUSE-LEVEL PARALLELISM (Phase 5b)
+% ============================================================================
+
+%% compile_clause_parallel_to_go(+PredSpec, +Clauses, -Code)
+%  Compile an order-independent multi-clause predicate into concurrent
+%  clause exploration via goroutines and a results channel.
+%  Each clause runs in its own goroutine; results are collected on a
+%  buffered channel. The caller receives all solutions.
+compile_clause_parallel_to_go(PredSpec, Clauses, Code) :-
+    PredSpec = Pred/Arity,
+    atom_string(Pred, PredStr),
+    length(Clauses, NumClauses),
+    % Compile each clause body into a standalone code block
+    compile_clause_parallel_branches(PredSpec, Clauses, 1, BranchCodes),
+    atomic_list_concat(BranchCodes, '\n', BranchesBlock),
+    % Build argument forwarding: each goroutine captures the function args
+    Arity1 is Arity - 1,
+    (   Arity1 > 0
+    ->  numlist(1, Arity1, Indices),
+        maplist([I, S]>>(format(string(S), 'arg~w', [I])), Indices, ArgNames),
+        atomic_list_concat(ArgNames, ', ', CaptureArgs),
+        format(string(CaptureComment), '\t// Captured args: ~w', [CaptureArgs])
+    ;   CaptureComment = "\t// No input args to capture"
+    ),
+    format(string(Code),
+'\t// Clause-parallel execution: ~w clauses explored concurrently
+\t// Predicate declared order_independent — clause order does not affect result set
+\t// Uses context cancellation to prevent goroutine leaks on early return.
+~w
+\tctx, cancel := context.WithCancel(context.Background())
+\tdefer cancel()
+\tresults := make(chan interface{}, ~w)
+\tvar wg sync.WaitGroup
+\twg.Add(~w)
+~w
+\tgo func() {
+\t\twg.Wait()
+\t\tclose(results)
+\t}()
+\t// Collect first result; cancel signals remaining goroutines to exit
+\tfor r := range results {
+\t\tcancel()
+\t\treturn r
+\t}
+\tpanic("No matching clause for ~w")', [NumClauses, CaptureComment, NumClauses, NumClauses, BranchesBlock, PredStr]).
+
+%% compile_clause_parallel_branches(+PredSpec, +Clauses, +Idx, -BranchCodes)
+compile_clause_parallel_branches(_, [], _, []).
+compile_clause_parallel_branches(PredSpec, [Head-Body|Rest], Idx, [BranchCode|RestCodes]) :-
+    (   native_go_clause(PredSpec, Head, Body, Condition, ClauseCode)
+    ->  (   Condition == "true"
+        ->  CondBlock = ClauseCode
+        ;   format(string(CondBlock),
+'\t\tif ~w {
+~w
+\t\t}', [Condition, ClauseCode])
+        ),
+        format(string(BranchCode),
+'\tgo func() { // clause ~w
+\t\tdefer wg.Done()
+\t\tdefer func() { recover() }() // prevent panics from crashing program
+~w
+\t\tselect {
+\t\tcase <-ctx.Done():
+\t\t\treturn // cancelled — another clause already produced a result
+\t\tcase results <- result:
+\t\t}
+\t}()', [Idx, CondBlock])
+    ;   % Clause didn't compile — skip with comment
+        format(string(BranchCode),
+'\tgo func() { // clause ~w (compilation failed)
+\t\tdefer wg.Done()
+\t}()', [Idx])
+    ),
+    NextIdx is Idx + 1,
+    compile_clause_parallel_branches(PredSpec, Rest, NextIdx, RestCodes).

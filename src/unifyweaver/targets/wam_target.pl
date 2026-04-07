@@ -679,11 +679,13 @@ peephole_lines([L1, L2|Rest], [L1|Result]) :-
     sub_string(S1, 0, _, _, "put_"), !,
     peephole_lines(Rest, Result).
 % Eliminate get_variable Xn, Ai followed by put_value Xn, Ai (pass-through)
+% Only safe if Xn is not referenced by any later instruction.
 peephole_lines([L1, L2|Rest], Result) :-
     normalize_ws(L1, N1),
     normalize_ws(L2, N2),
     atom_string(N1, S1), atom_string(N2, S2),
-    match_get_put_passthrough(S1, S2), !,
+    match_get_put_passthrough(S1, S2, Reg),
+    \+ reg_used_in_rest(Reg, Rest), !,
     peephole_lines(Rest, Result).
 % Eliminate put_variable Xn, Ai followed by put_value Xn, Ai (same register, same arg)
 peephole_lines([L1, L2|Rest], [L1|Result]) :-
@@ -706,19 +708,26 @@ match_put_get_identity(Put, Get) :-
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]),
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]).
 
-%% match_get_put_passthrough(+GetStr, +PutStr)
-%  get_variable Xn/Yn, Ai followed by put_value Xn/Yn, Ai — both redundant
-%  (the value is already in Ai and doesn't need round-tripping through Xn/Yn).
-match_get_put_passthrough(Get, Put) :-
+%% match_get_put_passthrough(+GetStr, +PutStr, -Reg)
+%  get_variable Xn, Ai followed by put_value Xn, Ai — both redundant
+%  (the value is already in Ai and doesn't need round-tripping through Xn).
+match_get_put_passthrough(Get, Put, Reg) :-
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]),
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]).
 
 %% match_put_variable_put_value(+PutVarStr, +PutValStr)
-%  put_variable Xn/Yn, Ai followed by put_value Xn/Yn, Aj where Ai == Aj
-%  — the put_value is redundant (value already in Ai from put_variable).
+%  put_variable Xn/Yn, Ai followed by put_value Xn/Yn, Ai where both
+%  use the same register and arg — the put_value is redundant.
 match_put_variable_put_value(PutVar, PutVal) :-
     split_string(PutVar, " ,", " ,", ["put_variable", Reg, Ai]),
     split_string(PutVal, " ,", " ,", ["put_value", Reg, Ai]).
+
+%% reg_used_in_rest(+Reg, +Lines)
+%  True if the register name appears in any subsequent line.
+reg_used_in_rest(Reg, Lines) :-
+    member(Line, Lines),
+    atom_string(Line, LineStr),
+    sub_string(LineStr, _, _, _, Reg), !.
 
 %% write_wam_program(+Code, +Filename)
 write_wam_program(Code, Filename) :-

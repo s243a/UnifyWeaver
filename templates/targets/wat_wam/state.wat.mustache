@@ -1,0 +1,170 @@
+;; state.wat - WAM State management for WAT target
+;; Memory layout (page 1, base offset 65536):
+;;   +0:  PC (i32)          +4:  CP (i32)
+;;   +8:  heap_top (i32)    +12: trail_top (i32)
+;;   +16: stack_top (i32)   +20: cp_count (i32)
+;;   +24: halted (i32)      +28: mode (i32) [0=read, 1=write]
+;;   +32: s_idx (i32) [structure write index]
+;;   +36: s_functor (i64) [current structure functor hash]
+;;   +48: s_arity (i32) [current structure arity]
+;;   +52: s_heap_off (i32) [current structure heap offset]
+;;   +56: (reserved to +63)
+;;   +64: Register file (64 regs x 12 bytes = 768 bytes, to +831)
+;;   +1024: Trail stack (entries: 16 bytes each)
+;;   +8192: Environment/Choice point stack
+
+;; Base offset for WAM state in linear memory
+;; Page 0 reserved for native WAT target, page 1 for WAM state
+
+;; --- PC accessors ---
+
+(func $get_pc (result i32)
+  (i32.load (i32.const 65536)))
+
+(func $set_pc (param $pc i32)
+  (i32.store (i32.const 65536) (local.get $pc)))
+
+(func $inc_pc
+  (i32.store (i32.const 65536)
+    (i32.add (i32.load (i32.const 65536)) (i32.const 1))))
+
+;; --- CP accessors ---
+
+(func $get_cp (result i32)
+  (i32.load (i32.const 65540)))
+
+(func $set_cp (param $cp i32)
+  (i32.store (i32.const 65540) (local.get $cp)))
+
+;; --- Heap top (bump allocator, base at page 2 = 131072) ---
+
+(func $get_heap_top (result i32)
+  (i32.load (i32.const 65544)))
+
+(func $set_heap_top (param $top i32)
+  (i32.store (i32.const 65544) (local.get $top)))
+
+(func $heap_alloc (param $nbytes i32) (result i32)
+  (local $ptr i32)
+  (local.set $ptr (call $get_heap_top))
+  (call $set_heap_top (i32.add (local.get $ptr) (local.get $nbytes)))
+  (local.get $ptr))
+
+;; Allocate one tagged value (12 bytes) on heap and return its offset
+(func $heap_push_val (param $tag i32) (param $payload i64) (result i32)
+  (local $off i32)
+  (local.set $off (call $heap_alloc (i32.const 12)))
+  (call $val_store (local.get $off) (local.get $tag) (local.get $payload))
+  (local.get $off))
+
+;; --- Trail stack (base at 65536 + 1024 = 66560) ---
+
+(func $get_trail_top (result i32)
+  (i32.load (i32.const 65548)))
+
+(func $set_trail_top (param $top i32)
+  (i32.store (i32.const 65548) (local.get $top)))
+
+;; Trail entry: [reg_idx:i32 +0] [old_tag:i32 +4] [old_payload:i64 +8] = 16 bytes
+(func $trail_binding (param $reg_idx i32)
+  (local $toff i32)
+  (local $reg_off i32)
+  (local.set $toff (call $get_trail_top))
+  (local.set $reg_off (call $reg_offset (local.get $reg_idx)))
+  ;; Save reg index
+  (i32.store (local.get $toff) (local.get $reg_idx))
+  ;; Save old tag
+  (i32.store (i32.add (local.get $toff) (i32.const 4))
+    (call $val_tag (local.get $reg_off)))
+  ;; Save old payload
+  (i64.store (i32.add (local.get $toff) (i32.const 8))
+    (call $val_payload (local.get $reg_off)))
+  ;; Advance trail top
+  (call $set_trail_top (i32.add (local.get $toff) (i32.const 16))))
+
+;; --- Environment/Choice point stack (base at 65536 + 8192 = 73728) ---
+
+(func $get_stack_top (result i32)
+  (i32.load (i32.const 65552)))
+
+(func $set_stack_top (param $top i32)
+  (i32.store (i32.const 65552) (local.get $top)))
+
+(func $get_cp_count (result i32)
+  (i32.load (i32.const 65556)))
+
+(func $set_cp_count (param $n i32)
+  (i32.store (i32.const 65556) (local.get $n)))
+
+;; --- Halted flag ---
+
+(func $is_halted (result i32)
+  (i32.load (i32.const 65560)))
+
+(func $set_halted (param $v i32)
+  (i32.store (i32.const 65560) (local.get $v)))
+
+;; --- Mode (0=read, 1=write) ---
+
+(func $get_mode (result i32)
+  (i32.load (i32.const 65564)))
+
+(func $set_mode (param $m i32)
+  (i32.store (i32.const 65564) (local.get $m)))
+
+;; --- Register file (base at 65536 + 64 = 65600, 64 regs x 12 bytes) ---
+;; A1-A32 = indices 0-31, X1-X32 = indices 32-63
+
+(func $reg_offset (param $idx i32) (result i32)
+  (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))
+
+(func $get_reg_tag (param $idx i32) (result i32)
+  (i32.load (call $reg_offset (local.get $idx))))
+
+(func $get_reg_payload (param $idx i32) (result i64)
+  (i64.load (i32.add (call $reg_offset (local.get $idx)) (i32.const 4))))
+
+(func $set_reg (param $idx i32) (param $tag i32) (param $payload i64)
+  (call $val_store (call $reg_offset (local.get $idx)) (local.get $tag) (local.get $payload)))
+
+;; Copy 12-byte value from memory offset to register
+(func $copy_to_reg (param $idx i32) (param $src_off i32)
+  (call $set_reg (local.get $idx)
+    (call $val_tag (local.get $src_off))
+    (call $val_payload (local.get $src_off))))
+
+;; Copy register value to memory offset
+(func $copy_from_reg (param $idx i32) (param $dst_off i32)
+  (call $val_store (local.get $dst_off)
+    (call $get_reg_tag (local.get $idx))
+    (call $get_reg_payload (local.get $idx))))
+
+;; --- Instruction fetch ---
+;; Instructions stored in data segments: 20 bytes each [tag:i32][op1:i64][op2:i64]
+;; Instruction base offset set per-predicate via global
+
+(func $fetch_instr_tag (param $code_base i32) (param $pc i32) (result i32)
+  (i32.load (i32.add (local.get $code_base)
+    (i32.mul (local.get $pc) (i32.const 20)))))
+
+(func $fetch_instr_op1 (param $code_base i32) (param $pc i32) (result i64)
+  (i64.load (i32.add
+    (i32.add (local.get $code_base) (i32.mul (local.get $pc) (i32.const 20)))
+    (i32.const 4))))
+
+(func $fetch_instr_op2 (param $code_base i32) (param $pc i32) (result i64)
+  (i64.load (i32.add
+    (i32.add (local.get $code_base) (i32.mul (local.get $pc) (i32.const 20)))
+    (i32.const 12))))
+
+;; --- State initialization ---
+
+(func $wam_init (param $heap_base i32)
+  (call $set_pc (i32.const 0))
+  (call $set_cp (i32.const -1))
+  (call $set_heap_top (local.get $heap_base))
+  (call $set_trail_top (i32.const 66560))   ;; 65536 + 1024
+  (call $set_stack_top (i32.const 73728))   ;; 65536 + 8192
+  (call $set_cp_count (i32.const 0))
+  (call $set_halted (i32.const 0))
+  (call $set_mode (i32.const 0)))

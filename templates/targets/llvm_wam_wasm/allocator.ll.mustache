@@ -1,0 +1,105 @@
+; === WASM Bump Allocator ===
+; Linear memory bump allocator — no malloc/free needed.
+; Heap starts at offset 65536 (64KB reserved for stack).
+; On backtracking, the heap pointer is rewound.
+;
+; Pointer provenance: all memory access goes through @wam_linear_base
+; via getelementptr, avoiding raw inttoptr which can confuse LLVM's
+; alias analysis. The base is a global pointer to address 0 of linear
+; memory (WASM's memory is a single contiguous byte array).
+
+@wam_heap_ptr = global i32 65536    ; Start after WASM stack
+@wam_linear_base = global i8* null  ; Set to linear memory base at init
+
+; Initialize the linear memory base (call once at startup)
+; In WASM, memory address 0 is the start of linear memory.
+define void @wam_init_linear_base() {
+entry:
+  %base = inttoptr i32 0 to i8*
+  store i8* %base, i8** @wam_linear_base
+  ret void
+}
+
+; Get a typed pointer from a linear memory offset
+; All memory access should go through this to preserve provenance.
+define i8* @wam_ptr_from_offset(i32 %offset) {
+entry:
+  %base = load i8*, i8** @wam_linear_base
+  %ptr = getelementptr i8, i8* %base, i32 %offset
+  ret i8* %ptr
+}
+
+; Allocate from linear memory (bump allocator)
+define i32 @wam_alloc(i32 %size) {
+entry:
+  %ptr = load i32, i32* @wam_heap_ptr
+  ; Align to 8 bytes
+  %aligned_size = add i32 %size, 7
+  %masked = and i32 %aligned_size, -8
+  %new_ptr = add i32 %ptr, %masked
+  store i32 %new_ptr, i32* @wam_heap_ptr
+  ret i32 %ptr
+}
+
+; Rewind allocator to a saved mark (for backtracking)
+define void @wam_alloc_rewind(i32 %mark) {
+entry:
+  store i32 %mark, i32* @wam_heap_ptr
+  ret void
+}
+
+; Get current allocation mark (for saving before choice point)
+define i32 @wam_alloc_mark() {
+entry:
+  %mark = load i32, i32* @wam_heap_ptr
+  ret i32 %mark
+}
+
+; Zero-fill a region (proper pointer provenance via getelementptr)
+define void @wam_memzero(i32 %offset, i32 %len) {
+entry:
+  %done = icmp sle i32 %len, 0
+  br i1 %done, label %exit, label %setup
+
+setup:
+  %base = load i8*, i8** @wam_linear_base
+  br label %loop
+
+loop:
+  %idx = phi i32 [0, %setup], [%next, %loop]
+  %actual_offset = add i32 %offset, %idx
+  %ptr = getelementptr i8, i8* %base, i32 %actual_offset
+  store i8 0, i8* %ptr
+  %next = add i32 %idx, 1
+  %more = icmp slt i32 %next, %len
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}
+
+; Copy memory (proper pointer provenance via getelementptr)
+define void @wam_memcpy(i32 %dest, i32 %src, i32 %len) {
+entry:
+  %done = icmp sle i32 %len, 0
+  br i1 %done, label %exit, label %setup
+
+setup:
+  %base = load i8*, i8** @wam_linear_base
+  br label %loop
+
+loop:
+  %idx = phi i32 [0, %setup], [%next, %loop]
+  %src_off = add i32 %src, %idx
+  %dest_off = add i32 %dest, %idx
+  %src_ptr = getelementptr i8, i8* %base, i32 %src_off
+  %dest_ptr = getelementptr i8, i8* %base, i32 %dest_off
+  %byte = load i8, i8* %src_ptr
+  store i8 %byte, i8* %dest_ptr
+  %next = add i32 %idx, 1
+  %more = icmp slt i32 %next, %len
+  br i1 %more, label %loop, label %exit
+
+exit:
+  ret void
+}

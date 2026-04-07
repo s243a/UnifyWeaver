@@ -1,0 +1,159 @@
+package {{package_name}}
+
+import "fmt"
+
+type Value interface {
+	valueTag()
+	String() string
+	Equals(other Value) bool
+}
+
+type Integer struct { Val int64 }
+func (v *Integer) valueTag() {}
+func (v *Integer) String() string { return fmt.Sprintf("%d", v.Val) }
+func (v *Integer) Equals(other Value) bool {
+	o, ok := other.(*Integer)
+	return ok && v.Val == o.Val
+}
+
+type Float struct { Val float64 }
+func (v *Float) valueTag() {}
+func (v *Float) String() string { return fmt.Sprintf("%g", v.Val) }
+func (v *Float) Equals(other Value) bool {
+	o, ok := other.(*Float)
+	return ok && v.Val == o.Val
+}
+
+type Atom struct { Name string }
+func (v *Atom) valueTag() {}
+func (v *Atom) String() string { return v.Name }
+func (v *Atom) Equals(other Value) bool {
+	o, ok := other.(*Atom)
+	return ok && v.Name == o.Name
+}
+
+type Compound struct {
+	Functor string
+	Args    []Value
+}
+func (v *Compound) valueTag() {}
+func (v *Compound) String() string {
+	return fmt.Sprintf("%s(%v)", v.Functor, v.Args)
+}
+func (v *Compound) Equals(other Value) bool {
+	o, ok := other.(*Compound)
+	if !ok || v.Functor != o.Functor || len(v.Args) != len(o.Args) { return false }
+	for i := range v.Args {
+		if !v.Args[i].Equals(o.Args[i]) { return false }
+	}
+	return true
+}
+
+type Structure struct {
+	Functor string
+	Arity   int
+	Args    []Value
+}
+func (v *Structure) valueTag() {}
+func (v *Structure) String() string {
+	return fmt.Sprintf("%s/%d", v.Functor, v.Arity)
+}
+func (v *Structure) Equals(other Value) bool {
+	o, ok := other.(*Structure)
+	if !ok || v.Functor != o.Functor || v.Arity != o.Arity {
+		return false
+	}
+	for i, a := range v.Args {
+		if !valueEquals(a, o.Args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+type List struct { Elements []Value }
+func (v *List) valueTag() {}
+func (v *List) String() string { return fmt.Sprintf("%v", v.Elements) }
+func (v *List) Equals(other Value) bool {
+	o, ok := other.(*List)
+	if !ok || len(v.Elements) != len(o.Elements) { return false }
+	for i := range v.Elements {
+		if !v.Elements[i].Equals(o.Elements[i]) { return false }
+	}
+	return true
+}
+
+type Ref struct { Addr int }
+func (v *Ref) valueTag() {}
+func (v *Ref) String() string { return fmt.Sprintf("REF(%d)", v.Addr) }
+func (v *Ref) Equals(other Value) bool {
+	o, ok := other.(*Ref)
+	return ok && v.Addr == o.Addr
+}
+
+type Unbound struct { Name string }
+func (v *Unbound) valueTag() {}
+func (v *Unbound) String() string { return "_" + v.Name }
+func (v *Unbound) Equals(other Value) bool {
+	o, ok := other.(*Unbound)
+	return ok && v.Name == o.Name
+}
+
+func isUnbound(v Value) bool {
+	_, ok := v.(*Unbound)
+	return ok
+}
+
+func isAtom(v Value) bool {
+	_, ok := v.(*Atom)
+	return ok
+}
+
+func isInteger(v Value) bool {
+	_, ok := v.(*Integer)
+	return ok
+}
+
+func isFloat(v Value) bool {
+	_, ok := v.(*Float)
+	return ok
+}
+
+func isNumber(v Value) bool {
+	switch v.(type) {
+	case *Integer, *Float:
+		return true
+	}
+	return false
+}
+
+func isCompound(v Value) bool {
+	switch v.(type) {
+	case *Compound, *Structure:
+		return true
+	}
+	return false
+}
+
+func isStructure(v Value) bool {
+	_, ok := v.(*Structure)
+	return ok
+}
+
+func isList(v Value) bool {
+	_, ok := v.(*List)
+	return ok
+}
+
+func isAtomic(v Value) bool {
+	switch v.(type) {
+	case *Atom, *Integer, *Float:
+		return true
+	}
+	return false
+}
+
+func valueEquals(a, b Value) bool {
+	if a == nil || b == nil { return a == b }
+	return a.Equals(b)
+}

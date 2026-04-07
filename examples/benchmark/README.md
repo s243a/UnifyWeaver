@@ -12,47 +12,64 @@ and specification.
 
 ## Benchmark Results
 
-### C# Query Engine vs DFS Pipelines
+### Accumulated Prolog and Query Engine vs DFS Pipelines
 
-The C# parameterized query engine (`PathAwareTransitiveClosureNode`) is
-dramatically faster than all DFS (depth-first search) pipeline
-implementations, including compiled Rust:
+The effective-distance benchmark now has a dedicated C# query-runtime
+weight-sum path. Instead of materializing all `(seed, ancestor, hops)`
+rows and regrouping them in the benchmark harness, the runtime now:
+
+- streams `category_parent` and `article_category` into the engine
+- reuses path-aware edge state inside `QueryRuntime`
+- computes per-article/per-root weight sums directly
+- emits compact `(article, root, weight_sum)` rows for the final
+  `d_eff` calculation
+
+That moves the retained state into the engine and flips the old headline:
+the query engine is now faster than accumulated Prolog and all DFS
+pipelines across the full benchmark range while preserving the same
+all-path semantics. It also now supports cost-guided selection between
+compact grouped weight sums and the legacy seeded-row regrouping path,
+using the same grouped-summary policy layer that now also drives the
+shortest-path minima family. That policy now records measured cost buckets
+like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
+`group_reduce`, while only running bounded probes when the structural signal
+is ambiguous.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **C# Query Engine** | 0.60s | **0.41s** | **1.25s** | **3.13s** |
-| C# DFS pipeline | **0.44s** | 1.25s | 5.36s | 9.96s |
-| Rust DFS pipeline | — | 1.36s | 7.33s | 13.68s |
-| Go DFS pipeline | 0.43s | 1.96s | 11.36s | 18.71s |
-| Codon DFS pipeline | 0.67s | 2.55s | 10.98s | 22.14s |
-| CPython DFS pipeline | 0.73s | 2.93s | 15.71s | — |
-| Prolog | 1.26s | — | — | — |
-| AWK | 2.46s | — | — | — |
+| **C# Query Engine** | **0.224s** | **0.182s** | **0.406s** | **0.695s** |
+| Prolog accumulated | 0.349s | 0.236s | 0.856s | 1.942s |
+| C# DFS pipeline | 0.437s | 1.313s | 5.634s | 10.196s |
+| Rust DFS pipeline | 0.365s | 1.638s | 7.164s | 13.782s |
+| Go DFS pipeline | 0.469s | 1.971s | 11.302s | 19.074s |
 
-**Speedup of C# Query Engine over DFS pipelines:**
+**Speedups of the current C# query engine:**
 
-| vs Target | 300 art | 1K art | 5K art | 10K art |
-|-----------|---------|--------|--------|---------|
-| vs C# DFS | 0.7x | 3.1x | 4.3x | 3.2x |
-| vs Rust | — | 3.3x | 5.9x | 4.4x |
-| vs Go | 1.1x | 8.9x | 17.2x | 12.4x |
+| Scale | vs Prolog accumulated | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------------------:|----------:|------------:|----------:|
+| 300 art | 1.56x | 1.95x | 1.63x | 2.09x |
+| 1K art | 1.30x | 7.21x | 9.00x | 10.83x |
+| 5K art | 2.11x | 13.88x | 17.65x | 27.84x |
+| 10K art | 2.79x | 14.67x | 19.83x | 27.46x |
 
 Semantic note:
 
-- The current C# query-engine benchmark path preserves per-path cycle
+- the current C# query-engine path still preserves per-path cycle
   checks without collapsing distinct simple paths that happen to reach
-  the same ancestor with the same hop count.
+  the same ancestor with the same hop count
 - `benchmark_effective_distance.py` compares the query-engine output
-  against the C# DFS reference and reports the result via
-  `query_vs_csharp_dfs`.
-- Current post-fix runs report `query_vs_csharp_dfs = match` at
-  `300`, `1k`, `5k`, and `10k`.
+  against both the C# DFS reference and accumulated Prolog, reporting
+  `query_vs_csharp_dfs` and `query_vs_prolog_accumulated`
+- current runs report `query_vs_csharp_dfs = match` at `300`, `1k`,
+  `5k`, and `10k`
+- current runs also report `query_vs_prolog_accumulated = match` at
+  `300`, `1k`, `5k`, and `10k`
 
-### Why the Query Engine Wins
+### Why Seeded Closures Win
 
-The query engine's advantage comes from **seed deduplication**: many
-articles share the same categories, so the engine computes ancestors
-once per unique category seed, not once per article.
+The main advantage comes from **seed deduplication**: many articles
+share the same categories, so the benchmark computes ancestors once per
+unique category seed, not once per article.
 
 | Scale | Articles | Unique category seeds | Redundancy factor |
 |-------|----------|-----------------------|-------------------|
@@ -62,14 +79,15 @@ once per unique category seed, not once per article.
 | 10K | 10,000 | 888 | ~11x |
 
 At 1K scale, 1000 articles map to only 89 unique category seeds — the
-engine does ~11x less seed expansion work. Even with full per-path
-semantics restored, the precomputed ancestor index still makes
+seeded benchmark does ~11x less seed expansion work. Even with full
+per-path semantics restored, the precomputed ancestor index still makes
 per-article aggregation much cheaper than rerunning DFS from scratch for
-each article.
+each article. The current Prolog effective-distance path now uses that
+same strategy directly.
 
 ### DFS Pipeline Execute Time Scaling
 
-For completeness, the original DFS pipeline comparison:
+For historical context, the original DFS-only pipeline comparison:
 
 | Target | 300 art | 1K art | 5K art | 10K art | Trend |
 |--------|---------|--------|--------|---------|-------|
@@ -92,41 +110,45 @@ For completeness, the original DFS pipeline comparison:
 
 ### Key Findings
 
-1. **The C# Query Engine remains the fastest target in the intended
-   large-scale regime** — after restoring full per-path semantics, it is
-   still 3.1x faster than C# DFS at `1k`, 4.3x faster at `5k`, and 3.2x
-   faster at `10k`.
+1. **The C# query engine is now the fastest effective-distance path on
+   this benchmark surface** — it beats accumulated Prolog by `1.56x` at
+   `300`, `1.30x` at `1k`, `2.11x` at `5k`, and `2.79x` at `10k`.
 
-2. **At small scale, the semantic fix makes the query engine slightly
-   slower than C# DFS** — at `300`, the query engine is `0.60s` vs
-   `0.44s` for C# DFS because it now preserves full path multiplicity
-   instead of collapsing equal `(ancestor, hops)` tuples.
+2. **The C# query engine now beats the DFS baselines by a wide margin** —
+   at `10k` it is `14.67x` faster than C# DFS, `19.83x` faster than Rust
+   DFS, and `27.46x` faster than Go DFS.
 
-3. **Among DFS pipelines, C# still leads at scale** — at `10k` it is
-   faster than Rust DFS (`9.96s` vs `13.68s`) and much faster than Go.
+3. **Retained-state strategy matters more than branch pruning on this
+   workload** — seeded reuse is the first big win, and moving per-article
+   root-weight aggregation into the query runtime removes the huge path-row
+   materialization cost that used to dominate the C# query path. The new
+   `Auto` selector also chooses the compact grouped weight-sum path on the
+   tested scales; forcing legacy seeded-row regrouping is dramatically
+   worse (`300`: `0.726s` vs `0.275s`, `10k`: `3.106s` vs `0.828s`).
 
-4. **The query engine still beats Rust DFS comfortably at scale** —
-   `3.3x` faster at `1k`, `5.9x` at `5k`, and `4.4x` at `10k`.
+4. **Accumulated Prolog is still a useful retained-state reference** — it
+   keeps only per-seed weight sums (`48` tuples at `1k`, `151` at `5k`,
+   `462` at `10k`), but the query engine still reaches a better end-to-end
+   result by combining streamed ingestion with operator-owned retained
+   state.
 
-5. **Go falls behind at scale** — `map[string]bool` copy-on-branch
-   semantics are heavier than C#'s `HashSet`. Go is 2x slower than C#
-   at 10K.
+5. **The new direct article/root Prolog helper is currently experimental**
+   — it emits compact `(article, root, weight_sum)` rows directly, but it
+   is slower than the seed-accumulated path on this workload, so it
+   remains an optional benchmark variant rather than the default.
 
-6. **Codon approaches Go** — at 5K they were nearly tied (11.0s vs 11.4s).
-   At 10K Go pulled ahead again (18.7s vs 22.1s), but the gap is narrowing.
-
-7. **Prolog needs demand analysis** to compete — naive all-simple-paths
-   exploration is combinatorially explosive. Design docs for this optimization
-   are in `docs/proposals/PROLOG_TARGET_DEMAND_ANALYSIS_*.md`.
+6. **The current C# query-engine path now matches the intended ownership
+   boundary much more closely** — the parser streams tuples, and the engine
+   decides what retained form the effective-distance operator actually needs.
 
 ### Target Recommendations by Audience
 
 | Audience | Recommended Target | Why |
 |----------|-------------------|-----|
-| Enterprise / .NET | C# Query Engine | Fastest at all scales, purpose-built |
-| ML / Data Science | Codon | Stay in Python, competitive performance |
+| SWI / Prolog-first | Accumulated Prolog | Strong retained-state reference and compact effective-distance helper |
+| Enterprise / .NET | C# Query Engine | Fastest current effective-distance path, with engine-owned retained state |
 | Cloud / DevOps | Go | Fast compile, good ecosystem |
-| Systems / Embedded | Rust | No runtime overhead, fastest DFS at small scale |
+| Systems / Embedded | Rust | No runtime overhead, strong DFS baseline |
 
 ## Data Provenance
 
@@ -180,14 +202,55 @@ Tables:
 | `generate_facts_from_db.py` | Extract facts from SQLite → Prolog/TSV (no crawling) |
 | `generate_facts.py` | Alternative: fetch from Wikipedia API (for small datasets) |
 | `generate_pipeline.py` | Generate self-contained pipeline per target |
+| `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
-| `benchmark_effective_distance.py` | Rebuild and time the C# query engine vs C#/Rust/Go DFS binaries |
-| `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root and root-bound Prolog variants, and C#/Rust/Go DFS binaries |
+| `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
-| `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |
+| `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
+| `benchmark_prolog_branch_pruning.py` | Compare handwritten Prolog shortest-path source against generated pruned and unpruned Prolog scripts |
+| `generate_prolog_effective_distance_benchmark.pl` | Generate standalone SWI-Prolog effective-distance scripts for seeded closure reuse, generated accumulation helpers, optional direct article/root helpers, and optional branch pruning |
+| `benchmark_prolog_effective_distance.py` | Compare seeded, pruned, accumulated, and optional direct article/root and root-bound Prolog effective-distance scripts and report phase/work metrics |
+| `generate_prolog_category_influence_benchmark.pl` | Generate standalone SWI-Prolog category-influence scripts using the PPV `category_ancestor/4` closure with optional seeded accumulation helpers |
+| `benchmark_prolog_category_influence.py` | Compare seeded and accumulated Prolog category-influence scripts and report phase/work metrics |
+| `generate_prolog_shortest_path_seeded_benchmark.pl` | Generate standalone SWI-Prolog shortest-path scripts for seeded `all` vs mode-directed `min` closure, loading `facts.pl` at runtime |
+| `benchmark_prolog_seeded_min_closure.py` | Compare seeded Prolog `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
+| `generate_prolog_weighted_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog weighted-shortest-path scripts for seeded `all` vs mode-directed `min` closure |
+| `benchmark_prolog_weighted_min_closure.py` | Compare seeded Prolog weighted `all` vs `min` closure and report `load_ms`, `query_ms`, `aggregation_ms`, and work metrics |
+| `generate_dependency_benchmark_data.py` | Generate deterministic synthetic package-DAG benchmark data |
 | `effective_distance.pl` | Benchmark Prolog program |
 | `run_benchmark.sh` | Compile all targets + generate reference output |
+
+Packaging note:
+
+- the shared `generate_pipeline.py` generator now owns packaged C#
+  benchmark output for the cross-target runners, including:
+  - `Program.cs`
+  - `QueryRuntime.cs` where needed for `csharp_query`
+  - `benchmark.csproj`
+- the benchmark runners are correspondingly narrower now: they mainly
+  generate, build, run, and compare, rather than assembling one-off C#
+  projects in-script
+- shared Rust/Go/C# runner utilities now live in `benchmark_common.py`
+  so new workload runners do not need to reimplement the same temp/build
+  scaffolding
+- `benchmark_common.py` now also carries shared output-digest and summary
+  helpers, so only workload-specific normalization and extra reporting
+  stay in the individual runners
+- safe shared normalization helpers also live there now for:
+  - exact sorted-line outputs
+  - rounded float row outputs in common 2-column and 3-column forms
+- workloads can still keep custom normalization when their semantics or
+  ordering rules are genuinely different
+- the seeded Prolog effective-distance, shortest-path, and
+  weighted-shortest-path benchmarks now load `facts.pl` at runtime from
+  a small generated driver instead of inlining facts into the generated
+  script, so `load_ms` is reported separately from `query_ms`
 
 ## Usage
 
@@ -214,12 +277,27 @@ go build -o bench pipelines/effective_distance.go
 # Re-run the current non-regression benchmark
 python examples/benchmark/benchmark_effective_distance.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated
+
+# Compare seeded, pruned, and accumulated effective-distance Prolog variants
+python examples/benchmark/benchmark_prolog_effective_distance.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-seeded,prolog-pruned,prolog-accumulated
 
 # Compare minimum-hop shortest path across query engine and DFS targets
 python examples/benchmark/benchmark_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min
+
+# Compare dependency reach count across query engine and DFS targets
+python examples/benchmark/benchmark_dependency_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+
+# Compare true DAG longest dependency depth across DFS targets
+python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-dfs,rust-dfs,go-dfs
 
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
@@ -232,16 +310,63 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
 # Compare positive weighted minimum path distance across query engine and DFS targets
 python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min
+
+# Compare category influence propagation across the C# query engine, Rust, and Go
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,rust-dfs,go-dfs
+
+# Compare seeded vs accumulated Prolog category influence
+python examples/benchmark/benchmark_prolog_category_influence.py \
+    --scales 300,1k \
+    --targets prolog-seeded,prolog-accumulated
+
+# Optional: add the accumulated Prolog path to the category-influence cross-target run
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k \
+    --targets csharp-query,rust-dfs,go-dfs,prolog-accumulated
+
+# Compare handwritten Prolog vs generated pruned and unpruned Prolog
+python examples/benchmark/benchmark_prolog_branch_pruning.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-source,prolog-pruned,prolog-unpruned
+
+# Compare seeded Prolog all-path closure vs mode-directed min closure
+python examples/benchmark/benchmark_prolog_seeded_min_closure.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-all,prolog-min
+
+# Compare seeded Prolog weighted all-path closure vs mode-directed min closure
+python examples/benchmark/benchmark_prolog_weighted_min_closure.py \
+    --scales 300,1k,5k,10k \
+    --targets prolog-all,prolog-min
 ```
 
-The current native-lowering comparison surface across non-query targets is:
+The current comparison surface across query and non-query targets is:
+
+- C# query:
+  - all-path effective distance
+  - minimum hop distance
+  - dependency reach count
+  - positive weighted minimum path distance
+  - category influence propagation
 
 - Rust DFS:
   - all-path effective distance
   - minimum hop distance
+  - dependency reach count
+  - dependency longest depth
   - positive weighted minimum path distance
+  - category influence propagation
 - Go DFS:
+  - all-path effective distance
+  - minimum hop distance
+  - dependency reach count
+  - dependency longest depth
+  - positive weighted minimum path distance
+  - category influence propagation
+- Prolog seeded closures and accumulations:
   - all-path effective distance
   - minimum hop distance
   - positive weighted minimum path distance
@@ -251,10 +376,130 @@ The benchmark split is now:
 - cross-target:
   - `benchmark_effective_distance.py`
   - `benchmark_shortest_path_cross_target.py`
+  - `benchmark_dependency_depth_cross_target.py`
+  - `benchmark_dependency_longest_depth_cross_target.py`
   - `benchmark_weighted_shortest_path_cross_target.py`
+  - `benchmark_category_influence_cross_target.py`
+- Prolog target:
+  - `benchmark_prolog_effective_distance.py`
+  - `benchmark_prolog_branch_pruning.py`
+  - `benchmark_prolog_seeded_min_closure.py`
+  - `benchmark_prolog_weighted_min_closure.py`
 - C# query-engine internal mode comparison:
   - `benchmark_shortest_path_to_root.py`
   - `benchmark_weighted_shortest_path.py`
+
+### Prolog Effective-Distance Retained-State Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_effective_distance.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Seeded | Pruned | Accumulated | Output Match | Note |
+|-------|--------|--------|-------------|--------------|------|
+| 300 | 0.380s | 0.416s | 0.369s | match | accumulated edges out seeded once load is amortized |
+| 1k | 0.293s | 0.364s | 0.257s | match | accumulated remains the best Prolog path |
+| 5k | 1.176s | 1.096s | 0.850s | match | retained-state reduction dominates |
+| 10k | 2.627s | 2.577s | 2.249s | match | accumulated stays best at the largest tested scale |
+
+Current interpretation:
+
+- seeded closure reuse is the real win on effective distance
+- branch pruning does not currently reduce tuple count or inferences on this workload
+- the accumulated variant now uses the generated selected helper surface,
+  which routes bound root queries to a dedicated bound-key fast path
+  instead of paying the generic helper's key-enumeration overhead
+- the experimental `article_accumulated` variant now uses the generated
+  `category_ancestor$effective_distance_article_sum` helper to emit
+  compact `(article, root, weight_sum)` rows directly, but it is slower
+  than `accumulated` on this workload:
+  - `300`: `0.457s` vs `0.393s`
+  - `1k`: `0.493s` vs `0.274s`
+  - `5k`: `6.275s` vs `0.973s`
+- the new `root_accumulated` profiling path uses the generated
+  `category_ancestor$effective_distance_article_sum_by_root/3` and
+  `category_ancestor$effective_distance_article_sum_pairs_by_root/2`
+  helpers to benchmark the bound-root path directly
+- that root-bound path is competitive at smaller scales but not the best
+  default retained-state plan overall:
+  - `300`: `0.360s` vs accumulated `0.354s`
+  - `1k`: `0.236s` vs accumulated `0.288s`
+  - `5k`: `0.934s` vs accumulated `0.797s`
+  - `10k`: `2.629s` vs accumulated `1.943s`
+- pre-aggregating per-seed weight sums materially reduces retained state:
+  - `1k`: tuple count `10976 -> 48`
+  - `5k`: tuple count `41132 -> 151`
+  - `10k`: tuple count `105287 -> 462`
+- the bound-key fast path also reduces query work for accumulated Prolog:
+  - `1k`: inferences `4078570 -> 3686379`
+  - `5k`: inferences `16176114 -> 14105020`
+  - `10k`: inferences `40693380 -> 37778802`
+- the seeded, pruned, and accumulated variants are semantically identical at all tested scales
+
+### Prolog Branch-Pruning Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_branch_pruning.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Source | Pruned | Unpruned | Output Match | Note |
+|-------|--------|--------|----------|--------------|------|
+| 300 | 2.718s | 2.748s | 2.804s | match | pruning overhead slightly visible |
+| 1k | 1.694s | 1.786s | 1.776s | match | still slightly slower than source |
+| 5k | 8.916s | 8.968s | 8.915s | match | essentially neutral |
+| 10k | 17.530s | 17.490s | 17.475s | match | effectively tied |
+
+This is a useful validation result even though it is not yet a strong
+speedup result: the generated pruned and unpruned Prolog variants match
+the handwritten source output across all tested dataset scales, and the
+current shortest-path workload gives a stable baseline for future
+benchmarks that should stress pruning more directly.
+
+### Prolog Seeded Min-Closure Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_seeded_min_closure.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Prolog All | Prolog Min | Output Match |
+|-------|-----------:|-----------:|--------------|
+| 300 | 0.405s | 0.109s | match |
+| 1k | 0.283s | 0.115s | match |
+| 5k | 0.964s | 0.246s | match |
+| 10k | 2.294s | 0.491s | match |
+
+Speedups of seeded Prolog `min` over seeded `all`:
+
+| Scale | Speedup |
+|-------|--------:|
+| 300 | 3.71x |
+| 1k | 2.45x |
+| 5k | 3.92x |
+| 10k | 4.67x |
+
+The retained work also drops sharply:
+
+| Scale | `all` tuple count | `min` tuple count |
+|-------|------------------:|------------------:|
+| 300 | 11172 | 213 |
+| 1k | 10976 | 48 |
+| 5k | 41132 | 151 |
+| 10k | 105287 | 462 |
 
 ### Cross-Target Shortest-Path Results
 
@@ -263,27 +508,56 @@ Command:
 ```bash
 python examples/benchmark/benchmark_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min \
     --repetitions 1
 ```
 
 Latest local results:
 
-| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs DFS |
-|-------|---------:|--------:|---------:|-------:|--------------|
-| 300 | 0.142s | 0.424s | 0.361s | 0.472s | match |
-| 1k | 0.104s | 1.350s | 1.400s | 2.101s | match |
-| 5k | 0.202s | 5.697s | 7.445s | 12.323s | match |
-| 10k | 0.433s | 10.313s | 14.462s | 20.487s | match |
+| Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
+|-------|---------:|-----------:|--------:|---------:|-------:|---------|
+| 300 | 0.095s | 0.131s | 0.500s | 0.437s | 0.478s | match |
+| 1k | 0.090s | 0.131s | 1.262s | 1.765s | 2.148s | match |
+| 5k | 0.121s | 0.254s | 5.822s | 8.109s | 12.126s | match |
+| 10k | 0.184s | 0.459s | 11.182s | 15.130s | 20.374s | match |
+
+Direct C# query vs Prolog seeded `min`:
+
+| Scale | Faster target | Speedup |
+|-------|---------------|--------:|
+| 300 | C# Query | 1.38x |
+| 1k | C# Query | 1.45x |
+| 5k | C# Query | 2.11x |
+| 10k | C# Query | 2.49x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 3.00x | 2.55x | 3.33x |
-| 1k | 13.04x | 13.52x | 20.29x |
-| 5k | 28.15x | 36.79x | 60.89x |
-| 10k | 23.84x | 33.43x | 47.35x |
+| 300 | 5.26x | 4.59x | 5.04x |
+| 1k | 14.03x | 19.62x | 23.88x |
+| 5k | 48.29x | 67.26x | 100.57x |
+| 10k | 60.64x | 82.06x | 110.49x |
+
+Comparison note:
+
+- the query runtime now emits compact `(article, root, min_depth)` rows
+  directly instead of materializing broad seeded ancestor rows and then
+  regrouping them in the benchmark harness
+- on the current one-root benchmark shape, the retained row count now
+  collapses to the final article result count, which is why the C# query
+  path improves so sharply at every tested scale
+- the new `Auto` selector currently chooses the compact grouped minima
+  path at every tested scale; this now flows through the same grouped-summary
+  policy layer used by grouped weight sums, while still preserving the
+  per-family override knob. Trace output now exposes measured buckets such as
+  `load_roots`, `load_seeds`, `strategy_select`, `build_compact_grouped`, and
+  `group_reduce`. Forcing legacy seeded-row regrouping is
+  materially worse (`300`: `0.160s` vs `0.083s`, `10k`: `0.419s` vs
+  `0.161s`)
+- seeded Prolog `min` remains competitive, but the C# query engine is
+  now faster at every tested scale, including `300`
+- output digests match across all five targets at every tested scale
 
 ### Cross-Target Weighted Shortest-Path Results
 
@@ -292,36 +566,301 @@ Command:
 ```bash
 python examples/benchmark/benchmark_weighted_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min \
     --repetitions 1
 ```
 
 Latest local results:
 
-| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
-|-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.181s | 0.466s | 0.353s | 0.487s | match |
-| 1k | 0.142s | 1.409s | 1.447s | 2.206s | match |
-| 5k | 0.250s | 5.957s | 7.994s | 12.404s | match |
-| 10k | 0.381s | 10.593s | 14.234s | 19.460s | match |
+| Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
+|-------|---------:|-----------:|--------:|---------:|-------:|---------|
+| 300 | 0.162s | 0.128s | 0.523s | 0.427s | 0.497s | match |
+| 1k | 0.147s | 0.125s | 1.402s | 1.762s | 2.186s | match |
+| 5k | 0.222s | 0.295s | 6.116s | 8.414s | 11.994s | match |
+| 10k | 0.347s | 0.514s | 11.450s | 16.019s | 20.289s | match |
+
+Direct C# query vs Prolog seeded `min`:
+
+| Scale | Faster target | Speedup |
+|-------|---------------|--------:|
+| 300 | Prolog Min | 1.26x |
+| 1k | Prolog Min | 1.17x |
+| 5k | C# Query | 1.33x |
+| 10k | C# Query | 1.48x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 2.57x | 1.95x | 2.69x |
-| 1k | 9.91x | 10.18x | 15.51x |
-| 5k | 23.81x | 31.94x | 49.57x |
-| 10k | 23.57x | 33.02x | 44.65x |
+| 300 | 3.24x | 2.64x | 3.07x |
+| 1k | 9.55x | 12.00x | 14.89x |
+| 5k | 27.60x | 37.97x | 54.12x |
+| 10k | 32.99x | 46.16x | 58.46x |
 
 Comparison note:
 
-- the earlier apparent weighted `10k` mismatch turned out to be
-  benchmark normalization sensitivity at roughly `1e-12`, not a semantic
-  query-engine bug
-- the cross-target weighted benchmark now normalizes floating-point
-  outputs with a tolerance appropriate for cross-language evaluation
-  order differences
+- the query runtime now emits compact `(article, root, min_weight)` rows
+  directly instead of materializing broad seeded weighted-path rows and
+  regrouping them afterward in the benchmark harness
+- on the current one-root benchmark shape, the retained row count now
+  also collapses to the final article result count
+- the new `Auto` selector also chooses the compact grouped minima path
+  here; this now uses the same grouped-summary policy layer as shortest
+  path while keeping a separate benchmark override, and the same measured
+  buckets are available under trace for this family too
+- forcing legacy seeded-row regrouping regresses both ends of the
+  benchmark (`300`: `0.202s` vs `0.151s`, `10k`: `0.430s` vs `0.320s`)
+- seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
+  query engine is now clearly faster from `5k` onward
+- the cross-target weighted benchmark normalizes floating-point outputs
+  with a tolerance appropriate for cross-language evaluation order
+  differences
+
+### Prolog Weighted Min-Closure Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_weighted_min_closure.py \
+    --scales 300,1k,5k,10k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Prolog All | Prolog Min | Output Match |
+|-------|-----------:|-----------:|--------------|
+| 300 | 0.441s | 0.117s | match |
+| 1k | 0.303s | 0.129s | match |
+| 5k | 1.189s | 0.292s | match |
+| 10k | 2.762s | 0.552s | match |
+
+Speedups of seeded Prolog weighted `min` over seeded `all`:
+
+| Scale | Speedup |
+|-------|--------:|
+| 300 | 3.78x |
+| 1k | 2.35x |
+| 5k | 4.08x |
+| 10k | 5.01x |
+
+The retained work also drops sharply:
+
+| Scale | `all` tuple count | `min` tuple count |
+|-------|------------------:|------------------:|
+| 300 | 11172 | 213 |
+| 1k | 10976 | 48 |
+| 5k | 41132 | 151 |
+| 10k | 105287 | 462 |
+
+### Cross-Target Dependency Reach Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_dependency_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+This workload uses a deterministic synthetic package DAG and reports, for
+each project, the size of its unique transitive dependency closure. It is
+named `dependency_depth` in the generator and runner for continuity with
+the original benchmark idea, but the current metric is more precisely a
+dependency **reach count** than a maximum-chain depth.
+
+Latest local results:
+
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
+|-------|---------:|--------:|---------:|-------:|-----------------|
+| 300 | 0.064s | 0.044s | 0.002s | 0.002s | match |
+| 1k | 0.082s | 0.048s | 0.007s | 0.008s | match |
+| 5k | 0.072s | 0.172s | 0.157s | 0.109s | match |
+| 10k | 0.073s | 0.528s | 0.733s | 0.481s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 0.68x | 0.03x | 0.04x |
+| 1k | 0.59x | 0.08x | 0.10x |
+| 5k | 2.39x | 2.18x | 1.52x |
+| 10k | 7.20x | 10.01x | 6.57x |
+
+Comparison note:
+
+- the current C# query path uses a project-grouped reachability node
+  with direct count aggregation inside the query runtime
+- the latest change also moves relation ingestion/materialization for the
+  benchmark inputs into the query runtime via delimited-source streaming,
+  instead of eagerly loading all edge and seed facts into the benchmark
+  program first
+- for the one-shot generated benchmark programs, disabling query-runtime
+  cache reuse still helps slightly by removing bookkeeping that is not
+  reused within a single run
+- this pushes the benchmark closer to the intended ownership boundary:
+  the parser streams tuples, and the engine decides what state to retain
+  for the operator
+- the query engine is still behind at `300` and `1k`, but is now clearly
+  ahead of all DFS targets from `5k` onward
+- outputs still match across all four targets
+
+### Cross-Target Dependency Longest-Depth Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+This workload is the true DAG longest-path version of the dependency
+benchmark family. For each project, it reports the maximum dependency
+chain length over the synthetic package DAG.
+
+Latest local results:
+
+| Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
+|-------|---------:|--------:|---------:|-------:|-----------------|
+| 300 | 0.056s | 0.041s | 0.002s | 0.002s | match |
+| 1k | 0.053s | 0.044s | 0.004s | 0.003s | match |
+| 5k | 0.070s | 0.053s | 0.007s | 0.006s | match |
+| 10k | 0.077s | 0.053s | 0.012s | 0.011s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
+|-------|----------:|------------:|----------:|
+| 300 | 0.74x | 0.03x | 0.04x |
+| 1k | 0.83x | 0.07x | 0.05x |
+| 5k | 0.76x | 0.10x | 0.08x |
+| 10k | 0.68x | 0.16x | 0.14x |
+
+Comparison note:
+
+- this benchmark includes a real `csharp-query` DAG longest-depth path
+  built on a dedicated query-runtime node
+- the latest change moves edge and seed fact ingestion/materialization
+  into the query runtime via delimited-source streaming, instead of
+  eagerly loading all rows into the benchmark program first
+- set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
+  `csharp-query` longest-depth benchmark to print per-phase timings to
+  `stderr`
+- cache reuse remains disabled for these one-shot generated benchmark
+  programs, and trace creation is now opt-in rather than always-on
+- the hand-written C# DFS baseline is still cheaper after its lighter
+  custom TSV loader work, but the query engine now sits closer to that
+  baseline than before while keeping the intended retention boundary in
+  the engine rather than the loader
+- outputs still match across all four targets, and longest depth remains
+  a separate optimization track from reach-count
+
+### Cross-Target Category Influence Results
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k,5k,10k \
+    --targets csharp-query,rust-dfs,go-dfs \
+    --repetitions 1
+```
+
+Latest local results:
+
+| Scale | C# Query | Rust DFS | Go DFS | Outputs |
+|-------|---------:|---------:|-------:|---------|
+| 300 | 0.207s | 0.484s | 0.495s | match |
+| 1k | 0.170s | 1.608s | 2.096s | match |
+| 5k | 0.382s | 8.125s | 11.640s | match |
+| 10k | 0.718s | 14.767s | 19.544s | match |
+
+Speedups of C# query engine:
+
+| Scale | vs Rust DFS | vs Go DFS |
+|-------|------------:|----------:|
+| 300 | 2.33x | 2.39x |
+| 1k | 9.48x | 12.35x |
+| 5k | 21.26x | 30.45x |
+| 10k | 20.55x | 27.20x |
+
+Comparison note:
+
+- the benchmark now uses the same retained-state idea as effective distance:
+  `QueryRuntime` emits compact `(article, root, weight_sum)` rows directly
+  instead of materializing all ancestor/hop rows and then summing them later
+- the remaining benchmark-side work is only the final per-root sum over those
+  compact article/root summaries
+- the new `Auto` selector also chooses the compact grouped weight-sum path
+  here; trace output now exposes measured buckets such as `load_roots`,
+  `load_seeds`, `strategy_select`, `build_compact_grouped`, and
+  `group_reduce`. Forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
+  vs `0.237s`, `10k`: `2.998s` vs `0.829s`)
+- Rust and Go remain generated DFS/pipeline binaries
+- so this runner is still intentionally a mixed execution-model comparison:
+  query engine versus non-query target pipelines
+- the C# path is now faster at every tested scale, and the gap widens quickly
+  once the path-row materialization cost is removed
+
+Optional grouped-Prolog spot check:
+
+```bash
+python examples/benchmark/benchmark_category_influence_cross_target.py \
+    --scales 300,1k \
+    --targets csharp-query,rust-dfs,go-dfs,prolog-accumulated \
+    --repetitions 1
+```
+
+| Scale | C# Query | Rust DFS | Go DFS | Prolog Accumulated | Outputs |
+|-------|---------:|---------:|-------:|-------------------:|---------|
+| 300 | 0.222s | 0.381s | 0.487s | 1.748s | match |
+| 1k | 0.149s | 1.506s | 2.133s | 1.050s | match |
+
+This grouped Prolog path now calls the generated
+`category_ancestor$power_sum_selected` helper. When the root is
+unbound, that selector routes to the grouped helper rather than the
+generic per-root fallback. That makes the accumulated Prolog path viable
+again, but C# query is still clearly faster on this workload.
+
+### Prolog Category-Influence Accumulation Results
+
+The category-influence benchmark now uses the generated
+`category_ancestor$power_sum_selected` helper for the cycle-safe PPV
+`category_ancestor/4` closure from the effective-distance workload.
+Because the root argument is left unbound in this workload, the selected
+helper routes to the grouped fast path automatically. The generic seeded
+accumulation helper remains available as the fallback path.
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_prolog_category_influence.py \
+    --scales 300,1k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | Seeded | Accumulated | Output Match | Note |
+|-------|-------:|------------:|--------------|------|
+| 300 | 1.770s | 1.868s | match | selected helper keeps grouped path close |
+| 1k | 1.175s | 1.231s | match | selected helper stays close |
+
+Current interpretation:
+
+- the specialized grouped helper is semantically correct on category
+  influence and dramatically better than the old generic accumulated
+  path
+- it still trades a higher query cost for much smaller retained state:
+  - `300`: tuple count `602808 -> 30968`
+  - `1k`: tuple count `352522 -> 10328`
+- that retained-state drop is enough to make accumulated Prolog roughly
+  competitive with the seeded baseline instead of catastrophically
+  slower
+- the generic seeded accumulation helper remains the right fallback for
+  workloads like effective distance where the grouped helper is not the
+  better consumer fit
 
 ### Weighted `Min` Results
 

@@ -78,8 +78,18 @@
     % Recursive compile_expression framework
     compile_expression/6,           % +Target, +Goal, +VarMap, -Code, -OutputVars, -VarMapOut
     compile_branch/6,               % +Target, +Branch, +VarMap, -Lines, -OutputVars, -VarMapOut
-    compile_classified_sequence/5   % +Target, +ClassifiedGoals, +VarMap, -Lines, -VarMapOut
+    compile_classified_sequence/5,  % +Target, +ClassifiedGoals, +VarMap, -Lines, -VarMapOut
+
+    % Parallelism analysis
+    classify_parallelism/3,         % +PredIndicator, +Clauses, -Strategy
+    is_order_independent/2,         % +PredIndicator, -Reason
+    order_independent/1,            % Directive
+    parallel_safe/1                 % Directive
 ]).
+
+% Directives
+:- dynamic order_independent/1.
+:- dynamic parallel_safe/1.
 
 %% Multifile hooks for target-specific rendering
 :- multifile render_output_goal/6.      % +Target, +Goal, +VarMap, -Line, -VarName, -VarMapOut
@@ -258,6 +268,14 @@ goal_output_var_simple(_Module:Goal, OutputVar) :-
 goal_output_var_simple(Var is _, Var) :- var(Var), !.
 goal_output_var_simple(Var = _, Var) :- var(Var), !.
 goal_output_var_simple(_ = Var, Var) :- var(Var), !.
+goal_output_var_simple(Goal, OutputVar) :-
+    compound(Goal),
+    Goal =.. [Pred|Args],
+    \+ comparison_op(Pred),
+    \+ type_check_pred(Pred),
+    last(Args, OutputVar),
+    var(OutputVar),
+    !.
 
 %% alternative_output_var(+Alternative, -OutputVar)
 %  Find the last output variable in an alternative branch.
@@ -909,3 +927,141 @@ compile_disj_branches(Target, [Alt|Rest], VarMap, OutputVars, Lines) :-
 ensure_var_name_from(VarMap, Var, Name) :-
     lookup_var(Var, VarMap, Name), !.
 ensure_var_name_from(_, _, "_").
+
+% ============================================================================
+% PARALLELISM ANALYSIS
+% ============================================================================
+
+%% classify_parallelism(+PredIndicator, +Clauses, -Strategy)
+%  Determine the parallelism strategy for a predicate.
+classify_parallelism(_PredIndicator, [Head-Body], goal_parallel(Head, ParallelGoals, ResultGoals)) :-
+    % Only single-clause predicates for goal parallelism for now
+    normalize_goals(Body, Goals),
+    term_variables(Head, HeadVars),
+    partition_parallel_goals(Goals, HeadVars, [], ParallelGoals, ResultGoals),
+    ParallelGoals = [_,_|_],
+    goals_are_independent(ParallelGoals),
+    !.
+classify_parallelism(PredIndicator, _Clauses, clause_parallel) :-
+    is_order_independent(PredIndicator, _),
+    !.
+classify_parallelism(_, _, sequential).
+
+%% partition_parallel_goals(+Goals, +HeadVars, +SeenVars, -Parallel, -Result)
+%  Collect goals into Parallel list until a data dependency or impurity is found.
+%  Invariant: A goal G is independent if its introduced variables (IntroVars = GVars - HeadVars)
+%  do not intersect with any variables seen in previous goals (SeenVars). 
+%  This catches both "output-after-input" and "input-after-output" dependencies because 
+%  SeenVars accumulates all variables from previous parallel goals.
+partition_parallel_goals([], _, _, [], []).
+partition_parallel_goals([G|Rest], HeadVars, SeenVars, Parallel, Result) :-
+    is_pure_goal(G),
+    term_variables(G, GVars),
+    % Variables introduced in this goal list (excluding head inputs)
+    exclude_vars_by_identity(GVars, HeadVars, IntroVars),
+    % Check for dependencies: IntroVars must not intersect with SeenVars
+    (   intersection_by_identity(IntroVars, SeenVars, [])
+    ->  Parallel = [G|RestParallel],
+        append(IntroVars, SeenVars, NewSeenVars),
+        partition_parallel_goals(Rest, HeadVars, NewSeenVars, RestParallel, Result)
+    ;   Parallel = [],
+        Result = [G|Rest]
+    ).
+
+%% is_order_independent(+PredIndicator, -Reason)
+%  True if the predicate's clauses can be evaluated in any order.
+is_order_independent(PredIndicator, declared) :-
+    order_independent(PredIndicator),
+    !.
+is_order_independent(Module:Pred/Arity, proven(Reasons)) :-
+    !,
+    functor(Head, Pred, Arity),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
+    Clauses \= [],
+    % Static analysis for order independence: all goals must be pure
+    forall(member(_-Body, Clauses), (
+        normalize_goals(Body, Goals),
+        forall(member(G, Goals), is_pure_goal(G))
+    )),
+    Reasons = [pure_goals].
+is_order_independent(Pred/Arity, Reason) :-
+    is_order_independent(user:Pred/Arity, Reason).
+
+%% goals_are_independent(+Goals)
+%  True if a list of goals can be executed in parallel.
+goals_are_independent(Goals) :-
+    forall(member(G, Goals), is_pure_goal(G)),
+    goals_have_disjoint_bindings(Goals).
+
+%% is_pure_goal(+Goal)
+%  True if the goal has no side effects.
+is_pure_goal(Goal) :-
+    functor(Goal, Pred, Arity),
+    parallel_safe(Pred/Arity),
+    !.
+is_pure_goal(Goal) :-
+    \+ is_impure_builtin(Goal).
+
+% I/O Impure
+is_impure_builtin(write(_)).
+is_impure_builtin(nl).
+is_impure_builtin(format(_,_)).
+is_impure_builtin(read(_)).
+is_impure_builtin(read_term(_,_)).
+is_impure_builtin(get_char(_)).
+is_impure_builtin(get_code(_)).
+is_impure_builtin(peek_char(_)).
+is_impure_builtin(peek_code(_)).
+% Database Impure
+is_impure_builtin(assert(_)).
+is_impure_builtin(asserta(_)).
+is_impure_builtin(assertz(_)).
+is_impure_builtin(retract(_)).
+is_impure_builtin(retractall(_)).
+% Global Variable Impure
+is_impure_builtin(nb_setval(_,_)).
+is_impure_builtin(b_setval(_,_)).
+% Target-specific / Domain-specific
+is_impure_builtin(send_message(_,_)).
+is_impure_builtin(succ_or_zero(_,_)).
+
+%% goals_have_disjoint_bindings(+Goals)
+%  Conservative check for disjoint bindings.
+%  We allow shared inputs, but outputs must be disjoint from all other goals' variables.
+goals_have_disjoint_bindings(Goals) :-
+    maplist(get_goal_io_vars, Goals, GoalIOVars),
+    all_goal_outputs_disjoint(GoalIOVars).
+
+%% get_goal_io_vars(+Goal, -IOVars)
+get_goal_io_vars(Goal, io(Inputs, Outputs)) :-
+    term_variables(Goal, AllVars),
+    (   goal_output_vars(Goal, Outputs) -> true ; Outputs = [] ),
+    exclude_vars_by_identity(AllVars, Outputs, Inputs).
+
+%% all_goal_outputs_disjoint(+GoalIOVars)
+all_goal_outputs_disjoint([]).
+all_goal_outputs_disjoint([io(In1, Out1)|Rest]) :-
+    forall(member(io(In2, Out2), Rest), (
+        intersection_by_identity(Out1, In2, []),
+        intersection_by_identity(Out1, Out2, []),
+        intersection_by_identity(Out2, In1, [])
+    )),
+    all_goal_outputs_disjoint(Rest).
+
+%% exclude_vars_by_identity(+AllVars, +ToExclude, -Result)
+exclude_vars_by_identity([], _, []).
+exclude_vars_by_identity([X|Rest], List, Result) :-
+    (   var_member_by_identity(X, List)
+    ->  Result = RestResult
+    ;   Result = [X|RestResult]
+    ),
+    exclude_vars_by_identity(Rest, List, RestResult).
+
+%% intersection_by_identity(+List1, +List2, -Intersection)
+intersection_by_identity([], _, []).
+intersection_by_identity([X|Rest], List, Result) :-
+    (   var_member_by_identity(X, List)
+    ->  Result = [X|RestResult]
+    ;   Result = RestResult
+    ),
+    intersection_by_identity(Rest, List, RestResult).

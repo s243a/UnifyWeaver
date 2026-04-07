@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Benchmark the effective-distance workload for the C# query engine and the
-compiled DFS pipelines.
+Benchmark the effective-distance workload for the C# query engine, seeded
+Prolog, optional direct article/root and bound-root Prolog variants, and
+the compiled DFS pipelines.
 
 Default targets:
   - csharp-query  : current C# query runtime using PathAwareTransitiveClosureNode
+  - prolog-seeded : generated Prolog using seeded counted-closure reuse
+  - prolog-accumulated : generated Prolog using seeded pre-aggregated weight sums
   - csharp-dfs    : generated C# DFS pipeline
   - rust-dfs      : generated Rust DFS pipeline
 
@@ -15,202 +18,37 @@ benchmark scales, and reports median wall-clock times plus output agreement.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from benchmark_common import (
+    available_targets,
+    build_csharp_package,
+    build_go_binary,
+    build_rust_binary,
+    digest_normalized_output,
+    find_result,
+    group_results_by_scale,
+    normalize_three_column_float_rows,
+    print_match_status,
+    print_pair_match_status,
+    print_phase_metrics,
+    print_result_table,
+    print_speedup,
+    require_file,
+    run_command,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "data" / "benchmark"
-QRY_RUNTIME = ROOT / "src" / "unifyweaver" / "targets" / "csharp_query_runtime" / "QueryRuntime.cs"
-
-QE_PROGRAM = """\
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using UnifyWeaver.QueryRuntime;
-
-class Program
-{
-    const string ROOT_CATEGORY = "Physics";
-    const double N = 5.0;
-    const int MAX_DEPTH = 10;
-
-    static void Main(string[] args)
-    {
-        if (args.Length < 2)
-        {
-            Console.Error.WriteLine("Usage: program <category_parent.tsv> <article_category.tsv>");
-            Environment.Exit(1);
-        }
-
-        var swTotal = Stopwatch.StartNew();
-
-        var provider = new InMemoryRelationProvider();
-        var edgeId = new PredicateId("category_parent", 2);
-        var predId = new PredicateId("category_ancestor", 3);
-        var articleCategories = new Dictionary<string, List<string>>();
-
-        var swLoad = Stopwatch.StartNew();
-        foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length == 2)
-            {
-                provider.AddFact(edgeId, parts[0], parts[1]);
-            }
-        }
-
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
-        {
-            if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
-            {
-                continue;
-            }
-
-            var parts = line.Split('\\t', 2);
-            if (parts.Length != 2)
-            {
-                continue;
-            }
-
-            if (!articleCategories.TryGetValue(parts[0], out var categories))
-            {
-                categories = new List<string>();
-                articleCategories[parts[0]] = categories;
-            }
-
-            categories.Add(parts[1]);
-        }
-        swLoad.Stop();
-
-        var plan = new QueryPlan(
-            predId,
-            new PathAwareTransitiveClosureNode(edgeId, predId, 1, 1, MAX_DEPTH),
-            true,
-            new int[] { 0 }
-        );
-
-        var uniqueSeeds = new HashSet<string>();
-        foreach (var categories in articleCategories.Values)
-        {
-            foreach (var category in categories)
-            {
-                uniqueSeeds.Add(category);
-            }
-        }
-
-        var seedParams = uniqueSeeds.Select(category => new object[] { category }).ToList();
-
-        var swExec = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider);
-        var rows = executor.Execute(plan, seedParams).ToList();
-        swExec.Stop();
-
-        var swAgg = Stopwatch.StartNew();
-        var ancestorIndex = new Dictionary<string, List<(string Ancestor, int Hops)>>();
-        foreach (var row in rows)
-        {
-            var source = row[0]?.ToString() ?? "";
-            var ancestor = row[1]?.ToString() ?? "";
-            var hops = Convert.ToInt32(row[2]);
-            if (!ancestorIndex.TryGetValue(source, out var bucket))
-            {
-                bucket = new List<(string, int)>();
-                ancestorIndex[source] = bucket;
-            }
-
-            bucket.Add((ancestor, hops));
-        }
-
-        var results = new List<(double Deff, string Article)>();
-        foreach (var article in articleCategories.Keys.OrderBy(x => x))
-        {
-            var allHops = new List<int>();
-            foreach (var category in articleCategories[article])
-            {
-                if (category == ROOT_CATEGORY)
-                {
-                    allHops.Add(1);
-                }
-
-                if (ancestorIndex.TryGetValue(category, out var ancestors))
-                {
-                    foreach (var (ancestor, hops) in ancestors)
-                    {
-                        if (ancestor == ROOT_CATEGORY)
-                        {
-                            allHops.Add(hops + 1);
-                        }
-                    }
-                }
-            }
-
-            if (allHops.Count > 0)
-            {
-                results.Add((ComputeDeff(allHops), article));
-            }
-        }
-        swAgg.Stop();
-
-        results.Sort((a, b) =>
-        {
-            var cmp = a.Deff.CompareTo(b.Deff);
-            return cmp != 0 ? cmp : string.Compare(a.Article, b.Article, StringComparison.Ordinal);
-        });
-
-        Console.WriteLine("article\\troot_category\\teffective_distance");
-        foreach (var (deff, article) in results)
-        {
-            Console.WriteLine($"{article}\\t{ROOT_CATEGORY}\\t{deff:F6}");
-        }
-
-        swTotal.Stop();
-        Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"query_ms={swExec.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"aggregation_ms={swAgg.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"total_ms={swTotal.ElapsedMilliseconds}");
-        Console.Error.WriteLine($"seed_count={seedParams.Count}");
-        Console.Error.WriteLine($"tuple_count={rows.Count}");
-        Console.Error.WriteLine($"article_count={results.Count}");
-    }
-
-    static double ComputeDeff(List<int> hops)
-    {
-        if (hops.Count == 0)
-        {
-            return double.PositiveInfinity;
-        }
-
-        var weightSum = hops.Sum(h => Math.Pow(h, -N));
-        return weightSum > 0 ? Math.Pow(weightSum, -1.0 / N) : double.PositiveInfinity;
-    }
-}
-"""
-
-CSHARP_PROJECT = """\
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-</Project>
-"""
+GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
+PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
+WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
 
 
 @dataclass
@@ -236,8 +74,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--targets",
-        default="csharp-query,csharp-dfs,rust-dfs",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs",
+        default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-accumulated",
     )
     parser.add_argument(
         "--repetitions",
@@ -253,150 +91,135 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(
-    cmd: list[str],
-    *,
-    cwd: Path | None = None,
-    check: bool = True,
-    capture_output: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        check=check,
-        capture_output=capture_output,
-        text=True,
+def build_csharp_query(root: Path) -> list[str]:
+    return build_csharp_package(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", "csharp_query", root / "csharp_query", root="Physics"
     )
 
 
-def require_file(path: Path) -> Path:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
-
-
-def available_targets(requested: list[str]) -> list[str]:
-    targets: list[str] = []
-    for target in requested:
-        if target == "rust-dfs" and shutil.which("rustc") is None:
-            print("skip rust-dfs: rustc not found", file=sys.stderr)
-            continue
-        if target == "go-dfs" and shutil.which("go") is None:
-            print("skip go-dfs: go not found", file=sys.stderr)
-            continue
-        if target.startswith("csharp-") and shutil.which("dotnet") is None:
-            print(f"skip {target}: dotnet not found", file=sys.stderr)
-            continue
-        targets.append(target)
-    return targets
-
-
-def build_csharp_query(root: Path) -> list[str]:
-    project_dir = root / "csharp_query"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "Program.cs").write_text(QE_PROGRAM, encoding="utf-8")
-    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_qe.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_qe.csproj", "-c", "Release"], cwd=project_dir)
-    return [
-        "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_qe.dll"),
-    ]
-
-
 def build_csharp_dfs(root: Path) -> list[str]:
-    project_dir = root / "csharp_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "EffectiveDistance.cs")
-    (project_dir / "Program.cs").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    (project_dir / "benchmark_dfs.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
-    run(["dotnet", "build", "benchmark_dfs.csproj", "-c", "Release"], cwd=project_dir)
-    return [
-        "dotnet",
-        str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_dfs.dll"),
-    ]
+    return build_csharp_package(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", "csharp", root / "csharp_dfs", root="Physics"
+    )
 
 
 def build_rust_dfs(root: Path) -> list[str]:
-    project_dir = root / "rust_dfs"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "effective_distance.rs")
-    binary = project_dir / "effective_distance_rust"
-    run(["rustc", "-O", str(source), "-o", str(binary)])
-    return [str(binary)]
+    return build_rust_binary(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", root / "rust_dfs", "effective_distance_rust", root="Physics"
+    )
 
 
 def build_go_dfs(root: Path) -> list[str]:
-    project_dir = root / "go_dfs"
+    return build_go_binary(
+        GENERATOR, BENCH_DIR / "10k" / "facts.pl", "effective_distance", root / "go_dfs", "effective_distance_go", root="Physics"
+    )
+
+
+def build_prolog_effective_distance(root: Path, scale: str, variant: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    script_path = root / f"prolog_{variant}" / scale / f"effective_distance_{variant}.pl"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(PROLOG_GENERATOR),
+            "--",
+            str(facts_path),
+            str(script_path),
+            variant,
+        ]
+    )
+    return ["swipl", "-q", "-s", str(script_path)]
+
+
+def build_wam_rust_effective_distance(root: Path, scale: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / "wam_rust" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
-    source = require_file(BENCH_DIR / "10k" / "pipelines" / "effective_distance.go")
-    binary = project_dir / "effective_distance_go"
-    run(["go", "build", "-o", str(binary), str(source)])
-    return [str(binary)]
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+        ],
+        cwd=ROOT,
+    )
+    run_command(["cargo", "build", "--release"], cwd=project_dir)
+    binary = project_dir / "target" / "release" / "hybrid_ed_bench"
+    scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+    return [str(binary), str(scale_dir)]
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
-    scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
-    edge_path = scale_dir / "category_parent.tsv"
-    article_path = scale_dir / "article_category.tsv"
-
     times: list[float] = []
     last_stdout = ""
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run(command + [str(edge_path), str(article_path)])
+        if target.startswith("prolog-") or target.startswith("wam-"):
+            result = run_command(command)
+        else:
+            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+            edge_path = scale_dir / "category_parent.tsv"
+            article_path = scale_dir / "article_category.tsv"
+            result = run_command(command + [str(edge_path), str(article_path)])
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         last_stdout = result.stdout
         last_stderr = result.stderr
 
-    lines = last_stdout.splitlines()
-    header = lines[:1]
-    body = sorted(lines[1:])
-    normalized = "\n".join(header + body)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    rows = len(body)
+    normalized = normalize_three_column_float_rows(last_stdout, decimals=6)
+    digest, rows = digest_normalized_output(normalized)
     return RunResult(target=target, scale=scale, times=times, stdout_sha256=digest, row_count=rows, stderr=last_stderr)
 
 
 def print_summary(results: list[RunResult]) -> None:
-    by_scale: dict[str, list[RunResult]] = {}
-    for result in results:
-        by_scale.setdefault(result.scale, []).append(result)
-
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
-    for scale in sorted(by_scale.keys(), key=scale_sort_key):
-        for result in sorted(by_scale[scale], key=lambda item: item.target):
-            print(
-                f"{scale}\t{result.target}\t{result.median:.3f}\t"
-                f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
-                f"{result.row_count}\t{result.stdout_sha256[:12]}"
-            )
+    for scale, entries in group_results_by_scale(results, sort_key=scale_sort_key):
+        print_result_table(entries, scale)
 
-        qe = next((item for item in by_scale[scale] if item.target == "csharp-query"), None)
-        csharp_dfs = next((item for item in by_scale[scale] if item.target == "csharp-dfs"), None)
-        rust_dfs = next((item for item in by_scale[scale] if item.target == "rust-dfs"), None)
-        dfs_like = [item for item in by_scale[scale] if item.target != "csharp-query"]
+        qe = find_result(entries, "csharp-query")
+        csharp_dfs = find_result(entries, "csharp-dfs")
+        rust_dfs = find_result(entries, "rust-dfs")
+        prolog_seeded = find_result(entries, "prolog-seeded")
+        prolog_pruned = find_result(entries, "prolog-pruned")
+        prolog_accumulated = find_result(entries, "prolog-accumulated")
+        prolog_article_accumulated = find_result(entries, "prolog-article-accumulated")
+        prolog_root_accumulated = find_result(entries, "prolog-root-accumulated")
+        wam_rust_accumulated = find_result(entries, "wam-rust-accumulated")
+        dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
 
         if len(dfs_like) > 1:
-            dfs_hashes = {item.stdout_sha256 for item in dfs_like}
-            status = "match" if len(dfs_hashes) == 1 else "MISMATCH"
-            print(f"{scale}\tdfs_outputs\t{status}")
-
-        if qe and csharp_dfs:
-            same = "match" if qe.stdout_sha256 == csharp_dfs.stdout_sha256 else "DIFFERENT"
-            print(f"{scale}\tquery_vs_csharp_dfs\t{same}")
-
-        if qe and csharp_dfs:
-            print(f"{scale}\tspeedup_vs_csharp_dfs\t{csharp_dfs.median / qe.median:.2f}x")
-        if qe and rust_dfs:
-            print(f"{scale}\tspeedup_vs_rust_dfs\t{rust_dfs.median / qe.median:.2f}x")
-
-        if qe and qe.stderr:
-            phase_lines = [line.strip() for line in qe.stderr.splitlines() if "=" in line]
-            if phase_lines:
-                print(f"{scale}\tcsharp-query-metrics\t" + " ".join(phase_lines))
+            print_match_status(scale, "dfs_outputs", dfs_like)
+        print_pair_match_status(scale, "query_vs_csharp_dfs", qe, csharp_dfs)
+        print_pair_match_status(scale, "query_vs_prolog_seeded", qe, prolog_seeded)
+        print_pair_match_status(scale, "query_vs_prolog_pruned", qe, prolog_pruned)
+        print_pair_match_status(scale, "query_vs_prolog_accumulated", qe, prolog_accumulated)
+        print_pair_match_status(scale, "query_vs_prolog_article_accumulated", qe, prolog_article_accumulated)
+        print_pair_match_status(scale, "query_vs_prolog_root_accumulated", qe, prolog_root_accumulated)
+        print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
+        print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
+        print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
+        print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
+        print_speedup(scale, "speedup_vs_prolog_seeded", prolog_seeded, qe)
+        print_speedup(scale, "speedup_vs_prolog_pruned", prolog_pruned, qe)
+        print_speedup(scale, "speedup_vs_prolog_accumulated", prolog_accumulated, qe)
+        print_speedup(scale, "speedup_vs_prolog_article_accumulated", prolog_article_accumulated, qe)
+        print_speedup(scale, "speedup_vs_prolog_root_accumulated", prolog_root_accumulated, qe)
+        print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
+        print_phase_metrics(scale, "csharp-query-metrics", qe)
+        print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
+        print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
+        print_phase_metrics(scale, "prolog-accumulated-metrics", prolog_accumulated)
+        print_phase_metrics(scale, "prolog-article-accumulated-metrics", prolog_article_accumulated)
+        print_phase_metrics(scale, "prolog-root-accumulated-metrics", prolog_root_accumulated)
+        print_phase_metrics(scale, "wam-rust-accumulated-metrics", wam_rust_accumulated)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -437,13 +260,39 @@ def main() -> int:
                 commands[target] = build_rust_dfs(temp_root)
             elif target == "go-dfs":
                 commands[target] = build_go_dfs(temp_root)
+            elif target == "prolog-seeded":
+                continue
+            elif target == "prolog-pruned":
+                continue
+            elif target == "prolog-accumulated":
+                continue
+            elif target == "prolog-article-accumulated":
+                continue
+            elif target == "prolog-root-accumulated":
+                continue
+            elif target == "wam-rust-accumulated":
+                continue
             else:
                 raise ValueError(f"unsupported target: {target}")
 
         results: list[RunResult] = []
         for scale in scales:
             for target in targets:
-                results.append(benchmark_target(commands[target], scale, args.repetitions, target))
+                if target == "prolog-seeded":
+                    command = build_prolog_effective_distance(temp_root, scale, "seeded")
+                elif target == "prolog-pruned":
+                    command = build_prolog_effective_distance(temp_root, scale, "pruned")
+                elif target == "prolog-accumulated":
+                    command = build_prolog_effective_distance(temp_root, scale, "accumulated")
+                elif target == "prolog-article-accumulated":
+                    command = build_prolog_effective_distance(temp_root, scale, "article_accumulated")
+                elif target == "prolog-root-accumulated":
+                    command = build_prolog_effective_distance(temp_root, scale, "root_accumulated")
+                elif target == "wam-rust-accumulated":
+                    command = build_wam_rust_effective_distance(temp_root, scale)
+                else:
+                    command = commands[target]
+                results.append(benchmark_target(command, scale, args.repetitions, target))
 
         print_summary(results)
         if args.keep_temp:
