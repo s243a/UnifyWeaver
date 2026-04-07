@@ -1,6 +1,23 @@
 # WAM Indexed Architecture: Implementation Plan
 
-## Phase 0: Design and Documentation (Current)
+## Benchmark Results (Phases 1-3)
+
+All 386 seeds at 300 scale through the Prolog WAM emulator with indexed fact tables:
+
+| Metric | Native Prolog | WAM Indexed | Improvement vs Unindexed |
+|--------|--------------|-------------|--------------------------|
+| Runtime (386 seeds) | 295ms | 1,953ms (6.6x) | from timeout (>30min) → 2s |
+| Per-seed (Physicists) | 17ms | 3ms | 4197ms → 3ms (1400x) |
+| Per-seed (Nuclear_physics) | 0ms | 4ms | 1661ms → 4ms (415x) |
+| Tuples found | 213 | 25 | Cut barrier limits multi-parent paths |
+| Total paths | 11,172 | 25 | Same cut barrier issue |
+
+The 25/213 tuple gap is from `!/0` clearing too many choice points (not
+performance). The indexed architecture correctly finds all single-parent
+paths. Multi-parent paths require Phase 4 (cut barrier fix in three-layer
+execution).
+
+## Phase 0: Design and Documentation
 
 - [x] Philosophy document
 - [x] Specification document

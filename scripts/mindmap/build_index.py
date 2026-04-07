@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Optional, Dict
 
 
-def extract_tree_id(filename: str) -> Optional[str]:
-    """Extract tree ID from filename.
+def extract_tree_id_from_filename(filename: str) -> Optional[str]:
+    """Extract tree ID from filename only.
 
     Supported patterns:
     - id{number}.smmx -> returns the number
+    - Title_id{number}.smmx -> returns the number
+    - Title_{number}.smmx -> returns the number
     - sha_{hash}.smmx -> returns sha_{hash}
     - {alphanumeric}.smmx -> returns the stem if long enough
     """
@@ -32,6 +34,14 @@ def extract_tree_id(filename: str) -> Optional[str]:
 
     # Numeric ID: id{number}
     match = re.match(r'^id(\d+)$', stem)
+    if match:
+        return match.group(1)
+
+    # Titled format: Title_id{number} or Title_{number}
+    match = re.search(r'_id(\d+)$', stem)
+    if match:
+        return match.group(1)
+    match = re.search(r'_(\d{6,})$', stem)  # At least 6 digits
     if match:
         return match.group(1)
 
@@ -43,6 +53,40 @@ def extract_tree_id(filename: str) -> Optional[str]:
     # Other alphanumeric patterns (synthetic IDs from old format)
     if re.match(r'^[a-z0-9]+$', stem) and len(stem) > 5:
         return stem
+
+    return None
+
+
+def extract_tree_id_from_mindmap(smmx_path: Path) -> Optional[str]:
+    """Extract tree ID from inside the mindmap's urllink."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(smmx_path, 'r') as zf:
+            xml_content = zf.read('document/mindmap.xml').decode('utf-8')
+            # Look for urllink with Pearltrees ID
+            match = re.search(r'urllink="https://www\.pearltrees\.com/[^"]+/id(\d+)"', xml_content)
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def extract_tree_id(filename: str, smmx_path: Path = None) -> Optional[str]:
+    """Extract tree ID from filename, falling back to mindmap content.
+
+    Args:
+        filename: The filename to extract from
+        smmx_path: Optional path to the .smmx file for fallback extraction
+    """
+    # Try filename first
+    tree_id = extract_tree_id_from_filename(filename)
+    if tree_id:
+        return tree_id
+
+    # Fall back to reading from mindmap
+    if smmx_path and smmx_path.exists():
+        return extract_tree_id_from_mindmap(smmx_path)
 
     return None
 
@@ -60,7 +104,7 @@ def build_index(search_dir: str) -> Dict[str, str]:
     base = Path(search_dir)
 
     for smmx_file in base.rglob("*.smmx"):
-        tree_id = extract_tree_id(smmx_file.name)
+        tree_id = extract_tree_id(smmx_file.name, smmx_path=smmx_file)
         if tree_id:
             # Store relative path from base
             rel_path = str(smmx_file.relative_to(base))

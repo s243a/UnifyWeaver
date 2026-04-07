@@ -162,9 +162,19 @@ def update_cloudmaprefs(
         try:
             # Read the zip file
             with zipfile.ZipFile(smmx_file, 'r') as zf:
-                xml_content = zf.read('document.xml').decode('utf-8')
+                # Find the XML file (may be document.xml or document/mindmap.xml)
+                xml_name = None
+                for name in ['document/mindmap.xml', 'document.xml', 'mindmap.xml']:
+                    if name in zf.namelist():
+                        xml_name = name
+                        break
+                if not xml_name:
+                    continue
+
+                xml_content = zf.read(xml_name).decode('utf-8')
 
             original_content = xml_content
+            xml_file_name = xml_name  # Remember for writing back
             modified = False
 
             # Find all cloudmapref attributes
@@ -209,9 +219,18 @@ def update_cloudmaprefs(
                     print(f"  Updating: {smmx_file.relative_to(base_dir)}")
 
                 if not dry_run:
-                    # Write back to the zip
-                    with zipfile.ZipFile(smmx_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        zf.writestr('document.xml', xml_content.encode('utf-8'))
+                    # Read all files from zip, update XML, write back
+                    with zipfile.ZipFile(smmx_file, 'r') as zf_read:
+                        files = {}
+                        for name in zf_read.namelist():
+                            if name == xml_file_name:
+                                files[name] = xml_content.encode('utf-8')
+                            else:
+                                files[name] = zf_read.read(name)
+
+                    with zipfile.ZipFile(smmx_file, 'w', zipfile.ZIP_DEFLATED) as zf_write:
+                        for name, content in files.items():
+                            zf_write.writestr(name, content)
 
         except Exception as e:
             if verbose:
@@ -407,28 +426,67 @@ def main():
         print("No folders to rename.")
         return
 
-    # Phase 1: Rename folders (in reverse depth order to avoid conflicts)
+    # Phase 1: Rename folders (shallowest first, rename folder name only)
+    # We rename from root to leaves because:
+    # 1. We only change the FOLDER NAME, not the full path
+    # 2. After renaming a parent, child paths update automatically
     if not args.dry_run:
         print("\nRenaming folders...")
-        # Sort by depth descending (deepest first) to avoid path conflicts
+        # Sort by depth ascending (shallowest first)
         sorted_renames = sorted(
             path_mapping.items(),
             key=lambda x: x[0].count('/'),
-            reverse=True
+            reverse=False  # Shallowest first!
         )
 
+        # Track current paths as we rename (parent renames affect child paths)
+        current_paths = {}  # old_rel -> current_actual_path
+
         for old_rel, new_rel in sorted_renames:
-            old_path = args.base_dir / old_rel
-            new_path = args.base_dir / new_rel
+            # Find current location of this folder
+            # Parent may have been renamed, so we need to compute current path
+            old_parts = old_rel.split('/')
+            new_parts = new_rel.split('/')
 
-            if old_path.exists():
-                # Ensure parent exists
-                new_path.parent.mkdir(parents=True, exist_ok=True)
+            # Build current path by looking up renamed parents
+            current_parts = []
+            for i, old_part in enumerate(old_parts[:-1]):  # All but last (folder to rename)
+                parent_old = '/'.join(old_parts[:i+1])
+                if parent_old in current_paths:
+                    # Parent was renamed, use its current location
+                    current_parts = current_paths[parent_old].split('/')
+                else:
+                    current_parts.append(old_part)
 
+            # Current location of the folder we want to rename
+            current_folder_path = '/'.join(current_parts + [old_parts[-1]]) if current_parts else old_parts[-1]
+            old_path = args.base_dir / current_folder_path
+
+            # New name for just this folder (last component of new_rel)
+            new_folder_name = new_parts[-1]
+
+            # New path is current parent + new folder name
+            if current_parts:
+                new_folder_path = '/'.join(current_parts + [new_folder_name])
+            else:
+                new_folder_path = new_folder_name
+
+            new_path = args.base_dir / new_folder_path
+
+            if old_path.exists() and old_path != new_path:
                 if args.verbose:
-                    print(f"  Moving: {old_rel} -> {new_rel}")
+                    print(f"  Renaming: {old_path.name} -> {new_folder_name}")
 
-                shutil.move(str(old_path), str(new_path))
+                # Simple rename (same parent directory)
+                old_path.rename(new_path)
+
+                # Track the new location
+                current_paths[old_rel] = new_folder_path
+            elif not old_path.exists():
+                if args.verbose:
+                    print(f"  Warning: {old_path} not found (may have been renamed)")
+            else:
+                current_paths[old_rel] = current_folder_path
 
     # Phase 2: Update cloudmapref links
     print("\nUpdating cloudmapref links...")
