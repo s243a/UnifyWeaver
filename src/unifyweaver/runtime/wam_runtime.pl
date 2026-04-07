@@ -137,9 +137,10 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     ;   PC = 1
     ),
     build_regs(Args, 1, Regs),
-    % Initialize the WAM variable binding table (global, mutable)
+    % Initialize the WAM variable binding table and counter (global, mutable)
     empty_assoc(EmptyBindings),
-    nb_setval(wam_bindings, EmptyBindings).
+    nb_setval(wam_bindings, EmptyBindings),
+    nb_setval(wam_var_counter, 0).
 
 % ============================================================================
 % Fact Table Registry
@@ -539,7 +540,12 @@ step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_s
     NPC is PC + 1.
 
 step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, H, NT, CP, CPS, Code, L)) :-
-    format(atom(NewVar), "_V~w", [PC]),
+    % Use monotonic counter for unique variable names across recursion depths.
+    % PC-based names collide when the same instruction runs at different depths.
+    nb_getval(wam_var_counter, VarCount),
+    NVC is VarCount + 1,
+    nb_setval(wam_var_counter, NVC),
+    format(atom(NewVar), "_V~w", [VarCount]),
     trail_binding(Xn, R, T, T1),
     trail_binding(Ai, R, T1, NT),
     put_reg(Xn, NewVar, R, R1, S, S1),
