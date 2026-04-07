@@ -16,7 +16,8 @@ pub struct TrailEntry {
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
     pub next_pc: usize,
-    pub regs: HashMap<String, Value>,
+    /// Saved argument registers (A1..An) — only the active ones, not the full HashMap.
+    pub saved_args: Vec<(String, Value)>,
     pub cp: usize,
     /// Saved stack depth — backtrack truncates stack to this length.
     pub stack_len: usize,
@@ -24,7 +25,7 @@ pub struct ChoicePoint {
     pub trail_len: usize,
     /// Saved heap depth — backtrack truncates heap to this length.
     pub heap_len: usize,
-    /// Saved bindings snapshot — needed because bindings is a HashMap (can't truncate).
+    /// Saved bindings snapshot for correct restoration on backtrack.
     pub bindings: HashMap<String, Value>,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
@@ -266,6 +267,19 @@ impl WamState {
         }
         // Default: just push to heap
         self.heap.push(val);
+    }
+
+    /// Save argument/temporary registers (A*, X*) as a compact Vec.
+    fn save_regs(&self) -> Vec<(String, Value)> {
+        self.regs.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Restore argument/temporary registers from a saved snapshot.
+    fn restore_regs(&mut self, saved: &[(String, Value)]) {
+        self.regs.clear();
+        for (k, v) in saved {
+            self.regs.insert(k.clone(), v.clone());
+        }
     }
 
     /// Record a binding on the trail for backtracking.

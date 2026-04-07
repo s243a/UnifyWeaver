@@ -346,7 +346,7 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
     Body = '                if let Some(&next_pc) = self.labels.get(label) {
                     self.choice_points.push(ChoicePoint {
                         next_pc,
-                        regs: self.regs.clone(),
+                        saved_args: self.save_regs(),
                         cp: self.cp,
                         stack_len: self.stack.len(),
                         trail_len: self.trail.len(),
@@ -486,13 +486,11 @@ compile_run_loop_to_rust(Code) :-
 
 compile_backtrack_to_rust(Code0) :-
     Code0 = '    /// Restore state from the top choice point without popping it.
-    /// In standard WAM semantics, the choice point is kept alive so that
-    /// retry_me_else can update its next_pc.  Only trust_me pops it.
     pub fn backtrack(&mut self) -> bool {
         if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
 
-            // 1. Unwind trail entries added since the choice point.
+            // 1. Unwind bindings from trail entries added since the CP.
             self.unwind_trail_bindings_only(cp.trail_len);
 
             // 2. Truncate stack, trail, and heap to saved depths.
@@ -501,7 +499,7 @@ compile_backtrack_to_rust(Code0) :-
             self.heap.truncate(cp.heap_len);
 
             // 3. Restore registers, bindings, and control state.
-            self.regs = cp.regs;
+            self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
             self.bindings = cp.bindings;
             self.cut_barrier = cp.cut_barrier;
@@ -651,7 +649,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         if items.len() > 1 {
                             self.choice_points.push(ChoicePoint {
                                 next_pc: self.pc,
-                                regs: self.regs.clone(),
+                                saved_args: self.save_regs(),
                                 cp: self.cp,
                                 stack_len: self.stack.len(),
                                 trail_len: self.trail.len(),
@@ -665,7 +663,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 cut_barrier: self.cut_barrier,
                             });
                         }
-                        
+
                         // Try first element
                         if self.unify(&val1, &items[0]) {
                             self.pc += 1; true
@@ -721,7 +719,7 @@ compile_resume_builtin_to_rust(Code) :-
                     if idx + 1 < items.len() {
                         self.choice_points.push(ChoicePoint {
                             next_pc: self.pc,
-                            regs: self.regs.clone(),
+                            saved_args: self.save_regs(),
                             cp: self.cp,
                             stack_len: self.stack.len(),
                             trail_len: self.trail.len(),
@@ -758,15 +756,31 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let goal = self.regs.get("A1").cloned();
                 let goal = goal.map(|v| self.deref_heap(&v));
                 match goal {
+                    Some(Value::Str(functor, args)) if functor == "member/2" && args.len() == 2 => {
+                        // Fast path for \\+(member(X, List)) — direct list scan,
+                        // no choice points, no builtin dispatch overhead.
+                        let needle = self.deref_var(&args[0]);
+                        let haystack = self.deref_var(&args[1]);
+                        let found = match &haystack {
+                            Value::List(items) => items.iter().any(|item| {
+                                let di = self.deref_var(item);
+                                di == needle
+                            }),
+                            _ => false,
+                        };
+                        // Negate: if found, \\+ fails; if not found, \\+ succeeds
+                        if found { return false; }
+                        self.pc += 1;
+                        return true;
+                    }
                     Some(Value::Str(functor, args)) => {
-                        let naf_pc = self.pc; // current BuiltinCall pc
+                        let naf_pc = self.pc;
 
-                        // Push a NAF choice point: if we backtrack here,
-                        // the goal failed, so \\+ succeeds.
+                        // Push a NAF choice point for general goals.
                         let cp_depth = self.choice_points.len();
                         self.choice_points.push(ChoicePoint {
                             next_pc: 0,
-                            regs: self.regs.clone(),
+                            saved_args: self.save_regs(),
                             cp: self.cp,
                             stack_len: self.stack.len(),
                             trail_len: self.trail.len(),
@@ -780,17 +794,13 @@ compile_execute_meta_builtin_to_rust(Code) :-
                             cut_barrier: self.cut_barrier,
                         });
 
-                        // Set up the goal call
                         let pred_key = format!("{}", functor);
                         let arity = args.len();
                         for (i, arg) in args.iter().enumerate() {
                             self.set_reg(&format!("A{}", i + 1), arg.clone());
                         }
 
-                        // Try as builtin first
                         if self.execute_builtin(&pred_key, arity) {
-                            // Goal succeeded → \\+ fails.
-                            // Remove the NAF choice point and any nested ones.
                             self.choice_points.truncate(cp_depth);
                             return false;
                         }
