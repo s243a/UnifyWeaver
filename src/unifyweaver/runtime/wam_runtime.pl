@@ -443,6 +443,29 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
 
+%% !/0 — cut: clear all choice points.
+%  TODO: proper cut barrier (only remove CPs above the barrier).
+step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, _CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, [], Code, L)) :-
+    NPC is PC + 1.
+
+%% length/2 — measure list length, bind to A2.
+step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, ListRaw),
+    deref_wam(ListRaw, wam_state(PC, R, S, H, T, CP, CPS, Code, L), DList),
+    is_list(DList),
+    length(DList, Len),
+    get_assoc('A2', R, LHS),
+    (   is_unbound_var(LHS)
+    ->  trail_binding('A2', R, T, NT),
+        put_assoc('A2', R, Len, NR)
+    ;   number(LHS), LHS =:= Len
+    ->  NR = R, NT = T
+    ;   fail
+    ),
+    NPC is PC + 1.
+
 step_wam(builtin_call(Op, 2), StateIn, StateOut) :-
     is_comparison_op(Op), !, StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
     get_assoc('A1', R, V1), get_assoc('A2', R, V2),
@@ -470,8 +493,79 @@ step_wam(builtin_call('member/2', 2), StateIn, StateOut) :-
         ; backtrack(State1, StateOut))
     ; fail).
 
-step_wam(builtin_call('\\+/1', 1), _, _) :-
-    throw(error(not_supported(negation_as_failure), wam_runtime)).
+%% \+/1 (negation-as-failure): the goal is in A1 as a structure.
+%  Fast path for member/2: directly check list membership.
+%  General path: save state, try goal, negate result.
+step_wam(builtin_call('\\+/1', 1),
+         wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, GoalTerm),
+    State = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    deref_wam(GoalTerm, State, DGoal0),
+    % If DGoal0 is a heap ref to a str, reconstruct with args from heap
+    reconstruct_goal(DGoal0, H, DGoal),
+    (   naf_try_goal(DGoal, State)
+    ->  fail    % goal succeeded → \+ fails
+    ;   NPC is PC + 1   % goal failed → \+ succeeds
+    ).
+
+%% reconstruct_goal(+HeapVal, +Heap, -Goal)
+%  If the value is str(F/N), extract N args from the heap after it.
+reconstruct_goal(str(FN), Heap, str(FN, Args)) :-
+    !,
+    % Parse arity from functor (e.g., "member/2" → 2)
+    (   sub_atom(FN, B, 1, _, '/'),
+        sub_atom(FN, _, _, 0, ArityAtom),
+        atom_number(ArityAtom, Arity),
+        B > 0
+    ->  true
+    ;   Arity = 0
+    ),
+    % Find the str(FN) on the heap and get the next Arity values
+    (   nth0(Idx, Heap, str(FN))
+    ->  StartIdx is Idx + 1,
+        heap_subargs(Heap, StartIdx, Arity, Args)
+    ;   Args = []
+    ).
+reconstruct_goal(Goal, _, Goal).
+
+%% heap_subargs(+Heap, +Start, +Count, -Args)
+heap_subargs(_, _, 0, []) :- !.
+heap_subargs(Heap, Idx, N, [Arg|Rest]) :-
+    N > 0,
+    nth0(Idx, Heap, Arg),
+    Idx1 is Idx + 1,
+    N1 is N - 1,
+    heap_subargs(Heap, Idx1, N1, Rest).
+
+%% naf_try_goal(+Goal, +State) — succeeds if Goal can be proved
+naf_try_goal(str('member/2', [Elem, List]), State) :-
+    !,
+    % Fast path: check membership directly
+    deref_wam(Elem, State, DElem),
+    deref_wam(List, State, DList),
+    is_list(DList),
+    member(DElem, DList).
+naf_try_goal(Goal, wam_state(_, R, S, H, T, CP, CPS, Code, L)) :-
+    % General path: extract functor/args, set up registers, run
+    Goal = str(Functor, Args),
+    length(Args, Arity),
+    set_args(Args, 1, R, R1),
+    format(atom(PredKey), "~w", [Functor]),
+    init_state_for_call(PredKey, R1, S, H, T, CPS, Code, L, CallState),
+    run_loop(CallState, _).
+
+set_args([], _, R, R).
+set_args([Arg|Rest], N, R, ROut) :-
+    format(atom(RegName), "A~w", [N]),
+    put_assoc(RegName, R, Arg, R1),
+    N1 is N + 1,
+    set_args(Rest, N1, R1, ROut).
+
+init_state_for_call(PredKey, R, S, H, T, CPS, Code, L, wam_state(PC, R, S, H, T, halt, CPS, Code, L)) :-
+    (   get_assoc(PredKey, L, PC) -> true
+    ;   PC = 0  % not found → will fail immediately
+    ).
 
 %% unify_wam(+V1, +V2, +StateIn, -StateOut)
 unify_wam(V1, V2, StateIn, StateOut) :-
