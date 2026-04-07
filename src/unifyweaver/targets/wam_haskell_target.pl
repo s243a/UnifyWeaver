@@ -319,9 +319,12 @@ step s (PutConstant c ai) =
   Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai c (wsRegs s) })
 
 step s (PutVariable xn ai) =
-  let var = Unbound ("_V" ++ show (wsPC s))
+  let var = Unbound ("_V" ++ show (wsVarCounter s))
       s1 = putReg xn var s
-  in Just (s1 { wsPC = wsPC s + 1, wsRegs = Map.insert ai var (wsRegs s1) })
+  in Just (s1 { wsPC = wsPC s + 1
+              , wsRegs = Map.insert ai var (wsRegs s1)
+              , wsVarCounter = wsVarCounter s + 1
+              })
 
 step s (PutValue xn ai) =
   case getReg xn s of
@@ -532,6 +535,7 @@ generate_main_hs(_Predicates, Code) :-
 
 import qualified Data.Map.Strict as Map
 import Data.List (nub, sort, isPrefixOf, intercalate)
+import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Environment (getArgs)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
@@ -694,8 +698,7 @@ main = do
 
 -- | Format a Double to 6 decimal places.
 showFFloat6 :: Double -> String
-showFFloat6 x = let s = show (fromIntegral (round (x * 1000000) :: Int) / 1000000 :: Double)
-                in s
+showFFloat6 x = Numeric.showFFloat (Just 6) x ""
 
 -- | Collect all Hops solutions from a query by repeated run + backtrack.
 collectSolutions :: WamState -> [Double]
@@ -914,6 +917,7 @@ data WamState = WamState
   , wsCode     :: ![Instruction]
   , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
+  , wsVarCounter :: !Int
   } deriving (Show)
 
 -- | Instruction type for the WAM.
@@ -955,6 +959,7 @@ emptyState code labels = WamState
   , wsCode     = code
   , wsLabels   = labels
   , wsBuilder  = NoBuilder
+  , wsVarCounter = 0
   }
 '.
 
