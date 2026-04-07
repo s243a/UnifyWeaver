@@ -141,6 +141,111 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     empty_assoc(EmptyBindings),
     nb_setval(wam_bindings, EmptyBindings).
 
+% ============================================================================
+% Fact Table Registry
+% ============================================================================
+
+:- use_module('../core/wam_fact_table').
+:- use_module('../core/wam_dict').
+
+:- dynamic wam_fact_table_entry/2.  % Pred/Arity → FactTable
+
+%% wam_register_fact_table(+PredKey, +FactTable)
+%  Register a fact table for a predicate (e.g., "category_parent/2").
+wam_register_fact_table(PredKey, FactTable) :-
+    retractall(wam_fact_table_entry(PredKey, _)),
+    assert(wam_fact_table_entry(PredKey, FactTable)).
+
+%% wam_fact_table_registered(+PredKey, -FactTable)
+%  Check if a predicate has a registered fact table.
+wam_fact_table_registered(PredKey, FactTable) :-
+    wam_fact_table_entry(PredKey, FactTable).
+
+%% wam_auto_register_facts(+Predicates)
+%  Automatically build and register fact tables for fact predicates.
+wam_auto_register_facts([]).
+wam_auto_register_facts([Pred/Arity|Rest]) :-
+    (   is_fact_predicate(Pred, Arity)
+    ->  build_fact_table(Pred, Arity, Table),
+        format(atom(Key), "~w/~w", [Pred, Arity]),
+        wam_register_fact_table(Key, Table),
+        fact_table_size(Table, N),
+        format(user_error, '  ~w/~w: ~w facts indexed~n', [Pred, Arity, N])
+    ;   true
+    ),
+    wam_auto_register_facts(Rest).
+
+%% call_fact_predicate(+Pred, +Arity, +FactTable, +StateIn, -StateOut)
+%  Execute a fact predicate via indexed table lookup.
+%  A1 is the first argument (lookup key). Remaining args are unified.
+%  Creates choice points for multiple matches.
+call_fact_predicate(_Pred, Arity, FactTable, StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, A1Raw),
+    wam_deref(A1Raw, A1),
+    (   \+ is_wam_unbound(A1)
+    ->  % Bound first arg: O(log n) lookup
+        wam_dict_lookup_all(A1, FactTable, Matches),
+        Matches = [FirstMatch|RestMatches],
+        % Unify remaining args (A2, A3, ...)
+        unify_fact_args(FirstMatch, 2, Arity, R, T, NR, NT),
+        % Create choice point for remaining matches
+        (   RestMatches \= []
+        ->  wam_save_bindings(SB),
+            NCPS = [cp(_, R, S, H, CP, T, fact_retry(A1, FactTable, Arity, RestMatches, CP), SB)|CPS]
+        ;   NCPS = CPS
+        ),
+        % Return to caller (proceed equivalent)
+        StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L)
+    ;   % Unbound first arg: iterate all facts (expensive)
+        wam_dict_to_list(FactTable, AllEntries),
+        all_fact_matches(AllEntries, Arity, AllMatches),
+        AllMatches = [FirstKey-FirstArgs|RestAll],
+        % Bind A1 to the key
+        trail_binding('A1', R, T, T1),
+        wam_bind(A1, FirstKey),
+        put_assoc('A1', R, FirstKey, R1),
+        unify_fact_args(FirstArgs, 2, Arity, R1, T1, NR, NT),
+        (   RestAll \= []
+        ->  wam_save_bindings(SB),
+            NCPS = [cp(_, R, S, H, CP, T, fact_retry_all(FactTable, Arity, RestAll, CP), SB)|CPS]
+        ;   NCPS = CPS
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L)
+    ).
+
+%% unify_fact_args(+ArgValues, +StartIdx, +Arity, +RegsIn, +TrailIn, -RegsOut, -TrailOut)
+%  Unify A2..AN with the fact's argument values.
+unify_fact_args(_, Idx, Arity, R, T, R, T) :- Idx > Arity, !.
+unify_fact_args([Val|Rest], Idx, Arity, R, T, ROut, TOut) :-
+    format(atom(RegKey), "A~w", [Idx]),
+    get_assoc(RegKey, R, RegVal),
+    wam_deref(RegVal, DRegVal),
+    (   DRegVal == Val
+    ->  R1 = R, T1 = T
+    ;   is_wam_unbound(DRegVal)
+    ->  trail_binding(RegKey, R, T, T1),
+        (atom(DRegVal), is_wam_unbound(DRegVal) -> wam_bind(DRegVal, Val) ; true),
+        put_assoc(RegKey, R, Val, R1)
+    ;   fail  % mismatch
+    ),
+    NIdx is Idx + 1,
+    unify_fact_args(Rest, NIdx, Arity, R1, T1, ROut, TOut).
+
+all_fact_matches([], _, []).
+all_fact_matches([Key-ValueLists|Rest], Arity, AllMatches) :-
+    maplist([Vs, Key-Vs]>>true, ValueLists, KeyedMatches),
+    all_fact_matches(Rest, Arity, RestMatches),
+    append(KeyedMatches, RestMatches, AllMatches).
+
+is_wam_unbound(Val) :- var(Val), !.
+is_wam_unbound(Val) :-
+    atom(Val),
+    (   sub_atom(Val, 0, 2, _, '_V')
+    ;   sub_atom(Val, 0, 2, _, '_Q')
+    ;   sub_atom(Val, 0, 2, _, '_H')
+    ).
+
 build_regs([], _, R) :- empty_assoc(R).
 build_regs([A|As], I, R) :-
     format(atom(Key), "A~w", [I]),
@@ -453,9 +558,16 @@ step_wam(set_value(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(N
 step_wam(set_constant(C), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, NH, T, CP, CPS, Code, L)) :-
     append(H, [C], NH), NPC is PC + 1.
 
-step_wam(call(P, _), wam_state(PC, R, S, H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)) :-
-    get_assoc(P, L, NPC),
-    NCP is PC + 1.
+step_wam(call(P, Arity), StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, _, CPS, Code, L),
+    NCP is PC + 1,
+    % Check fact table first (O(log n) lookup vs O(n) instruction scan)
+    (   wam_fact_table_registered(P, FactTable)
+    ->  call_fact_predicate(P, Arity, FactTable, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
+    ;   % Fallback to WAM code
+        get_assoc(P, L, NPC),
+        StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
+    ).
 
 step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(P, L, NPC).
