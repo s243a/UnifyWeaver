@@ -423,10 +423,12 @@ step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, 
 
 step_wam(proceed, wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(CP, R, S, H, T, halt, CPS, Code, L)).
 
-step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP, YRegs)|S], H, T, CP, CPS, Code, L)) :-
-    empty_assoc(YRegs), NPC is PC + 1.
+step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP, YRegs, CutBarrier)|S], H, T, CP, CPS, Code, L)) :-
+    empty_assoc(YRegs),
+    length(CPS, CutBarrier),  % save CP stack depth as cut barrier
+    NPC is PC + 1.
 
-step_wam(deallocate, wam_state(PC, R, [env(OldCP, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
+step_wam(deallocate, wam_state(PC, R, [env(OldCP, _, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
     NPC is PC + 1.
 
 step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, H, CP, T, _, SavedB)|CPS], Code, L)) :-
@@ -461,11 +463,19 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
 
-%% !/0 — cut: clear all choice points.
-%  TODO: proper cut barrier (only remove CPs above the barrier).
-step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, _CPS, Code, L),
-         wam_state(NPC, R, S, H, T, CP, [], Code, L)) :-
-    NPC is PC + 1.
+%% !/0 — cut: truncate choice points to the cut barrier.
+%  The cut barrier is saved at Allocate time in the env frame.
+step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
+    NPC is PC + 1,
+    % Find the cut barrier from the topmost env frame
+    (   member(env(_, _, CutBarrier), S)
+    ->  length(CPS, CPLen),
+        KeepN is min(CutBarrier, CPLen),
+        length(NCPS, KeepN),
+        append(NCPS, _, CPS)
+    ;   NCPS = []  % no env frame — clear all (fallback)
+    ).
 
 %% length/2 — measure list length, bind to A2.
 step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
@@ -716,14 +726,14 @@ get_reg_val(Reg, R, S, Val) :-
 
 get_reg(Reg, _R, Stack, Val) :-
     is_y_reg(Reg), !,
-    member(env(_, YRegs), Stack), !,
+    member(env(_, YRegs, _), Stack), !,
     get_assoc(Reg, YRegs, Val).
 get_reg(Reg, R, _, Val) :-
     get_assoc(Reg, R, Val).
 
 put_reg(Reg, Val, R, R, Stack, NewStack) :- is_y_reg(Reg), !, update_top_env(Stack, Reg, Val, NewStack).
 put_reg(Reg, Val, R, NR, Stack, Stack) :- put_assoc(Reg, R, Val, NR).
-update_top_env([env(CP, YRegs)|Rest], Reg, Val, [env(CP, NewYRegs)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
+update_top_env([env(CP, YRegs, CB)|Rest], Reg, Val, [env(CP, NewYRegs, CB)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
 
 get_arity(FN, Arity) :-
     (   once(sub_atom(FN, _, 1, After, '/'))
