@@ -27,11 +27,12 @@ generate_all :-
         ])
     ]),
     
-    % Generate the React app code
-    generate_react_app(react_cli, AppCode),
-    open('src/App.tsx', write, S),
+    % Generate the React app code (only include the declared component)
+    generate_react_app(react_cli, [components([react_cli])], AppCode),
+    make_directory_path('generated/src'),
+    open('generated/src/App.tsx', write, S),
     write(S, AppCode),
     close(S),
-    
-    format('  Created: src/App.tsx~n'),
-    format('Done! Run "npm run dev" to test.~n').
+
+    format('  Created: generated/src/App.tsx~n'),
+    format('Done! Compare with prototype/ and run "npm run dev" to test.~n').

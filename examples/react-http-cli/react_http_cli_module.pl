@@ -28,19 +28,20 @@ generate_all :-
             operation(send, '/api/run', "Execute Remote")
         ])
     ]),
-    generate_react_app(react_http_cli, AppCode),
-    open('src/App.tsx', write, S),
+    generate_react_app(react_http_cli, [components([react_http_cli])], AppCode),
+    make_directory_path('generated/src'),
+    open('generated/src/App.tsx', write, S),
     write(S, AppCode),
     close(S),
-    format('  Created: src/App.tsx~n'),
-    
+    format('  Created: generated/src/App.tsx~n'),
+
     % 2. Generate HTML interface via html_interface_generator
     http_cli_interface(Spec),
     http_cli_theme(Theme),
     generate_html_interface(Spec, Theme, HTML),
-    open('index.html', write, H),
+    open('generated/index.html', write, H),
     write(H, HTML),
     close(H),
-    format('  Created: index.html~n'),
-    
-    format('Done! Run "npm run dev" to test.~n').
+    format('  Created: generated/index.html~n'),
+
+    format('Done! Compare with prototype/ and run "npm run dev" to test.~n').
