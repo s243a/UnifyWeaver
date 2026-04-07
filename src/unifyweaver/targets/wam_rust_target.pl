@@ -108,7 +108,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         self.regs.insert(ai.clone(), Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.stack.push(StackEntry::WriteCtx(arity));
+                        self.smut().push(StackEntry::WriteCtx(arity));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
@@ -117,7 +117,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                                 let arity = fn_str.split(\'/\').nth(1)
                                     .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                                 let args = self.heap_subargs(addr + 1, arity);
-                                self.stack.push(StackEntry::UnifyCtx(args));
+                                self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
                             } else { false }
                         } else { false }
@@ -125,7 +125,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         // Read mode on Prolog compound
                         let check = format!("{}/{}", f, args.len());
                         if check == *fn_str {
-                            self.stack.push(StackEntry::UnifyCtx(args.to_vec()));
+                            self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
                         } else { false }
                     } else { false }
@@ -138,11 +138,11 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
                         self.regs.insert(ai.clone(), Value::Ref(addr));
-                        self.stack.push(StackEntry::WriteCtx(2));
+                        self.smut().push(StackEntry::WriteCtx(2));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
                         if let Some((head, tail)) = items.split_first() {
-                            self.stack.push(StackEntry::UnifyCtx(
+                            self.smut().push(StackEntry::UnifyCtx(
                                 vec![head.clone(), Value::List(tail.to_vec())]));
                             self.pc += 1; true
                         } else { false }
@@ -150,7 +150,7 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
                             if s == "str(./2)" {
                                 let args = self.heap_subargs(addr + 1, 2);
-                                self.stack.push(StackEntry::UnifyCtx(args));
+                                self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
                             } else { false }
                         } else { false }
@@ -161,9 +161,9 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
     Body = '                if let Some(StackEntry::UnifyCtx(args)) = self.stack.last().cloned() {
                     if let Some(arg) = args.first().cloned() {
                         let rest: Vec<Value> = args[1..].to_vec();
-                        self.stack.pop();
+                        self.smut().pop();
                         if !rest.is_empty() {
-                            self.stack.push(StackEntry::UnifyCtx(rest));
+                            self.smut().push(StackEntry::UnifyCtx(rest));
                         }
                         self.trail_binding(xn);
                         self.put_reg(xn, arg);
@@ -174,8 +174,8 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         let addr = self.heap.len();
                         let var = Value::Unbound(format!("_H{}", addr));
                         self.heap.push(var.clone());
-                        self.stack.pop();
-                        if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                        self.smut().pop();
+                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                         self.put_reg(xn, var);
                         self.pc += 1; true
                     } else { false }
@@ -197,9 +197,9 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         };
                         if ok {
                             let rest: Vec<Value> = args[1..].to_vec();
-                            self.stack.pop();
+                            self.smut().pop();
                             if !rest.is_empty() {
-                                self.stack.push(StackEntry::UnifyCtx(rest));
+                                self.smut().push(StackEntry::UnifyCtx(rest));
                             }
                             self.pc += 1; true
                         } else { false }
@@ -208,8 +208,8 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                     if n > 0 {
                         if let Some(val) = self.get_reg(xn) {
                             self.heap.push(val);
-                            self.stack.pop();
-                            if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                            self.smut().pop();
+                            if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                             self.pc += 1; true
                         } else { false }
                     } else { false }
@@ -220,9 +220,9 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                     if let Some(arg) = args.first().cloned() {
                         if arg == *c || arg.is_unbound() {
                             let rest: Vec<Value> = args[1..].to_vec();
-                            self.stack.pop();
+                            self.smut().pop();
                             if !rest.is_empty() {
-                                self.stack.push(StackEntry::UnifyCtx(rest));
+                                self.smut().push(StackEntry::UnifyCtx(rest));
                             }
                             self.pc += 1; true
                         } else { false }
@@ -230,8 +230,8 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
                 } else if let Some(StackEntry::WriteCtx(n)) = self.stack.last().cloned() {
                     if n > 0 {
                         self.heap.push(c.clone());
-                        self.stack.pop();
-                        if n - 1 > 0 { self.stack.push(StackEntry::WriteCtx(n - 1)); }
+                        self.smut().pop();
+                        if n - 1 > 0 { self.smut().push(StackEntry::WriteCtx(n - 1)); }
                         self.pc += 1; true
                     } else { false }
                 } else { false }'.
@@ -270,7 +270,7 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                     self.heap.push(Value::Atom("__struct_arg__".to_string()));
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
-                self.stack.push(StackEntry::WriteCtx(addr));
+                self.smut().push(StackEntry::WriteCtx(addr));
                 self.regs.insert(ai.clone(), Value::Ref(addr));
                 self.pc += 1; true'.
 
@@ -284,7 +284,7 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 self.heap.push(Value::Atom("__list_head__".to_string()));
                 self.heap.push(Value::Atom("__list_tail__".to_string()));
                 self.regs.insert(ai.clone(), Value::Integer(marker as i64));
-                self.stack.push(StackEntry::WriteCtx(marker));
+                self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
@@ -309,11 +309,12 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
 wam_instruction_arm('Instruction::Allocate', Body) :-
     Body = '                use std::collections::HashMap;
                 self.cut_barrier = self.choice_points.len();
-                self.stack.push(StackEntry::Env(self.cp, HashMap::new()));
+                let saved_cp = self.cp;
+                self.smut().push(StackEntry::Env(saved_cp, HashMap::new()));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::Deallocate', Body) :-
-    Body = '                if let Some(StackEntry::Env(old_cp, _)) = self.stack.pop() {
+    Body = '                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
                     self.cp = old_cp;
                     self.pc += 1; true
                 } else { false }'.

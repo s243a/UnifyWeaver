@@ -20,8 +20,8 @@ pub struct ChoicePoint {
     /// Saved argument registers (A1..An).
     pub saved_args: Vec<(String, Value)>,
     pub cp: usize,
-    /// Saved stack snapshot (full clone for correct Y-register restoration).
-    pub stack: Vec<StackEntry>,
+    /// Saved stack snapshot (Rc clone = O(1), copy-on-write on mutation).
+    pub stack: Rc<Vec<StackEntry>>,
     /// Saved trail depth — backtrack unwinds + truncates to this point.
     pub trail_len: usize,
     /// Saved heap depth — backtrack truncates to this point.
@@ -63,7 +63,9 @@ pub struct WamState {
     /// Register file: Ai (argument), Xi (temporary), mapped by name.
     pub regs: HashMap<String, Value>,
     /// Stack: environment frames and unification contexts.
-    pub stack: Vec<StackEntry>,
+    /// Wrapped in Rc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
+    pub stack: Rc<Vec<StackEntry>>,
+    // Note: use self.smut() for mutable stack access (Rc::make_mut).
     /// Heap: term construction area.
     pub heap: Vec<Value>,
     /// Trail: binding history for backtracking.
@@ -97,7 +99,7 @@ impl WamState {
         WamState {
             pc: 1,
             regs: HashMap::new(),
-            stack: Vec::new(),
+            stack: Rc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
             cp: 0, // 0 = halt
@@ -110,6 +112,12 @@ impl WamState {
             step_count: 0,
             step_limit: 0,
         }
+    }
+
+    /// Mutable access to stack (triggers copy-on-write if shared).
+    #[inline]
+    fn smut(&mut self) -> &mut Vec<StackEntry> {
+        Rc::make_mut(&mut self.stack)
     }
 
     /// Set an argument register.
@@ -146,7 +154,7 @@ impl WamState {
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
         self.regs.clear();
-        self.stack.clear();
+        self.stack = Rc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
         self.heap.clear();
@@ -180,7 +188,7 @@ impl WamState {
     /// Set a register value. Yi registers are written to the topmost environment frame.
     pub fn put_reg(&mut self, name: &str, val: Value) {
         if name.starts_with('Y') && name.len() > 1 && name[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            for entry in self.stack.iter_mut().rev() {
+            for entry in self.smut().iter_mut().rev() {
                 if let StackEntry::Env(_, y_regs) = entry {
                     y_regs.insert(name.to_string(), val);
                     return;
@@ -223,7 +231,7 @@ impl WamState {
                                 .find(|(_, v)| **v == ref_val || **v == int_val)
                                 .map(|(k, _)| k.clone());
                             if let Some(key) = reg_key { self.regs.insert(key, list); }
-                            self.stack.pop();
+                            self.smut().pop();
                             return;
                         }
                     }
@@ -256,7 +264,7 @@ impl WamState {
                                     if let Some(key) = reg_key {
                                         self.regs.insert(key, Value::Str(functor.clone(), args));
                                     }
-                                    self.stack.pop();
+                                    self.smut().pop();
                                 }
                                 return;
                             }
