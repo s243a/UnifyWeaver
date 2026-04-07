@@ -2,6 +2,17 @@
 
 A React/TypeScript frontend for the UnifyWeaver HTTP CLI server, providing comparable functionality to the Vue version.
 
+## Generation
+
+This application is fully regenerable from Prolog specifications.
+
+```bash
+# Generate the application files
+./generate.pl
+```
+
+This uses `react_http_cli_module.pl` to generate both the React component `src/App.tsx` (using `react_generator.pl`) and the HTML interface `index.html` (using `html_interface_generator.pl`).
+
 ## Features
 
 - **Browse** - Navigate directories with root selector (Sandbox/Project/Home), download files
