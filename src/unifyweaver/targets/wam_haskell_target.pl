@@ -278,20 +278,185 @@ backtrack s = case wsCPs s of
       | otherwise = bindings'.
 
 % ============================================================================
-% PHASE 3: Run Loop
+% PHASE 3: Step Function + Run Loop
 % ============================================================================
+
+step_function_haskell(Code) :-
+    Code = '-- | Execute a single WAM instruction.
+step :: WamState -> Instruction -> Maybe WamState
+step s (GetConstant c ai) =
+  let val = derefVar (wsBindings s) <$> Map.lookup ai (wsRegs s)
+  in case val of
+    Just v | v == c -> Just (s { wsPC = wsPC s + 1 })
+    Just (Unbound var) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsRegs = Map.insert ai c (wsRegs s)
+              , wsBindings = Map.insert var c (wsBindings s)
+              , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+              })
+    _ -> Nothing
+
+step s (GetVariable xn ai) =
+  case Map.lookup ai (wsRegs s) of
+    Just val -> let dv = derefVar (wsBindings s) val
+                in Just ((putReg xn dv s) { wsPC = wsPC s + 1 })
+    Nothing -> Nothing
+
+step s (GetValue xn ai) =
+  let va = derefVar (wsBindings s) <$> Map.lookup ai (wsRegs s)
+      vx = getReg xn s
+  in case (va, vx) of
+    (Just a, Just x) | a == x -> Just (s { wsPC = wsPC s + 1 })
+    (Just (Unbound n), Just x) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsRegs = Map.insert ai x (wsRegs s)
+              , wsBindings = Map.insert n x (wsBindings s)
+              , wsTrail = TrailEntry ("__binding__" ++ n) (Map.lookup n (wsBindings s)) : wsTrail s
+              })
+    _ -> Nothing
+
+step s (PutConstant c ai) =
+  Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai c (wsRegs s) })
+
+step s (PutVariable xn ai) =
+  let var = Unbound ("_V" ++ show (wsPC s))
+      s1 = putReg xn var s
+  in Just (s1 { wsPC = wsPC s + 1, wsRegs = Map.insert ai var (wsRegs s1) })
+
+step s (PutValue xn ai) =
+  case getReg xn s of
+    Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai val (wsRegs s) })
+    Nothing -> Nothing
+
+step s (Call pred _arity) =
+  case Map.lookup pred (wsLabels s) of
+    Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+    Nothing -> Nothing
+
+step s Proceed =
+  let ret = wsCP s
+  in if ret == 0 then Just (s { wsPC = 0 })
+     else Just (s { wsPC = ret, wsCP = 0 })
+
+step s Allocate =
+  let frame = EnvFrame (wsCP s) Map.empty
+  in Just (s { wsPC = wsPC s + 1
+             , wsStack = frame : wsStack s
+             , wsCutBar = length (wsCPs s)
+             })
+
+step s Deallocate =
+  case wsStack s of
+    (EnvFrame oldCP _ : rest) -> Just (s { wsPC = wsPC s + 1, wsStack = rest, wsCP = oldCP })
+    _ -> Nothing
+
+step s (TryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wsLabels s)
+      cp = ChoicePoint
+        { cpNextPC   = nextPC
+        , cpRegs     = wsRegs s       -- O(1): Data.Map shared reference
+        , cpStack    = wsStack s      -- O(1): list shared reference
+        , cpCP       = wsCP s
+        , cpTrailLen = length (wsTrail s)
+        , cpHeapLen  = length (wsHeap s)
+        , cpBindings = wsBindings s   -- O(1): Data.Map shared reference
+        , cpCutBar   = wsCutBar s
+        }
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s })
+
+step s TrustMe =
+  case wsCPs s of
+    (_ : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest })
+    [] -> Nothing
+
+step s (RetryMeElse label) =
+  case wsCPs s of
+    (cp : rest) ->
+      let nextPC = fromMaybe 0 $ Map.lookup label (wsLabels s)
+      in Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
+    [] -> Nothing
+
+step s (BuiltinCall "!/0" _) =
+  Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s) })
+
+step s (BuiltinCall "is/2" _) =
+  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (Map.lookup "A2" (wsRegs s))
+      result = evalArith (wsBindings s) expr
+      lhs = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
+  in case (lhs, result) of
+    (Just (Unbound var), Just r) ->
+      let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
+      in Just (s { wsPC = wsPC s + 1
+                 , wsRegs = Map.insert "A1" val (wsRegs s)
+                 , wsBindings = Map.insert var val (wsBindings s)
+                 , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+                 })
+    (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+step s (BuiltinCall "length/2" _) =
+  let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A1" (wsRegs s))
+  in case listVal of
+    VList items ->
+      let len = length items
+          lhs = derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s)
+      in case lhs of
+        Just (Unbound var) ->
+          let val = Integer len
+          in Just (s { wsPC = wsPC s + 1
+                     , wsRegs = Map.insert "A2" val (wsRegs s)
+                     , wsBindings = Map.insert var val (wsBindings s)
+                     , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+                     })
+        Just (Integer n) | n == len -> Just (s { wsPC = wsPC s + 1 })
+        _ -> Nothing
+    _ -> Nothing
+
+step s (BuiltinCall "</2" _) =
+  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
+      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+step s (BuiltinCall "\\\\+/1" _) =
+  let goal = Map.lookup "A1" (wsRegs s) >>= derefHeap (wsHeap s)
+  in case goal of
+    Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
+      let n = derefVar (wsBindings s) needle
+          h = derefVar (wsBindings s) haystack
+          found = case h of
+            VList items -> any (\\item -> derefVar (wsBindings s) item == n) items
+            _ -> False
+      in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- SwitchOnConstant: dispatch on A1 value
+step s (SwitchOnConstant table) =
+  let val = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
+  in case val of
+    Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })  -- unbound: skip
+    Just v -> case lookup v table of
+      Just label -> case Map.lookup label (wsLabels s) of
+        Just pc -> Just (s { wsPC = pc })
+        Nothing -> Nothing
+      Nothing -> Nothing  -- no match: fail
+    Nothing -> Nothing
+
+-- Fallback for unhandled instructions
+step _ _ = Nothing'.
 
 run_loop_haskell(Code) :-
     Code = '-- | Main execution loop. Runs until halt (pc=0) or failure.
-run :: WamState -> [Instruction] -> Map String Int -> Maybe WamState
-run s code labels
+run :: WamState -> Maybe WamState
+run s
   | wsPC s == 0 = Just s  -- halt
-  | otherwise = case fetchInstr (wsPC s) code of
+  | otherwise = case fetchInstr (wsPC s) (wsCode s) of
       Nothing -> Nothing
       Just instr -> case step s instr of
-        Just s'' -> run s'' code labels
+        Just s'' -> run s''
         Nothing -> case backtrack s of
-          Just s'' -> run s'' code labels
+          Just s'' -> run s''
           Nothing -> Nothing'.
 
 % ============================================================================
@@ -331,10 +496,60 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, CabalFile, CabalPath),
     write_hs_file(CabalPath, CabalCode),
 
+    % Generate Main.hs
+    generate_main_hs(Predicates, MainCode),
+    directory_file_path(SrcDir, 'Main.hs', MainPath),
+    write_hs_file(MainPath, MainCode),
+
     format(user_error, '[WAM-Haskell] Generated project at: ~w~n', [ProjectDir]).
+
+%% generate_main_hs(+Predicates, -Code)
+%  Generates a Main.hs that loads predicates and runs a simple query.
+generate_main_hs(Predicates, Code) :-
+    % Build the combined code and labels from all predicates
+    build_predicate_loads(Predicates, LoadCode),
+    format(string(Code),
+'module Main where
+
+import qualified Data.Map.Strict as Map
+import WamTypes
+import WamRuntime
+import Predicates
+
+main :: IO ()
+main = do
+    -- Build combined instruction list and label map
+~w
+    let state0 = emptyState allCode allLabels
+    -- Query: set A1 to unbound, run dimension_n/1
+    let queryState = state0
+          { wsPC = case Map.lookup "dimension_n/1" allLabels of
+                     Just pc -> pc
+                     Nothing -> 1
+          , wsRegs = Map.fromList [("A1", Unbound "X")]
+          , wsCP = 0
+          }
+    case run queryState of
+      Just result -> do
+        let a1 = derefVar (wsBindings result) <$> Map.lookup "A1" (wsRegs result)
+        putStrLn $ "Result: A1 = " ++ show a1
+      Nothing -> putStrLn "Query failed"
+', [LoadCode]).
+
+build_predicate_loads([], '    let allCode = []\n    let allLabels = Map.empty').
+build_predicate_loads([PredIndicator|_], Code) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    format(atom(FuncName), '~w_~w', [Pred, Arity]),
+    format(string(Code),
+'    let allCode = ~w_code
+    let allLabels = ~w_labels', [FuncName, FuncName]).
+% TODO: merge multiple predicate code/labels for multi-predicate projects
 
 %% compile_wam_runtime_to_haskell(+Options, -Code)
 compile_wam_runtime_to_haskell(_Options, Code) :-
+    step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCode),
     run_loop_haskell(RunCode),
     format(string(Code),
@@ -344,6 +559,8 @@ import qualified Data.Map.Strict as Map
 import Data.List (isPrefixOf, foldl'')
 import Data.Maybe (fromMaybe)
 import WamTypes
+
+~w
 
 ~w
 
@@ -397,6 +614,15 @@ putReg name val s
       EnvFrame cp (Map.insert n v yregs) : rest
     updateTopEnv n v (x : rest) = x : updateTopEnv n v rest
 
+-- | Dereference a heap reference.
+derefHeap :: [Value] -> Value -> Maybe Value
+derefHeap heap (Ref addr)
+  | addr >= 0 && addr < length heap = Just (heap !! addr)
+  | otherwise = Nothing
+derefHeap _ (Str fn args) = Just (Str fn args)
+derefHeap _ (Unbound n) = Just (Unbound n)
+derefHeap _ v = Just v
+
 -- | Lookup a label in the label map.
 lookupLabel :: String -> WamState -> Int
 lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
@@ -406,7 +632,7 @@ fetchInstr :: Int -> [Instruction] -> Maybe Instruction
 fetchInstr pc code
   | pc < 1 || pc > length code = Nothing
   | otherwise = Just (code !! (pc - 1))
-', [BacktrackCode, RunCode]).
+', [StepCode, BacktrackCode, RunCode]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -450,6 +676,7 @@ data WamState = WamState
   , wsCPs      :: ![ChoicePoint]
   , wsBindings :: !(Map.Map String Value)
   , wsCutBar   :: !Int
+  , wsCode     :: ![Instruction]
   , wsLabels   :: !(Map.Map String Int)
   } deriving (Show)
 
@@ -489,6 +716,7 @@ emptyState code labels = WamState
   , wsCPs      = []
   , wsBindings = Map.empty
   , wsCutBar   = 0
+  , wsCode     = code
   , wsLabels   = labels
   }
 '.
@@ -532,13 +760,118 @@ compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     ),
     wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode),
     format(user_error, '  ~w/~w: compiled to WAM~n', [Pred, Arity]),
-    % For now, emit a placeholder that includes the WAM code as a comment
+    % Parse WAM text into Haskell instruction list and label map
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_haskell(Lines, 1, InstrExprs, LabelExprs),
+    atomic_list_concat(InstrExprs, '\n    , ', InstrCode),
+    atomic_list_concat(LabelExprs, '\n    , ', LabelCode),
+    format(atom(FuncName), '~w_~w', [Pred, Arity]),
     format(string(Code),
 '-- WAM-compiled predicate: ~w/~w
--- TODO: native lower each WAM instruction to Haskell
-{-
-~w
--}', [Pred, Arity, WamCode]).
+~w_code :: [Instruction]
+~w_code =
+    [ ~w
+    ]
+
+~w_labels :: Map.Map String Int
+~w_labels = Map.fromList
+    [ ~w
+    ]', [Pred, Arity, FuncName, FuncName, InstrCode, FuncName, FuncName, LabelCode]).
+
+%% wam_lines_to_haskell(+Lines, +PC, -InstrExprs, -LabelExprs)
+%  Parses WAM assembly lines into Haskell Instruction constructor expressions
+%  and label (String, Int) pairs.
+wam_lines_to_haskell([], _, [], []).
+wam_lines_to_haskell([Line|Rest], PC, Instrs, Labels) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_lines_to_haskell(Rest, PC, Instrs, Labels)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelName),
+            format(string(LabelExpr), '("~w", ~w)', [LabelName, PC]),
+            Labels = [LabelExpr|RestLabels],
+            wam_lines_to_haskell(Rest, PC, Instrs, RestLabels)
+        ;   wam_instr_to_haskell(CleanParts, HsExpr),
+            NPC is PC + 1,
+            Instrs = [HsExpr|RestInstrs],
+            wam_lines_to_haskell(Rest, NPC, RestInstrs, Labels)
+        )
+    ).
+
+%% wam_instr_to_haskell(+Parts, -HaskellExpr)
+%  Converts parsed WAM instruction parts to a Haskell Instruction constructor.
+wam_instr_to_haskell(["get_constant", C, Ai], Hs) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    wam_value_to_haskell(CC, HsVal),
+    format(string(Hs), 'GetConstant (~w) "~w"', [HsVal, CAi]).
+wam_instr_to_haskell(["get_variable", Xn, Ai], Hs) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Hs), 'GetVariable "~w" "~w"', [CXn, CAi]).
+wam_instr_to_haskell(["get_value", Xn, Ai], Hs) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Hs), 'GetValue "~w" "~w"', [CXn, CAi]).
+wam_instr_to_haskell(["put_constant", C, Ai], Hs) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    wam_value_to_haskell(CC, HsVal),
+    format(string(Hs), 'PutConstant (~w) "~w"', [HsVal, CAi]).
+wam_instr_to_haskell(["put_variable", Xn, Ai], Hs) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Hs), 'PutVariable "~w" "~w"', [CXn, CAi]).
+wam_instr_to_haskell(["put_value", Xn, Ai], Hs) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    format(string(Hs), 'PutValue "~w" "~w"', [CXn, CAi]).
+wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    format(string(Hs), 'PutStructure "~w" "~w"', [CFN, CAi]).
+wam_instr_to_haskell(["put_list", Ai], Hs) :-
+    format(string(Hs), 'PutList "~w"', [Ai]).
+wam_instr_to_haskell(["set_value", Xn], Hs) :-
+    format(string(Hs), 'SetValue "~w"', [Xn]).
+wam_instr_to_haskell(["set_constant", C], Hs) :-
+    wam_value_to_haskell(C, HsVal),
+    format(string(Hs), 'SetConstant (~w)', [HsVal]).
+wam_instr_to_haskell(["allocate"], "Allocate").
+wam_instr_to_haskell(["deallocate"], "Deallocate").
+wam_instr_to_haskell(["call", P, N], Hs) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Hs), 'Call "~w" ~w', [CP, Num]).
+wam_instr_to_haskell(["execute", P], Hs) :-
+    format(string(Hs), 'Execute "~w"', [P]).
+wam_instr_to_haskell(["proceed"], "Proceed").
+wam_instr_to_haskell(["builtin_call", Op, N], Hs) :-
+    clean_comma(Op, COp), clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Hs), 'BuiltinCall "~w" ~w', [COp, Num]).
+wam_instr_to_haskell(["try_me_else", Label], Hs) :-
+    format(string(Hs), 'TryMeElse "~w"', [Label]).
+wam_instr_to_haskell(["trust_me"], "TrustMe").
+wam_instr_to_haskell(["retry_me_else", Label], Hs) :-
+    format(string(Hs), 'RetryMeElse "~w"', [Label]).
+% Fallback for unknown instructions
+wam_instr_to_haskell(Parts, Hs) :-
+    atomic_list_concat(Parts, ' ', Joined),
+    format(string(Hs), '-- UNKNOWN: ~w\n    Proceed', [Joined]).
+
+%% wam_value_to_haskell(+WamVal, -HaskellExpr)
+%  Converts a WAM constant to a Haskell Value constructor.
+wam_value_to_haskell(Val, Hs) :-
+    (   number_string(N, Val), integer(N)
+    ->  format(string(Hs), 'Integer ~w', [N])
+    ;   number_string(F, Val), float(F)
+    ->  format(string(Hs), 'Float ~w', [F])
+    ;   format(string(Hs), 'Atom "~w"', [Val])
+    ).
+
+%% clean_comma(+Str, -Clean) — strip trailing comma
+clean_comma(Str, Clean) :-
+    (   sub_string(Str, _, 1, 0, ",")
+    ->  sub_string(Str, 0, _, 1, Clean)
+    ;   Clean = Str
+    ).
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-
