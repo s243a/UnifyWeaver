@@ -244,7 +244,8 @@ step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), Sta
 step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     get_reg_val(Ai, R, S, Val),
     (   is_unbound_var(Val)
-    ->  length(H, Addr),
+    ->  % Write mode: construct list on heap
+        length(H, Addr),
         Ref = ref(Addr),
         append(H, [str('./2')], NH),
         trail_binding(Ai, R, T, T1),
@@ -257,6 +258,13 @@ step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
         ),
         NPC is PC + 1,
         StateOut = wam_state(NPC, NR, [write_ctx(2)|NS], NH, NT, CP, CPS, Code, L)
+    ;   Val = ref(Addr)
+    ->  % Read mode on heap-constructed list
+        nth0(Addr, H, str('./2')),
+        StartIdx is Addr + 1,
+        heap_subargs(H, StartIdx, 2, SubArgs),
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)
     ;   is_list(Val), Val = [Head|Tail]
     ->  NPC is PC + 1,
         StateOut = wam_state(NPC, R, [unify_ctx([Head, Tail])|S], H, T, CP, CPS, Code, L)
@@ -298,12 +306,27 @@ step_wam(unify_variable(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, C
     put_reg(Xn, Var, R, NR, BaseS, NewS),
     NPC is PC + 1.
 
+%% unify_value Xn — read mode: unify next sub-arg with Xn's value.
+%%                   Supports unbound variables on either side.
+%%                   write mode: push value of Xn onto heap.
 step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
-         wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
+         wam_state(NPC, NR, NewS, H, NT, CP, CPS, Code, L)) :-
     get_reg(Xn, R, S, Val),
-    deref_wam(Val, wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L), DV),
-    DV == Arg,
-    (   RestArgs == [] -> NewS = S ; NewS = [unify_ctx(RestArgs)|S] ),
+    (   Val == Arg
+    ->  NR = R, NT = T
+    ;   is_unbound_var(Val)
+    ->  % Xn is unbound — bind it to the sub-arg
+        trail_binding(Xn, R, T, NT),
+        put_reg(Xn, Arg, R, NR, S, _)
+    ;   is_unbound_var(Arg)
+    ->  % Sub-arg is unbound — succeeds (Arg unifies with Val)
+        NR = R, NT = T
+    ;   fail
+    ),
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
     NPC is PC + 1.
 step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
@@ -311,10 +334,19 @@ step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code
     N1 is N - 1, ( N1 == 0 -> NewS = S ; NewS = [write_ctx(N1)|S] ),
     NPC is PC + 1.
 
+%% unify_constant C — read mode: unify next sub-arg with constant C.
+%%                     Supports unbound sub-args (bind to C).
+%%                     write mode: push C onto heap.
 step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
-    Arg == C,
-    (   RestArgs == [] -> NewS = S ; NewS = [unify_ctx(RestArgs)|S] ),
+    (   Arg == C -> true
+    ;   is_unbound_var(Arg) -> true  % unbound unifies with any constant
+    ;   fail
+    ),
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
     NPC is PC + 1.
 step_wam(unify_constant(C), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
@@ -407,7 +439,7 @@ step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S
 lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
     (once(sub_atom(Entry, Before, 1, After, ':')) ->
         sub_atom(Entry, 0, Before, _, KeyStr), sub_atom(Entry, _, After, 0, LabelStr),
-        (number_atom(Key, KeyStr) -> true ; Key = KeyStr),
+        (atom_number(KeyStr, Key) -> true ; Key = KeyStr),
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
 
