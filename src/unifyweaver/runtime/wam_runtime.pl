@@ -97,7 +97,10 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     (   get_assoc(Target, Labels, PC) -> true
     ;   PC = 1
     ),
-    build_regs(Args, 1, Regs).
+    build_regs(Args, 1, Regs),
+    % Initialize the WAM variable binding table (global, mutable)
+    empty_assoc(EmptyBindings),
+    nb_setval(wam_bindings, EmptyBindings).
 
 build_regs([], _, R) :- empty_assoc(R).
 build_regs([A|As], I, R) :-
@@ -124,22 +127,23 @@ fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     integer(PC), nth1(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
-backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L),
+backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L),
           StateOut) :-
     unwind_trail(Trail, SavedTrail, R, RestoredR),
+    wam_restore_bindings(SavedB),
     (   nonvar(BuiltinState)
-    ->  resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L), StateOut)
-    ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L)
+    ->  resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+    ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L)
     ).
 
 %% resume_builtin(+State, +StateIn, -StateOut)
 resume_builtin(member(Elem, ListRaw, PC), StateIn, StateOut) :-
-    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _)|CPs], Code, L),
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
     deref_wam(ListRaw, StateIn, List),
     (   List = [Next|Rest]
     ->  (   Rest == []
         ->  NCPS = CPs
-        ;   NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, member(Elem, Rest, PC))|CPs]
+        ;   NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, member(Elem, Rest, PC), SB)|CPs]
         ),
         State1 = wam_state(PC, R, S, H, T, CP, NCPS, Code, L),
         (   unify_wam(Elem, Next, State1, State2)
@@ -176,11 +180,18 @@ remove_assoc_key(Key, Assoc, Value, NewAssoc) :-
 
 %% step_wam(+Instruction, +StateIn, -StateOut)
 step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_reg_val(Ai, R, S, Val),
+    % Read raw register value (before deref) for binding
+    (   get_reg(Ai, R, S, RawVal) -> true ; RawVal = '_Vunbound' ),
+    wam_deref(RawVal, Val),
     (   Val == C
     ->  NR = R, NT = T, NPC is PC + 1
     ;   is_unbound_var(Val)
     ->  trail_binding(Ai, R, T, NT),
+        % Bind the RAW atom name (not the deref'd chain endpoint)
+        (   atom(RawVal), is_unbound_var(RawVal)
+        ->  wam_bind(RawVal, C)
+        ;   true
+        ),
         put_assoc(Ai, R, C, NR),
         NPC is PC + 1
     ;   fail
@@ -418,15 +429,22 @@ step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R
 step_wam(deallocate, wam_state(PC, R, [env(OldCP, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
     NPC is PC + 1.
 
-step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, H, CP, T, _)|CPS], Code, L)) :-
-    get_assoc(NextL, L, NextPC), NPC is PC + 1.
+step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, H, CP, T, _, SavedB)|CPS], Code, L)) :-
+    get_assoc(NextL, L, NextPC),
+    wam_save_bindings(SavedB),
+    NPC is PC + 1.
 
 step_wam(trust_me, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     (CPS = [_|NCPS] -> true ; NCPS = CPS), NPC is PC + 1.
 
 step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     get_assoc(NextL, L, NextPC),
-    (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, H, CP, T, _)|Rest] ; NCPS = [cp(NextPC, R, S, H, CP, T, _)]),
+    % Only update next_pc, preserve saved state from try_me_else
+    (CPS = [cp(_, SR, SS, SH, SCP, ST, SBuiltin, SB)|Rest]
+    ->  NCPS = [cp(NextPC, SR, SS, SH, SCP, ST, SBuiltin, SB)|Rest]
+    ;   wam_save_bindings(SB),
+        NCPS = [cp(NextPC, R, S, H, CP, T, _, SB)]
+    ),
     NPC is PC + 1.
 
 %% Indexing instructions — handle both list and variadic forms
@@ -453,13 +471,14 @@ step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, _CPS, Code, L),
 step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     get_assoc('A1', R, ListRaw),
-    deref_wam(ListRaw, wam_state(PC, R, S, H, T, CP, CPS, Code, L), DList),
+    wam_deref(ListRaw, DList0),
+    deref_wam(DList0, wam_state(PC, R, S, H, T, CP, CPS, Code, L), DList),
     is_list(DList),
     length(DList, Len),
-    get_assoc('A2', R, LHS),
+    get_assoc('A2', R, LHS0), wam_deref(LHS0, LHS),
     (   is_unbound_var(LHS)
     ->  trail_binding('A2', R, T, NT),
-        (var(LHS) -> LHS = Len ; true),
+        wam_bind(LHS, Len),
         put_assoc('A2', R, Len, NR)
     ;   number(LHS), LHS =:= Len
     ->  NR = R, NT = T
@@ -475,10 +494,12 @@ step_wam(builtin_call(Op, 2), StateIn, StateOut) :-
     StateOut = wam_state(NPC, R, S, H, T, CP, CPS, Code, L).
 
 step_wam(builtin_call('is/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_assoc('A2', R, Expr), eval_arith(Expr, R, S, H, Result),
-    get_assoc('A1', R, LHS),
+    get_assoc('A2', R, Expr0), wam_deref(Expr0, Expr),
+    eval_arith(Expr, R, S, H, Result),
+    get_assoc('A1', R, RawLHS), wam_deref(RawLHS, LHS),
     (is_unbound_var(LHS) ->
         trail_binding('A1', R, T, NT),
+        (atom(RawLHS), is_unbound_var(RawLHS) -> wam_bind(RawLHS, Result) ; true),
         put_assoc('A1', R, Result, NR)
     ; number(LHS), LHS =:= Result -> NR = R, NT = T ; fail),
     NPC is PC + 1.
@@ -488,7 +509,8 @@ step_wam(builtin_call('member/2', 2), StateIn, StateOut) :-
     get_assoc('A1', R, ElemRaw), get_assoc('A2', R, ListRaw),
     deref_wam(ElemRaw, StateIn, Elem), deref_wam(ListRaw, StateIn, List),
     (List = [Next|Rest] ->
-        (Rest == [] -> NCPS = CPS ; NCPS = [cp(PC, R, S, H, CP, T, member(Elem, Rest, PC))|CPS]),
+        wam_save_bindings(MemberSB),
+        (Rest == [] -> NCPS = CPS ; NCPS = [cp(PC, R, S, H, CP, T, member(Elem, Rest, PC), MemberSB)|CPS]),
         State1 = wam_state(PC, R, S, H, T, CP, NCPS, Code, L),
         (unify_wam(Elem, Next, State1, State2) ->
             State2 = wam_state(NPC_base, R2, S2, H2, T2, CP2, CPS2, Code2, L2),
@@ -594,8 +616,19 @@ unify_args([A1|R1], [A2|R2], S0, Sf) :- unify_wam(A1, A2, S0, S1), unify_args(R1
 
 deref_wam(Val, State, Derefed) :-
     State = wam_state(_, R, S, _, _, _, _, _, _),
-    (is_unbound_var(Val) -> (get_reg(Val, R, S, Next) -> (Next == Val -> Derefed = Val ; deref_wam(Next, State, Derefed)) ; Derefed = Val)
-    ; Val = ref(Addr) -> deref_heap(ref(Addr), State, Derefed) ; Derefed = Val).
+    (   is_unbound_var(Val), atom(Val)
+    ->  % First check the binding table
+        (   nb_getval(wam_bindings, B), get_assoc(Val, B, BoundVal)
+        ->  deref_wam(BoundVal, State, Derefed)
+        ;   % Then check registers
+            (   get_reg(Val, R, S, Next)
+            ->  (Next == Val -> Derefed = Val ; deref_wam(Next, State, Derefed))
+            ;   Derefed = Val
+            )
+        )
+    ;   Val = ref(Addr) -> deref_heap(ref(Addr), State, Derefed)
+    ;   Derefed = Val
+    ).
 
 deref_heap(ref(Addr), State, Term) :- !,
     State = wam_state(_, _, _, Heap, _, _, _, _, _),
@@ -644,9 +677,40 @@ trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :- (get_assoc(Key,
 
 is_y_reg(Reg) :- atom(Reg), sub_atom(Reg, 0, 1, _, 'Y').
 
+%% wam_bind(+VarName, +Value)
+%  Bind a WAM variable name to a value in the global binding table.
+wam_bind(VarName, Value) :-
+    nb_getval(wam_bindings, B),
+    put_assoc(VarName, B, Value, B1),
+    nb_setval(wam_bindings, B1).
+
+%% wam_deref(+Val, -Derefed)
+%  Dereference a value through the binding table.
+%  If Val is an unbound WAM variable (_V*, _Q*, _H*), look up its binding.
+%  Follows chains: _V1 → _V2 → 10 → returns 10.
+wam_deref(Val, Derefed) :-
+    (   atom(Val), is_unbound_var(Val)
+    ->  nb_getval(wam_bindings, B),
+        (   get_assoc(Val, B, Bound)
+        ->  wam_deref(Bound, Derefed)
+        ;   Derefed = Val
+        )
+    ;   Derefed = Val
+    ).
+
+%% wam_save_bindings(-Saved)
+%  Save the current binding table (for choice points).
+wam_save_bindings(Saved) :-
+    nb_getval(wam_bindings, Saved).
+
+%% wam_restore_bindings(+Saved)
+%  Restore binding table from a saved snapshot (on backtrack).
+wam_restore_bindings(Saved) :-
+    nb_setval(wam_bindings, Saved).
+
 get_reg_val(Reg, R, S, Val) :-
     (   get_reg(Reg, R, S, V)
-    ->  Val = V
+    ->  wam_deref(V, Val)
     ;   Val = '_Vunbound'
     ).
 
@@ -729,20 +793,26 @@ run_all_acc(State, Query, VarNames, Acc, AllBindings) :-
     ).
 
 extract_bindings(VarNames, Query, wam_state(_, Regs, _, Heap, _, _, _, _, _), Bindings) :-
-    extract_bindings_iter(VarNames, Query, Regs, Heap, Bindings).
+    nb_getval(wam_bindings, BTable),
+    extract_bindings_iter(VarNames, Query, Regs, Heap, BTable, Bindings).
 
-extract_bindings_iter([], _, _, _, []).
-extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, [Name=Value|RestBindings]) :-
+extract_bindings_iter([], _, _, _, _, []).
+extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, BTable, [Name=Value|RestBindings]) :-
     Query =.. [_|Args],
     (   nth1(Idx, Args, A), A == Var
-    ->  format(atom(RegKey), "A~w", [Idx]),
-        (   get_assoc(RegKey, Regs, RawValue)
-        ->  deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value)
-        ;   Value = Var
+    ->  % First check the binding table for the query variable name
+        (   atom(Var), get_assoc(Var, BTable, BoundVal)
+        ->  Value = BoundVal
+        ;   % Fallback to register value
+            format(atom(RegKey), "A~w", [Idx]),
+            (   get_assoc(RegKey, Regs, RawValue)
+            ->  deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value)
+            ;   Value = Var
+            )
         )
     ;   Value = Var
     ),
-    extract_bindings_iter(Rest, Query, Regs, Heap, RestBindings).
+    extract_bindings_iter(Rest, Query, Regs, Heap, BTable, RestBindings).
 
 test_wam_runtime :-
     Test1 = 'WAM Runtime: basic parent/2',
