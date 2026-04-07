@@ -459,6 +459,7 @@ step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L
     get_assoc('A2', R, LHS),
     (   is_unbound_var(LHS)
     ->  trail_binding('A2', R, T, NT),
+        (var(LHS) -> LHS = Len ; true),
         put_assoc('A2', R, Len, NR)
     ;   number(LHS), LHS =:= Len
     ->  NR = R, NT = T
@@ -476,7 +477,9 @@ step_wam(builtin_call(Op, 2), StateIn, StateOut) :-
 step_wam(builtin_call('is/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
     get_assoc('A2', R, Expr), eval_arith(Expr, R, S, H, Result),
     get_assoc('A1', R, LHS),
-    (is_unbound_var(LHS) -> trail_binding('A1', R, T, NT), put_assoc('A1', R, Result, NR)
+    (is_unbound_var(LHS) ->
+        trail_binding('A1', R, T, NT),
+        put_assoc('A1', R, Result, NR)
     ; number(LHS), LHS =:= Result -> NR = R, NT = T ; fail),
     NPC is PC + 1.
 
