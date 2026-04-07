@@ -328,6 +328,27 @@ step s (PutValue xn ai) =
     Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
+step s (PutStructure fn ai) =
+  let arity = case break (== ''/'') (reverse fn) of
+                (ra, _:_) -> case reads (reverse ra) of [(n,"")] -> n; _ -> 0
+                _ -> 0
+  in Just (s { wsPC = wsPC s + 1
+             , wsBuilder = BuildStruct fn ai arity []
+             })
+
+step s (PutList ai) =
+  Just (s { wsPC = wsPC s + 1
+           , wsBuilder = BuildList ai []
+           })
+
+step s (SetValue xn) =
+  case getReg xn s of
+    Just val -> addToBuilder val s
+    Nothing -> Nothing
+
+step s (SetConstant c) =
+  addToBuilder c s
+
 step s (Call pred _arity) =
   case Map.lookup pred (wsLabels s) of
     Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
@@ -504,48 +525,225 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     format(user_error, '[WAM-Haskell] Generated project at: ~w~n', [ProjectDir]).
 
 %% generate_main_hs(+Predicates, -Code)
-%  Generates a Main.hs that loads predicates and runs a simple query.
-generate_main_hs(Predicates, Code) :-
-    % Build the combined code and labels from all predicates
-    build_predicate_loads(Predicates, LoadCode),
-    format(string(Code),
-'module Main where
+%  Generates Main.hs — a benchmark driver for effective-distance.
+%  Loads facts from TSV, runs category_ancestor queries, outputs TSV.
+generate_main_hs(_Predicates, Code) :-
+    Code = 'module Main where
 
 import qualified Data.Map.Strict as Map
+import Data.List (nub, sort, isPrefixOf, intercalate)
+import Data.Maybe (fromMaybe, mapMaybe)
+import System.Environment (getArgs)
+import System.IO (hPutStrLn, stderr, hFlush, stdout)
+import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import WamTypes
 import WamRuntime
 import Predicates
 
+-- | Load a TSV file, skip header, return pairs.
+loadTsvPairs :: FilePath -> IO [(String, String)]
+loadTsvPairs path = do
+    content <- readFile path
+    let ls = drop 1 (lines content)  -- skip header
+    return [(a, b) | l <- ls, let ws = splitOn ''\\t'' l, length ws >= 2, let [a, b] = take 2 ws]
+
+-- | Load single-column TSV.
+loadSingleColumn :: FilePath -> IO [String]
+loadSingleColumn path = do
+    content <- readFile path
+    return [l | l <- drop 1 (lines content), not (null l)]
+
+-- | Simple tab split.
+splitOn :: Char -> String -> [String]
+splitOn _ [] = [""]
+splitOn d (c:cs)
+  | c == d    = "" : splitOn d cs
+  | otherwise = let (w:ws) = splitOn d cs in (c:w) : ws
+
+-- | Build SwitchOnConstant dispatch table from grouped facts.
+buildFactIndex :: [(String, String)] -> Map.Map String [(String, String)]
+buildFactIndex pairs = foldl (\\m (a, b) -> Map.insertWith (++) a [(a, b)] m) Map.empty pairs
+
+-- | Build WAM instructions for indexed fact predicate.
+-- Returns (instructions, labels) to append to the code vector.
+buildFact2Code :: String -> [(String, String)] -> Int -> ([Instruction], [(String, Int)])
+buildFact2Code predName pairs startPC =
+    let groups = Map.toAscList (buildFactIndex pairs)
+        -- SwitchOnConstant dispatch table
+        (dispatchTable, groupCode, groupLabels, _) = foldl buildGroup ([], [], [], startPC + 1) groups
+        switchInstr = SwitchOnConstant dispatchTable
+    in (switchInstr : groupCode, (predName ++ "/2", startPC) : groupLabels)
+  where
+    buildGroup (disp, code, labels, pc) (key, facts) =
+      let groupLabel = predName ++ "_g_" ++ key
+          (fcode, flabels, nextPC) = buildFactGroup predName key facts pc
+      in (disp ++ [(Atom key, groupLabel)], code ++ fcode, labels ++ [(groupLabel, pc)] ++ flabels, nextPC)
+
+    buildFactGroup _ _ [] pc = ([], [], pc)
+    buildFactGroup pn key facts pc =
+      let n = length facts
+          buildFact i (a, b) curPC =
+            let choiceInstr = if n == 1 then [] else
+                  if i == 0 then [TryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
+                  else if i == n - 1 then [TrustMe]
+                  else [RetryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
+                factInstrs = [GetConstant (Atom a) "A1", GetConstant (Atom b) "A2", Proceed]
+                label = (pn ++ "_g_" ++ key ++ "_" ++ show i, curPC)
+            in (choiceInstr ++ factInstrs, [label], curPC + length choiceInstr + length factInstrs)
+          (allCode, allLabels, finalPC) = foldl (\\(c, l, p) (i, f) ->
+              let (fc, fl, np) = buildFact i f p in (c ++ fc, l ++ fl, np))
+            ([], [], pc) (zip [0..] facts)
+      in (allCode, allLabels, finalPC)
+
+-- | Build WAM instructions for 1-column indexed fact predicate.
+buildFact1Code :: String -> [String] -> Int -> ([Instruction], [(String, Int)])
+buildFact1Code predName vals startPC =
+    let disp = [(Atom v, predName ++ "_" ++ show i) | (i, v) <- zip [0..] vals]
+        switchInstr = SwitchOnConstant disp
+        factCode = concatMap (\\(i, v) -> [GetConstant (Atom v) "A1", Proceed]) (zip [0..] vals)
+        factLabels = [(predName ++ "_" ++ show i, startPC + 1 + i * 2) | i <- [0..length vals - 1]]
+    in (switchInstr : factCode, (predName ++ "/1", startPC) : factLabels)
+
 main :: IO ()
 main = do
-    -- Build combined instruction list and label map
-~w
-    let state0 = emptyState allCode allLabels
-    -- Query: set A1 to unbound, run dimension_n/1
-    let queryState = state0
-          { wsPC = case Map.lookup "dimension_n/1" allLabels of
-                     Just pc -> pc
-                     Nothing -> 1
-          , wsRegs = Map.fromList [("A1", Unbound "X")]
-          , wsCP = 0
-          }
-    case run queryState of
-      Just result -> do
-        let a1 = derefVar (wsBindings result) <$> Map.lookup "A1" (wsRegs result)
-        putStrLn $ "Result: A1 = " ++ show a1
-      Nothing -> putStrLn "Query failed"
-', [LoadCode]).
+    args <- getArgs
+    let factsDir = if null args then "." else head args
+
+    t0 <- getCurrentTime
+
+    -- Load facts from TSV
+    categoryParents <- loadTsvPairs (factsDir ++ "/category_parent.tsv")
+    articleCategories <- loadTsvPairs (factsDir ++ "/article_category.tsv")
+    roots <- loadSingleColumn (factsDir ++ "/root_categories.tsv")
+
+    t1 <- getCurrentTime
+    let loadMs = round (diffUTCTime t1 t0 * 1000) :: Int
+
+    -- Build merged code: compiled predicates + runtime facts
+    let baseLen = length allCode
+        (cpCode, cpLabels) = buildFact2Code "category_parent" categoryParents (baseLen + 1)
+        cpEnd = baseLen + length cpCode
+        (acCode, acLabels) = buildFact2Code "article_category" articleCategories (cpEnd + 1)
+        acEnd = cpEnd + length acCode
+        (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
+
+        mergedCode = allCode ++ cpCode ++ acCode ++ rcCode
+        mergedLabels = Map.union allLabels
+                     $ Map.fromList (cpLabels ++ acLabels ++ rcLabels)
+
+    -- Collect seed categories
+    let seedCats = nub $ sort $ map snd articleCategories
+        root = head roots
+        n = 5.0 :: Double
+        negN = -n
+
+    t2 <- getCurrentTime
+
+    -- For each seed, run category_ancestor(Cat, Root, Hops, [Cat])
+    let seedResults = map (\\cat ->
+          let s0 = (emptyState mergedCode mergedLabels)
+                { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
+                , wsRegs = Map.fromList
+                    [ ("A1", Atom cat)
+                    , ("A2", Atom root)
+                    , ("A3", Unbound "Hops")
+                    , ("A4", VList [Atom cat])
+                    ]
+                , wsCP = 0
+                }
+              solutions = collectSolutions s0
+              weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
+          in (cat, weightSum)
+          ) seedCats
+
+    let seedWeightSums = Map.fromList [(cat, ws) | (cat, ws) <- seedResults, ws > 0]
+
+    t3 <- getCurrentTime
+    let queryMs = round (diffUTCTime t3 t2 * 1000) :: Int
+
+    -- Aggregate per-article weight sums
+    let articleSums = foldl (\\m (art, cat) ->
+          let ws = if cat == root then 1.0 else 0.0
+              catWs = fromMaybe 0.0 (Map.lookup cat seedWeightSums)
+          in Map.insertWith (+) art (ws + catWs) m
+          ) Map.empty articleCategories
+
+    let invN = -1.0 / n
+        results = sort [(ws ** invN, art) | (art, ws) <- Map.toList articleSums, ws > 0]
+
+    t4 <- getCurrentTime
+    let aggMs = round (diffUTCTime t4 t3 * 1000) :: Int
+        totalMs = round (diffUTCTime t4 t0 * 1000) :: Int
+
+    -- Output TSV
+    putStrLn "article\\troot_category\\teffective_distance"
+    mapM_ (\\(deff, art) ->
+        putStrLn (art ++ "\\t" ++ root ++ "\\t" ++ showFFloat6 deff)
+        ) results
+    hFlush stdout
+
+    -- Metrics to stderr
+    hPutStrLn stderr $ "mode=wam_haskell_accumulated"
+    hPutStrLn stderr $ "load_ms=" ++ show loadMs
+    hPutStrLn stderr $ "query_ms=" ++ show queryMs
+    hPutStrLn stderr $ "aggregation_ms=" ++ show aggMs
+    hPutStrLn stderr $ "total_ms=" ++ show totalMs
+    hPutStrLn stderr $ "seed_count=" ++ show (length seedCats)
+    hPutStrLn stderr $ "tuple_count=" ++ show (Map.size seedWeightSums)
+    hPutStrLn stderr $ "article_count=" ++ show (length results)
+
+-- | Format a Double to 6 decimal places.
+showFFloat6 :: Double -> String
+showFFloat6 x = let s = show (fromIntegral (round (x * 1000000) :: Int) / 1000000 :: Double)
+                in s
+
+-- | Collect all Hops solutions from a query by repeated run + backtrack.
+collectSolutions :: WamState -> [Double]
+collectSolutions s0 =
+    case run s0 of
+      Nothing -> []
+      Just s1 ->
+        let hopsVal = case Map.lookup "Hops" (wsBindings s1) of
+              Just v -> extractDouble (derefVar (wsBindings s1) v)
+              Nothing -> Nothing
+            hops = fromMaybe 0 hopsVal
+            rest = case backtrack s1 of
+              Just s2 -> collectSolutions s2
+              Nothing -> []
+        in case hopsVal of
+          Just _ -> hops : rest
+          Nothing -> rest  -- skip solutions where Hops is not bound
+
+-- | Extract a Double from a Value.
+extractDouble :: Value -> Maybe Double
+extractDouble (Integer h) = Just (fromIntegral h)
+extractDouble (Float h) = Just h
+extractDouble (Atom str) = case reads str of [(h, "")] -> Just h; _ -> Nothing
+extractDouble _ = Nothing
+'.
 
 build_predicate_loads([], '    let allCode = []\n    let allLabels = Map.empty').
-build_predicate_loads([PredIndicator|_], Code) :-
-    (   PredIndicator = _Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity
-    ),
-    format(atom(FuncName), '~w_~w', [Pred, Arity]),
+build_predicate_loads(Predicates, Code) :-
+    Predicates \= [],
+    % Build code concatenation and label union
+    maplist([PredInd, FN]>>(
+        (PredInd = _M:P/A -> true ; PredInd = P/A),
+        format(atom(FN), '~w_~w', [P, A])
+    ), Predicates, FuncNames),
+    % Generate Haskell code to merge all predicate code/labels
+    maplist([FN, Expr]>>(
+        format(string(Expr), '~w_code', [FN])
+    ), FuncNames, CodeExprs),
+    atomic_list_concat(CodeExprs, ' ++ ', CodeConcat),
+    maplist([FN, Expr]>>(
+        format(string(Expr), '~w_labels', [FN])
+    ), FuncNames, LabelExprs),
+    % Union with offset adjustment
+    % For simplicity, use Map.unions (labels need PC offset per predicate)
+    atomic_list_concat(LabelExprs, ' `Map.union` ', LabelUnion),
     format(string(Code),
-'    let allCode = ~w_code
-    let allLabels = ~w_labels', [FuncName, FuncName]).
-% TODO: merge multiple predicate code/labels for multi-predicate projects
+'    let allCode = ~w
+    let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, -Code)
 compile_wam_runtime_to_haskell(_Options, Code) :-
@@ -623,6 +821,37 @@ derefHeap _ (Str fn args) = Just (Str fn args)
 derefHeap _ (Unbound n) = Just (Unbound n)
 derefHeap _ v = Just v
 
+-- | Add a value to the current structure/list builder.
+addToBuilder :: Value -> WamState -> Maybe WamState
+addToBuilder val s = case wsBuilder s of
+  BuildStruct fn ai arity args ->
+    let args'' = args ++ [val]
+    in if length args'' == arity
+       then Just (s { wsPC = wsPC s + 1
+                    , wsRegs = Map.insert ai (Str fn args'') (wsRegs s)
+                    , wsBuilder = NoBuilder
+                    })
+       else Just (s { wsPC = wsPC s + 1
+                    , wsBuilder = BuildStruct fn ai arity args''
+                    })
+  BuildList ai args ->
+    let args'' = args ++ [val]
+    in if length args'' == 2
+       then let [hd, tl] = args''
+                list = case tl of
+                  VList items -> VList (hd : items)
+                  _           -> VList [hd, tl]
+            in Just (s { wsPC = wsPC s + 1
+                       , wsRegs = Map.insert ai list (wsRegs s)
+                       , wsBuilder = NoBuilder
+                       })
+       else Just (s { wsPC = wsPC s + 1
+                    , wsBuilder = BuildList ai args''
+                    })
+  NoBuilder ->
+    -- No builder active, just push to heap (fallback)
+    Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val] })
+
 -- | Lookup a label in the label map.
 lookupLabel :: String -> WamState -> Int
 lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
@@ -666,6 +895,12 @@ data ChoicePoint = ChoicePoint
   , cpCutBar   :: !Int
   } deriving (Show)
 
+-- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
+data Builder = BuildStruct !String !String !Int ![Value]  -- functor, target reg, arity, collected args
+             | BuildList !String ![Value]                  -- target reg, collected [head, tail]
+             | NoBuilder
+             deriving (Show)
+
 data WamState = WamState
   { wsPC       :: !Int
   , wsRegs     :: !(Map.Map String Value)
@@ -678,6 +913,7 @@ data WamState = WamState
   , wsCutBar   :: !Int
   , wsCode     :: ![Instruction]
   , wsLabels   :: !(Map.Map String Int)
+  , wsBuilder  :: !Builder
   } deriving (Show)
 
 -- | Instruction type for the WAM.
@@ -718,6 +954,7 @@ emptyState code labels = WamState
   , wsCutBar   = 0
   , wsCode     = code
   , wsLabels   = labels
+  , wsBuilder  = NoBuilder
   }
 '.
 
@@ -739,20 +976,44 @@ executable ~w
 ', [Name, Name]).
 
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
-compile_predicates_to_haskell(Predicates, Options, Code) :-
-    maplist({Options}/[Pred, PredCode]>>(
-        compile_single_predicate_to_haskell(Pred, Options, PredCode)
-    ), Predicates, PredCodes),
-    atomic_list_concat(PredCodes, '\n\n', AllPreds),
+%  Compiles all predicates into a single merged code array and label map,
+%  with proper PC offsets for each predicate.
+compile_predicates_to_haskell(Predicates, _Options, Code) :-
+    compile_predicates_merged(Predicates, 1, AllInstrs, AllLabels),
+    atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
+    atomic_list_concat(AllLabels, '\n    , ', LabelCode),
     format(string(Code),
 'module Predicates where
 
 import qualified Data.Map.Strict as Map
 import WamTypes
-import WamRuntime
 
-~w
-', [AllPreds]).
+-- | Merged WAM code for all predicates.
+allCode :: [Instruction]
+allCode =
+    [ ~w
+    ]
+
+-- | Merged label map for all predicates.
+allLabels :: Map.Map String Int
+allLabels = Map.fromList
+    [ ~w
+    ]
+', [InstrCode, LabelCode]).
+
+compile_predicates_merged([], _, [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, AllInstrs, AllLabels) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode),
+    format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_haskell(Lines, StartPC, InstrExprs, LabelExprs, NextPC),
+    compile_predicates_merged(Rest, NextPC, RestInstrs, RestLabels),
+    append(InstrExprs, RestInstrs, AllInstrs),
+    append(LabelExprs, RestLabels, AllLabels).
 
 compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     (   PredIndicator = _Module:Pred/Arity -> true
@@ -779,25 +1040,25 @@ compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     [ ~w
     ]', [Pred, Arity, FuncName, FuncName, InstrCode, FuncName, FuncName, LabelCode]).
 
-%% wam_lines_to_haskell(+Lines, +PC, -InstrExprs, -LabelExprs)
+%% wam_lines_to_haskell(+Lines, +PC, -InstrExprs, -LabelExprs, -NextPC)
 %  Parses WAM assembly lines into Haskell Instruction constructor expressions
-%  and label (String, Int) pairs.
-wam_lines_to_haskell([], _, [], []).
-wam_lines_to_haskell([Line|Rest], PC, Instrs, Labels) :-
+%  and label (String, Int) pairs. Returns NextPC for merging multiple predicates.
+wam_lines_to_haskell([], PC, [], [], PC).
+wam_lines_to_haskell([Line|Rest], PC, Instrs, Labels, FinalPC) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_haskell(Rest, PC, Instrs, Labels)
+    ->  wam_lines_to_haskell(Rest, PC, Instrs, Labels, FinalPC)
     ;   CleanParts = [First|_],
         (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             format(string(LabelExpr), '("~w", ~w)', [LabelName, PC]),
             Labels = [LabelExpr|RestLabels],
-            wam_lines_to_haskell(Rest, PC, Instrs, RestLabels)
+            wam_lines_to_haskell(Rest, PC, Instrs, RestLabels, FinalPC)
         ;   wam_instr_to_haskell(CleanParts, HsExpr),
             NPC is PC + 1,
             Instrs = [HsExpr|RestInstrs],
-            wam_lines_to_haskell(Rest, NPC, RestInstrs, Labels)
+            wam_lines_to_haskell(Rest, NPC, RestInstrs, Labels, FinalPC)
         )
     ).
 
@@ -845,7 +1106,8 @@ wam_instr_to_haskell(["proceed"], "Proceed").
 wam_instr_to_haskell(["builtin_call", Op, N], Hs) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    format(string(Hs), 'BuiltinCall "~w" ~w', [COp, Num]).
+    escape_haskell_string(COp, ECOp),
+    format(string(Hs), 'BuiltinCall "~w" ~w', [ECOp, Num]).
 wam_instr_to_haskell(["try_me_else", Label], Hs) :-
     format(string(Hs), 'TryMeElse "~w"', [Label]).
 wam_instr_to_haskell(["trust_me"], "TrustMe").
@@ -872,6 +1134,12 @@ clean_comma(Str, Clean) :-
     ->  sub_string(Str, 0, _, 1, Clean)
     ;   Clean = Str
     ).
+
+%% escape_haskell_string(+In, -Out) — escape backslashes for Haskell string literals
+escape_haskell_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", Parts),
+    atomic_list_concat(Parts, "\\\\", Out).
 
 %% write_hs_file(+Path, +Content)
 write_hs_file(Path, Content) :-
