@@ -34,7 +34,46 @@ prepare_code(Raw, Instructions, Labels) :-
     ;   atomic_list_concat(Lines, '\n', Raw)
     ),
     empty_assoc(L0),
-    parse_lines(Lines, 1, Instructions, L0, Labels).
+    parse_lines(Lines, 1, RawInstructions, L0, Labels),
+    % Post-process: convert switch_on_constant to indexed form for O(log n) dispatch
+    maplist(index_switch_instr, RawInstructions, IndexedInstructions),
+    % Convert list to assoc for O(log n) instruction fetch
+    list_to_code_assoc(IndexedInstructions, 1, Instructions).
+
+%% list_to_code_assoc(+InstrList, +StartPC, -CodeAssoc)
+%  Converts instruction list to a PC → Instruction assoc for O(log n) fetch.
+list_to_code_assoc(InstrList, StartPC, CodeAssoc) :-
+    empty_assoc(A0),
+    foldl(add_instr_to_assoc, InstrList, StartPC-A0, _-CodeAssoc).
+
+add_instr_to_assoc(Instr, PC-AIn, NPC-AOut) :-
+    put_assoc(PC, AIn, Instr, AOut),
+    NPC is PC + 1.
+
+%% index_switch_instr(+RawInstr, -IndexedInstr)
+%  Converts switch_on_constant(K1:L1, K2:L2, ...) to switch_on_constant_index(Assoc).
+index_switch_instr(Instr, Indexed) :-
+    (   Instr =.. [Op|Args],
+        (Op == switch_on_constant ; Op == switch_on_constant_a2),
+        (Args = [Entries], is_list(Entries) -> true ; Entries = Args),
+        Entries \= []
+    ->  entries_to_assoc(Entries, Assoc),
+        Indexed = switch_on_constant_index(Assoc)
+    ;   Indexed = Instr
+    ).
+
+entries_to_assoc(Entries, Assoc) :-
+    empty_assoc(A0),
+    foldl(add_entry, Entries, A0, Assoc).
+
+add_entry(Entry, AIn, AOut) :-
+    (   once(sub_atom(Entry, Before, 1, After, ':'))
+    ->  sub_atom(Entry, 0, Before, _, KeyStr),
+        sub_atom(Entry, _, After, 0, LabelStr),
+        (atom_number(KeyStr, Key) -> true ; Key = KeyStr),
+        put_assoc(Key, AIn, LabelStr, AOut)
+    ;   AOut = AIn
+    ).
 
 parse_lines([], _, [], L, L).
 parse_lines([Line|Rest], PC, Instrs, LIn, LOut) :-
@@ -124,7 +163,7 @@ run_loop(S, Sf) :-
     ).
 
 fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
-    integer(PC), nth1(PC, Code, Instr).
+    integer(PC), get_assoc(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
 backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L),
@@ -449,12 +488,26 @@ step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     ),
     NPC is PC + 1.
 
-%% Indexing instructions — handle both list and variadic forms
+%% Indexing instructions — O(log n) dispatch via assoc lookup.
+%  switch_on_constant entries are pre-parsed into assoc during prepare_code.
+%  Format: switch_on_constant_index(Assoc) where Assoc maps Key → Label.
+step_wam(switch_on_constant_index(IndexAssoc), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val0),
+    wam_deref(Val0, Val),
+    (   \+ is_unbound_var(Val),
+        get_assoc(Val, IndexAssoc, LabelStr),
+        LabelStr \== default,
+        get_assoc(LabelStr, L, TargetPC)
+    ->  NPC = TargetPC
+    ;   NPC is PC + 1
+    ).
+
+%% Legacy switch_on_constant with flat list (fallback for unprocessed code)
 step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     Instr =.. [Op|Args],
     (Op == switch_on_constant ; Op == switch_on_structure ; Op == switch_on_constant_a2),
     (Args = [Entries], is_list(Entries) -> true ; Entries = Args),
-    (get_assoc('A1', R, Val), \+ is_unbound_var(Val), lookup_index(Val, Entries, L, TargetPC) -> NPC = TargetPC ; NPC is PC + 1).
+    (get_assoc('A1', R, Val0), wam_deref(Val0, Val), \+ is_unbound_var(Val), lookup_index(Val, Entries, L, TargetPC) -> NPC = TargetPC ; NPC is PC + 1).
 
 lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
     (once(sub_atom(Entry, Before, 1, After, ':')) ->
