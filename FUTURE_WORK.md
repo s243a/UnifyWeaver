@@ -596,11 +596,11 @@ Several example apps exist but lack complete Prolog-based generation scripts:
 
 | App | Current State | Needed |
 |-----|---------------|--------|
-| `examples/pyodide-matrix/` | Has `matrix_module.pl` (generates Python/TS) | Add HTML generation or `generate.pl` script |
-| `examples/curve-plot/` | Has `curve_module.pl` (generates WASM/TS) | Add HTML generation or `generate.pl` script |
-| `examples/wasm-graph/` | Manual TypeScript + HTML | Add `generate.pl` using `graph_generator.pl` |
-| `examples/react-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` |
-| `examples/react-http-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` + `html_interface_generator.pl` |
+| `examples/pyodide-matrix/` | Has `generate.pl` | Verify generated output matches prototype |
+| `examples/curve-plot/` | Has `generate.pl` | Verify generated output matches prototype |
+| `examples/wasm-graph/` | Has `generate.pl` | Verify generated output matches prototype |
+| `examples/react-cli/` | Has `generate.pl`, prototype/ and generated/ dirs | Generated output is simplified; needs parity with prototype |
+| `examples/react-http-cli/` | Has `generate.pl`, prototype/ and generated/ dirs | Generated output is simplified; needs parity with prototype |
 
 **Goal:** Each example app should be fully regenerable from Prolog specifications via a `generate.pl` script.
 
