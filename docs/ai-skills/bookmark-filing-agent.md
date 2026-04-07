@@ -116,26 +116,89 @@ For higher resolution within an account, use account-specific models:
 
 ### Cross-Account Migration
 
-To analyze folders for moving between accounts:
+When moving folders between accounts (e.g., s243a → s243a_groups), you must check for private content that shouldn't be shared.
 
-1. **Find the folder hierarchy** in source account:
+#### Step 1: Check Migration Safety
+
+Use `check_migration_safety.py` to identify private descendants:
+
 ```bash
-grep -i "folder name" reports/pearltrees_targets_full_multi_account.jsonl | \
-  python3 -c "import sys,json; [print(json.loads(l).get('target_text','')) for l in sys.stdin]"
+python3 scripts/check_migration_safety.py \
+  --rdf context/PT/*.rdf \
+  --folder "Folder Name"
 ```
 
-2. **Check for private content** in children:
+Or by tree ID:
 ```bash
-grep "TREE_ID" reports/pearltrees_targets_full_multi_account.jsonl
+python3 scripts/check_migration_safety.py \
+  --rdf context/PT/*.rdf \
+  --tree-id 12345
 ```
 
-3. **Find destination** in target account using semantic search:
+**Output explains:**
+- Whether the folder is safe to migrate (no private descendants)
+- List of any private descendants that block migration
+- "Safe height" - the highest ancestor with a fully public subtree
+
+#### Step 2: Understand the Report
+
+```
+============================================================
+Migration Safety Report: Machine Learning
+============================================================
+Tree ID: 90705456
+
+Hierarchy:
+└── STEM
+  └── AI & Machine Learning
+    └── Machine Learning <-- THIS
+
+✓ SAFE TO MIGRATE
+  This folder and all descendants are public.
+
+Safe Height: Machine Learning
+```
+
+If NOT safe:
+```
+✗ NOT SAFE TO MIGRATE
+  Found 2 private descendant(s):
+    - Personal Notes (id12345)
+    - Draft Ideas (id67890)
+
+Safe Height: AI & Machine Learning
+  You can safely move up to this folder
+```
+
+#### Step 3: Find Destination in Target Account
+
 ```bash
 python3 scripts/infer_pearltrees_federated.py \
   --model models/pearltrees_federated_s243a_groups.pkl \
   --query "Folder topic" \
   --top-k 5 --tree
 ```
+
+#### Privacy Detection
+
+The migration safety checker detects private folders via:
+1. **RDF privacy flag**: `<pt:privacy>1</pt:privacy>`
+2. **Title convention**: `*private*`
+3. **URL convention**: `/private/` or `-private` in path
+
+#### Interactive Mode
+
+For exploring multiple folders:
+```bash
+python3 scripts/check_migration_safety.py \
+  --rdf context/PT/*.rdf \
+  --interactive
+```
+
+Commands:
+- `id <tree_id>` - Check by tree ID
+- `name <query>` - Search and check by folder name
+- `quit` - Exit
 
 ## Dual-Objective Scoring (Alternative)
 
@@ -155,11 +218,14 @@ See `docs/ai-skills/dual-objective-scoring.md` for full details.
 
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM integration
 - `scripts/infer_pearltrees_federated.py` - Semantic search inference
+- `scripts/check_migration_safety.py` - Check for private descendants before cross-account moves
 - `scripts/generate_account_training_data.py` - Filter JSONL by account
+- `scripts/prepare_public_dataset.py` - Privacy propagation for public dataset generation
 - `models/pearltrees_federated_single.pkl` - All-account model (51 clusters, 160MB)
 - `models/pearltrees_federated_s243a.pkl` - s243a-only model (275 clusters)
 - `models/pearltrees_federated_s243a_groups.pkl` - s243a_groups-only model (48 clusters)
 - `reports/pearltrees_targets_full_multi_account.jsonl` - Full folder data
+- `context/PT/*.rdf` - Pearltrees RDF exports (source of truth for privacy flags)
 - `docs/design/FEDERATED_MODEL_FORMAT.md` - Model file format specification
 
 ## Remember
