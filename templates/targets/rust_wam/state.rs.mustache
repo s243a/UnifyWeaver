@@ -2,6 +2,7 @@
 // Date: {{date}}
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -16,14 +17,14 @@ pub struct TrailEntry {
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
     pub next_pc: usize,
-    /// Saved argument registers (A1..An) — only the active ones, not the full HashMap.
+    /// Saved argument registers (A1..An).
     pub saved_args: Vec<(String, Value)>,
     pub cp: usize,
-    /// Saved stack depth — backtrack truncates stack to this length.
-    pub stack_len: usize,
-    /// Saved trail depth — backtrack unwinds trail entries beyond this point.
+    /// Saved stack snapshot (full clone for correct Y-register restoration).
+    pub stack: Vec<StackEntry>,
+    /// Saved trail depth — backtrack unwinds + truncates to this point.
     pub trail_len: usize,
-    /// Saved heap depth — backtrack truncates heap to this length.
+    /// Saved heap depth — backtrack truncates to this point.
     pub heap_len: usize,
     /// Saved bindings snapshot for correct restoration on backtrack.
     pub bindings: HashMap<String, Value>,
@@ -281,6 +282,7 @@ impl WamState {
             self.regs.insert(k.clone(), v.clone());
         }
     }
+
 
     /// Record a binding on the trail for backtracking.
     pub fn trail_binding(&mut self, key: &str) {

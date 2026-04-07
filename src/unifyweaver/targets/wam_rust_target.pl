@@ -348,7 +348,7 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         next_pc,
                         saved_args: self.save_regs(),
                         cp: self.cp,
-                        stack_len: self.stack.len(),
+                        stack: self.stack.clone(),
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         bindings: self.bindings.clone(),
@@ -493,8 +493,8 @@ compile_backtrack_to_rust(Code0) :-
             // 1. Unwind bindings from trail entries added since the CP.
             self.unwind_trail_bindings_only(cp.trail_len);
 
-            // 2. Truncate stack, trail, and heap to saved depths.
-            self.stack.truncate(cp.stack_len);
+            // 2. Restore stack (full clone), truncate trail and heap.
+            self.stack = cp.stack;
             self.trail.truncate(cp.trail_len);
             self.heap.truncate(cp.heap_len);
 
@@ -650,8 +650,8 @@ compile_execute_term_builtin_to_rust(Code) :-
                             self.choice_points.push(ChoicePoint {
                                 next_pc: self.pc,
                                 saved_args: self.save_regs(),
+                                stack: self.stack.clone(),
                                 cp: self.cp,
-                                stack_len: self.stack.len(),
                                 trail_len: self.trail.len(),
                                 heap_len: self.heap.len(),
                                 bindings: self.bindings.clone(),
@@ -720,8 +720,8 @@ compile_resume_builtin_to_rust(Code) :-
                         self.choice_points.push(ChoicePoint {
                             next_pc: self.pc,
                             saved_args: self.save_regs(),
+                            stack: self.stack.clone(),
                             cp: self.cp,
-                            stack_len: self.stack.len(),
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             bindings: self.bindings.clone(),
@@ -780,9 +780,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         let cp_depth = self.choice_points.len();
                         self.choice_points.push(ChoicePoint {
                             next_pc: 0,
+                            stack: self.stack.clone(),
                             saved_args: self.save_regs(),
                             cp: self.cp,
-                            stack_len: self.stack.len(),
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             bindings: self.bindings.clone(),
