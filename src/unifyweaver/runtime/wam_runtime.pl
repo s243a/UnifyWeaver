@@ -187,14 +187,14 @@ call_fact_predicate(_Pred, Arity, FactTable, StateIn, StateOut) :-
     ->  % Bound first arg: O(log n) lookup
         wam_dict_lookup_all(A1, FactTable, Matches),
         Matches = [FirstMatch|RestMatches],
-        % Unify remaining args (A2, A3, ...)
-        unify_fact_args(FirstMatch, 2, Arity, R, T, NR, NT),
-        % Create choice point for remaining matches
+        % Save state BEFORE first match for correct backtracking
         (   RestMatches \= []
         ->  wam_save_bindings(SB),
             NCPS = [cp(_, R, S, H, CP, T, fact_retry(A1, FactTable, Arity, RestMatches, CP), SB)|CPS]
         ;   NCPS = CPS
         ),
+        % Unify remaining args (A2, A3, ...) AFTER CP creation
+        unify_fact_args(FirstMatch, 2, Arity, R, T, NR, NT),
         % Return to caller (proceed equivalent)
         StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L)
     ;   % Unbound first arg: iterate all facts (expensive)
@@ -219,7 +219,7 @@ call_fact_predicate(_Pred, Arity, FactTable, StateIn, StateOut) :-
 unify_fact_args(_, Idx, Arity, R, T, R, T) :- Idx > Arity, !.
 unify_fact_args([Val|Rest], Idx, Arity, R, T, ROut, TOut) :-
     format(atom(RegKey), "A~w", [Idx]),
-    get_assoc(RegKey, R, RegVal),
+    (get_assoc(RegKey, R, RegVal) -> true ; RegVal = '$missing'),
     wam_deref(RegVal, DRegVal),
     (   DRegVal == Val
     ->  R1 = R, T1 = T
@@ -297,6 +297,30 @@ resume_builtin(member(Elem, ListRaw, PC), StateIn, StateOut) :-
         ;   backtrack(State1, StateOut)
         )
     ;   fail
+    ).
+
+%% resume_builtin for fact_retry: try the next matching fact from the table.
+resume_builtin(fact_retry(A1, FactTable, Arity, RestMatches, SavedCP), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
+    RestMatches = [NextMatch|MoreMatches],
+    get_assoc('A2', R, A2Val),
+    % Try to unify remaining args with the next match
+    (   unify_fact_args(NextMatch, 2, Arity, R, T, NR, NT)
+    ->  % Success — create CP for further matches if any
+        (   MoreMatches \= []
+        ->  wam_save_bindings(SB2),
+            NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP), SB2)|CPs]
+        ;   NCPS = CPs
+        ),
+        % Return to caller
+        StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS, Code, L)
+    ;   % This match failed — try the next one
+        (   MoreMatches \= []
+        ->  wam_restore_bindings(SB),
+            resume_builtin(fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP),
+                StateIn, StateOut)
+        ;   fail  % no more matches
+        )
     ).
 
 unwind_trail(Trail, SavedTrail, Regs, RestoredRegs) :-
@@ -633,12 +657,15 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
 step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     NPC is PC + 1,
-    % Find the cut barrier from the topmost env frame
+    % Find the cut barrier from the topmost env frame.
+    % CutBarrier is the CP stack length at Allocate time.
+    % Cut removes CPs added AFTER the barrier (newer CPs at list head).
+    % Keep only the last CutBarrier CPs (the tail of the list).
     (   member(env(_, _, CutBarrier), S)
     ->  length(CPS, CPLen),
-        KeepN is min(CutBarrier, CPLen),
-        length(NCPS, KeepN),
-        append(NCPS, _, CPS)
+        DropN is max(0, CPLen - CutBarrier),
+        length(Prefix, DropN),
+        append(Prefix, NCPS, CPS)
     ;   NCPS = []  % no env frame — clear all (fallback)
     ).
 
