@@ -296,14 +296,17 @@ impl WamState {
         self.heap.push(val);
     }
 
-    /// Save argument/temporary registers (A*, X*) as a compact Vec.
+    /// Save only argument registers (A*) for choice-point restoration.
     fn save_regs(&self) -> Vec<(String, Value)> {
-        self.regs.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.regs.iter()
+            .filter(|(k, _)| k.starts_with('A'))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
-    /// Restore argument/temporary registers from a saved snapshot.
+    /// Restore argument registers and clear stale temporaries from failed paths.
     fn restore_regs(&mut self, saved: &[(String, Value)]) {
-        self.regs.clear();
+        self.regs.retain(|k, _| !k.starts_with('A') && !k.starts_with('X'));
         for (k, v) in saved {
             self.regs.insert(k.clone(), v.clone());
         }
