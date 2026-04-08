@@ -3434,11 +3434,21 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(include_main(IncludeMain), Options, true),
     option(unique(Unique), Options, true),
+    option(foreign_lowering(ForeignLowering), Options, false),
 
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
 
     (   Clauses = [] -> fail
+    ;   ForeignLowering == true,
+        rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec)
+    ->  wam_target:compile_predicate_to_wam(user:Pred/Arity, Options, WamCode),
+        wam_rust_target:compile_wam_predicate_to_rust(
+            Pred/Arity,
+            WamCode,
+            [foreign_lowering(ForeignSpec)|Options],
+            RustCode
+        )
     ;   maplist(is_fact_clause, Clauses) ->
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
     ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
@@ -3485,6 +3495,93 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ->  wam_rust_target:compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode)
     ;   fail
     ).
+
+rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
+    rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema),
+    rust_foreign_schema_spec(Schema, ForeignSpec).
+
+rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
+    rust_foreign_schema_category_ancestor(Pred, Arity, Clauses, Schema).
+rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
+    rust_foreign_schema_transitive_closure(Pred, Arity, Clauses, Schema).
+
+rust_foreign_schema_spec(
+        foreign_schema(
+            category_ancestor,
+            category_ancestor/4,
+            [max_depth(MaxDepth)]
+        ),
+        foreign_predicate(
+            category_ancestor/4,
+            [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+              register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)
+            ],
+            [category_ancestor/4]
+        )).
+rust_foreign_schema_spec(
+        foreign_schema(
+            transitive_closure2,
+            Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)]
+        ),
+        foreign_predicate(
+            Pred/Arity,
+            [ register_foreign_native_kind(Pred/Arity, transitive_closure2),
+              register_foreign_string_config(Pred/Arity, edge_pred, EdgePred/2),
+              register_indexed_atom_fact2(EdgePred/2, FactPairs)
+            ],
+            [Pred/Arity]
+        )).
+
+rust_foreign_schema_category_ancestor(Pred, Arity, Clauses,
+        foreign_schema(category_ancestor, category_ancestor/4, [max_depth(MaxDepth)])) :-
+    rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth).
+
+rust_foreign_schema_transitive_closure(Pred, Arity, Clauses,
+        foreign_schema(transitive_closure2, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
+    member(_-BaseBody, Clauses),
+    member(_-RecBody, Clauses),
+    BaseBody \= true,
+    RecBody \= true,
+    sub_term(\+ member(_, _), BaseBody),
+    sub_term(\+ member(_, _), RecBody),
+    sub_term((_ is _ + 1), RecBody),
+    current_predicate(user:max_depth/1),
+    user:max_depth(MaxDepth),
+    integer(MaxDepth),
+    MaxDepth > 0.
+
+rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, Start, Target],
+    RecHead =.. [Pred, Start, Target],
+    RecBody = (EdgeGoal, RecGoal),
+    RecGoal =.. [Pred, Mid, Target],
+    (   BaseBody =.. [EdgePred, Start, Target],
+        EdgeGoal =.. [EdgePred, Start, Mid],
+        PairMode = forward
+    ;   BaseBody =.. [EdgePred, Target, Start],
+        EdgeGoal =.. [EdgePred, Mid, Start],
+        PairMode = reverse
+    ),
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right),
+          rust_foreign_edge_pair(PairMode, Left, Right, Left-Right)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
+rust_foreign_edge_pair(forward, Left, Right, Left-Right).
+rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),

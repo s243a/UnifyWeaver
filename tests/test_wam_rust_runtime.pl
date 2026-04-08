@@ -3,6 +3,7 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_runtime.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/rust_target').
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 
@@ -25,8 +26,16 @@ path(a, b).
 path(b, c).
 path(c, d).
 
-:- dynamic test_member/1.
-test_member(X) :- member(X, [1, 2, 3]).
+:- dynamic tc_parent/2.
+tc_parent(tom, bob).
+tc_parent(tom, liz).
+tc_parent(bob, ann).
+tc_parent(bob, pat).
+tc_parent(pat, jim).
+
+:- dynamic tc_ancestor/2.
+tc_ancestor(X, Y) :- tc_parent(X, Y).
+tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
 
 %% Integration test
 test_runtime_execution :-
@@ -38,8 +47,8 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:fact/1, user:path/2, user:test_member/1], 
-            [module_name('runtime_test'), wam_fallback(true)], TmpDir),
+        write_wam_rust_project([user:tc_ancestor/2],
+            [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
         make_directory_path('output/test_wam_rust_runtime_e2e/tests'),
@@ -47,64 +56,52 @@ test_runtime_execution :-
         TestContent = '
 use runtime_test::value::Value;
 use runtime_test::state::WamState;
-use runtime_test::{fact, path, test_member};
+use runtime_test::tc_ancestor;
 
 #[test]
 fn test_generated_predicates() {
-    // Test fact/1
-    let mut vm_fact = WamState::new(vec![], std::collections::HashMap::new());
-    let ok1 = fact(&mut vm_fact, Value::Atom("alice".to_string()));
-    assert!(ok1, "fact(alice) should succeed");
-    
-    let ok2 = fact(&mut vm_fact, Value::Atom("charlie".to_string()));
-    assert!(!ok2, "fact(charlie) should fail");
-    
-    // Test path/2
-    let mut vm_path = WamState::new(vec![], std::collections::HashMap::new());
-    let ok3 = path(&mut vm_path, Value::Atom("a".to_string()), Value::Atom("b".to_string()));
-    assert!(ok3, "path(a, b) should succeed");
+    // Test tc_ancestor/2 foreign lowering end-to-end
+    let mut vm_tc = WamState::new(vec![], std::collections::HashMap::new());
+    let ok1 = tc_ancestor(&mut vm_tc,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Desc".to_string()));
+    assert!(ok1, "tc_ancestor(tom, Desc) first solution should succeed");
 
-    // Test relational member/2 directly
-    let mut vm_direct = WamState::new(vec![], std::collections::HashMap::new());
-    let list = Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
-    vm_direct.set_reg("A1", Value::Unbound("X".to_string()));
-    vm_direct.set_reg("A2", list);
-    
-    // First solution: X=1
-    let mut ok_mem = vm_direct.execute_builtin("member/2", 2);
-    assert!(ok_mem, "member first call should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(1)));
-    
-    // Backtrack for second solution: X=2
-    ok_mem = vm_direct.backtrack();
-    assert!(ok_mem, "member second solution should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(2)));
-    
-    // Backtrack for third solution: X=3
-    ok_mem = vm_direct.backtrack();
-    assert!(ok_mem, "member third solution should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(3)));
-    
-    // Fourth backtrack: should fail
-    ok_mem = vm_direct.backtrack();
-    assert!(!ok_mem, "member fourth solution should fail");
+    let mut descendants: Vec<String> = Vec::new();
+    if let Some(Value::Atom(desc)) = vm_tc.bindings.get("Desc").cloned() {
+        descendants.push(desc);
+    } else {
+        panic!("expected first tc_ancestor result in Desc");
+    }
 
-    // Test test_member/1 which calls member/2 via WAM instructions
-    let mut vm_nested = WamState::new(vec![], std::collections::HashMap::new());
-    let ok4 = test_member(&mut vm_nested, Value::Unbound("Y".to_string()));
-    assert!(ok4, "test_member(Y) first solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(1)));
+    while vm_tc.backtrack() {
+        if let Some(Value::Atom(desc)) = vm_tc.bindings.get("Desc").cloned() {
+            descendants.push(desc);
+        } else {
+            panic!("expected backtracked tc_ancestor result in Desc");
+        }
+    }
 
-    let ok5 = vm_nested.backtrack();
-    assert!(ok5, "test_member(Y) second solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(2)));
+    descendants.sort();
+    assert_eq!(descendants, vec![
+        "ann".to_string(),
+        "bob".to_string(),
+        "jim".to_string(),
+        "liz".to_string(),
+        "pat".to_string(),
+    ]);
 
-    let ok6 = vm_nested.backtrack();
-    assert!(ok6, "test_member(Y) third solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(3)));
+    let mut vm_tc_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok2 = tc_ancestor(&mut vm_tc_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(ok2, "tc_ancestor(tom, jim) should succeed");
 
-    let ok7 = vm_nested.backtrack();
-    assert!(!ok7, "test_member(Y) fourth solution should fail");
+    let mut vm_tc_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok3 = tc_ancestor(&mut vm_tc_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(!ok3, "tc_ancestor(liz, jim) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

@@ -785,6 +785,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
+    compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -799,6 +800,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
         NativeAncestorCode, '\n\n',
+        NativeClosureCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1047,8 +1049,12 @@ compile_execute_foreign_predicate_to_rust(Code) :-
         if !self.foreign_predicates.contains(&pred_key) {
             return false;
         }
-        match pred_key.as_str() {
-            "category_ancestor/4" => {
+        let native_kind = match self.foreign_native_kind(&pred_key) {
+            Some(kind) => kind,
+            None => return false,
+        };
+        match native_kind {
+            "category_ancestor" => {
                 let cat = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(cat)) => cat,
                     _ => return false,
@@ -1066,7 +1072,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(_) => return false,
                     None => return false,
                 };
-                let max_depth = match self.foreign_category_ancestor_max_depth {
+                let max_depth = match self.foreign_usize_config(&pred_key, "max_depth") {
                     Some(limit) => limit,
                     None => return false,
                 };
@@ -1084,14 +1090,60 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
-                            name: "foreign:category_ancestor/4".to_string(),
-                            args: vec![hops_reg.clone()],
+                            name: "foreign_results".to_string(),
+                            args: vec![Value::Atom(pred_key.clone()), hops_reg.clone()],
                             data: hops[1..].iter().map(|hop| Value::Integer(*hop)).collect(),
                         }),
                         cut_barrier: self.cut_barrier,
                     });
                 }
                 if self.unify(&hops_reg, &Value::Integer(hops[0])) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            "transitive_closure2" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mut nodes: Vec<String> = Vec::new();
+                self.collect_native_transitive_closure_nodes(&start, &edge_pred, &mut nodes);
+                if let Some(target) = target_filter {
+                    nodes.retain(|node| *node == target);
+                }
+                if nodes.is_empty() {
+                    return false;
+                }
+                if nodes.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign_results".to_string(),
+                            args: vec![Value::Atom(pred_key.clone()), target_reg.clone()],
+                            data: nodes[1..].iter().map(|node| Value::Atom(node.clone())).collect(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&target_reg, &Value::Atom(nodes[0].clone())) {
                     self.pc += 1; true
                 } else { false }
             }
@@ -1139,6 +1191,27 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
                 self.collect_native_category_ancestor_hops(parent, root, &next_visited, max_depth, out);
                 for hop in out.iter_mut().skip(before) {
                     *hop += 1;
+                }
+            }
+        }
+    }'.
+
+compile_collect_native_transitive_closure_to_rust(Code) :-
+    Code = '    pub fn collect_native_transitive_closure_nodes(
+        &self,
+        start: &str,
+        edge_pred: &str,
+        out: &mut Vec<String>,
+    ) {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = vec![start.to_string()];
+        while let Some(node) = stack.pop() {
+            if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
+                for next in next_nodes.iter().rev() {
+                    if seen.insert(next.clone()) {
+                        out.push(next.clone());
+                        stack.push(next.clone());
+                    }
                 }
             }
         }
@@ -1315,14 +1388,18 @@ compile_resume_builtin_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
-            "foreign:category_ancestor/4" => {
-                let hops_reg = match state.args.get(0) {
+            "foreign_results" => {
+                let pred_key = match state.args.get(0) {
+                    Some(Value::Atom(pred_key)) => pred_key.clone(),
+                    _ => return false,
+                };
+                let hops_reg = match state.args.get(1) {
                     Some(val) => val.clone(),
                     None => return false,
                 };
-                let hop = match state.data.first() {
-                    Some(Value::Integer(hop)) => *hop,
-                    _ => return false,
+                let result = match state.data.first() {
+                    Some(value) => value.clone(),
+                    None => return false,
                 };
                 if state.data.len() > 1 {
                     self.choice_points.push(ChoicePoint {
@@ -1333,14 +1410,21 @@ compile_resume_builtin_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
-                            name: "foreign:category_ancestor/4".to_string(),
+                            name: "foreign_results".to_string(),
                             args: state.args.clone(),
                             data: state.data[1..].to_vec(),
                         }),
                         cut_barrier: self.cut_barrier,
                     });
                 }
-                if self.unify(&hops_reg, &Value::Integer(hop)) {
+                let native_kind = match self.foreign_native_kind(&pred_key) {
+                    Some(kind) => kind,
+                    None => return false,
+                };
+                if native_kind != "category_ancestor" && native_kind != "transitive_closure2" {
+                    return false;
+                }
+                if self.unify(&hops_reg, &result) {
                     self.pc += 1; true
                 } else { false }
             }
@@ -1525,12 +1609,13 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %% compile_wam_predicate_to_rust(+Pred/Arity, +WamCode, +Options, -RustCode)
 %  Given WAM compiled code for a predicate, generate a Rust wrapper function
 %  that creates instruction data and executes it via the WAM runtime.
-compile_wam_predicate_to_rust(Pred/Arity, WamCode, _Options, RustCode) :-
+compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     % Convert WAM instruction string to Rust Instruction enum literals
-    wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals),
+    wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
+    foreign_wrapper_setup(Pred/Arity, Options, ForeignSetup, RunExpr),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
@@ -1545,24 +1630,77 @@ pub fn ~w(~w) -> bool {
     vm.labels = labels;
     vm.pc = 1;
 ~w
-    vm.run()
-}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ArgSetup]).
+~w
+    ~w
+}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ForeignSetup, ArgSetup, RunExpr]).
 
-%% wam_code_to_rust_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
+foreign_wrapper_setup(Pred/Arity, Options, Setup, RunExpr) :-
+    (   option(foreign_lowering(ForeignSpec), Options),
+        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
+    ->  rust_foreign_setup_code(SetupOps, Setup),
+        format(string(RunExpr),
+            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
+    ;   Setup = "",
+        RunExpr = 'vm.run()'
+    ).
+
+rust_foreign_spec(Pred/Arity,
+        foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
+        SetupOps,
+        Pred/Arity) :-
+    is_list(SetupOps),
+    is_list(RewriteCalls).
+
+rust_foreign_setup_code([], "").
+rust_foreign_setup_code(Ops, Setup) :-
+    maplist(rust_foreign_setup_line, Ops, Lines),
+    atomic_list_concat(Lines, '\n', Setup).
+
+rust_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_native_kind("~w/~w", "~w");', [Pred, Arity, Kind]).
+rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_string_config("~w/~w", "~w", "~w/~w");',
+        [Pred, Arity, Key, ValuePred, ValueArity]).
+rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, Value), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_string_config("~w/~w", "~w", "~w");',
+        [Pred, Arity, Key, Value]).
+rust_foreign_setup_line(register_foreign_usize_config(Pred/Arity, Key, Value), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_usize_config("~w/~w", "~w", ~w);', [Pred, Arity, Key, Value]).
+rust_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
+    rust_fact_pairs_literal(Pairs, PairsLiteral),
+    format(string(Line),
+        '    vm.register_indexed_atom_fact2_pairs("~w/~w", &~w);',
+        [Pred, Arity, PairsLiteral]).
+
+rust_fact_pairs_literal(Pairs, Literal) :-
+    maplist(rust_fact_pair_literal, Pairs, PairLiterals),
+    atomic_list_concat(PairLiterals, ', ', Joined),
+    format(string(Literal), '[~w]', [Joined]).
+
+rust_fact_pair_literal(Left-Right, Literal) :-
+    escape_rust_string(Left, ELeft),
+    escape_rust_string(Right, ERight),
+    format(string(Literal), '("~w", "~w")', [ELeft, ERight]).
+
+%% wam_code_to_rust_instructions(+WamCodeStr, +PredIndicator, +Options, -InstrLiterals, -LabelLiterals)
 %  Parses a WAM code string and generates Rust vec![] entries and label map inserts.
-wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals) :-
+wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_rust(Lines, 1, InstrParts, LabelParts),
+    wam_lines_to_rust(Lines, 1, PredIndicator, Options, InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, '\n', LabelLiterals).
 
-wam_lines_to_rust([], _, [], []).
-wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
+wam_lines_to_rust([], _, _, _, [], []).
+wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_rust(Rest, PC, Instrs, Labels)
+    ->  wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, Labels)
     ;   CleanParts = [First|_],
         (   % Label line: "pred/2:" or "L_pred_2_2:"
             sub_string(First, _, 1, 0, ":")
@@ -1570,145 +1708,176 @@ wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
             format(string(LabelInsert),
                 '    labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
-            wam_lines_to_rust(Rest, PC, Instrs, RestLabels)
+            wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
-            wam_line_to_rust_instr(CleanParts, RustInstr),
+            wam_line_to_rust_instr(CleanParts, PredIndicator, Options, RustInstr),
             format(string(InstrEntry), '        ~w,', [RustInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
-            wam_lines_to_rust(Rest, NPC, RestInstrs, Labels)
+            wam_lines_to_rust(Rest, NPC, PredIndicator, Options, RestInstrs, Labels)
         )
     ).
 
-%% wam_line_to_rust_instr(+Parts, -RustExpr)
+%% wam_line_to_rust_instr(+Parts, +PredIndicator, +Options, -RustExpr)
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
-wam_line_to_rust_instr(["get_constant", C, Ai], Rust) :-
+wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
         [CC, CAi]).
-wam_line_to_rust_instr(["get_variable", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetVariable("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["get_value", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetValue("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["get_structure", FN, Ai], Rust) :-
+wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetStructure("~w".to_string(), "~w".to_string())',
         [CFN, CAi]).
-wam_line_to_rust_instr(["get_list", Ai], Rust) :-
+wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetList("~w".to_string())', [CAi]).
-wam_line_to_rust_instr(["unify_variable", Xn], Rust) :-
+wam_line_to_rust_instr(["unify_variable", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyVariable("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["unify_value", Xn], Rust) :-
+wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyValue("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["unify_constant", C], Rust) :-
+wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     (   number_string(N, C)
     ->  format(string(Rust),
             'Instruction::UnifyConstant(Value::Integer(~w))', [N])
     ;   format(string(Rust),
             'Instruction::UnifyConstant(Value::Atom("~w".to_string()))', [C])
     ).
-wam_line_to_rust_instr(["put_constant", C, Ai], Rust) :-
+wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
         [CC, CAi]).
-wam_line_to_rust_instr(["put_variable", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutVariable("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["put_value", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutValue("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["put_structure", FN, Ai], Rust) :-
+wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutStructure("~w".to_string(), "~w".to_string())',
         [CFN, CAi]).
-wam_line_to_rust_instr(["put_list", Ai], Rust) :-
+wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
     format(string(Rust),
         'Instruction::PutList("~w".to_string())', [Ai]).
-wam_line_to_rust_instr(["set_variable", Xn], Rust) :-
+wam_line_to_rust_instr(["set_variable", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetVariable("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["set_value", Xn], Rust) :-
+wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetValue("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["set_constant", C], Rust) :-
+wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
     (   number_string(N, C)
     ->  format(string(Rust),
             'Instruction::SetConstant(Value::Integer(~w))', [N])
     ;   format(string(Rust),
             'Instruction::SetConstant(Value::Atom("~w".to_string()))', [C])
     ).
-wam_line_to_rust_instr(["allocate"], "Instruction::Allocate").
-wam_line_to_rust_instr(["deallocate"], "Instruction::Deallocate").
-wam_line_to_rust_instr(["call", P, N], Rust) :-
+wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
+wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
+wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
     escape_rust_string(CP, ECP),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    format(string(Rust),
-        'Instruction::Call("~w".to_string(), ~w)', [ECP, Num]).
-wam_line_to_rust_instr(["execute", P], Rust) :-
+    (   rust_foreign_rewrite_call(Options, Pred/Arity, ECP, Num, ForeignPred, ForeignArity)
+    ->  format(string(Rust),
+            'Instruction::CallForeign("~w".to_string(), ~w)', [ForeignPred, ForeignArity])
+    ;   format(string(Rust),
+            'Instruction::Call("~w".to_string(), ~w)', [ECP, Num])
+    ).
+wam_line_to_rust_instr(["execute", P], Pred/Arity, Options, Rust) :-
     escape_rust_string(P, EP),
-    format(string(Rust),
-        'Instruction::Execute("~w".to_string())', [EP]).
-wam_line_to_rust_instr(["proceed"], "Instruction::Proceed").
-wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
+    (   rust_foreign_rewrite_execute(Options, Pred/Arity, EP, ForeignPred, ForeignArity)
+    ->  format(string(Rust),
+            'Instruction::CallForeign("~w".to_string(), ~w)', [ForeignPred, ForeignArity])
+    ;   format(string(Rust),
+            'Instruction::Execute("~w".to_string())', [EP])
+    ).
+wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
+wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     escape_rust_string(COp, ECOp),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
         'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
-wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], Rust) :-
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], _, _, Rust) :-
     clean_comma(Type, CType),
     clean_comma(ValueReg, CValueReg),
     clean_comma(ResultReg, CResultReg),
     format(string(Rust),
         'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
         [CType, CValueReg, CResultReg]).
-wam_line_to_rust_instr(["end_aggregate", ValueReg], Rust) :-
+wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
         'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
-wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
+wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
-wam_line_to_rust_instr(["trust_me"], "Instruction::TrustMe").
-wam_line_to_rust_instr(["retry_me_else", Label], Rust) :-
+wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
+wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
 % Indexing instructions
-wam_line_to_rust_instr(["switch_on_constant"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_structure"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnStructure(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
 % Fallback for unknown instructions
-wam_line_to_rust_instr(Parts, Rust) :-
+wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), '/* unknown: ~w */', [Joined]).
+
+rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
+    option(foreign_lowering(ForeignSpec), Options),
+    rust_foreign_spec(CurrentPred, ForeignSpec, _, RewriteCalls, ForeignPred/ForeignArity),
+    member(TargetPred/TargetArity, RewriteCalls),
+    format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
+    TargetPredArity == ExpectedTarget,
+    Num =:= ForeignArity.
+
+rust_foreign_rewrite_execute(Options, CurrentPred, TargetPredArity, ForeignPred, ForeignArity) :-
+    option(foreign_lowering(ForeignSpec), Options),
+    rust_foreign_spec(CurrentPred, ForeignSpec, _, RewriteCalls, ForeignPred/ForeignArity),
+    member(TargetPred/TargetArity, RewriteCalls),
+    format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
+    TargetPredArity == ExpectedTarget.
+
+rust_foreign_spec(Pred/Arity,
+        foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
+        SetupOps,
+        RewriteCalls,
+        Pred/Arity) :-
+    is_list(SetupOps),
+    is_list(RewriteCalls).
 
 parse_index_entry_constant(Entry, Rust) :-
     (   sub_string(Entry, Before, 1, After, ":")

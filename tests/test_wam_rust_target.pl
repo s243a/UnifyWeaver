@@ -26,6 +26,44 @@ test_simple_fact(foo, bar).
 
 :- dynamic test_failed/0.
 
+:- dynamic category_ancestor/4.
+:- dynamic category_parent/2.
+:- dynamic tc_ancestor/2.
+:- dynamic tc_descendant/2.
+:- dynamic tc_parent/2.
+:- dynamic max_depth/1.
+
+max_depth(10).
+category_parent(alpha, beta).
+category_parent(beta, gamma).
+category_parent(gamma, physics).
+category_parent(beta, physics).
+
+category_ancestor(Cat, Target, 1, Visited) :-
+    category_parent(Cat, Target),
+    \+ member(Target, Visited).
+category_ancestor(Cat, Target, Hops, Visited) :-
+    max_depth(MaxD),
+    length(Visited, Depth),
+    Depth < MaxD,
+    !,
+    category_parent(Cat, Mid),
+    \+ member(Mid, Visited),
+    category_ancestor(Mid, Target, H1, [Mid|Visited]),
+    Hops is H1 + 1.
+
+tc_parent(tom, bob).
+tc_parent(tom, liz).
+tc_parent(bob, ann).
+tc_parent(bob, pat).
+tc_parent(pat, jim).
+
+tc_ancestor(X, Y) :- tc_parent(X, Y).
+tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
+
+tc_descendant(X, Y) :- tc_parent(Y, X).
+tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
@@ -186,6 +224,27 @@ test_predicate_wrapper :-
     ;   fail_test(Test, 'Incorrect predicate wrapper')
     ).
 
+test_foreign_spec_wrapper_generation :-
+    Test = 'WAM-Rust: generic foreign spec drives wrapper generation',
+    ForeignSpec = foreign_predicate(
+        category_ancestor/4,
+        [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+          register_foreign_usize_config(category_ancestor/4, max_depth, 10)
+        ],
+        [category_ancestor/4]
+    ),
+    WamCode = "call category_ancestor/4, 4",
+    (   compile_wam_predicate_to_rust(category_ancestor/4, WamCode,
+            [foreign_lowering(ForeignSpec)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -254,6 +313,47 @@ test_generated_rust_has_wam_wrapper :-
     ;   fail_test(Test, 'Generated wrapper missing expected elements')
     ).
 
+test_foreign_lowering_category_ancestor :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for category_ancestor/4',
+    (   rust_target:compile_predicate_to_rust(user:category_ancestor/4,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
+    ).
+
+test_foreign_lowering_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_ancestor/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_ancestor/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_ancestor/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_ancestor".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
+    ).
+
+test_foreign_lowering_reverse_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_descendant/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_descendant/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_descendant/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_descendant".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_descendant/2')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -270,7 +370,13 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'BeginAggregate'),
         sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
-        sub_string(S, _, _, _, 'TryMeElse')
+        sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
+        sub_string(S, _, _, _, 'foreign_string_config(&pred_key, "edge_pred")'),
+        sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
+        sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
+        sub_string(S, _, _, _, 'transitive_closure2'),
+        sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -531,11 +637,15 @@ run_tests :-
     test_all_instruction_arms,
     test_builtin_dispatch,
     test_predicate_wrapper,
+    test_foreign_spec_wrapper_generation,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
     test_wam_fallback_flag,
     test_generated_rust_has_wam_wrapper,
+    test_foreign_lowering_category_ancestor,
+    test_foreign_lowering_transitive_closure,
+    test_foreign_lowering_reverse_transitive_closure,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

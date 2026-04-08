@@ -80,8 +80,12 @@ pub struct WamState {
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Registered foreign predicates keyed by "name/arity".
     pub foreign_predicates: HashSet<String>,
-    /// Configuration for the native category_ancestor/4 foreign predicate.
-    pub foreign_category_ancestor_max_depth: Option<usize>,
+    /// Native foreign handler kinds keyed by "name/arity".
+    pub foreign_native_kinds: HashMap<String, String>,
+    /// Foreign predicate string configs keyed by "name/arity#config".
+    pub foreign_string_configs: HashMap<String, String>,
+    /// Foreign predicate usize configs keyed by "name/arity#config".
+    pub foreign_usize_configs: HashMap<String, usize>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -118,7 +122,9 @@ impl WamState {
             labels,
             indexed_atom_fact2: HashMap::new(),
             foreign_predicates: HashSet::new(),
-            foreign_category_ancestor_max_depth: None,
+            foreign_native_kinds: HashMap::new(),
+            foreign_string_configs: HashMap::new(),
+            foreign_usize_configs: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -146,15 +152,55 @@ impl WamState {
         self.indexed_atom_fact2.insert(pred.to_string(), index);
     }
 
+    /// Register binary atom facts and build a first-argument index.
+    pub fn register_indexed_atom_fact2_pairs(&mut self, pred: &str, pairs: &[(&str, &str)]) {
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        for (left, right) in pairs {
+            index.entry((*left).to_string())
+                .or_insert_with(Vec::new)
+                .push((*right).to_string());
+        }
+        self.register_indexed_atom_fact2(pred, index);
+    }
+
     /// Register a foreign predicate implementation by "name/arity".
     pub fn register_foreign_predicate(&mut self, pred: &str) {
         self.foreign_predicates.insert(pred.to_string());
     }
 
-    /// Configure the native category_ancestor/4 foreign predicate.
-    pub fn register_foreign_category_ancestor(&mut self, max_depth: usize) {
-        self.register_foreign_predicate("category_ancestor/4");
-        self.foreign_category_ancestor_max_depth = Some(max_depth);
+    /// Register the native handler kind for a foreign predicate.
+    pub fn register_foreign_native_kind(&mut self, pred: &str, kind: &str) {
+        self.register_foreign_predicate(pred);
+        self.foreign_native_kinds.insert(pred.to_string(), kind.to_string());
+    }
+
+    /// Fetch the native handler kind for a foreign predicate.
+    pub fn foreign_native_kind(&self, pred: &str) -> Option<&str> {
+        self.foreign_native_kinds.get(pred).map(|kind| kind.as_str())
+    }
+
+    /// Register a string configuration entry for a foreign predicate.
+    pub fn register_foreign_string_config(&mut self, pred: &str, key: &str, value: &str) {
+        self.foreign_string_configs.insert(format!("{}#{}", pred, key), value.to_string());
+    }
+
+    /// Fetch a string configuration entry for a foreign predicate.
+    pub fn foreign_string_config(&self, pred: &str, key: &str) -> Option<&str> {
+        self.foreign_string_configs
+            .get(&format!("{}#{}", pred, key))
+            .map(|value| value.as_str())
+    }
+
+    /// Register a usize configuration entry for a foreign predicate.
+    pub fn register_foreign_usize_config(&mut self, pred: &str, key: &str, value: usize) {
+        self.foreign_usize_configs.insert(format!("{}#{}", pred, key), value);
+    }
+
+    /// Fetch a usize configuration entry for a foreign predicate.
+    pub fn foreign_usize_config(&self, pred: &str, key: &str) -> Option<usize> {
+        self.foreign_usize_configs
+            .get(&format!("{}#{}", pred, key))
+            .copied()
     }
 
     /// Dereference an Unbound variable through the binding table.
