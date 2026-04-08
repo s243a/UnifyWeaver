@@ -242,6 +242,24 @@ This is a better fit than adding many custom opcodes for high-level recursive
 search. It preserves the WAM runtime for general predicates while letting the
 hottest recursive kernels execute natively.
 
+The current compiler structure is now split into three layers instead of one
+ad hoc selection block:
+
+1. **Detector registry**
+   - A small registry maps kernel kinds to detector predicates.
+   - Adding a new recursive family no longer requires editing the central
+     dispatcher directly.
+2. **Recursive-kernel IR**
+   - Supported predicates normalize into `recursive_kernel(...)` terms.
+   - This is the compiler's internal representation of "foreign-lowerable
+     recursive work."
+3. **Metadata-driven foreign spec generation**
+   - Foreign setup ops and rewrite targets are derived from kernel metadata,
+     rather than one bespoke spec-construction clause per supported family.
+
+That split makes the foreign-lowering path easier to extend without letting
+`rust_target.pl` grow another layer of special cases.
+
 ### What Is Verified
 
 The current test coverage now includes:
