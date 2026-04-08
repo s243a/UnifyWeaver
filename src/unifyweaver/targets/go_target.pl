@@ -523,7 +523,9 @@ generate_handler_op_go(Pred, Code) :-
     Pred \= receive, Pred \= respond, Pred \= respond_error,
     format(string(Code), "\t// Execute predicate: ~w", [Pred]).
 
-generate_handler_op_go(_, "\t// Unknown operation").
+generate_handler_op_go(Op, Code) :-
+    format(warning, 'Unknown Go handler operation: ~w~n', [Op]),
+    format(string(Code), "\t// Unknown operation: ~w", [Op]).
 
 %% ============================================
 %% PHASE 2: CROSS-PROCESS SERVICES (Unix Socket)
@@ -8249,7 +8251,8 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 semantic_compiler:semantic_dispatch(go, Goal, Provider, VarMap, Code) :-
     % Extract Query and TopK from Goal
     Goal =.. [_, Query, TopK | _],
-    option(provider(hugot), Provider),
+    ( option(provider(hugot), Provider) ; option(provider(onnx), Provider) ),
+    !,
     option(model(Model), Provider, 'all-MiniLM-L6-v2'),
     option(device(Device), Provider, auto),
     

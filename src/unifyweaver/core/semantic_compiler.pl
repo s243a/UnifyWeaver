@@ -22,6 +22,7 @@
 % ============================================================================
 
 :- dynamic stored_semantic_provider/2. % stored_semantic_provider(Predicate, Options)
+:- dynamic user_providers_loaded/0.
 
 % ============================================================================
 % CORE API
@@ -30,14 +31,17 @@
 %% load_user_providers
 %
 %  Discover and register semantic providers declared in the user module
-%  via semantic_provider/2.
+%  via semantic_provider/2. Runs at most once per session.
 %
+load_user_providers :-
+    user_providers_loaded, !.
 load_user_providers :-
     (   current_predicate(user:semantic_provider/2)
     ->  forall(user:semantic_provider(Pred/Arity, Options),
                declare_semantic_provider(Pred/Arity, Options))
     ;   true
-    ).
+    ),
+    assertz(user_providers_loaded).
 
 %% declare_semantic_provider(+Predicate, +Options)
 %
