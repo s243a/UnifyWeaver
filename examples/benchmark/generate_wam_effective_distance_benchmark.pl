@@ -184,6 +184,7 @@ write_main_rs(Path, MergedInstrCode, MergedLabelCode) :-
 // are loaded at runtime and injected into the WAM code vector.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::time::Instant;
@@ -428,12 +429,27 @@ fn main() {
     let mut seed_cats: Vec<String> = article_categories.iter().map(|(_, c)| c.clone()).collect();
     seed_cats.sort();
     seed_cats.dedup();
+    if let Ok(filter_raw) = std::env::var("WAM_SEED_FILTER") {
+        let wanted: HashSet<String> = filter_raw
+            .split(",")
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.to_string())
+            .collect();
+        if !wanted.is_empty() {
+            seed_cats.retain(|cat| wanted.contains(cat));
+        }
+    }
     let seed_count = seed_cats.len();
 
     let root = roots[0].clone();
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
     let profile_enabled = std::env::var("WAM_PROFILE").ok().as_deref() == Some("1");
+    let step_limit = std::env::var("WAM_STEP_LIMIT")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(500_000);
 
     // For each seed category, run category_ancestor(Cat, Root, Hops, [Cat])
     // through the WAM VM and compute weight_sum = Σ (Hops+1)^(-n)
@@ -448,7 +464,7 @@ fn main() {
 
         // Reset VM mutable state (code/labels are shared, not cloned)
         vm.reset_query();
-        vm.step_limit = 500_000; // cap exploration per seed category
+        vm.step_limit = step_limit; // cap exploration per seed category
 
         vm.set_reg("A1", Value::Atom(cat.clone()));
         vm.set_reg("A2", Value::Atom(root.clone()));
