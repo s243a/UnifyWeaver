@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useRef } from 'react'
 
 // Configuration - update to match your server
 const API_BASE = 'https://localhost:3001'
