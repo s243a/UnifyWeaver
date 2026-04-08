@@ -304,17 +304,15 @@ resume_builtin(member(Elem, ListRaw, PC), StateIn, StateOut) :-
 resume_builtin(fact_retry(A1, FactTable, Arity, RestMatches, SavedCP), StateIn, StateOut) :-
     StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
     RestMatches = [NextMatch|MoreMatches],
-    get_assoc('A2', R, A2Val),
+    % Save bindings BEFORE unify for correct retry
+    (   MoreMatches \= []
+    ->  wam_save_bindings(SB2),
+        NCPS0 = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP), SB2)|CPs]
+    ;   NCPS0 = CPs
+    ),
     % Try to unify remaining args with the next match
     (   unify_fact_args(NextMatch, 2, Arity, R, T, NR, NT)
-    ->  % Success — create CP for further matches if any
-        (   MoreMatches \= []
-        ->  wam_save_bindings(SB2),
-            NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP), SB2)|CPs]
-        ;   NCPS = CPs
-        ),
-        % Return to caller
-        StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS, Code, L)
+    ->  StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS0, Code, L)
     ;   % This match failed — try the next one
         (   MoreMatches \= []
         ->  wam_restore_bindings(SB),
