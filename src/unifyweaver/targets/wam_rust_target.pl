@@ -304,6 +304,194 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
     Body = '                self.set_heap_or_list(c.clone());
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::LoadRegisterConstant(c, reg, skip)', Body) :-
+    Body = '                self.trail_binding(reg);
+                self.put_reg(reg, c.clone());
+                self.pc += *skip; true'.
+
+wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body) :-
+    Body = '                if let (Some(head), Some(tail)) = (self.get_reg(head_reg), self.get_reg(tail_reg)) {
+                    self.heap.push(head.clone());
+                    self.heap.push(tail.clone());
+                    let list = match tail {
+                        Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                        tail_val => Value::List(vec![head, tail_val]),
+                    };
+                    self.regs.insert(out_reg.clone(), list);
+                    self.pc += *skip; true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
+    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg(elem_reg), self.get_reg(list_reg)) {
+                    let needle = self.deref_var(&elem);
+                    let haystack = self.deref_var(&list_val);
+                    let found = match &haystack {
+                        Value::List(items) => items.iter().any(|item| self.deref_var(item) == needle),
+                        _ => false,
+                    };
+                    if found { false } else { self.pc += *skip; true }
+                } else { false }'.
+
+wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body) :-
+    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg(list_reg), self.get_reg(limit_reg)) {
+                    let len = match self.deref_var(&list_val) {
+                        Value::List(items) => items.len() as i64,
+                        direct => match self.deref_heap(&direct) {
+                            Value::List(items) => items.len() as i64,
+                            _ => return false,
+                        }
+                    };
+                    let limit_ok = match self.deref_var(&limit_val) {
+                        Value::Integer(n) => len < n,
+                        Value::Float(f) => (len as f64) < f,
+                        Value::Atom(s) => match s.parse::<f64>() {
+                            Ok(f) => (len as f64) < f,
+                            Err(_) => false,
+                        },
+                        _ => false,
+                    };
+                    if limit_ok { self.pc += *skip; true } else { false }
+                } else { false }'.
+
+wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visited_reg)', Body) :-
+    Body = '                let cat = match self.get_reg(cat_reg) {
+                    Some(Value::Atom(s)) => s,
+                    Some(val) => match self.deref_var(&val) {
+                        Value::Atom(s) => s,
+                        _ => return false,
+                    },
+                    None => return false,
+                };
+                let target = match self.get_reg(target_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let target_atom = match &target {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let already_visited = match &visited {
+                    Value::List(items) => items.iter().any(|item| self.deref_var(item) == target),
+                    _ => false,
+                };
+                if already_visited {
+                    return false;
+                }
+                let parent_matches = self.indexed_atom_fact2
+                    .get("category_parent/2")
+                    .and_then(|table| table.get(&cat))
+                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .unwrap_or(false);
+                if !parent_matches {
+                    return false;
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
+
+wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip)', Body) :-
+    Body = '                let Some(&target_pc) = self.labels.get(pred) else { return false; };
+                let instr = Instruction::RecurseCategoryAncestorPc(
+                    mid_reg.clone(),
+                    root_reg.clone(),
+                    child_hops_reg.clone(),
+                    visited_reg.clone(),
+                    target_pc,
+                    *skip,
+                );
+                self.step(&instr)'.
+
+wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, child_hops_reg, visited_reg, target_pc, skip)', Body) :-
+    Body = '                let mid = match self.get_reg(mid_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let root = match self.get_reg(root_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let child_hops = Value::Unbound(format!("_V{}", self.var_counter));
+                self.var_counter += 1;
+                let next_visited = match visited {
+                    Value::List(mut items) => {
+                        items.insert(0, mid.clone());
+                        Value::List(items)
+                    }
+                    tail => Value::List(vec![mid.clone(), tail]),
+                };
+                self.trail_binding(child_hops_reg);
+                self.trail_binding("A1");
+                self.trail_binding("A2");
+                self.trail_binding("A3");
+                self.trail_binding("A4");
+                self.put_reg(child_hops_reg, child_hops.clone());
+                self.regs.insert("A1".to_string(), mid);
+                self.regs.insert("A2".to_string(), root);
+                self.regs.insert("A3".to_string(), child_hops);
+                self.regs.insert("A4".to_string(), next_visited);
+                self.cp = self.pc + *skip;
+                self.pc = *target_pc;
+                true'.
+
+wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
+    Body = '                let in_val = match self.get_reg(in_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let result = match in_val {
+                    Value::Integer(n) => Value::Integer(n + 1),
+                    Value::Float(f) => {
+                        let next = f + 1.0;
+                        if (next.round() - next).abs() < f64::EPSILON {
+                            Value::Integer(next.round() as i64)
+                        } else {
+                            Value::Float(next)
+                        }
+                    }
+                    Value::Atom(s) => match s.parse::<f64>() {
+                        Ok(f) => {
+                            let next = f + 1.0;
+                            if (next.round() - next).abs() < f64::EPSILON {
+                                Value::Integer(next.round() as i64)
+                            } else {
+                                Value::Float(next)
+                            }
+                        }
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let out_val = match self.get_reg(out_reg) {
+                    Some(val) => val,
+                    None => return false,
+                };
+                if !self.unify(&out_val, &result) {
+                    return false;
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
+
 % --- Control Instructions ---
 
 wam_instruction_arm('Instruction::Allocate', Body) :-
@@ -326,11 +514,56 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     true
                 } else { false }'.
 
+wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
+    Body = '                self.cp = self.pc + 1;
+                self.pc = *target_pc;
+                true'.
+
+wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
+    Body = '                self.execute_foreign_predicate(pred, *arity)'.
+
+wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
+    Body = '                let key = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let a2 = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let values = match self.indexed_atom_fact2.get(pred).and_then(|table| table.get(&key)) {
+                    Some(values) if !values.is_empty() => values.clone(),
+                    _ => return false,
+                };
+                if values.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        cp: self.cp,
+                        stack: self.stack.clone(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "indexed_atom_fact2".to_string(),
+                            args: vec![Value::Atom(pred.clone()), Value::Atom(key.clone())],
+                            data: vec![Value::Integer(1)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&a2, &Value::Atom(values[0].clone())) {
+                    self.pc += 1; true
+                } else { false }'.
+
 wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
                 } else { false }'.
+
+wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
+    Body = '                self.pc = *target_pc;
+                true'.
 
 wam_instruction_arm('Instruction::Proceed', Body) :-
     Body = '                let ret = self.cp;
@@ -340,6 +573,35 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
 
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
+
+wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
+    Body = '                self.aggregate_acc.clear();
+                self.choice_points.push(ChoicePoint {
+                    next_pc: self.pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: Some(BuiltinState {
+                        name: "aggregate_frame".to_string(),
+                        args: vec![
+                            Value::Atom(agg_type.clone()),
+                            Value::Atom(value_reg.clone()),
+                            Value::Atom(result_reg.clone()),
+                        ],
+                        data: vec![],
+                    }),
+                    cut_barrier: self.cut_barrier,
+                });
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
+    Body = '                if let Some(val) = self.get_reg(value_reg) {
+                    self.aggregate_acc.push(self.deref_var(&self.deref_heap(&val)));
+                    self.aggregate_return_pc = self.pc + 1;
+                    self.backtrack()
+                } else { false }'.
 
 % --- Choice Point Instructions ---
 
@@ -352,12 +614,24 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         stack: self.stack.clone(),
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
-                        bindings: self.bindings.clone(),
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
                     });
                     self.pc += 1; true
                 } else { false }'.
+
+wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
+    Body = '                self.choice_points.push(ChoicePoint {
+                    next_pc: *next_pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                });
+                self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::TrustMe', Body) :-
     Body = '                self.choice_points.pop();
@@ -370,6 +644,12 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     }
                     self.pc += 1; true
                 } else { false }'.
+
+wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
+    Body = '                if let Some(cp) = self.choice_points.last_mut() {
+                    cp.next_pc = *next_pc;
+                }
+                self.pc += 1; true'.
 
 % --- Indexing Instructions ---
 
@@ -405,6 +685,33 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 // Unbound A1: skip dispatch, advance to next instruction
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
+    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        if let Value::Atom(ref needle) = val {
+                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
+                                if let Value::Atom(s) = k { s.as_str() } else { "" }
+                            }) {
+                                Ok(idx) => {
+                                    self.pc = table[idx].1;
+                                    return true;
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            for (key, target_pc) in table {
+                                if *key == val {
+                                    self.pc = *target_pc;
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
     Body = '                if let Some(val) = self.regs.get("A1").cloned() {
                     if let Some((f, args)) = val.univ() {
@@ -420,6 +727,19 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                 }
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
+    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+                    if let Some((f, args)) = val.univ() {
+                        let key = format!("{}/{}", f, args.len());
+                        for (k, target_pc) in table {
+                            if *k == key {
+                                self.pc = *target_pc; return true;
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
     Body = '                if let Some(val) = self.regs.get("A2").cloned() {
                     if !val.is_unbound() {
@@ -428,6 +748,18 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                                 if let Some(&pc) = self.labels.get(label) {
                                     self.pc = pc; return true;
                                 }
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
+    Body = '                if let Some(val) = self.regs.get("A2").cloned() {
+                    if !val.is_unbound() {
+                        for (key, target_pc) in table {
+                            if *key == val {
+                                self.pc = *target_pc; return true;
                             }
                         }
                     }
@@ -450,7 +782,9 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_type_builtin_to_rust(TypeBuiltinCode),
     compile_execute_term_builtin_to_rust(TermBuiltinCode),
     compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
+    compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
+    compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -462,7 +796,9 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         TypeBuiltinCode, '\n\n',
         TermBuiltinCode, '\n\n',
         MetaBuiltinCode, '\n\n',
+        ForeignCode, '\n\n',
         ResumeCode, '\n\n',
+        NativeAncestorCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -488,7 +824,8 @@ compile_run_loop_to_rust(Code) :-
 compile_backtrack_to_rust(Code0) :-
     Code0 = '    /// Restore state from the top choice point without popping it.
     pub fn backtrack(&mut self) -> bool {
-        if let Some(cp) = self.choice_points.last().cloned() {
+        self.backtrack_count += 1;
+        while let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
 
             // 1. Unwind bindings from trail entries added since the CP.
@@ -499,20 +836,22 @@ compile_backtrack_to_rust(Code0) :-
             self.trail.truncate(cp.trail_len);
             self.heap.truncate(cp.heap_len);
 
-            // 3. Restore registers, bindings, and control state.
+            // 3. Restore registers and control state.
+            // Binding-table changes are restored by trail unwind above.
             self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
-            self.bindings = cp.bindings;
             self.cut_barrier = cp.cut_barrier;
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
-                return self.resume_builtin(state);
+                if self.resume_builtin(state) {
+                    return true;
+                }
+                continue;
             }
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 '.
 
@@ -655,7 +994,6 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 cp: self.cp,
                                 trail_len: self.trail.len(),
                                 heap_len: self.heap.len(),
-                                bindings: self.bindings.clone(),
                                 builtin_state: Some(BuiltinState {
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
@@ -702,9 +1040,204 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }'.
 
+compile_execute_foreign_predicate_to_rust(Code) :-
+    Code = '    /// Execute a registered foreign predicate by name/arity.
+    pub fn execute_foreign_predicate(&mut self, pred: &str, arity: usize) -> bool {
+        let pred_key = format!("{}/{}", pred, arity);
+        if !self.foreign_predicates.contains(&pred_key) {
+            return false;
+        }
+        match pred_key.as_str() {
+            "category_ancestor/4" => {
+                let cat = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(cat)) => cat,
+                    _ => return false,
+                };
+                let root = match self.regs.get("A2").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(root)) => root,
+                    _ => return false,
+                };
+                let hops_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let visited = match self.regs.get("A4").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::List(items)) => items,
+                    Some(_) => return false,
+                    None => return false,
+                };
+                let max_depth = match self.foreign_category_ancestor_max_depth {
+                    Some(limit) => limit,
+                    None => return false,
+                };
+                let mut hops: Vec<i64> = Vec::new();
+                self.collect_native_category_ancestor_hops(&cat, &root, &visited, max_depth, &mut hops);
+                if hops.is_empty() {
+                    return false;
+                }
+                if hops.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign:category_ancestor/4".to_string(),
+                            args: vec![hops_reg.clone()],
+                            data: hops[1..].iter().map(|hop| Value::Integer(*hop)).collect(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&hops_reg, &Value::Integer(hops[0])) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            _ => false,
+        }
+    }'.
+
+compile_collect_native_category_ancestor_to_rust(Code) :-
+    Code = '    pub fn collect_native_category_ancestor_hops(
+        &self,
+        cat: &str,
+        root: &str,
+        visited: &[Value],
+        max_depth: usize,
+        out: &mut Vec<i64>,
+    ) {
+        let root_val = Value::Atom(root.to_string());
+        let root_seen = visited.iter().any(|item| self.deref_var(item) == root_val);
+        if !root_seen {
+            if let Some(values) = self.indexed_atom_fact2
+                .get("category_parent/2")
+                .and_then(|table| table.get(cat)) {
+                if values.iter().any(|parent| parent == root) {
+                    out.push(1);
+                }
+            }
+        }
+
+        if visited.len() >= max_depth {
+            return;
+        }
+
+        if let Some(values) = self.indexed_atom_fact2
+            .get("category_parent/2")
+            .and_then(|table| table.get(cat)) {
+            for parent in values {
+                let parent_val = Value::Atom(parent.clone());
+                if visited.iter().any(|item| self.deref_var(item) == parent_val) {
+                    continue;
+                }
+                let mut next_visited: Vec<Value> = Vec::with_capacity(visited.len() + 1);
+                next_visited.push(parent_val);
+                next_visited.extend(visited.iter().cloned());
+                let before = out.len();
+                self.collect_native_category_ancestor_hops(parent, root, &next_visited, max_depth, out);
+                for hop in out.iter_mut().skip(before) {
+                    *hop += 1;
+                }
+            }
+        }
+    }'.
+
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
         match state.name.as_str() {
+            "aggregate_frame" => {
+                if state.args.len() != 3 { return false; }
+                let agg_type = match &state.args[0] {
+                    Value::Atom(s) => s.as_str(),
+                    _ => return false,
+                };
+                let result_reg = match &state.args[2] {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+
+                let result = match agg_type {
+                    "sum" => {
+                        let mut sum_i: i64 = 0;
+                        let mut sum_f: f64 = 0.0;
+                        let mut saw_float = false;
+                        for val in &self.aggregate_acc {
+                            match self.deref_var(&self.deref_heap(val)) {
+                                Value::Integer(n) => {
+                                    sum_i += n;
+                                    sum_f += n as f64;
+                                }
+                                Value::Float(f) => {
+                                    saw_float = true;
+                                    sum_f += f;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
+                    }
+                    "count" => Value::Integer(self.aggregate_acc.len() as i64),
+                    "collect" => Value::List(self.aggregate_acc.clone()),
+                    "max" => {
+                        let mut best: Option<Value> = None;
+                        for val in &self.aggregate_acc {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => {
+                                    match (&current, prev) {
+                                        (Value::Integer(a), Value::Integer(b)) if a > b => Some(current),
+                                        (Value::Float(a), Value::Float(b)) if a > b => Some(current),
+                                        (Value::Integer(a), Value::Float(b)) if (*a as f64) > *b => Some(current),
+                                        (Value::Float(a), Value::Integer(b)) if *a > (*b as f64) => Some(current),
+                                        _ => Some(prev.clone()),
+                                    }
+                                }
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    "min" => {
+                        let mut best: Option<Value> = None;
+                        for val in &self.aggregate_acc {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => {
+                                    match (&current, prev) {
+                                        (Value::Integer(a), Value::Integer(b)) if a < b => Some(current),
+                                        (Value::Float(a), Value::Float(b)) if a < b => Some(current),
+                                        (Value::Integer(a), Value::Float(b)) if (*a as f64) < *b => Some(current),
+                                        (Value::Float(a), Value::Integer(b)) if *a < (*b as f64) => Some(current),
+                                        _ => Some(prev.clone()),
+                                    }
+                                }
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    _ => return false,
+                };
+
+                self.aggregate_acc.clear();
+                let lhs = self.regs.get(&result_reg).cloned().map(|v| self.deref_var(&v));
+                match lhs {
+                    Some(Value::Unbound(ref var_name)) => {
+                        self.trail_binding(&result_reg);
+                        self.regs.insert(result_reg.clone(), result.clone());
+                        self.bind_var(var_name, result);
+                    }
+                    Some(existing) if existing == result => {}
+                    Some(_) => return false,
+                    None => {
+                        self.regs.insert(result_reg.clone(), result);
+                    }
+                }
+                self.pc = self.aggregate_return_pc;
+                true
+            }
             "member/2" => {
                 let val1 = state.args[0].clone();
                 let val2 = state.args[1].clone();
@@ -725,7 +1258,6 @@ compile_resume_builtin_to_rust(Code) :-
                             cp: self.cp,
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
-                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
@@ -739,6 +1271,77 @@ compile_resume_builtin_to_rust(Code) :-
                     if self.unify(&val1, &items[idx]) {
                         self.pc += 1; true
                     } else { false }
+                } else { false }
+            }
+            "indexed_atom_fact2" => {
+                let pred = match state.args.get(0) {
+                    Some(Value::Atom(pred)) => pred.clone(),
+                    _ => return false,
+                };
+                let key = match state.args.get(1) {
+                    Some(Value::Atom(key)) => key.clone(),
+                    _ => return false,
+                };
+                let idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let values = match self.indexed_atom_fact2.get(&pred).and_then(|table| table.get(&key)) {
+                    Some(values) => values,
+                    None => return false,
+                };
+                if idx >= values.len() { return false; }
+                if idx + 1 < values.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "indexed_atom_fact2".to_string(),
+                            args: state.args.clone(),
+                            data: vec![Value::Integer((idx + 1) as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                let a2 = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                if self.unify(&a2, &Value::Atom(values[idx].clone())) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            "foreign:category_ancestor/4" => {
+                let hops_reg = match state.args.get(0) {
+                    Some(val) => val.clone(),
+                    None => return false,
+                };
+                let hop = match state.data.first() {
+                    Some(Value::Integer(hop)) => *hop,
+                    _ => return false,
+                };
+                if state.data.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign:category_ancestor/4".to_string(),
+                            args: state.args.clone(),
+                            data: state.data[1..].to_vec(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&hops_reg, &Value::Integer(hop)) {
+                    self.pc += 1; true
                 } else { false }
             }
             _ => false,
@@ -786,7 +1389,6 @@ compile_execute_meta_builtin_to_rust(Code) :-
                             cp: self.cp,
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
-                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "naf_succeed".to_string(),
                                 args: vec![Value::Integer(naf_pc as i64)],
@@ -1072,6 +1674,17 @@ wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
         'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], Rust) :-
+    clean_comma(Type, CType),
+    clean_comma(ValueReg, CValueReg),
+    clean_comma(ResultReg, CResultReg),
+    format(string(Rust),
+        'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
+        [CType, CValueReg, CResultReg]).
+wam_line_to_rust_instr(["end_aggregate", ValueReg], Rust) :-
+    clean_comma(ValueReg, CValueReg),
+    format(string(Rust),
+        'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
 wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).

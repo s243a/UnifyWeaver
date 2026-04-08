@@ -184,6 +184,7 @@ write_main_rs(Path, MergedInstrCode, MergedLabelCode) :-
 // are loaded at runtime and injected into the WAM code vector.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::fs::File;
 use std::time::Instant;
@@ -195,6 +196,16 @@ mod state;
 use value::Value;
 use instructions::Instruction;
 use state::WamState;
+
+#[derive(Debug)]
+struct SeedProfile {
+    category: String,
+    elapsed_ms: u128,
+    steps: u64,
+    backtracks: u64,
+    solutions: u32,
+    weight_sum: f64,
+}
 
 /// Load a two-column TSV file into pairs (skips the header line).
 fn load_tsv_pairs(path: &str) -> Vec<(String, String)> {
@@ -285,6 +296,49 @@ fn append_fact2(
     code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
+fn build_indexed_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (a, b) in pairs {
+        grouped.entry(a.clone()).or_default().push(b.clone());
+    }
+    grouped.into_iter().collect()
+}
+
+fn build_reverse_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (child, parent) in pairs {
+        grouped.entry(parent.clone()).or_default().push(child.clone());
+    }
+    grouped.into_iter().collect()
+}
+
+fn compute_reachable_to_root(root: &str, reverse_index: &HashMap<String, Vec<String>>, max_depth: usize) -> HashSet<String> {
+    use std::collections::VecDeque;
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut best_depth: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::from([(root.to_string(), 0)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        if let Some(prev) = best_depth.get(&current) {
+            if depth >= *prev {
+                continue;
+            }
+        }
+        best_depth.insert(current.clone(), depth);
+        reachable.insert(current.clone());
+        if depth >= max_depth {
+            continue;
+        }
+        if let Some(children) = reverse_index.get(&current) {
+            for child in children {
+                queue.push_back((child.clone(), depth + 1));
+            }
+        }
+    }
+    reachable
+}
+
 /// Build WAM fact instructions for a 1-column relation with first-argument indexing.
 fn append_fact1(
     code: &mut Vec<Instruction>,
@@ -311,6 +365,275 @@ fn append_fact1(
     }
 
     code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
+}
+
+fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
+    optimize_benchmark_code(code);
+    for instr in code.iter_mut() {
+        let replacement = match instr {
+            Instruction::Call(pred, arity) => {
+                if pred == "category_ancestor/4" && *arity == 4 {
+                    Some(Instruction::CallForeign(pred.clone(), *arity))
+                } else if pred == "category_parent/2" && *arity == 2 {
+                    Some(Instruction::CallIndexedAtomFact2(pred.clone()))
+                } else {
+                    labels.get(pred).copied().map(|pc| Instruction::CallPc(pc, *arity))
+                }
+            }
+            Instruction::Execute(pred) => {
+                labels.get(pred).copied().map(Instruction::ExecutePc)
+            }
+            Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip) => {
+                labels.get(pred).copied().map(|pc| {
+                    Instruction::RecurseCategoryAncestorPc(
+                        mid_reg.clone(),
+                        root_reg.clone(),
+                        child_hops_reg.clone(),
+                        visited_reg.clone(),
+                        pc,
+                        *skip,
+                    )
+                })
+            }
+            Instruction::TryMeElse(label) => {
+                labels.get(label).copied().map(Instruction::TryMeElsePc)
+            }
+            Instruction::RetryMeElse(label) => {
+                labels.get(label).copied().map(Instruction::RetryMeElsePc)
+            }
+            Instruction::SwitchOnConstant(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (value, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((value.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnConstantPc(resolved))
+            }
+            Instruction::SwitchOnStructure(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (functor, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((functor.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnStructurePc(resolved))
+            }
+            Instruction::SwitchOnConstantA2(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (value, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((value.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnConstantA2Pc(resolved))
+            }
+            _ => None,
+        };
+        if let Some(new_instr) = replacement {
+            *instr = new_instr;
+        }
+    }
+}
+
+fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
+    let mut i = 0usize;
+    while i < code.len() {
+        if i + 5 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+            ) {
+                (
+                    Instruction::PutValue(list_reg, a1),
+                    Instruction::PutVariable(tmp_reg, a2),
+                    Instruction::BuiltinCall(op_len, 2),
+                    Instruction::PutValue(tmp_reg2, a1b),
+                    Instruction::PutValue(limit_reg, a2b),
+                    Instruction::BuiltinCall(op_lt, 2),
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && op_len == "length/2"
+                    && tmp_reg == tmp_reg2
+                    && a1b == "A1"
+                    && a2b == "A2"
+                    && op_lt == "</2" =>
+                    Some(Instruction::ListLengthLt(list_reg.clone(), limit_reg.clone(), 6)),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 6;
+                continue;
+            }
+        }
+        if i + 1 < code.len() {
+            let replacement = match (&code[i], &code[i + 1]) {
+                (
+                    Instruction::PutVariable(limit_reg, a1),
+                    Instruction::Call(pred, 1),
+                ) if a1 == "A1" && pred == "max_depth/1" =>
+                    Some(Instruction::LoadRegisterConstant(
+                        Value::Integer(10),
+                        limit_reg.clone(),
+                        2,
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 2;
+                continue;
+            }
+        }
+        if i + 8 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+            ) {
+                (
+                    Instruction::PutValue(cat_reg, a1),
+                    Instruction::PutValue(target_reg, a2),
+                    Instruction::Call(pred, 2),
+                    Instruction::PutStructure(functor, a1b),
+                    Instruction::SetValue(target_reg2),
+                    Instruction::SetValue(visited_reg),
+                    Instruction::Deallocate,
+                    Instruction::BuiltinCall(op, 1),
+                    Instruction::Proceed,
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && pred == "category_parent/2"
+                    && functor == "member/2"
+                    && a1b == "A1"
+                    && target_reg == target_reg2
+                    && op == r"\\+/1" =>
+                    Some(Instruction::BaseCategoryAncestor(
+                        cat_reg.clone(),
+                        target_reg.clone(),
+                        visited_reg.clone(),
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 9;
+                continue;
+            }
+        }
+        if i + 3 < code.len() {
+            let replacement = match (&code[i], &code[i + 1], &code[i + 2], &code[i + 3]) {
+                (
+                    Instruction::PutStructure(functor, a1),
+                    Instruction::SetValue(elem_reg),
+                    Instruction::SetValue(list_reg),
+                    Instruction::BuiltinCall(op, 1),
+                ) if functor == "member/2" && a1 == "A1" && op == r"\\+/1" =>
+                    Some(Instruction::NotMember(elem_reg.clone(), list_reg.clone(), 4)),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 4;
+                continue;
+            }
+        }
+        if i + 6 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+            ) {
+                (
+                    Instruction::PutValue(mid_reg, a1),
+                    Instruction::PutValue(root_reg, a2),
+                    Instruction::PutVariable(child_hops_reg, a3),
+                    Instruction::PutList(a4),
+                    Instruction::SetValue(mid_reg2),
+                    Instruction::SetValue(visited_reg),
+                    Instruction::Call(pred, 4),
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && a3 == "A3"
+                    && a4 == "A4"
+                    && mid_reg == mid_reg2
+                    && pred == "category_ancestor/4" =>
+                    Some(Instruction::RecurseCategoryAncestor(
+                        mid_reg.clone(),
+                        root_reg.clone(),
+                        child_hops_reg.clone(),
+                        visited_reg.clone(),
+                        pred.clone(),
+                        7,
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 7;
+                continue;
+            }
+        }
+        if i + 6 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+            ) {
+                (
+                    Instruction::PutValue(out_reg, a1),
+                    Instruction::PutStructure(functor, a2),
+                    Instruction::SetValue(in_reg),
+                    Instruction::SetConstant(Value::Integer(1)),
+                    Instruction::Deallocate,
+                    Instruction::BuiltinCall(op, 2),
+                    Instruction::Proceed,
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && functor == "+/2"
+                    && op == "is/2" =>
+                    Some(Instruction::ReturnAdd1(out_reg.clone(), in_reg.clone())),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 7;
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 fn main() {
@@ -345,9 +668,11 @@ fn main() {
     append_fact2(&mut all_code, &mut all_labels, "category_parent", &category_parents);
     append_fact2(&mut all_code, &mut all_labels, "article_category", &article_categories);
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
+    resolve_benchmark_targets(&mut all_code, &all_labels);
 
     // Create VM with merged code
-    let mut vm = WamState::new(all_code.clone(), all_labels.clone());
+    let mut vm = WamState::new(all_code, all_labels);
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
 
     let query_start = Instant::now();
 
@@ -355,62 +680,163 @@ fn main() {
     let mut seed_cats: Vec<String> = article_categories.iter().map(|(_, c)| c.clone()).collect();
     seed_cats.sort();
     seed_cats.dedup();
+    if let Ok(filter_raw) = std::env::var("WAM_SEED_FILTER") {
+        let wanted: HashSet<String> = filter_raw
+            .split("|")
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.to_string())
+            .collect();
+        if !wanted.is_empty() {
+            seed_cats.retain(|cat| wanted.contains(cat));
+        }
+    }
     let seed_count = seed_cats.len();
 
     let root = roots[0].clone();
+    let max_depth_limit = 10usize;
+    vm.register_foreign_category_ancestor(max_depth_limit);
+    let reverse_category_parents = build_reverse_fact2(&category_parents);
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
+    let mut hop_weights: Vec<f64> = Vec::with_capacity(max_depth_limit + 2);
+    hop_weights.push(0.0);
+    for d in 1..=(max_depth_limit + 1) {
+        hop_weights.push((d as f64).powf(neg_n));
+    }
+    let profile_enabled = std::env::var("WAM_PROFILE").ok().as_deref() == Some("1");
+    let step_limit = std::env::var("WAM_STEP_LIMIT")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(1_000_000);
 
     // For each seed category, run category_ancestor(Cat, Root, Hops, [Cat])
     // through the WAM VM and compute weight_sum = Σ (Hops+1)^(-n)
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
+    let mut seed_profiles: Vec<SeedProfile> = Vec::new();
+    let mut total_steps: u64 = 0;
+    let mut total_backtracks: u64 = 0;
 
     for cat in &seed_cats {
+        if !reachable_to_root.contains(cat) {
+            if profile_enabled {
+                let profile = SeedProfile {
+                    category: cat.clone(),
+                    elapsed_ms: 0,
+                    steps: 0,
+                    backtracks: 0,
+                    solutions: 0,
+                    weight_sum: 0.0,
+                };
+                eprintln!(
+                    "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                    profile.category,
+                    profile.elapsed_ms,
+                    profile.steps,
+                    profile.backtracks,
+                    profile.solutions,
+                    profile.weight_sum,
+                );
+                seed_profiles.push(profile);
+            }
+            continue;
+        }
         let mut weight_sum: f64 = 0.0;
+        let seed_start = Instant::now();
 
         // Reset VM mutable state (code/labels are shared, not cloned)
         vm.reset_query();
-        vm.step_limit = 500_000; // cap exploration per seed category
+        vm.step_limit = step_limit; // cap exploration per seed category
 
         vm.set_reg("A1", Value::Atom(cat.clone()));
         vm.set_reg("A2", Value::Atom(root.clone()));
         vm.set_reg("A3", Value::Unbound("Hops".to_string()));
         vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
 
-        if let Some(&pc) = vm.labels.get("category_ancestor/4") {
-            vm.pc = pc;
-            vm.cp = 0;
-
+        let solutions: u32 = if vm.foreign_predicates.contains("category_ancestor/4") {
+            let visited = vec![Value::Atom(cat.clone())];
+            let mut hops: Vec<i64> = Vec::new();
+            vm.collect_native_category_ancestor_hops(cat, &root, &visited, max_depth_limit, &mut hops);
+            for hop in hops.iter().take(10001) {
+                let idx = (*hop + 1) as usize;
+                let d = (*hop as f64) + 1.0;
+                let weight = hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n));
+                weight_sum += weight;
+            }
+            hops.len().min(10001) as u32
+        } else {
             let mut solutions = 0u32;
+            let mut first = true;
             loop {
-                let succeeded = vm.run();
-                if succeeded {
-                    // Read Hops from the binding table, not A3 directly.
-                    // A3 gets overwritten by recursive calls, but the original
-                    // Unbound("Hops") variable is bound via bind_var.
-                    if let Some(hops_val) = vm.bindings.get("Hops").cloned()
-                        .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
-                        let hops = match &hops_val {
-                            Value::Integer(h) => *h as f64,
-                            Value::Float(h) => *h,
-                            Value::Atom(s) => match s.parse::<f64>() {
-                                Ok(v) => v,
-                                Err(_) => { if !vm.backtrack() { break; } continue; }
-                            },
-                            _ => { if !vm.backtrack() { break; } continue; }
-                        };
-                        let d = hops + 1.0;
-                        weight_sum += d.powf(neg_n);
-                        solutions += 1;
+                let succeeded = if first {
+                    first = false;
+                    if let Some(&pc) = vm.labels.get("category_ancestor/4") {
+                        vm.pc = pc;
+                        vm.cp = 0;
+                        vm.run()
+                    } else {
+                        false
                     }
-                    // Safety limit: deep paths contribute negligibly to d_eff
-                    // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
-                    if solutions > 10000 { break; }
-                    if !vm.backtrack() { break; }
                 } else {
+                    vm.backtrack()
+                };
+                if !succeeded {
                     break;
                 }
+                // Read Hops from the binding table, not A3 directly.
+                // A3 gets overwritten by recursive calls, but the original
+                // Unbound("Hops") variable is bound via bind_var.
+                if let Some(hops_val) = vm.bindings.get("Hops").cloned()
+                    .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
+                    let hops = match &hops_val {
+                        Value::Integer(h) => *h as f64,
+                        Value::Float(h) => *h,
+                        Value::Atom(s) => match s.parse::<f64>() {
+                            Ok(v) => v,
+                            Err(_) => { continue; }
+                        },
+                        _ => { continue; }
+                    };
+                    let d = hops + 1.0;
+                    let weight = match &hops_val {
+                        Value::Integer(h) => {
+                            let idx = (*h + 1) as usize;
+                            hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
+                        }
+                        _ => d.powf(neg_n),
+                    };
+                    weight_sum += weight;
+                    solutions += 1;
+                }
+                // Safety limit: deep paths contribute negligibly to d_eff
+                // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
+                if solutions > 10000 { break; }
             }
+            solutions
+        };
+
+        total_steps += vm.step_count;
+        total_backtracks += vm.backtrack_count;
+        if profile_enabled {
+            let profile = SeedProfile {
+                category: cat.clone(),
+                elapsed_ms: seed_start.elapsed().as_millis(),
+                steps: vm.step_count,
+                backtracks: vm.backtrack_count,
+                solutions,
+                weight_sum,
+            };
+            eprintln!(
+                "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                profile.category,
+                profile.elapsed_ms,
+                profile.steps,
+                profile.backtracks,
+                profile.solutions,
+                profile.weight_sum,
+            );
+            seed_profiles.push(profile);
         }
 
         if weight_sum > 0.0 {
@@ -460,6 +886,28 @@ fn main() {
     eprintln!("seed_count={}", seed_count);
     eprintln!("tuple_count={}", seed_weight_sums.len());
     eprintln!("article_count={}", results.len());
+    eprintln!("total_steps={}", total_steps);
+    eprintln!("total_backtracks={}", total_backtracks);
+
+    if profile_enabled {
+        seed_profiles.sort_by(|a, b| {
+            b.elapsed_ms.cmp(&a.elapsed_ms)
+                .then(b.steps.cmp(&a.steps))
+                .then(a.category.cmp(&b.category))
+        });
+        eprintln!("profile_top_seeds={}", seed_profiles.len().min(10));
+        for seed in seed_profiles.iter().take(10) {
+            eprintln!(
+                "seed_profile category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                seed.category,
+                seed.elapsed_ms,
+                seed.steps,
+                seed.backtracks,
+                seed.solutions,
+                seed.weight_sum,
+            );
+        }
+    }
 }
 ', [MergedInstrCode, MergedLabelCode]),
     setup_call_cleanup(

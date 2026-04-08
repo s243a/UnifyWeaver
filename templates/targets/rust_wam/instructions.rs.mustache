@@ -42,6 +42,22 @@ pub enum Instruction {
     SetValue(String),
     /// Push constant C onto heap.
     SetConstant(Value),
+    /// Write constant C into any register and skip a replaced source sequence.
+    LoadRegisterConstant(Value, String, usize),
+    /// Fused [H|T] construction into an output register; skips a source sequence on success.
+    Cons(String, String, String, usize),
+    /// Fused \\+ member(Element, List); skips a source sequence on success.
+    NotMember(String, String, usize),
+    /// Fused length(List, Depth), Depth < Limit; skips a source sequence on success.
+    ListLengthLt(String, String, usize),
+    /// Fused base clause for category_ancestor/4 using indexed parent existence.
+    BaseCategoryAncestor(String, String, String),
+    /// Fused benchmark recursive self-call setup for category_ancestor/4.
+    RecurseCategoryAncestor(String, String, String, String, String, usize),
+    /// Fused benchmark recursive self-call setup with a resolved target PC.
+    RecurseCategoryAncestorPc(String, String, String, String, usize, usize),
+    /// Fused benchmark recursive return: Hops is ChildHops + 1, then return.
+    ReturnAdd1(String, String),
 
     // === Control ===
     /// Create environment frame (saves CP, provides Yi storage).
@@ -50,26 +66,48 @@ pub enum Instruction {
     Deallocate,
     /// Call predicate P/N, saving return address in CP.
     Call(String, usize),
+    /// Call predicate at resolved PC, saving return address in CP.
+    CallPc(usize, usize),
+    /// Invoke a registered foreign predicate by name/arity.
+    CallForeign(String, usize),
+    /// Direct indexed call for a 2-column atom fact predicate.
+    CallIndexedAtomFact2(String),
     /// Jump to predicate P/N (tail call optimization).
     Execute(String),
+    /// Jump directly to a resolved PC (tail call optimization).
+    ExecutePc(usize),
     /// Return from predicate (jump to CP).
     Proceed,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
+    /// Start collecting solutions for an aggregate.
+    BeginAggregate(String, String, String),
+    /// Record one aggregate solution and force backtracking.
+    EndAggregate(String),
 
     // === Choice Points ===
     /// Create choice point, try current clause, alternative at Label.
     TryMeElse(String),
+    /// Create choice point with a pre-resolved alternative PC.
+    TryMeElsePc(usize),
     /// Update choice point to next alternative at Label.
     RetryMeElse(String),
+    /// Update choice point to a pre-resolved alternative PC.
+    RetryMeElsePc(usize),
     /// Remove choice point, try final clause.
     TrustMe,
 
     // === Indexing ===
     /// First-argument constant dispatch.
     SwitchOnConstant(Vec<(Value, String)>),
+    /// First-argument constant dispatch with pre-resolved PCs.
+    SwitchOnConstantPc(Vec<(Value, usize)>),
     /// First-argument structure dispatch.
     SwitchOnStructure(Vec<(String, String)>),
+    /// First-argument structure dispatch with pre-resolved PCs.
+    SwitchOnStructurePc(Vec<(String, usize)>),
     /// Second-argument constant dispatch.
     SwitchOnConstantA2(Vec<(Value, String)>),
+    /// Second-argument constant dispatch with pre-resolved PCs.
+    SwitchOnConstantA2Pc(Vec<(Value, usize)>),
 }
