@@ -162,18 +162,18 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
 wam_enable_tabling(PredKey) :-
     (wam_tabled_predicate(PredKey) -> true ; assert(wam_tabled_predicate(PredKey))).
 
+:- dynamic wam_memo_entry/2.  % Key → Results (hash-indexed by first arg)
+
 %% wam_memo_lookup(+Key, -CachedResults)
-%  Check memo table for cached results.
+%  Check memo table for cached results. O(1) via first-argument indexing.
 wam_memo_lookup(Key, Results) :-
-    nb_getval(wam_memo_table, Memo),
-    get_assoc(Key, Memo, Results).
+    wam_memo_entry(Key, Results).
 
 %% wam_memo_store(+Key, +Results)
 %  Store results in memo table.
 wam_memo_store(Key, Results) :-
-    nb_getval(wam_memo_table, Memo),
-    put_assoc(Key, Memo, Results, NewMemo),
-    nb_setval(wam_memo_table, NewMemo).
+    (retract(wam_memo_entry(Key, _)) -> true ; true),
+    assert(wam_memo_entry(Key, Results)).
 
 %% wam_memo_store_seed(+Pred, +Cat, +Root, +HopsList)
 %  Store cached results for a (Cat, Root) pair after findall_wam.
@@ -181,7 +181,8 @@ wam_memo_store(Key, Results) :-
 wam_memo_store_seed(Pred, Cat, Root, HopsList) :-
     Key = Pred-Cat-Root,
     % Convert Hops list to result format: list of [A1, A2, A3, A4] tuples
-    maplist({Cat, Root}/[Hops, [Cat, Root, Hops, _]]>>true, HopsList, Results),
+    % A4 is 'any' placeholder (not a Prolog variable to avoid sharing bugs)
+    maplist({Cat, Root}/[Hops, [Cat, Root, Hops, any]]>>true, HopsList, Results),
     wam_memo_store(Key, Results).
 
 % ============================================================================
@@ -192,6 +193,11 @@ wam_memo_store_seed(Pred, Cat, Root, HopsList) :-
 :- use_module('../core/wam_dict').
 
 :- dynamic wam_fact_table_entry/2.  % Pred/Arity → FactTable
+
+% Initialize global tables at module load time
+:- empty_assoc(EmptyB), nb_setval(wam_bindings, EmptyB).
+:- nb_setval(wam_var_counter, 0).
+:- empty_assoc(EmptyM), nb_setval(wam_memo_table, EmptyM).
 
 %% wam_register_fact_table(+PredKey, +FactTable)
 %  Register a fact table for a predicate (e.g., "category_parent/2").
@@ -634,16 +640,12 @@ step_wam(call(P, Arity), StateIn, StateOut) :-
     % Check fact table first (O(log n) lookup vs O(n) instruction scan)
     (   wam_fact_table_registered(P, FactTable)
     ->  call_fact_predicate(P, Arity, FactTable, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
-    ;   % Check memo table for tabled predicates
-        (   wam_tabled_predicate(P),
-            memo_key_from_call(P, Arity, R, MemoKey),
-            wam_memo_lookup(MemoKey, CachedResults)
-        ->  % Return cached results via choice points
-            return_cached_results(CachedResults, Arity, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
-        ;   % Execute normally via WAM code
-            get_assoc(P, L, NPC),
-            StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
-        )
+    ;   % Execute via WAM code (with optional memo check for inner recursive calls)
+        get_assoc(P, L, NPC),
+        % TODO: Tabling for context-free predicates (not category_ancestor
+        % which depends on Visited list and call depth).
+        % When enabled, use: wam_tabled_predicate(P), memo_key, wam_memo_lookup
+        StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
     ).
 
 %% memo_key_from_call(+Pred, +Arity, +Regs, -Key)
@@ -673,14 +675,18 @@ apply_cached_result(Result, Arity, R, T, NR, NT) :-
 apply_one_result(Result, I, RIn-TIn, ROut-TOut) :-
     format(atom(RegName), "A~w", [I]),
     nth1(I, Result, Val),
-    get_assoc(RegName, RIn, CurVal),
-    wam_deref(CurVal, DCur),
-    (   DCur == Val -> ROut = RIn, TOut = TIn
-    ;   is_wam_unbound(DCur)
-    ->  trail_binding(RegName, RIn, TIn, TOut),
-        (atom(DCur), is_wam_unbound(DCur) -> wam_bind(DCur, Val) ; true),
-        put_assoc(RegName, RIn, Val, ROut)
-    ;   fail
+    (   Val == any
+    ->  % Placeholder: don't touch this register
+        ROut = RIn, TOut = TIn
+    ;   get_assoc(RegName, RIn, CurVal),
+        wam_deref(CurVal, DCur),
+        (   DCur == Val -> ROut = RIn, TOut = TIn
+        ;   is_wam_unbound(DCur)
+        ->  trail_binding(RegName, RIn, TIn, TOut),
+            (atom(DCur), is_wam_unbound(DCur) -> wam_bind(DCur, Val) ; true),
+            put_assoc(RegName, RIn, Val, ROut)
+        ;   fail
+        )
     ).
 
 %% resume_builtin for cached_retry
