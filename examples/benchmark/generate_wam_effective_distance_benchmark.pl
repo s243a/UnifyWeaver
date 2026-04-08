@@ -403,6 +403,38 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
 fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
     let mut i = 0usize;
     while i < code.len() {
+        if i + 5 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+            ) {
+                (
+                    Instruction::PutValue(list_reg, a1),
+                    Instruction::PutVariable(tmp_reg, a2),
+                    Instruction::BuiltinCall(op_len, 2),
+                    Instruction::PutValue(tmp_reg2, a1b),
+                    Instruction::PutValue(limit_reg, a2b),
+                    Instruction::BuiltinCall(op_lt, 2),
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && op_len == "length/2"
+                    && tmp_reg == tmp_reg2
+                    && a1b == "A1"
+                    && a2b == "A2"
+                    && op_lt == "</2" =>
+                    Some(Instruction::ListLengthLt(list_reg.clone(), limit_reg.clone(), 6)),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 6;
+                continue;
+            }
+        }
         if i + 3 < code.len() {
             let replacement = match (&code[i], &code[i + 1], &code[i + 2], &code[i + 3]) {
                 (
