@@ -37,6 +37,10 @@ tc_parent(pat, jim).
 tc_ancestor(X, Y) :- tc_parent(X, Y).
 tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
 
+:- dynamic tc_descendant/2.
+tc_descendant(X, Y) :- tc_parent(Y, X).
+tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -47,7 +51,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -57,6 +61,7 @@ test_runtime_execution :-
 use runtime_test::value::Value;
 use runtime_test::state::WamState;
 use runtime_test::tc_ancestor;
+use runtime_test::tc_descendant;
 
 #[test]
 fn test_generated_predicates() {
@@ -102,6 +107,47 @@ fn test_generated_predicates() {
         Value::Atom("liz".to_string()),
         Value::Atom("jim".to_string()));
     assert!(!ok3, "tc_ancestor(liz, jim) should fail");
+
+    // Test tc_descendant/2 reverse foreign lowering end-to-end
+    let mut vm_desc = WamState::new(vec![], std::collections::HashMap::new());
+    let ok4 = tc_descendant(&mut vm_desc,
+        Value::Atom("jim".to_string()),
+        Value::Unbound("Anc".to_string()));
+    assert!(ok4, "tc_descendant(jim, Anc) first solution should succeed");
+
+    let mut ancestors: Vec<String> = Vec::new();
+    if let Some(Value::Atom(anc)) = vm_desc.bindings.get("Anc").cloned() {
+        ancestors.push(anc);
+    } else {
+        panic!("expected first tc_descendant result in Anc");
+    }
+
+    while vm_desc.backtrack() {
+        if let Some(Value::Atom(anc)) = vm_desc.bindings.get("Anc").cloned() {
+            ancestors.push(anc);
+        } else {
+            panic!("expected backtracked tc_descendant result in Anc");
+        }
+    }
+
+    ancestors.sort();
+    assert_eq!(ancestors, vec![
+        "bob".to_string(),
+        "pat".to_string(),
+        "tom".to_string(),
+    ]);
+
+    let mut vm_desc_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok5 = tc_descendant(&mut vm_desc_check,
+        Value::Atom("jim".to_string()),
+        Value::Atom("tom".to_string()));
+    assert!(ok5, "tc_descendant(jim, tom) should succeed");
+
+    let mut vm_desc_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok6 = tc_descendant(&mut vm_desc_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(!ok6, "tc_descendant(liz, jim) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

@@ -216,6 +216,62 @@ with Rust's ownership model:
 3. **Stack-based vs heap-based:** Rust's stack frame model doesn't match WAM's
    environment frames that survive across call boundaries and need restoration.
 
+## Update: Foreign Lowering Is Now the Preferred Hybrid Path
+
+The conclusions above still hold for generic interpreted WAM execution, but the
+current Rust path has moved beyond "optimize the interpreter harder" for the
+hottest recursive predicates.
+
+Instead, the compiler now supports a **foreign-lowering** path for selected
+recursive schemas:
+
+- `category_ancestor/4`-style bounded recursive search
+- binary transitive closure such as `tc_ancestor/2`
+- reversed binary closure such as `tc_descendant/2`
+
+The shape is:
+
+1. The compiler recognizes a supported recursive schema.
+2. WAM-Rust codegen emits `CallForeign(...)` rather than interpreting the
+   recursive body instruction-by-instruction.
+3. The Rust runtime dispatches to a registered native handler kind plus
+   structured predicate config.
+4. Results are streamed back through the normal backtracking-compatible path.
+
+This is a better fit than adding many custom opcodes for high-level recursive
+search. It preserves the WAM runtime for general predicates while letting the
+hottest recursive kernels execute natively.
+
+### What Is Verified
+
+The current test coverage now includes:
+
+- compiler-selection tests for:
+  - `category_ancestor/4`
+  - `tc_ancestor/2`
+  - `tc_descendant/2`
+- end-to-end generated Rust runtime validation for:
+  - `tc_ancestor/2`
+  - `tc_descendant/2`
+
+The reverse transitive-closure path required an additional correctness fix:
+reverse schemas must register fact pairs in `child -> parent` orientation, and
+the schema matcher must distinguish forward and reverse recursive forms without
+accidentally collapsing them into the same case.
+
+### Practical Conclusion
+
+For recursive search workloads, the current direction is no longer "make the
+generic Rust WAM interpreter competitive with native Prolog." The higher-value
+strategy is:
+
+- keep the WAM runtime as the general fallback
+- recognize expensive recursive schemas at compile time
+- lower them to native foreign handlers
+- preserve standard WAM/backtracking behavior at the interface boundary
+
+That is the current architectural direction for Rust hybrid WAM execution.
+
 ### Why Functional Languages Would Be Better
 
 Languages with immutable/persistent data structures map naturally to WAM backtracking:
