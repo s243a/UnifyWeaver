@@ -148,6 +148,39 @@ semantic_compiler:fuzzy_dispatch(python, f_or(Terms, _Result), Code) :-
     py_weighted_terms(Terms, PyTerms),
     format(string(Code), '    result = f_or(~w, _term_scores)\n', [PyTerms]).
 
+% Minimal Rust fuzzy dispatch (mirrors rust_target.pl)
+semantic_compiler:fuzzy_dispatch(rust, f_and(Terms, _Result), Code) :-
+    rust_product_terms(Terms, TermCode),
+    format(string(Code), '    let mut result: f64 = 1.0;\n~w', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(rust, f_or(Terms, _Result), Code) :-
+    rust_complement_terms(Terms, TermCode),
+    format(string(Code), '    let mut complement: f64 = 1.0;\n~w    let result = 1.0 - complement;\n', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(rust, f_not(Score, _Result), Code) :-
+    format(string(Code), '    let result = 1.0 - ~w;\n', [Score]).
+
+% Minimal C# fuzzy dispatch (mirrors csharp_target.pl)
+semantic_compiler:fuzzy_dispatch(csharp, f_and(Terms, _Result), Code) :-
+    csharp_product_terms(Terms, TermCode),
+    format(string(Code), '    double result = 1.0;\n~w', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(csharp, f_or(Terms, _Result), Code) :-
+    csharp_complement_terms(Terms, TermCode),
+    format(string(Code), '    double complement = 1.0;\n~w    double result = 1.0 - complement;\n', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(csharp, f_not(Score, _Result), Code) :-
+    format(string(Code), '    double result = 1.0 - ~w;\n', [Score]).
+
+% Minimal Go batch fuzzy dispatch (mirrors go_target.pl batch ops)
+semantic_compiler:fuzzy_dispatch(go, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    go_batch_product_terms(Terms, TermCode),
+    format(string(Code), '\tn := batchLen(termScoresBatch)\n\tresult := make([]float64, n)\n\tfor i := range result { result[i] = 1.0 }\n~w', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(go, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    go_batch_complement_terms(Terms, TermCode),
+    format(string(Code), '\tn := batchLen(termScoresBatch)\n\tcomplement := make([]float64, n)\n\tfor i := range complement { complement[i] = 1.0 }\n~w\tresult := make([]float64, n)\n\tfor i := range result { result[i] = 1 - complement[i] }\n', [TermCode]).
+
 % ---- Inline test helpers ----
 
 go_product_terms([], '').
@@ -160,6 +193,42 @@ go_complement_terms([], '').
 go_complement_terms([w(Term, Weight)|Rest], Code) :-
     go_complement_terms(Rest, RestCode),
     format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+rust_product_terms([], '').
+rust_product_terms([w(Term, Weight)|Rest], Code) :-
+    rust_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+rust_complement_terms([], '').
+rust_complement_terms([w(Term, Weight)|Rest], Code) :-
+    rust_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+csharp_product_terms([], '').
+csharp_product_terms([w(Term, Weight)|Rest], Code) :-
+    csharp_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= ~w * (termScores.TryGetValue("~w", out var s_~w) ? s_~w : 0.5);\n', [Weight, Term, Term, Term]),
+    string_concat(Line, RestCode, Code).
+
+csharp_complement_terms([], '').
+csharp_complement_terms([w(Term, Weight)|Rest], Code) :-
+    csharp_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * (termScores.TryGetValue("~w", out var s_~w) ? s_~w : 0.5);\n', [Weight, Term, Term, Term]),
+    string_concat(Line, RestCode, Code).
+
+go_batch_product_terms([], '').
+go_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    go_batch_product_terms(Rest, RestCode),
+    format(string(Line), '\tif scores, ok := termScoresBatch["~w"]; ok {\n\t\tfor i := range result { result[i] *= ~w * scores[i] }\n\t}\n', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+
+go_batch_complement_terms([], '').
+go_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    go_batch_complement_terms(Rest, RestCode),
+    format(string(Line), '\tif scores, ok := termScoresBatch["~w"]; ok {\n\t\tfor i := range complement { complement[i] *= (1 - ~w * scores[i]) }\n\t}\n', [Term, Weight]),
     string_concat(Line, RestCode, Code).
 
 py_weighted_terms(Terms, PyTerms) :-
@@ -214,6 +283,55 @@ test_python_fuzzy_or :-
     compile_fuzzy_call(python, f_or([w(bash, 0.9)], _), Code),
     assert_contains(Code, "f_or(", "f_or call").
 
+test_rust_fuzzy_and :-
+    format('--- Rust Fuzzy AND ---~n'),
+    compile_fuzzy_call(rust, f_and([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "let mut result: f64 = 1.0", "product identity"),
+    assert_contains(Code, "term_scores.get(\"bash\")", "HashMap lookup"),
+    assert_contains(Code, "unwrap_or(0.5)", "default score fallback").
+
+test_rust_fuzzy_or :-
+    format('--- Rust Fuzzy OR ---~n'),
+    compile_fuzzy_call(rust, f_or([w(bash, 0.9)], _), Code),
+    assert_contains(Code, "let mut complement: f64 = 1.0", "complement identity"),
+    assert_contains(Code, "1.0 - complement", "probabilistic sum").
+
+test_rust_fuzzy_not :-
+    format('--- Rust Fuzzy NOT ---~n'),
+    compile_fuzzy_call(rust, f_not(0.3, _), Code),
+    assert_contains(Code, "1.0 - 0.3", "complement").
+
+test_csharp_fuzzy_and :-
+    format('--- C# Fuzzy AND ---~n'),
+    compile_fuzzy_call(csharp, f_and([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "double result = 1.0", "product identity"),
+    assert_contains(Code, "TryGetValue(\"bash\"", "Dictionary lookup"),
+    assert_contains(Code, "0.5)", "default score fallback").
+
+test_csharp_fuzzy_or :-
+    format('--- C# Fuzzy OR ---~n'),
+    compile_fuzzy_call(csharp, f_or([w(bash, 0.9)], _), Code),
+    assert_contains(Code, "double complement = 1.0", "complement identity"),
+    assert_contains(Code, "1.0 - complement", "probabilistic sum").
+
+test_csharp_fuzzy_not :-
+    format('--- C# Fuzzy NOT ---~n'),
+    compile_fuzzy_call(csharp, f_not(0.3, _), Code),
+    assert_contains(Code, "1.0 - 0.3", "complement").
+
+test_go_batch_and :-
+    format('--- Go Batch AND ---~n'),
+    compile_fuzzy_call(go, f_and_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "batchLen(termScoresBatch)", "batch length"),
+    assert_contains(Code, "make([]float64, n)", "slice allocation"),
+    assert_contains(Code, "termScoresBatch[\"bash\"]", "batch lookup").
+
+test_go_batch_or :-
+    format('--- Go Batch OR ---~n'),
+    compile_fuzzy_call(go, f_or_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "complement[i] = 1.0", "complement init"),
+    assert_contains(Code, "1 - complement[i]", "element-wise sum").
+
 % ---- Helpers ----
 
 assert_contains(String, Substring, Label) :-
@@ -235,6 +353,14 @@ test_all :-
     test_go_fuzzy_or,
     test_go_fuzzy_not,
     test_python_fuzzy_and,
-    test_python_fuzzy_or.
+    test_python_fuzzy_or,
+    test_rust_fuzzy_and,
+    test_rust_fuzzy_or,
+    test_rust_fuzzy_not,
+    test_csharp_fuzzy_and,
+    test_csharp_fuzzy_or,
+    test_csharp_fuzzy_not,
+    test_go_batch_and,
+    test_go_batch_or.
 
 :- initialization(test_all, main).

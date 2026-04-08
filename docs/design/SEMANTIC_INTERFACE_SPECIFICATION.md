@@ -82,7 +82,9 @@ The `semantic_compiler` also provides a `fuzzy_dispatch/3` multifile hook for co
 | Target | Core ops | Batch ops | Utility ops |
 |--------|----------|-----------|-------------|
 | **Python** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch | blend, top\_k, filter, boost |
-| **Go** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | — | blend, top\_k |
+| **Go** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch, f\_union\_batch | blend, top\_k |
+| **Rust** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | — | blend, top\_k |
+| **C#** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | — | blend (LINQ Zip), top\_k (LINQ OrderByDescending) |
 
 ### 4.5 Usage Example
 

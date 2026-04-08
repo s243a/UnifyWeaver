@@ -19,12 +19,17 @@
 - [x] Implement Go fuzzy dispatch: f_and, f_or, f_dist_or, f_union, f_not, blend_scores, top_k.
 - [x] Tests for fuzzy recognition, Go codegen, Python dispatch.
 
+## Phase 2c: Full Fuzzy Target Coverage (Completed)
+- [x] Implement Rust fuzzy dispatch: f_and, f_or, f_dist_or, f_union, f_not, blend_scores, top_k.
+- [x] Implement C# fuzzy dispatch: all core ops + LINQ-based blend_scores and top_k.
+- [x] Go batch fuzzy operations: f_and_batch, f_or_batch, f_dist_or_batch, f_union_batch.
+- [x] Tests for Rust (AND/OR/NOT), C# (AND/OR/NOT), Go batch (AND/OR).
+
 ## Phase 3: Runtime Integration & Data Sources
 - [ ] Extend `input_source.pl` to handle vector index files for different targets.
 - [ ] Add support for `semantic_search/4` (options including threshold, custom model).
 - [ ] Integrate with `cross_runtime_pipeline.pl` to allow multi-language semantic stages.
-- [ ] Implement Rust and C# fuzzy dispatch (core operations).
-- [ ] Go fuzzy batch operations (slice-based vectorization).
+- [ ] Rust and C# batch fuzzy operations.
 
 ## Phase 4: Extended Target Coverage & Polish
 - [ ] Implement `semantic_dispatch` for Elixir (via Bumblebee/NX).

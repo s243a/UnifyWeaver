@@ -8418,6 +8418,122 @@ generate_go_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
     format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [BaseExpr, Term]),
     string_concat(Line, RestCode, Code).
 
+% ============================================================================
+% FUZZY BATCH OPERATIONS (Go target)
+% ============================================================================
+%
+% Slice-based batch fuzzy operations. Operates on []float64 score slices,
+% one score per item. Assumes termScoresBatch (map[string][]float64) is in scope.
+
+%% f_and_batch: Batch product t-norm over slices
+semantic_compiler:fuzzy_dispatch(go, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_product_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy AND (product t-norm)
+\tn := batchLen(termScoresBatch)
+\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1.0 }
+~w', [TermCode]).
+
+%% f_or_batch: Batch probabilistic sum over slices
+semantic_compiler:fuzzy_dispatch(go, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy OR (probabilistic sum)
+\tn := batchLen(termScoresBatch)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1 - complement[i] }
+', [TermCode]).
+
+%% f_dist_or_batch: Batch distributed OR
+semantic_compiler:fuzzy_dispatch(go, f_dist_or_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_dist_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy distributed OR
+\tn := len(~w)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1 - complement[i] }
+', [BaseScores, TermCode]).
+
+%% f_union_batch: Batch non-distributed OR
+semantic_compiler:fuzzy_dispatch(go, f_union_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy union (base * OR)
+\tn := len(~w)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = ~w[i] * (1 - complement[i]) }
+', [BaseScores, TermCode, BaseScores]).
+
+% ---- Batch helper generators ----
+
+%% generate_go_batch_product_terms(+Terms, -Code)
+%  Generate: for i := range result { result[i] *= weight * scores[i] }
+generate_go_batch_product_terms([], '').
+generate_go_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range result { result[i] *= ~w * scores[i] }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range result { result[i] *= scores[i] }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_batch_complement_terms(+Terms, -Code)
+generate_go_batch_complement_terms([], '').
+generate_go_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - ~w * scores[i]) }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - scores[i]) }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_batch_dist_complement_terms(+Terms, -Code)
+generate_go_batch_dist_complement_terms([], '').
+generate_go_batch_dist_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - baseScores[i] * ~w * scores[i]) }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_dist_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - baseScores[i] * scores[i]) }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
 %% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
 compile_semantic_rule_go(PredStr, HeadArgs, Goal, GoCode) :-
     build_var_map(HeadArgs, VarMap),
