@@ -138,6 +138,111 @@ semantic_compiler:semantic_dispatch(rust, Goal, Provider, VarMap, Code) :-
     let results = searcher.text_search("~w", ~w)?;
 ', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
 
+% ============================================================================
+% FUZZY LOGIC DISPATCH (Rust target)
+% ============================================================================
+%
+% Generates inline Rust code for fuzzy operations. Assumes `term_scores`
+% (HashMap<String, f64>) is in scope from the surrounding search context.
+
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+
+%% f_and: Fuzzy AND (product t-norm)
+semantic_compiler:fuzzy_dispatch(rust, f_and(Terms, _Result), Code) :-
+    generate_rust_product_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy AND (product t-norm)
+    let mut result: f64 = 1.0;
+~w', [TermCode]).
+
+%% f_or: Fuzzy OR (probabilistic sum)
+semantic_compiler:fuzzy_dispatch(rust, f_or(Terms, _Result), Code) :-
+    generate_rust_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy OR (probabilistic sum)
+    let mut complement: f64 = 1.0;
+~w    let result = 1.0 - complement;
+', [TermCode]).
+
+%% f_dist_or: Distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_dist_or(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_rust_dist_complement_terms(BaseExpr, Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy distributed OR
+    let mut complement: f64 = 1.0;
+~w    let result = 1.0 - complement;
+', [TermCode]).
+
+%% f_union: Non-distributed OR (base * OR result)
+semantic_compiler:fuzzy_dispatch(rust, f_union(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_rust_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy union (base * OR)
+    let mut complement: f64 = 1.0;
+~w    let result = ~w * (1.0 - complement);
+', [TermCode, BaseExpr]).
+
+%% f_not: Fuzzy NOT (complement)
+semantic_compiler:fuzzy_dispatch(rust, f_not(Score, _Result), Code) :-
+    (number(Score) -> format(string(ScoreExpr), "~w", [Score]) ; format(string(ScoreExpr), "~w", [Score])),
+    format(string(Code), '    let result = 1.0 - ~w;\n', [ScoreExpr]).
+
+%% blend_scores: Weighted interpolation using iterators
+semantic_compiler:fuzzy_dispatch(rust, blend_scores(Alpha, Scores1, Scores2, _Result), Code) :-
+    (number(Alpha) -> format(string(AExpr), "~w_f64", [Alpha]) ; AExpr = Alpha),
+    format(string(Code),
+'    // Blend scores: alpha*s1 + (1-alpha)*s2
+    let result: Vec<f64> = ~w.iter().zip(~w.iter())
+        .map(|(s1, s2)| ~w * s1 + (1.0 - ~w) * s2)
+        .collect();
+', [Scores1, Scores2, AExpr, AExpr]).
+
+%% top_k: Get top K items by score
+semantic_compiler:fuzzy_dispatch(rust, top_k(Items, K, _Result), Code) :-
+    format(string(Code),
+'    // Top-K selection
+    let mut scored: Vec<_> = ~w.clone();
+    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    let result = scored.into_iter().take(~w).collect::<Vec<_>>();
+', [Items, K]).
+
+% ---- Helpers for generating per-term Rust code ----
+
+generate_rust_product_terms([], '').
+generate_rust_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= term_scores.get("~w").copied().unwrap_or(0.5);\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_complement_terms([], '').
+generate_rust_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - term_scores.get("~w").copied().unwrap_or(0.5);\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_dist_complement_terms(_, [], '').
+generate_rust_dist_complement_terms(BaseExpr, [w(Term, Weight)|Rest], Code) :-
+    generate_rust_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [BaseExpr, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [BaseExpr, Term]),
+    string_concat(Line, RestCode, Code).
+
 % Per-path visited pattern detection
 :- use_module('../core/advanced/pattern_matchers', [
     is_per_path_visited_pattern/4,
