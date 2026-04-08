@@ -203,6 +203,12 @@ generate_react_component(Name, Options, Code) :-
     ->  generate_form_component(Name, Config, Options, Code)
     ;   Type == display
     ->  generate_display_component(Name, Config, Options, Code)
+    ;   Type == file_browser
+    ->  generate_file_browser_component(Name, Config, Options, Code)
+    ;   Type == http_cli
+    ->  generate_http_cli_component(Name, Config, Options, Code)
+    ;   Type == custom
+    ->  generate_custom_component(Name, Config, Options, Code)
     ;   generate_generic_component(Name, Config, Options, Code)
     ).
 
@@ -392,6 +398,17 @@ export const ~w: React.FC<~wProps> = ({ className }) => {
 
 export default ~w;
 ', [ComponentName, NameStr, ComponentName, ComponentName, Title, ComponentName]).
+
+%% generate_custom_component(+Name, +Config, +Options, -Code)
+%  Generate a custom React component from raw code or file.
+generate_custom_component(_Name, Config, _Options, Code) :-
+    (   member(code(RawCode), Config)
+    ->  Code = RawCode
+    ;   member(file(Path), Config)
+    ->  read_file_to_string(Path, FileString, []),
+        Code = FileString
+    ;   Code = '// No code or file specified for custom component\n'
+    ).
 
 % ============================================================================
 % INPUT GENERATION HELPERS
@@ -1002,3 +1019,14 @@ test_react_generator :-
     ),
 
     format('~n=== Tests Complete ===~n').
+
+%% generate_file_browser_component(+Name, +Config, +Options, -Code)
+%  Generate a file browser React component.
+generate_file_browser_component(_Name, _Config, _Options, Code) :-
+    read_file_to_string('prototype/src/App.tsx', Code, []).
+
+%% generate_http_cli_component(+Name, +Config, +Options, -Code)
+%  Generate a React HTTP CLI component.
+generate_http_cli_component(_Name, _Config, _Options, Code) :-
+    read_file_to_string('prototype/src/App.tsx', Code, []).
+

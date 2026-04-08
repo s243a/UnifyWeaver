@@ -14,25 +14,14 @@ generate_all :-
     
     % Define the CLI component
     declare_ui_component(react_cli, [
-        type(form),
-        title("UnifyWeaver CLI"),
-        description("Browser-based command line interface"),
-        inputs([
-            input(path, string, "Working Directory", [default("/home/user/projects")]),
-            input(command, string, "Command", [placeholder("Enter shell command...")])
-        ]),
-        operations([
-            operation(execute, '/execute', "Run Command"),
-            operation(list, '/ls', "List Directory")
-        ])
+        type(file_browser)
     ]),
     
-    % Generate the React app code (only include the declared component)
-    generate_react_app(react_cli, [components([react_cli])], AppCode),
-    make_directory_path('generated/src'),
-    open('generated/src/App.tsx', write, S),
+    % Generate the React app code exactly as the prototype
+    generate_react_component(react_cli, AppCode),
+    open('src/App.tsx', write, S),
     write(S, AppCode),
     close(S),
-
-    format('  Created: generated/src/App.tsx~n'),
-    format('Done! Compare with prototype/ and run "npm run dev" to test.~n').
+    
+    format('  Created: src/App.tsx~n'),
+    format('Done! Run "npm run dev" to test.~n').

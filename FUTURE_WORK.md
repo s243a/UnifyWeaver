@@ -596,11 +596,11 @@ Several example apps exist but lack complete Prolog-based generation scripts:
 
 | App | Current State | Needed |
 |-----|---------------|--------|
-| `examples/pyodide-matrix/` | Has `generate.pl` | Verify generated output matches prototype |
-| `examples/curve-plot/` | Has `generate.pl` | Verify generated output matches prototype |
-| `examples/wasm-graph/` | Has `generate.pl` | Verify generated output matches prototype |
-| `examples/react-cli/` | Has `generate.pl`, prototype/ and generated/ dirs | Generated output is simplified; needs parity with prototype |
-| `examples/react-http-cli/` | Has `generate.pl`, prototype/ and generated/ dirs | Generated output is simplified; needs parity with prototype |
+| `examples/pyodide-matrix/` | ✅ Complete | Generated output matches prototype |
+| `examples/curve-plot/` | ✅ Complete | Generated output matches prototype |
+| `examples/wasm-graph/` | ✅ Complete | Generated output matches prototype |
+| `examples/react-cli/` | ✅ Complete | Generated output matches prototype |
+| `examples/react-http-cli/` | ✅ Complete | Generated output matches prototype |
 
 **Goal:** Each example app should be fully regenerable from Prolog specifications via a `generate.pl` script.
 

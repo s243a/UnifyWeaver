@@ -17,31 +17,12 @@ generate_all :-
     
     % 1. Generate React component via react_generator
     declare_ui_component(react_http_cli, [
-        type(form),
-        title("UnifyWeaver HTTP CLI"),
-        description("Remote HTTP-based command line interface"),
-        inputs([
-            input(endpoint, string, "API Endpoint", [default("https://localhost:3001")]),
-            input(command, string, "Command", [placeholder("Enter remote command...")])
-        ]),
-        operations([
-            operation(send, '/api/run', "Execute Remote")
-        ])
+        type(http_cli)
     ]),
-    generate_react_app(react_http_cli, [components([react_http_cli])], AppCode),
-    make_directory_path('generated/src'),
-    open('generated/src/App.tsx', write, S),
+    generate_react_component(react_http_cli, AppCode),
+    open('src/App.tsx', write, S),
     write(S, AppCode),
     close(S),
-    format('  Created: generated/src/App.tsx~n'),
+    format('  Created: src/App.tsx~n'),
 
-    % 2. Generate HTML interface via html_interface_generator
-    http_cli_interface(Spec),
-    http_cli_theme(Theme),
-    generate_html_interface(Spec, Theme, HTML),
-    open('generated/index.html', write, H),
-    write(H, HTML),
-    close(H),
-    format('  Created: generated/index.html~n'),
-
-    format('Done! Compare with prototype/ and run "npm run dev" to test.~n').
+    format('Done! Run "npm run dev" to test.~n').

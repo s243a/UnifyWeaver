@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 
 // Helper function for formatting file sizes
 const formatSize = (bytes: number): string => {
@@ -45,11 +45,16 @@ function App() {
   const [fileContent, setFileContent] = useState<string | null>(null)
 
   // Browse state
-  const [browse, setBrowse] = useState({
+  const [browse, setBrowse] = useState<{
+    path: string,
+    parent: string | null,
+    entries: Array<{name: string, type: string, size: number}>,
+    selected: string | null
+  }>({
     path: '/home/user/projects',
     parent: '/home/user',
     entries: mockFS['/home/user/projects'] || [],
-    selected: null as string | null
+    selected: null
   })
 
   const [workingDir, setWorkingDir] = useState('.')
@@ -208,3 +213,4 @@ function App() {
 }
 
 export default App
+
