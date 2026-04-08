@@ -117,7 +117,7 @@ function App() {
   const viewFile = () => {
     if (browse.selected) {
       setLoading(true)
-      // Simulate loading
+      // NOTE: demo simulation
       setTimeout(() => {
         setFileContent(`// Contents of ${browse.selected}\n\nexport default function Example() {\n  return <div>Hello World</div>\n}`)
         setLoading(false)

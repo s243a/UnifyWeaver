@@ -45,7 +45,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [fileContent, setFileContent] = useState<string | null>(null)
   const [notification, setNotification] = useState<string | null>(null)
-  
+
   // Search state
   const [isSearching, setIsSearching] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -117,7 +117,7 @@ function App() {
   const viewFile = () => {
     if (browse.selected) {
       setLoading(true)
-      // Simulate loading
+      // NOTE: demo simulation
       setTimeout(() => {
         setFileContent(`// Contents of ${browse.selected}\n\nexport default function Example() {\n  return <div>Hello World</div>\n}`)
         setLoading(false)
@@ -197,11 +197,11 @@ function App() {
                   <button onClick={downloadFile} className="btn btn-primary">📥 Download</button>
                   <button onClick={() => setIsSearching(true)} className="btn btn-panel">Search Here</button>
                 </div>
-                
+
                 {isSearching && (
                   <div className="flex-row" style={{ marginTop: '10px' }}>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={searchQuery}
                       onChange={e => setSearchQuery(e.target.value)}
                       placeholder="Enter search pattern..."

@@ -201,7 +201,7 @@ See `examples/` directory:
 | `src/unifyweaver/ui/ui_primitives.pl` | Core UI primitive definitions |
 | `src/unifyweaver/ui/project_scaffold.pl` | Project generation orchestrator |
 | `src/unifyweaver/ui/vue_generator.pl` | Vue.js code generator |
-| `src/unifyweaver/ui/react_generator.pl` | React code generator |
+| `src/unifyweaver/glue/react_generator.pl` | React code generator |
 | `src/unifyweaver/ui/flutter_generator.pl` | Flutter code generator |
 | `src/unifyweaver/ui/tui_generator.pl` | TUI/Dialog code generator |
 | `src/unifyweaver/ui/http_cli_ui.pl` | HTTP CLI interface specification |

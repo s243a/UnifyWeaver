@@ -599,8 +599,8 @@ Several example apps exist but lack complete Prolog-based generation scripts:
 | `examples/pyodide-matrix/` | ✅ Complete | Generated output matches prototype |
 | `examples/curve-plot/` | ✅ Complete | Generated output matches prototype |
 | `examples/wasm-graph/` | ✅ Complete | Generated output matches prototype |
-| `examples/react-cli/` | ✅ Complete | Generated output matches prototype |
-| `examples/react-http-cli/` | ✅ Complete | Generated output matches prototype |
+| `examples/react-cli/` | ✅ Complete | Prolog-driven: mock FS, features, initial state from specs |
+| `examples/react-http-cli/` | ✅ Complete | Prolog-driven: API config, tabs, auth, roots; per-tab modular generation |
 
 **Goal:** Each example app should be fully regenerable from Prolog specifications via a `generate.pl` script.
 

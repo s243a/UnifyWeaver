@@ -101,7 +101,7 @@ function App() {
   const [browsePath, setBrowsePath] = useState('.')
   const [browseEntries, setBrowseEntries] = useState<FileEntry[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [browseRoot, setBrowseRoot] = useState('sandbox') // sandbox | project | home
+  const [browseRoot, setBrowseRoot] = useState('sandbox')
 
   // Upload state
   const [uploadFiles, setUploadFiles] = useState<File[]>([])

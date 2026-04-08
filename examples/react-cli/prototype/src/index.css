@@ -205,3 +205,13 @@ body {
   border-radius: 4px;
   color: var(--color-text-main);
 }
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.2);
+}
+
+.mt-10 {
+  margin-top: 10px;
+}
