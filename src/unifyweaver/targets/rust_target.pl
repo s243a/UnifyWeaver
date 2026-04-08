@@ -3497,16 +3497,16 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ).
 
 rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
-    rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema),
-    rust_foreign_schema_spec(Schema, ForeignSpec).
+    rust_recursive_kernel(Pred, Arity, Clauses, Kernel),
+    rust_recursive_kernel_spec(Kernel, ForeignSpec).
 
-rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
-    rust_foreign_schema_category_ancestor(Pred, Arity, Clauses, Schema).
-rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
-    rust_foreign_schema_transitive_closure(Pred, Arity, Clauses, Schema).
+rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
+    rust_recursive_kernel_category_ancestor(Pred, Arity, Clauses, Kernel).
+rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
+    rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses, Kernel).
 
-rust_foreign_schema_spec(
-        foreign_schema(
+rust_recursive_kernel_spec(
+        recursive_kernel(
             category_ancestor,
             category_ancestor/4,
             [max_depth(MaxDepth)]
@@ -3518,8 +3518,8 @@ rust_foreign_schema_spec(
             ],
             [category_ancestor/4]
         )).
-rust_foreign_schema_spec(
-        foreign_schema(
+rust_recursive_kernel_spec(
+        recursive_kernel(
             transitive_closure2,
             Pred/Arity,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)]
@@ -3533,12 +3533,12 @@ rust_foreign_schema_spec(
             [Pred/Arity]
         )).
 
-rust_foreign_schema_category_ancestor(Pred, Arity, Clauses,
-        foreign_schema(category_ancestor, category_ancestor/4, [max_depth(MaxDepth)])) :-
+rust_recursive_kernel_category_ancestor(Pred, Arity, Clauses,
+        recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(MaxDepth)])) :-
     rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth).
 
-rust_foreign_schema_transitive_closure(Pred, Arity, Clauses,
-        foreign_schema(transitive_closure2, Pred/Arity,
+rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
+        recursive_kernel(transitive_closure2, Pred/Arity,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
     rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs).
 
