@@ -42,12 +42,16 @@ pub enum Instruction {
     SetValue(String),
     /// Push constant C onto heap.
     SetConstant(Value),
+    /// Write constant C into any register and skip a replaced source sequence.
+    LoadRegisterConstant(Value, String, usize),
     /// Fused [H|T] construction into an output register; skips a source sequence on success.
     Cons(String, String, String, usize),
     /// Fused \\+ member(Element, List); skips a source sequence on success.
     NotMember(String, String, usize),
     /// Fused length(List, Depth), Depth < Limit; skips a source sequence on success.
     ListLengthLt(String, String, usize),
+    /// Fused base clause for category_ancestor/4 using indexed parent existence.
+    BaseCategoryAncestor(String, String, String),
     /// Fused benchmark recursive self-call setup for category_ancestor/4.
     RecurseCategoryAncestor(String, String, String, String, String, usize),
     /// Fused benchmark recursive self-call setup with a resolved target PC.

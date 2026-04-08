@@ -304,6 +304,11 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
     Body = '                self.set_heap_or_list(c.clone());
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::LoadRegisterConstant(c, reg, skip)', Body) :-
+    Body = '                self.trail_binding(reg);
+                self.put_reg(reg, c.clone());
+                self.pc += *skip; true'.
+
 wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body) :-
     Body = '                if let (Some(head), Some(tail)) = (self.get_reg(head_reg), self.get_reg(tail_reg)) {
                     self.heap.push(head.clone());
@@ -347,6 +352,52 @@ wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body
                     };
                     if limit_ok { self.pc += *skip; true } else { false }
                 } else { false }'.
+
+wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visited_reg)', Body) :-
+    Body = '                let cat = match self.get_reg(cat_reg) {
+                    Some(Value::Atom(s)) => s,
+                    Some(val) => match self.deref_var(&val) {
+                        Value::Atom(s) => s,
+                        _ => return false,
+                    },
+                    None => return false,
+                };
+                let target = match self.get_reg(target_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let target_atom = match &target {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let already_visited = match &visited {
+                    Value::List(items) => items.iter().any(|item| self.deref_var(item) == target),
+                    _ => false,
+                };
+                if already_visited {
+                    return false;
+                }
+                let parent_matches = self.indexed_atom_fact2
+                    .get("category_parent/2")
+                    .and_then(|table| table.get(&cat))
+                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .unwrap_or(false);
+                if !parent_matches {
+                    return false;
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
 
 wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip)', Body) :-
     Body = '                let Some(&target_pc) = self.labels.get(pred) else { return false; };

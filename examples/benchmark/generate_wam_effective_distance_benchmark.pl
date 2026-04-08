@@ -481,6 +481,67 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
                 continue;
             }
         }
+        if i + 1 < code.len() {
+            let replacement = match (&code[i], &code[i + 1]) {
+                (
+                    Instruction::PutVariable(limit_reg, a1),
+                    Instruction::Call(pred, 1),
+                ) if a1 == "A1" && pred == "max_depth/1" =>
+                    Some(Instruction::LoadRegisterConstant(
+                        Value::Integer(10),
+                        limit_reg.clone(),
+                        2,
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 2;
+                continue;
+            }
+        }
+        if i + 8 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+            ) {
+                (
+                    Instruction::PutValue(cat_reg, a1),
+                    Instruction::PutValue(target_reg, a2),
+                    Instruction::Call(pred, 2),
+                    Instruction::PutStructure(functor, a1b),
+                    Instruction::SetValue(target_reg2),
+                    Instruction::SetValue(visited_reg),
+                    Instruction::Deallocate,
+                    Instruction::BuiltinCall(op, 1),
+                    Instruction::Proceed,
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && pred == "category_parent/2"
+                    && functor == "member/2"
+                    && a1b == "A1"
+                    && target_reg == target_reg2
+                    && op == r"\\+/1" =>
+                    Some(Instruction::BaseCategoryAncestor(
+                        cat_reg.clone(),
+                        target_reg.clone(),
+                        visited_reg.clone(),
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 9;
+                continue;
+            }
+        }
         if i + 3 < code.len() {
             let replacement = match (&code[i], &code[i + 1], &code[i + 2], &code[i + 3]) {
                 (

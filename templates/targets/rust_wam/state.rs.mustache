@@ -541,6 +541,14 @@ impl WamState {
                 Some(Instruction::SetValue(args[0].clone())),
             "set_constant" if args.len() == 1 =>
                 Some(Instruction::SetConstant(Self::parse_value(&args[0]))),
+            "load_register_constant" if args.len() == 3 => {
+                let skip = args[2].parse::<usize>().ok()?;
+                Some(Instruction::LoadRegisterConstant(
+                    Self::parse_value(&args[0]),
+                    args[1].clone(),
+                    skip,
+                ))
+            }
             "cons" if args.len() == 4 => {
                 let skip = args[3].parse::<usize>().ok()?;
                 Some(Instruction::Cons(args[0].clone(), args[1].clone(), args[2].clone(), skip))
@@ -553,6 +561,12 @@ impl WamState {
                 let skip = args[2].parse::<usize>().ok()?;
                 Some(Instruction::ListLengthLt(args[0].clone(), args[1].clone(), skip))
             }
+            "base_category_ancestor" if args.len() == 3 =>
+                Some(Instruction::BaseCategoryAncestor(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                )),
             "recurse_category_ancestor" if args.len() == 6 => {
                 let skip = args[5].parse::<usize>().ok()?;
                 Some(Instruction::RecurseCategoryAncestor(

@@ -119,9 +119,11 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'SetVariable'),
         sub_string(S, _, _, _, 'SetValue'),
         sub_string(S, _, _, _, 'SetConstant'),
+        sub_string(S, _, _, _, 'LoadRegisterConstant'),
         sub_string(S, _, _, _, 'Cons'),
         sub_string(S, _, _, _, 'NotMember'),
         sub_string(S, _, _, _, 'ListLengthLt'),
+        sub_string(S, _, _, _, 'BaseCategoryAncestor'),
         sub_string(S, _, _, _, 'RecurseCategoryAncestor'),
         sub_string(S, _, _, _, 'ReturnAdd1'),
         % Control
