@@ -304,6 +304,50 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
     Body = '                self.set_heap_or_list(c.clone());
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body) :-
+    Body = '                if let (Some(head), Some(tail)) = (self.get_reg(head_reg), self.get_reg(tail_reg)) {
+                    self.heap.push(head.clone());
+                    self.heap.push(tail.clone());
+                    let list = match tail {
+                        Value::List(mut items) => { items.insert(0, head); Value::List(items) }
+                        tail_val => Value::List(vec![head, tail_val]),
+                    };
+                    self.regs.insert(out_reg.clone(), list);
+                    self.pc += *skip; true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
+    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg(elem_reg), self.get_reg(list_reg)) {
+                    let needle = self.deref_var(&elem);
+                    let haystack = self.deref_heap(&list_val);
+                    let found = match haystack {
+                        Value::List(items) => items.into_iter().any(|item| self.deref_var(&item) == needle),
+                        _ => false,
+                    };
+                    if found { false } else { self.pc += *skip; true }
+                } else { false }'.
+
+wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body) :-
+    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg(list_reg), self.get_reg(limit_reg)) {
+                    let len = match self.deref_var(&list_val) {
+                        Value::List(items) => items.len() as i64,
+                        direct => match self.deref_heap(&direct) {
+                            Value::List(items) => items.len() as i64,
+                            _ => return false,
+                        }
+                    };
+                    let limit_ok = match self.deref_var(&limit_val) {
+                        Value::Integer(n) => len < n,
+                        Value::Float(f) => (len as f64) < f,
+                        Value::Atom(s) => match s.parse::<f64>() {
+                            Ok(f) => (len as f64) < f,
+                            Err(_) => false,
+                        },
+                        _ => false,
+                    };
+                    if limit_ok { self.pc += *skip; true } else { false }
+                } else { false }'.
+
 % --- Control Instructions ---
 
 wam_instruction_arm('Instruction::Allocate', Body) :-

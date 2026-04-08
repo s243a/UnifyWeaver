@@ -42,6 +42,12 @@ pub enum Instruction {
     SetValue(String),
     /// Push constant C onto heap.
     SetConstant(Value),
+    /// Fused [H|T] construction into an output register; skips a source sequence on success.
+    Cons(String, String, String, usize),
+    /// Fused \\+ member(Element, List); skips a source sequence on success.
+    NotMember(String, String, usize),
+    /// Fused length(List, Depth), Depth < Limit; skips a source sequence on success.
+    ListLengthLt(String, String, usize),
 
     // === Control ===
     /// Create environment frame (saves CP, provides Yi storage).

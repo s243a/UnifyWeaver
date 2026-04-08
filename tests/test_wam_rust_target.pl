@@ -119,6 +119,9 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'SetVariable'),
         sub_string(S, _, _, _, 'SetValue'),
         sub_string(S, _, _, _, 'SetConstant'),
+        sub_string(S, _, _, _, 'Cons'),
+        sub_string(S, _, _, _, 'NotMember'),
+        sub_string(S, _, _, _, 'ListLengthLt'),
         % Control
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'Deallocate'),
@@ -446,6 +449,9 @@ test_parser_handles_all_instructions :-
         sub_string(Content, _, _, _, '"set_variable"'),
         sub_string(Content, _, _, _, '"set_value"'),
         sub_string(Content, _, _, _, '"set_constant"'),
+        sub_string(Content, _, _, _, '"cons"'),
+        sub_string(Content, _, _, _, '"not_member"'),
+        sub_string(Content, _, _, _, '"list_length_lt"'),
         % Control
         sub_string(Content, _, _, _, '"allocate"'),
         sub_string(Content, _, _, _, '"deallocate"'),
