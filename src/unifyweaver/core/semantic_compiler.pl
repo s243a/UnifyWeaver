@@ -13,6 +13,10 @@
     is_semantic_predicate/1,         % +Goal
     compile_semantic_call/4,         % +Target, +Goal, +VarMap, -Code
 
+    % Options-aware compilation (semantic_search/4)
+    extract_search_options/2,        % +Goal, -SearchOptions
+    merge_provider_options/3,        % +ProviderInfo, +SearchOptions, -Merged
+
     % Fuzzy logic compilation
     is_fuzzy_predicate/1,            % +Goal
     compile_fuzzy_call/3             % +Target, +Goal, -Code
@@ -88,11 +92,67 @@ is_semantic_predicate(Goal) :-
 %% compile_semantic_call(+Target, +Goal, +VarMap, -Code)
 %
 %  Dispatch compilation to target-specific semantic handler.
+%  Supports both Pred/3 and Pred/4 (with inline options).
+%  For Pred/4, options are merged with provider config before dispatch.
 %
 compile_semantic_call(Target, Goal, VarMap, Code) :-
     functor(Goal, Pred, Arity),
-    get_semantic_provider(Target, Pred/Arity, ProviderInfo),
-    semantic_dispatch(Target, Goal, ProviderInfo, VarMap, Code).
+    % Try exact arity first, then fall back to base arity (e.g., /4 → /3)
+    (   get_semantic_provider(Target, Pred/Arity, BaseProvider)
+    ->  true
+    ;   Arity > 3,
+        BaseArity is Arity - 1,
+        get_semantic_provider(Target, Pred/BaseArity, BaseProvider)
+    ),
+    % Merge inline options from Goal (if present) with provider config
+    extract_search_options(Goal, SearchOpts),
+    merge_provider_options(BaseProvider, SearchOpts, MergedProvider),
+    semantic_dispatch(Target, Goal, MergedProvider, VarMap, Code).
+
+%% extract_search_options(+Goal, -Options)
+%
+%  Extract inline search options from the Goal.
+%  For Pred/4 goals, the 4th argument is the options list.
+%  For Pred/3 goals (or when 4th arg is unbound), returns [].
+%
+extract_search_options(Goal, Options) :-
+    Goal =.. [_ | Args],
+    length(Args, Len),
+    Len >= 4,
+    nth1(4, Args, Opts),
+    is_list(Opts),
+    !,
+    Options = Opts.
+extract_search_options(_, []).
+
+%% merge_provider_options(+ProviderInfo, +SearchOptions, -Merged)
+%
+%  Merge inline search options with the provider configuration.
+%  Inline options override provider defaults.
+%  Supported inline options:
+%    threshold(T)  — minimum similarity score for results
+%    model(M)      — override the provider model name
+%    index(Path)   — override the vector database path
+%    top_k(K)      — override result count
+%
+merge_provider_options(ProviderInfo, [], ProviderInfo) :- !.
+merge_provider_options(ProviderInfo, SearchOpts, Merged) :-
+    % Override model if specified in search options
+    (   member(model(M), SearchOpts)
+    ->  select(model(_), ProviderInfo, P1),
+        Merged0 = [model(M) | P1]
+    ;   Merged0 = ProviderInfo
+    ),
+    % Add threshold if specified (not typically in provider config)
+    (   member(threshold(T), SearchOpts)
+    ->  Merged1 = [threshold(T) | Merged0]
+    ;   Merged1 = Merged0
+    ),
+    % Add index path if specified
+    (   member(index(Path), SearchOpts)
+    ->  Merged = [index(Path) | Merged1]
+    ;   Merged = Merged1
+    ).
 
 % ============================================================================
 % TARGET DISPATCH (Multifile hooks)

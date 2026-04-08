@@ -184,6 +184,106 @@ generate_csharp_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
     format(string(Line), '    complement *= 1.0 - ~w * (termScores.TryGetValue("~w", out var s_~w) ? s_~w : 0.5);\n', [BaseExpr, Term, Term, Term]),
     string_concat(Line, RestCode, Code).
 
+% ---- Batch fuzzy operations (double[] with LINQ/Parallel) ----
+
+%% f_and_batch: Batch product t-norm
+semantic_compiler:fuzzy_dispatch(csharp, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_csharp_batch_product_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy AND (product t-norm)
+    int n = BatchLen(termScoresBatch);
+    double[] result = Enumerable.Repeat(1.0, n).ToArray();
+~w', [TermCode]).
+
+%% f_or_batch: Batch probabilistic sum
+semantic_compiler:fuzzy_dispatch(csharp, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_csharp_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy OR (probabilistic sum)
+    int n = BatchLen(termScoresBatch);
+    double[] complement = Enumerable.Repeat(1.0, n).ToArray();
+~w    double[] result = complement.Select(c => 1.0 - c).ToArray();
+', [TermCode]).
+
+%% f_dist_or_batch: Batch distributed OR
+semantic_compiler:fuzzy_dispatch(csharp, f_dist_or_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_csharp_batch_dist_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy distributed OR
+    int n = ~w.Length;
+    double[] complement = Enumerable.Repeat(1.0, n).ToArray();
+~w    double[] result = complement.Select(c => 1.0 - c).ToArray();
+', [BaseScores, TermCode]).
+
+%% f_union_batch: Batch non-distributed OR
+semantic_compiler:fuzzy_dispatch(csharp, f_union_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_csharp_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy union (base * OR)
+    int n = ~w.Length;
+    double[] complement = Enumerable.Repeat(1.0, n).ToArray();
+~w    double[] result = ~w.Zip(complement, (b, c) => b * (1.0 - c)).ToArray();
+', [BaseScores, TermCode, BaseScores]).
+
+% ---- Batch helpers ----
+
+generate_csharp_batch_product_terms([], '').
+generate_csharp_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_csharp_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < result.Length; i++) result[i] *= ~w * scores_~w[i];
+    }
+', [Term, Term, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_csharp_batch_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_csharp_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < result.Length; i++) result[i] *= scores_~w[i];
+    }
+', [Term, Term, Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_csharp_batch_complement_terms([], '').
+generate_csharp_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_csharp_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < complement.Length; i++) complement[i] *= 1.0 - ~w * scores_~w[i];
+    }
+', [Term, Term, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_csharp_batch_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_csharp_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < complement.Length; i++) complement[i] *= 1.0 - scores_~w[i];
+    }
+', [Term, Term, Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_csharp_batch_dist_complement_terms([], '').
+generate_csharp_batch_dist_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_csharp_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < complement.Length; i++) complement[i] *= 1.0 - baseScores[i] * ~w * scores_~w[i];
+    }
+', [Term, Term, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_csharp_batch_dist_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_csharp_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {
+        for (int i = 0; i < complement.Length; i++) complement[i] *= 1.0 - baseScores[i] * scores_~w[i];
+    }
+', [Term, Term, Term]),
+    string_concat(Line, RestCode, Code).
+
 :- dynamic query_materialized_relation/1.
 :- discontiguous emit_plan_expression/2.
 

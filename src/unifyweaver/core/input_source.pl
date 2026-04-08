@@ -14,12 +14,17 @@
 %   input(file(Path))  — Read from a file path at runtime
 %   input(vfs(Cell))   — Read from a NotebookVFS cell (for sciREPL)
 %   input(function)    — Generate a function API (no I/O)
+%   input(vector_db(Path))          — Vector database for semantic search
+%   input(vector_db(Path, Format))  — Vector database with format hint
 
 :- module(input_source, [
     resolve_input_mode/2,       % +Options, -Mode
     base_seed_code/4,           % +Target, +Module, +BasePred, -SeedCode
     input_default/2,            % +Context, -Mode
-    lua_literal/2               % +Value, -Literal
+    lua_literal/2,              % +Value, -Literal
+    % Vector database support
+    resolve_vector_source/2,    % +Options, -VectorConfig
+    vector_db_init_code/3       % +Target, +VectorConfig, -Code
 ]).
 
 %% resolve_input_mode(+Options, -Mode)
@@ -48,6 +53,7 @@ input_default(notebook, embedded).
 input_default(workbook, embedded).
 input_default(browser, embedded).
 input_default(test, embedded).
+input_default(semantic, vector_db("data.db")).
 input_default(cli, stdin).
 input_default(_, stdin).
 
@@ -236,3 +242,49 @@ js_literal(Value, Literal) :-
     ->  format(string(Literal), '~w', [Value])
     ;   format(string(Literal), '"~w"', [Value])
     ).
+
+% ============================================================================
+% VECTOR DATABASE SUPPORT
+% ============================================================================
+
+%% resolve_vector_source(+Options, -VectorConfig)
+%  Extract vector database configuration from options.
+%  Returns vector_db(Path, Format) with defaults.
+resolve_vector_source(Options, vector_db(Path, Format)) :-
+    (   member(input(vector_db(P, F)), Options)
+    ->  Path = P, Format = F
+    ;   member(input(vector_db(P)), Options)
+    ->  Path = P, Format = auto
+    ;   member(index(P), Options)
+    ->  Path = P, Format = auto
+    ;   Path = "data.db", Format = auto
+    ).
+
+%% vector_db_init_code(+Target, +VectorConfig, -Code)
+%  Generate target-language initialization code for a vector database.
+vector_db_init_code(python, vector_db(Path, _Format), Code) :-
+    format(string(Code),
+'# Initialize vector database
+import sqlite3
+_db = sqlite3.connect("~w")
+', [Path]).
+
+vector_db_init_code(go, vector_db(Path, _Format), Code) :-
+    format(string(Code),
+'\t// Initialize vector database
+\tstore, err := storage.NewStore("~w")
+\tif err != nil { log.Fatal(err) }
+\tdefer store.Close()
+', [Path]).
+
+vector_db_init_code(rust, vector_db(Path, _Format), Code) :-
+    format(string(Code),
+'    // Initialize vector database
+    let store = Store::open("~w")?;
+', [Path]).
+
+vector_db_init_code(csharp, vector_db(Path, _Format), Code) :-
+    format(string(Code),
+'    // Initialize vector database
+    using var store = new VectorStore("~w");
+', [Path]).

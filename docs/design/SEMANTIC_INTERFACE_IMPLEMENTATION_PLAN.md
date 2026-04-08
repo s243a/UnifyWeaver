@@ -25,11 +25,14 @@
 - [x] Go batch fuzzy operations: f_and_batch, f_or_batch, f_dist_or_batch, f_union_batch.
 - [x] Tests for Rust (AND/OR/NOT), C# (AND/OR/NOT), Go batch (AND/OR).
 
-## Phase 3: Runtime Integration & Data Sources
-- [ ] Extend `input_source.pl` to handle vector index files for different targets.
-- [ ] Add support for `semantic_search/4` (options including threshold, custom model).
-- [ ] Integrate with `cross_runtime_pipeline.pl` to allow multi-language semantic stages.
-- [ ] Rust and C# batch fuzzy operations.
+## Phase 3: Runtime Integration & Data Sources (Completed)
+- [x] Extend `input_source.pl` with `vector_db(Path)` / `vector_db(Path, Format)` modes.
+- [x] Add `resolve_vector_source/2` and `vector_db_init_code/3` for all 4 targets.
+- [x] Support `semantic_search/4` via `extract_search_options/2` and `merge_provider_options/3`.
+- [x] Inline options (threshold, model, index) override provider config at compile time.
+- [x] Integrate `cross_runtime_pipeline.pl` with semantic/fuzzy dispatch for Rust/C# stages.
+- [x] Rust batch fuzzy operations (f_and_batch, f_or_batch, f_dist_or_batch, f_union_batch) via Vec<f64> iterators.
+- [x] C# batch fuzzy operations via LINQ Enumerable/Zip patterns.
 
 ## Phase 4: Extended Target Coverage & Polish
 - [ ] Implement `semantic_dispatch` for Elixir (via Bumblebee/NX).
