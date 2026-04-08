@@ -29,6 +29,7 @@ test_simple_fact(foo, bar).
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
 :- dynamic tc_ancestor/2.
+:- dynamic tc_descendant/2.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -59,6 +60,9 @@ tc_parent(pat, jim).
 
 tc_ancestor(X, Y) :- tc_parent(X, Y).
 tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
+
+tc_descendant(X, Y) :- tc_parent(Y, X).
+tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -334,6 +338,20 @@ test_foreign_lowering_transitive_closure :-
         sub_string(S, _, _, _, 'Instruction::CallForeign("tc_ancestor".to_string(), 2)')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
+    ).
+
+test_foreign_lowering_reverse_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_descendant/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_descendant/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_descendant/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_descendant".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_descendant/2')
     ).
 
 test_compile_wam_runtime_output :-
@@ -627,6 +645,7 @@ run_tests :-
     test_generated_rust_has_wam_wrapper,
     test_foreign_lowering_category_ancestor,
     test_foreign_lowering_transitive_closure,
+    test_foreign_lowering_reverse_transitive_closure,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

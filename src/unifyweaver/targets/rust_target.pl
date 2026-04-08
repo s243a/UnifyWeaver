@@ -3504,19 +3504,28 @@ rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPair
     member(RecHead-RecBody, Clauses),
     BaseHead =.. [Pred, Start, Target],
     RecHead =.. [Pred, Start, Target],
-    BaseBody =.. [EdgePred, Start, Target],
     RecBody = (EdgeGoal, RecGoal),
-    EdgeGoal =.. [EdgePred, Start, Mid],
     RecGoal =.. [Pred, Mid, Target],
+    (   BaseBody =.. [EdgePred, Start, Target],
+        EdgeGoal =.. [EdgePred, Start, Mid],
+        PairMode = forward
+    ;   BaseBody =.. [EdgePred, Target, Start],
+        EdgeGoal =.. [EdgePred, Mid, Start],
+        PairMode = reverse
+    ),
     findall(Left-Right,
         ( functor(EdgeHead, EdgePred, 2),
           user:clause(EdgeHead, true),
           EdgeHead =.. [EdgePred, Left, Right],
           atom(Left),
-          atom(Right)
+          atom(Right),
+          rust_foreign_edge_pair(PairMode, Left, Right, Left-Right)
         ),
         FactPairs),
     FactPairs \= [].
+
+rust_foreign_edge_pair(forward, Left, Right, Left-Right).
+rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),
