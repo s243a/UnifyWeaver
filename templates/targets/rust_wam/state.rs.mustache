@@ -80,8 +80,8 @@ pub struct WamState {
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Registered foreign predicates keyed by "name/arity".
     pub foreign_predicates: HashSet<String>,
-    /// Configuration for the native category_ancestor/4 foreign predicate.
-    pub foreign_category_ancestor_max_depth: Option<usize>,
+    /// Foreign predicate usize configs keyed by "name/arity#config".
+    pub foreign_usize_configs: HashMap<String, usize>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -118,7 +118,7 @@ impl WamState {
             labels,
             indexed_atom_fact2: HashMap::new(),
             foreign_predicates: HashSet::new(),
-            foreign_category_ancestor_max_depth: None,
+            foreign_usize_configs: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -151,10 +151,22 @@ impl WamState {
         self.foreign_predicates.insert(pred.to_string());
     }
 
+    /// Register a usize configuration entry for a foreign predicate.
+    pub fn register_foreign_usize_config(&mut self, pred: &str, key: &str, value: usize) {
+        self.foreign_usize_configs.insert(format!("{}#{}", pred, key), value);
+    }
+
+    /// Fetch a usize configuration entry for a foreign predicate.
+    pub fn foreign_usize_config(&self, pred: &str, key: &str) -> Option<usize> {
+        self.foreign_usize_configs
+            .get(&format!("{}#{}", pred, key))
+            .copied()
+    }
+
     /// Configure the native category_ancestor/4 foreign predicate.
     pub fn register_foreign_category_ancestor(&mut self, max_depth: usize) {
         self.register_foreign_predicate("category_ancestor/4");
-        self.foreign_category_ancestor_max_depth = Some(max_depth);
+        self.register_foreign_usize_config("category_ancestor/4", "max_depth", max_depth);
     }
 
     /// Dereference an Unbound variable through the binding table.

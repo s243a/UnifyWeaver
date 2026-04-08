@@ -323,7 +323,9 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'BeginAggregate'),
         sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
-        sub_string(S, _, _, _, 'TryMeElse')
+        sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
+        sub_string(S, _, _, _, 'name: "foreign_results".to_string()')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).

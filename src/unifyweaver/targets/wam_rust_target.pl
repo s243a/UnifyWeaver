@@ -1066,7 +1066,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(_) => return false,
                     None => return false,
                 };
-                let max_depth = match self.foreign_category_ancestor_max_depth {
+                let max_depth = match self.foreign_usize_config(&pred_key, "max_depth") {
                     Some(limit) => limit,
                     None => return false,
                 };
@@ -1084,8 +1084,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
-                            name: "foreign:category_ancestor/4".to_string(),
-                            args: vec![hops_reg.clone()],
+                            name: "foreign_results".to_string(),
+                            args: vec![Value::Atom(pred_key.clone()), hops_reg.clone()],
                             data: hops[1..].iter().map(|hop| Value::Integer(*hop)).collect(),
                         }),
                         cut_barrier: self.cut_barrier,
@@ -1315,8 +1315,12 @@ compile_resume_builtin_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
-            "foreign:category_ancestor/4" => {
-                let hops_reg = match state.args.get(0) {
+            "foreign_results" => {
+                let pred_key = match state.args.get(0) {
+                    Some(Value::Atom(pred_key)) => pred_key.clone(),
+                    _ => return false,
+                };
+                let hops_reg = match state.args.get(1) {
                     Some(val) => val.clone(),
                     None => return false,
                 };
@@ -1333,12 +1337,15 @@ compile_resume_builtin_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
-                            name: "foreign:category_ancestor/4".to_string(),
+                            name: "foreign_results".to_string(),
                             args: state.args.clone(),
                             data: state.data[1..].to_vec(),
                         }),
                         cut_barrier: self.cut_barrier,
                     });
+                }
+                if pred_key != "category_ancestor/4" {
+                    return false;
                 }
                 if self.unify(&hops_reg, &Value::Integer(hop)) {
                     self.pc += 1; true
