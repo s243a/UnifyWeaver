@@ -319,9 +319,9 @@ wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body
 wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
     Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg(elem_reg), self.get_reg(list_reg)) {
                     let needle = self.deref_var(&elem);
-                    let haystack = self.deref_heap(&list_val);
-                    let found = match haystack {
-                        Value::List(items) => items.into_iter().any(|item| self.deref_var(&item) == needle),
+                    let haystack = self.deref_var(&list_val);
+                    let found = match &haystack {
+                        Value::List(items) => items.iter().any(|item| self.deref_var(item) == needle),
                         _ => false,
                     };
                     if found { false } else { self.pc += *skip; true }

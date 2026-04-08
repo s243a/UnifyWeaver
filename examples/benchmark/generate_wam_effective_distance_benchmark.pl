@@ -334,6 +334,7 @@ fn append_fact1(
 }
 
 fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
+    optimize_benchmark_code(code);
     for instr in code.iter_mut() {
         let replacement = match instr {
             Instruction::Call(pred, arity) => {
@@ -396,6 +397,30 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
         if let Some(new_instr) = replacement {
             *instr = new_instr;
         }
+    }
+}
+
+fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
+    let mut i = 0usize;
+    while i < code.len() {
+        if i + 3 < code.len() {
+            let replacement = match (&code[i], &code[i + 1], &code[i + 2], &code[i + 3]) {
+                (
+                    Instruction::PutStructure(functor, a1),
+                    Instruction::SetValue(elem_reg),
+                    Instruction::SetValue(list_reg),
+                    Instruction::BuiltinCall(op, 1),
+                ) if functor == "member/2" && a1 == "A1" && op == r"\\+/1" =>
+                    Some(Instruction::NotMember(elem_reg.clone(), list_reg.clone(), 4)),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 4;
+                continue;
+            }
+        }
+        i += 1;
     }
 }
 
