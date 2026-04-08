@@ -905,13 +905,19 @@ wam_deref(Val, Derefed) :-
     ).
 
 %% wam_save_bindings(-Saved)
-%  Save the current binding table (for choice points).
-wam_save_bindings(Saved) :-
-    nb_getval(wam_bindings, Saved).
+%  Save the current binding table and variable counter (for choice points).
+wam_save_bindings(saved(Bindings, VarCounter)) :-
+    nb_getval(wam_bindings, Bindings),
+    nb_getval(wam_var_counter, VarCounter).
 
 %% wam_restore_bindings(+Saved)
-%  Restore binding table from a saved snapshot (on backtrack).
+%  Restore binding table and variable counter from a saved snapshot.
+wam_restore_bindings(saved(Bindings, VarCounter)) :-
+    nb_setval(wam_bindings, Bindings),
+    nb_setval(wam_var_counter, VarCounter).
+%  Legacy format (plain assoc) for backward compatibility
 wam_restore_bindings(Saved) :-
+    \+ functor(Saved, saved, 2),
     nb_setval(wam_bindings, Saved).
 
 get_reg_val(Reg, R, S, Val) :-
