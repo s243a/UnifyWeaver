@@ -145,6 +145,184 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     nb_setval(wam_memo_table, EmptyMemo).
 
 % ============================================================================
+% Meta-Predicate Builtins (aggregate_all, findall, setof, keysort)
+% ============================================================================
+
+is_meta_predicate('aggregate_all/3').
+is_meta_predicate('findall/3').
+is_meta_predicate('setof/3').
+is_meta_predicate('keysort/2').
+is_meta_predicate('sort/2').
+
+%% call_meta_predicate(+Pred, +Arity, +StateIn, -StateOut)
+call_meta_predicate('keysort/2', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, ListRaw),
+    wam_deref(ListRaw, DList),
+    deref_wam(DList, StateIn, List),
+    % keysort expects a list of Key-Value pairs
+    (   is_list(List)
+    ->  deref_pairs(List, StateIn, Pairs),
+        keysort(Pairs, Sorted),
+        get_assoc('A2', R, A2Raw), wam_deref(A2Raw, A2),
+        (   is_wam_unbound(A2)
+        ->  trail_binding('A2', R, T, NT),
+            (atom(A2), is_wam_unbound(A2) -> wam_bind(A2, Sorted) ; true),
+            put_assoc('A2', R, Sorted, NR)
+        ;   A2 == Sorted -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+call_meta_predicate('sort/2', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, ListRaw),
+    wam_deref(ListRaw, DList),
+    deref_wam(DList, StateIn, List),
+    is_list(List),
+    sort(List, Sorted),
+    get_assoc('A2', R, A2Raw), wam_deref(A2Raw, A2),
+    (   is_wam_unbound(A2)
+    ->  trail_binding('A2', R, T, NT),
+        (atom(A2), is_wam_unbound(A2) -> wam_bind(A2, Sorted) ; true),
+        put_assoc('A2', R, Sorted, NR)
+    ;   A2 == Sorted -> NR = R, NT = T
+    ;   fail
+    ),
+    StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L).
+
+%% aggregate_all/3: aggregate_all(Template, Goal, Result)
+%  Template is a structure like sum(X). Goal is a structure representing
+%  the body to evaluate. Result is bound to the aggregated value.
+%
+%  A1 = Template (e.g., sum(Var))
+%  A2 = Goal (structure representing the body)
+%  A3 = Result (output)
+%
+%  For the effective-distance workload, this is called with:
+%    aggregate_all(sum(F), (category_ancestor(A,B,G,[A]), H is G+1, F is H**E), C)
+%  where the Goal is a conjunction built as nested str(',/2', ...) on the heap.
+%
+%  Implementation: reconstruct the Goal from the heap, use native Prolog's
+%  aggregate_all to evaluate it, bind the result.
+call_meta_predicate('aggregate_all/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    % Reconstruct Template and Goal from heap structures
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    % Convert heap structures to callable Prolog terms
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    % Execute via native Prolog's aggregate_all
+    (   catch(
+            aggregate_all(TemplateTerm, GoalTerm, Result),
+            _,
+            fail
+        )
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, Result) ; true),
+            put_assoc('A3', R, Result, NR)
+        ;   ResultVar == Result -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% findall/3: findall(Template, Goal, ResultList)
+call_meta_predicate('findall/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    (   catch(findall(TemplateTerm, GoalTerm, ResultList), _, fail)
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, ResultList) ; true),
+            put_assoc('A3', R, ResultList, NR)
+        ;   ResultVar == ResultList -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% setof/3: setof(Template, Goal, ResultList)
+call_meta_predicate('setof/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    (   catch(setof(TemplateTerm, GoalTerm, ResultList), _, fail)
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, ResultList) ; true),
+            put_assoc('A3', R, ResultList, NR)
+        ;   ResultVar == ResultList -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% heap_to_term(+HeapVal, +State, -PrologTerm)
+%  Convert a heap-constructed WAM structure to a callable Prolog term.
+%  E.g., str('sum/1', [Var]) → sum(Var)
+%       str(',/2', [Goal1, Goal2]) → (Goal1, Goal2)
+heap_to_term(Val, State, Term) :-
+    (   Val = str(FN, Args)
+    ->  % Parse functor/arity
+        (   sub_atom(FN, Before, 1, _, '/')
+        ->  sub_atom(FN, 0, Before, _, Functor)
+        ;   Functor = FN
+        ),
+        maplist({State}/[A, T]>>heap_to_term(A, State, T), Args, TermArgs),
+        (   Functor == ',' -> TermArgs = [T1, T2], Term = (T1, T2)
+        ;   Functor == '-' -> TermArgs = [T1, T2], Term = (T1 - T2)
+        ;   atom_to_term_functor(Functor, TermArgs, Term)
+        )
+    ;   Val = ref(Addr)
+    ->  deref_wam(Val, State, DVal),
+        (DVal == Val -> Term = Val ; heap_to_term(DVal, State, Term))
+    ;   is_wam_unbound(Val)
+    ->  % Unbound WAM variable — check bindings, or leave as Prolog variable
+        wam_deref(Val, DVal),
+        (DVal == Val -> true ; heap_to_term(DVal, State, Term)),
+        (var(Term) -> true ; true)  % Term might still be unbound
+    ;   Term = Val  % atom, number, list
+    ).
+
+atom_to_term_functor(Functor, Args, Term) :-
+    atom_string(FAtom, Functor),
+    Term =.. [FAtom|Args].
+
+deref_pairs([], _, []).
+deref_pairs([H|T], State, [DH|DT]) :-
+    (   H = K-V
+    ->  deref_wam(K, State, DK), deref_wam(V, State, DV),
+        DH = DK-DV
+    ;   DH = H
+    ),
+    deref_pairs(T, State, DT).
+
+% ============================================================================
 % WAM Tabling / Memoization
 % ============================================================================
 %
@@ -637,8 +815,11 @@ step_wam(set_constant(C), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state
 step_wam(call(P, Arity), StateIn, StateOut) :-
     StateIn = wam_state(PC, R, S, H, T, _, CPS, Code, L),
     NCP is PC + 1,
-    % Check fact table first (O(log n) lookup vs O(n) instruction scan)
-    (   wam_fact_table_registered(P, FactTable)
+    % Check meta-predicates first (aggregate_all, findall, setof)
+    (   is_meta_predicate(P)
+    ->  call_meta_predicate(P, Arity, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
+    % Check fact table (O(log n) lookup)
+    ;   wam_fact_table_registered(P, FactTable)
     ->  call_fact_predicate(P, Arity, FactTable, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
     ;   % Execute via WAM code (with optional memo check for inner recursive calls)
         get_assoc(P, L, NPC),
@@ -759,6 +940,20 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
         (atom_number(KeyStr, Key) -> true ; Key = KeyStr),
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
+
+%% nonvar/1 — succeed if A1 is not an unbound WAM variable.
+step_wam(builtin_call('nonvar/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val), wam_deref(Val, DVal),
+    \+ is_wam_unbound(DVal),
+    NPC is PC + 1.
+
+%% var/1 — succeed if A1 is an unbound WAM variable.
+step_wam(builtin_call('var/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val), wam_deref(Val, DVal),
+    is_wam_unbound(DVal),
+    NPC is PC + 1.
 
 %% !/0 — cut: truncate choice points to the cut barrier.
 %  The cut barrier is saved at Allocate time in the env frame.
