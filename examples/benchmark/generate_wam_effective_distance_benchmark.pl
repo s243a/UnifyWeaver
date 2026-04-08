@@ -296,6 +296,15 @@ fn append_fact2(
     code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
+fn build_indexed_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (a, b) in pairs {
+        grouped.entry(a.clone()).or_default().push(b.clone());
+    }
+    grouped.into_iter().collect()
+}
+
 /// Build WAM fact instructions for a 1-column relation with first-argument indexing.
 fn append_fact1(
     code: &mut Vec<Instruction>,
@@ -328,7 +337,11 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
     for instr in code.iter_mut() {
         let replacement = match instr {
             Instruction::Call(pred, arity) => {
-                labels.get(pred).copied().map(|pc| Instruction::CallPc(pc, *arity))
+                if pred == "category_parent/2" && *arity == 2 {
+                    Some(Instruction::CallIndexedAtomFact2(pred.clone()))
+                } else {
+                    labels.get(pred).copied().map(|pc| Instruction::CallPc(pc, *arity))
+                }
             }
             Instruction::Execute(pred) => {
                 labels.get(pred).copied().map(Instruction::ExecutePc)
@@ -422,6 +435,7 @@ fn main() {
 
     // Create VM with merged code
     let mut vm = WamState::new(all_code, all_labels);
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
 
     let query_start = Instant::now();
 
@@ -449,7 +463,7 @@ fn main() {
     let step_limit = std::env::var("WAM_STEP_LIMIT")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(500_000);
+        .unwrap_or(1_000_000);
 
     // For each seed category, run category_ancestor(Cat, Root, Hops, [Cat])
     // through the WAM VM and compute weight_sum = Σ (Hops+1)^(-n)

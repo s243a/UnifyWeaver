@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--step-limit",
         type=int,
-        default=500_000,
+        default=1_000_000,
         help="Rust WAM per-seed step cap",
     )
     parser.add_argument(

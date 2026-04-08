@@ -375,6 +375,39 @@ wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
                 self.pc = *target_pc;
                 true'.
 
+wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
+    Body = '                let key = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let a2 = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let values = match self.indexed_atom_fact2.get(pred).and_then(|table| table.get(&key)) {
+                    Some(values) if !values.is_empty() => values.clone(),
+                    _ => return false,
+                };
+                if values.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        cp: self.cp,
+                        stack: self.stack.clone(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "indexed_atom_fact2".to_string(),
+                            args: vec![Value::Atom(pred.clone()), Value::Atom(key.clone())],
+                            data: vec![Value::Integer(1)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&a2, &Value::Atom(values[0].clone())) {
+                    self.pc += 1; true
+                } else { false }'.
+
 wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
@@ -983,6 +1016,48 @@ compile_resume_builtin_to_rust(Code) :-
                     if self.unify(&val1, &items[idx]) {
                         self.pc += 1; true
                     } else { false }
+                } else { false }
+            }
+            "indexed_atom_fact2" => {
+                let pred = match state.args.get(0) {
+                    Some(Value::Atom(pred)) => pred.clone(),
+                    _ => return false,
+                };
+                let key = match state.args.get(1) {
+                    Some(Value::Atom(key)) => key.clone(),
+                    _ => return false,
+                };
+                let idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let values = match self.indexed_atom_fact2.get(&pred).and_then(|table| table.get(&key)) {
+                    Some(values) => values,
+                    None => return false,
+                };
+                if idx >= values.len() { return false; }
+                if idx + 1 < values.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "indexed_atom_fact2".to_string(),
+                            args: state.args.clone(),
+                            data: vec![Value::Integer((idx + 1) as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                let a2 = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                if self.unify(&a2, &Value::Atom(values[idx].clone())) {
+                    self.pc += 1; true
                 } else { false }
             }
             _ => false,

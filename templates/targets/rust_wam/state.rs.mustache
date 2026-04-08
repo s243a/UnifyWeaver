@@ -76,6 +76,8 @@ pub struct WamState {
     pub code: Vec<Instruction>,
     /// Label → PC mapping.
     pub labels: HashMap<String, usize>,
+    /// Pre-indexed 2-column atom facts keyed by predicate then first argument.
+    pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -110,6 +112,7 @@ impl WamState {
             choice_points: Vec::new(),
             code,
             labels,
+            indexed_atom_fact2: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -130,6 +133,11 @@ impl WamState {
     /// Set an argument register.
     pub fn set_reg(&mut self, name: &str, val: Value) {
         self.regs.insert(name.to_string(), val);
+    }
+
+    /// Register an indexed atom/atom fact table for benchmark fast paths.
+    pub fn register_indexed_atom_fact2(&mut self, pred: &str, index: HashMap<String, Vec<String>>) {
+        self.indexed_atom_fact2.insert(pred.to_string(), index);
     }
 
     /// Dereference an Unbound variable through the binding table.
@@ -550,6 +558,8 @@ impl WamState {
                 let arity = args[1].parse::<usize>().ok()?;
                 Some(Instruction::Call(args[0].clone(), arity))
             }
+            "call_indexed_atom_fact2" if args.len() == 1 =>
+                Some(Instruction::CallIndexedAtomFact2(args[0].clone())),
             "execute" if args.len() == 1 =>
                 Some(Instruction::Execute(args[0].clone())),
             "proceed" => Some(Instruction::Proceed),
