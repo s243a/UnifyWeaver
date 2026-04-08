@@ -305,6 +305,40 @@ fn build_indexed_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String
     grouped.into_iter().collect()
 }
 
+fn build_reverse_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (child, parent) in pairs {
+        grouped.entry(parent.clone()).or_default().push(child.clone());
+    }
+    grouped.into_iter().collect()
+}
+
+fn compute_reachable_to_root(root: &str, reverse_index: &HashMap<String, Vec<String>>, max_depth: usize) -> HashSet<String> {
+    use std::collections::VecDeque;
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut best_depth: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::from([(root.to_string(), 0)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        if let Some(prev) = best_depth.get(&current) {
+            if depth >= *prev {
+                continue;
+            }
+        }
+        best_depth.insert(current.clone(), depth);
+        reachable.insert(current.clone());
+        if depth >= max_depth {
+            continue;
+        }
+        if let Some(children) = reverse_index.get(&current) {
+            for child in children {
+                queue.push_back((child.clone(), depth + 1));
+            }
+        }
+    }
+    reachable
+}
+
 /// Build WAM fact instructions for a 1-column relation with first-argument indexing.
 fn append_fact1(
     code: &mut Vec<Instruction>,
@@ -502,7 +536,7 @@ fn main() {
     seed_cats.dedup();
     if let Ok(filter_raw) = std::env::var("WAM_SEED_FILTER") {
         let wanted: HashSet<String> = filter_raw
-            .split(",")
+            .split("|")
             .map(|part| part.trim())
             .filter(|part| !part.is_empty())
             .map(|part| part.to_string())
@@ -514,9 +548,11 @@ fn main() {
     let seed_count = seed_cats.len();
 
     let root = roots[0].clone();
+    let max_depth_limit = 10usize;
+    let reverse_category_parents = build_reverse_fact2(&category_parents);
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
-    let max_depth_limit = 10usize;
     let mut hop_weights: Vec<f64> = Vec::with_capacity(max_depth_limit + 2);
     hop_weights.push(0.0);
     for d in 1..=(max_depth_limit + 1) {
@@ -536,6 +572,29 @@ fn main() {
     let mut total_backtracks: u64 = 0;
 
     for cat in &seed_cats {
+        if !reachable_to_root.contains(cat) {
+            if profile_enabled {
+                let profile = SeedProfile {
+                    category: cat.clone(),
+                    elapsed_ms: 0,
+                    steps: 0,
+                    backtracks: 0,
+                    solutions: 0,
+                    weight_sum: 0.0,
+                };
+                eprintln!(
+                    "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                    profile.category,
+                    profile.elapsed_ms,
+                    profile.steps,
+                    profile.backtracks,
+                    profile.solutions,
+                    profile.weight_sum,
+                );
+                seed_profiles.push(profile);
+            }
+            continue;
+        }
         let mut weight_sum: f64 = 0.0;
         let seed_start = Instant::now();
 

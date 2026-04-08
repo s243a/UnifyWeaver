@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--seeds",
         required=True,
-        help="Comma-separated seed categories to profile",
+        help="Pipe-separated seed categories to profile",
     )
     parser.add_argument(
         "--step-limit",
@@ -188,7 +188,7 @@ def print_row(seed: str, prolog: PrologSeedProfile, wam: WamSeedProfile) -> None
 
 def main() -> int:
     args = parse_args()
-    seeds = [seed.strip() for seed in args.seeds.split(",") if seed.strip()]
+    seeds = [seed.strip() for seed in args.seeds.split("|") if seed.strip()]
     if not seeds:
         raise SystemExit("no seeds supplied")
 
