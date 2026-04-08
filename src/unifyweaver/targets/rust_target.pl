@@ -61,8 +61,6 @@
     compile_streaming_federation_rust/2   % +Options, -RustCode
 ]).
 
-:- discontiguous compile_predicate_to_rust_normal/4.
-
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(library(gensym)). % For generating unique variable names
@@ -3413,19 +3411,6 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ;   fail
     ).
 
-rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
-    member(_-BaseBody, Clauses),
-    member(_-RecBody, Clauses),
-    BaseBody \= true,
-    RecBody \= true,
-    sub_term(\+ member(_, _), BaseBody),
-    sub_term(\+ member(_, _), RecBody),
-    sub_term((_ is _ + 1), RecBody),
-    current_predicate(user:max_depth/1),
-    user:max_depth(MaxDepth),
-    integer(MaxDepth),
-    MaxDepth > 0.
-
 %% WAM fallback tier: when all native lowering tiers fail, compile
 %% via WAM and generate Rust wrapper. Controlled by wam_fallback option
 %% (default: true). Set wam_fallback(false) to disable and see how far
@@ -3454,6 +3439,19 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ->  wam_rust_target:compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode)
     ;   fail
     ).
+
+rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
+    member(_-BaseBody, Clauses),
+    member(_-RecBody, Clauses),
+    BaseBody \= true,
+    RecBody \= true,
+    sub_term(\+ member(_, _), BaseBody),
+    sub_term(\+ member(_, _), RecBody),
+    sub_term((_ is _ + 1), RecBody),
+    current_predicate(user:max_depth/1),
+    user:max_depth(MaxDepth),
+    integer(MaxDepth),
+    MaxDepth > 0.
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),
