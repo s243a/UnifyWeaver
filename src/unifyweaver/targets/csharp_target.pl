@@ -48,6 +48,41 @@
 :- use_module('../core/component_registry').
 :- use_module('csharp_runtime/custom_csharp', []).
 
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(csharp, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
+    option(provider(onnx), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device initialization for C# (ONNX Runtime)
+    (   Device == gpu
+    ->  DeviceInit = 'opts.AppendExecutionProvider_DML(); // DirectML for Windows GPU'
+    ;   Device == cpu
+    ->  DeviceInit = 'opts.AppendExecutionProvider_CPU();'
+    ;   DeviceInit = '// Auto-select device (default CPU)'
+    ),
+
+    format(string(Code), '
+    // Initialize C# ONNX Runtime searcher with model ~w
+    var opts = new SessionOptions();
+    try {
+        ~w
+    } catch (Exception ex) {
+        Console.WriteLine($"Warning: GPU initialization failed: {ex.Message}. Falling back to CPU.");
+        opts.AppendExecutionProvider_CPU();
+    }
+    var searcher = new OnnxVectorSearch("data.db", "models/~w-onnx", opts);
+    var results = searcher.Search("~w", ~w);
+', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
+
 :- dynamic query_materialized_relation/1.
 :- discontiguous emit_plan_expression/2.
 

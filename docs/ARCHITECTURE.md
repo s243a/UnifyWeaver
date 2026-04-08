@@ -17,6 +17,7 @@ src/unifyweaver/
 │   ├── stream_compiler.pl
 │   ├── recursive_compiler.pl
 │   ├── constraint_analyzer.pl
+│   ├── semantic_compiler.pl
 │   ├── optimizer.pl
 │   ├── firewall.pl
 │   ├── preferences.pl
@@ -53,6 +54,10 @@ Compiles non-recursive predicates into bash streaming pipelines.
 ### recursive_compiler.pl
 
 Acts as the main dispatcher. It analyzes a predicate, classifies its recursion pattern, and delegates compilation to the appropriate module (either `stream_compiler` or `advanced_recursive_compiler`). It also orchestrates the control plane logic.
+
+### semantic_compiler.pl
+
+Generic semantic search compilation interface. Provides `declare_semantic_provider/2` for registering provider configurations and `compile_semantic_call/4` for dispatching to target-specific code generators via multifile `semantic_dispatch/5` hooks. Supports per-target provider selection, hardware-aware device fallback, and a fallback provider mechanism.
 
 ### constraint_analyzer.pl
 
