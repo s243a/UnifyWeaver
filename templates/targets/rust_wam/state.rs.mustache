@@ -91,6 +91,8 @@ pub struct WamState {
     pub step_count: u64,
     /// Maximum steps per query (0 = unlimited).
     pub step_limit: u64,
+    /// Number of backtrack attempts in the current query.
+    pub backtrack_count: u64,
     /// Accumulator used by aggregate frames during solution collection.
     pub aggregate_acc: Vec<Value>,
     /// Return PC stored by end_aggregate for aggregate-frame finalization.
@@ -115,6 +117,7 @@ impl WamState {
             cut_barrier: 0,
             step_count: 0,
             step_limit: 0,
+            backtrack_count: 0,
             aggregate_acc: Vec::new(),
             aggregate_return_pc: 0,
         }
@@ -169,6 +172,7 @@ impl WamState {
         self.var_counter = 0;
         self.cut_barrier = 0;
         self.step_count = 0;
+        self.backtrack_count = 0;
         self.aggregate_acc.clear();
         self.aggregate_return_pc = 0;
     }

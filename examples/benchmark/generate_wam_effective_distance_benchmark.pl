@@ -196,6 +196,16 @@ use value::Value;
 use instructions::Instruction;
 use state::WamState;
 
+#[derive(Debug)]
+struct SeedProfile {
+    category: String,
+    elapsed_ms: u128,
+    steps: u64,
+    backtracks: u64,
+    solutions: u32,
+    weight_sum: f64,
+}
+
 /// Load a two-column TSV file into pairs (skips the header line).
 fn load_tsv_pairs(path: &str) -> Vec<(String, String)> {
     let file = File::open(path).unwrap_or_else(|e| panic!("Cannot open {}: {}", path, e));
@@ -347,7 +357,7 @@ fn main() {
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
 
     // Create VM with merged code
-    let mut vm = WamState::new(all_code.clone(), all_labels.clone());
+    let mut vm = WamState::new(all_code, all_labels);
 
     let query_start = Instant::now();
 
@@ -360,13 +370,18 @@ fn main() {
     let root = roots[0].clone();
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
+    let profile_enabled = std::env::var("WAM_PROFILE").ok().as_deref() == Some("1");
 
     // For each seed category, run category_ancestor(Cat, Root, Hops, [Cat])
     // through the WAM VM and compute weight_sum = Σ (Hops+1)^(-n)
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
+    let mut seed_profiles: Vec<SeedProfile> = Vec::new();
+    let mut total_steps: u64 = 0;
+    let mut total_backtracks: u64 = 0;
 
     for cat in &seed_cats {
         let mut weight_sum: f64 = 0.0;
+        let seed_start = Instant::now();
 
         // Reset VM mutable state (code/labels are shared, not cloned)
         vm.reset_query();
@@ -410,6 +425,29 @@ fn main() {
                 } else {
                     break;
                 }
+            }
+
+            total_steps += vm.step_count;
+            total_backtracks += vm.backtrack_count;
+            if profile_enabled {
+                let profile = SeedProfile {
+                    category: cat.clone(),
+                    elapsed_ms: seed_start.elapsed().as_millis(),
+                    steps: vm.step_count,
+                    backtracks: vm.backtrack_count,
+                    solutions,
+                    weight_sum,
+                };
+                eprintln!(
+                    "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                    profile.category,
+                    profile.elapsed_ms,
+                    profile.steps,
+                    profile.backtracks,
+                    profile.solutions,
+                    profile.weight_sum,
+                );
+                seed_profiles.push(profile);
             }
         }
 
@@ -460,6 +498,28 @@ fn main() {
     eprintln!("seed_count={}", seed_count);
     eprintln!("tuple_count={}", seed_weight_sums.len());
     eprintln!("article_count={}", results.len());
+    eprintln!("total_steps={}", total_steps);
+    eprintln!("total_backtracks={}", total_backtracks);
+
+    if profile_enabled {
+        seed_profiles.sort_by(|a, b| {
+            b.elapsed_ms.cmp(&a.elapsed_ms)
+                .then(b.steps.cmp(&a.steps))
+                .then(a.category.cmp(&b.category))
+        });
+        eprintln!("profile_top_seeds={}", seed_profiles.len().min(10));
+        for seed in seed_profiles.iter().take(10) {
+            eprintln!(
+                "seed_profile category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                seed.category,
+                seed.elapsed_ms,
+                seed.steps,
+                seed.backtracks,
+                seed.solutions,
+                seed.weight_sum,
+            );
+        }
+    }
 }
 ', [MergedInstrCode, MergedLabelCode]),
     setup_call_cleanup(

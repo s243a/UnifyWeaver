@@ -518,6 +518,7 @@ compile_run_loop_to_rust(Code) :-
 compile_backtrack_to_rust(Code0) :-
     Code0 = '    /// Restore state from the top choice point without popping it.
     pub fn backtrack(&mut self) -> bool {
+        self.backtrack_count += 1;
         if let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
 
