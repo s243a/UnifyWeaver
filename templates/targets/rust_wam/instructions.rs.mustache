@@ -50,8 +50,12 @@ pub enum Instruction {
     Deallocate,
     /// Call predicate P/N, saving return address in CP.
     Call(String, usize),
+    /// Call predicate at resolved PC, saving return address in CP.
+    CallPc(usize, usize),
     /// Jump to predicate P/N (tail call optimization).
     Execute(String),
+    /// Jump directly to a resolved PC (tail call optimization).
+    ExecutePc(usize),
     /// Return from predicate (jump to CP).
     Proceed,
     /// Evaluate a built-in predicate.

@@ -323,6 +323,23 @@ fn append_fact1(
     code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
+fn resolve_call_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
+    for instr in code.iter_mut() {
+        let replacement = match instr {
+            Instruction::Call(pred, arity) => {
+                labels.get(pred).copied().map(|pc| Instruction::CallPc(pc, *arity))
+            }
+            Instruction::Execute(pred) => {
+                labels.get(pred).copied().map(Instruction::ExecutePc)
+            }
+            _ => None,
+        };
+        if let Some(new_instr) = replacement {
+            *instr = new_instr;
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -355,6 +372,7 @@ fn main() {
     append_fact2(&mut all_code, &mut all_labels, "category_parent", &category_parents);
     append_fact2(&mut all_code, &mut all_labels, "article_category", &article_categories);
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
+    resolve_call_targets(&mut all_code, &all_labels);
 
     // Create VM with merged code
     let mut vm = WamState::new(all_code, all_labels);

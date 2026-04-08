@@ -326,11 +326,20 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     true
                 } else { false }'.
 
+wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
+    Body = '                self.cp = self.pc + 1;
+                self.pc = *target_pc;
+                true'.
+
 wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
                 } else { false }'.
+
+wam_instruction_arm('Instruction::ExecutePc(target_pc)', Body) :-
+    Body = '                self.pc = *target_pc;
+                true'.
 
 wam_instruction_arm('Instruction::Proceed', Body) :-
     Body = '                let ret = self.cp;
