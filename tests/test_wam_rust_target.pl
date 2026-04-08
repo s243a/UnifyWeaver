@@ -275,6 +275,27 @@ test_recursive_kernel_ir_selection :-
     ;   fail_test(Test, 'Recursive kernel IR did not normalize expected schemas')
     ).
 
+test_recursive_kernel_spec_generation :-
+    Test = 'WAM-Rust: recursive kernel IR generates foreign specs declaratively',
+    Kernel = recursive_kernel(
+        transitive_closure2,
+        tc_descendant/2,
+        [ edge_pred(tc_parent/2),
+          fact_pairs(['bob'-'tom', 'liz'-'tom'])
+        ]),
+    (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
+        ForeignSpec = foreign_predicate(
+            tc_descendant/2,
+            [ register_foreign_native_kind(tc_descendant/2, transitive_closure2),
+              register_foreign_string_config(tc_descendant/2, edge_pred, tc_parent/2),
+              register_indexed_atom_fact2(tc_parent/2, ['bob'-'tom', 'liz'-'tom'])
+            ],
+            [tc_descendant/2]
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -669,6 +690,7 @@ run_tests :-
     test_predicate_wrapper,
     test_foreign_spec_wrapper_generation,
     test_recursive_kernel_ir_selection,
+    test_recursive_kernel_spec_generation,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
