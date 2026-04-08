@@ -26,6 +26,29 @@ test_simple_fact(foo, bar).
 
 :- dynamic test_failed/0.
 
+:- dynamic category_ancestor/4.
+:- dynamic category_parent/2.
+:- dynamic max_depth/1.
+
+max_depth(10).
+category_parent(alpha, beta).
+category_parent(beta, gamma).
+category_parent(gamma, physics).
+category_parent(beta, physics).
+
+category_ancestor(Cat, Target, 1, Visited) :-
+    category_parent(Cat, Target),
+    \+ member(Target, Visited).
+category_ancestor(Cat, Target, Hops, Visited) :-
+    max_depth(MaxD),
+    length(Visited, Depth),
+    Depth < MaxD,
+    !,
+    category_parent(Cat, Mid),
+    \+ member(Mid, Visited),
+    category_ancestor(Mid, Target, H1, [Mid|Visited]),
+    Hops is H1 + 1.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
@@ -252,6 +275,18 @@ test_generated_rust_has_wam_wrapper :-
         sub_string(S, _, _, _, 'set_reg')
     ->  pass(Test)
     ;   fail_test(Test, 'Generated wrapper missing expected elements')
+    ).
+
+test_foreign_lowering_category_ancestor :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for category_ancestor/4',
+    (   rust_target:compile_predicate_to_rust(user:category_ancestor/4,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_category_ancestor(10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
     ).
 
 test_compile_wam_runtime_output :-
@@ -536,6 +571,7 @@ run_tests :-
     test_native_still_preferred,
     test_wam_fallback_flag,
     test_generated_rust_has_wam_wrapper,
+    test_foreign_lowering_category_ancestor,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

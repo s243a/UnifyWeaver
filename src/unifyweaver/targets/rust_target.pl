@@ -61,6 +61,8 @@
     compile_streaming_federation_rust/2   % +Options, -RustCode
 ]).
 
+:- discontiguous compile_predicate_to_rust_normal/4.
+
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(library(gensym)). % For generating unique variable names
@@ -3378,11 +3380,21 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(include_main(IncludeMain), Options, true),
     option(unique(Unique), Options, true),
+    option(foreign_lowering(ForeignLowering), Options, false),
 
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
 
     (   Clauses = [] -> fail
+    ;   ForeignLowering == true,
+        rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth)
+    ->  wam_target:compile_predicate_to_wam(user:Pred/Arity, Options, WamCode),
+        wam_rust_target:compile_wam_predicate_to_rust(
+            Pred/Arity,
+            WamCode,
+            [foreign_lowering(category_ancestor(MaxDepth))|Options],
+            RustCode
+        )
     ;   maplist(is_fact_clause, Clauses) ->
         compile_facts_to_rust(Pred, Arity, Clauses, FieldDelim, RustCode)
     ;   is_general_recursive_pattern_rust(Pred, Arity, Clauses) ->
@@ -3400,6 +3412,19 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         compile_single_rule_to_rust(Pred, Arity, SingleHead, SingleBody, FieldDelim, Unique, IncludeMain, RustCode)
     ;   fail
     ).
+
+rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
+    member(_-BaseBody, Clauses),
+    member(_-RecBody, Clauses),
+    BaseBody \= true,
+    RecBody \= true,
+    sub_term(\+ member(_, _), BaseBody),
+    sub_term(\+ member(_, _), RecBody),
+    sub_term((_ is _ + 1), RecBody),
+    current_predicate(user:max_depth/1),
+    user:max_depth(MaxDepth),
+    integer(MaxDepth),
+    MaxDepth > 0.
 
 %% WAM fallback tier: when all native lowering tiers fail, compile
 %% via WAM and generate Rust wrapper. Controlled by wam_fallback option

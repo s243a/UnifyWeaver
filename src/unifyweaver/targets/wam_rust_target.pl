@@ -1525,12 +1525,13 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %% compile_wam_predicate_to_rust(+Pred/Arity, +WamCode, +Options, -RustCode)
 %  Given WAM compiled code for a predicate, generate a Rust wrapper function
 %  that creates instruction data and executes it via the WAM runtime.
-compile_wam_predicate_to_rust(Pred/Arity, WamCode, _Options, RustCode) :-
+compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     % Convert WAM instruction string to Rust Instruction enum literals
-    wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals),
+    wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
+    foreign_wrapper_setup(Pred/Arity, Options, ForeignSetup, RunExpr),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
@@ -1545,24 +1546,36 @@ pub fn ~w(~w) -> bool {
     vm.labels = labels;
     vm.pc = 1;
 ~w
-    vm.run()
-}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ArgSetup]).
+~w
+    ~w
+}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ForeignSetup, ArgSetup, RunExpr]).
 
-%% wam_code_to_rust_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
+foreign_wrapper_setup(Pred/Arity, Options, Setup, RunExpr) :-
+    (   option(foreign_lowering(category_ancestor(MaxDepth)), Options),
+        Pred == category_ancestor,
+        Arity =:= 4
+    ->  format(string(Setup),
+            '    vm.register_foreign_category_ancestor(~w);', [MaxDepth]),
+        RunExpr = 'vm.execute_foreign_predicate("category_ancestor", 4)'
+    ;   Setup = "",
+        RunExpr = 'vm.run()'
+    ).
+
+%% wam_code_to_rust_instructions(+WamCodeStr, +PredIndicator, +Options, -InstrLiterals, -LabelLiterals)
 %  Parses a WAM code string and generates Rust vec![] entries and label map inserts.
-wam_code_to_rust_instructions(WamCode, InstrLiterals, LabelLiterals) :-
+wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_rust(Lines, 1, InstrParts, LabelParts),
+    wam_lines_to_rust(Lines, 1, PredIndicator, Options, InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, '\n', LabelLiterals).
 
-wam_lines_to_rust([], _, [], []).
-wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
+wam_lines_to_rust([], _, _, _, [], []).
+wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_rust(Rest, PC, Instrs, Labels)
+    ->  wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, Labels)
     ;   CleanParts = [First|_],
         (   % Label line: "pred/2:" or "L_pred_2_2:"
             sub_string(First, _, 1, 0, ":")
@@ -1570,143 +1583,151 @@ wam_lines_to_rust([Line|Rest], PC, Instrs, Labels) :-
             format(string(LabelInsert),
                 '    labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
-            wam_lines_to_rust(Rest, PC, Instrs, RestLabels)
+            wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
-            wam_line_to_rust_instr(CleanParts, RustInstr),
+            wam_line_to_rust_instr(CleanParts, PredIndicator, Options, RustInstr),
             format(string(InstrEntry), '        ~w,', [RustInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
-            wam_lines_to_rust(Rest, NPC, RestInstrs, Labels)
+            wam_lines_to_rust(Rest, NPC, PredIndicator, Options, RestInstrs, Labels)
         )
     ).
 
-%% wam_line_to_rust_instr(+Parts, -RustExpr)
+%% wam_line_to_rust_instr(+Parts, +PredIndicator, +Options, -RustExpr)
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
-wam_line_to_rust_instr(["get_constant", C, Ai], Rust) :-
+wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetConstant(Value::Atom("~w".to_string()), "~w".to_string())',
         [CC, CAi]).
-wam_line_to_rust_instr(["get_variable", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetVariable("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["get_value", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetValue("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["get_structure", FN, Ai], Rust) :-
+wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetStructure("~w".to_string(), "~w".to_string())',
         [CFN, CAi]).
-wam_line_to_rust_instr(["get_list", Ai], Rust) :-
+wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::GetList("~w".to_string())', [CAi]).
-wam_line_to_rust_instr(["unify_variable", Xn], Rust) :-
+wam_line_to_rust_instr(["unify_variable", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyVariable("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["unify_value", Xn], Rust) :-
+wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::UnifyValue("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["unify_constant", C], Rust) :-
+wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     (   number_string(N, C)
     ->  format(string(Rust),
             'Instruction::UnifyConstant(Value::Integer(~w))', [N])
     ;   format(string(Rust),
             'Instruction::UnifyConstant(Value::Atom("~w".to_string()))', [C])
     ).
-wam_line_to_rust_instr(["put_constant", C, Ai], Rust) :-
+wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutConstant(Value::Atom("~w".to_string()), "~w".to_string())',
         [CC, CAi]).
-wam_line_to_rust_instr(["put_variable", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutVariable("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["put_value", Xn, Ai], Rust) :-
+wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutValue("~w".to_string(), "~w".to_string())',
         [CXn, CAi]).
-wam_line_to_rust_instr(["put_structure", FN, Ai], Rust) :-
+wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     format(string(Rust),
         'Instruction::PutStructure("~w".to_string(), "~w".to_string())',
         [CFN, CAi]).
-wam_line_to_rust_instr(["put_list", Ai], Rust) :-
+wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
     format(string(Rust),
         'Instruction::PutList("~w".to_string())', [Ai]).
-wam_line_to_rust_instr(["set_variable", Xn], Rust) :-
+wam_line_to_rust_instr(["set_variable", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetVariable("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["set_value", Xn], Rust) :-
+wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
     format(string(Rust),
         'Instruction::SetValue("~w".to_string())', [Xn]).
-wam_line_to_rust_instr(["set_constant", C], Rust) :-
+wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
     (   number_string(N, C)
     ->  format(string(Rust),
             'Instruction::SetConstant(Value::Integer(~w))', [N])
     ;   format(string(Rust),
             'Instruction::SetConstant(Value::Atom("~w".to_string()))', [C])
     ).
-wam_line_to_rust_instr(["allocate"], "Instruction::Allocate").
-wam_line_to_rust_instr(["deallocate"], "Instruction::Deallocate").
-wam_line_to_rust_instr(["call", P, N], Rust) :-
+wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
+wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
+wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
     escape_rust_string(CP, ECP),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    format(string(Rust),
-        'Instruction::Call("~w".to_string(), ~w)', [ECP, Num]).
-wam_line_to_rust_instr(["execute", P], Rust) :-
+    (   option(foreign_lowering(category_ancestor(_)), Options),
+        Pred == category_ancestor,
+        Arity =:= 4,
+        ECP == "category_ancestor/4",
+        Num =:= 4
+    ->  format(string(Rust),
+            'Instruction::CallForeign("category_ancestor".to_string(), 4)', [])
+    ;   format(string(Rust),
+            'Instruction::Call("~w".to_string(), ~w)', [ECP, Num])
+    ).
+wam_line_to_rust_instr(["execute", P], _, _, Rust) :-
     escape_rust_string(P, EP),
     format(string(Rust),
         'Instruction::Execute("~w".to_string())', [EP]).
-wam_line_to_rust_instr(["proceed"], "Instruction::Proceed").
-wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
+wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
+wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     escape_rust_string(COp, ECOp),
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
         'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
-wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], Rust) :-
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], _, _, Rust) :-
     clean_comma(Type, CType),
     clean_comma(ValueReg, CValueReg),
     clean_comma(ResultReg, CResultReg),
     format(string(Rust),
         'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
         [CType, CValueReg, CResultReg]).
-wam_line_to_rust_instr(["end_aggregate", ValueReg], Rust) :-
+wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
     format(string(Rust),
         'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
-wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
+wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
-wam_line_to_rust_instr(["trust_me"], "Instruction::TrustMe").
-wam_line_to_rust_instr(["retry_me_else", Label], Rust) :-
+wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
+wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
 % Indexing instructions
-wam_line_to_rust_instr(["switch_on_constant"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_structure"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnStructure(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], Rust) :-
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
 % Fallback for unknown instructions
-wam_line_to_rust_instr(Parts, Rust) :-
+wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), '/* unknown: ~w */', [Joined]).
 
