@@ -153,9 +153,9 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     ),
     build_regs(Args, 1, Regs),
     % Initialize the WAM variable binding table, counter, and memo table
-    empty_assoc(EmptyBindings),
-    nb_setval(wam_bindings, EmptyBindings),
-    nb_setval(wam_var_counter, 0),
+    empty_assoc(EmptyB),
+    nb_setval(wam_bind_box, box(EmptyB)),
+    nb_linkval(wam_var_counter, 0),
     empty_assoc(EmptyMemo),
     nb_setval(wam_memo_table, EmptyMemo).
 
@@ -388,8 +388,8 @@ wam_memo_store_seed(Pred, Cat, Root, HopsList) :-
 :- dynamic wam_fact_table_entry/2.  % Pred/Arity → FactTable
 
 % Initialize global tables at module load time
-:- empty_assoc(EmptyB), nb_setval(wam_bindings, EmptyB).
-:- nb_setval(wam_var_counter, 0).
+:- empty_assoc(EmptyB0), nb_setval(wam_bind_box, box(EmptyB0)).
+:- nb_linkval(wam_var_counter, 0).
 :- empty_assoc(EmptyM), nb_setval(wam_memo_table, EmptyM).
 
 %% wam_register_fact_table(+PredKey, +FactTable)
@@ -458,21 +458,34 @@ call_fact_predicate(_Pred, Arity, FactTable, StateIn, StateOut) :-
 
 %% unify_fact_args(+ArgValues, +StartIdx, +Arity, +RegsIn, +TrailIn, -RegsOut, -TrailOut)
 %  Unify A2..AN with the fact's argument values.
-unify_fact_args(_, Idx, Arity, R, T, R, T) :- Idx > Arity, !.
-unify_fact_args([Val|Rest], Idx, Arity, R, T, ROut, TOut) :-
+%  Collects deferred wam_bind calls to apply only on full success.
+unify_fact_args(Args, StartIdx, Arity, RIn, TIn, ROut, TOut) :-
+    unify_fact_args_(Args, StartIdx, Arity, RIn, TIn, ROut, TOut, DeferredBinds),
+    apply_deferred_binds(DeferredBinds).
+
+unify_fact_args_(_, Idx, Arity, R, T, R, T, []) :- Idx > Arity, !.
+unify_fact_args_([Val|Rest], Idx, Arity, R, T, ROut, TOut, Deferred) :-
     format(atom(RegKey), "A~w", [Idx]),
     (get_assoc(RegKey, R, RegVal) -> true ; RegVal = '$missing'),
     wam_deref(RegVal, DRegVal),
     (   DRegVal == Val
-    ->  R1 = R, T1 = T
+    ->  R1 = R, T1 = T, Deferred = RestDeferred
     ;   is_wam_unbound(DRegVal)
     ->  trail_binding(RegKey, R, T, T1),
-        (atom(DRegVal), is_wam_unbound(DRegVal) -> wam_bind(DRegVal, Val) ; true),
-        put_assoc(RegKey, R, Val, R1)
+        put_assoc(RegKey, R, Val, R1),
+        (atom(DRegVal), is_wam_unbound(DRegVal)
+        ->  Deferred = [DRegVal-Val|RestDeferred]
+        ;   Deferred = RestDeferred
+        )
     ;   fail  % mismatch
     ),
     NIdx is Idx + 1,
-    unify_fact_args(Rest, NIdx, Arity, R1, T1, ROut, TOut).
+    unify_fact_args_(Rest, NIdx, Arity, R1, T1, ROut, TOut, RestDeferred).
+
+apply_deferred_binds([]).
+apply_deferred_binds([VarName-Val|Rest]) :-
+    wam_bind(VarName, Val),
+    apply_deferred_binds(Rest).
 
 all_fact_matches([], _, []).
 all_fact_matches([Key-ValueLists|Rest], Arity, AllMatches) :-
@@ -513,12 +526,17 @@ fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     integer(PC), get_assoc(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
+%% When a builtin CP is exhausted (resume_builtin fails), pop it and try the next CP.
 backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L),
           StateOut) :-
     unwind_trail(Trail, SavedTrail, R, RestoredR),
     wam_restore_bindings(SavedB),
     (   nonvar(BuiltinState)
-    ->  resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+    ->  (   resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+        ->  true
+        ;   % Builtin exhausted — pop this CP and try the next one
+            backtrack(wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, CPs, Code, L), StateOut)
+        )
     ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L)
     ).
 
@@ -783,7 +801,7 @@ step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_
     % PC-based names collide when the same instruction runs at different depths.
     nb_getval(wam_var_counter, VarCount),
     NVC is VarCount + 1,
-    nb_setval(wam_var_counter, NVC),
+    nb_linkval(wam_var_counter, NVC),
     format(atom(NewVar), "_V~w", [VarCount]),
     trail_binding(Xn, R, T, T1),
     trail_binding(Ai, R, T1, NT),
@@ -985,20 +1003,24 @@ step_wam(begin_aggregate(Type, ValueReg, ResultReg), wam_state(PC, R, S, H, T, C
 
 step_wam(end_aggregate(ValueReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     % Collect the current value from the value register
-    get_reg_val(ValueReg, R, S, Val),
+    get_reg_val(ValueReg, R, S, RawVal),
+    wam_deref(RawVal, Val),
     retract(wam_aggregate_acc(Acc)),
     assert(wam_aggregate_acc([Val|Acc])),
+    % Store the return PC (instruction after end_aggregate) for aggregate_frame finalization
+    AfterPC is PC + 1,
+    nb_setval(wam_end_aggregate_pc, AfterPC),
     % Force backtrack to find next solution
-    % This goes back through the Goal body to find the next path
     (   backtrack(wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut)
     ->  true
-    ;   % No more solutions — should not happen here (aggregate_frame handles it)
-        fail
+    ;   fail
     ).
 
 %% resume_builtin for aggregate_frame: finalize aggregation
-resume_builtin(aggregate_frame(Type, ValueReg, ResultReg, ReturnPC), StateIn, StateOut) :-
+resume_builtin(aggregate_frame(Type, _ValueReg, ResultReg, _BeginPC), StateIn, StateOut) :-
     StateIn = wam_state(_, R, S, H, T, CP, [_|CPs], Code, L),
+    % Use the ReturnPC stored by end_aggregate (instruction after end_aggregate)
+    nb_getval(wam_end_aggregate_pc, ReturnPC),
     % Collect accumulated values
     retract(wam_aggregate_acc(AccReversed)),
     reverse(AccReversed, Acc),
@@ -1015,7 +1037,7 @@ resume_builtin(aggregate_frame(Type, ValueReg, ResultReg, ReturnPC), StateIn, St
     ;   DResultVar == Result -> NR = R, NT = T
     ;   fail
     ),
-    % Return to instruction after the aggregate block
+    % Return to instruction after end_aggregate
     StateOut = wam_state(ReturnPC, NR, S, H, NT, CP, CPs, Code, L).
 
 %% apply_aggregation(+Type, +Values, -Result)
@@ -1193,11 +1215,13 @@ unify_wam(V1, V2, StateIn, StateOut) :-
     ; var(DV2) -> DV2 = DV1, StateOut = StateIn
     ; is_unbound_var(DV1) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV1, R, T, NT), put_reg(DV1, DV2, R, NR, S, NS),
+        trail_binding(DV1, R, T, NT), wam_bind(DV1, DV2),
+        put_reg(DV1, DV2, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; is_unbound_var(DV2) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV2, R, T, NT), put_reg(DV2, DV1, R, NR, S, NS),
+        trail_binding(DV2, R, T, NT), wam_bind(DV2, DV1),
+        put_reg(DV2, DV1, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; compound(DV1), compound(DV2) ->
         DV1 =.. [F|Args1], DV2 =.. [F|Args2], length(Args1, Len), length(Args2, Len),
@@ -1211,7 +1235,7 @@ deref_wam(Val, State, Derefed) :-
     State = wam_state(_, R, S, _, _, _, _, _, _),
     (   is_unbound_var(Val), atom(Val)
     ->  % First check the binding table
-        (   nb_getval(wam_bindings, B), get_assoc(Val, B, BoundVal)
+        (   nb_getval(wam_bind_box, Box_), arg(1, Box_, B_), get_assoc(Val, B_, BoundVal)
         ->  deref_wam(BoundVal, State, Derefed)
         ;   % Then check registers
             (   get_reg(Val, R, S, Next)
@@ -1270,20 +1294,22 @@ trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :- (get_assoc(Key,
 
 is_y_reg(Reg) :- atom(Reg), sub_atom(Reg, 0, 1, _, 'Y').
 
+%% WAM binding table — assoc tree stored in a mutable box via nb_setarg.
+%  The box wrapper avoids nb_getval's deep-copy overhead.
+%  Save/restore is O(1) — just capture/restore the tree reference.
+
 %% wam_bind(+VarName, +Value)
-%  Bind a WAM variable name to a value in the global binding table.
 wam_bind(VarName, Value) :-
-    nb_getval(wam_bindings, B),
+    nb_getval(wam_bind_box, Box),
+    arg(1, Box, B),
     put_assoc(VarName, B, Value, B1),
-    nb_setval(wam_bindings, B1).
+    nb_setarg(1, Box, B1).
 
 %% wam_deref(+Val, -Derefed)
-%  Dereference a value through the binding table.
-%  If Val is an unbound WAM variable (_V*, _Q*, _H*), look up its binding.
-%  Follows chains: _V1 → _V2 → 10 → returns 10.
 wam_deref(Val, Derefed) :-
     (   atom(Val), is_unbound_var(Val)
-    ->  nb_getval(wam_bindings, B),
+    ->  nb_getval(wam_bind_box, Box),
+        arg(1, Box, B),
         (   get_assoc(Val, B, Bound)
         ->  wam_deref(Bound, Derefed)
         ;   Derefed = Val
@@ -1292,20 +1318,19 @@ wam_deref(Val, Derefed) :-
     ).
 
 %% wam_save_bindings(-Saved)
-%  Save the current binding table and variable counter (for choice points).
+%  O(1) save — capture assoc tree reference and var counter.
 wam_save_bindings(saved(Bindings, VarCounter)) :-
-    nb_getval(wam_bindings, Bindings),
+    nb_getval(wam_bind_box, Box),
+    arg(1, Box, Bindings),
     nb_getval(wam_var_counter, VarCounter).
 
 %% wam_restore_bindings(+Saved)
-%  Restore binding table and variable counter from a saved snapshot.
+%  O(1) restore — put back the saved assoc tree reference.
 wam_restore_bindings(saved(Bindings, VarCounter)) :-
-    nb_setval(wam_bindings, Bindings),
-    nb_setval(wam_var_counter, VarCounter).
-%  Legacy format (plain assoc) for backward compatibility
-wam_restore_bindings(Saved) :-
-    \+ functor(Saved, saved, 2),
-    nb_setval(wam_bindings, Saved).
+    nb_getval(wam_bind_box, Box),
+    nb_setarg(1, Box, Bindings),
+    nb_linkval(wam_var_counter, VarCounter).
+wam_restore_bindings(_).
 
 get_reg_val(Reg, R, S, Val) :-
     (   get_reg(Reg, R, S, V)
@@ -1347,6 +1372,7 @@ eval_arith_derefed(Expr, R, S, Heap, Result) :- atom(Expr), (is_unbound_var(Expr
 eval_arith_derefed(Expr, R, S, Heap, Result) :- compound(Expr), Expr =.. [Op|Args], maplist({R, S, Heap}/[A, V]>>eval_arith(A, R, S, Heap, V), Args, Vals), (Vals = [V1, V2] -> apply_arith_op(Op, V1, V2, Result) ; Vals = [V1] -> apply_arith_unary(Op, V1, Result) ; fail).
 apply_arith_op(+, A, B, R) :- R is A + B. apply_arith_op(-, A, B, R) :- R is A - B. apply_arith_op(*, A, B, R) :- R is A * B.
 apply_arith_op(/, A, B, R) :- B =\= 0, R is A / B. apply_arith_op(//, A, B, R) :- B =\= 0, R is A // B. apply_arith_op(mod, A, B, R) :- B =\= 0, R is A mod B. apply_arith_op(div, A, B, R) :- B =\= 0, R is A div B.
+apply_arith_op(**, A, B, R) :- R is A ** B. apply_arith_op('^', A, B, R) :- R is A ^ B.
 apply_arith_unary(-, A, R) :- R is -A. apply_arith_unary(abs, A, R) :- R is abs(A).
 
 solve_wam(Instructions, Query, VarNames, Bindings) :-
@@ -1392,15 +1418,14 @@ run_all_acc(State, Query, VarNames, Acc, AllBindings) :-
     ).
 
 extract_bindings(VarNames, Query, wam_state(_, Regs, _, Heap, _, _, _, _, _), Bindings) :-
-    nb_getval(wam_bindings, BTable),
-    extract_bindings_iter(VarNames, Query, Regs, Heap, BTable, Bindings).
+    extract_bindings_iter(VarNames, Query, Regs, Heap, Bindings).
 
-extract_bindings_iter([], _, _, _, _, []).
-extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, BTable, [Name=Value|RestBindings]) :-
+extract_bindings_iter([], _, _, _, []).
+extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, [Name=Value|RestBindings]) :-
     Query =.. [_|Args],
     (   nth1(Idx, Args, A), A == Var
     ->  % First check the binding table for the query variable name
-        (   atom(Var), get_assoc(Var, BTable, BoundVal)
+        (   atom(Var), nb_getval(wam_bind_box, Box_eb), arg(1, Box_eb, B_eb), get_assoc(Var, B_eb, BoundVal)
         ->  Value = BoundVal
         ;   % Fallback to register value
             format(atom(RegKey), "A~w", [Idx]),
@@ -1411,7 +1436,7 @@ extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, BTable, [Name=Value|Re
         )
     ;   Value = Var
     ),
-    extract_bindings_iter(Rest, Query, Regs, Heap, BTable, RestBindings).
+    extract_bindings_iter(Rest, Query, Regs, Heap, RestBindings).
 
 test_wam_runtime :-
     Test1 = 'WAM Runtime: basic parent/2',
