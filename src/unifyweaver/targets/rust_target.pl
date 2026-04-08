@@ -243,6 +243,108 @@ generate_rust_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
     format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [BaseExpr, Term]),
     string_concat(Line, RestCode, Code).
 
+% ---- Batch fuzzy operations (Vec<f64>) ----
+
+%% f_and_batch: Batch product t-norm over Vec<f64>
+semantic_compiler:fuzzy_dispatch(rust, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_product_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy AND (product t-norm)
+    let n = batch_len(&term_scores_batch);
+    let mut result: Vec<f64> = vec![1.0; n];
+~w', [TermCode]).
+
+%% f_or_batch: Batch probabilistic sum
+semantic_compiler:fuzzy_dispatch(rust, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy OR (probabilistic sum)
+    let n = batch_len(&term_scores_batch);
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = complement.iter().map(|c| 1.0 - c).collect();
+', [TermCode]).
+
+%% f_dist_or_batch: Batch distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_dist_or_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_dist_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy distributed OR
+    let n = ~w.len();
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = complement.iter().map(|c| 1.0 - c).collect();
+', [BaseScores, TermCode]).
+
+%% f_union_batch: Batch non-distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_union_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy union (base * OR)
+    let n = ~w.len();
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = ~w.iter().zip(complement.iter())
+        .map(|(b, c)| b * (1.0 - c))
+        .collect();
+', [BaseScores, TermCode, BaseScores]).
+
+% ---- Batch helpers ----
+
+generate_rust_batch_product_terms([], '').
+generate_rust_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (r, s) in result.iter_mut().zip(scores.iter()) { *r *= ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (r, s) in result.iter_mut().zip(scores.iter()) { *r *= s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_batch_complement_terms([], '').
+generate_rust_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (c, s) in complement.iter_mut().zip(scores.iter()) { *c *= 1.0 - ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (c, s) in complement.iter_mut().zip(scores.iter()) { *c *= 1.0 - s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_batch_dist_complement_terms([], '').
+generate_rust_batch_dist_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for ((c, s), b) in complement.iter_mut().zip(scores.iter()).zip(base_scores.iter()) { *c *= 1.0 - b * ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_dist_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for ((c, s), b) in complement.iter_mut().zip(scores.iter()).zip(base_scores.iter()) { *c *= 1.0 - b * s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
 % Per-path visited pattern detection
 :- use_module('../core/advanced/pattern_matchers', [
     is_per_path_visited_pattern/4,

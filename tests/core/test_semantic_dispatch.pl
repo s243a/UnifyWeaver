@@ -5,6 +5,7 @@
 %   swipl tests/core/test_semantic_dispatch.pl
 
 :- use_module('../../src/unifyweaver/core/semantic_compiler').
+:- use_module('../../src/unifyweaver/core/input_source').
 
 % We test dispatch through semantic_compiler rather than loading the full
 % target files (which have heavy dependency chains). Instead, define minimal
@@ -332,6 +333,108 @@ test_go_batch_or :-
     assert_contains(Code, "complement[i] = 1.0", "complement init"),
     assert_contains(Code, "1 - complement[i]", "element-wise sum").
 
+% Minimal Rust batch fuzzy dispatch
+semantic_compiler:fuzzy_dispatch(rust, f_and_batch(Terms, _SB, _R), Code) :-
+    rust_batch_product_terms(Terms, TC),
+    format(string(Code), '    let mut result: Vec<f64> = vec![1.0; n];\n~w', [TC]).
+
+semantic_compiler:fuzzy_dispatch(rust, f_or_batch(Terms, _SB, _R), Code) :-
+    rust_batch_complement_terms(Terms, TC),
+    format(string(Code), '    let mut complement: Vec<f64> = vec![1.0; n];\n~w    let result: Vec<f64> = complement.iter().map(|c| 1.0 - c).collect();\n', [TC]).
+
+% Minimal C# batch fuzzy dispatch
+semantic_compiler:fuzzy_dispatch(csharp, f_and_batch(Terms, _SB, _R), Code) :-
+    csharp_batch_product_terms(Terms, TC),
+    format(string(Code), '    double[] result = Enumerable.Repeat(1.0, n).ToArray();\n~w', [TC]).
+
+semantic_compiler:fuzzy_dispatch(csharp, f_or_batch(Terms, _SB, _R), Code) :-
+    csharp_batch_complement_terms(Terms, TC),
+    format(string(Code), '    double[] complement = Enumerable.Repeat(1.0, n).ToArray();\n~w    double[] result = complement.Select(c => 1.0 - c).ToArray();\n', [TC]).
+
+rust_batch_product_terms([], '').
+rust_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    rust_batch_product_terms(Rest, RestCode),
+    format(string(Line), '    if let Some(scores) = term_scores_batch.get("~w") {\n        for (r, s) in result.iter_mut().zip(scores.iter()) { *r *= ~w * s; }\n    }\n', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+
+rust_batch_complement_terms([], '').
+rust_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    rust_batch_complement_terms(Rest, RestCode),
+    format(string(Line), '    if let Some(scores) = term_scores_batch.get("~w") {\n        for (c, s) in complement.iter_mut().zip(scores.iter()) { *c *= 1.0 - ~w * s; }\n    }\n', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+
+csharp_batch_product_terms([], '').
+csharp_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    csharp_batch_product_terms(Rest, RestCode),
+    format(string(Line), '    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {\n        for (int i = 0; i < result.Length; i++) result[i] *= ~w * scores_~w[i];\n    }\n', [Term, Term, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+csharp_batch_complement_terms([], '').
+csharp_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    csharp_batch_complement_terms(Rest, RestCode),
+    format(string(Line), '    if (termScoresBatch.TryGetValue("~w", out var scores_~w)) {\n        for (int i = 0; i < complement.Length; i++) complement[i] *= 1.0 - ~w * scores_~w[i];\n    }\n', [Term, Term, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+% ---- New Phase 3 tests ----
+
+test_rust_batch_and :-
+    format('--- Rust Batch AND ---~n'),
+    compile_fuzzy_call(rust, f_and_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "vec![1.0; n]", "batch init"),
+    assert_contains(Code, "term_scores_batch.get(\"bash\")", "batch lookup"),
+    assert_contains(Code, "iter_mut().zip", "iterator zip").
+
+test_rust_batch_or :-
+    format('--- Rust Batch OR ---~n'),
+    compile_fuzzy_call(rust, f_or_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "1.0 - c", "complement map").
+
+test_csharp_batch_and :-
+    format('--- C# Batch AND ---~n'),
+    compile_fuzzy_call(csharp, f_and_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "Enumerable.Repeat(1.0, n)", "batch init"),
+    assert_contains(Code, "TryGetValue(\"bash\"", "batch lookup").
+
+test_csharp_batch_or :-
+    format('--- C# Batch OR ---~n'),
+    compile_fuzzy_call(csharp, f_or_batch([w(bash, 0.9)], scores, _), Code),
+    assert_contains(Code, "Select(c => 1.0 - c)", "complement LINQ").
+
+test_semantic_search_options :-
+    format('--- Semantic Search /4 Options ---~n'),
+    % Register a provider for test_search/3
+    declare_semantic_provider(test_search/3, [
+        targets([target(go, [provider(hugot), model('base-model'), device(cpu)])])
+    ]),
+    % Compile with inline options that override model
+    compile_semantic_call(go,
+        test_search(query, 5, _, [model('override-model'), threshold(0.7)]),
+        [], Code),
+    assert_contains(Code, "override-model", "model override from options").
+
+test_vector_source :-
+    format('--- Vector DB Source ---~n'),
+    resolve_vector_source([input(vector_db("my_index.db", sqlite))], Config),
+    Config = vector_db("my_index.db", sqlite),
+    format('  PASS: explicit vector_db resolved~n'),
+    resolve_vector_source([index("other.db")], Config2),
+    Config2 = vector_db("other.db", auto),
+    format('  PASS: index shorthand resolved~n'),
+    resolve_vector_source([], Config3),
+    Config3 = vector_db("data.db", auto),
+    format('  PASS: default vector_db resolved~n').
+
+test_vector_init_code :-
+    format('--- Vector DB Init Code ---~n'),
+    vector_db_init_code(python, vector_db("search.db", _), Code),
+    assert_contains(Code, "sqlite3.connect(\"search.db\")", "Python DB init"),
+    vector_db_init_code(go, vector_db("search.db", _), GoCode),
+    assert_contains(GoCode, "storage.NewStore(\"search.db\")", "Go DB init"),
+    vector_db_init_code(rust, vector_db("search.db", _), RustCode),
+    assert_contains(RustCode, "Store::open(\"search.db\")", "Rust DB init"),
+    vector_db_init_code(csharp, vector_db("search.db", _), CsCode),
+    assert_contains(CsCode, "VectorStore(\"search.db\")", "C# DB init").
+
 % ---- Helpers ----
 
 assert_contains(String, Substring, Label) :-
@@ -361,6 +464,13 @@ test_all :-
     test_csharp_fuzzy_or,
     test_csharp_fuzzy_not,
     test_go_batch_and,
-    test_go_batch_or.
+    test_go_batch_or,
+    test_rust_batch_and,
+    test_rust_batch_or,
+    test_csharp_batch_and,
+    test_csharp_batch_or,
+    test_semantic_search_options,
+    test_vector_source,
+    test_vector_init_code.
 
 :- initialization(test_all, main).
