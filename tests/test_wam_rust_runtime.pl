@@ -45,6 +45,14 @@ tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
 tc_distance(X, Y, 1) :- tc_parent(X, Y).
 tc_distance(X, Y, D) :- tc_parent(X, Z), tc_distance(Z, Y, D1), D is D1 + 1.
 
+:- dynamic tri_sum/2.
+tri_sum(0, 0).
+tri_sum(N, Sum) :-
+    N > 0,
+    N1 is N - 1,
+    tri_sum(N1, Prev),
+    Sum is Prev + N.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -55,7 +63,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tri_sum/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -67,6 +75,7 @@ use runtime_test::state::WamState;
 use runtime_test::tc_ancestor;
 use runtime_test::tc_descendant;
 use runtime_test::tc_distance;
+use runtime_test::tri_sum;
 
 #[test]
 fn test_generated_predicates() {
@@ -201,6 +210,26 @@ fn test_generated_predicates() {
         Value::Atom("jim".to_string()),
         Value::Unbound("D".to_string()));
     assert!(!ok9, "tc_distance(liz, jim, D) should fail");
+
+    // Test tri_sum/2 foreign lowering end-to-end
+    let mut vm_sum = WamState::new(vec![], std::collections::HashMap::new());
+    let ok10 = tri_sum(&mut vm_sum,
+        Value::Integer(4),
+        Value::Unbound("Sum".to_string()));
+    assert!(ok10, "tri_sum(4, Sum) should succeed");
+    assert_eq!(vm_sum.bindings.get("Sum").cloned(), Some(Value::Integer(10)));
+
+    let mut vm_sum_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok11 = tri_sum(&mut vm_sum_check,
+        Value::Integer(4),
+        Value::Integer(10));
+    assert!(ok11, "tri_sum(4, 10) should succeed");
+
+    let mut vm_sum_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok12 = tri_sum(&mut vm_sum_fail,
+        Value::Integer(4),
+        Value::Integer(11));
+    assert!(!ok12, "tri_sum(4, 11) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
