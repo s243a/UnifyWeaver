@@ -341,6 +341,36 @@ wam_instruction_arm('Instruction::Proceed', Body) :-
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
 
+wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
+    Body = '                self.aggregate_acc.clear();
+                self.choice_points.push(ChoicePoint {
+                    next_pc: self.pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    bindings: self.bindings.clone(),
+                    builtin_state: Some(BuiltinState {
+                        name: "aggregate_frame".to_string(),
+                        args: vec![
+                            Value::Atom(agg_type.clone()),
+                            Value::Atom(value_reg.clone()),
+                            Value::Atom(result_reg.clone()),
+                        ],
+                        data: vec![],
+                    }),
+                    cut_barrier: self.cut_barrier,
+                });
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
+    Body = '                if let Some(val) = self.get_reg(value_reg) {
+                    self.aggregate_acc.push(self.deref_var(&self.deref_heap(&val)));
+                    self.aggregate_return_pc = self.pc + 1;
+                    self.backtrack()
+                } else { false }'.
+
 % --- Choice Point Instructions ---
 
 wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
@@ -705,6 +735,97 @@ compile_execute_term_builtin_to_rust(Code) :-
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
         match state.name.as_str() {
+            "aggregate_frame" => {
+                if state.args.len() != 3 { return false; }
+                let agg_type = match &state.args[0] {
+                    Value::Atom(s) => s.as_str(),
+                    _ => return false,
+                };
+                let result_reg = match &state.args[2] {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+
+                let result = match agg_type {
+                    "sum" => {
+                        let mut sum_i: i64 = 0;
+                        let mut sum_f: f64 = 0.0;
+                        let mut saw_float = false;
+                        for val in &self.aggregate_acc {
+                            match self.deref_var(&self.deref_heap(val)) {
+                                Value::Integer(n) => {
+                                    sum_i += n;
+                                    sum_f += n as f64;
+                                }
+                                Value::Float(f) => {
+                                    saw_float = true;
+                                    sum_f += f;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
+                    }
+                    "count" => Value::Integer(self.aggregate_acc.len() as i64),
+                    "collect" => Value::List(self.aggregate_acc.clone()),
+                    "max" => {
+                        let mut best: Option<Value> = None;
+                        for val in &self.aggregate_acc {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => {
+                                    match (&current, prev) {
+                                        (Value::Integer(a), Value::Integer(b)) if a > b => Some(current),
+                                        (Value::Float(a), Value::Float(b)) if a > b => Some(current),
+                                        (Value::Integer(a), Value::Float(b)) if (*a as f64) > *b => Some(current),
+                                        (Value::Float(a), Value::Integer(b)) if *a > (*b as f64) => Some(current),
+                                        _ => Some(prev.clone()),
+                                    }
+                                }
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    "min" => {
+                        let mut best: Option<Value> = None;
+                        for val in &self.aggregate_acc {
+                            let current = self.deref_var(&self.deref_heap(val));
+                            best = match best {
+                                None => Some(current),
+                                Some(ref prev) => {
+                                    match (&current, prev) {
+                                        (Value::Integer(a), Value::Integer(b)) if a < b => Some(current),
+                                        (Value::Float(a), Value::Float(b)) if a < b => Some(current),
+                                        (Value::Integer(a), Value::Float(b)) if (*a as f64) < *b => Some(current),
+                                        (Value::Float(a), Value::Integer(b)) if *a < (*b as f64) => Some(current),
+                                        _ => Some(prev.clone()),
+                                    }
+                                }
+                            };
+                        }
+                        best.unwrap_or(Value::List(vec![]))
+                    }
+                    _ => return false,
+                };
+
+                self.aggregate_acc.clear();
+                let lhs = self.regs.get(&result_reg).cloned().map(|v| self.deref_var(&v));
+                match lhs {
+                    Some(Value::Unbound(ref var_name)) => {
+                        self.trail_binding(&result_reg);
+                        self.regs.insert(result_reg.clone(), result.clone());
+                        self.bind_var(var_name, result);
+                    }
+                    Some(existing) if existing == result => {}
+                    Some(_) => return false,
+                    None => {
+                        self.regs.insert(result_reg.clone(), result);
+                    }
+                }
+                self.pc = self.aggregate_return_pc;
+                true
+            }
             "member/2" => {
                 let val1 = state.args[0].clone();
                 let val2 = state.args[1].clone();
@@ -1072,6 +1193,17 @@ wam_line_to_rust_instr(["builtin_call", Op, N], Rust) :-
     (   number_string(Num, CN) -> true ; Num = 0 ),
     format(string(Rust),
         'Instruction::BuiltinCall("~w".to_string(), ~w)', [ECOp, Num]).
+wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg], Rust) :-
+    clean_comma(Type, CType),
+    clean_comma(ValueReg, CValueReg),
+    clean_comma(ResultReg, CResultReg),
+    format(string(Rust),
+        'Instruction::BeginAggregate("~w".to_string(), "~w".to_string(), "~w".to_string())',
+        [CType, CValueReg, CResultReg]).
+wam_line_to_rust_instr(["end_aggregate", ValueReg], Rust) :-
+    clean_comma(ValueReg, CValueReg),
+    format(string(Rust),
+        'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
 wam_line_to_rust_instr(["try_me_else", Label], Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).

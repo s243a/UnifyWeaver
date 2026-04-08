@@ -91,6 +91,10 @@ pub struct WamState {
     pub step_count: u64,
     /// Maximum steps per query (0 = unlimited).
     pub step_limit: u64,
+    /// Accumulator used by aggregate frames during solution collection.
+    pub aggregate_acc: Vec<Value>,
+    /// Return PC stored by end_aggregate for aggregate-frame finalization.
+    pub aggregate_return_pc: usize,
 }
 
 impl WamState {
@@ -111,6 +115,8 @@ impl WamState {
             cut_barrier: 0,
             step_count: 0,
             step_limit: 0,
+            aggregate_acc: Vec::new(),
+            aggregate_return_pc: 0,
         }
     }
 
@@ -163,6 +169,8 @@ impl WamState {
         self.var_counter = 0;
         self.cut_barrier = 0;
         self.step_count = 0;
+        self.aggregate_acc.clear();
+        self.aggregate_return_pc = 0;
     }
 
     /// Get a register value. Yi registers are read from the environment frame.
@@ -535,6 +543,10 @@ impl WamState {
                 let arity = args[1].parse::<usize>().ok()?;
                 Some(Instruction::BuiltinCall(args[0].clone(), arity))
             }
+            "begin_aggregate" if args.len() == 3 =>
+                Some(Instruction::BeginAggregate(args[0].clone(), args[1].clone(), args[2].clone())),
+            "end_aggregate" if args.len() == 1 =>
+                Some(Instruction::EndAggregate(args[0].clone())),
 
             // Choice points
             "try_me_else" if args.len() == 1 =>

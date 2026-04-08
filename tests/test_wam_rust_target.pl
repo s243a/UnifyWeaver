@@ -63,6 +63,8 @@ test_step_wam_generation :-
         sub_string(S, _, _, _, 'PutValue'),
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'SwitchOnConstant')
     ->  pass(Test)
@@ -77,6 +79,7 @@ test_helpers_generation :-
         sub_string(S, _, _, _, 'fn backtrack'),
         sub_string(S, _, _, _, 'fn unwind_trail'),
         sub_string(S, _, _, _, 'fn execute_builtin'),
+        sub_string(S, _, _, _, 'aggregate_frame'),
         sub_string(S, _, _, _, 'fn eval_arith')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing expected helper functions')
@@ -123,6 +126,8 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'Execute('),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'BuiltinCall'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         % Choice points
         sub_string(S, _, _, _, 'TryMeElse'),
         sub_string(S, _, _, _, 'TrustMe'),
@@ -253,6 +258,8 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'fn eval_arith'),
         % Verify key instruction handling
         sub_string(S, _, _, _, 'GetConstant'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'TryMeElse')
     ->  pass(Test)
@@ -379,6 +386,17 @@ test_instruction_parser_resistant :-
     ;   fail_test(Test, 'Resistant predicate WAM code incomplete')
     ).
 
+test_aggregate_instruction_parser :-
+    Test = 'WAM-Rust: aggregate instructions lower to Rust enums',
+    WamCode = "agg/1:\n    begin_aggregate sum, Y1, A1\n    end_aggregate Y1\n    proceed",
+    (   compile_wam_predicate_to_rust(agg/1, WamCode, [], RustCode),
+        atom_string(RustCode, S),
+        sub_string(S, _, _, _, 'Instruction::BeginAggregate("sum".to_string(), "Y1".to_string(), "A1".to_string())'),
+        sub_string(S, _, _, _, 'Instruction::EndAggregate("Y1".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Aggregate instructions were not lowered')
+    ).
+
 test_cargo_check_not_available :-
     Test = 'WAM-Rust: cargo_check handles missing cargo gracefully',
     (   % On systems without cargo, should return not_available
@@ -435,6 +453,8 @@ test_parser_handles_all_instructions :-
         sub_string(Content, _, _, _, '"execute"'),
         sub_string(Content, _, _, _, '"proceed"'),
         sub_string(Content, _, _, _, '"builtin_call"'),
+        sub_string(Content, _, _, _, '"begin_aggregate"'),
+        sub_string(Content, _, _, _, '"end_aggregate"'),
         % Choice points
         sub_string(Content, _, _, _, '"try_me_else"'),
         sub_string(Content, _, _, _, '"retry_me_else"'),
@@ -510,6 +530,7 @@ run_tests :-
     test_instruction_parser,
     test_instruction_parser_labels,
     test_instruction_parser_resistant,
+    test_aggregate_instruction_parser,
     test_cargo_check_not_available,
     test_state_template_has_parser,
     test_parser_handles_all_instructions,

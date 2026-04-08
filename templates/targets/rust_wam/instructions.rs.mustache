@@ -56,6 +56,10 @@ pub enum Instruction {
     Proceed,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
+    /// Start collecting solutions for an aggregate.
+    BeginAggregate(String, String, String),
+    /// Record one aggregate solution and force backtracking.
+    EndAggregate(String),
 
     // === Choice Points ===
     /// Create choice point, try current clause, alternative at Label.
