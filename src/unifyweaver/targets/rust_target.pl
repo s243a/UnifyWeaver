@@ -3501,9 +3501,12 @@ rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
     rust_recursive_kernel_spec(Kernel, ForeignSpec).
 
 rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
-    rust_recursive_kernel_category_ancestor(Pred, Arity, Clauses, Kernel).
-rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
-    rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses, Kernel).
+    rust_recursive_kernel_detector(KernelKind, Detector),
+    call(Detector, Pred, Arity, Clauses, Kernel),
+    Kernel = recursive_kernel(KernelKind, _, _).
+
+rust_recursive_kernel_detector(category_ancestor, rust_recursive_kernel_category_ancestor).
+rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
 
 rust_recursive_kernel_spec(
         recursive_kernel(KernelKind, PredIndicator, KernelConfig),

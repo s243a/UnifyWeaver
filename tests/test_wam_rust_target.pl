@@ -296,6 +296,15 @@ test_recursive_kernel_spec_generation :-
     ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
     ).
 
+test_recursive_kernel_registry :-
+    Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
+    findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
+    sort(Kinds0, Kinds),
+    (   Kinds == [category_ancestor, transitive_closure2]
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -691,6 +700,7 @@ run_tests :-
     test_foreign_spec_wrapper_generation,
     test_recursive_kernel_ir_selection,
     test_recursive_kernel_spec_generation,
+    test_recursive_kernel_registry,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
