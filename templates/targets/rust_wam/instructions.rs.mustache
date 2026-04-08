@@ -68,16 +68,26 @@ pub enum Instruction {
     // === Choice Points ===
     /// Create choice point, try current clause, alternative at Label.
     TryMeElse(String),
+    /// Create choice point with a pre-resolved alternative PC.
+    TryMeElsePc(usize),
     /// Update choice point to next alternative at Label.
     RetryMeElse(String),
+    /// Update choice point to a pre-resolved alternative PC.
+    RetryMeElsePc(usize),
     /// Remove choice point, try final clause.
     TrustMe,
 
     // === Indexing ===
     /// First-argument constant dispatch.
     SwitchOnConstant(Vec<(Value, String)>),
+    /// First-argument constant dispatch with pre-resolved PCs.
+    SwitchOnConstantPc(Vec<(Value, usize)>),
     /// First-argument structure dispatch.
     SwitchOnStructure(Vec<(String, String)>),
+    /// First-argument structure dispatch with pre-resolved PCs.
+    SwitchOnStructurePc(Vec<(String, usize)>),
     /// Second-argument constant dispatch.
     SwitchOnConstantA2(Vec<(Value, String)>),
+    /// Second-argument constant dispatch with pre-resolved PCs.
+    SwitchOnConstantA2Pc(Vec<(Value, usize)>),
 }

@@ -323,7 +323,7 @@ fn append_fact1(
     code[switch_idx] = Instruction::SwitchOnConstant(dispatch);
 }
 
-fn resolve_call_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
+fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
     for instr in code.iter_mut() {
         let replacement = match instr {
             Instruction::Call(pred, arity) => {
@@ -331,6 +331,51 @@ fn resolve_call_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, us
             }
             Instruction::Execute(pred) => {
                 labels.get(pred).copied().map(Instruction::ExecutePc)
+            }
+            Instruction::TryMeElse(label) => {
+                labels.get(label).copied().map(Instruction::TryMeElsePc)
+            }
+            Instruction::RetryMeElse(label) => {
+                labels.get(label).copied().map(Instruction::RetryMeElsePc)
+            }
+            Instruction::SwitchOnConstant(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (value, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((value.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnConstantPc(resolved))
+            }
+            Instruction::SwitchOnStructure(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (functor, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((functor.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnStructurePc(resolved))
+            }
+            Instruction::SwitchOnConstantA2(table) => {
+                let mut resolved = Vec::with_capacity(table.len());
+                let mut ok = true;
+                for (value, label) in table.iter() {
+                    if let Some(&pc) = labels.get(label) {
+                        resolved.push((value.clone(), pc));
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok.then_some(Instruction::SwitchOnConstantA2Pc(resolved))
             }
             _ => None,
         };
@@ -372,7 +417,7 @@ fn main() {
     append_fact2(&mut all_code, &mut all_labels, "category_parent", &category_parents);
     append_fact2(&mut all_code, &mut all_labels, "article_category", &article_categories);
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
-    resolve_call_targets(&mut all_code, &all_labels);
+    resolve_benchmark_targets(&mut all_code, &all_labels);
 
     // Create VM with merged code
     let mut vm = WamState::new(all_code, all_labels);

@@ -398,6 +398,20 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                     self.pc += 1; true
                 } else { false }'.
 
+wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
+    Body = '                self.choice_points.push(ChoicePoint {
+                    next_pc: *next_pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    bindings: self.bindings.clone(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                });
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::TrustMe', Body) :-
     Body = '                self.choice_points.pop();
                 self.pc += 1; true'.
@@ -409,6 +423,12 @@ wam_instruction_arm('Instruction::RetryMeElse(label)', Body) :-
                     }
                     self.pc += 1; true
                 } else { false }'.
+
+wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
+    Body = '                if let Some(cp) = self.choice_points.last_mut() {
+                    cp.next_pc = *next_pc;
+                }
+                self.pc += 1; true'.
 
 % --- Indexing Instructions ---
 
@@ -444,6 +464,33 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 // Unbound A1: skip dispatch, advance to next instruction
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
+    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        if let Value::Atom(ref needle) = val {
+                            match table.binary_search_by_key(&needle.as_str(), |(k, _)| {
+                                if let Value::Atom(s) = k { s.as_str() } else { "" }
+                            }) {
+                                Ok(idx) => {
+                                    self.pc = table[idx].1;
+                                    return true;
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            for (key, target_pc) in table {
+                                if *key == val {
+                                    self.pc = *target_pc;
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
     Body = '                if let Some(val) = self.regs.get("A1").cloned() {
                     if let Some((f, args)) = val.univ() {
@@ -459,6 +506,19 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                 }
                 self.pc += 1; true'.
 
+wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
+    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+                    if let Some((f, args)) = val.univ() {
+                        let key = format!("{}/{}", f, args.len());
+                        for (k, target_pc) in table {
+                            if *k == key {
+                                self.pc = *target_pc; return true;
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
     Body = '                if let Some(val) = self.regs.get("A2").cloned() {
                     if !val.is_unbound() {
@@ -467,6 +527,18 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                                 if let Some(&pc) = self.labels.get(label) {
                                     self.pc = pc; return true;
                                 }
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
+wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
+    Body = '                if let Some(val) = self.regs.get("A2").cloned() {
+                    if !val.is_unbound() {
+                        for (key, target_pc) in table {
+                            if *key == val {
+                                self.pc = *target_pc; return true;
                             }
                         }
                     }
