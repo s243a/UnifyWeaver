@@ -122,6 +122,8 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'Cons'),
         sub_string(S, _, _, _, 'NotMember'),
         sub_string(S, _, _, _, 'ListLengthLt'),
+        sub_string(S, _, _, _, 'RecurseCategoryAncestor'),
+        sub_string(S, _, _, _, 'ReturnAdd1'),
         % Control
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'Deallocate'),

@@ -48,6 +48,12 @@ pub enum Instruction {
     NotMember(String, String, usize),
     /// Fused length(List, Depth), Depth < Limit; skips a source sequence on success.
     ListLengthLt(String, String, usize),
+    /// Fused benchmark recursive self-call setup for category_ancestor/4.
+    RecurseCategoryAncestor(String, String, String, String, String, usize),
+    /// Fused benchmark recursive self-call setup with a resolved target PC.
+    RecurseCategoryAncestorPc(String, String, String, String, usize, usize),
+    /// Fused benchmark recursive return: Hops is ChildHops + 1, then return.
+    ReturnAdd1(String, String),
 
     // === Control ===
     /// Create environment frame (saves CP, provides Yi storage).

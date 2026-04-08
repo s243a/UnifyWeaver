@@ -348,6 +348,99 @@ wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body
                     if limit_ok { self.pc += *skip; true } else { false }
                 } else { false }'.
 
+wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip)', Body) :-
+    Body = '                let Some(&target_pc) = self.labels.get(pred) else { return false; };
+                let instr = Instruction::RecurseCategoryAncestorPc(
+                    mid_reg.clone(),
+                    root_reg.clone(),
+                    child_hops_reg.clone(),
+                    visited_reg.clone(),
+                    target_pc,
+                    *skip,
+                );
+                self.step(&instr)'.
+
+wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, child_hops_reg, visited_reg, target_pc, skip)', Body) :-
+    Body = '                let mid = match self.get_reg(mid_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let root = match self.get_reg(root_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let child_hops = Value::Unbound(format!("_V{}", self.var_counter));
+                self.var_counter += 1;
+                let next_visited = match visited {
+                    Value::List(mut items) => {
+                        items.insert(0, mid.clone());
+                        Value::List(items)
+                    }
+                    tail => Value::List(vec![mid.clone(), tail]),
+                };
+                self.trail_binding(child_hops_reg);
+                self.trail_binding("A1");
+                self.trail_binding("A2");
+                self.trail_binding("A3");
+                self.trail_binding("A4");
+                self.put_reg(child_hops_reg, child_hops.clone());
+                self.regs.insert("A1".to_string(), mid);
+                self.regs.insert("A2".to_string(), root);
+                self.regs.insert("A3".to_string(), child_hops);
+                self.regs.insert("A4".to_string(), next_visited);
+                self.cp = self.pc + *skip;
+                self.pc = *target_pc;
+                true'.
+
+wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
+    Body = '                let in_val = match self.get_reg(in_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let result = match in_val {
+                    Value::Integer(n) => Value::Integer(n + 1),
+                    Value::Float(f) => {
+                        let next = f + 1.0;
+                        if (next.round() - next).abs() < f64::EPSILON {
+                            Value::Integer(next.round() as i64)
+                        } else {
+                            Value::Float(next)
+                        }
+                    }
+                    Value::Atom(s) => match s.parse::<f64>() {
+                        Ok(f) => {
+                            let next = f + 1.0;
+                            if (next.round() - next).abs() < f64::EPSILON {
+                                Value::Integer(next.round() as i64)
+                            } else {
+                                Value::Float(next)
+                            }
+                        }
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let out_val = match self.get_reg(out_reg) {
+                    Some(val) => val,
+                    None => return false,
+                };
+                if !self.unify(&out_val, &result) {
+                    return false;
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
+
 % --- Control Instructions ---
 
 wam_instruction_arm('Instruction::Allocate', Body) :-

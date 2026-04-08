@@ -381,6 +381,18 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
             Instruction::Execute(pred) => {
                 labels.get(pred).copied().map(Instruction::ExecutePc)
             }
+            Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip) => {
+                labels.get(pred).copied().map(|pc| {
+                    Instruction::RecurseCategoryAncestorPc(
+                        mid_reg.clone(),
+                        root_reg.clone(),
+                        child_hops_reg.clone(),
+                        visited_reg.clone(),
+                        pc,
+                        *skip,
+                    )
+                })
+            }
             Instruction::TryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::TryMeElsePc)
             }
@@ -483,6 +495,77 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
             if let Some(instr) = replacement {
                 code[i] = instr;
                 i += 4;
+                continue;
+            }
+        }
+        if i + 6 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+            ) {
+                (
+                    Instruction::PutValue(mid_reg, a1),
+                    Instruction::PutValue(root_reg, a2),
+                    Instruction::PutVariable(child_hops_reg, a3),
+                    Instruction::PutList(a4),
+                    Instruction::SetValue(mid_reg2),
+                    Instruction::SetValue(visited_reg),
+                    Instruction::Call(pred, 4),
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && a3 == "A3"
+                    && a4 == "A4"
+                    && mid_reg == mid_reg2
+                    && pred == "category_ancestor/4" =>
+                    Some(Instruction::RecurseCategoryAncestor(
+                        mid_reg.clone(),
+                        root_reg.clone(),
+                        child_hops_reg.clone(),
+                        visited_reg.clone(),
+                        pred.clone(),
+                        7,
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 7;
+                continue;
+            }
+        }
+        if i + 6 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+            ) {
+                (
+                    Instruction::PutValue(out_reg, a1),
+                    Instruction::PutStructure(functor, a2),
+                    Instruction::SetValue(in_reg),
+                    Instruction::SetConstant(Value::Integer(1)),
+                    Instruction::Deallocate,
+                    Instruction::BuiltinCall(op, 2),
+                    Instruction::Proceed,
+                ) if a1 == "A1"
+                    && a2 == "A2"
+                    && functor == "+/2"
+                    && op == "is/2" =>
+                    Some(Instruction::ReturnAdd1(out_reg.clone(), in_reg.clone())),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 7;
                 continue;
             }
         }

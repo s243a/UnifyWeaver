@@ -553,6 +553,19 @@ impl WamState {
                 let skip = args[2].parse::<usize>().ok()?;
                 Some(Instruction::ListLengthLt(args[0].clone(), args[1].clone(), skip))
             }
+            "recurse_category_ancestor" if args.len() == 6 => {
+                let skip = args[5].parse::<usize>().ok()?;
+                Some(Instruction::RecurseCategoryAncestor(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                    args[3].clone(),
+                    args[4].clone(),
+                    skip,
+                ))
+            }
+            "return_add1" if args.len() == 2 =>
+                Some(Instruction::ReturnAdd1(args[0].clone(), args[1].clone())),
 
             // Control
             "allocate" => Some(Instruction::Allocate),
