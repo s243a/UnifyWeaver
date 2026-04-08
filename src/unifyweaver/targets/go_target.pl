@@ -8292,8 +8292,131 @@ semantic_compiler:semantic_dispatch(go, Goal, Provider, VarMap, Code) :-
 %% is_semantic_predicate(+Goal)
 is_semantic_predicate(Goal) :-
     semantic_compiler:is_semantic_predicate(Goal).
+is_semantic_predicate(Goal) :-
+    semantic_compiler:is_fuzzy_predicate(Goal).
 is_semantic_predicate(semantic_search(_, _, _)).
 is_semantic_predicate(crawler_run(_, _)).
+
+% ============================================================================
+% FUZZY LOGIC DISPATCH (Go target)
+% ============================================================================
+%
+% Generates inline Go code for fuzzy operations. Assumes `termScores`
+% (map[string]float64) is in scope from the surrounding search context.
+
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+
+%% f_and: Fuzzy AND (product t-norm)
+%  result = w1*t1 * w2*t2 * ...
+semantic_compiler:fuzzy_dispatch(go, f_and(Terms, _Result), Code) :-
+    generate_go_product_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy AND (product t-norm)
+\tresult := 1.0
+~w', [TermCode]).
+
+%% f_or: Fuzzy OR (probabilistic sum)
+%  result = 1 - (1-w1*t1)(1-w2*t2)...
+semantic_compiler:fuzzy_dispatch(go, f_or(Terms, _Result), Code) :-
+    generate_go_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy OR (probabilistic sum)
+\tcomplement := 1.0
+~w\tresult := 1 - complement
+', [TermCode]).
+
+%% f_dist_or: Distributed OR (base score into each term)
+%  result = 1 - (1-base*w1*t1)(1-base*w2*t2)...
+semantic_compiler:fuzzy_dispatch(go, f_dist_or(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_go_dist_complement_terms(BaseExpr, Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy distributed OR
+\tcomplement := 1.0
+~w\tresult := 1 - complement
+', [TermCode]).
+
+%% f_union: Non-distributed OR (base * OR result)
+%  result = base * (1 - (1-w1*t1)(1-w2*t2)...)
+semantic_compiler:fuzzy_dispatch(go, f_union(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_go_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy union (base * OR)
+\tcomplement := 1.0
+~w\tresult := ~w * (1 - complement)
+', [TermCode, BaseExpr]).
+
+%% f_not: Fuzzy NOT (complement)
+semantic_compiler:fuzzy_dispatch(go, f_not(Score, _Result), Code) :-
+    (number(Score) -> format(string(ScoreExpr), "~w", [Score]) ; ScoreExpr = Score),
+    format(string(Code), '\tresult := 1 - ~w\n', [ScoreExpr]).
+
+%% blend_scores: Weighted interpolation
+semantic_compiler:fuzzy_dispatch(go, blend_scores(Alpha, Scores1, Scores2, _Result), Code) :-
+    (number(Alpha) -> format(string(AExpr), "~w", [Alpha]) ; AExpr = Alpha),
+    format(string(Code),
+'\t// Blend scores: alpha*s1 + (1-alpha)*s2
+\tresult := make([]float64, len(~w))
+\tfor i := range result {
+\t\tresult[i] = ~w * ~w[i] + (1-~w) * ~w[i]
+\t}
+', [Scores1, AExpr, Scores1, AExpr, Scores2]).
+
+%% top_k: Get top K items by score
+semantic_compiler:fuzzy_dispatch(go, top_k(Items, K, _Result), Code) :-
+    format(string(Code),
+'\t// Top-K selection
+\tsort.Slice(~w, func(i, j int) bool {
+\t\treturn ~w[i].Score > ~w[j].Score
+\t})
+\tif len(~w) > ~w {
+\t\tresult = ~w[:~w]
+\t} else {
+\t\tresult = ~w
+\t}
+', [Items, Items, Items, Items, K, Items, K, Items]).
+
+% ---- Helpers for generating per-term Go code ----
+
+%% generate_go_product_terms(+Terms, -Code)
+%  Generate: result *= weight * termScores["term"]
+generate_go_product_terms([], '').
+generate_go_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_product_terms(Rest, RestCode),
+    format(string(Line), '\tresult *= ~w * termScores["~w"]\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_product_terms(Rest, RestCode),
+    format(string(Line), '\tresult *= termScores["~w"]\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_complement_terms(+Terms, -Code)
+%  Generate: complement *= (1 - weight * termScores["term"])
+generate_go_complement_terms([], '').
+generate_go_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_complement_terms(Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_complement_terms(Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - termScores["~w"])\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_dist_complement_terms(+BaseExpr, +Terms, -Code)
+%  Generate: complement *= (1 - base * weight * termScores["term"])
+generate_go_dist_complement_terms(_, [], '').
+generate_go_dist_complement_terms(BaseExpr, [w(Term, Weight)|Rest], Code) :-
+    generate_go_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * ~w * termScores["~w"])\n', [BaseExpr, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
+    atom(Term),
+    generate_go_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [BaseExpr, Term]),
+    string_concat(Line, RestCode, Code).
 
 %% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
 compile_semantic_rule_go(PredStr, HeadArgs, Goal, GoCode) :-

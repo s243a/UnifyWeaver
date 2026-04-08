@@ -357,3 +357,16 @@ python_target:translate_goal(apply_filter(Items, F, R), Code) :-
     translate_fuzzy_goal(apply_filter(Items, F, R), Code).
 python_target:translate_goal(apply_boost(Items, B, R), Code) :-
     translate_fuzzy_goal(apply_boost(Items, B, R), Code).
+
+% =============================================================================
+% Generic Semantic Interface Integration
+% =============================================================================
+% Wire through semantic_compiler:fuzzy_dispatch/3 so fuzzy operations
+% can be compiled via the generic interface (compile_fuzzy_call/3).
+
+:- use_module('../core/semantic_compiler').
+
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+
+semantic_compiler:fuzzy_dispatch(python, Goal, Code) :-
+    translate_fuzzy_goal(Goal, Code).
