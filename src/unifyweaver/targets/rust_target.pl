@@ -3441,24 +3441,50 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ).
 
 rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
-    rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth),
-    ForeignSpec = foreign_predicate(
-        category_ancestor/4,
-        [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
-          register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)
-        ],
-        [category_ancestor/4]
-    ).
-rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
-    rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs),
-    ForeignSpec = foreign_predicate(
-        Pred/Arity,
-        [ register_foreign_native_kind(Pred/Arity, transitive_closure2),
-          register_foreign_string_config(Pred/Arity, edge_pred, EdgePred/2),
-          register_indexed_atom_fact2(EdgePred/2, FactPairs)
-        ],
-        [Pred/Arity]
-    ).
+    rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema),
+    rust_foreign_schema_spec(Schema, ForeignSpec).
+
+rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
+    rust_foreign_schema_category_ancestor(Pred, Arity, Clauses, Schema).
+rust_foreign_lowering_schema(Pred, Arity, Clauses, Schema) :-
+    rust_foreign_schema_transitive_closure(Pred, Arity, Clauses, Schema).
+
+rust_foreign_schema_spec(
+        foreign_schema(
+            category_ancestor,
+            category_ancestor/4,
+            [max_depth(MaxDepth)]
+        ),
+        foreign_predicate(
+            category_ancestor/4,
+            [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+              register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)
+            ],
+            [category_ancestor/4]
+        )).
+rust_foreign_schema_spec(
+        foreign_schema(
+            transitive_closure2,
+            Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)]
+        ),
+        foreign_predicate(
+            Pred/Arity,
+            [ register_foreign_native_kind(Pred/Arity, transitive_closure2),
+              register_foreign_string_config(Pred/Arity, edge_pred, EdgePred/2),
+              register_indexed_atom_fact2(EdgePred/2, FactPairs)
+            ],
+            [Pred/Arity]
+        )).
+
+rust_foreign_schema_category_ancestor(Pred, Arity, Clauses,
+        foreign_schema(category_ancestor, category_ancestor/4, [max_depth(MaxDepth)])) :-
+    rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth).
+
+rust_foreign_schema_transitive_closure(Pred, Arity, Clauses,
+        foreign_schema(transitive_closure2, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
     member(_-BaseBody, Clauses),
