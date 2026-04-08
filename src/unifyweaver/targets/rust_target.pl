@@ -3385,12 +3385,12 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
 
     (   Clauses = [] -> fail
     ;   ForeignLowering == true,
-        rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth)
+        rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec)
     ->  wam_target:compile_predicate_to_wam(user:Pred/Arity, Options, WamCode),
         wam_rust_target:compile_wam_predicate_to_rust(
             Pred/Arity,
             WamCode,
-            [foreign_lowering(category_ancestor(MaxDepth))|Options],
+            [foreign_lowering(ForeignSpec)|Options],
             RustCode
         )
     ;   maplist(is_fact_clause, Clauses) ->
@@ -3438,6 +3438,14 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
         wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode)
     ->  wam_rust_target:compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode)
     ;   fail
+    ).
+
+rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
+    rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth),
+    ForeignSpec = foreign_predicate(
+        category_ancestor/4,
+        [register_foreign_category_ancestor(MaxDepth)],
+        [category_ancestor/4]
     ).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-

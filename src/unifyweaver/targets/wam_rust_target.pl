@@ -1551,15 +1551,30 @@ pub fn ~w(~w) -> bool {
 }', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ForeignSetup, ArgSetup, RunExpr]).
 
 foreign_wrapper_setup(Pred/Arity, Options, Setup, RunExpr) :-
-    (   option(foreign_lowering(category_ancestor(MaxDepth)), Options),
-        Pred == category_ancestor,
-        Arity =:= 4
-    ->  format(string(Setup),
-            '    vm.register_foreign_category_ancestor(~w);', [MaxDepth]),
-        RunExpr = 'vm.execute_foreign_predicate("category_ancestor", 4)'
+    (   option(foreign_lowering(ForeignSpec), Options),
+        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
+    ->  rust_foreign_setup_code(SetupOps, Setup),
+        format(string(RunExpr),
+            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
     ;   Setup = "",
         RunExpr = 'vm.run()'
     ).
+
+rust_foreign_spec(Pred/Arity,
+        foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
+        SetupOps,
+        Pred/Arity) :-
+    is_list(SetupOps),
+    is_list(RewriteCalls).
+
+rust_foreign_setup_code([], "").
+rust_foreign_setup_code(Ops, Setup) :-
+    maplist(rust_foreign_setup_line, Ops, Lines),
+    atomic_list_concat(Lines, '\n', Setup).
+
+rust_foreign_setup_line(register_foreign_category_ancestor(MaxDepth), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_category_ancestor(~w);', [MaxDepth]).
 
 %% wam_code_to_rust_instructions(+WamCodeStr, +PredIndicator, +Options, -InstrLiterals, -LabelLiterals)
 %  Parses a WAM code string and generates Rust vec![] entries and label map inserts.
@@ -1674,13 +1689,9 @@ wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
     escape_rust_string(CP, ECP),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    (   option(foreign_lowering(category_ancestor(_)), Options),
-        Pred == category_ancestor,
-        Arity =:= 4,
-        ECP == "category_ancestor/4",
-        Num =:= 4
+    (   rust_foreign_rewrite_call(Options, Pred/Arity, ECP, Num, ForeignPred, ForeignArity)
     ->  format(string(Rust),
-            'Instruction::CallForeign("category_ancestor".to_string(), 4)', [])
+            'Instruction::CallForeign("~w".to_string(), ~w)', [ForeignPred, ForeignArity])
     ;   format(string(Rust),
             'Instruction::Call("~w".to_string(), ~w)', [ECP, Num])
     ).
@@ -1730,6 +1741,22 @@ wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
 wam_line_to_rust_instr(Parts, _, _, Rust) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Rust), '/* unknown: ~w */', [Joined]).
+
+rust_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
+    option(foreign_lowering(ForeignSpec), Options),
+    rust_foreign_spec(CurrentPred, ForeignSpec, _, RewriteCalls, ForeignPred/ForeignArity),
+    member(TargetPred/TargetArity, RewriteCalls),
+    format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
+    TargetPredArity == ExpectedTarget,
+    Num =:= ForeignArity.
+
+rust_foreign_spec(Pred/Arity,
+        foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
+        SetupOps,
+        RewriteCalls,
+        Pred/Arity) :-
+    is_list(SetupOps),
+    is_list(RewriteCalls).
 
 parse_index_entry_constant(Entry, Rust) :-
     (   sub_string(Entry, Before, 1, After, ":")

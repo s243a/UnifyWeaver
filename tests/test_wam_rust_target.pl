@@ -209,6 +209,24 @@ test_predicate_wrapper :-
     ;   fail_test(Test, 'Incorrect predicate wrapper')
     ).
 
+test_foreign_spec_wrapper_generation :-
+    Test = 'WAM-Rust: generic foreign spec drives wrapper generation',
+    ForeignSpec = foreign_predicate(
+        category_ancestor/4,
+        [register_foreign_category_ancestor(10)],
+        [category_ancestor/4]
+    ),
+    WamCode = "call category_ancestor/4, 4",
+    (   compile_wam_predicate_to_rust(category_ancestor/4, WamCode,
+            [foreign_lowering(ForeignSpec)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_category_ancestor(10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -566,6 +584,7 @@ run_tests :-
     test_all_instruction_arms,
     test_builtin_dispatch,
     test_predicate_wrapper,
+    test_foreign_spec_wrapper_generation,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
