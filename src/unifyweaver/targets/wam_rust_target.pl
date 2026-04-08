@@ -786,6 +786,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_resume_builtin_to_rust(ResumeCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
+    compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -801,6 +802,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ResumeCode, '\n\n',
         NativeAncestorCode, '\n\n',
         NativeClosureCode, '\n\n',
+        NativeDistanceCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1147,6 +1149,62 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
+            "transitive_distance3" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let dist_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mut results: Vec<(String, i64)> = Vec::new();
+                self.collect_native_transitive_distance_results(&start, &edge_pred, &mut results);
+                if let Some(target) = target_filter {
+                    results.retain(|(node, _)| *node == target);
+                }
+                if results.is_empty() {
+                    return false;
+                }
+                if results.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign_results".to_string(),
+                            args: vec![Value::Atom(pred_key.clone()), target_reg.clone(), dist_reg.clone()],
+                            data: results[1..].iter().map(|(node, dist)| {
+                                Value::Str("__pair__".to_string(), vec![
+                                    Value::Atom(node.clone()),
+                                    Value::Integer(*dist),
+                                ])
+                            }).collect(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&target_reg, &Value::Atom(results[0].0.clone()))
+                    && self.unify(&dist_reg, &Value::Integer(results[0].1)) {
+                    self.pc += 1; true
+                } else { false }
+            }
             _ => false,
         }
     }'.
@@ -1212,6 +1270,31 @@ compile_collect_native_transitive_closure_to_rust(Code) :-
                         out.push(next.clone());
                         stack.push(next.clone());
                     }
+                }
+            }
+        }
+    }'.
+
+compile_collect_native_transitive_distance_to_rust(Code) :-
+    Code = '    pub fn collect_native_transitive_distance_results(
+        &self,
+        start: &str,
+        edge_pred: &str,
+        out: &mut Vec<(String, i64)>,
+    ) {
+        let mut stack: Vec<(String, i64, Vec<String>)> =
+            vec![(start.to_string(), 0, vec![start.to_string()])];
+        while let Some((node, depth, path)) = stack.pop() {
+            if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
+                for next in next_nodes.iter().rev() {
+                    if path.iter().any(|seen| seen == next) {
+                        continue;
+                    }
+                    let next_depth = depth + 1;
+                    out.push((next.clone(), next_depth));
+                    let mut next_path = path.clone();
+                    next_path.push(next.clone());
+                    stack.push((next.clone(), next_depth, next_path));
                 }
             }
         }
@@ -1393,10 +1476,6 @@ compile_resume_builtin_to_rust(Code) :-
                     Some(Value::Atom(pred_key)) => pred_key.clone(),
                     _ => return false,
                 };
-                let hops_reg = match state.args.get(1) {
-                    Some(val) => val.clone(),
-                    None => return false,
-                };
                 let result = match state.data.first() {
                     Some(value) => value.clone(),
                     None => return false,
@@ -1421,12 +1500,36 @@ compile_resume_builtin_to_rust(Code) :-
                     Some(kind) => kind,
                     None => return false,
                 };
-                if native_kind != "category_ancestor" && native_kind != "transitive_closure2" {
-                    return false;
+                match native_kind {
+                    "category_ancestor" | "transitive_closure2" => {
+                        let result_reg = match state.args.get(1) {
+                            Some(val) => val.clone(),
+                            None => return false,
+                        };
+                        if self.unify(&result_reg, &result) {
+                            self.pc += 1; true
+                        } else { false }
+                    }
+                    "transitive_distance3" => {
+                        let target_reg = match state.args.get(1) {
+                            Some(val) => val.clone(),
+                            None => return false,
+                        };
+                        let dist_reg = match state.args.get(2) {
+                            Some(val) => val.clone(),
+                            None => return false,
+                        };
+                        match result {
+                            Value::Str(functor, args) if functor == "__pair__" && args.len() == 2 => {
+                                if self.unify(&target_reg, &args[0]) && self.unify(&dist_reg, &args[1]) {
+                                    self.pc += 1; true
+                                } else { false }
+                            }
+                            _ => false,
+                        }
+                    }
+                    _ => false,
                 }
-                if self.unify(&hops_reg, &result) {
-                    self.pc += 1; true
-                } else { false }
             }
             _ => false,
         }
