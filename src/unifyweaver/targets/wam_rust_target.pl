@@ -1110,12 +1110,20 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(val) => val,
                     None => return false,
                 };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
                 let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
                     Some(pred) => pred.to_string(),
                     None => return false,
                 };
                 let mut nodes: Vec<String> = Vec::new();
                 self.collect_native_transitive_closure_nodes(&start, &edge_pred, &mut nodes);
+                if let Some(target) = target_filter {
+                    nodes.retain(|node| *node == target);
+                }
                 if nodes.is_empty() {
                     return false;
                 }
