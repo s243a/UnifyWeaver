@@ -123,6 +123,97 @@ test_unknown_target :-
     ;   format('  PASS: Correctly failed for unknown target~n')
     ).
 
+% ============================================================================
+% FUZZY LOGIC TESTS
+% ============================================================================
+
+% Minimal Go fuzzy dispatch (mirrors go_target.pl)
+semantic_compiler:fuzzy_dispatch(go, f_and(Terms, _Result), Code) :-
+    go_product_terms(Terms, TermCode),
+    format(string(Code), '\tresult := 1.0\n~w', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(go, f_or(Terms, _Result), Code) :-
+    go_complement_terms(Terms, TermCode),
+    format(string(Code), '\tcomplement := 1.0\n~w\tresult := 1 - complement\n', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(go, f_not(Score, _Result), Code) :-
+    format(string(Code), '\tresult := 1 - ~w\n', [Score]).
+
+% Minimal Python fuzzy dispatch (mirrors python_fuzzy_target.pl)
+semantic_compiler:fuzzy_dispatch(python, f_and(Terms, _Result), Code) :-
+    py_weighted_terms(Terms, PyTerms),
+    format(string(Code), '    result = f_and(~w, _term_scores)\n', [PyTerms]).
+
+semantic_compiler:fuzzy_dispatch(python, f_or(Terms, _Result), Code) :-
+    py_weighted_terms(Terms, PyTerms),
+    format(string(Code), '    result = f_or(~w, _term_scores)\n', [PyTerms]).
+
+% ---- Inline test helpers ----
+
+go_product_terms([], '').
+go_product_terms([w(Term, Weight)|Rest], Code) :-
+    go_product_terms(Rest, RestCode),
+    format(string(Line), '\tresult *= ~w * termScores["~w"]\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+go_complement_terms([], '').
+go_complement_terms([w(Term, Weight)|Rest], Code) :-
+    go_complement_terms(Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+py_weighted_terms(Terms, PyTerms) :-
+    maplist(py_weighted_term, Terms, Strs),
+    atomic_list_concat(Strs, ', ', Joined),
+    format(string(PyTerms), '[~w]', [Joined]).
+py_weighted_term(w(T, W), S) :- format(string(S), '("~w", ~w)', [T, W]).
+
+% ---- Fuzzy tests ----
+
+test_fuzzy_recognition :-
+    format('--- Fuzzy Recognition ---~n'),
+    (   is_fuzzy_predicate(f_and([w(a,1)], _))
+    ->  format('  PASS: f_and recognized~n')
+    ;   format('  FAIL: f_and not recognized~n')
+    ),
+    (   is_fuzzy_predicate(f_not(0.5, _))
+    ->  format('  PASS: f_not recognized~n')
+    ;   format('  FAIL: f_not not recognized~n')
+    ),
+    (   is_fuzzy_predicate(foo(1,2))
+    ->  format('  FAIL: foo should not be fuzzy~n')
+    ;   format('  PASS: foo correctly rejected~n')
+    ).
+
+test_go_fuzzy_and :-
+    format('--- Go Fuzzy AND ---~n'),
+    compile_fuzzy_call(go, f_and([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "result := 1.0", "product identity"),
+    assert_contains(Code, "0.9 * termScores[\"bash\"]", "bash weighted term"),
+    assert_contains(Code, "0.5 * termScores[\"shell\"]", "shell weighted term").
+
+test_go_fuzzy_or :-
+    format('--- Go Fuzzy OR ---~n'),
+    compile_fuzzy_call(go, f_or([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "complement := 1.0", "complement identity"),
+    assert_contains(Code, "1 - complement", "probabilistic sum").
+
+test_go_fuzzy_not :-
+    format('--- Go Fuzzy NOT ---~n'),
+    compile_fuzzy_call(go, f_not(0.3, _), Code),
+    assert_contains(Code, "1 - 0.3", "complement").
+
+test_python_fuzzy_and :-
+    format('--- Python Fuzzy AND ---~n'),
+    compile_fuzzy_call(python, f_and([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "f_and(", "f_and call"),
+    assert_contains(Code, "_term_scores", "term scores dict").
+
+test_python_fuzzy_or :-
+    format('--- Python Fuzzy OR ---~n'),
+    compile_fuzzy_call(python, f_or([w(bash, 0.9)], _), Code),
+    assert_contains(Code, "f_or(", "f_or call").
+
 % ---- Helpers ----
 
 assert_contains(String, Substring, Label) :-
@@ -138,6 +229,12 @@ test_all :-
     test_csharp_dispatch,
     test_fallback_dispatch,
     test_guard,
-    test_unknown_target.
+    test_unknown_target,
+    test_fuzzy_recognition,
+    test_go_fuzzy_and,
+    test_go_fuzzy_or,
+    test_go_fuzzy_not,
+    test_python_fuzzy_and,
+    test_python_fuzzy_or.
 
 :- initialization(test_all, main).

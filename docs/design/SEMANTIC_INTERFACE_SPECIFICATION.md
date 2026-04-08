@@ -51,3 +51,49 @@ semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 | **Go** | `hugot` | `onnx` | GPU, CPU |
 | **Rust** | `candle` | `onnx` | CUDA, CPU |
 | **C#** | `onnx` | — | DirectML, CPU |
+
+## 4. Fuzzy Logic Compilation
+
+### 4.1 Overview
+
+The `semantic_compiler` also provides a `fuzzy_dispatch/3` multifile hook for compiling fuzzy logic operations across targets. This enables the Prolog fuzzy DSL (`f_and`, `f_or`, `f_dist_or`, `f_union`, `f_not`) to be compiled to target-specific code.
+
+### 4.2 Fuzzy Dispatch Hook
+
+```prolog
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+% fuzzy_dispatch(+Target, +Goal, -Code)
+```
+
+### 4.3 Supported Operations
+
+| Operation | Arity | Description | Formula |
+|-----------|-------|-------------|---------|
+| `f_and` | 2 | Product t-norm | w1\*t1 \* w2\*t2 \* ... |
+| `f_or` | 2 | Probabilistic sum | 1 - (1-w1\*t1)(1-w2\*t2)... |
+| `f_dist_or` | 3 | Distributed OR | 1 - (1-base\*w1\*t1)(1-base\*w2\*t2)... |
+| `f_union` | 3 | Non-distributed OR | base \* f\_or result |
+| `f_not` | 2 | Complement | 1 - score |
+| `blend_scores` | 4 | Weighted interpolation | alpha\*s1 + (1-alpha)\*s2 |
+| `top_k` | 3 | Top-K selection | Sort by score descending |
+
+### 4.4 Target Support
+
+| Target | Core ops | Batch ops | Utility ops |
+|--------|----------|-----------|-------------|
+| **Python** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch | blend, top\_k, filter, boost |
+| **Go** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | — | blend, top\_k |
+
+### 4.5 Usage Example
+
+```prolog
+% Define weighted terms
+Terms = [w(bash, 0.9), w(shell, 0.5)],
+
+% Compile fuzzy AND for Go
+compile_fuzzy_call(go, f_and(Terms, Result), Code).
+% Code generates:
+%   result := 1.0
+%   result *= 0.9 * termScores["bash"]
+%   result *= 0.5 * termScores["shell"]
+```

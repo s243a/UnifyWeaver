@@ -11,7 +11,11 @@
     declare_semantic_provider/2,     % +Predicate, +Options
     get_semantic_provider/3,         % +Target, +Predicate, -ProviderInfo
     is_semantic_predicate/1,         % +Goal
-    compile_semantic_call/4          % +Target, +Goal, +VarMap, -Code
+    compile_semantic_call/4,         % +Target, +Goal, +VarMap, -Code
+
+    % Fuzzy logic compilation
+    is_fuzzy_predicate/1,            % +Goal
+    compile_fuzzy_call/3             % +Target, +Goal, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -96,3 +100,38 @@ compile_semantic_call(Target, Goal, VarMap, Code) :-
 
 :- multifile semantic_dispatch/5.
 % semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+
+% ============================================================================
+% FUZZY LOGIC COMPILATION
+% ============================================================================
+
+%% is_fuzzy_predicate(+Goal)
+%
+%  True if the goal is a fuzzy logic operation that can be compiled
+%  via fuzzy_dispatch/4.
+%
+is_fuzzy_predicate(Goal) :-
+    functor(Goal, Name, _),
+    fuzzy_op(Name).
+
+fuzzy_op(f_and).
+fuzzy_op(f_or).
+fuzzy_op(f_dist_or).
+fuzzy_op(f_union).
+fuzzy_op(f_not).
+fuzzy_op(eval_fuzzy_expr).
+fuzzy_op(blend_scores).
+fuzzy_op(multiply_scores).
+fuzzy_op(top_k).
+fuzzy_op(apply_filter).
+fuzzy_op(apply_boost).
+
+%% compile_fuzzy_call(+Target, +Goal, -Code)
+%
+%  Dispatch compilation of a fuzzy logic goal to the target-specific handler.
+%
+compile_fuzzy_call(Target, Goal, Code) :-
+    fuzzy_dispatch(Target, Goal, Code).
+
+:- multifile fuzzy_dispatch/3.
+% fuzzy_dispatch(+Target, +Goal, -Code)

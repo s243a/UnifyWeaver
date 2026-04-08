@@ -12,10 +12,19 @@
 - [x] CPU fallback in generated code: Go (err retry), Python (torch check), C# (try/catch), Rust (unwrap_or_else).
 - [x] Tests for GPU/CPU code generation paths.
 
+## Phase 2b: Fuzzy Logic Integration (Completed)
+- [x] Add `fuzzy_dispatch/3` multifile hook to `semantic_compiler.pl`.
+- [x] Add `is_fuzzy_predicate/1` and `compile_fuzzy_call/3` API.
+- [x] Wire Python fuzzy target (`python_fuzzy_target.pl`) through generic dispatch.
+- [x] Implement Go fuzzy dispatch: f_and, f_or, f_dist_or, f_union, f_not, blend_scores, top_k.
+- [x] Tests for fuzzy recognition, Go codegen, Python dispatch.
+
 ## Phase 3: Runtime Integration & Data Sources
 - [ ] Extend `input_source.pl` to handle vector index files for different targets.
 - [ ] Add support for `semantic_search/4` (options including threshold, custom model).
 - [ ] Integrate with `cross_runtime_pipeline.pl` to allow multi-language semantic stages.
+- [ ] Implement Rust and C# fuzzy dispatch (core operations).
+- [ ] Go fuzzy batch operations (slice-based vectorization).
 
 ## Phase 4: Extended Target Coverage & Polish
 - [ ] Implement `semantic_dispatch` for Elixir (via Bumblebee/NX).
