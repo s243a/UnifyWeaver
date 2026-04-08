@@ -117,11 +117,26 @@ parse_instr(Str, Term) :-
         sub_string(Str, 0, Before, _, OpStr),
         sub_string(Str, _, After, 0, ArgsStr),
         atom_string(Op, OpStr),
-        split_string(ArgsStr, ",", " \t", ArgList),
+        split_string(ArgsStr, ",", " \t", ArgList0),
+        fix_comma_functor(ArgList0, ArgList),
         maplist(parse_arg, ArgList, ArgAtoms),
         Term =.. [Op|ArgAtoms]
     ;   atom_string(Term, Str)
     ).
+
+%% fix_comma_functor(+ArgList, -Fixed)
+%  When splitting on commas, a functor like ,/2 produces ["", "/2", ...].
+%  Merge the empty string and /N back into ",/N".
+fix_comma_functor([], []).
+fix_comma_functor([""|Rest], Fixed) :-
+    Rest = [SlashN|More],
+    sub_string(SlashN, 0, 1, _, "/"),
+    !,
+    string_concat(",", SlashN, Merged),
+    fix_comma_functor(More, MoreFixed),
+    Fixed = [Merged|MoreFixed].
+fix_comma_functor([H|T], [H|Fixed]) :-
+    fix_comma_functor(T, Fixed).
 
 parse_arg(Str, Val) :-
     (   number_string(Num, Str)
