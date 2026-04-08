@@ -41,6 +41,10 @@ tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
 tc_descendant(X, Y) :- tc_parent(Y, X).
 tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
 
+:- dynamic tc_distance/3.
+tc_distance(X, Y, 1) :- tc_parent(X, Y).
+tc_distance(X, Y, D) :- tc_parent(X, Z), tc_distance(Z, Y, D1), D is D1 + 1.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -51,7 +55,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -62,6 +66,7 @@ use runtime_test::value::Value;
 use runtime_test::state::WamState;
 use runtime_test::tc_ancestor;
 use runtime_test::tc_descendant;
+use runtime_test::tc_distance;
 
 #[test]
 fn test_generated_predicates() {
@@ -148,6 +153,54 @@ fn test_generated_predicates() {
         Value::Atom("liz".to_string()),
         Value::Atom("jim".to_string()));
     assert!(!ok6, "tc_descendant(liz, jim) should fail");
+
+    // Test tc_distance/3 foreign lowering end-to-end
+    let mut vm_dist = WamState::new(vec![], std::collections::HashMap::new());
+    let ok7 = tc_distance(&mut vm_dist,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Target".to_string()),
+        Value::Unbound("Dist".to_string()));
+    assert!(ok7, "tc_distance(tom, Target, Dist) first solution should succeed");
+
+    let mut distances: Vec<String> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Integer(dist))) =
+        (vm_dist.bindings.get("Target").cloned(), vm_dist.bindings.get("Dist").cloned()) {
+        distances.push(format!("{}:{}", target, dist));
+    } else {
+        panic!("expected first tc_distance result in Target/Dist");
+    }
+
+    while vm_dist.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Integer(dist))) =
+            (vm_dist.bindings.get("Target").cloned(), vm_dist.bindings.get("Dist").cloned()) {
+            distances.push(format!("{}:{}", target, dist));
+        } else {
+            panic!("expected backtracked tc_distance result in Target/Dist");
+        }
+    }
+
+    distances.sort();
+    assert_eq!(distances, vec![
+        "ann:2".to_string(),
+        "bob:1".to_string(),
+        "jim:3".to_string(),
+        "liz:1".to_string(),
+        "pat:2".to_string(),
+    ]);
+
+    let mut vm_dist_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok8 = tc_distance(&mut vm_dist_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Integer(3));
+    assert!(ok8, "tc_distance(tom, jim, 3) should succeed");
+
+    let mut vm_dist_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok9 = tc_distance(&mut vm_dist_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Unbound("D".to_string()));
+    assert!(!ok9, "tc_distance(liz, jim, D) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

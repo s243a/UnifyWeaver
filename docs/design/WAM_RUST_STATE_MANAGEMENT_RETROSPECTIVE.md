@@ -228,6 +228,7 @@ recursive schemas:
 - `category_ancestor/4`-style bounded recursive search
 - binary transitive closure such as `tc_ancestor/2`
 - reversed binary closure such as `tc_descendant/2`
+- recursive distance search such as `tc_distance/3`
 
 The shape is:
 
@@ -260,6 +261,12 @@ ad hoc selection block:
 That split makes the foreign-lowering path easier to extend without letting
 `rust_target.pl` grow another layer of special cases.
 
+The currently registered recursive kernel families are:
+
+- `category_ancestor`
+- `transitive_closure2`
+- `transitive_distance3`
+
 ### What Is Verified
 
 The current test coverage now includes:
@@ -268,9 +275,11 @@ The current test coverage now includes:
   - `category_ancestor/4`
   - `tc_ancestor/2`
   - `tc_descendant/2`
+  - `tc_distance/3`
 - end-to-end generated Rust runtime validation for:
   - `tc_ancestor/2`
   - `tc_descendant/2`
+  - `tc_distance/3`
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and

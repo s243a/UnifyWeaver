@@ -3612,6 +3612,7 @@ rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
 
 rust_recursive_kernel_detector(category_ancestor, rust_recursive_kernel_category_ancestor).
 rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
+rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
 
 rust_recursive_kernel_spec(
         recursive_kernel(KernelKind, PredIndicator, KernelConfig),
@@ -3626,11 +3627,19 @@ rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
 
 rust_recursive_kernel_native_kind(category_ancestor, category_ancestor).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
+rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],
         [register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)]).
 rust_recursive_kernel_config_ops(transitive_closure2, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+rust_recursive_kernel_config_ops(transitive_distance3, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+
+rust_recursive_kernel_binary_edge_config_ops(PredIndicator,
         [edge_pred(EdgePred/2), fact_pairs(FactPairs)],
         [ register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
           register_indexed_atom_fact2(EdgePred/2, FactPairs)
@@ -3646,6 +3655,11 @@ rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
         recursive_kernel(transitive_closure2, Pred/Arity,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
     rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_distance3, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
     member(_-BaseBody, Clauses),
@@ -3688,6 +3702,27 @@ rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPair
           atom(Left),
           atom(Right),
           rust_foreign_edge_pair(PairMode, Left, Right, PairLeft-PairRight)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
+rust_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1],
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
         ),
         FactPairs),
     FactPairs \= [].
