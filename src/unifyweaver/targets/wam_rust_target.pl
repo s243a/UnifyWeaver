@@ -597,7 +597,7 @@ compile_backtrack_to_rust(Code0) :-
     Code0 = '    /// Restore state from the top choice point without popping it.
     pub fn backtrack(&mut self) -> bool {
         self.backtrack_count += 1;
-        if let Some(cp) = self.choice_points.last().cloned() {
+        while let Some(cp) = self.choice_points.last().cloned() {
             self.pc = cp.next_pc;
 
             // 1. Unwind bindings from trail entries added since the CP.
@@ -616,12 +616,14 @@ compile_backtrack_to_rust(Code0) :-
 
             if let Some(state) = cp.builtin_state {
                 self.choice_points.pop();
-                return self.resume_builtin(state);
+                if self.resume_builtin(state) {
+                    return true;
+                }
+                continue;
             }
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 '.
 
