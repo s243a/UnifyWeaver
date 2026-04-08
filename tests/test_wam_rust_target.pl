@@ -130,6 +130,7 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'Deallocate'),
         sub_string(S, _, _, _, 'Call('),
+        sub_string(S, _, _, _, 'CallForeign'),
         sub_string(S, _, _, _, 'CallIndexedAtomFact2'),
         sub_string(S, _, _, _, 'Execute('),
         sub_string(S, _, _, _, 'Proceed'),

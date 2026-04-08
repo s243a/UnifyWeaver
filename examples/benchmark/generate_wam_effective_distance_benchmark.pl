@@ -372,7 +372,9 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
     for instr in code.iter_mut() {
         let replacement = match instr {
             Instruction::Call(pred, arity) => {
-                if pred == "category_parent/2" && *arity == 2 {
+                if pred == "category_ancestor/4" && *arity == 4 {
+                    Some(Instruction::CallForeign(pred.clone(), *arity))
+                } else if pred == "category_parent/2" && *arity == 2 {
                     Some(Instruction::CallIndexedAtomFact2(pred.clone()))
                 } else {
                     labels.get(pred).copied().map(|pc| Instruction::CallPc(pc, *arity))
@@ -693,6 +695,7 @@ fn main() {
 
     let root = roots[0].clone();
     let max_depth_limit = 10usize;
+    vm.register_foreign_category_ancestor(max_depth_limit);
     let reverse_category_parents = build_reverse_fact2(&category_parents);
     let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
@@ -751,70 +754,77 @@ fn main() {
         vm.set_reg("A3", Value::Unbound("Hops".to_string()));
         vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
 
-        if let Some(&pc) = vm.labels.get("category_ancestor/4") {
-            vm.pc = pc;
-            vm.cp = 0;
-
-            let mut solutions = 0u32;
-            loop {
-                let succeeded = vm.run();
-                if succeeded {
-                    // Read Hops from the binding table, not A3 directly.
-                    // A3 gets overwritten by recursive calls, but the original
-                    // Unbound("Hops") variable is bound via bind_var.
-                    if let Some(hops_val) = vm.bindings.get("Hops").cloned()
-                        .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
-                        let hops = match &hops_val {
-                            Value::Integer(h) => *h as f64,
-                            Value::Float(h) => *h,
-                            Value::Atom(s) => match s.parse::<f64>() {
-                                Ok(v) => v,
-                                Err(_) => { if !vm.backtrack() { break; } continue; }
-                            },
-                            _ => { if !vm.backtrack() { break; } continue; }
-                        };
-                        let d = hops + 1.0;
-                        let weight = match &hops_val {
-                            Value::Integer(h) => {
-                                let idx = (*h + 1) as usize;
-                                hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
-                            }
-                            _ => d.powf(neg_n),
-                        };
-                        weight_sum += weight;
-                        solutions += 1;
-                    }
-                    // Safety limit: deep paths contribute negligibly to d_eff
-                    // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
-                    if solutions > 10000 { break; }
-                    if !vm.backtrack() { break; }
+        let mut solutions = 0u32;
+        let mut first = true;
+        loop {
+            let succeeded = if first {
+                first = false;
+                if vm.foreign_predicates.contains("category_ancestor/4") {
+                    vm.execute_foreign_predicate("category_ancestor", 4)
+                } else if let Some(&pc) = vm.labels.get("category_ancestor/4") {
+                    vm.pc = pc;
+                    vm.cp = 0;
+                    vm.run()
                 } else {
-                    break;
+                    false
                 }
+            } else {
+                vm.backtrack()
+            };
+            if !succeeded {
+                break;
             }
-
-            total_steps += vm.step_count;
-            total_backtracks += vm.backtrack_count;
-            if profile_enabled {
-                let profile = SeedProfile {
-                    category: cat.clone(),
-                    elapsed_ms: seed_start.elapsed().as_millis(),
-                    steps: vm.step_count,
-                    backtracks: vm.backtrack_count,
-                    solutions,
-                    weight_sum,
+            // Read Hops from the binding table, not A3 directly.
+            // A3 gets overwritten by recursive calls, but the original
+            // Unbound("Hops") variable is bound via bind_var.
+            if let Some(hops_val) = vm.bindings.get("Hops").cloned()
+                .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
+                let hops = match &hops_val {
+                    Value::Integer(h) => *h as f64,
+                    Value::Float(h) => *h,
+                    Value::Atom(s) => match s.parse::<f64>() {
+                        Ok(v) => v,
+                        Err(_) => { continue; }
+                    },
+                    _ => { continue; }
                 };
-                eprintln!(
-                    "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
-                    profile.category,
-                    profile.elapsed_ms,
-                    profile.steps,
-                    profile.backtracks,
-                    profile.solutions,
-                    profile.weight_sum,
-                );
-                seed_profiles.push(profile);
+                let d = hops + 1.0;
+                let weight = match &hops_val {
+                    Value::Integer(h) => {
+                        let idx = (*h + 1) as usize;
+                        hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
+                    }
+                    _ => d.powf(neg_n),
+                };
+                weight_sum += weight;
+                solutions += 1;
             }
+            // Safety limit: deep paths contribute negligibly to d_eff
+            // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
+            if solutions > 10000 { break; }
+        }
+
+        total_steps += vm.step_count;
+        total_backtracks += vm.backtrack_count;
+        if profile_enabled {
+            let profile = SeedProfile {
+                category: cat.clone(),
+                elapsed_ms: seed_start.elapsed().as_millis(),
+                steps: vm.step_count,
+                backtracks: vm.backtrack_count,
+                solutions,
+                weight_sum,
+            };
+            eprintln!(
+                "seed_progress category={} elapsed_ms={} steps={} backtracks={} solutions={} weight_sum={:.6}",
+                profile.category,
+                profile.elapsed_ms,
+                profile.steps,
+                profile.backtracks,
+                profile.solutions,
+                profile.weight_sum,
+            );
+            seed_profiles.push(profile);
         }
 
         if weight_sum > 0.0 {

@@ -519,6 +519,9 @@ wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
                 self.pc = *target_pc;
                 true'.
 
+wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
+    Body = '                self.execute_foreign_predicate(pred, *arity)'.
+
 wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
     Body = '                let key = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(s)) => s,
@@ -779,7 +782,9 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_type_builtin_to_rust(TypeBuiltinCode),
     compile_execute_term_builtin_to_rust(TermBuiltinCode),
     compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
+    compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
+    compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -791,7 +796,9 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         TypeBuiltinCode, '\n\n',
         TermBuiltinCode, '\n\n',
         MetaBuiltinCode, '\n\n',
+        ForeignCode, '\n\n',
         ResumeCode, '\n\n',
+        NativeAncestorCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1033,6 +1040,110 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }'.
 
+compile_execute_foreign_predicate_to_rust(Code) :-
+    Code = '    /// Execute a registered foreign predicate by name/arity.
+    pub fn execute_foreign_predicate(&mut self, pred: &str, arity: usize) -> bool {
+        let pred_key = format!("{}/{}", pred, arity);
+        if !self.foreign_predicates.contains(&pred_key) {
+            return false;
+        }
+        match pred_key.as_str() {
+            "category_ancestor/4" => {
+                let cat = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(cat)) => cat,
+                    _ => return false,
+                };
+                let root = match self.regs.get("A2").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(root)) => root,
+                    _ => return false,
+                };
+                let hops_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let visited = match self.regs.get("A4").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::List(items)) => items,
+                    Some(_) => return false,
+                    None => return false,
+                };
+                let max_depth = match self.foreign_category_ancestor_max_depth {
+                    Some(limit) => limit,
+                    None => return false,
+                };
+                let mut hops: Vec<i64> = Vec::new();
+                self.collect_native_category_ancestor_hops(&cat, &root, &visited, max_depth, &mut hops);
+                if hops.is_empty() {
+                    return false;
+                }
+                if hops.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign:category_ancestor/4".to_string(),
+                            args: vec![hops_reg.clone()],
+                            data: hops[1..].iter().map(|hop| Value::Integer(*hop)).collect(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&hops_reg, &Value::Integer(hops[0])) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            _ => false,
+        }
+    }'.
+
+compile_collect_native_category_ancestor_to_rust(Code) :-
+    Code = '    fn collect_native_category_ancestor_hops(
+        &self,
+        cat: &str,
+        root: &str,
+        visited: &[Value],
+        max_depth: usize,
+        out: &mut Vec<i64>,
+    ) {
+        let root_val = Value::Atom(root.to_string());
+        let root_seen = visited.iter().any(|item| self.deref_var(item) == root_val);
+        if !root_seen {
+            if let Some(values) = self.indexed_atom_fact2
+                .get("category_parent/2")
+                .and_then(|table| table.get(cat)) {
+                if values.iter().any(|parent| parent == root) {
+                    out.push(1);
+                }
+            }
+        }
+
+        if visited.len() >= max_depth {
+            return;
+        }
+
+        if let Some(values) = self.indexed_atom_fact2
+            .get("category_parent/2")
+            .and_then(|table| table.get(cat)) {
+            for parent in values {
+                let parent_val = Value::Atom(parent.clone());
+                if visited.iter().any(|item| self.deref_var(item) == parent_val) {
+                    continue;
+                }
+                let mut next_visited: Vec<Value> = Vec::with_capacity(visited.len() + 1);
+                next_visited.push(parent_val);
+                next_visited.extend(visited.iter().cloned());
+                let before = out.len();
+                self.collect_native_category_ancestor_hops(parent, root, &next_visited, max_depth, out);
+                for hop in out.iter_mut().skip(before) {
+                    *hop += 1;
+                }
+            }
+        }
+    }'.
+
 compile_resume_builtin_to_rust(Code) :-
     Code = '    fn resume_builtin(&mut self, state: BuiltinState) -> bool {
         match state.name.as_str() {
@@ -1201,6 +1312,35 @@ compile_resume_builtin_to_rust(Code) :-
                     None => return false,
                 };
                 if self.unify(&a2, &Value::Atom(values[idx].clone())) {
+                    self.pc += 1; true
+                } else { false }
+            }
+            "foreign:category_ancestor/4" => {
+                let hops_reg = match state.args.get(0) {
+                    Some(val) => val.clone(),
+                    None => return false,
+                };
+                let hop = match state.data.first() {
+                    Some(Value::Integer(hop)) => *hop,
+                    _ => return false,
+                };
+                if state.data.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign:category_ancestor/4".to_string(),
+                            args: state.args.clone(),
+                            data: state.data[1..].to_vec(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&hops_reg, &Value::Integer(hop)) {
                     self.pc += 1; true
                 } else { false }
             }

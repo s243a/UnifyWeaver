@@ -68,6 +68,8 @@ pub enum Instruction {
     Call(String, usize),
     /// Call predicate at resolved PC, saving return address in CP.
     CallPc(usize, usize),
+    /// Invoke a registered foreign predicate by name/arity.
+    CallForeign(String, usize),
     /// Direct indexed call for a 2-column atom fact predicate.
     CallIndexedAtomFact2(String),
     /// Jump to predicate P/N (tail call optimization).
