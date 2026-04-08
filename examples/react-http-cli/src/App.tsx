@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useRef } from 'react'
+import './index.css'
 
 // Configuration - update to match your server
 const API_BASE = 'https://localhost:3001'
@@ -100,7 +101,7 @@ function App() {
   const [browsePath, setBrowsePath] = useState('.')
   const [browseEntries, setBrowseEntries] = useState<FileEntry[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [browseRoot, setBrowseRoot] = useState('sandbox') // sandbox | project | home
+  const [browseRoot, setBrowseRoot] = useState('sandbox')
 
   // Upload state
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
@@ -366,40 +367,41 @@ function App() {
   if (!user) {
     return (
       <div className="app-container">
-        <h1 style={{ textAlign: 'center', marginBottom: 30 }}>🔍 UnifyWeaver CLI</h1>
-        <div style={{ maxWidth: 400, margin: '0 auto', background: '#16213e', padding: 30, borderRadius: 10 }}>
+        <h1 className="text-center" style={{ marginBottom: 30 }}>🔍 UnifyWeaver CLI</h1>
+        <div className="panel login-container">
           <h2 style={{ marginBottom: 20 }}>Login Required</h2>
           <div style={{ marginBottom: 15 }}>
-            <label style={{ display: 'block', marginBottom: 5, color: '#94a3b8' }}>Email</label>
+            <label className="text-muted" style={{ display: 'block', marginBottom: 5 }}>Email</label>
             <input
               type="email"
               value={loginEmail}
               onChange={e => setLoginEmail(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && handleLogin()}
-              style={{ width: '100%', padding: 10, background: '#1a1a2e', border: '1px solid #0f3460', borderRadius: 5, color: '#fff' }}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              className="input-field"
             />
           </div>
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', marginBottom: 5, color: '#94a3b8' }}>Password</label>
+            <label className="text-muted" style={{ display: 'block', marginBottom: 5 }}>Password</label>
             <input
               type="password"
               value={loginPassword}
               onChange={e => setLoginPassword(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && handleLogin()}
-              style={{ width: '100%', padding: 10, background: '#1a1a2e', border: '1px solid #0f3460', borderRadius: 5, color: '#fff' }}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              className="input-field"
             />
           </div>
           <button
             onClick={handleLogin}
             disabled={loading}
-            style={{ width: '100%', padding: 12, background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer', fontWeight: 'bold' }}
+            className="btn btn-primary"
+            style={{ width: '100%' }}
           >
             {loading ? 'Logging in...' : 'Login'}
           </button>
           {loginError && (
-            <p style={{ color: '#ff6b6b', marginTop: 15, textAlign: 'center' }}>{loginError}</p>
+            <p className="text-error text-center" style={{ marginTop: 15 }}>{loginError}</p>
           )}
-          <p style={{ color: '#94a3b8', fontSize: 12, marginTop: 20, textAlign: 'center' }}>
+          <p className="text-muted text-center" style={{ marginTop: 20 }}>
             Default: shell@local / shell
           </p>
         </div>
@@ -413,47 +415,40 @@ function App() {
       <h1 style={{ marginBottom: 20 }}>🔍 UnifyWeaver CLI</h1>
 
       {/* User header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, padding: '10px 15px', background: '#16213e', borderRadius: 5 }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+      <div className="header-panel flex-between">
+        <div className="flex-row">
           <span>{user.email}</span>
           {user.roles.map(role => (
-            <span key={role} style={{ background: '#0f3460', padding: '2px 8px', borderRadius: 3, fontSize: 12 }}>{role}</span>
+            <span key={role} className="role-badge">{role}</span>
           ))}
         </div>
-        <button onClick={handleLogout} style={{ padding: '8px 16px', background: '#0f3460', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}>
+        <button onClick={handleLogout} className="btn btn-small btn-secondary">
           Logout
         </button>
       </div>
 
       {/* Working directory bar */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 20, padding: '8px 12px', background: '#16213e', borderRadius: 5, flexWrap: 'wrap' }}>
+      <div className="header-panel flex-row">
         <select
           value={browseRoot}
           onChange={e => handleRootChange(e.target.value)}
-          style={{ padding: '6px 10px', background: '#1a1a2e', border: '1px solid #0f3460', borderRadius: 5, color: '#fff', fontSize: 12 }}
+          className="select-field"
         >
           <option value="sandbox">Sandbox</option>
           <option value="project">Project</option>
           <option value="home">Home</option>
         </select>
-        <span style={{ color: '#94a3b8', fontSize: 12 }}>Working Dir:</span>
-        <code style={{ background: '#1a1a2e', padding: '4px 8px', borderRadius: 3, color: '#4ade80' }}>{workingDir}</code>
+        <span className="text-muted">Working Dir:</span>
+        <code className="path-code path-code-success">{workingDir}</code>
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 5, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div className="flex-row" style={{ marginBottom: 20 }}>
         {TABS.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: '10px 20px',
-              background: activeTab === tab.id ? '#e94560' : (tab.highlight ? '#a855f7' : '#16213e'),
-              border: 'none',
-              borderRadius: 5,
-              color: '#fff',
-              cursor: 'pointer'
-            }}
+            className={`btn ${activeTab === tab.id ? 'btn-primary' : (tab.highlight ? 'btn-accent' : 'btn-panel')}`}
           >
             {tab.icon} {tab.label}
           </button>
@@ -462,53 +457,46 @@ function App() {
 
       {/* Browse panel */}
       {activeTab === 'browse' && (
-        <div style={{ background: '#16213e', padding: 20, borderRadius: 5 }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 15, flexWrap: 'wrap' }}>
+        <div className="panel">
+          <div className="flex-row" style={{ marginBottom: 15 }}>
             {browsePath !== '.' && (
-              <button onClick={navigateUp} style={{ padding: '8px 16px', background: '#0f3460', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}>⬆️ Up</button>
+              <button onClick={navigateUp} className="btn btn-small btn-secondary">⬆️ Up</button>
             )}
             <span>📁</span>
-            <code style={{ background: '#1a1a2e', padding: '4px 8px', borderRadius: 3 }}>{browsePath}</code>
+            <code className="path-code">{browsePath}</code>
             <button
               onClick={() => setWorkingDir(browsePath)}
               disabled={workingDir === browsePath}
-              style={{ padding: '8px 16px', background: workingDir === browsePath ? '#555' : '#4ade80', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+              className={`btn btn-small ${workingDir === browsePath ? 'btn-outline' : 'btn-success'}`}
             >
               📌 Set as Working Dir
             </button>
           </div>
 
-          <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+          <div className="file-list">
             {browseEntries.map((entry, i) => (
               <div
                 key={i}
                 onClick={() => handleEntryClick(entry)}
-                style={{
-                  padding: '12px 16px',
-                  background: selectedFile === entry.name ? '#0f3460' : '#1a1a2e',
-                  marginBottom: 4,
-                  borderRadius: 5,
-                  cursor: 'pointer',
-                  borderLeft: `3px solid ${entry.type === 'directory' ? '#e94560' : '#3b82f6'}`
-                }}
+                className={`file-item ${selectedFile === entry.name ? 'file-item-selected' : 'file-item-normal'} ${entry.type === 'directory' ? 'file-item-dir' : 'file-item-file'}`}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div className="flex-between">
                   <span>{entry.type === 'directory' ? '📁' : '📄'} {entry.name}</span>
-                  <span style={{ color: '#94a3b8', fontSize: 12 }}>{formatSize(entry.size)}</span>
+                  <span className="text-muted">{formatSize(entry.size)}</span>
                 </div>
               </div>
             ))}
             {browseEntries.length === 0 && !loading && (
-              <p style={{ color: '#94a3b8', textAlign: 'center' }}>Empty directory</p>
+              <p className="text-muted text-center">Empty directory</p>
             )}
           </div>
 
           {selectedFile && (
-            <div style={{ marginTop: 15, padding: 15, background: '#0f3460', borderRadius: 5 }}>
-              <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 10 }}>Selected: <code>{selectedFile}</code></p>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button onClick={viewFile} style={{ padding: '10px 20px', background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}>View Contents</button>
-                <button onClick={downloadFile} style={{ padding: '10px 20px', background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}>📥 Download</button>
+            <div className="selected-panel">
+              <p className="text-muted" style={{ marginBottom: 10 }}>Selected: <code className="path-code">{selectedFile}</code></p>
+              <div className="flex-row">
+                <button onClick={viewFile} className="btn btn-primary">View Contents</button>
+                <button onClick={downloadFile} className="btn btn-primary">📥 Download</button>
               </div>
             </div>
           )}
@@ -517,24 +505,23 @@ function App() {
 
       {/* Upload panel */}
       {activeTab === 'upload' && (
-        <div style={{ background: '#16213e', padding: 20, borderRadius: 5 }}>
-          <div style={{ marginBottom: 15, padding: 10, background: '#1a1a2e', borderRadius: 5 }}>
-            <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 5 }}>Destination: <code>{workingDir}</code> ({browseRoot})</p>
+        <div className="panel">
+          <div className="header-panel" style={{ marginBottom: 15, padding: 10 }}>
+            <p className="text-muted" style={{ margin: 0 }}>Destination: <code className="path-code">{workingDir}</code> ({browseRoot})</p>
           </div>
 
           {/* File System Access API - better for Android */}
-          <div style={{ border: '2px dashed #4ade80', padding: 30, borderRadius: 10, textAlign: 'center', marginBottom: 15, cursor: 'pointer', background: '#0a2e1a' }} onClick={openFilePicker}>
-            <p style={{ fontSize: 18, marginBottom: 5 }}>📂 Open File Picker</p>
-            <p style={{ color: '#94a3b8', fontSize: 12 }}>Recommended for Android - picks and uploads immediately</p>
+          <div className="drop-zone" onClick={openFilePicker}>
+            <p style={{ fontSize: 18, margin: '0 0 5px 0' }}>📂 Open File Picker</p>
+            <p className="text-muted" style={{ margin: 0 }}>Recommended for Android - picks and uploads immediately</p>
           </div>
 
           {/* Fallback standard file input */}
-          <div style={{ border: '2px dashed #0f3460', padding: 20, borderRadius: 10, textAlign: 'center', marginBottom: 20 }}>
-            <p style={{ fontSize: 14, marginBottom: 10, color: '#94a3b8' }}>Or use standard file input:</p>
+          <div className="drop-zone-fallback">
+            <p className="text-muted" style={{ fontSize: 14, margin: '0 0 10px 0' }}>Or use standard file input:</p>
             <input
               type="file"
               multiple
-              accept="*/*"
               onChange={handleFileSelect}
               style={{ padding: 10 }}
             />
@@ -542,11 +529,11 @@ function App() {
 
           {uploadFiles.length > 0 && (
             <div style={{ marginBottom: 20 }}>
-              <p style={{ color: '#94a3b8', marginBottom: 10 }}>Selected files:</p>
+              <p className="text-muted" style={{ marginBottom: 10 }}>Selected files:</p>
               {uploadFiles.map((file, i) => (
-                <div key={i} style={{ padding: '8px 12px', background: '#1a1a2e', marginBottom: 4, borderRadius: 5, display: 'flex', justifyContent: 'space-between' }}>
+                <div key={i} className="flex-between" style={{ padding: '8px 12px', background: 'var(--color-bg-item)', marginBottom: 4, borderRadius: 5 }}>
                   <span>{file.name}</span>
-                  <span style={{ color: '#94a3b8', fontSize: 12 }}>{formatSize(file.size)}</span>
+                  <span className="text-muted">{formatSize(file.size)}</span>
                 </div>
               ))}
             </div>
@@ -556,34 +543,38 @@ function App() {
             <button
               onClick={handleUpload}
               disabled={loading}
-              style={{ width: '100%', padding: 12, background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+              className="btn btn-primary"
+              style={{ width: '100%' }}
             >
               {loading ? 'Uploading...' : '📤 Upload Files'}
             </button>
           )}
 
           {uploadResult && (
-            <p style={{ marginTop: 15, padding: 10, background: uploadResult.startsWith('Error') ? '#7f1d1d' : '#065f46', borderRadius: 5 }}>{uploadResult}</p>
+            <div className={`result-box ${uploadResult.startsWith('Error') ? 'result-error' : 'result-success'}`}>
+              {uploadResult}
+            </div>
           )}
         </div>
       )}
 
       {/* Cat panel */}
       {activeTab === 'cat' && (
-        <div style={{ background: '#16213e', padding: 20, borderRadius: 5 }}>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 15 }}>
+        <div className="panel">
+          <div className="flex-row" style={{ marginBottom: 15 }}>
             <input
               type="text"
               value={catPath}
               onChange={e => setCatPath(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && handleCat()}
+              onKeyDown={e => e.key === 'Enter' && handleCat()}
               placeholder="File path..."
-              style={{ flex: 1, padding: 10, background: '#1a1a2e', border: '1px solid #0f3460', borderRadius: 5, color: '#fff' }}
+              className="input-field"
+              style={{ flex: 1 }}
             />
             <button
               onClick={() => handleCat()}
               disabled={loading}
-              style={{ padding: '10px 20px', background: '#e94560', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+              className="btn btn-primary"
             >
               {loading ? 'Loading...' : 'Read File'}
             </button>
@@ -594,13 +585,13 @@ function App() {
               <div style={{ marginBottom: 10 }}>
                 <button
                   onClick={() => { setActiveTab('browse'); setCatContent(''); }}
-                  style={{ padding: '8px 16px', background: '#0f3460', border: 'none', borderRadius: 5, color: '#fff', cursor: 'pointer' }}
+                  className="btn btn-small btn-secondary"
                 >
                   ← Back to Browse
                 </button>
               </div>
-              <div style={{ background: '#0a0a0a', padding: 15, borderRadius: 5, maxHeight: 400, overflowY: 'auto' }}>
-                <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap', color: '#cdd6f4' }}>{catContent}</pre>
+              <div className="content-viewer">
+                <pre className="content-pre">{catContent}</pre>
               </div>
             </>
           )}
@@ -609,41 +600,41 @@ function App() {
 
       {/* Shell panel */}
       {activeTab === 'shell' && (
-        <div style={{ background: '#16213e', padding: 0, borderRadius: 5 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#0f3460' }}>
-            <span style={{ color: '#a855f7', fontWeight: 'bold' }}>🔐 Shell</span>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <span style={{ color: shellConnected ? '#4ade80' : '#ff6b6b', fontSize: 12 }}>
+        <div style={{ borderRadius: 5, overflow: 'hidden' }}>
+          <div className="shell-header flex-between">
+            <span style={{ color: 'var(--color-accent)', fontWeight: 'bold' }}>🔐 Shell</span>
+            <div className="flex-row">
+              <span style={{ color: shellConnected ? 'var(--color-success)' : 'var(--color-error)', fontSize: 12 }}>
                 ● {shellConnected ? 'Connected' : 'Disconnected'}
               </span>
               {!shellConnected ? (
-                <button onClick={connectShell} style={{ padding: '6px 12px', background: '#4ade80', border: 'none', borderRadius: 3, color: '#000', cursor: 'pointer', fontSize: 12 }}>Connect</button>
+                <button onClick={connectShell} className="btn btn-tiny btn-success">Connect</button>
               ) : (
-                <button onClick={disconnectShell} style={{ padding: '6px 12px', background: '#ff6b6b', border: 'none', borderRadius: 3, color: '#fff', cursor: 'pointer', fontSize: 12 }}>Disconnect</button>
+                <button onClick={disconnectShell} className="btn btn-tiny btn-error">Disconnect</button>
               )}
-              <button onClick={() => setShellOutput('')} style={{ padding: '6px 12px', background: '#0f3460', border: '1px solid #16213e', borderRadius: 3, color: '#fff', cursor: 'pointer', fontSize: 12 }}>Clear</button>
+              <button onClick={() => setShellOutput('')} className="btn btn-tiny btn-outline">Clear</button>
             </div>
           </div>
 
-          <div style={{ background: '#0a0a0a', padding: 10, height: 300, overflowY: 'auto', fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' }}>
+          <div className="shell-body">
             {shellOutput ? stripAnsi(shellOutput) : 'Click "Connect" to start a shell session.'}
           </div>
 
-          <div style={{ display: 'flex', gap: 10, padding: '8px 12px', background: '#0f3460' }}>
-            <span style={{ color: '#4ade80' }}>$</span>
+          <div className="shell-footer flex-row">
+            <span style={{ color: 'var(--color-success)' }}>$</span>
             <input
               type="text"
               value={shellInput}
               onChange={e => setShellInput(e.target.value)}
-              onKeyPress={e => e.key === 'Enter' && sendShellCommand()}
+              onKeyDown={e => e.key === 'Enter' && sendShellCommand()}
               placeholder="Enter command..."
               disabled={!shellConnected}
-              style={{ flex: 1, background: '#0a0a0a', border: 'none', color: '#fff', fontFamily: 'monospace', padding: 5 }}
+              className="input-shell"
             />
             <button
               onClick={sendShellCommand}
               disabled={!shellConnected}
-              style={{ padding: '6px 12px', background: '#e94560', border: 'none', borderRadius: 3, color: '#fff', cursor: 'pointer' }}
+              className="btn btn-tiny btn-primary"
             >
               Send
             </button>
@@ -652,7 +643,7 @@ function App() {
       )}
 
       {loading && (
-        <div style={{ position: 'fixed', top: 10, right: 10, padding: '8px 16px', background: '#e94560', borderRadius: 5 }}>
+        <div className="loading-toast">
           Loading...
         </div>
       )}

@@ -6,9 +6,9 @@ This document tracks the status of GUI/UI app generation in UnifyWeaver.
 
 | Category | Count |
 |----------|-------|
-| Fully generated apps | 8 |
+| Fully generated apps | 10 |
 | Partially generated apps | 1 |
-| Manual apps (need generators) | 3 |
+| Manual apps (need generators) | 1 |
 | Untested visualization generators | 13 |
 
 ---
@@ -101,23 +101,25 @@ These apps have Prolog modules that generate some code, but HTML/scaffolding is 
 
 ---
 
+### 10. react-cli (Fully Generated)
+**Path:** `examples/react-cli/`
+**Generator:** `react_cli_module.pl` → `react_generator.pl`
+**Generated:** `src/App.tsx` from Prolog specs (mock filesystem, features, initial state)
+**Architecture:** Prolog `fs_dir`/`entry` terms → JavaScript mock FS + React component
+**Status:** ✅ Complete - per-feature modular generation
+
+### 11. react-http-cli (Fully Generated)
+**Path:** `examples/react-http-cli/`
+**Generator:** `react_http_cli_module.pl` → `react_generator.pl`
+**Generated:** `src/App.tsx` from Prolog specs (API config, tabs, auth fields, browse roots)
+**Architecture:** Prolog `tab`/`field`/`root` terms → per-tab state, handlers, and JSX panels
+**Status:** ✅ Complete - per-tab modular generation
+
+---
+
 ## Manual Apps (Need Generators)
 
 These apps exist but have no Prolog generation - they were handcrafted.
-
-### 10. react-cli
-**Path:** `examples/react-cli/`
-**Current:** Manual React/Vite app
-**Needed:** `generate.pl` using `react_generator.pl` + `project_scaffold.pl`
-**Architecture:** Should be Prolog → React/TypeScript via Vite
-**Status:** ❌ No generator
-
-### 11. react-http-cli
-**Path:** `examples/react-http-cli/`
-**Current:** Manual React app (24KB App.tsx)
-**Needed:** `generate.pl` using `react_generator.pl` + `html_interface_generator.pl`
-**Architecture:** Should be Prolog → React/TypeScript + HTTP client
-**Status:** ❌ No generator
 
 ### 12. rust-ffi-node
 **Path:** `examples/python-bridges/rust-ffi-node/`

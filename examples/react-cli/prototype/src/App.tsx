@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
+import './index.css'
 
 // Helper function for formatting file sizes
 const formatSize = (bytes: number): string => {
@@ -43,13 +44,23 @@ function App() {
   // State
   const [loading, setLoading] = useState(false)
   const [fileContent, setFileContent] = useState<string | null>(null)
+  const [notification, setNotification] = useState<string | null>(null)
+  
+  // Search state
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
 
   // Browse state
-  const [browse, setBrowse] = useState({
+  const [browse, setBrowse] = useState<{
+    path: string,
+    parent: string | null,
+    entries: Array<{name: string, type: string, size: number}>,
+    selected: string | null
+  }>({
     path: '/home/user/projects',
     parent: '/home/user',
     entries: mockFS['/home/user/projects'] || [],
-    selected: null as string | null
+    selected: null
   })
 
   const [workingDir, setWorkingDir] = useState('.')
@@ -73,6 +84,8 @@ function App() {
         selected: null
       })
       setFileContent(null)
+      setNotification(null)
+      setIsSearching(false)
     }
   }
 
@@ -86,21 +99,25 @@ function App() {
         selected: null
       })
       setFileContent(null)
+      setNotification(null)
+      setIsSearching(false)
     } else {
       setBrowse(prev => ({ ...prev, selected: entry.name }))
       setFileContent(null)
+      setNotification(null)
+      setIsSearching(false)
     }
   }
 
   const setWorkingDirTo = (path: string) => {
     setWorkingDir(path)
-    alert(`Working directory set to: ${path}`)
+    setNotification(`Working directory set to: ${path}`)
   }
 
   const viewFile = () => {
     if (browse.selected) {
       setLoading(true)
-      // Simulate loading
+      // NOTE: demo simulation
       setTimeout(() => {
         setFileContent(`// Contents of ${browse.selected}\n\nexport default function Example() {\n  return <div>Hello World</div>\n}`)
         setLoading(false)
@@ -110,60 +127,53 @@ function App() {
 
   const downloadFile = () => {
     if (browse.selected) {
-      alert(`Downloading: ${browse.path}/${browse.selected}`)
+      setNotification(`Downloading: ${browse.path}/${browse.selected}`)
     }
   }
 
-  const searchHere = () => {
-    const pattern = prompt('Enter search pattern:')
-    if (pattern) {
-      alert(`Searching for "${pattern}" in ${browse.path}...`)
+  const handleSearchSubmit = () => {
+    if (searchQuery) {
+      setNotification(`Searching for "${searchQuery}" in ${browse.path}...`)
+      setIsSearching(false)
+      setSearchQuery('')
     }
   }
 
   return (
     <div className="app-container">
-      <div style={{ background: "#16213e", padding: 20, borderRadius: 5 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
+      <div className="panel">
+        <div className="flex-col">
           {/* Navigation bar */}
-          <div style={{ display: "flex", flexDirection: "row", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="flex-row">
             {browse.parent && (
-              <button onClick={navigateUp} style={{ padding: "10px 20px", background: "#0f3460", border: "none", color: "#fff", cursor: "pointer", borderRadius: 5 }}>⬆️ Up</button>
+              <button onClick={navigateUp} className="btn btn-secondary">⬆️ Up</button>
             )}
             <span style={{ fontSize: 18 }}>📁 </span>
-            <code style={{ background: "#1a1a2e", padding: "4px 8px", borderRadius: 3, fontFamily: "monospace" }}>{browse.path}</code>
+            <code className="path-code">{browse.path}</code>
             <button
               onClick={() => setWorkingDirTo(browse.path)}
               disabled={workingDir === browse.path}
-              style={{ padding: "10px 20px", background: workingDir === browse.path ? "#555" : "#e94560", border: "none", color: "#fff", cursor: workingDir === browse.path ? "not-allowed" : "pointer", borderRadius: 5 }}
+              className={`btn ${workingDir === browse.path ? 'btn-panel' : 'btn-primary'}`}
             >📌 Set as Working Dir</button>
           </div>
 
           {/* Entry count */}
-          <span style={{ color: "#94a3b8", fontSize: 12 }}>{browse.entries.length} items</span>
+          <span className="text-muted">{browse.entries.length} items</span>
 
           {/* File list */}
-          <div style={{ overflowY: "auto", maxHeight: 300 }}>
+          <div className="file-list">
             {browse.entries.map((entry, index) => (
               <div
                 key={index}
                 onClick={() => handleEntryClick(entry)}
-                style={{
-                  background: browse.selected === entry.name ? "#0f3460" : "#1a1a2e",
-                  padding: "12px 16px",
-                  borderRadius: 5,
-                  marginBottom: 4,
-                  cursor: "pointer",
-                  borderLeft: entry.type === 'directory' ? "3px solid #e94560" : "3px solid #3b82f6",
-                  transition: "background 0.2s"
-                }}
+                className={`file-item ${browse.selected === entry.name ? 'file-item-selected' : 'file-item-normal'} ${entry.type === 'directory' ? 'file-item-dir' : 'file-item-file'}`}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div className="file-item-content">
+                  <div className="file-item-left">
                     <span>{entry.type === 'directory' ? '📁' : '📄'}</span>
                     <span>{entry.name}</span>
                   </div>
-                  <span style={{ color: "#94a3b8", fontSize: 12 }}>{formatSize(entry.size)}</span>
+                  <span className="text-muted">{formatSize(entry.size)}</span>
                 </div>
               </div>
             ))}
@@ -171,34 +181,58 @@ function App() {
 
           {/* Empty state */}
           {browse.entries.length === 0 && !loading && (
-            <span style={{ color: "#94a3b8", fontSize: 12, textAlign: "center" }}>Empty directory</span>
+            <span className="text-muted text-center">Empty directory</span>
           )}
 
           {/* Selected file actions */}
           {browse.selected && (
-            <div style={{ background: "#0f3460", padding: 16, borderRadius: 5 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <span style={{ color: "#94a3b8", fontSize: 12 }}>Selected file:</span>
-                <code style={{ background: "#1a1a2e", padding: "4px 8px", borderRadius: 3, fontFamily: "monospace" }}>{browse.selected}</code>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button onClick={viewFile} disabled={loading} style={{ padding: "10px 20px", background: "#e94560", border: "none", color: "#fff", cursor: "pointer", borderRadius: 5, fontWeight: "bold" }}>
+            <div className="selected-panel">
+              <div className="selected-panel-col">
+                <span className="text-muted">Selected file:</span>
+                <code className="path-code">{browse.selected}</code>
+                <div className="flex-row">
+                  <button onClick={viewFile} disabled={loading} className="btn btn-primary">
                     {loading ? "Loading..." : "View Contents"}
                   </button>
-                  <button onClick={downloadFile} style={{ padding: "10px 20px", background: "#e94560", border: "none", color: "#fff", cursor: "pointer", borderRadius: 5, fontWeight: "bold" }}>📥 Download</button>
-                  <button onClick={searchHere} style={{ padding: "10px 20px", background: "#16213e", border: "none", color: "#fff", cursor: "pointer", borderRadius: 5 }}>Search Here</button>
+                  <button onClick={downloadFile} className="btn btn-primary">📥 Download</button>
+                  <button onClick={() => setIsSearching(true)} className="btn btn-panel">Search Here</button>
                 </div>
+                
+                {isSearching && (
+                  <div className="flex-row" style={{ marginTop: '10px' }}>
+                    <input 
+                      type="text" 
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Enter search pattern..."
+                      className="search-input"
+                      autoFocus
+                      onKeyDown={e => e.key === 'Enter' && handleSearchSubmit()}
+                    />
+                    <button onClick={handleSearchSubmit} className="btn btn-secondary">Go</button>
+                    <button onClick={() => setIsSearching(false)} className="btn btn-text text-muted">Cancel</button>
+                  </div>
+                )}
               </div>
+            </div>
+          )}
+
+          {/* Notification */}
+          {notification && (
+            <div className="notification">
+              <span className="text-success">{notification}</span>
+              <button onClick={() => setNotification(null)} className="btn-text text-muted">✕</button>
             </div>
           )}
 
           {/* File content viewer */}
           {fileContent && (
-            <div style={{ background: "#0a0a0a", padding: 16, borderRadius: 5, maxHeight: 200, overflowY: "auto" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ color: "#4ade80", fontSize: 12 }}>File contents:</span>
-                <button onClick={() => setFileContent(null)} style={{ background: "none", border: "none", color: "#ff6b6b", cursor: "pointer" }}>✕ Close</button>
+            <div className="content-viewer">
+              <div className="content-header">
+                <span className="text-success">File contents:</span>
+                <button onClick={() => setFileContent(null)} className="btn-text btn-text-error">✕ Close</button>
               </div>
-              <pre style={{ margin: 0, fontFamily: "monospace", fontSize: 13, color: "#cdd6f4", whiteSpace: "pre-wrap" }}>{fileContent}</pre>
+              <pre className="content-pre">{fileContent}</pre>
             </div>
           )}
         </div>
