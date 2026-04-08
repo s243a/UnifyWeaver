@@ -754,55 +754,67 @@ fn main() {
         vm.set_reg("A3", Value::Unbound("Hops".to_string()));
         vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
 
-        let mut solutions = 0u32;
-        let mut first = true;
-        loop {
-            let succeeded = if first {
-                first = false;
-                if vm.foreign_predicates.contains("category_ancestor/4") {
-                    vm.execute_foreign_predicate("category_ancestor", 4)
-                } else if let Some(&pc) = vm.labels.get("category_ancestor/4") {
-                    vm.pc = pc;
-                    vm.cp = 0;
-                    vm.run()
-                } else {
-                    false
-                }
-            } else {
-                vm.backtrack()
-            };
-            if !succeeded {
-                break;
-            }
-            // Read Hops from the binding table, not A3 directly.
-            // A3 gets overwritten by recursive calls, but the original
-            // Unbound("Hops") variable is bound via bind_var.
-            if let Some(hops_val) = vm.bindings.get("Hops").cloned()
-                .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
-                let hops = match &hops_val {
-                    Value::Integer(h) => *h as f64,
-                    Value::Float(h) => *h,
-                    Value::Atom(s) => match s.parse::<f64>() {
-                        Ok(v) => v,
-                        Err(_) => { continue; }
-                    },
-                    _ => { continue; }
-                };
-                let d = hops + 1.0;
-                let weight = match &hops_val {
-                    Value::Integer(h) => {
-                        let idx = (*h + 1) as usize;
-                        hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
-                    }
-                    _ => d.powf(neg_n),
-                };
+        let solutions: u32 = if vm.foreign_predicates.contains("category_ancestor/4") {
+            let visited = vec![Value::Atom(cat.clone())];
+            let mut hops: Vec<i64> = Vec::new();
+            vm.collect_native_category_ancestor_hops(cat, &root, &visited, max_depth_limit, &mut hops);
+            for hop in hops.iter().take(10001) {
+                let idx = (*hop + 1) as usize;
+                let d = (*hop as f64) + 1.0;
+                let weight = hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n));
                 weight_sum += weight;
-                solutions += 1;
             }
-            // Safety limit: deep paths contribute negligibly to d_eff
-            // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
-            if solutions > 10000 { break; }
-        }
+            hops.len().min(10001) as u32
+        } else {
+            let mut solutions = 0u32;
+            let mut first = true;
+            loop {
+                let succeeded = if first {
+                    first = false;
+                    if let Some(&pc) = vm.labels.get("category_ancestor/4") {
+                        vm.pc = pc;
+                        vm.cp = 0;
+                        vm.run()
+                    } else {
+                        false
+                    }
+                } else {
+                    vm.backtrack()
+                };
+                if !succeeded {
+                    break;
+                }
+                // Read Hops from the binding table, not A3 directly.
+                // A3 gets overwritten by recursive calls, but the original
+                // Unbound("Hops") variable is bound via bind_var.
+                if let Some(hops_val) = vm.bindings.get("Hops").cloned()
+                    .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
+                    let hops = match &hops_val {
+                        Value::Integer(h) => *h as f64,
+                        Value::Float(h) => *h,
+                        Value::Atom(s) => match s.parse::<f64>() {
+                            Ok(v) => v,
+                            Err(_) => { continue; }
+                        },
+                        _ => { continue; }
+                    };
+                    let d = hops + 1.0;
+                    let weight = match &hops_val {
+                        Value::Integer(h) => {
+                            let idx = (*h + 1) as usize;
+                            hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
+                        }
+                        _ => d.powf(neg_n),
+                    };
+                    weight_sum += weight;
+                    solutions += 1;
+                }
+                // Safety limit: deep paths contribute negligibly to d_eff
+                // (with n=5, 10000 paths each at depth 10 add < 0.06 to weight_sum)
+                if solutions > 10000 { break; }
+            }
+            solutions
+        };
 
         total_steps += vm.step_count;
         total_backtracks += vm.backtrack_count;

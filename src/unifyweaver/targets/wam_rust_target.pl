@@ -1100,7 +1100,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
     }'.
 
 compile_collect_native_category_ancestor_to_rust(Code) :-
-    Code = '    fn collect_native_category_ancestor_hops(
+    Code = '    pub fn collect_native_category_ancestor_hops(
         &self,
         cat: &str,
         root: &str,
