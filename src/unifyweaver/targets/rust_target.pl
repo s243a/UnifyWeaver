@@ -3449,6 +3449,16 @@ rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
         ],
         [category_ancestor/4]
     ).
+rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
+    rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs),
+    ForeignSpec = foreign_predicate(
+        Pred/Arity,
+        [ register_foreign_native_kind(Pred/Arity, transitive_closure2),
+          register_foreign_string_config(Pred/Arity, edge_pred, EdgePred/2),
+          register_indexed_atom_fact2(EdgePred/2, FactPairs)
+        ],
+        [Pred/Arity]
+    ).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
     member(_-BaseBody, Clauses),
@@ -3462,6 +3472,25 @@ rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth
     user:max_depth(MaxDepth),
     integer(MaxDepth),
     MaxDepth > 0.
+
+rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, Start, Target],
+    RecHead =.. [Pred, Start, Target],
+    BaseBody =.. [EdgePred, Start, Target],
+    RecBody = (EdgeGoal, RecGoal),
+    EdgeGoal =.. [EdgePred, Start, Mid],
+    RecGoal =.. [Pred, Mid, Target],
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs),
+    FactPairs \= [].
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),

@@ -28,6 +28,8 @@ test_simple_fact(foo, bar).
 
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
+:- dynamic tc_ancestor/2.
+:- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
 max_depth(10).
@@ -48,6 +50,15 @@ category_ancestor(Cat, Target, Hops, Visited) :-
     \+ member(Mid, Visited),
     category_ancestor(Mid, Target, H1, [Mid|Visited]),
     Hops is H1 + 1.
+
+tc_parent(tom, bob).
+tc_parent(tom, liz).
+tc_parent(bob, ann).
+tc_parent(bob, pat).
+tc_parent(pat, jim).
+
+tc_ancestor(X, Y) :- tc_parent(X, Y).
+tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -311,6 +322,20 @@ test_foreign_lowering_category_ancestor :-
     ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
     ).
 
+test_foreign_lowering_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_ancestor/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_ancestor/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_ancestor/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_ancestor".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -329,8 +354,11 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'TryMeElse'),
         sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
+        sub_string(S, _, _, _, 'foreign_string_config(&pred_key, "edge_pred")'),
         sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
-        sub_string(S, _, _, _, 'name: "foreign_results".to_string()')
+        sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
+        sub_string(S, _, _, _, 'transitive_closure2'),
+        sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -598,6 +626,7 @@ run_tests :-
     test_wam_fallback_flag,
     test_generated_rust_has_wam_wrapper,
     test_foreign_lowering_category_ancestor,
+    test_foreign_lowering_transitive_closure,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

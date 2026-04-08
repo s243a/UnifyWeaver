@@ -82,6 +82,8 @@ pub struct WamState {
     pub foreign_predicates: HashSet<String>,
     /// Native foreign handler kinds keyed by "name/arity".
     pub foreign_native_kinds: HashMap<String, String>,
+    /// Foreign predicate string configs keyed by "name/arity#config".
+    pub foreign_string_configs: HashMap<String, String>,
     /// Foreign predicate usize configs keyed by "name/arity#config".
     pub foreign_usize_configs: HashMap<String, usize>,
     /// Variable binding table: maps Unbound variable names to their bound values.
@@ -121,6 +123,7 @@ impl WamState {
             indexed_atom_fact2: HashMap::new(),
             foreign_predicates: HashSet::new(),
             foreign_native_kinds: HashMap::new(),
+            foreign_string_configs: HashMap::new(),
             foreign_usize_configs: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
@@ -149,6 +152,17 @@ impl WamState {
         self.indexed_atom_fact2.insert(pred.to_string(), index);
     }
 
+    /// Register binary atom facts and build a first-argument index.
+    pub fn register_indexed_atom_fact2_pairs(&mut self, pred: &str, pairs: &[(&str, &str)]) {
+        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        for (left, right) in pairs {
+            index.entry((*left).to_string())
+                .or_insert_with(Vec::new)
+                .push((*right).to_string());
+        }
+        self.register_indexed_atom_fact2(pred, index);
+    }
+
     /// Register a foreign predicate implementation by "name/arity".
     pub fn register_foreign_predicate(&mut self, pred: &str) {
         self.foreign_predicates.insert(pred.to_string());
@@ -163,6 +177,18 @@ impl WamState {
     /// Fetch the native handler kind for a foreign predicate.
     pub fn foreign_native_kind(&self, pred: &str) -> Option<&str> {
         self.foreign_native_kinds.get(pred).map(|kind| kind.as_str())
+    }
+
+    /// Register a string configuration entry for a foreign predicate.
+    pub fn register_foreign_string_config(&mut self, pred: &str, key: &str, value: &str) {
+        self.foreign_string_configs.insert(format!("{}#{}", pred, key), value.to_string());
+    }
+
+    /// Fetch a string configuration entry for a foreign predicate.
+    pub fn foreign_string_config(&self, pred: &str, key: &str) -> Option<&str> {
+        self.foreign_string_configs
+            .get(&format!("{}#{}", pred, key))
+            .map(|value| value.as_str())
     }
 
     /// Register a usize configuration entry for a foreign predicate.
