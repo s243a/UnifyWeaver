@@ -452,10 +452,31 @@ pre_bind_unbound_yi([Var|Rest], Bindings, YI, NewBindings) :-
 %% compile_goals(+Goals, +VarMap, +HasEnv, -Vf, -Code)
 compile_goals([], V, _, V, "").
 compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
-    (   Rest == []
+    % Check for aggregate_all/findall first — these are always compiled inline
+    (   Goal = aggregate_all(Template, InnerGoal, Result)
+    ->  compile_aggregate_all(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   Goal = findall(Template, InnerGoal, Result)
+    ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        % For TCO with environments, put arguments BEFORE deallocate
-        % so that Yi registers are still accessible.
         (   HasEnv == yes
         ->  Goal =.. [Pred|Args],
             length(Args, Arity),
@@ -470,13 +491,8 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             )
         ;   compile_goal_execute(Goal, V0, Vf, Code)
         )
-    ;   % Check for aggregate_all/findall — compile Goal body inline
-        (   Goal = aggregate_all(Template, InnerGoal, Result)
-        ->  compile_aggregate_all(Template, InnerGoal, Result, V0, V1, GoalCode)
-        ;   Goal = findall(Template, InnerGoal, Result)
-        ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode)
-        ;   compile_goal_call(Goal, V0, V1, GoalCode)
-        ),
+    ;   % Non-last goal: call
+        compile_goal_call(Goal, V0, V1, GoalCode),
         compile_goals(Rest, V1, HasEnv, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
     ).
@@ -488,34 +504,38 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
 compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % Determine aggregation type from Template
     (   Template = sum(ValueVar) -> AggType = sum
-    ;   Template = count       -> AggType = count
+    ;   Template = count       -> AggType = count, ValueVar = 1
     ;   Template = max(ValueVar) -> AggType = max
     ;   Template = min(ValueVar) -> AggType = min
     ;   AggType = collect, ValueVar = Template  % default: collect all values
     ),
-    % Compile the Result register (where output goes)
-    compile_put_arguments([Result], 1, V0, V1, ResultPutCode),
+    % Find or allocate the Result register (where output goes)
+    (   var(Result), get_var_reg(Result, V0, ResultReg0)
+    ->  V1 = V0
+    ;   allocate_var(Result, V0, V1, ResultReg0)
+    ),
     % Compile the Value register (what gets collected per solution)
     (   var(ValueVar)
     ->  % ValueVar is a Prolog variable — allocate a Y-register for it
-        allocate_var(ValueVar, V1, V2, ValueReg)
-    ;   ValueReg = 'A1', V2 = V1  % fallback
+        allocate_var(ValueVar, V1, V2, ValueReg),
+        % Emit put_variable to actually create the Y-register in the env frame
+        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg])
+    ;   % Constant value (e.g., count uses 1) — use A1 as placeholder
+        ValueReg = 'A1', V2 = V1, InitValueCode = ""
     ),
     % Flatten the InnerGoal conjunction into a list of goals
     flatten_conjunction(InnerGoal, GoalList),
-    % Compile the inner goal body using call (not execute/TCO)
-    % so it doesn't emit proceed at the end
-    compile_goals(GoalList, V2, no, Vf, InnerCode0),
-    % Remove trailing "proceed" if present (TCO artifact)
-    (   sub_string(InnerCode0, _, _, 0, "\n    proceed")
-    ->  sub_string(InnerCode0, 0, _, 12, InnerCode)
-    ;   InnerCode0 = "    proceed"
-    ->  InnerCode = ""
-    ;   InnerCode = InnerCode0
-    ),
-    format(string(Code),
-        "    begin_aggregate ~w, ~w, A1~n~w~n    end_aggregate ~w",
-        [AggType, ValueReg, InnerCode, ValueReg]).
+    % Compile each inner goal as a call (never TCO/execute) so control
+    % returns to end_aggregate after each solution
+    compile_inner_call_goals(GoalList, V2, Vf, InnerCode),
+    (   InitValueCode \= ""
+    ->  format(string(Code),
+            "~w~n    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
+            [InitValueCode, AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+    ;   format(string(Code),
+            "    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
+            [AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+    ).
 
 %% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
 compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
@@ -529,12 +549,27 @@ flatten_conjunction((A, B), Goals) :- !,
     append(AG, BG, Goals).
 flatten_conjunction(Goal, [Goal]).
 
+%% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
+%  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.
+compile_inner_call_goals([], V, V, "").
+compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
+    compile_goal_call(Goal, V0, V1, GoalCode),
+    compile_inner_call_goals(Rest, V1, Vf, RestCode),
+    (   RestCode == ""
+    ->  Code = GoalCode
+    ;   format(string(Code), "~w~n~w", [GoalCode, RestCode])
+    ).
+
 %% allocate_var(+Var, +VarMapIn, -VarMapOut, -Register)
 %  Allocate a Y-register for a variable if not already allocated.
 allocate_var(Var, VIn, VOut, Reg) :-
     (   get_var_reg(Var, VIn, ExistingReg)
     ->  Reg = ExistingReg, VOut = VIn
     ;   get_yi_alloc(Var, VIn, Reg, VOut)
+    ->  true
+    ;   next_x_reg(VIn, XReg, V_temp),
+        bind_var(Var, XReg, V_temp, VOut),
+        Reg = XReg
     ).
 
 compile_goal_call(Goal, V0, Vf, Code) :-

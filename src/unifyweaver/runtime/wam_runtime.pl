@@ -513,12 +513,17 @@ fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
     integer(PC), get_assoc(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
+%% When a builtin CP is exhausted (resume_builtin fails), pop it and try the next CP.
 backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L),
           StateOut) :-
     unwind_trail(Trail, SavedTrail, R, RestoredR),
     wam_restore_bindings(SavedB),
     (   nonvar(BuiltinState)
-    ->  resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+    ->  (   resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+        ->  true
+        ;   % Builtin exhausted — pop this CP and try the next one
+            backtrack(wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, CPs, Code, L), StateOut)
+        )
     ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L)
     ).
 
@@ -985,20 +990,24 @@ step_wam(begin_aggregate(Type, ValueReg, ResultReg), wam_state(PC, R, S, H, T, C
 
 step_wam(end_aggregate(ValueReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     % Collect the current value from the value register
-    get_reg_val(ValueReg, R, S, Val),
+    get_reg_val(ValueReg, R, S, RawVal),
+    wam_deref(RawVal, Val),
     retract(wam_aggregate_acc(Acc)),
     assert(wam_aggregate_acc([Val|Acc])),
+    % Store the return PC (instruction after end_aggregate) for aggregate_frame finalization
+    AfterPC is PC + 1,
+    nb_setval(wam_end_aggregate_pc, AfterPC),
     % Force backtrack to find next solution
-    % This goes back through the Goal body to find the next path
     (   backtrack(wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut)
     ->  true
-    ;   % No more solutions — should not happen here (aggregate_frame handles it)
-        fail
+    ;   fail
     ).
 
 %% resume_builtin for aggregate_frame: finalize aggregation
-resume_builtin(aggregate_frame(Type, ValueReg, ResultReg, ReturnPC), StateIn, StateOut) :-
+resume_builtin(aggregate_frame(Type, _ValueReg, ResultReg, _BeginPC), StateIn, StateOut) :-
     StateIn = wam_state(_, R, S, H, T, CP, [_|CPs], Code, L),
+    % Use the ReturnPC stored by end_aggregate (instruction after end_aggregate)
+    nb_getval(wam_end_aggregate_pc, ReturnPC),
     % Collect accumulated values
     retract(wam_aggregate_acc(AccReversed)),
     reverse(AccReversed, Acc),
@@ -1015,7 +1024,7 @@ resume_builtin(aggregate_frame(Type, ValueReg, ResultReg, ReturnPC), StateIn, St
     ;   DResultVar == Result -> NR = R, NT = T
     ;   fail
     ),
-    % Return to instruction after the aggregate block
+    % Return to instruction after end_aggregate
     StateOut = wam_state(ReturnPC, NR, S, H, NT, CP, CPs, Code, L).
 
 %% apply_aggregation(+Type, +Values, -Result)
@@ -1193,11 +1202,13 @@ unify_wam(V1, V2, StateIn, StateOut) :-
     ; var(DV2) -> DV2 = DV1, StateOut = StateIn
     ; is_unbound_var(DV1) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV1, R, T, NT), put_reg(DV1, DV2, R, NR, S, NS),
+        trail_binding(DV1, R, T, NT), wam_bind(DV1, DV2),
+        put_reg(DV1, DV2, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; is_unbound_var(DV2) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV2, R, T, NT), put_reg(DV2, DV1, R, NR, S, NS),
+        trail_binding(DV2, R, T, NT), wam_bind(DV2, DV1),
+        put_reg(DV2, DV1, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; compound(DV1), compound(DV2) ->
         DV1 =.. [F|Args1], DV2 =.. [F|Args2], length(Args1, Len), length(Args2, Len),
@@ -1347,6 +1358,7 @@ eval_arith_derefed(Expr, R, S, Heap, Result) :- atom(Expr), (is_unbound_var(Expr
 eval_arith_derefed(Expr, R, S, Heap, Result) :- compound(Expr), Expr =.. [Op|Args], maplist({R, S, Heap}/[A, V]>>eval_arith(A, R, S, Heap, V), Args, Vals), (Vals = [V1, V2] -> apply_arith_op(Op, V1, V2, Result) ; Vals = [V1] -> apply_arith_unary(Op, V1, Result) ; fail).
 apply_arith_op(+, A, B, R) :- R is A + B. apply_arith_op(-, A, B, R) :- R is A - B. apply_arith_op(*, A, B, R) :- R is A * B.
 apply_arith_op(/, A, B, R) :- B =\= 0, R is A / B. apply_arith_op(//, A, B, R) :- B =\= 0, R is A // B. apply_arith_op(mod, A, B, R) :- B =\= 0, R is A mod B. apply_arith_op(div, A, B, R) :- B =\= 0, R is A div B.
+apply_arith_op(**, A, B, R) :- R is A ** B. apply_arith_op('^', A, B, R) :- R is A ^ B.
 apply_arith_unary(-, A, R) :- R is -A. apply_arith_unary(abs, A, R) :- R is abs(A).
 
 solve_wam(Instructions, Query, VarNames, Bindings) :-
