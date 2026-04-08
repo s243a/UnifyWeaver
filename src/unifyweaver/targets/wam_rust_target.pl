@@ -1047,8 +1047,12 @@ compile_execute_foreign_predicate_to_rust(Code) :-
         if !self.foreign_predicates.contains(&pred_key) {
             return false;
         }
-        match pred_key.as_str() {
-            "category_ancestor/4" => {
+        let native_kind = match self.foreign_native_kind(&pred_key) {
+            Some(kind) => kind,
+            None => return false,
+        };
+        match native_kind {
+            "category_ancestor" => {
                 let cat = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(cat)) => cat,
                     _ => return false,
@@ -1344,9 +1348,11 @@ compile_resume_builtin_to_rust(Code) :-
                         cut_barrier: self.cut_barrier,
                     });
                 }
-                if pred_key != "category_ancestor/4" {
-                    return false;
-                }
+                let native_kind = match self.foreign_native_kind(&pred_key) {
+                    Some(kind) => kind,
+                    None => return false,
+                };
+                if native_kind != "category_ancestor" { return false; }
                 if self.unify(&hops_reg, &Value::Integer(hop)) {
                     self.pc += 1; true
                 } else { false }
@@ -1579,9 +1585,12 @@ rust_foreign_setup_code(Ops, Setup) :-
     maplist(rust_foreign_setup_line, Ops, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
-rust_foreign_setup_line(register_foreign_category_ancestor(MaxDepth), Line) :-
+rust_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
     format(string(Line),
-        '    vm.register_foreign_category_ancestor(~w);', [MaxDepth]).
+        '    vm.register_foreign_native_kind("~w/~w", "~w");', [Pred, Arity, Kind]).
+rust_foreign_setup_line(register_foreign_usize_config(Pred/Arity, Key, Value), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_usize_config("~w/~w", "~w", ~w);', [Pred, Arity, Key, Value]).
 
 %% wam_code_to_rust_instructions(+WamCodeStr, +PredIndicator, +Options, -InstrLiterals, -LabelLiterals)
 %  Parses a WAM code string and generates Rust vec![] entries and label map inserts.

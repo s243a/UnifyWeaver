@@ -3444,7 +3444,9 @@ rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
     rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth),
     ForeignSpec = foreign_predicate(
         category_ancestor/4,
-        [register_foreign_category_ancestor(MaxDepth)],
+        [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+          register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)
+        ],
         [category_ancestor/4]
     ).
 

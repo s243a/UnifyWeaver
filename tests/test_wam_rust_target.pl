@@ -213,14 +213,17 @@ test_foreign_spec_wrapper_generation :-
     Test = 'WAM-Rust: generic foreign spec drives wrapper generation',
     ForeignSpec = foreign_predicate(
         category_ancestor/4,
-        [register_foreign_category_ancestor(10)],
+        [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+          register_foreign_usize_config(category_ancestor/4, max_depth, 10)
+        ],
         [category_ancestor/4]
     ),
     WamCode = "call category_ancestor/4, 4",
     (   compile_wam_predicate_to_rust(category_ancestor/4, WamCode,
             [foreign_lowering(ForeignSpec)], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, 'register_foreign_category_ancestor(10)'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
     ->  pass(Test)
@@ -300,7 +303,8 @@ test_foreign_lowering_category_ancestor :-
     (   rust_target:compile_predicate_to_rust(user:category_ancestor/4,
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, 'register_foreign_category_ancestor(10)'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
     ->  pass(Test)
@@ -324,6 +328,7 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
         sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
         sub_string(S, _, _, _, 'name: "foreign_results".to_string()')
     ->  pass(Test)

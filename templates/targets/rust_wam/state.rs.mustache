@@ -80,6 +80,8 @@ pub struct WamState {
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Registered foreign predicates keyed by "name/arity".
     pub foreign_predicates: HashSet<String>,
+    /// Native foreign handler kinds keyed by "name/arity".
+    pub foreign_native_kinds: HashMap<String, String>,
     /// Foreign predicate usize configs keyed by "name/arity#config".
     pub foreign_usize_configs: HashMap<String, usize>,
     /// Variable binding table: maps Unbound variable names to their bound values.
@@ -118,6 +120,7 @@ impl WamState {
             labels,
             indexed_atom_fact2: HashMap::new(),
             foreign_predicates: HashSet::new(),
+            foreign_native_kinds: HashMap::new(),
             foreign_usize_configs: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
@@ -151,6 +154,17 @@ impl WamState {
         self.foreign_predicates.insert(pred.to_string());
     }
 
+    /// Register the native handler kind for a foreign predicate.
+    pub fn register_foreign_native_kind(&mut self, pred: &str, kind: &str) {
+        self.register_foreign_predicate(pred);
+        self.foreign_native_kinds.insert(pred.to_string(), kind.to_string());
+    }
+
+    /// Fetch the native handler kind for a foreign predicate.
+    pub fn foreign_native_kind(&self, pred: &str) -> Option<&str> {
+        self.foreign_native_kinds.get(pred).map(|kind| kind.as_str())
+    }
+
     /// Register a usize configuration entry for a foreign predicate.
     pub fn register_foreign_usize_config(&mut self, pred: &str, key: &str, value: usize) {
         self.foreign_usize_configs.insert(format!("{}#{}", pred, key), value);
@@ -161,12 +175,6 @@ impl WamState {
         self.foreign_usize_configs
             .get(&format!("{}#{}", pred, key))
             .copied()
-    }
-
-    /// Configure the native category_ancestor/4 foreign predicate.
-    pub fn register_foreign_category_ancestor(&mut self, max_depth: usize) {
-        self.register_foreign_predicate("category_ancestor/4");
-        self.register_foreign_usize_config("category_ancestor/4", "max_depth", max_depth);
     }
 
     /// Dereference an Unbound variable through the binding table.
