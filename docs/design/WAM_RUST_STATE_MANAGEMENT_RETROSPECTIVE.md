@@ -226,6 +226,7 @@ Instead, the compiler now supports a **foreign-lowering** path for selected
 recursive schemas:
 
 - `category_ancestor/4`-style bounded recursive search
+- countdown-style numeric recursion such as `tri_sum/2`
 - binary transitive closure such as `tc_ancestor/2`
 - reversed binary closure such as `tc_descendant/2`
 - recursive distance search such as `tc_distance/3`
@@ -264,6 +265,7 @@ That split makes the foreign-lowering path easier to extend without letting
 The currently registered recursive kernel families are:
 
 - `category_ancestor`
+- `countdown_sum2`
 - `transitive_closure2`
 - `transitive_distance3`
 
@@ -273,13 +275,20 @@ The current test coverage now includes:
 
 - compiler-selection tests for:
   - `category_ancestor/4`
+  - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
   - `tc_distance/3`
 - end-to-end generated Rust runtime validation for:
+  - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
   - `tc_distance/3`
+
+When `foreign_lowering(true)` is enabled and a registered kernel matches, the
+compiler now prefers the foreign path over earlier generic native clause
+lowering. That keeps recognized recursive kernels on the tested runtime path
+instead of silently taking a less structured lowering tier first.
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and

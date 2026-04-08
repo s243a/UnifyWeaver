@@ -785,6 +785,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
+    compile_compute_native_countdown_sum_to_rust(NativeCountdownSumCode),
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
     compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
     compile_eval_arith_to_rust(ArithCode),
@@ -801,6 +802,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
         NativeAncestorCode, '\n\n',
+        NativeCountdownSumCode, '\n\n',
         NativeClosureCode, '\n\n',
         NativeDistanceCode, '\n\n',
         ArithCode
@@ -1103,6 +1105,23 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
+            "countdown_sum2" => {
+                let n = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let sum_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let sum = match self.compute_native_countdown_sum(n) {
+                    Some(sum) => sum,
+                    None => return false,
+                };
+                if self.unify(&sum_reg, &Value::Integer(sum)) {
+                    self.pc += 1; true
+                } else { false }
+            }
             "transitive_closure2" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
@@ -1252,6 +1271,20 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
                 }
             }
         }
+    }'.
+
+compile_compute_native_countdown_sum_to_rust(Code) :-
+    Code = '    pub fn compute_native_countdown_sum(&self, n: i64) -> Option<i64> {
+        if n < 0 {
+            return None;
+        }
+        let mut total = 0;
+        let mut current = n;
+        while current > 0 {
+            total += current;
+            current -= 1;
+        }
+        Some(total)
     }'.
 
 compile_collect_native_transitive_closure_to_rust(Code) :-
