@@ -8242,23 +8242,30 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
         )
     ).
 
+:- use_module('../core/semantic_compiler').
+
 %% is_semantic_predicate(+Goal)
+is_semantic_predicate(Goal) :-
+    semantic_compiler:is_semantic_predicate(Goal).
 is_semantic_predicate(semantic_search(_, _, _)).
 is_semantic_predicate(crawler_run(_, _)).
 
 %% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
-compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
+compile_semantic_rule_go(PredStr, HeadArgs, Goal, GoCode) :-
     build_var_map(HeadArgs, VarMap),
-    Goal =.. [GoalName | GoalArgs],
     
-    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
-    
-    (   GoalName == semantic_search
-    ->  GoalArgs = [Query, TopK, _Results],
-        term_to_go_expr(Query, VarMap, QueryExpr),
-        term_to_go_expr(TopK, VarMap, TopKExpr),
-        
-        format(string(Body), '
+    (   semantic_compiler:is_semantic_predicate(Goal)
+    ->  semantic_compiler:compile_semantic_call(go, Goal, VarMap, Body),
+        Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
+        format(string(GoCode), 'package main\n\nimport (\n~w\n)\n\nfunc ~w(query string) {\n~w\n\tfor _, res := range results {\n\t\tfmt.Printf("Result: %s (Score: %f)\\n", res.ID, res.Score)\n\t}\n}\n', [Imports, PredStr, Body])
+    ;   Goal =.. [GoalName | GoalArgs],
+        Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
+        (   GoalName == semantic_search
+        ->  GoalArgs = [Query, TopK, _Results],
+            term_to_go_expr(Query, VarMap, QueryExpr),
+            term_to_go_expr(TopK, VarMap, TopKExpr),
+            
+            format(string(Body), '
 \t// Initialize runtime
 \tstore, err := storage.NewStore("data.db")
 \tif err != nil { log.Fatal(err) }
@@ -8280,19 +8287,19 @@ compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
 \t\tfmt.Printf("Result: %%s (Score: %%f)\\n", res.ID, res.Score)
 \t}
 ', [QueryExpr, TopKExpr])
-    ;   GoalName == crawler_run
-    ->  GoalArgs = [Seeds, MaxDepth],
-        term_to_go_expr(MaxDepth, VarMap, DepthExpr),
-        
-        (   is_list(Seeds)
-        ->  maplist(atom_string, Seeds, SeedStrs),
-            atomic_list_concat(SeedStrs, '", "', Inner),
-            format(string(SeedsGo), '[]string{"~w"}', [Inner])
-        ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
-            SeedsGo = SeedsExpr
-        ),
+        ;   GoalName == crawler_run
+        ->  GoalArgs = [Seeds, MaxDepth],
+            term_to_go_expr(MaxDepth, VarMap, DepthExpr),
+            
+            (   is_list(Seeds)
+            ->  maplist(atom_string, Seeds, SeedStrs),
+                atomic_list_concat(SeedStrs, '", "', Inner),
+                format(string(SeedsGo), '[]string{"~w"}', [Inner])
+            ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
+                SeedsGo = SeedsExpr
+            ),
 
-        format(string(Body), '
+            format(string(Body), '
 \t// Initialize runtime
 \tstore, err := storage.NewStore("data.db")
 \tif err != nil { log.Fatal(err) }
@@ -8309,9 +8316,9 @@ compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
 \tcraw := crawler.NewCrawler(store, emb)
 \tcraw.Crawl(~w, int(~w))
 ', [SeedsGo, DepthExpr])
-    ),
-    
-    format(string(GoCode), 'package main
+        ),
+        
+        format(string(GoCode), 'package main
 
 import (
 ~s
@@ -8321,7 +8328,8 @@ func main() {
 \t// Parse input arguments if needed (e.g. if HeadArgs are used)
 \t// For now, we assume simple stdin/args or constants
 ~s}
-', [Imports, Body]).
+', [Imports, Body])
+    ).
 
 %% generate_field_assignments(+Args, -Code)
 %  Generate field assignment statements
