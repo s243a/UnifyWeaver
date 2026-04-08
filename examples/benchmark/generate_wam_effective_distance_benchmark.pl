@@ -516,6 +516,12 @@ fn main() {
     let root = roots[0].clone();
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
+    let max_depth_limit = 10usize;
+    let mut hop_weights: Vec<f64> = Vec::with_capacity(max_depth_limit + 2);
+    hop_weights.push(0.0);
+    for d in 1..=(max_depth_limit + 1) {
+        hop_weights.push((d as f64).powf(neg_n));
+    }
     let profile_enabled = std::env::var("WAM_PROFILE").ok().as_deref() == Some("1");
     let step_limit = std::env::var("WAM_STEP_LIMIT")
         .ok()
@@ -565,7 +571,14 @@ fn main() {
                             _ => { if !vm.backtrack() { break; } continue; }
                         };
                         let d = hops + 1.0;
-                        weight_sum += d.powf(neg_n);
+                        let weight = match &hops_val {
+                            Value::Integer(h) => {
+                                let idx = (*h + 1) as usize;
+                                hop_weights.get(idx).copied().unwrap_or_else(|| d.powf(neg_n))
+                            }
+                            _ => d.powf(neg_n),
+                        };
+                        weight_sum += weight;
                         solutions += 1;
                     }
                     // Safety limit: deep paths contribute negligibly to d_eff
