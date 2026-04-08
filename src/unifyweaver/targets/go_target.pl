@@ -71,7 +71,9 @@
     % KG Topology Phase 5a: Hierarchical federation
     compile_hierarchical_federation_go/2, % +Options, -GoCode
     % KG Topology Phase 5d: Streaming federation
-    compile_streaming_federation_go/2   % +Options, -GoCode
+    compile_streaming_federation_go/2,  % +Options, -GoCode
+    % Semantic search compilation
+    compile_semantic_rule_go/4          % +PredStr, +HeadArgs, +Goal, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -524,7 +526,7 @@ generate_handler_op_go(Pred, Code) :-
     format(string(Code), "\t// Execute predicate: ~w", [Pred]).
 
 generate_handler_op_go(Op, Code) :-
-    format(warning, 'Unknown Go handler operation: ~w~n', [Op]),
+    print_message(warning, format('Unknown Go handler operation: ~w', [Op])),
     format(string(Code), "\t// Unknown operation: ~w", [Op]).
 
 %% ============================================

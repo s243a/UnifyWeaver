@@ -47,8 +47,7 @@ semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 
 | Target | Default Provider | Alternate Providers | Device Support |
 |--------|------------------|---------------------|----------------|
-| **Python** | `transformers` | `onnx` | CUDA, MPS, CPU |
-| **Go** | `hugot` | `candle` (FFI), `ort` (FFI) | CUDA, CPU |
-| **Rust** | `candle` | `onnx` | CUDA, Metal, CPU |
-| **C#** | `onnx` | — | DirectML, CUDA, CPU |
-| **C/C++** | `onnx` | `libtorch` | CUDA, CPU |
+| **Python** | `transformers` | `onnx` | CUDA, CPU (MPS planned) |
+| **Go** | `hugot` | `onnx` | GPU, CPU |
+| **Rust** | `candle` | `onnx` | CUDA, CPU |
+| **C#** | `onnx` | — | DirectML, CPU |

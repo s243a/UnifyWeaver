@@ -86,34 +86,57 @@
 
 %% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 %  Target-specific implementation for semantic search.
-semantic_compiler:semantic_dispatch(rust, semantic_search(Query, TopK, _Results), Provider, VarMap, Code) :-
+%  Handles candle and onnx providers with device-aware initialization.
+semantic_compiler:semantic_dispatch(rust, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
     option(provider(candle), Provider),
+    !,
     option(model(Model), Provider, 'all-MiniLM-L6-v2'),
-    
+    option(device(Device), Provider, auto),
+
     % Lookup variable names in VarMap
     (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
     (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device feature selection for candle
+    (   Device == gpu
+    ->  DeviceInit = 'let device = candle_core::Device::new_cuda(0)\n        .unwrap_or_else(|_| { eprintln!("Warning: CUDA not available, falling back to CPU"); candle_core::Device::Cpu });'
+    ;   Device == cpu
+    ->  DeviceInit = 'let device = candle_core::Device::Cpu;'
+    ;   DeviceInit = 'let device = candle_core::Device::cuda_if_available(0).unwrap_or(candle_core::Device::Cpu);'
+    ),
 
     format(string(Code), '
     // Initialize candle searcher with model ~w
-    let searcher = PtSearcher::new("data.redb", "~w")?;
+    ~w
+    let searcher = PtSearcher::new("data.redb", "~w", &device)?;
     let results = searcher.text_search("~w", ~w)?;
     println!("{}", serde_json::to_string_pretty(&results)?);
-', [Model, Model, QueryExpr, TopKExpr]).
+', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
 
-semantic_compiler:semantic_dispatch(rust, semantic_search(Query, TopK, _Results), Provider, VarMap, Code) :-
+semantic_compiler:semantic_dispatch(rust, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
     option(provider(onnx), Provider),
+    !,
     option(model(Model), Provider, 'all-MiniLM-L6-v2'),
-    
+    option(device(Device), Provider, auto),
+
     % Lookup variable names in VarMap
     (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
     (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
 
+    % Device selection for ONNX Runtime
+    (   Device == gpu
+    ->  DeviceInit = 'let env = ort::Environment::builder().with_execution_providers([ort::CUDAExecutionProvider::default().build()]).build()?;'
+    ;   DeviceInit = 'let env = ort::Environment::builder().build()?;'
+    ),
+
     format(string(Code), '
     // Initialize ONNX searcher with model ~w
-    let searcher = OnnxSearcher::new("data.redb", "models/~w-onnx")?;
+    ~w
+    let searcher = OnnxSearcher::new("data.redb", "models/~w-onnx", &env)?;
     let results = searcher.text_search("~w", ~w)?;
-', [Model, Model, QueryExpr, TopKExpr]).
+', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
 
 % Per-path visited pattern detection
 :- use_module('../core/advanced/pattern_matchers', [
