@@ -245,6 +245,66 @@ test_foreign_spec_wrapper_generation :-
     ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
     ).
 
+test_recursive_kernel_ir_selection :-
+    Test = 'WAM-Rust: recursive kernel IR normalizes supported schemas',
+    CategoryClauses = [
+        category_ancestor(Cat1, Target1, 1, Visited1)-
+            (category_parent(Cat1, Target1), \+ member(Target1, Visited1)),
+        category_ancestor(Cat2, Target2, Hops2, Visited2)-
+            ( max_depth(MaxDepth2),
+              length(Visited2, Depth2),
+              Depth2 < MaxDepth2,
+              !,
+              category_parent(Cat2, Mid2),
+              \+ member(Mid2, Visited2),
+              category_ancestor(Mid2, Target2, H12, [Mid2|Visited2]),
+              Hops2 is H12 + 1
+            )
+    ],
+    DescClauses = [
+        tc_descendant(X1, Y1)-tc_parent(Y1, X1),
+        tc_descendant(X2, Y2)-(tc_parent(Z2, X2), tc_descendant(Z2, Y2))
+    ],
+    (   rust_target:rust_recursive_kernel(category_ancestor, 4, CategoryClauses,
+            recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(10)])),
+        rust_target:rust_recursive_kernel(tc_descendant, 2, DescClauses,
+            recursive_kernel(transitive_closure2, tc_descendant/2,
+                [edge_pred(tc_parent/2), fact_pairs(FactPairs)])),
+        FactPairs == ['bob'-'tom', 'liz'-'tom', 'ann'-'bob', 'pat'-'bob', 'jim'-'pat']
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel IR did not normalize expected schemas')
+    ).
+
+test_recursive_kernel_spec_generation :-
+    Test = 'WAM-Rust: recursive kernel IR generates foreign specs declaratively',
+    Kernel = recursive_kernel(
+        transitive_closure2,
+        tc_descendant/2,
+        [ edge_pred(tc_parent/2),
+          fact_pairs(['bob'-'tom', 'liz'-'tom'])
+        ]),
+    (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
+        ForeignSpec = foreign_predicate(
+            tc_descendant/2,
+            [ register_foreign_native_kind(tc_descendant/2, transitive_closure2),
+              register_foreign_string_config(tc_descendant/2, edge_pred, tc_parent/2),
+              register_indexed_atom_fact2(tc_parent/2, ['bob'-'tom', 'liz'-'tom'])
+            ],
+            [tc_descendant/2]
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
+    ).
+
+test_recursive_kernel_registry :-
+    Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
+    findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
+    sort(Kinds0, Kinds),
+    (   Kinds == [category_ancestor, transitive_closure2]
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -638,6 +698,9 @@ run_tests :-
     test_builtin_dispatch,
     test_predicate_wrapper,
     test_foreign_spec_wrapper_generation,
+    test_recursive_kernel_ir_selection,
+    test_recursive_kernel_spec_generation,
+    test_recursive_kernel_registry,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
