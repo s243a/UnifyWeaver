@@ -359,7 +359,6 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                     stack: self.stack.clone(),
                     trail_len: self.trail.len(),
                     heap_len: self.heap.len(),
-                    bindings: self.bindings.clone(),
                     builtin_state: Some(BuiltinState {
                         name: "aggregate_frame".to_string(),
                         args: vec![
@@ -391,7 +390,6 @@ wam_instruction_arm('Instruction::TryMeElse(label)', Body) :-
                         stack: self.stack.clone(),
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
-                        bindings: self.bindings.clone(),
                         builtin_state: None,
                         cut_barrier: self.cut_barrier,
                     });
@@ -406,7 +404,6 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                     stack: self.stack.clone(),
                     trail_len: self.trail.len(),
                     heap_len: self.heap.len(),
-                    bindings: self.bindings.clone(),
                     builtin_state: None,
                     cut_barrier: self.cut_barrier,
                 });
@@ -611,10 +608,10 @@ compile_backtrack_to_rust(Code0) :-
             self.trail.truncate(cp.trail_len);
             self.heap.truncate(cp.heap_len);
 
-            // 3. Restore registers, bindings, and control state.
+            // 3. Restore registers and control state.
+            // Binding-table changes are restored by trail unwind above.
             self.restore_regs(&cp.saved_args);
             self.cp = cp.cp;
-            self.bindings = cp.bindings;
             self.cut_barrier = cp.cut_barrier;
 
             if let Some(state) = cp.builtin_state {
@@ -767,7 +764,6 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 cp: self.cp,
                                 trail_len: self.trail.len(),
                                 heap_len: self.heap.len(),
-                                bindings: self.bindings.clone(),
                                 builtin_state: Some(BuiltinState {
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
@@ -928,7 +924,6 @@ compile_resume_builtin_to_rust(Code) :-
                             cp: self.cp,
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
-                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
@@ -989,7 +984,6 @@ compile_execute_meta_builtin_to_rust(Code) :-
                             cp: self.cp,
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
-                            bindings: self.bindings.clone(),
                             builtin_state: Some(BuiltinState {
                                 name: "naf_succeed".to_string(),
                                 args: vec![Value::Integer(naf_pc as i64)],

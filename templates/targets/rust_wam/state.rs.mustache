@@ -26,8 +26,6 @@ pub struct ChoicePoint {
     pub trail_len: usize,
     /// Saved heap depth — backtrack truncates to this point.
     pub heap_len: usize,
-    /// Saved bindings snapshot for correct restoration on backtrack.
-    pub bindings: HashMap<String, Value>,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
     /// Saved cut barrier for backtracking.
