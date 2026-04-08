@@ -347,7 +347,7 @@ test_foreign_lowering_reverse_transitive_closure :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tc_descendant/2", "transitive_closure2")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
-        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("bob", "tom"), ("liz", "tom"), ("ann", "bob"), ("pat", "bob"), ("jim", "pat")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("tc_descendant".to_string(), 2)')
     ->  pass(Test)
