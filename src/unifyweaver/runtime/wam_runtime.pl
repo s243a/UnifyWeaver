@@ -137,10 +137,52 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     ;   PC = 1
     ),
     build_regs(Args, 1, Regs),
-    % Initialize the WAM variable binding table and counter (global, mutable)
+    % Initialize the WAM variable binding table, counter, and memo table
     empty_assoc(EmptyBindings),
     nb_setval(wam_bindings, EmptyBindings),
-    nb_setval(wam_var_counter, 0).
+    nb_setval(wam_var_counter, 0),
+    empty_assoc(EmptyMemo),
+    nb_setval(wam_memo_table, EmptyMemo).
+
+% ============================================================================
+% WAM Tabling / Memoization
+% ============================================================================
+%
+% Caches results of WAM predicate calls to avoid redundant recomputation.
+% Key: ground arguments of the call (e.g., category_ancestor(Cat, Root, _, Visited))
+% Value: list of result bindings
+%
+% This is essential for cycle-heavy category graphs where the same
+% (Cat, Root) subproblem appears in many paths.
+
+:- dynamic wam_tabled_predicate/1.  % Predicates to table
+
+%% wam_enable_tabling(+PredKey)
+%  Mark a predicate for tabling (e.g., "category_ancestor/4").
+wam_enable_tabling(PredKey) :-
+    (wam_tabled_predicate(PredKey) -> true ; assert(wam_tabled_predicate(PredKey))).
+
+%% wam_memo_lookup(+Key, -CachedResults)
+%  Check memo table for cached results.
+wam_memo_lookup(Key, Results) :-
+    nb_getval(wam_memo_table, Memo),
+    get_assoc(Key, Memo, Results).
+
+%% wam_memo_store(+Key, +Results)
+%  Store results in memo table.
+wam_memo_store(Key, Results) :-
+    nb_getval(wam_memo_table, Memo),
+    put_assoc(Key, Memo, Results, NewMemo),
+    nb_setval(wam_memo_table, NewMemo).
+
+%% wam_memo_store_seed(+Pred, +Cat, +Root, +HopsList)
+%  Store cached results for a (Cat, Root) pair after findall_wam.
+%  HopsList is a list of Hops values from successful queries.
+wam_memo_store_seed(Pred, Cat, Root, HopsList) :-
+    Key = Pred-Cat-Root,
+    % Convert Hops list to result format: list of [A1, A2, A3, A4] tuples
+    maplist({Cat, Root}/[Hops, [Cat, Root, Hops, _]]>>true, HopsList, Results),
+    wam_memo_store(Key, Results).
 
 % ============================================================================
 % Fact Table Registry
@@ -592,10 +634,66 @@ step_wam(call(P, Arity), StateIn, StateOut) :-
     % Check fact table first (O(log n) lookup vs O(n) instruction scan)
     (   wam_fact_table_registered(P, FactTable)
     ->  call_fact_predicate(P, Arity, FactTable, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
-    ;   % Fallback to WAM code
-        get_assoc(P, L, NPC),
-        StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
+    ;   % Check memo table for tabled predicates
+        (   wam_tabled_predicate(P),
+            memo_key_from_call(P, Arity, R, MemoKey),
+            wam_memo_lookup(MemoKey, CachedResults)
+        ->  % Return cached results via choice points
+            return_cached_results(CachedResults, Arity, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
+        ;   % Execute normally via WAM code
+            get_assoc(P, L, NPC),
+            StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
+        )
     ).
+
+%% memo_key_from_call(+Pred, +Arity, +Regs, -Key)
+%  Build a memo key from the predicate name and bound argument registers.
+%  Uses the first two args (Cat, Root) as the key since Hops and Visited vary.
+memo_key_from_call(Pred, _Arity, Regs, Key) :-
+    (get_assoc('A1', Regs, A1Raw) -> wam_deref(A1Raw, A1) ; A1 = '_'),
+    (get_assoc('A2', Regs, A2Raw) -> wam_deref(A2Raw, A2) ; A2 = '_'),
+    Key = Pred-A1-A2.
+
+%% return_cached_results(+Results, +Arity, +StateIn, -StateOut)
+%  Return the first cached result, with choice point for the rest.
+return_cached_results([Result|Rest], Arity, StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, CPS, Code, L),
+    apply_cached_result(Result, Arity, R, T, NR, NT),
+    (   Rest \= []
+    ->  wam_save_bindings(SB),
+        NCPS = [cp(_, R, S, H, CP, T, cached_retry(Rest, Arity, CP), SB)|CPS]
+    ;   NCPS = CPS
+    ),
+    StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L).
+
+apply_cached_result(Result, Arity, R, T, NR, NT) :-
+    numlist(1, Arity, Indices),
+    foldl(apply_one_result(Result), Indices, R-T, NR-NT).
+
+apply_one_result(Result, I, RIn-TIn, ROut-TOut) :-
+    format(atom(RegName), "A~w", [I]),
+    nth1(I, Result, Val),
+    get_assoc(RegName, RIn, CurVal),
+    wam_deref(CurVal, DCur),
+    (   DCur == Val -> ROut = RIn, TOut = TIn
+    ;   is_wam_unbound(DCur)
+    ->  trail_binding(RegName, RIn, TIn, TOut),
+        (atom(DCur), is_wam_unbound(DCur) -> wam_bind(DCur, Val) ; true),
+        put_assoc(RegName, RIn, Val, ROut)
+    ;   fail
+    ).
+
+%% resume_builtin for cached_retry
+resume_builtin(cached_retry(Rest, Arity, SavedCP), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(_, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
+    Rest = [Result|MoreRest],
+    apply_cached_result(Result, Arity, R, T, NR, NT),
+    (   MoreRest \= []
+    ->  wam_save_bindings(SB2),
+        NCPS = [cp(_, R_orig, S_orig, H_orig, CP_orig, T_orig, cached_retry(MoreRest, Arity, SavedCP), SB2)|CPs]
+    ;   NCPS = CPs
+    ),
+    StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS, Code, L).
 
 step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(P, L, NPC).
@@ -905,13 +1003,19 @@ wam_deref(Val, Derefed) :-
     ).
 
 %% wam_save_bindings(-Saved)
-%  Save the current binding table (for choice points).
-wam_save_bindings(Saved) :-
-    nb_getval(wam_bindings, Saved).
+%  Save the current binding table and variable counter (for choice points).
+wam_save_bindings(saved(Bindings, VarCounter)) :-
+    nb_getval(wam_bindings, Bindings),
+    nb_getval(wam_var_counter, VarCounter).
 
 %% wam_restore_bindings(+Saved)
-%  Restore binding table from a saved snapshot (on backtrack).
+%  Restore binding table and variable counter from a saved snapshot.
+wam_restore_bindings(saved(Bindings, VarCounter)) :-
+    nb_setval(wam_bindings, Bindings),
+    nb_setval(wam_var_counter, VarCounter).
+%  Legacy format (plain assoc) for backward compatibility
 wam_restore_bindings(Saved) :-
+    \+ functor(Saved, saved, 2),
     nb_setval(wam_bindings, Saved).
 
 get_reg_val(Reg, R, S, Val) :-
