@@ -470,9 +470,71 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             )
         ;   compile_goal_execute(Goal, V0, Vf, Code)
         )
-    ;   compile_goal_call(Goal, V0, V1, GoalCode),
+    ;   % Check for aggregate_all/findall — compile Goal body inline
+        (   Goal = aggregate_all(Template, InnerGoal, Result)
+        ->  compile_aggregate_all(Template, InnerGoal, Result, V0, V1, GoalCode)
+        ;   Goal = findall(Template, InnerGoal, Result)
+        ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode)
+        ;   compile_goal_call(Goal, V0, V1, GoalCode)
+        ),
         compile_goals(Rest, V1, HasEnv, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
+    ).
+
+%% compile_aggregate_all(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+%  Compile aggregate_all(Template, Goal, Result) to WAM instructions.
+%  Emits: begin_aggregate, Goal body, end_aggregate
+%  The WAM runtime handles solution collection and aggregation.
+compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
+    % Determine aggregation type from Template
+    (   Template = sum(ValueVar) -> AggType = sum
+    ;   Template = count       -> AggType = count
+    ;   Template = max(ValueVar) -> AggType = max
+    ;   Template = min(ValueVar) -> AggType = min
+    ;   AggType = collect, ValueVar = Template  % default: collect all values
+    ),
+    % Compile the Result register (where output goes)
+    compile_put_arguments([Result], 1, V0, V1, ResultPutCode),
+    % Compile the Value register (what gets collected per solution)
+    (   var(ValueVar)
+    ->  % ValueVar is a Prolog variable — allocate a Y-register for it
+        allocate_var(ValueVar, V1, V2, ValueReg)
+    ;   ValueReg = 'A1', V2 = V1  % fallback
+    ),
+    % Flatten the InnerGoal conjunction into a list of goals
+    flatten_conjunction(InnerGoal, GoalList),
+    % Compile the inner goal body using call (not execute/TCO)
+    % so it doesn't emit proceed at the end
+    compile_goals(GoalList, V2, no, Vf, InnerCode0),
+    % Remove trailing "proceed" if present (TCO artifact)
+    (   sub_string(InnerCode0, _, _, 0, "\n    proceed")
+    ->  sub_string(InnerCode0, 0, _, 12, InnerCode)
+    ;   InnerCode0 = "    proceed"
+    ->  InnerCode = ""
+    ;   InnerCode = InnerCode0
+    ),
+    format(string(Code),
+        "    begin_aggregate ~w, ~w, A1~n~w~n    end_aggregate ~w",
+        [AggType, ValueReg, InnerCode, ValueReg]).
+
+%% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
+    compile_aggregate_all(collect-Template, InnerGoal, Result, V0, Vf, Code).
+
+%% flatten_conjunction(+Conj, -GoalList)
+%  Flatten (A, B, C) into [A, B, C].
+flatten_conjunction((A, B), Goals) :- !,
+    flatten_conjunction(A, AG),
+    flatten_conjunction(B, BG),
+    append(AG, BG, Goals).
+flatten_conjunction(Goal, [Goal]).
+
+%% allocate_var(+Var, +VarMapIn, -VarMapOut, -Register)
+%  Allocate a Y-register for a variable if not already allocated.
+allocate_var(Var, VIn, VOut, Reg) :-
+    (   get_var_reg(Var, VIn, ExistingReg)
+    ->  Reg = ExistingReg, VOut = VIn
+    ;   get_yi_alloc(Var, VIn, Reg, VOut)
     ).
 
 compile_goal_call(Goal, V0, Vf, Code) :-

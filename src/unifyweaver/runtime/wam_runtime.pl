@@ -956,6 +956,79 @@ lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
 
+% ============================================================================
+% Aggregate Instructions (begin_aggregate / end_aggregate)
+% ============================================================================
+%
+% begin_aggregate Type, ValueReg, ResultReg
+%   Save state for solution collection. Initialize accumulator.
+%   Push a special "aggregate frame" on the choice point stack.
+%
+% end_aggregate
+%   Collect the current value from ValueReg, add to accumulator.
+%   Force backtrack to find the next solution.
+%   When backtracking past the begin_aggregate frame:
+%     apply aggregation (sum/count/etc) and bind ResultReg.
+
+:- dynamic wam_aggregate_acc/1.  % Global accumulator for aggregate collection
+
+step_wam(begin_aggregate(Type, ValueReg, ResultReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
+    NPC is PC + 1,
+    % Initialize accumulator
+    retractall(wam_aggregate_acc(_)),
+    assert(wam_aggregate_acc([])),
+    % Push an aggregate frame as a choice point
+    % When backtracking past this frame, finalize the aggregation
+    wam_save_bindings(SB),
+    NCPS = [cp(PC, R, S, H, CP, T, aggregate_frame(Type, ValueReg, ResultReg, NPC), SB)|CPS].
+
+step_wam(end_aggregate(ValueReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
+    % Collect the current value from the value register
+    get_reg_val(ValueReg, R, S, Val),
+    retract(wam_aggregate_acc(Acc)),
+    assert(wam_aggregate_acc([Val|Acc])),
+    % Force backtrack to find next solution
+    % This goes back through the Goal body to find the next path
+    (   backtrack(wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut)
+    ->  true
+    ;   % No more solutions — should not happen here (aggregate_frame handles it)
+        fail
+    ).
+
+%% resume_builtin for aggregate_frame: finalize aggregation
+resume_builtin(aggregate_frame(Type, ValueReg, ResultReg, ReturnPC), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [_|CPs], Code, L),
+    % Collect accumulated values
+    retract(wam_aggregate_acc(AccReversed)),
+    reverse(AccReversed, Acc),
+    assert(wam_aggregate_acc([])),
+    % Apply aggregation
+    apply_aggregation(Type, Acc, Result),
+    % Bind result register
+    get_assoc(ResultReg, R, ResultVar),
+    wam_deref(ResultVar, DResultVar),
+    (   is_wam_unbound(DResultVar)
+    ->  trail_binding(ResultReg, R, T, NT),
+        (atom(DResultVar), is_wam_unbound(DResultVar) -> wam_bind(DResultVar, Result) ; true),
+        put_assoc(ResultReg, R, Result, NR)
+    ;   DResultVar == Result -> NR = R, NT = T
+    ;   fail
+    ),
+    % Return to instruction after the aggregate block
+    StateOut = wam_state(ReturnPC, NR, S, H, NT, CP, CPs, Code, L).
+
+%% apply_aggregation(+Type, +Values, -Result)
+apply_aggregation(sum, Values, Sum) :-
+    foldl([V, Acc, Out]>>(number(V) -> Out is Acc + V ; Out = Acc), Values, 0, Sum).
+apply_aggregation(count, Values, Count) :-
+    length(Values, Count).
+apply_aggregation(max, [H|T], Max) :-
+    foldl([V, Acc, Out]>>(V > Acc -> Out = V ; Out = Acc), T, H, Max).
+apply_aggregation(min, [H|T], Min) :-
+    foldl([V, Acc, Out]>>(V < Acc -> Out = V ; Out = Acc), T, H, Min).
+apply_aggregation(collect, Values, Values).
+
 %% nonvar/1 — succeed if A1 is not an unbound WAM variable.
 step_wam(builtin_call('nonvar/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
          wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
