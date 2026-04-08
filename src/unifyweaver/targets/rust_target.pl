@@ -82,6 +82,39 @@
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
 
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(rust, semantic_search(Query, TopK, _Results), Provider, VarMap, Code) :-
+    option(provider(candle), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    format(string(Code), '
+    // Initialize candle searcher with model ~w
+    let searcher = PtSearcher::new("data.redb", "~w")?;
+    let results = searcher.text_search("~w", ~w)?;
+    println!("{}", serde_json::to_string_pretty(&results)?);
+', [Model, Model, QueryExpr, TopKExpr]).
+
+semantic_compiler:semantic_dispatch(rust, semantic_search(Query, TopK, _Results), Provider, VarMap, Code) :-
+    option(provider(onnx), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    format(string(Code), '
+    // Initialize ONNX searcher with model ~w
+    let searcher = OnnxSearcher::new("data.redb", "models/~w-onnx")?;
+    let results = searcher.text_search("~w", ~w)?;
+', [Model, Model, QueryExpr, TopKExpr]).
+
 % Per-path visited pattern detection
 :- use_module('../core/advanced/pattern_matchers', [
     is_per_path_visited_pattern/4,

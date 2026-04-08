@@ -48,6 +48,24 @@
 :- use_module('../core/component_registry').
 :- use_module('csharp_runtime/custom_csharp', []).
 
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(csharp, semantic_search(Query, TopK, _Results), Provider, VarMap, Code) :-
+    option(provider(onnx), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    format(string(Code), '
+    // Initialize C# ONNX Runtime searcher
+    var searcher = new OnnxVectorSearch("data.db", "models/~w-onnx");
+    var results = searcher.Search("~w", ~w);
+', [Model, QueryExpr, TopKExpr]).
+
 :- dynamic query_materialized_relation/1.
 :- discontiguous emit_plan_expression/2.
 

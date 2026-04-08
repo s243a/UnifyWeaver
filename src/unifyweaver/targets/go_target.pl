@@ -8244,6 +8244,46 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 
 :- use_module('../core/semantic_compiler').
 
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(go, Goal, Provider, VarMap, Code) :-
+    % Extract Query and TopK from Goal
+    Goal =.. [_, Query, TopK | _],
+    option(provider(hugot), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device initialization template for Go (hugot)
+    (   Device == gpu
+    ->  DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithGPU())'
+    ;   Device == cpu
+    ->  DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithCPU())'
+    ;   DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w") // Auto device'
+    ),
+    format(string(DeviceInit), DeviceInitTpl, [Model, Model]),
+
+    format(string(Code), '
+\t// Initialize hugot embedder with model ~w
+~w
+\tif err != nil { 
+\t\tlog.Printf("Warning: GPU initialization failed, falling back to CPU: %v", err)
+\t\temb, err = embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithCPU())
+\t\tif err != nil { log.Fatal(err) }
+\t}
+\tdefer emb.Close()
+
+\t// Embed query: ~w
+\tqVec, err := emb.Embed(~w)
+\tif err != nil { log.Fatal(err) }
+\t
+\t// Search top ~w results
+\tresults, err := search.Search(store, qVec, ~w)
+', [Model, DeviceInit, Model, Model, QueryExpr, QueryExpr, TopKExpr, TopKExpr]).
+
 %% is_semantic_predicate(+Goal)
 is_semantic_predicate(Goal) :-
     semantic_compiler:is_semantic_predicate(Goal).
