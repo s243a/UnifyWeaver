@@ -114,6 +114,10 @@ astar_weighted_path(X, Y, Dim, Cost) :-
 min_semantic_dist(Start, Target, MinDist) :-
     aggregate_all(min(Cost), weighted_path(Start, Target, Cost), MinDist).
 
+:- dynamic min_semantic_dist_astar/4.
+min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
+    aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), MinDist).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -124,7 +128,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -144,6 +148,7 @@ use runtime_test::tail_suffixes;
 use runtime_test::weighted_path;
 use runtime_test::astar_weighted_path;
 use runtime_test::min_semantic_dist;
+use runtime_test::min_semantic_dist_astar;
 
 #[test]
 fn test_generated_predicates() {
@@ -658,6 +663,48 @@ fn test_generated_predicates() {
         Value::Atom("s".to_string()),
         Value::Unbound("NoPath".to_string()));
     assert!(!ok24, "min_semantic_dist(d, s, NoPath) should fail");
+
+    // Test min_semantic_dist_astar/4 aggregate wrapper over astar_weighted_path/4
+    let mut vm_astar_min = WamState::new(vec![], std::collections::HashMap::new());
+    let ok25 = min_semantic_dist_astar(&mut vm_astar_min,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarMinCost".to_string()));
+    assert!(ok25, "min_semantic_dist_astar(s, d, 5, MinCost) should succeed");
+    match vm_astar_min.bindings.get("AStarMinCost").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 7.0),
+        other => panic!("expected min_semantic_dist_astar(s, d, 5, MinCost) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_astar_min_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok26 = min_semantic_dist_astar(&mut vm_astar_min_any,
+        Value::Atom("s".to_string()),
+        Value::Unbound("AStarAnyTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarGlobalMin".to_string()));
+    assert!(ok26, "min_semantic_dist_astar(s, Target, 5, GlobalMin) should succeed");
+    assert!(vm_astar_min_any.bindings.get("AStarAnyTarget").is_none(), "A* aggregate wrapper should not bind existential Target");
+    match vm_astar_min_any.bindings.get("AStarGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 1.0),
+        other => panic!("expected min_semantic_dist_astar(s, Target, 5, GlobalMin) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_astar_min_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok27 = min_semantic_dist_astar(&mut vm_astar_min_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("c".to_string()),
+        Value::Integer(5),
+        Value::Float(4.0));
+    assert!(ok27, "min_semantic_dist_astar(s, c, 5, 4.0) should succeed");
+
+    let mut vm_astar_min_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok28 = min_semantic_dist_astar(&mut vm_astar_min_fail,
+        Value::Atom("d".to_string()),
+        Value::Atom("s".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarNoPath".to_string()));
+    assert!(!ok28, "min_semantic_dist_astar(d, s, 5, NoPath) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

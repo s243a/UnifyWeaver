@@ -4167,6 +4167,82 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
     get_dict(op, AggInfo, min),
     get_dict(expr, AggInfo, Expr),
     get_dict(relations, GoalInfo, [RelGoal|_]),
+    RelGoal =.. [InnerPred, _StartArg, TargetArg, _DimArg, CostArg],
+    Expr == CostArg,
+    var(TargetArg),
+    functor(InnerHead, InnerPred, 4),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
+    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
+    vm.register_foreign_result_layout("~w/4", "tuple:2");
+    vm.register_foreign_result_mode("~w/4", "stream");
+    vm.register_foreign_string_config("~w/4", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
+
+    let temp_target = "__agg_target".to_string();
+    let temp_cost = "__agg_cost".to_string();
+    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
+
+    if !vm.execute_foreign_predicate("~w", 4) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut best = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+        Some(Value::Float(cost)) => Some(cost),
+        _ => None,
+    };
+    while vm.backtrack() {
+        if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            best = Some(match best {
+                Some(current) => current.min(cost),
+                None => cost,
+            });
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+
+    match best {
+        Some(cost) => vm.unify(&a4, &Value::Float(cost)),
+        None => false,
+    }
+}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
+      WeightPredKey, WeightPredKey, WeightTriplesLiteral,
+      InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
+      InnerPredStr, DefaultDim, InnerPredStr]).
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    get_dict(type, AggInfo, all),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(relations, GoalInfo, [RelGoal|_]),
     RelGoal =.. [InnerPred, _StartArg, TargetArg, CostArg],
     Expr == CostArg,
     var(TargetArg),
