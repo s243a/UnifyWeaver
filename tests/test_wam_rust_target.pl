@@ -38,6 +38,7 @@ test_simple_fact(foo, bar).
 :- dynamic tc_step_parent_distance/5.
 :- dynamic weighted_path/3.
 :- dynamic weighted_edge/3.
+:- dynamic min_semantic_dist/3.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -110,6 +111,9 @@ weighted_path(X, Y, Cost) :-
     weighted_edge(X, Z, W),
     weighted_path(Z, Y, RestCost),
     Cost is W + RestCost.
+
+min_semantic_dist(Start, Target, MinDist) :-
+    aggregate_all(min(Cost), weighted_path(Start, Target, Cost), MinDist).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -659,6 +663,20 @@ test_foreign_lowering_weighted_shortest_path :-
     ;   fail_test(Test, 'Foreign lowering was not selected for weighted_path/3')
     ).
 
+test_weighted_min_aggregate_wrapper :-
+    Test = 'WAM-Rust: aggregate min wrapper delegates to weighted_path/3',
+    (   rust_target:compile_predicate_to_rust(user:min_semantic_dist/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'if !vm.execute_foreign_predicate("weighted_path", 3) {'),
+        sub_string(S, _, _, _, 'vm.unify(&a3, &Value::Float(cost))')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Weighted aggregate wrapper did not delegate correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -971,6 +989,7 @@ run_tests :-
     test_foreign_lowering_transitive_parent_distance,
     test_foreign_lowering_transitive_step_parent_distance,
     test_foreign_lowering_weighted_shortest_path,
+    test_weighted_min_aggregate_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
