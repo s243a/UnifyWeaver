@@ -51,6 +51,14 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum DagRelationRetentionStrategy
+    {
+        Auto,
+        StreamingDirect,
+        ReplayableBuffer,
+        ExternalMaterialized
+    }
+
     public readonly record struct DelimitedRelationSource(
         string InputPath,
         char Delimiter = '	',
@@ -504,8 +512,13 @@ namespace UnifyWeaver.QueryRuntime
         PathAwareGroupedSummaryStrategy Strategy,
         string DecisionMode);
 
+    internal readonly record struct DagRelationRetentionSelection(
+        DagRelationRetentionStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
+        DagRelationRetentionStrategy DagRelationRetentionStrategy = DagRelationRetentionStrategy.Auto,
         PathAwareEdgeRetentionStrategy PathAwareEdgeRetentionStrategy = PathAwareEdgeRetentionStrategy.Auto,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
         PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
@@ -1455,6 +1468,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
+        private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
@@ -1471,6 +1485,7 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
+            _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
@@ -6005,6 +6020,142 @@ namespace UnifyWeaver.QueryRuntime
             seeds.Sort(CompareCacheSeedValues);
         }
 
+        private static void ProbeDagRows(IEnumerable<object[]> edges, IEnumerable<object[]> seeds, int maxEdgeRows, int maxSeedRows)
+        {
+            var nodeIds = new Dictionary<object?, int>();
+            var edgeCount = 0;
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!nodeIds.ContainsKey(edge[0]))
+                {
+                    nodeIds.Add(edge[0], nodeIds.Count);
+                }
+
+                if (!nodeIds.ContainsKey(edge[1]))
+                {
+                    nodeIds.Add(edge[1], nodeIds.Count);
+                }
+
+                edgeCount++;
+                if (edgeCount >= maxEdgeRows)
+                {
+                    break;
+                }
+            }
+
+            var groupIds = new Dictionary<object?, int>();
+            var seedCount = 0;
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!nodeIds.ContainsKey(seed[1]))
+                {
+                    continue;
+                }
+
+                if (!groupIds.ContainsKey(seed[0]))
+                {
+                    groupIds.Add(seed[0], groupIds.Count);
+                }
+
+                seedCount++;
+                if (seedCount >= maxSeedRows)
+                {
+                    break;
+                }
+            }
+        }
+
+        private static void ProbeDagDelimited(DelimitedRelationSource edgeSource, DelimitedRelationSource seedSource, int maxEdgeRows, int maxSeedRows)
+        {
+            var nodeIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var edgeCount = 0;
+
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
+            {
+                for (var i = 0; i < edgeSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    {
+                        continue;
+                    }
+
+                    if (!nodeIds.ContainsKey(left))
+                    {
+                        nodeIds.Add(left, nodeIds.Count);
+                    }
+
+                    if (!nodeIds.ContainsKey(right))
+                    {
+                        nodeIds.Add(right, nodeIds.Count);
+                    }
+
+                    edgeCount++;
+                    if (edgeCount >= maxEdgeRows)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var seedCount = 0;
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
+            {
+                for (var i = 0; i < seedSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    {
+                        continue;
+                    }
+
+                    if (!nodeIds.ContainsKey(node))
+                    {
+                        continue;
+                    }
+
+                    if (!groupIds.ContainsKey(group))
+                    {
+                        groupIds.Add(group, groupIds.Count);
+                    }
+
+                    seedCount++;
+                    if (seedCount >= maxSeedRows)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
         private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
         {
             if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
@@ -7823,6 +7974,198 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private static DagRelationRetentionStrategy ResolveStructuralDagRelationRetentionStrategy(
+            PlanNode node,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            if (replayableMaterialized && hasReplayable)
+            {
+                return DagRelationRetentionStrategy.ReplayableBuffer;
+            }
+
+            if (node is SeedGroupedTransitiveClosureCountNode or SeedGroupedDagLongestDepthNode)
+            {
+                if (hasStreaming)
+                {
+                    return DagRelationRetentionStrategy.StreamingDirect;
+                }
+
+                if (hasReplayable)
+                {
+                    return DagRelationRetentionStrategy.ReplayableBuffer;
+                }
+            }
+            else
+            {
+                if (hasReplayable)
+                {
+                    return DagRelationRetentionStrategy.ReplayableBuffer;
+                }
+
+                if (hasStreaming)
+                {
+                    return DagRelationRetentionStrategy.StreamingDirect;
+                }
+            }
+
+            return hasExternal
+                ? DagRelationRetentionStrategy.ExternalMaterialized
+                : DagRelationRetentionStrategy.StreamingDirect;
+        }
+
+        private static bool ShouldProbeDagRelationRetentionStrategy(
+            PlanNode node,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            if (replayableMaterialized)
+            {
+                return false;
+            }
+
+            var availableCount = (hasStreaming ? 1 : 0) + (hasReplayable ? 1 : 0) + (hasExternal ? 1 : 0);
+            if (availableCount <= 1)
+            {
+                return false;
+            }
+
+            if (relationBytes is null)
+            {
+                return true;
+            }
+
+            if (node is SeedGroupedTransitiveClosureCountNode)
+            {
+                return relationBytes <= 384 * 1024L;
+            }
+
+            if (node is SeedGroupedDagLongestDepthNode)
+            {
+                return relationBytes <= 320 * 1024L;
+            }
+
+            return relationBytes <= 256 * 1024L;
+        }
+
+        private static DagRelationRetentionStrategy ResolveMeasuredDagRelationRetentionStrategy(
+            IReadOnlyDictionary<DagRelationRetentionStrategy, TimeSpan> probes,
+            DagRelationRetentionStrategy structuralStrategy)
+        {
+            var bestStrategy = structuralStrategy;
+            var bestTicks = double.PositiveInfinity;
+            foreach (var entry in probes)
+            {
+                var ticks = entry.Value == TimeSpan.MaxValue
+                    ? double.PositiveInfinity
+                    : entry.Value.Ticks;
+                if (ticks <= 0d || double.IsNaN(ticks))
+                {
+                    continue;
+                }
+
+                if (ticks < bestTicks)
+                {
+                    bestTicks = ticks;
+                    bestStrategy = entry.Key;
+                }
+            }
+
+            return double.IsInfinity(bestTicks) ? structuralStrategy : bestStrategy;
+        }
+
+        private static DagRelationRetentionSelection ResolveDagRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            DagRelationRetentionStrategy configuredStrategy,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized,
+            Func<TimeSpan>? measureStreamingProbe = null,
+            Func<TimeSpan>? measureReplayableProbe = null,
+            Func<TimeSpan>? measureExternalProbe = null)
+        {
+            return MeasurePhase(trace, node, "dag_strategy_select", () =>
+            {
+                bool IsAvailable(DagRelationRetentionStrategy strategy) => strategy switch
+                {
+                    DagRelationRetentionStrategy.StreamingDirect => hasStreaming,
+                    DagRelationRetentionStrategy.ReplayableBuffer => hasReplayable,
+                    DagRelationRetentionStrategy.ExternalMaterialized => hasExternal,
+                    _ => hasStreaming || hasReplayable || hasExternal
+                };
+
+                if (configuredStrategy != DagRelationRetentionStrategy.Auto)
+                {
+                    if (IsAvailable(configuredStrategy))
+                    {
+                        return new DagRelationRetentionSelection(configuredStrategy, "ConfiguredOverride");
+                    }
+
+                    configuredStrategy = DagRelationRetentionStrategy.Auto;
+                }
+
+                if (replayableMaterialized && hasReplayable)
+                {
+                    return new DagRelationRetentionSelection(DagRelationRetentionStrategy.ReplayableBuffer, "ReplayableCached");
+                }
+
+                var structuralStrategy = ResolveStructuralDagRelationRetentionStrategy(node, hasStreaming, hasReplayable, hasExternal, replayableMaterialized);
+                if (!ShouldProbeDagRelationRetentionStrategy(node, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized))
+                {
+                    var availableCount = (hasStreaming ? 1 : 0) + (hasReplayable ? 1 : 0) + (hasExternal ? 1 : 0);
+                    return new DagRelationRetentionSelection(structuralStrategy, availableCount <= 1 ? "OnlyAvailable" : "Structural");
+                }
+
+                var probes = new Dictionary<DagRelationRetentionStrategy, TimeSpan>();
+                if (measureStreamingProbe is not null)
+                {
+                    var probe = measureStreamingProbe();
+                    trace?.RecordPhase(node, "dag_probe_streaming_direct", probe);
+                    probes[DagRelationRetentionStrategy.StreamingDirect] = probe;
+                }
+
+                if (measureReplayableProbe is not null)
+                {
+                    var probe = measureReplayableProbe();
+                    trace?.RecordPhase(node, "dag_probe_replayable_buffer", probe);
+                    probes[DagRelationRetentionStrategy.ReplayableBuffer] = probe;
+                }
+
+                if (measureExternalProbe is not null)
+                {
+                    var probe = measureExternalProbe();
+                    trace?.RecordPhase(node, "dag_probe_external_materialized", probe);
+                    probes[DagRelationRetentionStrategy.ExternalMaterialized] = probe;
+                }
+
+                if (probes.Count == 0)
+                {
+                    return new DagRelationRetentionSelection(structuralStrategy, "Structural");
+                }
+
+                return new DagRelationRetentionSelection(
+                    ResolveMeasuredDagRelationRetentionStrategy(probes, structuralStrategy),
+                    "MeasuredProbe");
+            });
+        }
+
+        private static void RecordDagRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            DagRelationRetentionSelection selection)
+        {
+            trace?.RecordStrategy(node, $"DagRelationRetentionSelection{selection.DecisionMode}");
+            trace?.RecordStrategy(node, $"DagRelationRetention{selection.Strategy}");
         }
 
         private static PathAwareEdgeRetentionStrategy ResolveStructuralPathAwareEdgeRetentionStrategy(
@@ -10328,33 +10671,112 @@ namespace UnifyWeaver.QueryRuntime
                     return cachedRows;
                 }
 
+                trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
+
                 const int MaxDagNodeCount = 16384;
                 const int MaxDagGroupCount = 4096;
                 const int MinDagGroupCount = 64;
                 const int MinDagEdgeCount = 8192;
-                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
-                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
-                    TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out var streamedDagRows))
+                const int DagProbeEdgeRowLimit = 256;
+                const int DagProbeSeedRowLimit = 128;
+
+                var hasStreamingEdge = TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource);
+                var hasStreamingSeed = TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource);
+                var hasStreaming = hasStreamingEdge && hasStreamingSeed;
+                var hasReplayableEdge = TryGetReplayableSource(closure.EdgeRelation, context, out var edgeReplayableSource);
+                var hasReplayableSeed = TryGetReplayableSource(closure.SeedRelation, context, out var seedReplayableSource);
+                var hasReplayable = hasReplayableEdge && hasReplayableSeed;
+                var hasExternalEdge = TryGetExternalFacts(closure.EdgeRelation, out var externalEdgeFacts);
+                var hasExternalSeed = TryGetExternalFacts(closure.SeedRelation, out var externalSeedFacts);
+                var hasExternal = hasExternalEdge && hasExternalSeed;
+                var edgeConcreteReplayable = edgeReplayableSource as ReplayableRelationSource;
+                var seedConcreteReplayable = seedReplayableSource as ReplayableRelationSource;
+                var replayableMaterialized = edgeConcreteReplayable?.IsMaterialized == true && seedConcreteReplayable?.IsMaterialized == true;
+                long? relationBytes = hasStreaming &&
+                    !string.IsNullOrEmpty(edgeSource.InputPath) && File.Exists(edgeSource.InputPath) &&
+                    !string.IsNullOrEmpty(seedSource.InputPath) && File.Exists(seedSource.InputPath)
+                    ? new FileInfo(edgeSource.InputPath).Length + new FileInfo(seedSource.InputPath).Length
+                    : (long?)null;
+
+                Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                    ? () => MeasureElapsed(() => ProbeDagDelimited(edgeSource, seedSource, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+                Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                    ? () => MeasureElapsed(() =>
+                    {
+                        var edgeProbeRows = edgeConcreteReplayable is not null
+                            ? edgeConcreteReplayable.ProbeMaterialize(DagProbeEdgeRowLimit)
+                            : edgeReplayableSource.Stream().Take(DagProbeEdgeRowLimit).ToList();
+                        var seedProbeRows = seedConcreteReplayable is not null
+                            ? seedConcreteReplayable.ProbeMaterialize(DagProbeSeedRowLimit)
+                            : seedReplayableSource.Stream().Take(DagProbeSeedRowLimit).ToList();
+                        ProbeDagRows(edgeProbeRows, seedProbeRows, DagProbeEdgeRowLimit, DagProbeSeedRowLimit);
+                    })
+                    : null;
+                Func<TimeSpan>? measureExternalProbe = hasExternal
+                    ? () => MeasureElapsed(() => ProbeDagRows(externalEdgeFacts, externalSeedFacts, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+
+                var selection = ResolveDagRelationRetentionStrategy(
+                    trace,
+                    closure,
+                    _dagRelationRetentionStrategy,
+                    relationBytes,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized,
+                    measureStreamingProbe,
+                    measureReplayableProbe,
+                    measureExternalProbe);
+                RecordDagRelationRetentionStrategy(trace, closure, selection);
+
+                List<object[]>? edges = null;
+                List<object[]>? seeds = null;
+
+                if (selection.Strategy == DagRelationRetentionStrategy.StreamingDirect && hasStreaming)
                 {
-                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
-                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDagStreamed");
-                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = streamedDagRows;
-                    return streamedDagRows;
+                    List<object[]> streamedDagRows = new();
+                    if (MeasurePhase(trace, closure, "dag_build_streaming_direct", () =>
+                            TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out streamedDagRows)))
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDagStreamed");
+                        context.SeedGroupedTransitiveClosureCountResults[cacheKey] = streamedDagRows;
+                        return streamedDagRows;
+                    }
                 }
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var seeds = GetFactsList(closure.SeedRelation, context);
+                if (selection.Strategy == DagRelationRetentionStrategy.ReplayableBuffer && hasReplayable)
+                {
+                    edges = MeasurePhase(trace, closure, "dag_materialize_replayable_edges", () => edgeReplayableSource.Materialize());
+                    seeds = MeasurePhase(trace, closure, "dag_materialize_replayable_seeds", () => seedReplayableSource.Materialize());
+                }
+                else if (selection.Strategy == DagRelationRetentionStrategy.ExternalMaterialized && hasExternal)
+                {
+                    edges = externalEdgeFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_edges", () => externalEdgeFacts.ToList());
+                    seeds = externalSeedFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_seeds", () => externalSeedFacts.ToList());
+                }
+
+                edges ??= GetFactsList(closure.EdgeRelation, context);
+                seeds ??= GetFactsList(closure.SeedRelation, context);
                 if (seeds.Count >= MinDagGroupCount &&
-                    edges.Count >= MinDagEdgeCount &&
-                    TryBuildProjectGroupedDagReachCountRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out var dagRows))
+                    edges.Count >= MinDagEdgeCount)
                 {
-                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
-                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDag");
-                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = dagRows;
-                    return dagRows;
+                    List<object[]> dagRows = new();
+                    var buildPhase = selection.Strategy switch
+                    {
+                        DagRelationRetentionStrategy.ReplayableBuffer when hasReplayable => "dag_build_replayable_buffer",
+                        DagRelationRetentionStrategy.ExternalMaterialized when hasExternal => "dag_build_external_materialized",
+                        _ => "dag_build_materialized_fallback"
+                    };
+                    if (MeasurePhase(trace, closure, buildPhase, () =>
+                            TryBuildProjectGroupedDagReachCountRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out dagRows)))
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDag");
+                        context.SeedGroupedTransitiveClosureCountResults[cacheKey] = dagRows;
+                        return dagRows;
+                    }
                 }
-
-                trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
 
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
                 var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
@@ -10459,17 +10881,91 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedDagLongestDepth", traceKey, hit: false, built: true);
 
                 const int MaxDagNodeCount = 65536;
-                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
-                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
-                    TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out var streamedRows))
+                const int DagProbeEdgeRowLimit = 256;
+                const int DagProbeSeedRowLimit = 128;
+
+                var hasStreamingEdge = TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource);
+                var hasStreamingSeed = TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource);
+                var hasStreaming = hasStreamingEdge && hasStreamingSeed;
+                var hasReplayableEdge = TryGetReplayableSource(closure.EdgeRelation, context, out var edgeReplayableSource);
+                var hasReplayableSeed = TryGetReplayableSource(closure.SeedRelation, context, out var seedReplayableSource);
+                var hasReplayable = hasReplayableEdge && hasReplayableSeed;
+                var hasExternalEdge = TryGetExternalFacts(closure.EdgeRelation, out var externalEdgeFacts);
+                var hasExternalSeed = TryGetExternalFacts(closure.SeedRelation, out var externalSeedFacts);
+                var hasExternal = hasExternalEdge && hasExternalSeed;
+                var edgeConcreteReplayable = edgeReplayableSource as ReplayableRelationSource;
+                var seedConcreteReplayable = seedReplayableSource as ReplayableRelationSource;
+                var replayableMaterialized = edgeConcreteReplayable?.IsMaterialized == true && seedConcreteReplayable?.IsMaterialized == true;
+                long? relationBytes = hasStreaming &&
+                    !string.IsNullOrEmpty(edgeSource.InputPath) && File.Exists(edgeSource.InputPath) &&
+                    !string.IsNullOrEmpty(seedSource.InputPath) && File.Exists(seedSource.InputPath)
+                    ? new FileInfo(edgeSource.InputPath).Length + new FileInfo(seedSource.InputPath).Length
+                    : (long?)null;
+
+                Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                    ? () => MeasureElapsed(() => ProbeDagDelimited(edgeSource, seedSource, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+                Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                    ? () => MeasureElapsed(() =>
+                    {
+                        var edgeProbeRows = edgeConcreteReplayable is not null
+                            ? edgeConcreteReplayable.ProbeMaterialize(DagProbeEdgeRowLimit)
+                            : edgeReplayableSource.Stream().Take(DagProbeEdgeRowLimit).ToList();
+                        var seedProbeRows = seedConcreteReplayable is not null
+                            ? seedConcreteReplayable.ProbeMaterialize(DagProbeSeedRowLimit)
+                            : seedReplayableSource.Stream().Take(DagProbeSeedRowLimit).ToList();
+                        ProbeDagRows(edgeProbeRows, seedProbeRows, DagProbeEdgeRowLimit, DagProbeSeedRowLimit);
+                    })
+                    : null;
+                Func<TimeSpan>? measureExternalProbe = hasExternal
+                    ? () => MeasureElapsed(() => ProbeDagRows(externalEdgeFacts, externalSeedFacts, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+
+                var selection = ResolveDagRelationRetentionStrategy(
+                    trace,
+                    closure,
+                    _dagRelationRetentionStrategy,
+                    relationBytes,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized,
+                    measureStreamingProbe,
+                    measureReplayableProbe,
+                    measureExternalProbe);
+                RecordDagRelationRetentionStrategy(trace, closure, selection);
+
+                if (selection.Strategy == DagRelationRetentionStrategy.StreamingDirect && hasStreaming)
                 {
-                    context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
-                    return streamedRows;
+                    List<object[]> streamedRows = new();
+                    if (MeasurePhase(trace, closure, "dag_build_streaming_direct", () =>
+                            TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out streamedRows)))
+                    {
+                        context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
+                        return streamedRows;
+                    }
                 }
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var seeds = GetFactsList(closure.SeedRelation, context);
-                if (!TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out var rows))
+                List<object[]>? edges = null;
+                List<object[]>? seeds = null;
+                string buildPhase = "dag_build_materialized_fallback";
+                if (selection.Strategy == DagRelationRetentionStrategy.ReplayableBuffer && hasReplayable)
+                {
+                    edges = MeasurePhase(trace, closure, "dag_materialize_replayable_edges", () => edgeReplayableSource.Materialize());
+                    seeds = MeasurePhase(trace, closure, "dag_materialize_replayable_seeds", () => seedReplayableSource.Materialize());
+                    buildPhase = "dag_build_replayable_buffer";
+                }
+                else if (selection.Strategy == DagRelationRetentionStrategy.ExternalMaterialized && hasExternal)
+                {
+                    edges = externalEdgeFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_edges", () => externalEdgeFacts.ToList());
+                    seeds = externalSeedFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_seeds", () => externalSeedFacts.ToList());
+                    buildPhase = "dag_build_external_materialized";
+                }
+
+                edges ??= GetFactsList(closure.EdgeRelation, context);
+                seeds ??= GetFactsList(closure.SeedRelation, context);
+                List<object[]> rows = new();
+                if (!MeasurePhase(trace, closure, buildPhase, () => TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out rows)))
                 {
                     throw new InvalidOperationException("SeedGroupedDagLongestDepthNode requires an acyclic edge relation.");
                 }

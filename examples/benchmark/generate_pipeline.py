@@ -1434,6 +1434,48 @@ class Program
 {{
     const int MAX_DEPTH = {depth_bound};
 
+    static DagRelationRetentionStrategy ReadDagRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_DAG_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => DagRelationRetentionStrategy.StreamingDirect,
+            "replayable" => DagRelationRetentionStrategy.ReplayableBuffer,
+            "external" => DagRelationRetentionStrategy.ExternalMaterialized,
+            _ => DagRelationRetentionStrategy.Auto
+        }};
+    }}
+
+    static void PrintDagStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedTransitiveClosureCountNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintDagPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedTransitiveClosureCountNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds:F3}}");
+        }}
+    }}
+
     static void Main(string[] args)
     {{
         if (args.Length < 2)
@@ -1455,7 +1497,7 @@ class Program
         provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
         foreach (var line in File.ReadLines(args[1]).Skip(1))
         {{
-            var tab = line.IndexOf('\t');
+            var tab = line.IndexOf('	');
             if (tab > 0)
             {{
                 projects.Add(line[..tab]);
@@ -1469,8 +1511,11 @@ class Program
             true
         );
 
+        var dagRetentionStrategy = ReadDagRetentionStrategy();
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            DagRelationRetentionStrategy: dagRetentionStrategy));
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
         var rows = executor.Execute(plan, trace: trace).ToList();
@@ -1493,10 +1538,10 @@ class Program
             return cmp != 0 ? cmp : string.Compare(a.Project, b.Project, StringComparison.Ordinal);
         }});
 
-        Console.WriteLine("project\\tdependency_reach_count");
+        Console.WriteLine("project\tdependency_reach_count");
         foreach (var item in results)
         {{
-            Console.WriteLine($"{{item.Project}}\\t{{item.Count}}");
+            Console.WriteLine($"{{item.Project}}\t{{item.Count}}");
         }}
 
         Console.Error.WriteLine($"load_ms={{swLoad.ElapsedMilliseconds}}");
@@ -1506,16 +1551,13 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
-        if (trace is not null)
-        {{
-            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
-            {{
-                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
-            }}
-        }}
+        Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
+        PrintDagStrategies(trace);
+        PrintDagPhases(trace);
     }}
 }}
 '''
+
 
 
 def generate_go_dependency_longest_depth(article_cats, category_parents, root_cats, n=5, max_depth=10):
@@ -1881,6 +1923,7 @@ def generate_csharp_query_dependency_longest_depth(article_cats, category_parent
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
@@ -1888,6 +1931,48 @@ using UnifyWeaver.QueryRuntime;
 class Program
 {{
     const int MAX_DEPTH = {depth_bound};
+
+    static DagRelationRetentionStrategy ReadDagRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_DAG_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => DagRelationRetentionStrategy.StreamingDirect,
+            "replayable" => DagRelationRetentionStrategy.ReplayableBuffer,
+            "external" => DagRelationRetentionStrategy.ExternalMaterialized,
+            _ => DagRelationRetentionStrategy.Auto
+        }};
+    }}
+
+    static void PrintDagStrategies(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(SeedGroupedDagLongestDepthNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"strategy_{{strategy.Strategy}}={{strategy.Count}}");
+        }}
+    }}
+
+    static void PrintDagPhases(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
 
     static void Main(string[] args)
     {{
@@ -1931,8 +2016,11 @@ class Program
             true
         );
 
+        var dagRetentionStrategy = ReadDagRetentionStrategy();
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
+        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+            ReuseCaches: false,
+            DagRelationRetentionStrategy: dagRetentionStrategy));
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
         var rows = executor.Execute(plan, trace: trace).ToList();
@@ -1972,16 +2060,13 @@ class Program
         Console.Error.WriteLine($"seed_count={{projects.Count}}");
         Console.Error.WriteLine($"tuple_count={{rows.Count}}");
         Console.Error.WriteLine($"project_count={{results.Count}}");
-        if (trace is not null)
-        {{
-            foreach (var phase in trace.SnapshotPhases().Where(p => p.NodeType == nameof(SeedGroupedDagLongestDepthNode)))
-            {{
-                Console.Error.WriteLine($"phase_ms_{{phase.Phase}}={{phase.Elapsed.TotalMilliseconds:F3}}");
-            }}
-        }}
+        Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
+        PrintDagStrategies(trace);
+        PrintDagPhases(trace);
     }}
 }}
 """
+
 
 
 def generate_go_weighted_shortest_path(article_cats, category_parents, root_cats, n=5, max_depth=10):
