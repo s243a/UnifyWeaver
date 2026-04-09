@@ -36,6 +36,8 @@ test_simple_fact(foo, bar).
 :- dynamic tc_distance/3.
 :- dynamic tc_parent_distance/4.
 :- dynamic tc_step_parent_distance/5.
+:- dynamic weighted_path/3.
+:- dynamic weighted_edge/3.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -95,6 +97,19 @@ tc_step_parent_distance(X, Y, Step, Parent, D) :-
     tc_parent(X, Step),
     tc_step_parent_distance(Step, Y, _Inner, Parent, D1),
     D is D1 + 1.
+
+weighted_edge(s, a, 1.0).
+weighted_edge(s, b, 4.0).
+weighted_edge(a, b, 2.0).
+weighted_edge(a, c, 5.0).
+weighted_edge(b, c, 1.0).
+weighted_edge(c, d, 3.0).
+
+weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
+weighted_path(X, Y, Cost) :-
+    weighted_edge(X, Z, W),
+    weighted_path(Z, Y, RestCost),
+    Cost is W + RestCost.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -628,6 +643,22 @@ test_foreign_lowering_transitive_step_parent_distance :-
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_step_parent_distance/5')
     ).
 
+test_foreign_lowering_weighted_shortest_path :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for weighted_path/3',
+    (   rust_target:compile_predicate_to_rust(user:weighted_path/3,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("weighted_path/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("weighted_path/3", "stream")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("weighted_path/3", "weight_pred", "weighted_edge/3")'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("weighted_path", 3)'),
+        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for weighted_path/3')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -660,7 +691,8 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'transitive_closure2'),
         sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes'),
         sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results'),
-        sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results')
+        sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results'),
+        sub_string(S, _, _, _, 'collect_native_weighted_shortest_path_results')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -937,6 +969,8 @@ run_tests :-
     test_foreign_lowering_reverse_transitive_closure,
     test_foreign_lowering_transitive_distance,
     test_foreign_lowering_transitive_parent_distance,
+    test_foreign_lowering_transitive_step_parent_distance,
+    test_foreign_lowering_weighted_shortest_path,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
