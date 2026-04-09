@@ -84,6 +84,10 @@ Status:
 - started for path-aware edge-relation retention, where the runtime can now
   choose between direct streamed edge-state build, replayable buffering, and
   external materialized fallback before building operator-owned edge state
+- started for DAG grouped reach-count and DAG longest-depth relation retention,
+  where the runtime can now choose between direct streamed DAG build,
+  replayable buffering, and external materialized fallback before building
+  operator-owned DAG state
 - the runtime can now choose between compact grouped summaries and legacy
   seeded-row regrouping for both operator families through a shared
   grouped-summary policy layer
@@ -97,9 +101,13 @@ Status:
 - `QueryExecutorOptions.PathAwareEdgeRetentionStrategy` can force `Auto`,
   `StreamingDirect`, `ReplayableBuffer`, or `ExternalMaterialized` for
   path-aware edge-retention benchmarking
+- `QueryExecutorOptions.DagRelationRetentionStrategy` can force `Auto`,
+  `StreamingDirect`, `ReplayableBuffer`, or `ExternalMaterialized` for DAG
+  relation-retention benchmarking
 - the current selector only runs bounded measured probes in ambiguous cases;
   obvious grouped-summary shapes still short-circuit structurally, while
-  path-aware edge retention now measures competing source paths directly
+  path-aware edge retention and DAG relation retention now measure competing
+  source paths directly when the structural signal is unclear
 
 Work:
 
