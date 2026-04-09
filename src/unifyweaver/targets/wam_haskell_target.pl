@@ -281,31 +281,34 @@ backtrack s = case wsCPs s of
             Nothing  -> Map.delete var bindings
       | otherwise = bindings
 
--- | Resume a builtin choice point. For FactRetry: try next match, update or pop CP.
+-- | Resume a builtin choice point. Tries next match, updates or pops CP.
 resumeBuiltin :: BuiltinState -> ChoicePoint -> [ChoicePoint] -> WamState -> Maybe WamState
-resumeBuiltin (FactRetry var [] _) _ rest s =
-  -- No more matches: pop this CP, try next
+resumeBuiltin (FactRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
 resumeBuiltin (FactRetry var (v:vs) retPC) cp rest s =
-  let -- Restore base state from CP
-      restoredBindings = cpBindings cp
-      -- Bind var to the next value
-      newBindings = Map.insert var (Atom v) restoredBindings
+  let newBindings = Map.insert var (Atom v) (cpBindings cp)
       newRegs = Map.insert "A2" (Atom v) (cpRegs cp)
-      -- Update CP for remaining matches, or pop if last
       newCPs = case vs of
-        [] -> rest  -- last match: pop CP
+        [] -> rest
         _  -> cp { cpBuiltin = Just (FactRetry var vs retPC) } : rest
-  in Just s { wsPC = retPC
-            , wsRegs = newRegs
-            , wsStack = cpStack cp
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
             , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
             , wsHeap = take (cpHeapLen cp) (wsHeap s)
-            , wsBindings = newBindings
-            , wsCutBar = cpCutBar cp
-            , wsCPs = newCPs
-            }
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+resumeBuiltin (HopsRetry _ [] _) _ rest s =
+  backtrack (s { wsCPs = rest })
+resumeBuiltin (HopsRetry var (h:hs) retPC) cp rest s =
+  let newBindings = Map.insert var (Integer (fromIntegral h)) (cpBindings cp)
+      newRegs = Map.insert "A3" (Integer (fromIntegral h)) (cpRegs cp)
+      newCPs = case hs of
+        [] -> rest
+        _  -> cp { cpBuiltin = Just (HopsRetry var hs retPC) } : rest
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+            , wsCP = cpCP cp
+            , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
+            , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
 -- an aggregate frame, return Nothing (inner solutions exhausted).
@@ -450,27 +453,21 @@ executeForeign "category_ancestor/4" s =
                   , wsBindings = Map.insert var (Integer (fromIntegral hopVal)) (wsBindings s)
                   , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s }
               _ -> s { wsPC = retPC, wsRegs = Map.insert "A3" (Integer (fromIntegral hopVal)) (wsRegs s) }
-          mkCP hopVal =
-            let bound = bindHop hopVal
-            in ChoicePoint
-              { cpNextPC   = retPC
-              , cpRegs     = wsRegs bound
-              , cpStack    = wsStack s
-              , cpCP       = wsCP s
-              , cpTrailLen = length (wsTrail s)
-              , cpHeapLen  = length (wsHeap s)
-              , cpBindings = wsBindings bound
-              , cpCutBar   = wsCutBar s
-              , cpAggFrame = Nothing, cpBuiltin = Nothing
-              }
       in case hops of
         [] -> Nothing
         [h] -> Just (bindHop h)   -- single result, no CPs
-        (h:rest) ->
+        (h:restHops) ->
           let s1 = bindHop h
-              -- CPs for remaining results (in reverse so backtrack gets them in order)
-              newCPs = map mkCP (reverse rest)
-          in Just (s1 { wsCPs = newCPs ++ wsCPs s })
+              -- Single HopsRetry CP for all remaining matches (self-popping)
+              hopsVar = case hopsReg of { Unbound v -> v; _ -> "" }
+              cp = ChoicePoint
+                { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                , cpCP = wsCP s, cpTrailLen = length (wsTrail s)
+                , cpHeapLen = length (wsHeap s), cpBindings = wsBindings s
+                , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)
+                }
+          in Just (s1 { wsCPs = cp : wsCPs s })
     _ -> Nothing
 executeForeign _ _ = Nothing
 
@@ -1180,6 +1177,7 @@ data ChoicePoint = ChoicePoint
 -- | Builtin state for choice points that need custom retry logic.
 data BuiltinState
   = FactRetry !String ![String] !Int  -- varName, remaining values, returnPC
+  | HopsRetry !String ![Int] !Int     -- varName, remaining Hops values, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
