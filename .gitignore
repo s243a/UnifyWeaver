@@ -70,6 +70,8 @@ config/model_registry.yaml
 
 # Claude Code (entire directory - user-specific)
 .claude/
+# Codex local state
+.codex
 coro.json
 # VSCode
 .vscode/
