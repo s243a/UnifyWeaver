@@ -1873,34 +1873,38 @@ compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
-    % Convert WAM instruction string to Rust Instruction enum literals
-    wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
-    foreign_wrapper_setup(Pred/Arity, Options, ForeignSetup, RunExpr),
+    foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
 pub fn ~w(~w) -> bool {
     use std::collections::HashMap;
-    let code: Vec<Instruction> = vec![
+~w
+~w
+~w
+    ~w
+}', [PredStr, Arity, PredStr, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+
+foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
+    (   option(foreign_lowering(ForeignSpec), Options),
+        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
+    ->  InstrSetup = '    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;',
+        rust_foreign_setup_code(SetupOps, Setup),
+        format(string(RunExpr),
+            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
+    ;   wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
+        format(string(InstrSetup),
+'    let code: Vec<Instruction> = vec![
 ~w
     ];
     let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
     vm.code = code;
     vm.labels = labels;
-    vm.pc = 1;
-~w
-~w
-    ~w
-}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ForeignSetup, ArgSetup, RunExpr]).
-
-foreign_wrapper_setup(Pred/Arity, Options, Setup, RunExpr) :-
-    (   option(foreign_lowering(ForeignSpec), Options),
-        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
-    ->  rust_foreign_setup_code(SetupOps, Setup),
-        format(string(RunExpr),
-            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
-    ;   Setup = "",
+    vm.pc = 1;', [InstrLiterals, LabelLiterals]),
+        Setup = "",
         RunExpr = 'vm.run()'
     ).
 
