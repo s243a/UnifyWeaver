@@ -4163,6 +4163,194 @@ compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCo
     ).
 
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    get_dict(type, AggInfo, group),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(group, AggInfo, GroupTerm),
+    get_dict(relations, GoalInfo, [RelGoal|_]),
+    RelGoal =.. [InnerPred, _StartArg, TargetArg, CostArg],
+    Expr == CostArg,
+    parse_group_term_rust(GroupTerm, [GroupVar]),
+    GroupVar == TargetArg,
+    functor(InnerHead, InnerPred, 3),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(PredKey), '~w/3', [Pred]),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    use std::collections::BTreeMap;
+
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
+    vm.register_foreign_result_layout("~w/3", "tuple:2");
+    vm.register_foreign_result_mode("~w/3", "stream");
+    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+
+    let target_filter = match &a2 {
+        Value::Atom(target) => Some(target.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let temp_target = "__agg_target".to_string();
+    let temp_cost = "__agg_cost".to_string();
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
+
+    if !vm.execute_foreign_predicate("~w", 3) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
+    loop {
+        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Atom(target)) => target,
+            _ => break,
+        };
+        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Float(cost)) => cost,
+            _ => break,
+        };
+        if target_filter.as_ref().map(|want| want == &target).unwrap_or(true) {
+            grouped.entry(target)
+                .and_modify(|current| *current = current.min(cost))
+                .or_insert(cost);
+        }
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+
+    if grouped.is_empty() {
+        return false;
+    }
+
+    let packed_results: Vec<Value> = grouped.into_iter().map(|(target, cost)| {
+        Value::Str("__tuple__".to_string(), vec![
+            Value::Atom(target),
+            Value::Float(cost),
+        ])
+    }).collect();
+    vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
+}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
+      InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
+      InnerPredStr, PredKey]).
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    get_dict(type, AggInfo, group),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(group, AggInfo, GroupTerm),
+    get_dict(relations, GoalInfo, [RelGoal|_]),
+    RelGoal =.. [InnerPred, _StartArg, TargetArg, _DimArg, CostArg],
+    Expr == CostArg,
+    parse_group_term_rust(GroupTerm, [GroupVar]),
+    GroupVar == TargetArg,
+    functor(InnerHead, InnerPred, 4),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(PredKey), '~w/4', [Pred]),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
+    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
+    use std::collections::BTreeMap;
+
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
+    vm.register_foreign_result_layout("~w/4", "tuple:2");
+    vm.register_foreign_result_mode("~w/4", "stream");
+    vm.register_foreign_string_config("~w/4", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
+
+    let target_filter = match &a2 {
+        Value::Atom(target) => Some(target.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let temp_target = "__agg_target".to_string();
+    let temp_cost = "__agg_cost".to_string();
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
+
+    if !vm.execute_foreign_predicate("~w", 4) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
+    loop {
+        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Atom(target)) => target,
+            _ => break,
+        };
+        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Float(cost)) => cost,
+            _ => break,
+        };
+        if target_filter.as_ref().map(|want| want == &target).unwrap_or(true) {
+            grouped.entry(target)
+                .and_modify(|current| *current = current.min(cost))
+                .or_insert(cost);
+        }
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+
+    if grouped.is_empty() {
+        return false;
+    }
+
+    let packed_results: Vec<Value> = grouped.into_iter().map(|(target, cost)| {
+        Value::Str("__tuple__".to_string(), vec![
+            Value::Atom(target),
+            Value::Float(cost),
+        ])
+    }).collect();
+    vm.finish_foreign_results("~w", vec![a2.clone(), a4.clone()], packed_results)
+}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
+      InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
+      InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
+      InnerPredStr, DefaultDim, InnerPredStr, PredKey]).
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
     get_dict(type, AggInfo, all),
     get_dict(op, AggInfo, min),
     get_dict(expr, AggInfo, Expr),

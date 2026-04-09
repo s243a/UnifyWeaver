@@ -118,6 +118,14 @@ min_semantic_dist(Start, Target, MinDist) :-
 min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
     aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), MinDist).
 
+:- dynamic grouped_min_semantic_dist/3.
+grouped_min_semantic_dist(Start, Target, MinDist) :-
+    aggregate_all(min(Cost), weighted_path(Start, Target, Cost), Target, MinDist).
+
+:- dynamic grouped_min_semantic_dist_astar/4.
+grouped_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
+    aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), Target, MinDist).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -128,7 +136,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -149,6 +157,8 @@ use runtime_test::weighted_path;
 use runtime_test::astar_weighted_path;
 use runtime_test::min_semantic_dist;
 use runtime_test::min_semantic_dist_astar;
+use runtime_test::grouped_min_semantic_dist;
+use runtime_test::grouped_min_semantic_dist_astar;
 
 #[test]
 fn test_generated_predicates() {
@@ -705,6 +715,105 @@ fn test_generated_predicates() {
         Value::Integer(5),
         Value::Unbound("AStarNoPath".to_string()));
     assert!(!ok28, "min_semantic_dist_astar(d, s, 5, NoPath) should fail");
+
+    // Test grouped_min_semantic_dist/3 streaming grouped minima over weighted_path/3
+    let mut vm_grouped = WamState::new(vec![], std::collections::HashMap::new());
+    let ok29 = grouped_min_semantic_dist(&mut vm_grouped,
+        Value::Atom("s".to_string()),
+        Value::Unbound("GroupedTarget".to_string()),
+        Value::Unbound("GroupedMin".to_string()));
+    assert!(ok29, "grouped_min_semantic_dist(s, Target, Min) first grouped result should succeed");
+    let mut grouped_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_grouped.bindings.get("GroupedTarget").cloned(), vm_grouped.bindings.get("GroupedMin").cloned()) {
+        grouped_results.push((target, cost));
+    } else {
+        panic!("expected first grouped_min_semantic_dist result");
+    }
+    while vm_grouped.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_grouped.bindings.get("GroupedTarget").cloned(), vm_grouped.bindings.get("GroupedMin").cloned()) {
+            grouped_results.push((target, cost));
+        } else {
+            panic!("expected grouped_min_semantic_dist backtrack result");
+        }
+    }
+    grouped_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_results, vec![
+        ("a".to_string(), 1.0),
+        ("b".to_string(), 3.0),
+        ("c".to_string(), 4.0),
+        ("d".to_string(), 7.0),
+    ]);
+
+    let mut vm_grouped_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok30 = grouped_min_semantic_dist(&mut vm_grouped_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("c".to_string()),
+        Value::Unbound("GroupedC".to_string()));
+    assert!(ok30, "grouped_min_semantic_dist(s, c, Min) should succeed");
+    match vm_grouped_exact.bindings.get("GroupedC").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected grouped_min_semantic_dist(s, c, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_grouped_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok31 = grouped_min_semantic_dist(&mut vm_grouped_fail,
+        Value::Atom("d".to_string()),
+        Value::Unbound("GroupedNoTarget".to_string()),
+        Value::Unbound("GroupedNoMin".to_string()));
+    assert!(!ok31, "grouped_min_semantic_dist(d, Target, Min) should fail");
+
+    // Test grouped_min_semantic_dist_astar/4 streaming grouped minima over astar_weighted_path/4
+    let mut vm_grouped_astar = WamState::new(vec![], std::collections::HashMap::new());
+    let ok32 = grouped_min_semantic_dist_astar(&mut vm_grouped_astar,
+        Value::Atom("s".to_string()),
+        Value::Unbound("GroupedAStarTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarMin".to_string()));
+    assert!(ok32, "grouped_min_semantic_dist_astar(s, Target, 5, Min) first grouped result should succeed");
+    let mut grouped_astar_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_grouped_astar.bindings.get("GroupedAStarTarget").cloned(), vm_grouped_astar.bindings.get("GroupedAStarMin").cloned()) {
+        grouped_astar_results.push((target, cost));
+    } else {
+        panic!("expected first grouped_min_semantic_dist_astar result");
+    }
+    while vm_grouped_astar.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_grouped_astar.bindings.get("GroupedAStarTarget").cloned(), vm_grouped_astar.bindings.get("GroupedAStarMin").cloned()) {
+            grouped_astar_results.push((target, cost));
+        } else {
+            panic!("expected grouped_min_semantic_dist_astar backtrack result");
+        }
+    }
+    grouped_astar_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_astar_results, vec![
+        ("a".to_string(), 1.0),
+        ("b".to_string(), 3.0),
+        ("c".to_string(), 4.0),
+        ("d".to_string(), 7.0),
+    ]);
+
+    let mut vm_grouped_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok33 = grouped_min_semantic_dist_astar(&mut vm_grouped_astar_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarD".to_string()));
+    assert!(ok33, "grouped_min_semantic_dist_astar(s, d, 5, Min) should succeed");
+    match vm_grouped_astar_exact.bindings.get("GroupedAStarD").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 7.0),
+        other => panic!("expected grouped_min_semantic_dist_astar(s, d, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_grouped_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok34 = grouped_min_semantic_dist_astar(&mut vm_grouped_astar_fail,
+        Value::Atom("d".to_string()),
+        Value::Unbound("GroupedAStarNoTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarNoMin".to_string()));
+    assert!(!ok34, "grouped_min_semantic_dist_astar(d, Target, 5, Min) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
