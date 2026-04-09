@@ -35,12 +35,14 @@ These hooks do not solve every ingestion case yet, but they make the
 retention choice explicit at the runtime/provider boundary instead of hiding it
 inside benchmark-specific wiring. The current runtime now also shares one
 internal measured relation-retention policy layer between DAG relation
-selection and path-aware edge selection, while preserving separate public
-override surfaces for those families. The runtime now also shares one
-internal materialization-planner layer above those policy components: the
-path-aware grouped-summary family uses both relation-retention and
-grouped-summary planning through that shared layer, while the DAG family
-currently uses the relation-retention branch of the same planner.
+selection, path-aware edge selection, generic scan selection, and generic
+closure relation selection, while preserving separate public override
+surfaces for those families. The runtime now also shares one internal
+materialization-planner layer above those policy components: the path-aware
+grouped-summary family uses both relation-retention and grouped-summary
+planning through that shared layer, while the DAG, generic scan, and
+generic closure families currently use the relation-retention branch of the
+same planner.
 
 ## Required Capabilities
 
@@ -78,6 +80,10 @@ Examples:
   are all viable sources for that edge state, the runtime can choose among
   them through a measured retention selector and still expose an explicit
   override via `QueryExecutorOptions.PathAwareEdgeRetentionStrategy`
+- generic closure operators can route edge and support relations through the
+  same measured relation-retention boundary before building successor,
+  predecessor, or auxiliary lookup indices, with an explicit override via
+  `QueryExecutorOptions.ClosureRelationRetentionStrategy`
 - shortest-path and weighted-shortest-path operators can emit compact
   `(group, root, min_value)` summaries instead of retaining full seeded path rows
 - where both grouped minima and legacy seeded-row regrouping are available, the
@@ -164,19 +170,26 @@ For the current benchmark/runtime surface, the streamed path is:
    negation, and aggregate paths can choose between direct streaming,
    replayable buffering, and external materialized fallback before building
    list/set views
-13. the current runtime now routes path-aware, DAG, and generic scan planning
-   through a shared internal materialization-planner layer
-14. for the current path-aware grouped-summary family, that planner
+13. generic closure operators now also route edge and support relations
+   through measured relation-retention selection before building successor,
+   predecessor, or auxiliary lookup indices
+14. the current runtime now routes path-aware, DAG, generic scan, and
+   generic closure planning through a shared internal
+   materialization-planner layer
+15. for the current path-aware grouped-summary family, that planner
    coordinates the earlier edge-retention choice with the later
    grouped-summary choice and records the combined plan in trace output
-15. for the current DAG family, that same planner currently records the
+16. for the current DAG family, that same planner currently records the
    coordinated relation-retention plan before the operator-owned DAG state is
    built
-16. for the current generic scan family, that same planner currently records
+17. for the current generic scan family, that same planner currently records
    the coordinated relation-retention plan before scan-heavy consumers build
    list/set views
-17. the operator builds only the retained state it actually needs
-18. benchmark code avoids preloading raw facts into in-memory relations first
+18. for the current generic closure family, that same planner currently
+   records the coordinated relation-retention plan before closure consumers
+   build edge or auxiliary indices
+19. the operator builds only the retained state it actually needs
+20. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

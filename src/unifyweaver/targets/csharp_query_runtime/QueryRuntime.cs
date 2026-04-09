@@ -67,6 +67,14 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum ClosureRelationRetentionStrategy
+    {
+        Auto,
+        StreamingDirect,
+        ReplayableBuffer,
+        ExternalMaterialized
+    }
+
     public readonly record struct DelimitedRelationSource(
         string InputPath,
         char Delimiter = '	',
@@ -527,6 +535,12 @@ namespace UnifyWeaver.QueryRuntime
         Set
     }
 
+    internal enum ClosureRelationAccessKind
+    {
+        Edge,
+        Support
+    }
+
     internal readonly record struct RelationRetentionSelection(
         RelationRetentionPolicyStrategy Strategy,
         string DecisionMode);
@@ -552,10 +566,15 @@ namespace UnifyWeaver.QueryRuntime
         ScanRelationRetentionStrategy Strategy,
         string DecisionMode);
 
+    internal readonly record struct ClosureRelationRetentionSelection(
+        ClosureRelationRetentionStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         DagRelationRetentionStrategy DagRelationRetentionStrategy = DagRelationRetentionStrategy.Auto,
         ScanRelationRetentionStrategy ScanRelationRetentionStrategy = ScanRelationRetentionStrategy.Auto,
+        ClosureRelationRetentionStrategy ClosureRelationRetentionStrategy = ClosureRelationRetentionStrategy.Auto,
         PathAwareEdgeRetentionStrategy PathAwareEdgeRetentionStrategy = PathAwareEdgeRetentionStrategy.Auto,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
         PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
@@ -1507,6 +1526,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _maxFixpointIterations;
         private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
+        private readonly ClosureRelationRetentionStrategy _closureRelationRetentionStrategy;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
@@ -1525,6 +1545,7 @@ namespace UnifyWeaver.QueryRuntime
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
             _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
+            _closureRelationRetentionStrategy = options.ClosureRelationRetentionStrategy;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
@@ -1786,6 +1807,7 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.FactSources.Clear();
             _cacheContext.ReplayableFactSources.Clear();
             _cacheContext.ScanRelationRetentionSelections.Clear();
+            _cacheContext.ClosureRelationRetentionSelections.Clear();
             _cacheContext.PathAwareEdgeStates.Clear();
             _cacheContext.PathAwareEdgeRetentionSelections.Clear();
             _cacheContext.FactSets.Clear();
@@ -6388,6 +6410,126 @@ namespace UnifyWeaver.QueryRuntime
             return set;
         }
 
+        private ClosureRelationRetentionSelection GetClosureRelationRetentionSelection(
+            PredicateId predicate,
+            ClosureRelationAccessKind accessKind,
+            EvaluationContext context,
+            PlanNode traceNode)
+        {
+            var cacheKey = (predicate, accessKind);
+            if (context.ClosureRelationRetentionSelections.TryGetValue(cacheKey, out var cachedSelection))
+            {
+                return cachedSelection;
+            }
+
+            var hasStreaming = TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource);
+            var hasReplayable = TryGetReplayableSource(predicate, context, out var replayableSource);
+            var hasExternal = TryGetExternalFacts(predicate, out var externalFacts);
+            var concreteReplayable = replayableSource as ReplayableRelationSource;
+            var relationBytes = hasStreaming && !string.IsNullOrEmpty(delimitedSource.InputPath) && File.Exists(delimitedSource.InputPath)
+                ? new FileInfo(delimitedSource.InputPath).Length
+                : (long?)null;
+            const int closureProbeRowLimit = 256;
+
+            Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                ? () => MeasureElapsed(() => ProbeFactRows(DelimitedRelationReader.ReadRows(delimitedSource), closureProbeRowLimit))
+                : null;
+            Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                ? () => MeasureElapsed(() =>
+                {
+                    var probeRows = concreteReplayable is not null
+                        ? concreteReplayable.ProbeMaterialize(closureProbeRowLimit)
+                        : replayableSource.Stream().Take(closureProbeRowLimit).ToList();
+                    ProbeFactRows(probeRows, closureProbeRowLimit);
+                })
+                : null;
+            Func<TimeSpan>? measureExternalProbe = hasExternal
+                ? () => MeasureElapsed(() => ProbeFactRows(externalFacts, closureProbeRowLimit))
+                : null;
+
+            var selection = ResolveClosureRelationRetentionStrategy(
+                context.Trace,
+                traceNode,
+                _closureRelationRetentionStrategy,
+                accessKind,
+                relationBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                concreteReplayable?.IsMaterialized == true,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            context.ClosureRelationRetentionSelections[cacheKey] = selection;
+            return selection;
+        }
+
+        private List<object[]> GetClosureFactsList(
+            PredicateId predicate,
+            ClosureRelationAccessKind accessKind,
+            EvaluationContext? context,
+            PlanNode traceNode)
+        {
+            if (context is null)
+            {
+                return MaterializeFacts(predicate, context);
+            }
+
+            if (context.Facts.TryGetValue(predicate, out var cached))
+            {
+                context.Trace?.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                return cached;
+            }
+
+            context.Trace?.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
+
+            var plan = ResolveMaterializationPlan(
+                context.Trace,
+                traceNode,
+                ToRelationRetentionSelection(GetClosureRelationRetentionSelection(predicate, accessKind, context, traceNode)));
+            RecordClosureRelationRetentionStrategy(
+                context.Trace,
+                traceNode,
+                new ClosureRelationRetentionSelection(ToClosureRelationRetentionStrategy(plan.RelationRetention.Strategy), plan.RelationRetention.DecisionMode));
+            RecordMaterializationPlanStrategy(context.Trace, traceNode, "Closure", plan);
+
+            var hasStreaming = TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource);
+            var hasReplayable = TryGetReplayableSource(predicate, context, out var replayableSource);
+            var hasExternal = TryGetExternalFacts(predicate, out var externalFacts);
+            List<object[]> facts;
+
+            switch (plan.RelationRetention.Strategy)
+            {
+                case RelationRetentionPolicyStrategy.StreamingDirect when hasStreaming:
+                    facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_streaming_direct", () => DelimitedRelationReader.ReadRows(delimitedSource).ToList());
+                    break;
+                case RelationRetentionPolicyStrategy.ReplayableBuffer when hasReplayable:
+                    facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_replayable", () => replayableSource.Materialize());
+                    break;
+                case RelationRetentionPolicyStrategy.ExternalMaterialized when hasExternal:
+                    facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_external_materialized", () => externalFacts as List<object[]> ?? externalFacts.ToList());
+                    break;
+                default:
+                    if (hasReplayable)
+                    {
+                        facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_replayable", () => replayableSource.Materialize());
+                    }
+                    else if (hasStreaming)
+                    {
+                        facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_streaming_direct", () => DelimitedRelationReader.ReadRows(delimitedSource).ToList());
+                    }
+                    else
+                    {
+                        var externalSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+                        facts = MeasurePhase(context.Trace, traceNode, "closure_materialize_external_materialized", () => externalSource as List<object[]> ?? externalSource.ToList());
+                    }
+                    break;
+            }
+
+            context.Facts[predicate] = facts;
+            return facts;
+        }
+
         private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
         {
             if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
@@ -8146,7 +8288,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: false, built: true);
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
 
                 var visited = new HashSet<PairKey>();
@@ -8252,6 +8394,24 @@ namespace UnifyWeaver.QueryRuntime
                 _ => ScanRelationRetentionStrategy.Auto
             };
 
+        private static RelationRetentionPolicyStrategy ToRelationRetentionPolicyStrategy(ClosureRelationRetentionStrategy strategy)
+            => strategy switch
+            {
+                ClosureRelationRetentionStrategy.StreamingDirect => RelationRetentionPolicyStrategy.StreamingDirect,
+                ClosureRelationRetentionStrategy.ReplayableBuffer => RelationRetentionPolicyStrategy.ReplayableBuffer,
+                ClosureRelationRetentionStrategy.ExternalMaterialized => RelationRetentionPolicyStrategy.ExternalMaterialized,
+                _ => RelationRetentionPolicyStrategy.Auto
+            };
+
+        private static ClosureRelationRetentionStrategy ToClosureRelationRetentionStrategy(RelationRetentionPolicyStrategy strategy)
+            => strategy switch
+            {
+                RelationRetentionPolicyStrategy.StreamingDirect => ClosureRelationRetentionStrategy.StreamingDirect,
+                RelationRetentionPolicyStrategy.ReplayableBuffer => ClosureRelationRetentionStrategy.ReplayableBuffer,
+                RelationRetentionPolicyStrategy.ExternalMaterialized => ClosureRelationRetentionStrategy.ExternalMaterialized,
+                _ => ClosureRelationRetentionStrategy.Auto
+            };
+
         private static RelationRetentionPolicyStrategy ToRelationRetentionPolicyStrategy(PathAwareEdgeRetentionStrategy strategy)
             => strategy switch
             {
@@ -8274,6 +8434,9 @@ namespace UnifyWeaver.QueryRuntime
             => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
 
         private static RelationRetentionSelection ToRelationRetentionSelection(ScanRelationRetentionSelection selection)
+            => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
+
+        private static RelationRetentionSelection ToRelationRetentionSelection(ClosureRelationRetentionSelection selection)
             => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
 
         private static RelationRetentionSelection ToRelationRetentionSelection(PathAwareEdgeRetentionSelection selection)
@@ -8658,6 +8821,101 @@ namespace UnifyWeaver.QueryRuntime
                 new RelationRetentionSelection(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode),
                 "ScanRelationRetentionSelection",
                 "ScanRelationRetention");
+        }
+
+        private static ClosureRelationRetentionStrategy ResolveStructuralClosureRelationRetentionStrategy(
+            ClosureRelationAccessKind accessKind,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var preferredStrategy = accessKind == ClosureRelationAccessKind.Edge
+                ? RelationRetentionPolicyStrategy.ReplayableBuffer
+                : RelationRetentionPolicyStrategy.ReplayableBuffer;
+            return ToClosureRelationRetentionStrategy(
+                ResolveStructuralRelationRetentionStrategy(
+                    preferredStrategy,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+        }
+
+        private static bool ShouldProbeClosureRelationRetentionStrategy(
+            ClosureRelationAccessKind accessKind,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var thresholdBytes = accessKind switch
+            {
+                ClosureRelationAccessKind.Edge => 384 * 1024L,
+                _ => 256 * 1024L,
+            };
+            return ShouldProbeRelationRetentionStrategy(
+                relationBytes,
+                thresholdBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized);
+        }
+
+        private static ClosureRelationRetentionSelection ResolveClosureRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            ClosureRelationRetentionStrategy configuredStrategy,
+            ClosureRelationAccessKind accessKind,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized,
+            Func<TimeSpan>? measureStreamingProbe = null,
+            Func<TimeSpan>? measureReplayableProbe = null,
+            Func<TimeSpan>? measureExternalProbe = null)
+        {
+            var structuralStrategy = ToRelationRetentionPolicyStrategy(
+                ResolveStructuralClosureRelationRetentionStrategy(
+                    accessKind,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+            var selection = ResolveRelationRetentionStrategy(
+                trace,
+                node,
+                "closure_strategy_select",
+                "closure_probe_streaming_direct",
+                "closure_probe_replayable_buffer",
+                "closure_probe_external_materialized",
+                ToRelationRetentionPolicyStrategy(configuredStrategy),
+                structuralStrategy,
+                ShouldProbeClosureRelationRetentionStrategy(accessKind, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            return new ClosureRelationRetentionSelection(ToClosureRelationRetentionStrategy(selection.Strategy), selection.DecisionMode);
+        }
+
+        private static void RecordClosureRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            ClosureRelationRetentionSelection selection)
+        {
+            RecordRelationRetentionStrategy(
+                trace,
+                node,
+                new RelationRetentionSelection(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode),
+                "ClosureRelationRetentionSelection",
+                "ClosureRelationRetention");
         }
 
         private static PathAwareEdgeRetentionStrategy ResolveStructuralPathAwareEdgeRetentionStrategy(
@@ -9845,7 +10103,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     positiveFastPathPrepared = true;
-                    var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetFactsList(closure.AuxiliaryRelation, context));
+                    var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure));
                     auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
                     usePositiveMinFastPath = closure.MaxDepth > 0 &&
                         TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
@@ -10311,7 +10569,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var succIndex = edgeState.Successors;
-                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                var auxRows = GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
@@ -10357,7 +10615,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var succIndex = edgeState.Successors;
-                var auxRows = GetFactsList(closure.AuxiliaryRelation, context);
+                var auxRows = GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
@@ -10955,7 +11213,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosure", traceKey, hit: false, built: true);
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
 
                 var edgeKeyIndices = new int[groupCount + 1];
                 for (var i = 0; i < groupCount; i++)
@@ -11070,8 +11328,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 var predicate = closure.Predicate;
                 var traceKey = $"{predicate.Name}/{predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:seeds={closure.SeedRelation.Name}/{closure.SeedRelation.Arity}";
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var seeds = GetFactsList(closure.SeedRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
+                var seeds = GetClosureFactsList(closure.SeedRelation, ClosureRelationAccessKind.Support, context, closure);
 
                 const int MaxDagNodeCount = 16384;
                 const int MaxDagGroupCount = 4096;
@@ -13003,7 +13261,7 @@ namespace UnifyWeaver.QueryRuntime
                     Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
                     targetKey[sourceKey.Length - 1] = target;
 
-                    var edges = GetFactsList(closure.EdgeRelation, context);
+                    var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
                     var groupKeyCount = closure.GroupIndices.Count;
                     var fromKeyIndices = new int[groupKeyCount + 1];
                     var toKeyIndices = new int[groupKeyCount + 1];
@@ -13290,7 +13548,7 @@ namespace UnifyWeaver.QueryRuntime
                 context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
             }
 
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var groupKeyCount = closure.GroupIndices.Count;
             var fromKeyIndices = new int[groupKeyCount + 1];
             var toKeyIndices = new int[groupKeyCount + 1];
@@ -13518,7 +13776,7 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var groupKeyCount = closure.GroupIndices.Count;
             var fromKeyIndices = new int[groupKeyCount + 1];
             var toKeyIndices = new int[groupKeyCount + 1];
@@ -13614,7 +13872,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeeded");
 
                 var predicate = closure.Predicate;
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
 
                 var edgeKeyIndices = new int[groupCount + 1];
                 for (var i = 0; i < groupCount; i++)
@@ -14031,7 +14289,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "GroupedTransitiveClosureSeededByTarget");
 
                 var predicate = closure.Predicate;
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
 
                 var edgeKeyIndices = new int[groupCount + 1];
                 for (var i = 0; i < groupCount; i++)
@@ -14655,7 +14913,7 @@ namespace UnifyWeaver.QueryRuntime
             var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
             var trace = context.Trace;
             var predicate = closure.Predicate;
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
 
             var edgeKeyIndices = new int[groupCount + 1];
             for (var i = 0; i < groupCount; i++)
@@ -14801,7 +15059,7 @@ namespace UnifyWeaver.QueryRuntime
             var maxRequiredIndex = ValidateGroupedClosureIndices(closure.GroupIndices, width);
             var trace = context.Trace;
             var predicate = closure.Predicate;
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
 
             var edgeKeyIndices = new int[groupCount + 1];
             for (var i = 0; i < groupCount; i++)
@@ -15612,7 +15870,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "TransitiveClosureSeeded");
 
                 var predicate = closure.Predicate;
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
 
                 var seeds = new List<object?>();
@@ -16057,7 +16315,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordStrategy(closure, "TransitiveClosureSeededByTarget");
 
                 var predicate = closure.Predicate;
-                var edges = GetFactsList(closure.EdgeRelation, context);
+                var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
                 var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
 
                 var seeds = new List<object?>();
@@ -16395,7 +16653,7 @@ namespace UnifyWeaver.QueryRuntime
                     var probeCount = ComputeSinglePairProbeNormalizationCount(parameters);
                     var source = bySource.First().Key;
                     var target = bySource.First().Value.First();
-                    var edges = GetFactsList(closure.EdgeRelation, context);
+                    var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
                     var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
                     var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
                     var forwardCost = CountEdgeBucket(succIndex, source);
@@ -16630,7 +16888,7 @@ namespace UnifyWeaver.QueryRuntime
                 context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
             }
 
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
             var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
             var sourceCostCache = new Dictionary<object?, int>();
@@ -16815,7 +17073,7 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
             var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
             var sourceCostCache = new Dictionary<object?, int>();
@@ -16958,7 +17216,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             var trace = context.Trace;
             var predicate = closure.Predicate;
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
 
             var totalRows = new List<object[]>();
@@ -17088,7 +17346,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             var trace = context.Trace;
             var predicate = closure.Predicate;
-            var edges = GetFactsList(closure.EdgeRelation, context);
+            var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
             var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
 
             var totalRows = new List<object[]>();
@@ -17590,6 +17848,7 @@ namespace UnifyWeaver.QueryRuntime
                 FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
                 ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
                 ScanRelationRetentionSelections = parent?.ScanRelationRetentionSelections ?? new Dictionary<(PredicateId Predicate, ScanRelationAccessKind AccessKind), ScanRelationRetentionSelection>();
+                ClosureRelationRetentionSelections = parent?.ClosureRelationRetentionSelections ?? new Dictionary<(PredicateId Predicate, ClosureRelationAccessKind AccessKind), ClosureRelationRetentionSelection>();
                 PathAwareEdgeStates = parent?.PathAwareEdgeStates ?? new Dictionary<PredicateId, PathAwareEdgeState>();
                 PathAwareEdgeRetentionSelections = parent?.PathAwareEdgeRetentionSelections ?? new Dictionary<PredicateId, PathAwareEdgeRetentionSelection>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
@@ -17657,6 +17916,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, IReplayableRelationSource> ReplayableFactSources { get; }
 
             public Dictionary<(PredicateId Predicate, ScanRelationAccessKind AccessKind), ScanRelationRetentionSelection> ScanRelationRetentionSelections { get; }
+
+            public Dictionary<(PredicateId Predicate, ClosureRelationAccessKind AccessKind), ClosureRelationRetentionSelection> ClosureRelationRetentionSelections { get; }
 
             public Dictionary<PredicateId, PathAwareEdgeState> PathAwareEdgeStates { get; }
 
