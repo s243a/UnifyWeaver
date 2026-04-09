@@ -45,6 +45,13 @@ tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
 tc_distance(X, Y, 1) :- tc_parent(X, Y).
 tc_distance(X, Y, D) :- tc_parent(X, Z), tc_distance(Z, Y, D1), D is D1 + 1.
 
+:- dynamic tc_parent_distance/4.
+tc_parent_distance(X, Y, X, 1) :- tc_parent(X, Y).
+tc_parent_distance(X, Y, Parent, D) :-
+    tc_parent(X, Z),
+    tc_parent_distance(Z, Y, Parent, D1),
+    D is D1 + 1.
+
 :- dynamic tri_sum/2.
 tri_sum(0, 0).
 tri_sum(N, Sum) :-
@@ -67,7 +74,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tri_sum/2, user:tail_suffix/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tri_sum/2, user:tail_suffix/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -79,6 +86,7 @@ use runtime_test::state::WamState;
 use runtime_test::tc_ancestor;
 use runtime_test::tc_descendant;
 use runtime_test::tc_distance;
+use runtime_test::tc_parent_distance;
 use runtime_test::tri_sum;
 use runtime_test::tail_suffix;
 
@@ -215,6 +223,61 @@ fn test_generated_predicates() {
         Value::Atom("jim".to_string()),
         Value::Unbound("D".to_string()));
     assert!(!ok9, "tc_distance(liz, jim, D) should fail");
+
+    // Test tc_parent_distance/4 foreign lowering end-to-end
+    let mut vm_parent_dist = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_pd1 = tc_parent_distance(&mut vm_parent_dist,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Target2".to_string()),
+        Value::Unbound("Parent2".to_string()),
+        Value::Unbound("Dist2".to_string()));
+    assert!(ok_pd1, "tc_parent_distance(tom, Target, Parent, Dist) first solution should succeed");
+
+    let mut parent_distances: Vec<String> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Atom(parent)), Some(Value::Integer(dist))) =
+        (vm_parent_dist.bindings.get("Target2").cloned(),
+         vm_parent_dist.bindings.get("Parent2").cloned(),
+         vm_parent_dist.bindings.get("Dist2").cloned()) {
+        parent_distances.push(format!("{}:{}:{}", target, parent, dist));
+    } else {
+        panic!("expected first tc_parent_distance result in Target2/Parent2/Dist2");
+    }
+
+    while vm_parent_dist.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Atom(parent)), Some(Value::Integer(dist))) =
+            (vm_parent_dist.bindings.get("Target2").cloned(),
+             vm_parent_dist.bindings.get("Parent2").cloned(),
+             vm_parent_dist.bindings.get("Dist2").cloned()) {
+            parent_distances.push(format!("{}:{}:{}", target, parent, dist));
+        } else {
+            panic!("expected backtracked tc_parent_distance result in Target2/Parent2/Dist2");
+        }
+    }
+
+    parent_distances.sort();
+    assert_eq!(parent_distances, vec![
+        "ann:bob:2".to_string(),
+        "bob:tom:1".to_string(),
+        "jim:pat:3".to_string(),
+        "liz:tom:1".to_string(),
+        "pat:bob:2".to_string(),
+    ]);
+
+    let mut vm_parent_dist_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_pd2 = tc_parent_distance(&mut vm_parent_dist_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Atom("pat".to_string()),
+        Value::Integer(3));
+    assert!(ok_pd2, "tc_parent_distance(tom, jim, pat, 3) should succeed");
+
+    let mut vm_parent_dist_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_pd3 = tc_parent_distance(&mut vm_parent_dist_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Unbound("Parent3".to_string()),
+        Value::Unbound("Dist3".to_string()));
+    assert!(!ok_pd3, "tc_parent_distance(liz, jim, Parent, Dist) should fail");
 
     // Test tri_sum/2 foreign lowering end-to-end
     let mut vm_sum = WamState::new(vec![], std::collections::HashMap::new());

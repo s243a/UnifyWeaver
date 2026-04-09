@@ -231,6 +231,7 @@ recursive schemas:
 - binary transitive closure such as `tc_ancestor/2`
 - reversed binary closure such as `tc_descendant/2`
 - recursive distance search such as `tc_distance/3`
+- recursive parent+distance search such as `tc_parent_distance/4`
 
 The shape is:
 
@@ -273,6 +274,7 @@ The currently registered recursive kernel families are:
 - `list_suffix2`
 - `transitive_closure2`
 - `transitive_distance3`
+- `transitive_parent_distance4`
 
 ### What Is Verified
 
@@ -285,12 +287,14 @@ The current test coverage now includes:
   - `tc_ancestor/2`
   - `tc_descendant/2`
   - `tc_distance/3`
+  - `tc_parent_distance/4`
 - end-to-end generated Rust runtime validation for:
   - `tail_suffix/2`
   - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
   - `tc_distance/3`
+  - `tc_parent_distance/4`
 
 When `foreign_lowering(true)` is enabled and a registered kernel matches, the
 compiler now prefers the foreign path over earlier generic native clause
@@ -301,10 +305,11 @@ The runtime now also uses a small foreign-result layout layer:
 
 - `single` for one output register
 - `pair` for two-output payloads packed into one foreign result item
+- `triple` for three-output payloads packed into one foreign result item
 
 That replaces the older kernel-specific resume branching for result shape and
 makes additional kernels cheaper to add as long as they fit an existing result
-layout.
+layout. `tc_parent_distance/4` is the first kernel using the `triple` path.
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and
