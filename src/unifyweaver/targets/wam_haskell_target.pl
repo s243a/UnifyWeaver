@@ -526,12 +526,12 @@ step s (BuiltinCall "\\\\+/1" _) =
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
--- SwitchOnConstant: dispatch on A1 value
+-- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
 step s (SwitchOnConstant table) =
   let val = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })  -- unbound: skip
-    Just v -> case lookup v table of
+    Just v -> case Map.lookup v table of
       Just label -> case Map.lookup label (wsLabels s) of
         Just pc -> Just (s { wsPC = pc })
         Nothing -> Nothing
@@ -687,8 +687,8 @@ buildFact2Code :: String -> [(String, String)] -> Int -> ([Instruction], [(Strin
 buildFact2Code predName pairs startPC =
     let groups = Map.toAscList (buildFactIndex pairs)
         -- SwitchOnConstant dispatch table
-        (dispatchTable, groupCode, groupLabels, _) = foldl buildGroup ([], [], [], startPC + 1) groups
-        switchInstr = SwitchOnConstant dispatchTable
+        (dispatchList, groupCode, groupLabels, _) = foldl buildGroup ([], [], [], startPC + 1) groups
+        switchInstr = SwitchOnConstant (Map.fromList dispatchList)
     in (switchInstr : groupCode, (predName ++ "/2", startPC) : groupLabels)
   where
     buildGroup (disp, code, labels, pc) (key, facts) =
@@ -716,7 +716,7 @@ buildFact2Code predName pairs startPC =
 buildFact1Code :: String -> [String] -> Int -> ([Instruction], [(String, Int)])
 buildFact1Code predName vals startPC =
     let disp = [(Atom v, predName ++ "_" ++ show i) | (i, v) <- zip [0..] vals]
-        switchInstr = SwitchOnConstant disp
+        switchInstr = SwitchOnConstant (Map.fromList disp)
         factCode = concatMap (\\(i, v) -> [GetConstant (Atom v) "A1", Proceed]) (zip [0..] vals)
         factLabels = [(predName ++ "_" ++ show i, startPC + 1 + i * 2) | i <- [0..length vals - 1]]
     in (switchInstr : factCode, (predName ++ "/1", startPC) : factLabels)
@@ -1075,7 +1075,7 @@ data Instruction
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
-  | SwitchOnConstant [(Value, String)]
+  | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
   | BeginAggregate String String String   -- type, valueReg, resultReg
   | EndAggregate String                   -- valueReg
   deriving (Show, Eq)
@@ -1257,6 +1257,15 @@ wam_instr_to_haskell(["retry_me_else", Label], Hs) :-
     format(string(Hs), 'RetryMeElse "~w"', [Label]).
 wam_instr_to_haskell(["set_variable", Xn], Hs) :-
     format(string(Hs), 'SetVariable "~w"', [Xn]).
+%% switch_on_constant key1:label1, key2:label2, ...
+wam_instr_to_haskell(["switch_on_constant"|Entries], Hs) :-
+    parse_switch_entries(Entries, HsPairs),
+    atomic_list_concat(HsPairs, ', ', PairsStr),
+    format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
+wam_instr_to_haskell(["switch_on_constant_a2"|Entries], Hs) :-
+    parse_switch_entries(Entries, HsPairs),
+    atomic_list_concat(HsPairs, ', ', PairsStr),
+    format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
 wam_instr_to_haskell(["begin_aggregate", Type, ValReg, ResReg], Hs) :-
     clean_comma(Type, CT), clean_comma(ValReg, CV), clean_comma(ResReg, CR),
     format(string(Hs), 'BeginAggregate "~w" "~w" "~w"', [CT, CV, CR]).
@@ -1284,6 +1293,21 @@ clean_comma(Str, Clean) :-
     ->  sub_string(Str, 0, _, 1, Clean)
     ;   Clean = Str
     ).
+
+%% parse_switch_entries(+Entries, -HaskellPairs)
+%  Parse "key:label" pairs from switch_on_constant instruction.
+parse_switch_entries([], []).
+parse_switch_entries([Entry|Rest], [HsPair|HsRest]) :-
+    clean_comma(Entry, CEntry),
+    (   sub_atom(CEntry, Before, 1, _, ':')
+    ->  sub_atom(CEntry, 0, Before, _, Key),
+        After is Before + 1,
+        sub_atom(CEntry, After, _, 0, Label),
+        wam_value_to_haskell(Key, HsKey),
+        format(string(HsPair), '(~w, "~w")', [HsKey, Label])
+    ;   format(string(HsPair), '(Atom "~w", "default")', [CEntry])
+    ),
+    parse_switch_entries(Rest, HsRest).
 
 %% escape_haskell_string(+In, -Out) — escape backslashes for Haskell string literals
 escape_haskell_string(In, Out) :-
