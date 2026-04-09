@@ -44,6 +44,8 @@ test_simple_fact(foo, bar).
 :- dynamic min_semantic_dist_astar/4.
 :- dynamic grouped_min_semantic_dist/3.
 :- dynamic grouped_min_semantic_dist_astar/4.
+:- dynamic filtered_adjusted_min_semantic_dist/3.
+:- dynamic filtered_adjusted_min_semantic_dist_astar/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -146,6 +148,16 @@ grouped_min_semantic_dist(Start, Target, MinDist) :-
 
 grouped_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
     aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), Target, MinDist).
+
+filtered_adjusted_min_semantic_dist(Start, Target, MinDist) :-
+    aggregate_all(min(Adjusted),
+        (weighted_path(Start, Target, Cost), Cost > 2, Adjusted is Cost + 1),
+        MinDist).
+
+filtered_adjusted_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
+    aggregate_all(min(Adjusted),
+        (astar_weighted_path(Start, Target, Dim, Cost), Cost > 2, Adjusted is Cost + 1),
+        MinDist).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -777,6 +789,32 @@ test_grouped_astar_min_aggregate_wrapper :-
     ;   fail_test(Test, 'Grouped A* aggregate wrapper did not delegate correctly')
     ).
 
+test_filtered_adjusted_weighted_min_wrapper :-
+    Test = 'WAM-Rust: mixed-goal aggregate wrapper filters and adjusts weighted_path/3',
+    (   rust_target:compile_predicate_to_rust(user:filtered_adjusted_min_semantic_dist/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'if !(cost > 2_f64) {'),
+        sub_string(S, _, _, _, 'current.min(agg_value)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed-goal weighted aggregate wrapper did not lower correctly')
+    ).
+
+test_filtered_adjusted_astar_min_wrapper :-
+    Test = 'WAM-Rust: mixed-goal aggregate wrapper filters and adjusts astar_weighted_path/4',
+    (   rust_target:compile_predicate_to_rust(user:filtered_adjusted_min_semantic_dist_astar/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'if !(cost > 2_f64) {'),
+        sub_string(S, _, _, _, 'current.min(agg_value)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed-goal A* aggregate wrapper did not lower correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1095,6 +1133,8 @@ run_tests :-
     test_astar_min_aggregate_wrapper,
     test_grouped_weighted_min_aggregate_wrapper,
     test_grouped_astar_min_aggregate_wrapper,
+    test_filtered_adjusted_weighted_min_wrapper,
+    test_filtered_adjusted_astar_min_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
