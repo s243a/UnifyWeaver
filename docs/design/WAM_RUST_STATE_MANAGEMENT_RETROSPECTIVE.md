@@ -227,6 +227,7 @@ recursive schemas:
 
 - `category_ancestor/4`-style bounded recursive search
 - countdown-style numeric recursion such as `tri_sum/2`
+- list-suffix recursion such as `tail_suffix/2`
 - binary transitive closure such as `tc_ancestor/2`
 - reversed binary closure such as `tc_descendant/2`
 - recursive distance search such as `tc_distance/3`
@@ -266,6 +267,7 @@ The currently registered recursive kernel families are:
 
 - `category_ancestor`
 - `countdown_sum2`
+- `list_suffix2`
 - `transitive_closure2`
 - `transitive_distance3`
 
@@ -275,11 +277,13 @@ The current test coverage now includes:
 
 - compiler-selection tests for:
   - `category_ancestor/4`
+  - `tail_suffix/2`
   - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
   - `tc_distance/3`
 - end-to-end generated Rust runtime validation for:
+  - `tail_suffix/2`
   - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`

@@ -3719,6 +3719,7 @@ rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
 
 rust_recursive_kernel_detector(category_ancestor, rust_recursive_kernel_category_ancestor).
 rust_recursive_kernel_detector(countdown_sum2, rust_recursive_kernel_countdown_sum).
+rust_recursive_kernel_detector(list_suffix2, rust_recursive_kernel_list_suffix).
 rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
 rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
 
@@ -3735,6 +3736,7 @@ rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
 
 rust_recursive_kernel_native_kind(category_ancestor, category_ancestor).
 rust_recursive_kernel_native_kind(countdown_sum2, countdown_sum2).
+rust_recursive_kernel_native_kind(list_suffix2, list_suffix2).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 
@@ -3742,6 +3744,7 @@ rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],
         [register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)]).
 rust_recursive_kernel_config_ops(countdown_sum2, _PredIndicator, [], []).
+rust_recursive_kernel_config_ops(list_suffix2, _PredIndicator, [], []).
 rust_recursive_kernel_config_ops(transitive_closure2, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
@@ -3764,6 +3767,10 @@ rust_recursive_kernel_category_ancestor(Pred, Arity, Clauses,
 rust_recursive_kernel_countdown_sum(Pred, Arity, Clauses,
         recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
     rust_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
+
+rust_recursive_kernel_list_suffix(Pred, Arity, Clauses,
+        recursive_kernel(list_suffix2, Pred/Arity, [])) :-
+    rust_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
 
 rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
         recursive_kernel(transitive_closure2, Pred/Arity,
@@ -3802,6 +3809,15 @@ rust_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     RecGoal =.. [Pred, PrevN, PrevSum],
     SumGoal =.. [is, Sum, SumExpr],
     SumExpr =.. [+, PrevSum, N].
+
+rust_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseList, BaseList],
+    var(BaseList),
+    RecHead =.. [Pred, InputList, Suffix],
+    InputList = [_|Tail],
+    RecBody =.. [Pred, Tail, Suffix].
 
 rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPairs) :-
     member(BaseHead-BaseBody, Clauses),
