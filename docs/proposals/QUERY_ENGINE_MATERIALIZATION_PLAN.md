@@ -87,7 +87,8 @@ Status:
 - started for DAG grouped reach-count and DAG longest-depth relation retention,
   where the runtime can now choose between direct streamed DAG build,
   replayable buffering, and external materialized fallback before building
-  operator-owned DAG state
+  operator-owned DAG state, and where the fallback edge/seed materialization
+  path now also follows that planner-selected retention strategy explicitly
 - started for generic scan relation retention, where `RelationScanNode`,
   `PatternScanNode`, and scan-heavy join/negation/aggregate consumers can now
   choose between direct streamed scan access, replayable buffering, and

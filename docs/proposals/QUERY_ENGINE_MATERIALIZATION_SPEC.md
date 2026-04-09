@@ -74,6 +74,9 @@ Examples:
   materialized rows are all viable inputs for those DAG operators, the runtime
   can choose among them through a measured retention selector and still expose
   an explicit override via `QueryExecutorOptions.DagRelationRetentionStrategy`
+- when the streamed DAG fast path is not used, the fallback edge/seed
+  materialization path now also honors that same planner-selected retention
+  strategy instead of dropping back to generic raw fact-list loading
 - path-aware shortest-path operators can build compact source->targets edge state
   instead of retaining generic edge tuples
 - where direct streaming, replayable buffering, and external materialized rows
