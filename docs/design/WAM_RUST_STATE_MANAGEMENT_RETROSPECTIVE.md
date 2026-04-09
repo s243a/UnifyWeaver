@@ -275,6 +275,7 @@ The currently registered recursive kernel families are:
 - `transitive_closure2`
 - `transitive_distance3`
 - `transitive_parent_distance4`
+- `transitive_step_parent_distance5`
 
 ### What Is Verified
 
@@ -289,6 +290,7 @@ The current test coverage now includes:
   - `tc_descendant/2`
   - `tc_distance/3`
   - `tc_parent_distance/4`
+  - `tc_step_parent_distance/5`
 - end-to-end generated Rust runtime validation for:
   - `tail_suffix/2`
   - `tail_suffixes/2`
@@ -297,6 +299,7 @@ The current test coverage now includes:
   - `tc_descendant/2`
   - `tc_distance/3`
   - `tc_parent_distance/4`
+  - `tc_step_parent_distance/5`
 
 When `foreign_lowering(true)` is enabled and a registered kernel matches, the
 compiler now prefers the foreign path over earlier generic native clause
@@ -310,11 +313,12 @@ The tuple-shaped foreign-result layout layer is:
 - `tuple:1` for one output register
 - `tuple:2` for two-output payloads packed into one foreign result item
 - `tuple:3` for three-output payloads packed into one foreign result item
+- `tuple:4` for four-output payloads packed into one foreign result item
 
 That replaces the older kernel-specific resume branching for result shape and
 makes additional kernels cheaper to add without adding another arity-specific
 resume path. `tc_parent_distance/4` is the first kernel using the `tuple:3`
-path.
+path. `tc_step_parent_distance/5` is the first kernel using `tuple:4`.
 
 Foreign result delivery now also distinguishes:
 

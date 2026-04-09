@@ -3724,6 +3724,7 @@ rust_recursive_kernel_detector(list_suffixes2, rust_recursive_kernel_list_suffix
 rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
 rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
 rust_recursive_kernel_detector(transitive_parent_distance4, rust_recursive_kernel_transitive_parent_distance).
+rust_recursive_kernel_detector(transitive_step_parent_distance5, rust_recursive_kernel_transitive_step_parent_distance).
 
 rust_recursive_kernel_spec(
         recursive_kernel(KernelKind, PredIndicator, KernelConfig),
@@ -3748,6 +3749,7 @@ rust_recursive_kernel_native_kind(list_suffixes2, list_suffixes2).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 rust_recursive_kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
+rust_recursive_kernel_native_kind(transitive_step_parent_distance5, transitive_step_parent_distance5).
 
 rust_recursive_kernel_result_layout(category_ancestor, tuple(1)).
 rust_recursive_kernel_result_layout(countdown_sum2, tuple(1)).
@@ -3756,6 +3758,7 @@ rust_recursive_kernel_result_layout(list_suffixes2, tuple(1)).
 rust_recursive_kernel_result_layout(transitive_closure2, tuple(1)).
 rust_recursive_kernel_result_layout(transitive_distance3, tuple(2)).
 rust_recursive_kernel_result_layout(transitive_parent_distance4, tuple(3)).
+rust_recursive_kernel_result_layout(transitive_step_parent_distance5, tuple(4)).
 
 rust_recursive_kernel_result_mode(category_ancestor, stream).
 rust_recursive_kernel_result_mode(countdown_sum2, deterministic).
@@ -3764,6 +3767,7 @@ rust_recursive_kernel_result_mode(list_suffixes2, deterministic_collection).
 rust_recursive_kernel_result_mode(transitive_closure2, stream).
 rust_recursive_kernel_result_mode(transitive_distance3, stream).
 rust_recursive_kernel_result_mode(transitive_parent_distance4, stream).
+rust_recursive_kernel_result_mode(transitive_step_parent_distance5, stream).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],
@@ -3778,6 +3782,9 @@ rust_recursive_kernel_config_ops(transitive_distance3, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
 rust_recursive_kernel_config_ops(transitive_parent_distance4, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+rust_recursive_kernel_config_ops(transitive_step_parent_distance5, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
 
@@ -3819,6 +3826,11 @@ rust_recursive_kernel_transitive_parent_distance(Pred, Arity, Clauses,
         recursive_kernel(transitive_parent_distance4, Pred/Arity,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
     rust_foreign_lowerable_transitive_parent_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_recursive_kernel_transitive_step_parent_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_step_parent_distance5, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_step_parent_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
     member(_-BaseBody, Clauses),
@@ -3926,6 +3938,28 @@ rust_foreign_lowerable_transitive_parent_distance(Pred, 4, Clauses, EdgePred/2, 
     RecBody = (EdgeGoal, (RecGoal, IsGoal)),
     EdgeGoal =.. [EdgePred, RecStart, RecMid],
     RecGoal =.. [Pred, RecMid, RecTarget, RecParent, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1],
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
+rust_foreign_lowerable_transitive_step_parent_distance(Pred, 5, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseTarget, BaseStart, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecStep, RecParent, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecStep == RecMid,
+    RecGoal =.. [Pred, RecMid, RecTarget, _InnerStep, RecParent, PrevDepth],
     IsGoal =.. [is, RecDepth, Expr],
     Expr =.. [+, PrevDepth, 1],
     findall(Left-Right,

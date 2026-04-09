@@ -792,6 +792,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
     compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
     compile_collect_native_transitive_parent_distance_to_rust(NativeParentDistanceCode),
+    compile_collect_native_transitive_step_parent_distance_to_rust(NativeStepParentDistanceCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -813,6 +814,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         NativeClosureCode, '\n\n',
         NativeDistanceCode, '\n\n',
         NativeParentDistanceCode, '\n\n',
+        NativeStepParentDistanceCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1268,6 +1270,54 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, parent_reg, dist_reg], packed_results)
             }
+            "transitive_step_parent_distance5" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let step_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let parent_reg = match self.regs.get("A4").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let dist_reg = match self.regs.get("A5").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mut results: Vec<(String, String, String, i64)> = Vec::new();
+                self.collect_native_transitive_step_parent_distance_results(&start, &edge_pred, &mut results);
+                if let Some(target) = target_filter {
+                    results.retain(|(node, _, _, _)| *node == target);
+                }
+                if results.is_empty() {
+                    return false;
+                }
+                let packed_results: Vec<Value> = results.into_iter().map(|(node, step, parent, dist)| {
+                    Value::Str("__tuple__".to_string(), vec![
+                        Value::Atom(node),
+                        Value::Atom(step),
+                        Value::Atom(parent),
+                        Value::Integer(dist),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg, step_reg, parent_reg, dist_reg], packed_results)
+            }
             _ => false,
         }
     }'.
@@ -1483,6 +1533,25 @@ compile_collect_native_transitive_parent_distance_to_rust(Code) :-
                     let next_depth = depth + 1;
                     out.push((next.clone(), node.clone(), next_depth));
                     stack.push((next.clone(), next_depth));
+                }
+            }
+        }
+    }'.
+
+compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
+    Code = '    pub fn collect_native_transitive_step_parent_distance_results(
+        &self,
+        start: &str,
+        edge_pred: &str,
+        out: &mut Vec<(String, String, String, i64)>,
+    ) {
+        if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(start)) {
+            for next in next_nodes {
+                out.push((next.clone(), next.clone(), start.to_string(), 1));
+                let mut nested: Vec<(String, String, i64)> = Vec::new();
+                self.collect_native_transitive_parent_distance_results(next, edge_pred, &mut nested);
+                for (target, parent, dist) in nested {
+                    out.push((target, next.clone(), parent, dist + 1));
                 }
             }
         }
