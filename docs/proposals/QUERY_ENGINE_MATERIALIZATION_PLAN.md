@@ -88,6 +88,10 @@ Status:
   where the runtime can now choose between direct streamed DAG build,
   replayable buffering, and external materialized fallback before building
   operator-owned DAG state
+- started for generic scan relation retention, where `RelationScanNode`,
+  `PatternScanNode`, and scan-heavy join/negation/aggregate consumers can now
+  choose between direct streamed scan access, replayable buffering, and
+  external materialized fallback before building list/set views
 - the runtime can now choose between compact grouped summaries and legacy
   seeded-row regrouping for both operator families through a shared
   grouped-summary policy layer
@@ -114,8 +118,8 @@ Status:
 - the runtime now shares one internal materialization-planner layer above
   the shared relation-retention and grouped-summary policy components
 - the path-aware grouped-summary family uses both branches of that planner,
-  while the DAG family currently uses the relation-retention branch of the
-  same planner
+  while the DAG family and the generic scan family currently use the
+  relation-retention branch of the same planner
 - the current per-family override knobs and trace surface are still preserved
 
 Work:
