@@ -41,6 +41,7 @@ test_simple_fact(foo, bar).
 :- dynamic astar_weighted_path/4.
 :- dynamic direct_semantic_dist/3.
 :- dynamic min_semantic_dist/3.
+:- dynamic min_semantic_dist_astar/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -134,6 +135,9 @@ astar_weighted_path(X, Y, Dim, Cost) :-
 
 min_semantic_dist(Start, Target, MinDist) :-
     aggregate_all(min(Cost), weighted_path(Start, Target, Cost), MinDist).
+
+min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
+    aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), MinDist).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -716,6 +720,25 @@ test_weighted_min_aggregate_wrapper :-
     ;   fail_test(Test, 'Weighted aggregate wrapper did not delegate correctly')
     ).
 
+test_astar_min_aggregate_wrapper :-
+    Test = 'WAM-Rust: aggregate min wrapper delegates to astar_weighted_path/4',
+    (   rust_target:compile_predicate_to_rust(user:min_semantic_dist_astar/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("astar_weighted_path/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("astar_weighted_path/4", "weight_pred", "weighted_edge/3")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("astar_weighted_path/4", "direct_dist_pred", "direct_semantic_dist/3")'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("direct_semantic_dist/3", &[("s", "a", 1.0), ("s", "b", 3.0), ("s", "c", 4.0), ("s", "d", 7.0), ("a", "b", 2.0), ("a", "c", 3.0), ("a", "d", 6.0), ("b", "c", 1.0), ("b", "d", 4.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("astar_weighted_path/4", "dimensionality", 5)'),
+        sub_string(S, _, _, _, 'if !vm.execute_foreign_predicate("astar_weighted_path", 4) {'),
+        sub_string(S, _, _, _, 'vm.unify(&a4, &Value::Float(cost))')
+    ->  pass(Test)
+    ;   fail_test(Test, 'A* aggregate wrapper did not delegate correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1031,6 +1054,7 @@ run_tests :-
     test_foreign_lowering_weighted_shortest_path,
     test_foreign_lowering_astar_shortest_path,
     test_weighted_min_aggregate_wrapper,
+    test_astar_min_aggregate_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
