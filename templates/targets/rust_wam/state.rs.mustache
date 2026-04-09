@@ -89,6 +89,8 @@ pub struct WamState {
     /// Foreign predicate result layouts keyed by "name/arity".
     /// Layouts are encoded as "tuple:N".
     pub foreign_result_layouts: HashMap<String, String>,
+    /// Foreign predicate result-delivery modes keyed by "name/arity".
+    pub foreign_result_modes: HashMap<String, String>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
     /// creates a variable that's stored in both a Y-register and an A-register.
@@ -129,6 +131,7 @@ impl WamState {
             foreign_string_configs: HashMap::new(),
             foreign_usize_configs: HashMap::new(),
             foreign_result_layouts: HashMap::new(),
+            foreign_result_modes: HashMap::new(),
             bindings: HashMap::new(),
             var_counter: 0,
             cut_barrier: 0,
@@ -215,6 +218,16 @@ impl WamState {
     /// Fetch the tuple layout for a foreign predicate.
     pub fn foreign_result_layout(&self, pred: &str) -> Option<&str> {
         self.foreign_result_layouts.get(pred).map(|layout| layout.as_str())
+    }
+
+    /// Register a result-delivery mode for a foreign predicate.
+    pub fn register_foreign_result_mode(&mut self, pred: &str, mode: &str) {
+        self.foreign_result_modes.insert(pred.to_string(), mode.to_string());
+    }
+
+    /// Fetch the result-delivery mode for a foreign predicate.
+    pub fn foreign_result_mode(&self, pred: &str) -> Option<&str> {
+        self.foreign_result_modes.get(pred).map(|mode| mode.as_str())
     }
 
     /// Dereference an Unbound variable through the binding table.

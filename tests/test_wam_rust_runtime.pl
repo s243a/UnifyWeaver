@@ -64,6 +64,10 @@ tri_sum(N, Sum) :-
 tail_suffix(S, S).
 tail_suffix([_|T], S) :- tail_suffix(T, S).
 
+:- dynamic tail_suffixes/2.
+tail_suffixes([], [[]]).
+tail_suffixes([H|T], [[H|T]|Rest]) :- tail_suffixes(T, Rest).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -74,7 +78,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tri_sum/2, user:tail_suffix/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -89,6 +93,7 @@ use runtime_test::tc_distance;
 use runtime_test::tc_parent_distance;
 use runtime_test::tri_sum;
 use runtime_test::tail_suffix;
+use runtime_test::tail_suffixes;
 
 #[test]
 fn test_generated_predicates() {
@@ -347,6 +352,34 @@ fn test_generated_predicates() {
         list_abc,
         Value::List(vec![Value::Atom("d".to_string())]));
     assert!(!ok15, "tail_suffix([a,b,c], [d]) should fail");
+
+    // Test tail_suffixes/2 deterministic collection foreign lowering end-to-end
+    let mut vm_suffixes = WamState::new(vec![], std::collections::HashMap::new());
+    let ok16 = tail_suffixes(&mut vm_suffixes,
+        Value::List(vec![
+            Value::Atom("a".to_string()),
+            Value::Atom("b".to_string()),
+            Value::Atom("c".to_string()),
+        ]),
+        Value::Unbound("Suffixes".to_string()));
+    assert!(ok16, "tail_suffixes([a,b,c], Suffixes) should succeed");
+    match vm_suffixes.bindings.get("Suffixes").cloned() {
+        Some(Value::List(items)) => assert_eq!(items, vec![
+            Value::List(vec![
+                Value::Atom("a".to_string()),
+                Value::Atom("b".to_string()),
+                Value::Atom("c".to_string()),
+            ]),
+            Value::List(vec![
+                Value::Atom("b".to_string()),
+                Value::Atom("c".to_string()),
+            ]),
+            Value::List(vec![Value::Atom("c".to_string())]),
+            Value::List(vec![]),
+        ]),
+        other => panic!("expected deterministic suffix collection in Suffixes, got {:?}", other),
+    }
+    assert!(!vm_suffixes.backtrack(), "tail_suffixes/2 should not leave backtracking results behind");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

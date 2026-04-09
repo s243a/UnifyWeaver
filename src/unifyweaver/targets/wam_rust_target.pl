@@ -1142,6 +1142,20 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![suffix_reg], results)
             }
+            "list_suffixes2" => {
+                let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let suffixes_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let mut suffixes: Vec<Value> = Vec::new();
+                self.collect_native_list_suffixes(&items, &mut suffixes);
+                let result = Value::Str("__tuple__".to_string(), vec![Value::List(suffixes)]);
+                self.finish_foreign_results(&pred_key, vec![suffixes_reg], vec![result])
+            }
             "transitive_closure2" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
@@ -1265,31 +1279,46 @@ compile_foreign_result_helpers_to_rust(Code) :-
         result_regs: Vec<Value>,
         results: Vec<Value>,
     ) -> bool {
+        let result_mode = match self.foreign_result_mode(pred_key) {
+            Some(mode) => mode,
+            None => "stream",
+        };
         if results.is_empty() {
             return false;
         }
-        if results.len() > 1 {
-            self.choice_points.push(ChoicePoint {
-                next_pc: self.pc,
-                saved_args: self.save_regs(),
-                stack: self.stack.clone(),
-                cp: self.cp,
-                trail_len: self.trail.len(),
-                heap_len: self.heap.len(),
-                builtin_state: Some(BuiltinState {
-                    name: "foreign_results".to_string(),
-                    args: {
-                        let mut args = Vec::with_capacity(result_regs.len() + 1);
-                        args.push(Value::Atom(pred_key.to_string()));
-                        args.extend(result_regs.iter().cloned());
-                        args
-                    },
-                    data: results[1..].to_vec(),
-                }),
-                cut_barrier: self.cut_barrier,
-            });
+        match result_mode {
+            "stream" => {
+                if results.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign_results".to_string(),
+                            args: {
+                                let mut args = Vec::with_capacity(result_regs.len() + 1);
+                                args.push(Value::Atom(pred_key.to_string()));
+                                args.extend(result_regs.iter().cloned());
+                                args
+                            },
+                            data: results[1..].to_vec(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.apply_foreign_result(pred_key, &result_regs, &results[0])
+            }
+            "deterministic" | "deterministic_collection" => {
+                if results.len() != 1 {
+                    return false;
+                }
+                self.apply_foreign_result(pred_key, &result_regs, &results[0])
+            }
+            _ => false,
         }
-        self.apply_foreign_result(pred_key, &result_regs, &results[0])
     }
 
     fn apply_foreign_result(
@@ -1894,6 +1923,9 @@ rust_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line
     rust_foreign_result_layout_literal(Layout, LayoutLiteral),
     format(string(Line),
         '    vm.register_foreign_result_layout("~w/~w", "~w");', [Pred, Arity, LayoutLiteral]).
+rust_foreign_setup_line(register_foreign_result_mode(Pred/Arity, Mode), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_result_mode("~w/~w", "~w");', [Pred, Arity, Mode]).
 rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(string(Line),
         '    vm.register_foreign_string_config("~w/~w", "~w", "~w/~w");',
@@ -1950,7 +1982,10 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
             wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
             wam_line_to_rust_instr(CleanParts, PredIndicator, Options, RustInstr),
-            format(string(InstrEntry), '        ~w,', [RustInstr]),
+            (   sub_string(RustInstr, 0, _, _, "/*")
+            ->  format(string(InstrEntry), '        ~w', [RustInstr])
+            ;   format(string(InstrEntry), '        ~w,', [RustInstr])
+            ),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
             wam_lines_to_rust(Rest, NPC, PredIndicator, Options, RestInstrs, Labels)

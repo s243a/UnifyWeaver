@@ -29,6 +29,7 @@ test_simple_fact(foo, bar).
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
 :- dynamic tail_suffix/2.
+:- dynamic tail_suffixes/2.
 :- dynamic tc_ancestor/2.
 :- dynamic tri_sum/2.
 :- dynamic tc_descendant/2.
@@ -45,6 +46,9 @@ category_parent(beta, physics).
 
 tail_suffix(S, S).
 tail_suffix([_|T], S) :- tail_suffix(T, S).
+
+tail_suffixes([], [[]]).
+tail_suffixes([H|T], [[H|T]|Rest]) :- tail_suffixes(T, Rest).
 
 category_ancestor(Cat, Target, 1, Visited) :-
     category_parent(Cat, Target),
@@ -252,6 +256,7 @@ test_foreign_spec_wrapper_generation :-
         category_ancestor/4,
         [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
           register_foreign_result_layout(category_ancestor/4, tuple(1)),
+          register_foreign_result_mode(category_ancestor/4, stream),
           register_foreign_usize_config(category_ancestor/4, max_depth, 10)
         ],
         [category_ancestor/4]
@@ -262,6 +267,7 @@ test_foreign_spec_wrapper_generation :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
         sub_string(S, _, _, _, 'register_foreign_result_layout("category_ancestor/4", "tuple:1")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("category_ancestor/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
@@ -297,6 +303,10 @@ test_recursive_kernel_ir_selection :-
         tail_suffix(S1, S1)-true,
         tail_suffix([_|T2], S2)-tail_suffix(T2, S2)
     ],
+    SuffixesClauses = [
+        tail_suffixes([], [[]])-true,
+        tail_suffixes([H3|T3], [[H3|T3]|Rest3])-tail_suffixes(T3, Rest3)
+    ],
     DistClauses = [
         tc_distance(S1, T1, 1)-tc_parent(S1, T1),
         tc_distance(S2, T2, D2)-(tc_parent(S2, M2), (tc_distance(M2, T2, D1), D2 is D1 + 1))
@@ -312,6 +322,8 @@ test_recursive_kernel_ir_selection :-
             recursive_kernel(countdown_sum2, tri_sum/2, [])),
         rust_target:rust_recursive_kernel(tail_suffix, 2, SuffixClauses,
             recursive_kernel(list_suffix2, tail_suffix/2, [])),
+        rust_target:rust_recursive_kernel(tail_suffixes, 2, SuffixesClauses,
+            recursive_kernel(list_suffixes2, tail_suffixes/2, [])),
         rust_target:rust_recursive_kernel(tc_parent_distance, 4, ParentDistClauses,
             recursive_kernel(transitive_parent_distance4, tc_parent_distance/4,
                 [edge_pred(tc_parent/2), fact_pairs(ParentDistancePairs)])),
@@ -341,6 +353,7 @@ test_recursive_kernel_spec_generation :-
             tc_parent_distance/4,
             [ register_foreign_native_kind(tc_parent_distance/4, transitive_parent_distance4),
               register_foreign_result_layout(tc_parent_distance/4, tuple(3)),
+              register_foreign_result_mode(tc_parent_distance/4, stream),
               register_foreign_string_config(tc_parent_distance/4, edge_pred, tc_parent/2),
               register_indexed_atom_fact2(tc_parent/2, ['tom'-'bob', 'bob'-'ann'])
             ],
@@ -354,7 +367,7 @@ test_recursive_kernel_registry :-
     Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
     findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
     sort(Kinds0, Kinds),
-    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, transitive_closure2, transitive_distance3, transitive_parent_distance4]
+    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4]
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
@@ -482,6 +495,20 @@ test_foreign_lowering_list_suffix :-
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffix/2')
     ).
 
+test_foreign_lowering_list_suffixes :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tail_suffixes/2',
+    (   rust_target:compile_predicate_to_rust(user:tail_suffixes/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tail_suffixes/2", "list_suffixes2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffixes/2", "tuple:1")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("tail_suffixes/2", "deterministic_collection")'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffixes", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tail_suffixes".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffixes/2')
+    ).
+
 test_foreign_lowering_reverse_transitive_closure :-
     Test = 'WAM-Rust: compiler can choose foreign lowering for tc_descendant/2',
     (   rust_target:compile_predicate_to_rust(user:tc_descendant/2,
@@ -545,6 +572,7 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'TryMeElse'),
         sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
         sub_string(S, _, _, _, 'foreign_result_layout(pred_key)'),
+        sub_string(S, _, _, _, 'foreign_result_mode(pred_key)'),
         sub_string(S, _, _, _, 'foreign_string_config(&pred_key, "edge_pred")'),
         sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
         sub_string(S, _, _, _, 'fn finish_foreign_results'),
@@ -552,6 +580,7 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'fn parse_foreign_tuple_layout'),
         sub_string(S, _, _, _, 'tuple:'),
         sub_string(S, _, _, _, '__tuple__'),
+        sub_string(S, _, _, _, 'deterministic_collection'),
         sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
         sub_string(S, _, _, _, 'transitive_closure2'),
         sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes'),
