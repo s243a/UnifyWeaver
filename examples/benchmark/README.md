@@ -30,10 +30,12 @@ pipelines across the full benchmark range while preserving the same
 all-path semantics. It also now supports cost-guided selection between
 compact grouped weight sums and the legacy seeded-row regrouping path,
 using the same grouped-summary policy layer that now also drives the
-shortest-path minima family. That policy now records measured cost buckets
-like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
-`group_reduce`, while the earlier path-aware edge-retention boundary now also
-records buckets like `edge_strategy_select`, `edge_probe_*`,
+shortest-path minima family. The path-aware family now also coordinates that
+grouped-summary selector with the earlier edge-retention selector through a
+small internal materialization planner layer. That policy now records measured
+cost buckets like `load_roots`, `load_seeds`, `strategy_select`, `build_*`,
+and `group_reduce`, while the earlier path-aware edge-retention boundary now
+also records buckets like `edge_strategy_select`, `edge_probe_*`,
 `edge_materialize_replayable`, and `edge_build_*`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |

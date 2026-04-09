@@ -36,7 +36,10 @@ retention choice explicit at the runtime/provider boundary instead of hiding it
 inside benchmark-specific wiring. The current runtime now also shares one
 internal measured relation-retention policy layer between DAG relation
 selection and path-aware edge selection, while preserving separate public
-override surfaces for those families.
+override surfaces for those families. For the path-aware grouped-summary
+family, the runtime now coordinates that relation-retention choice with the
+grouped-summary selector through a small internal materialization planner
+layer.
 
 ## Required Capabilities
 
@@ -86,6 +89,10 @@ Examples:
   runtime can choose between them through that same grouped-summary policy
   layer, record measured cost buckets for that choice, and still expose an
   explicit override via `QueryExecutorOptions.PathAwareWeightSumStrategy`
+- when a path-aware operator family has both relation-retention and
+  grouped-summary policy layers available, the runtime can coordinate them
+  through a materialization planner layer instead of treating them as
+  unrelated decisions
 - other operators may request replay buffers or indexes when needed
 
 ### 3. External materialization fallback
@@ -151,8 +158,11 @@ For the current benchmark/runtime surface, the streamed path is:
    runtime can select between them through that same grouped-summary policy
    layer, record measured cost buckets for that decision, and use bounded
    probes in ambiguous cases before falling back to an explicit executor option
-12. the operator builds only the retained state it actually needs
-13. benchmark code avoids preloading raw facts into in-memory relations first
+12. for the current path-aware grouped-summary family, a materialization
+   planner layer now coordinates the earlier edge-retention choice with the
+   later grouped-summary choice and records the combined plan in trace output
+13. the operator builds only the retained state it actually needs
+14. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.
