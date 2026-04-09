@@ -524,6 +524,11 @@ namespace UnifyWeaver.QueryRuntime
         PathAwareGroupedSummaryStrategy Strategy,
         string DecisionMode);
 
+    internal readonly record struct PathAwareMaterializationPlanSelection(
+        PathAwareEdgeRetentionSelection EdgeRetention,
+        PathAwareGroupedSummarySelection GroupedSummary,
+        string DecisionMode);
+
     internal readonly record struct DagRelationRetentionSelection(
         DagRelationRetentionStrategy Strategy,
         string DecisionMode);
@@ -1759,6 +1764,7 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.FactSources.Clear();
             _cacheContext.ReplayableFactSources.Clear();
             _cacheContext.PathAwareEdgeStates.Clear();
+            _cacheContext.PathAwareEdgeRetentionSelections.Clear();
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
@@ -6297,8 +6303,16 @@ namespace UnifyWeaver.QueryRuntime
                     break;
             }
 
+            context.PathAwareEdgeRetentionSelections[predicate] = selection;
             context.PathAwareEdgeStates[predicate] = state;
             return state;
+        }
+
+        private static PathAwareEdgeRetentionSelection GetCachedPathAwareEdgeRetentionSelection(PredicateId predicate, EvaluationContext context)
+        {
+            return context.PathAwareEdgeRetentionSelections.TryGetValue(predicate, out var selection)
+                ? selection
+                : new PathAwareEdgeRetentionSelection(PathAwareEdgeRetentionStrategy.Auto, "Unavailable");
         }
 
         private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
@@ -8445,26 +8459,55 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordPhase(node, phase, stopwatch.Elapsed);
         }
 
+        private static long AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
+        {
+            var factor = edgeRetentionStrategy switch
+            {
+                PathAwareEdgeRetentionStrategy.StreamingDirect => 1.50d,
+                PathAwareEdgeRetentionStrategy.ReplayableBuffer => 0.75d,
+                PathAwareEdgeRetentionStrategy.ExternalMaterialized => 0.90d,
+                _ => 1.0d,
+            };
+
+            var adjusted = (long)Math.Ceiling(Math.Min(long.MaxValue, estimatedLegacyRows * factor));
+            return Math.Max(estimatedGroupedRows, adjusted);
+        }
+
         private static PathAwareGroupedSummaryStrategy ResolveStructuralPathAwareGroupedSummaryStrategy(
             long estimatedGroupedRows,
-            long estimatedLegacyRows) =>
-            estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
+        {
+            var adjustedLegacyRows = AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
+            return adjustedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
                 ? PathAwareGroupedSummaryStrategy.LegacySeededRows
                 : PathAwareGroupedSummaryStrategy.CompactGrouped;
+        }
 
         private static bool ShouldProbePathAwareGroupedSummaryStrategy(
             long estimatedGroupedRows,
             long estimatedLegacyRows,
-            int uniqueSeedCount)
+            int uniqueSeedCount,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
         {
             if (uniqueSeedCount < 2)
             {
                 return false;
             }
 
+            var adjustedLegacyRows = AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
             var lowerBound = Math.Max(64L, estimatedGroupedRows * 2L);
             var upperBound = Math.Max(256L, estimatedGroupedRows * 8L);
-            return estimatedLegacyRows > lowerBound && estimatedLegacyRows < upperBound;
+            return adjustedLegacyRows > lowerBound && adjustedLegacyRows < upperBound;
         }
 
         private static PathAwareGroupedSummaryStrategy ResolveMeasuredPathAwareGroupedSummaryStrategy(
@@ -8473,9 +8516,13 @@ namespace UnifyWeaver.QueryRuntime
             TimeSpan compactProbe,
             TimeSpan legacyProbe,
             long estimatedGroupedRows,
-            long estimatedLegacyRows)
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
         {
-            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
             if (sampleSeedCount <= 0 || totalSeedCount <= 0)
             {
                 return structuralStrategy;
@@ -8516,6 +8563,7 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyList<object?> orderedUniqueSeeds,
             int rootCount,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy,
             Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
             Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
         {
@@ -8533,10 +8581,13 @@ namespace UnifyWeaver.QueryRuntime
                 var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
                 var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
                 var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
-                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(
+                    estimatedGroupedRows,
+                    estimatedLegacyRows,
+                    edgeRetentionStrategy);
 
                 if (measureCompactProbe is null || measureLegacyProbe is null ||
-                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount))
+                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount, edgeRetentionStrategy))
                 {
                     return new PathAwareGroupedSummarySelection(structuralStrategy, "Structural");
                 }
@@ -8554,7 +8605,8 @@ namespace UnifyWeaver.QueryRuntime
                     compactProbe,
                     legacyProbe,
                     estimatedGroupedRows,
-                    estimatedLegacyRows);
+                    estimatedLegacyRows,
+                    edgeRetentionStrategy);
                 return new PathAwareGroupedSummarySelection(measuredStrategy, "MeasuredProbe");
             });
         }
@@ -8569,6 +8621,61 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordStrategy(node, selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                 ? $"{nodeStrategyPrefix}LegacySeededRows"
                 : $"{nodeStrategyPrefix}CompactGrouped");
+        }
+
+        private static PathAwareMaterializationPlanSelection ResolvePathAwareMaterializationPlan(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareEdgeRetentionSelection edgeRetentionSelection,
+            PathAwareGroupedSummaryStrategy configuredSummaryStrategy,
+            int groupCount,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
+        {
+            return MeasurePhase(trace, node, "materialization_plan_select", () =>
+            {
+                var groupedSummarySelection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    node,
+                    configuredSummaryStrategy,
+                    groupCount,
+                    orderedUniqueSeeds,
+                    rootCount,
+                    succIndex,
+                    edgeRetentionSelection.Strategy,
+                    measureCompactProbe,
+                    measureLegacyProbe);
+
+                var decisionMode = groupedSummarySelection.DecisionMode switch
+                {
+                    "ConfiguredOverride" => "ConfiguredSummary",
+                    "MeasuredProbe" when edgeRetentionSelection.DecisionMode == "MeasuredProbe" => "MeasuredRelationAndSummary",
+                    "MeasuredProbe" => "MeasuredSummary",
+                    _ when edgeRetentionSelection.DecisionMode == "MeasuredProbe" => "MeasuredRelation",
+                    _ when edgeRetentionSelection.DecisionMode == "ConfiguredOverride" => "ConfiguredRelation",
+                    _ when edgeRetentionSelection.DecisionMode == "ReplayableCached" => "ReplayableCached",
+                    _ => "Structural"
+                };
+
+                return new PathAwareMaterializationPlanSelection(
+                    edgeRetentionSelection,
+                    groupedSummarySelection,
+                    decisionMode);
+            });
+        }
+
+        private static void RecordPathAwareMaterializationPlanStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string nodeStrategyPrefix,
+            PathAwareMaterializationPlanSelection selection)
+        {
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
+            trace?.RecordStrategy(node,
+                $"{nodeStrategyPrefix}MaterializationPlanEdge{selection.EdgeRetention.Strategy}Summary{selection.GroupedSummary.Strategy}");
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
@@ -8677,6 +8784,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
 
                 var rootKeys = new HashSet<object>();
@@ -8797,9 +8905,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareWeightSumStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -8807,9 +8916,10 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", materializationPlan.GroupedSummary);
 
-                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                     ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, double>>)ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context))
                     : MeasurePhase(trace, closure, "build_compact_grouped", () =>
@@ -9039,6 +9149,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
@@ -9129,9 +9240,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareGroupedMinStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -9139,9 +9251,10 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", materializationPlan.GroupedSummary);
 
-                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                     ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, int>>)ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context))
                     : MeasurePhase(trace, closure, "build_compact_grouped", () =>
@@ -9291,6 +9404,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
@@ -9416,9 +9530,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareGroupedMinStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -9426,10 +9541,11 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", materializationPlan.GroupedSummary);
 
                 IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
-                if (selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
+                if (materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
                     seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
@@ -9445,6 +9561,7 @@ namespace UnifyWeaver.QueryRuntime
                     else
                     {
                         trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoPositiveFastPath");
                         seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                             (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                     }
@@ -17100,6 +17217,7 @@ namespace UnifyWeaver.QueryRuntime
                 FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
                 ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
                 PathAwareEdgeStates = parent?.PathAwareEdgeStates ?? new Dictionary<PredicateId, PathAwareEdgeState>();
+                PathAwareEdgeRetentionSelections = parent?.PathAwareEdgeRetentionSelections ?? new Dictionary<PredicateId, PathAwareEdgeRetentionSelection>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
@@ -17165,6 +17283,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, IReplayableRelationSource> ReplayableFactSources { get; }
 
             public Dictionary<PredicateId, PathAwareEdgeState> PathAwareEdgeStates { get; }
+
+            public Dictionary<PredicateId, PathAwareEdgeRetentionSelection> PathAwareEdgeRetentionSelections { get; }
 
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
