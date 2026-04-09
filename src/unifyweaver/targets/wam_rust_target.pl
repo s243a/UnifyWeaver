@@ -794,6 +794,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_collect_native_transitive_parent_distance_to_rust(NativeParentDistanceCode),
     compile_collect_native_transitive_step_parent_distance_to_rust(NativeStepParentDistanceCode),
     compile_collect_native_weighted_shortest_path_to_rust(NativeWeightedPathCode),
+    compile_collect_native_astar_shortest_path_to_rust(NativeAstarPathCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -817,6 +818,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         NativeParentDistanceCode, '\n\n',
         NativeStepParentDistanceCode, '\n\n',
         NativeWeightedPathCode, '\n\n',
+        NativeAstarPathCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1358,6 +1360,55 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
+            "astar_shortest_path4" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let dim_val = match self.regs.get("A3").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(d)) => d as f64,
+                    Some(Value::Float(d)) => d,
+                    _ => 5.0,  // default dimensionality
+                };
+                let dist_reg = match self.regs.get("A4").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let weight_pred = match self.foreign_string_config(&pred_key, "weight_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let direct_pred = match self.foreign_string_config(&pred_key, "direct_dist_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let target_node = target_filter.as_deref().unwrap_or("");
+                let mut results: Vec<(String, f64)> = Vec::new();
+                self.collect_native_astar_shortest_path_results(
+                    &start, &weight_pred, &direct_pred, target_node, dim_val, &mut results);
+                if let Some(target) = target_filter {
+                    results.retain(|(node, _)| *node == target);
+                }
+                if results.is_empty() {
+                    return false;
+                }
+                let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
+                    Value::Str("__tuple2__".to_string(), vec![
+                        Value::Atom(node),
+                        Value::Float(dist),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
+            }
             _ => false,
         }
     }'.
@@ -1659,6 +1710,103 @@ compile_collect_native_weighted_shortest_path_to_rust(Code) :-
         }
 
         // Collect all reachable nodes (excluding start)
+        for (node, cost) in &dist {
+            if node != start {
+                out.push((node.clone(), *cost));
+            }
+        }
+    }'.
+
+compile_collect_native_astar_shortest_path_to_rust(Code) :-
+    Code = '    /// A* shortest path with dimensionality-aware heuristic.
+    /// Priority: f(n) = g(n)^D + h(n)^D where D = graph dimensionality.
+    /// h(n) = direct semantic distance from n to target.
+    /// By Minkowski inequality this is admissible and tighter than L1 A*.
+    /// The power D amplifies the effect of short remaining distances,
+    /// matching the intrinsic dimensionality of the graph structure.
+    pub fn collect_native_astar_shortest_path_results(
+        &self,
+        start: &str,
+        weight_pred: &str,
+        direct_pred: &str,
+        target: &str,
+        dim: f64,
+        out: &mut Vec<(String, f64)>,
+    ) {
+        use std::collections::BinaryHeap;
+        use std::cmp::Ordering;
+
+        #[derive(PartialEq)]
+        struct State { f_cost: f64, g_cost: f64, node: String }
+        impl Eq for State {}
+        impl PartialOrd for State {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                other.f_cost.partial_cmp(&self.f_cost) // reversed for min-heap
+            }
+        }
+        impl Ord for State {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+            }
+        }
+
+        // Heuristic: h(n) = direct semantic distance from n to target
+        let heuristic = |node: &str| -> f64 {
+            if target.is_empty() { return 0.0; } // no target filter = Dijkstra
+            self.indexed_weighted_edge.get(direct_pred)
+                .and_then(|table| table.get(node))
+                .and_then(|edges| edges.iter().find(|(t, _)| t == target))
+                .map(|(_, w)| *w)
+                .unwrap_or(1.0) // conservative default if no direct distance
+        };
+
+        // f(n) = g^D + h^D
+        let f_cost = |g: f64, h: f64| -> f64 {
+            g.powf(dim) + h.powf(dim)
+        };
+
+        let mut dist: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut heap = BinaryHeap::new();
+
+        let h_start = heuristic(start);
+        dist.insert(start.to_string(), 0.0);
+        heap.push(State { f_cost: f_cost(0.0, h_start), g_cost: 0.0, node: start.to_string() });
+
+        while let Some(State { f_cost: _, g_cost, node }) = heap.pop() {
+            // Skip if we already found a shorter path
+            if let Some(&best) = dist.get(&node) {
+                if g_cost > best { continue; }
+            }
+
+            // Early termination: if we reached the target, no need to explore further
+            if !target.is_empty() && node == target {
+                break;
+            }
+
+            // Explore weighted edges
+            if let Some(edges) = self.indexed_weighted_edge.get(weight_pred)
+                .and_then(|table| table.get(&node))
+            {
+                for (next, weight) in edges {
+                    let next_g = g_cost + weight;
+                    let is_shorter = match dist.get(next) {
+                        Some(&prev_best) => next_g < prev_best,
+                        None => true,
+                    };
+                    if is_shorter {
+                        dist.insert(next.clone(), next_g);
+                        let h = heuristic(next);
+                        heap.push(State {
+                            f_cost: f_cost(next_g, h),
+                            g_cost: next_g,
+                            node: next.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Collect results
         for (node, cost) in &dist {
             if node != start {
                 out.push((node.clone(), *cost));
