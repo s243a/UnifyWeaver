@@ -78,6 +78,8 @@ pub struct WamState {
     pub labels: HashMap<String, usize>,
     /// Pre-indexed 2-column atom facts keyed by predicate then first argument.
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
+    /// Pre-indexed weighted 3-column edge facts keyed by predicate then source node.
+    pub indexed_weighted_edge: HashMap<String, HashMap<String, Vec<(String, f64)>>>,
     /// Registered foreign predicates keyed by "name/arity".
     pub foreign_predicates: HashSet<String>,
     /// Native foreign handler kinds keyed by "name/arity".
@@ -126,6 +128,7 @@ impl WamState {
             code,
             labels,
             indexed_atom_fact2: HashMap::new(),
+            indexed_weighted_edge: HashMap::new(),
             foreign_predicates: HashSet::new(),
             foreign_native_kinds: HashMap::new(),
             foreign_string_configs: HashMap::new(),
@@ -168,6 +171,17 @@ impl WamState {
                 .push((*right).to_string());
         }
         self.register_indexed_atom_fact2(pred, index);
+    }
+
+    /// Register weighted edge facts and build a first-argument index.
+    pub fn register_indexed_weighted_edge_triples(&mut self, pred: &str, triples: &[(&str, &str, f64)]) {
+        let mut index: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+        for (from, to, weight) in triples {
+            index.entry((*from).to_string())
+                .or_insert_with(Vec::new)
+                .push(((*to).to_string(), *weight));
+        }
+        self.indexed_weighted_edge.insert(pred.to_string(), index);
     }
 
     /// Register a foreign predicate implementation by "name/arity".

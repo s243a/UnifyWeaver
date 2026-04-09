@@ -35,6 +35,7 @@ test_simple_fact(foo, bar).
 :- dynamic tc_descendant/2.
 :- dynamic tc_distance/3.
 :- dynamic tc_parent_distance/4.
+:- dynamic tc_step_parent_distance/5.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -88,6 +89,11 @@ tc_parent_distance(X, Y, X, 1) :- tc_parent(X, Y).
 tc_parent_distance(X, Y, Parent, D) :-
     tc_parent(X, Z),
     tc_parent_distance(Z, Y, Parent, D1),
+    D is D1 + 1.
+tc_step_parent_distance(X, Y, Y, X, 1) :- tc_parent(X, Y).
+tc_step_parent_distance(X, Y, Step, Parent, D) :-
+    tc_parent(X, Step),
+    tc_step_parent_distance(Step, Y, _Inner, Parent, D1),
     D is D1 + 1.
 
 pass(Test) :-
@@ -316,6 +322,11 @@ test_recursive_kernel_ir_selection :-
         tc_parent_distance(SP2, TP2, PP2, DP2)-
             (tc_parent(SP2, MP2), (tc_parent_distance(MP2, TP2, PP2, DPrev2), DP2 is DPrev2 + 1))
     ],
+    StepParentDistClauses = [
+        tc_step_parent_distance(SS1, ST1, ST1, SS1, 1)-tc_parent(SS1, ST1),
+        tc_step_parent_distance(SS2, ST2, SSP2, SPP2, SDP2)-
+            (tc_parent(SS2, SSP2), (tc_step_parent_distance(SSP2, ST2, _Inner2, SPP2, SDPrev2), SDP2 is SDPrev2 + 1))
+    ],
     (   rust_target:rust_recursive_kernel(category_ancestor, 4, CategoryClauses,
             recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(10)])),
         rust_target:rust_recursive_kernel(tri_sum, 2, SumClauses,
@@ -327,6 +338,9 @@ test_recursive_kernel_ir_selection :-
         rust_target:rust_recursive_kernel(tc_parent_distance, 4, ParentDistClauses,
             recursive_kernel(transitive_parent_distance4, tc_parent_distance/4,
                 [edge_pred(tc_parent/2), fact_pairs(ParentDistancePairs)])),
+        rust_target:rust_recursive_kernel(tc_step_parent_distance, 5, StepParentDistClauses,
+            recursive_kernel(transitive_step_parent_distance5, tc_step_parent_distance/5,
+                [edge_pred(tc_parent/2), fact_pairs(StepParentDistancePairs)])),
         rust_target:rust_recursive_kernel(tc_descendant, 2, DescClauses,
             recursive_kernel(transitive_closure2, tc_descendant/2,
                 [edge_pred(tc_parent/2), fact_pairs(FactPairs)])),
@@ -336,6 +350,7 @@ test_recursive_kernel_ir_selection :-
         FactPairs == ['bob'-'tom', 'liz'-'tom', 'ann'-'bob', 'pat'-'bob', 'jim'-'pat']
         , DistancePairs == ['tom'-'bob', 'tom'-'liz', 'bob'-'ann', 'bob'-'pat', 'pat'-'jim']
         , ParentDistancePairs == ['tom'-'bob', 'tom'-'liz', 'bob'-'ann', 'bob'-'pat', 'pat'-'jim']
+        , StepParentDistancePairs == ['tom'-'bob', 'tom'-'liz', 'bob'-'ann', 'bob'-'pat', 'pat'-'jim']
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel IR did not normalize expected schemas')
     ).
@@ -363,11 +378,34 @@ test_recursive_kernel_spec_generation :-
     ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
     ).
 
+test_recursive_kernel_spec_generation_quad :-
+    Test = 'WAM-Rust: quad tuple kernel spec generation is declarative',
+    Kernel = recursive_kernel(
+        transitive_step_parent_distance5,
+        tc_step_parent_distance/5,
+        [ edge_pred(tc_parent/2),
+          fact_pairs(['tom'-'bob', 'bob'-'ann'])
+        ]),
+    (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
+        ForeignSpec = foreign_predicate(
+            tc_step_parent_distance/5,
+            [ register_foreign_native_kind(tc_step_parent_distance/5, transitive_step_parent_distance5),
+              register_foreign_result_layout(tc_step_parent_distance/5, tuple(4)),
+              register_foreign_result_mode(tc_step_parent_distance/5, stream),
+              register_foreign_string_config(tc_step_parent_distance/5, edge_pred, tc_parent/2),
+              register_indexed_atom_fact2(tc_parent/2, ['tom'-'bob', 'bob'-'ann'])
+            ],
+            [tc_step_parent_distance/5]
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'Quad tuple kernel spec generation did not match expected foreign spec')
+    ).
+
 test_recursive_kernel_registry :-
     Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
     findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
     sort(Kinds0, Kinds),
-    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4]
+    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5, weighted_shortest_path3]
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
@@ -575,6 +613,21 @@ test_foreign_lowering_transitive_parent_distance :-
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_parent_distance/4')
     ).
 
+test_foreign_lowering_transitive_step_parent_distance :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_step_parent_distance/5',
+    (   rust_target:compile_predicate_to_rust(user:tc_step_parent_distance/5,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_step_parent_distance/5", "transitive_step_parent_distance5")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_step_parent_distance/5", "tuple:4")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("tc_step_parent_distance/5", "stream")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_step_parent_distance/5", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_step_parent_distance", 5)'),
+        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_step_parent_distance/5')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -606,7 +659,8 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
         sub_string(S, _, _, _, 'transitive_closure2'),
         sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes'),
-        sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results')
+        sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results'),
+        sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).

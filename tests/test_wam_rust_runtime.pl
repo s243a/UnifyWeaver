@@ -52,6 +52,13 @@ tc_parent_distance(X, Y, Parent, D) :-
     tc_parent_distance(Z, Y, Parent, D1),
     D is D1 + 1.
 
+:- dynamic tc_step_parent_distance/5.
+tc_step_parent_distance(X, Y, Y, X, 1) :- tc_parent(X, Y).
+tc_step_parent_distance(X, Y, Step, Parent, D) :-
+    tc_parent(X, Step),
+    tc_step_parent_distance(Step, Y, _Inner, Parent, D1),
+    D is D1 + 1.
+
 :- dynamic tri_sum/2.
 tri_sum(0, 0).
 tri_sum(N, Sum) :-
@@ -78,7 +85,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -91,6 +98,7 @@ use runtime_test::tc_ancestor;
 use runtime_test::tc_descendant;
 use runtime_test::tc_distance;
 use runtime_test::tc_parent_distance;
+use runtime_test::tc_step_parent_distance;
 use runtime_test::tri_sum;
 use runtime_test::tail_suffix;
 use runtime_test::tail_suffixes;
@@ -283,6 +291,66 @@ fn test_generated_predicates() {
         Value::Unbound("Parent3".to_string()),
         Value::Unbound("Dist3".to_string()));
     assert!(!ok_pd3, "tc_parent_distance(liz, jim, Parent, Dist) should fail");
+
+    // Test tc_step_parent_distance/5 foreign lowering end-to-end
+    let mut vm_step_parent = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_sp1 = tc_step_parent_distance(&mut vm_step_parent,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Target4".to_string()),
+        Value::Unbound("Step4".to_string()),
+        Value::Unbound("Parent4".to_string()),
+        Value::Unbound("Dist4".to_string()));
+    assert!(ok_sp1, "tc_step_parent_distance(tom, Target, Step, Parent, Dist) first solution should succeed");
+
+    let mut step_parent_distances: Vec<String> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Atom(step)), Some(Value::Atom(parent)), Some(Value::Integer(dist))) =
+        (vm_step_parent.bindings.get("Target4").cloned(),
+         vm_step_parent.bindings.get("Step4").cloned(),
+         vm_step_parent.bindings.get("Parent4").cloned(),
+         vm_step_parent.bindings.get("Dist4").cloned()) {
+        step_parent_distances.push(format!("{}:{}:{}:{}", target, step, parent, dist));
+    } else {
+        panic!("expected first tc_step_parent_distance result in Target4/Step4/Parent4/Dist4");
+    }
+
+    while vm_step_parent.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Atom(step)), Some(Value::Atom(parent)), Some(Value::Integer(dist))) =
+            (vm_step_parent.bindings.get("Target4").cloned(),
+             vm_step_parent.bindings.get("Step4").cloned(),
+             vm_step_parent.bindings.get("Parent4").cloned(),
+             vm_step_parent.bindings.get("Dist4").cloned()) {
+            step_parent_distances.push(format!("{}:{}:{}:{}", target, step, parent, dist));
+        } else {
+            panic!("expected backtracked tc_step_parent_distance result in Target4/Step4/Parent4/Dist4");
+        }
+    }
+
+    step_parent_distances.sort();
+    assert_eq!(step_parent_distances, vec![
+        "ann:bob:bob:2".to_string(),
+        "bob:bob:tom:1".to_string(),
+        "jim:bob:pat:3".to_string(),
+        "liz:liz:tom:1".to_string(),
+        "pat:bob:bob:2".to_string(),
+    ]);
+
+    let mut vm_step_parent_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_sp2 = tc_step_parent_distance(&mut vm_step_parent_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Atom("bob".to_string()),
+        Value::Atom("pat".to_string()),
+        Value::Integer(3));
+    assert!(ok_sp2, "tc_step_parent_distance(tom, jim, bob, pat, 3) should succeed");
+
+    let mut vm_step_parent_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_sp3 = tc_step_parent_distance(&mut vm_step_parent_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Unbound("Step".to_string()),
+        Value::Unbound("Parent".to_string()),
+        Value::Unbound("Dist".to_string()));
+    assert!(!ok_sp3, "tc_step_parent_distance(liz, jim, Step, Parent, Dist) should fail");
 
     // Test tri_sum/2 foreign lowering end-to-end
     let mut vm_sum = WamState::new(vec![], std::collections::HashMap::new());
