@@ -4058,6 +4058,11 @@ rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),
     get_dict(goal_info, AggInfo, GoalInfo),
+    compile_rust_weighted_min_aggregate_wrapper(Pred, Goal, GoalInfo, AggInfo, IncludeMain, RustCode),
+    !.
+compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
+    get_dict(goal, AggInfo, Goal),
+    get_dict(goal_info, AggInfo, GoalInfo),
     get_dict(relations, GoalInfo, [RelGoal|_]),
     RelGoal =.. [InnerPred|GoalArgs],
     length(GoalArgs, InnerArity),
@@ -4084,6 +4089,83 @@ compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCo
     ->  compile_rust_grouped_recursive_aggregate(Pred, Goal, InnerPred, InnerArity, GoalArgs, GroupTerm, Op, ValueIndex, IncludeMain, RustCode)
     ;   fail
     ).
+
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    get_dict(type, AggInfo, all),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(relations, GoalInfo, [RelGoal|_]),
+    RelGoal =.. [InnerPred, _StartArg, TargetArg, CostArg],
+    Expr == CostArg,
+    var(TargetArg),
+    functor(InnerHead, InnerPred, 3),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
+    vm.register_foreign_result_layout("~w/3", "tuple:2");
+    vm.register_foreign_result_mode("~w/3", "stream");
+    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+
+    let temp_target = "__agg_target".to_string();
+    let temp_cost = "__agg_cost".to_string();
+    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
+
+    if !vm.execute_foreign_predicate("~w", 3) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut best = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+        Some(Value::Float(cost)) => Some(cost),
+        _ => None,
+    };
+    while vm.backtrack() {
+        if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            best = Some(match best {
+                Some(current) => current.min(cost),
+                None => cost,
+            });
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+
+    match best {
+        Some(cost) => vm.unify(&a3, &Value::Float(cost)),
+        None => false,
+    }
+}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, InnerPredStr]).
+
+rust_weighted_fact_triples_literal(Triples, Literal) :-
+    maplist(rust_weighted_fact_triple_literal, Triples, TripleLiterals),
+    atomic_list_concat(TripleLiterals, ', ', Joined),
+    format(string(Literal), '[~w]', [Joined]).
+
+rust_weighted_fact_triple_literal(Left-Right-Weight, Literal) :-
+    rust_literal(Left, LeftLiteral),
+    rust_literal(Right, RightLiteral),
+    format(string(Literal), '(~w, ~w, ~w)', [LeftLiteral, RightLiteral, Weight]).
 
 rust_filter_fact_rows(_GoalArgs, GoalInfo, FactRows, FilteredRows) :-
     include(rust_fact_row_matches(GoalInfo), FactRows, FilteredRows).
