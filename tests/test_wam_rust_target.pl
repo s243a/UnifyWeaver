@@ -513,6 +513,21 @@ test_foreign_lowering_list_suffixes :-
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffixes/2')
     ).
 
+test_foreign_only_wrapper_omits_dead_wam_code :-
+    Test = 'WAM-Rust: foreign-only wrappers omit dead WAM instruction setup',
+    (   rust_target:compile_predicate_to_rust(user:tail_suffixes/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'vm.code = Vec::new();'),
+        sub_string(S, _, _, _, 'vm.labels = HashMap::new();'),
+        \+ sub_string(S, _, _, _, 'let code: Vec<Instruction> = vec!['),
+        \+ sub_string(S, _, _, _, 'labels.insert('),
+        \+ sub_string(S, _, _, _, 'switch_on_term'),
+        \+ sub_string(S, _, _, _, 'unknown:')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign-only wrapper still emitted dead WAM setup')
+    ).
+
 test_foreign_lowering_reverse_transitive_closure :-
     Test = 'WAM-Rust: compiler can choose foreign lowering for tc_descendant/2',
     (   rust_target:compile_predicate_to_rust(user:tc_descendant/2,
