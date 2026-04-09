@@ -49,6 +49,8 @@ BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
+SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_min_semantic_distance_benchmark.pl"
+EDGE_WEIGHT_SCRIPT = ROOT / "examples" / "benchmark" / "precompute_edge_weights.py"
 
 
 @dataclass
@@ -134,6 +136,42 @@ def build_prolog_effective_distance(root: Path, scale: str, variant: str) -> lis
     return ["swipl", "-q", "-s", str(script_path)]
 
 
+def build_prolog_semantic_min(root: Path, scale: str) -> list[str]:
+    """Build the min semantic distance Prolog benchmark.
+
+    Requires precomputed edge weights in data/benchmark/<scale>/edge_weights.pl.
+    Generate them first with:
+        python precompute_edge_weights.py data/benchmark/<scale>/category_parent.tsv data/benchmark/<scale>/
+    """
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    weights_path = BENCH_DIR / scale / "edge_weights.pl"
+    if not weights_path.exists():
+        # Try to precompute if sentence-transformers is available
+        edges_path = BENCH_DIR / scale / "category_parent.tsv"
+        if edges_path.exists():
+            print(f"  Precomputing edge weights for {scale}...", file=sys.stderr)
+            run_command(
+                [sys.executable, str(EDGE_WEIGHT_SCRIPT), str(edges_path), str(BENCH_DIR / scale)],
+                check=False,
+            )
+        if not weights_path.exists():
+            raise FileNotFoundError(
+                f"Edge weights not found: {weights_path}\n"
+                f"Run: python precompute_edge_weights.py {BENCH_DIR / scale / 'category_parent.tsv'} {BENCH_DIR / scale}/"
+            )
+    weights_path = require_file(weights_path)
+
+    script_path = root / "prolog_semantic_min" / scale / "min_semantic_distance.pl"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl", "-q", "-s", str(SEMANTIC_PROLOG_GENERATOR),
+            "--", str(facts_path), str(weights_path), str(script_path),
+        ]
+    )
+    return ["swipl", "-q", "-s", str(script_path)]
+
+
 def build_wam_rust_effective_distance(root: Path, scale: str) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
     project_dir = root / "wam_rust" / scale
@@ -193,6 +231,7 @@ def print_summary(results: list[RunResult]) -> None:
         prolog_article_accumulated = find_result(entries, "prolog-article-accumulated")
         prolog_root_accumulated = find_result(entries, "prolog-root-accumulated")
         wam_rust_accumulated = find_result(entries, "wam-rust-accumulated")
+        prolog_semantic_min = find_result(entries, "prolog-semantic-min")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
 
         if len(dfs_like) > 1:
@@ -205,6 +244,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_prolog_root_accumulated", qe, prolog_root_accumulated)
         print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
         print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
+        print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_prolog_seeded", prolog_seeded, qe)
@@ -213,6 +253,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_prolog_article_accumulated", prolog_article_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_root_accumulated", prolog_root_accumulated, qe)
         print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
+        print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
         print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
         print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
@@ -220,6 +261,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "prolog-article-accumulated-metrics", prolog_article_accumulated)
         print_phase_metrics(scale, "prolog-root-accumulated-metrics", prolog_root_accumulated)
         print_phase_metrics(scale, "wam-rust-accumulated-metrics", wam_rust_accumulated)
+        print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -272,6 +314,8 @@ def main() -> int:
                 continue
             elif target == "wam-rust-accumulated":
                 continue
+            elif target == "prolog-semantic-min":
+                continue
             else:
                 raise ValueError(f"unsupported target: {target}")
 
@@ -290,6 +334,8 @@ def main() -> int:
                     command = build_prolog_effective_distance(temp_root, scale, "root_accumulated")
                 elif target == "wam-rust-accumulated":
                     command = build_wam_rust_effective_distance(temp_root, scale)
+                elif target == "prolog-semantic-min":
+                    command = build_prolog_semantic_min(temp_root, scale)
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))
