@@ -32,25 +32,26 @@ compact grouped weight sums and the legacy seeded-row regrouping path,
 using the same grouped-summary policy layer that now also drives the
 shortest-path minima family. That policy now records measured cost buckets
 like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
-`group_reduce`, while only running bounded probes when the structural signal
-is ambiguous.
+`group_reduce`, while the earlier path-aware edge-retention boundary now also
+records buckets like `edge_strategy_select`, `edge_probe_*`,
+`edge_materialize_replayable`, and `edge_build_*`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
-| **C# Query Engine** | **0.224s** | **0.182s** | **0.406s** | **0.695s** |
-| Prolog accumulated | 0.349s | 0.236s | 0.856s | 1.942s |
-| C# DFS pipeline | 0.437s | 1.313s | 5.634s | 10.196s |
-| Rust DFS pipeline | 0.365s | 1.638s | 7.164s | 13.782s |
-| Go DFS pipeline | 0.469s | 1.971s | 11.302s | 19.074s |
+| **C# Query Engine** | **0.279s** | **0.229s** | **0.453s** | **0.902s** |
+| Prolog accumulated | 0.488s | 0.333s | 1.040s | 2.283s |
+| C# DFS pipeline | 0.509s | 1.465s | 6.494s | 11.863s |
+| Rust DFS pipeline | 0.413s | 1.718s | 9.761s | 16.344s |
+| Go DFS pipeline | 0.580s | 2.496s | 15.875s | 24.587s |
 
 **Speedups of the current C# query engine:**
 
 | Scale | vs Prolog accumulated | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------------------:|----------:|------------:|----------:|
-| 300 art | 1.56x | 1.95x | 1.63x | 2.09x |
-| 1K art | 1.30x | 7.21x | 9.00x | 10.83x |
-| 5K art | 2.11x | 13.88x | 17.65x | 27.84x |
-| 10K art | 2.79x | 14.67x | 19.83x | 27.46x |
+| 300 art | 1.75x | 1.83x | 1.48x | 2.08x |
+| 1K art | 1.45x | 6.40x | 7.50x | 10.90x |
+| 5K art | 2.30x | 14.34x | 21.55x | 35.04x |
+| 10K art | 2.53x | 13.15x | 18.12x | 27.26x |
 
 Semantic note:
 
@@ -110,13 +111,13 @@ For historical context, the original DFS-only pipeline comparison:
 
 ### Key Findings
 
-1. **The C# query engine is now the fastest effective-distance path on
-   this benchmark surface** — it beats accumulated Prolog by `1.56x` at
-   `300`, `1.30x` at `1k`, `2.11x` at `5k`, and `2.79x` at `10k`.
+1. **The C# query engine is still the fastest effective-distance path on
+   this benchmark surface** — it beats accumulated Prolog by `1.75x` at
+   `300`, `1.45x` at `1k`, `2.30x` at `5k`, and `2.53x` at `10k`.
 
-2. **The C# query engine now beats the DFS baselines by a wide margin** —
-   at `10k` it is `14.67x` faster than C# DFS, `19.83x` faster than Rust
-   DFS, and `27.46x` faster than Go DFS.
+2. **The C# query engine still beats the DFS baselines by a wide margin** —
+   at `10k` it is `13.15x` faster than C# DFS, `18.12x` faster than Rust
+   DFS, and `27.26x` faster than Go DFS.
 
 3. **Retained-state strategy matters more than branch pruning on this
    workload** — seeded reuse is the first big win, and moving per-article
@@ -516,28 +517,28 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.095s | 0.131s | 0.500s | 0.437s | 0.478s | match |
-| 1k | 0.090s | 0.131s | 1.262s | 1.765s | 2.148s | match |
-| 5k | 0.121s | 0.254s | 5.822s | 8.109s | 12.126s | match |
-| 10k | 0.184s | 0.459s | 11.182s | 15.130s | 20.374s | match |
+| 300 | 0.117s | 0.136s | 0.537s | 0.418s | 0.600s | match |
+| 1k | 0.107s | 0.112s | 1.465s | 1.718s | 2.531s | match |
+| 5k | 0.148s | 0.278s | 6.434s | 8.819s | 15.760s | match |
+| 10k | 0.212s | 0.510s | 12.139s | 16.450s | 25.110s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | C# Query | 1.38x |
-| 1k | C# Query | 1.45x |
-| 5k | C# Query | 2.11x |
-| 10k | C# Query | 2.49x |
+| 300 | C# Query | 1.15x |
+| 1k | C# Query | 1.05x |
+| 5k | C# Query | 1.87x |
+| 10k | C# Query | 2.40x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 5.26x | 4.59x | 5.04x |
-| 1k | 14.03x | 19.62x | 23.88x |
-| 5k | 48.29x | 67.26x | 100.57x |
-| 10k | 60.64x | 82.06x | 110.49x |
+| 300 | 4.57x | 3.56x | 5.11x |
+| 1k | 13.73x | 16.10x | 23.72x |
+| 5k | 43.34x | 59.41x | 106.16x |
+| 10k | 57.21x | 77.53x | 118.35x |
 
 Comparison note:
 
@@ -547,12 +548,17 @@ Comparison note:
 - on the current one-root benchmark shape, the retained row count now
   collapses to the final article result count, which is why the C# query
   path improves so sharply at every tested scale
-- the new `Auto` selector currently chooses the compact grouped minima
+- the new `Auto` selector still chooses the compact grouped minima
   path at every tested scale; this now flows through the same grouped-summary
   policy layer used by grouped weight sums, while still preserving the
-  per-family override knob. Trace output now exposes measured buckets such as
-  `load_roots`, `load_seeds`, `strategy_select`, `build_compact_grouped`, and
-  `group_reduce`. Forcing legacy seeded-row regrouping is
+  per-family override knob
+- the path-aware edge relation now also goes through measured retention
+  selection, and on the current benchmark surface `Auto` prefers
+  `ReplayableBuffer`; trace output now exposes edge buckets such as
+  `edge_strategy_select`, `edge_probe_streaming_direct`,
+  `edge_probe_replayable_buffer`, `edge_materialize_replayable`, and
+  `edge_build_replayable_buffer`
+- forcing legacy seeded-row regrouping is
   materially worse (`300`: `0.160s` vs `0.083s`, `10k`: `0.419s` vs
   `0.161s`)
 - seeded Prolog `min` remains competitive, but the C# query engine is
@@ -574,28 +580,28 @@ Latest local results:
 
 | Scale | C# Query | Prolog Min | C# DFS | Rust DFS | Go DFS | Outputs |
 |-------|---------:|-----------:|--------:|---------:|-------:|---------|
-| 300 | 0.162s | 0.128s | 0.523s | 0.427s | 0.497s | match |
-| 1k | 0.147s | 0.125s | 1.402s | 1.762s | 2.186s | match |
-| 5k | 0.222s | 0.295s | 6.116s | 8.414s | 11.994s | match |
-| 10k | 0.347s | 0.514s | 11.450s | 16.019s | 20.289s | match |
+| 300 | 0.190s | 0.134s | 0.528s | 0.386s | 0.628s | match |
+| 1k | 0.175s | 0.155s | 1.450s | 1.730s | 2.622s | match |
+| 5k | 0.246s | 0.305s | 6.742s | 9.137s | 15.661s | match |
+| 10k | 0.414s | 0.636s | 12.798s | 17.239s | 24.495s | match |
 
 Direct C# query vs Prolog seeded `min`:
 
 | Scale | Faster target | Speedup |
 |-------|---------------|--------:|
-| 300 | Prolog Min | 1.26x |
-| 1k | Prolog Min | 1.17x |
-| 5k | C# Query | 1.33x |
-| 10k | C# Query | 1.48x |
+| 300 | Prolog Min | 1.42x |
+| 1k | Prolog Min | 1.13x |
+| 5k | C# Query | 1.24x |
+| 10k | C# Query | 1.54x |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 3.24x | 2.64x | 3.07x |
-| 1k | 9.55x | 12.00x | 14.89x |
-| 5k | 27.60x | 37.97x | 54.12x |
-| 10k | 32.99x | 46.16x | 58.46x |
+| 300 | 2.78x | 2.03x | 3.31x |
+| 1k | 8.30x | 9.90x | 15.01x |
+| 5k | 27.39x | 37.12x | 63.62x |
+| 10k | 30.93x | 41.66x | 59.20x |
 
 Comparison note:
 
@@ -606,8 +612,10 @@ Comparison note:
   also collapses to the final article result count
 - the new `Auto` selector also chooses the compact grouped minima path
   here; this now uses the same grouped-summary policy layer as shortest
-  path while keeping a separate benchmark override, and the same measured
-  buckets are available under trace for this family too
+  path while keeping a separate benchmark override
+- the path-aware edge relation also now goes through measured retention
+  selection, and the same edge buckets are available under trace for this
+  family too
 - forcing legacy seeded-row regrouping regresses both ends of the
   benchmark (`300`: `0.202s` vs `0.151s`, `10k`: `0.430s` vs `0.320s`)
 - seeded Prolog `min` still wins narrowly at `300` and `1k`, but the C#
@@ -772,19 +780,19 @@ Latest local results:
 
 | Scale | C# Query | Rust DFS | Go DFS | Outputs |
 |-------|---------:|---------:|-------:|---------|
-| 300 | 0.207s | 0.484s | 0.495s | match |
-| 1k | 0.170s | 1.608s | 2.096s | match |
-| 5k | 0.382s | 8.125s | 11.640s | match |
-| 10k | 0.718s | 14.767s | 19.544s | match |
+| 300 | 0.320s | 0.469s | 1.516s | match |
+| 1k | 0.340s | 2.861s | 2.636s | match |
+| 5k | 0.455s | 9.366s | 14.989s | match |
+| 10k | 0.882s | 16.925s | 25.592s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs Rust DFS | vs Go DFS |
 |-------|------------:|----------:|
-| 300 | 2.33x | 2.39x |
-| 1k | 9.48x | 12.35x |
-| 5k | 21.26x | 30.45x |
-| 10k | 20.55x | 27.20x |
+| 300 | 1.47x | 4.74x |
+| 1k | 8.42x | 7.75x |
+| 5k | 20.57x | 32.92x |
+| 10k | 19.19x | 29.01x |
 
 Comparison note:
 
@@ -794,9 +802,14 @@ Comparison note:
 - the remaining benchmark-side work is only the final per-root sum over those
   compact article/root summaries
 - the new `Auto` selector also chooses the compact grouped weight-sum path
-  here; trace output now exposes measured buckets such as `load_roots`,
-  `load_seeds`, `strategy_select`, `build_compact_grouped`, and
-  `group_reduce`. Forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
+  here
+- the path-aware edge relation now also goes through measured retention
+  selection, and trace output exposes both grouped-summary buckets such as
+  `load_roots`, `load_seeds`, `strategy_select`, `build_compact_grouped`, and
+  `group_reduce`, plus edge buckets such as `edge_strategy_select`,
+  `edge_probe_streaming_direct`, `edge_probe_replayable_buffer`,
+  `edge_materialize_replayable`, and `edge_build_replayable_buffer`
+- forcing legacy seeded-row regrouping regresses badly (`300`: `0.711s`
   vs `0.237s`, `10k`: `2.998s` vs `0.829s`)
 - Rust and Go remain generated DFS/pipeline binaries
 - so this runner is still intentionally a mixed execution-model comparison:
