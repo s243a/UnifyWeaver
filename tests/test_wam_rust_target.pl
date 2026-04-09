@@ -38,6 +38,8 @@ test_simple_fact(foo, bar).
 :- dynamic tc_step_parent_distance/5.
 :- dynamic weighted_path/3.
 :- dynamic weighted_edge/3.
+:- dynamic astar_weighted_path/4.
+:- dynamic direct_semantic_dist/3.
 :- dynamic min_semantic_dist/3.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
@@ -106,10 +108,28 @@ weighted_edge(a, c, 5.0).
 weighted_edge(b, c, 1.0).
 weighted_edge(c, d, 3.0).
 
+direct_semantic_dist(s, a, 1.0).
+direct_semantic_dist(s, b, 3.0).
+direct_semantic_dist(s, c, 4.0).
+direct_semantic_dist(s, d, 7.0).
+direct_semantic_dist(a, b, 2.0).
+direct_semantic_dist(a, c, 3.0).
+direct_semantic_dist(a, d, 6.0).
+direct_semantic_dist(b, c, 1.0).
+direct_semantic_dist(b, d, 4.0).
+direct_semantic_dist(c, d, 3.0).
+
 weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
 weighted_path(X, Y, Cost) :-
     weighted_edge(X, Z, W),
     weighted_path(Z, Y, RestCost),
+    Cost is W + RestCost.
+
+astar_weighted_path(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+astar_weighted_path(X, Y, Dim, Cost) :-
+    weighted_edge(X, Z, W),
+    direct_semantic_dist(Z, Y, _Heuristic),
+    astar_weighted_path(Z, Y, Dim, RestCost),
     Cost is W + RestCost.
 
 min_semantic_dist(Start, Target, MinDist) :-
@@ -424,7 +444,7 @@ test_recursive_kernel_registry :-
     Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
     findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
     sort(Kinds0, Kinds),
-    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5, weighted_shortest_path3]
+    (   Kinds == [astar_shortest_path4, category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5, weighted_shortest_path3]
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
@@ -663,6 +683,25 @@ test_foreign_lowering_weighted_shortest_path :-
     ;   fail_test(Test, 'Foreign lowering was not selected for weighted_path/3')
     ).
 
+test_foreign_lowering_astar_shortest_path :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for astar_weighted_path/4',
+    (   rust_target:compile_predicate_to_rust(user:astar_weighted_path/4,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("astar_weighted_path/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("astar_weighted_path/4", "stream")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("astar_weighted_path/4", "weight_pred", "weighted_edge/3")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("astar_weighted_path/4", "direct_dist_pred", "direct_semantic_dist/3")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("astar_weighted_path/4", "dimensionality", 5)'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("direct_semantic_dist/3", &[("s", "a", 1.0), ("s", "b", 3.0), ("s", "c", 4.0), ("s", "d", 7.0), ("a", "b", 2.0), ("a", "c", 3.0), ("a", "d", 6.0), ("b", "c", 1.0), ("b", "d", 4.0), ("c", "d", 3.0)])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("astar_weighted_path", 4)'),
+        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for astar_weighted_path/4')
+    ).
+
 test_weighted_min_aggregate_wrapper :-
     Test = 'WAM-Rust: aggregate min wrapper delegates to weighted_path/3',
     (   rust_target:compile_predicate_to_rust(user:min_semantic_dist/3,
@@ -710,7 +749,8 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes'),
         sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results'),
         sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results'),
-        sub_string(S, _, _, _, 'collect_native_weighted_shortest_path_results')
+        sub_string(S, _, _, _, 'collect_native_weighted_shortest_path_results'),
+        sub_string(S, _, _, _, 'collect_native_astar_shortest_path_results')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -989,6 +1029,7 @@ run_tests :-
     test_foreign_lowering_transitive_parent_distance,
     test_foreign_lowering_transitive_step_parent_distance,
     test_foreign_lowering_weighted_shortest_path,
+    test_foreign_lowering_astar_shortest_path,
     test_weighted_min_aggregate_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,

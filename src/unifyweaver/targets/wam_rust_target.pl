@@ -1402,7 +1402,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple2__".to_string(), vec![
+                    Value::Str("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Float(dist),
                     ])

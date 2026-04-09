@@ -83,11 +83,31 @@ weighted_edge(a, c, 5.0).
 weighted_edge(b, c, 1.0).
 weighted_edge(c, d, 3.0).
 
+:- dynamic direct_semantic_dist/3.
+direct_semantic_dist(s, a, 1.0).
+direct_semantic_dist(s, b, 3.0).
+direct_semantic_dist(s, c, 4.0).
+direct_semantic_dist(s, d, 7.0).
+direct_semantic_dist(a, b, 2.0).
+direct_semantic_dist(a, c, 3.0).
+direct_semantic_dist(a, d, 6.0).
+direct_semantic_dist(b, c, 1.0).
+direct_semantic_dist(b, d, 4.0).
+direct_semantic_dist(c, d, 3.0).
+
 :- dynamic weighted_path/3.
 weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
 weighted_path(X, Y, Cost) :-
     weighted_edge(X, Z, W),
     weighted_path(Z, Y, RestCost),
+    Cost is W + RestCost.
+
+:- dynamic astar_weighted_path/4.
+astar_weighted_path(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+astar_weighted_path(X, Y, Dim, Cost) :-
+    weighted_edge(X, Z, W),
+    direct_semantic_dist(Z, Y, _Heuristic),
+    astar_weighted_path(Z, Y, Dim, RestCost),
     Cost is W + RestCost.
 
 :- dynamic min_semantic_dist/3.
@@ -104,7 +124,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:min_semantic_dist/3],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -122,6 +142,7 @@ use runtime_test::tri_sum;
 use runtime_test::tail_suffix;
 use runtime_test::tail_suffixes;
 use runtime_test::weighted_path;
+use runtime_test::astar_weighted_path;
 use runtime_test::min_semantic_dist;
 
 #[test]
@@ -534,6 +555,71 @@ fn test_generated_predicates() {
         Value::Atom("s".to_string()),
         Value::Unbound("CostFail".to_string()));
     assert!(!ok20, "weighted_path(d, s, Cost) should fail");
+
+    // Test astar_weighted_path/4 foreign lowering end-to-end
+    let mut vm_astar = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_astar1 = astar_weighted_path(&mut vm_astar,
+        Value::Atom("s".to_string()),
+        Value::Unbound("ATarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("ACost".to_string()));
+    assert!(ok_astar1, "astar_weighted_path(s, Target, 5, Cost) first solution should succeed");
+
+    let mut astar_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_astar.bindings.get("ATarget").cloned(), vm_astar.bindings.get("ACost").cloned()) {
+        astar_results.push((target, cost));
+    } else {
+        panic!("expected first astar_weighted_path result in ATarget/ACost");
+    }
+
+    while vm_astar.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_astar.bindings.get("ATarget").cloned(), vm_astar.bindings.get("ACost").cloned()) {
+            astar_results.push((target, cost));
+        } else {
+            panic!("expected backtracked astar_weighted_path result in ATarget/ACost");
+        }
+    }
+
+    astar_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(astar_results.len(), 4);
+    assert_eq!(astar_results[0].0, "a".to_string());
+    assert_eq!(astar_results[1].0, "b".to_string());
+    assert_eq!(astar_results[2].0, "c".to_string());
+    assert_eq!(astar_results[3].0, "d".to_string());
+    assert_close(astar_results[0].1, 1.0);
+    assert_close(astar_results[1].1, 3.0);
+    assert_close(astar_results[2].1, 4.0);
+    assert_close(astar_results[3].1, 7.0);
+
+    let mut vm_astar_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_astar2 = astar_weighted_path(&mut vm_astar_check,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Unbound("ACostD".to_string()));
+    assert!(ok_astar2, "astar_weighted_path(s, d, 5, Cost) should succeed");
+    match vm_astar_check.bindings.get("ACostD").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 7.0),
+        other => panic!("expected astar_weighted_path(s, d, 5, Cost) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_astar3 = astar_weighted_path(&mut vm_astar_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("c".to_string()),
+        Value::Integer(5),
+        Value::Float(4.0));
+    assert!(ok_astar3, "astar_weighted_path(s, c, 5, 4.0) should succeed");
+
+    let mut vm_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok_astar4 = astar_weighted_path(&mut vm_astar_fail,
+        Value::Atom("d".to_string()),
+        Value::Atom("s".to_string()),
+        Value::Integer(5),
+        Value::Unbound("ACostFail".to_string()));
+    assert!(!ok_astar4, "astar_weighted_path(d, s, 5, Cost) should fail");
 
     // Test min_semantic_dist/3 aggregate wrapper over weighted_path/3
     let mut vm_min = WamState::new(vec![], std::collections::HashMap::new());
