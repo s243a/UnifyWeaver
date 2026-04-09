@@ -29,7 +29,10 @@ main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-%% power_sum_bound: aggregate_all(sum(W), ...) compiled to WAM instructions
+%% power_sum_bound(+Cat, +Root, +NegN, -WeightSum)
+%  Computes WeightSum = Σ (Hops+1)^NegN over all category_ancestor paths.
+%  NegN should be negative (e.g., -5 for dimension n=5).
+%  Compiled to WAM begin_aggregate/end_aggregate instructions.
 power_sum_bound(Cat, Root, NegN, WeightSum) :-
     aggregate_all(sum(W),
         (category_ancestor(Cat, Root, Hops, [Cat]),

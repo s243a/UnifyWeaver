@@ -293,6 +293,14 @@ backtrackInner returnPC s = case wsCPs s of
 
 -- | Finalize an aggregate: pop CPs to the aggregate frame, apply the
 -- aggregation function, bind the result register.
+-- | Update only the nearest aggregate frame CP with returnPC. O(k) where
+-- k is the number of inner CPs above the aggregate frame, not O(n) over all CPs.
+updateNearestAggFrame :: Int -> [ChoicePoint] -> [ChoicePoint]
+updateNearestAggFrame _ [] = []
+updateNearestAggFrame rpc (cp:rest) = case cpAggFrame cp of
+  Just af -> cp { cpAggFrame = Just af { afReturnPC = rpc } } : rest
+  Nothing -> cp : updateNearestAggFrame rpc rest
+
 finalizeAggregate :: Int -> WamState -> Maybe WamState
 finalizeAggregate returnPC s = go (wsCPs s)
   where
@@ -646,14 +654,12 @@ step s (BeginAggregate typ valReg resReg) =
              , wsAggAccum = []
              })
 
--- end_aggregate: collect value, store returnPC in aggregate frame, force backtrack
+-- end_aggregate: collect value, store returnPC in nearest aggregate frame, force backtrack
 step s (EndAggregate valReg) =
   let val = derefVar (wsBindings s) $ fromMaybe (Integer 0) (getReg valReg s)
       returnPC = wsPC s + 1
-      -- Update the aggregate frame CP with the correct returnPC
-      updatedCPs = map (\\cp -> case cpAggFrame cp of
-          Just af -> cp { cpAggFrame = Just af { afReturnPC = returnPC } }
-          Nothing -> cp) (wsCPs s)
+      -- Update only the nearest (first) aggregate frame CP, not all CPs
+      updatedCPs = updateNearestAggFrame returnPC (wsCPs s)
       s1 = s { wsAggAccum = val : wsAggAccum s, wsCPs = updatedCPs }
   in case backtrackInner returnPC s1 of
     Just s2 -> Just s2
@@ -1135,8 +1141,8 @@ data WamState = WamState
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
   , wsAggAccum :: ![Value]     -- aggregate accumulator (values collected so far)
-  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))  -- pred -> (key1 -> [val2s])
-  , wsForeignConfig :: !(Map.Map String Int)                       -- "max_depth" etc.
+  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))  -- pred -> (key1 -> [val2s]); populated by benchmark driver
+  , wsForeignConfig :: !(Map.Map String Int)                       -- "max_depth" etc.; populated by benchmark driver
   } deriving (Show)
 
 -- | Instruction type for the WAM.
