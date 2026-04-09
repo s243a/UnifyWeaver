@@ -784,6 +784,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_meta_builtin_to_rust(MetaBuiltinCode),
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
+    compile_foreign_result_helpers_to_rust(ForeignResultHelpersCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_compute_native_countdown_sum_to_rust(NativeCountdownSumCode),
     compile_collect_native_list_suffixes_to_rust(NativeListSuffixCode),
@@ -802,6 +803,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         MetaBuiltinCode, '\n\n',
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
+        ForeignResultHelpersCode, '\n\n',
         NativeAncestorCode, '\n\n',
         NativeCountdownSumCode, '\n\n',
         NativeListSuffixCode, '\n\n',
@@ -1087,25 +1089,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if hops.is_empty() {
                     return false;
                 }
-                if hops.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: vec![Value::Atom(pred_key.clone()), hops_reg.clone()],
-                            data: hops[1..].iter().map(|hop| Value::Integer(*hop)).collect(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
-                }
-                if self.unify(&hops_reg, &Value::Integer(hops[0])) {
-                    self.pc += 1; true
-                } else { false }
+                let results: Vec<Value> = hops.into_iter().map(Value::Integer).collect();
+                self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
             "countdown_sum2" => {
                 let n = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1120,9 +1105,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(sum) => sum,
                     None => return false,
                 };
-                if self.unify(&sum_reg, &Value::Integer(sum)) {
-                    self.pc += 1; true
-                } else { false }
+                self.finish_foreign_results(&pred_key, vec![sum_reg], vec![Value::Integer(sum)])
             }
             "list_suffix2" => {
                 let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1146,25 +1129,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if suffixes.is_empty() {
                     return false;
                 }
-                if suffixes.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: vec![Value::Atom(pred_key.clone()), suffix_reg.clone()],
-                            data: suffixes[1..].to_vec(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
-                }
-                if self.unify(&suffix_reg, &suffixes[0]) {
-                    self.pc += 1; true
-                } else { false }
+                self.finish_foreign_results(&pred_key, vec![suffix_reg], suffixes)
             }
             "transitive_closure2" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1192,25 +1157,8 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if nodes.is_empty() {
                     return false;
                 }
-                if nodes.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: vec![Value::Atom(pred_key.clone()), target_reg.clone()],
-                            data: nodes[1..].iter().map(|node| Value::Atom(node.clone())).collect(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
-                }
-                if self.unify(&target_reg, &Value::Atom(nodes[0].clone())) {
-                    self.pc += 1; true
-                } else { false }
+                let results: Vec<Value> = nodes.into_iter().map(Value::Atom).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
             "transitive_distance3" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1242,31 +1190,79 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if results.is_empty() {
                     return false;
                 }
-                if results.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: vec![Value::Atom(pred_key.clone()), target_reg.clone(), dist_reg.clone()],
-                            data: results[1..].iter().map(|(node, dist)| {
-                                Value::Str("__pair__".to_string(), vec![
-                                    Value::Atom(node.clone()),
-                                    Value::Integer(*dist),
-                                ])
-                            }).collect(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
+                let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
+                    Value::Str("__pair__".to_string(), vec![
+                        Value::Atom(node),
+                        Value::Integer(dist),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
+            }
+            _ => false,
+        }
+    }'.
+
+compile_foreign_result_helpers_to_rust(Code) :-
+    Code = '    fn finish_foreign_results(
+        &mut self,
+        pred_key: &str,
+        result_regs: Vec<Value>,
+        results: Vec<Value>,
+    ) -> bool {
+        if results.is_empty() {
+            return false;
+        }
+        if results.len() > 1 {
+            self.choice_points.push(ChoicePoint {
+                next_pc: self.pc,
+                saved_args: self.save_regs(),
+                stack: self.stack.clone(),
+                cp: self.cp,
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: Some(BuiltinState {
+                    name: "foreign_results".to_string(),
+                    args: {
+                        let mut args = Vec::with_capacity(result_regs.len() + 1);
+                        args.push(Value::Atom(pred_key.to_string()));
+                        args.extend(result_regs.iter().cloned());
+                        args
+                    },
+                    data: results[1..].to_vec(),
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+        }
+        self.apply_foreign_result(pred_key, &result_regs, &results[0])
+    }
+
+    fn apply_foreign_result(
+        &mut self,
+        pred_key: &str,
+        result_regs: &[Value],
+        result: &Value,
+    ) -> bool {
+        let layout = match self.foreign_result_layout(pred_key) {
+            Some(layout) => layout,
+            None => return false,
+        };
+        match layout {
+            "single" => {
+                if result_regs.len() != 1 {
+                    return false;
                 }
-                if self.unify(&target_reg, &Value::Atom(results[0].0.clone()))
-                    && self.unify(&dist_reg, &Value::Integer(results[0].1)) {
-                    self.pc += 1; true
-                } else { false }
+                self.unify(&result_regs[0], result)
+            }
+            "pair" => {
+                if result_regs.len() != 2 {
+                    return false;
+                }
+                match result {
+                    Value::Str(functor, args) if functor == "__pair__" && args.len() == 2 => {
+                        self.unify(&result_regs[0], &args[0]) && self.unify(&result_regs[1], &args[1])
+                    }
+                    _ => false,
+                }
             }
             _ => false,
         }
@@ -1584,40 +1580,9 @@ compile_resume_builtin_to_rust(Code) :-
                         cut_barrier: self.cut_barrier,
                     });
                 }
-                let native_kind = match self.foreign_native_kind(&pred_key) {
-                    Some(kind) => kind,
-                    None => return false,
-                };
-                match native_kind {
-                    "category_ancestor" | "list_suffix2" | "transitive_closure2" => {
-                        let result_reg = match state.args.get(1) {
-                            Some(val) => val.clone(),
-                            None => return false,
-                        };
-                        if self.unify(&result_reg, &result) {
-                            self.pc += 1; true
-                        } else { false }
-                    }
-                    "transitive_distance3" => {
-                        let target_reg = match state.args.get(1) {
-                            Some(val) => val.clone(),
-                            None => return false,
-                        };
-                        let dist_reg = match state.args.get(2) {
-                            Some(val) => val.clone(),
-                            None => return false,
-                        };
-                        match result {
-                            Value::Str(functor, args) if functor == "__pair__" && args.len() == 2 => {
-                                if self.unify(&target_reg, &args[0]) && self.unify(&dist_reg, &args[1]) {
-                                    self.pc += 1; true
-                                } else { false }
-                            }
-                            _ => false,
-                        }
-                    }
-                    _ => false,
-                }
+                if self.apply_foreign_result(&pred_key, &state.args[1..], &result) {
+                    self.pc += 1; true
+                } else { false }
             }
             _ => false,
         }
@@ -1850,6 +1815,9 @@ rust_foreign_setup_code(Ops, Setup) :-
 rust_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
     format(string(Line),
         '    vm.register_foreign_native_kind("~w/~w", "~w");', [Pred, Arity, Kind]).
+rust_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_result_layout("~w/~w", "~w");', [Pred, Arity, Layout]).
 rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(string(Line),
         '    vm.register_foreign_string_config("~w/~w", "~w", "~w/~w");',

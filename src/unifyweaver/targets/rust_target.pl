@@ -3730,8 +3730,11 @@ rust_recursive_kernel_spec(
     rust_recursive_kernel_rewrite_targets(KernelKind, PredIndicator, KernelConfig, RewriteTargets).
 
 rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
-        [register_foreign_native_kind(PredIndicator, NativeKind)|ConfigOps]) :-
+        [ register_foreign_native_kind(PredIndicator, NativeKind),
+          register_foreign_result_layout(PredIndicator, ResultLayout)
+        |ConfigOps]) :-
     rust_recursive_kernel_native_kind(KernelKind, NativeKind),
+    rust_recursive_kernel_result_layout(KernelKind, ResultLayout),
     rust_recursive_kernel_config_ops(KernelKind, PredIndicator, KernelConfig, ConfigOps).
 
 rust_recursive_kernel_native_kind(category_ancestor, category_ancestor).
@@ -3739,6 +3742,12 @@ rust_recursive_kernel_native_kind(countdown_sum2, countdown_sum2).
 rust_recursive_kernel_native_kind(list_suffix2, list_suffix2).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
+
+rust_recursive_kernel_result_layout(category_ancestor, single).
+rust_recursive_kernel_result_layout(countdown_sum2, single).
+rust_recursive_kernel_result_layout(list_suffix2, single).
+rust_recursive_kernel_result_layout(transitive_closure2, single).
+rust_recursive_kernel_result_layout(transitive_distance3, pair).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],

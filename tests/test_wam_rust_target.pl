@@ -245,6 +245,7 @@ test_foreign_spec_wrapper_generation :-
     ForeignSpec = foreign_predicate(
         category_ancestor/4,
         [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+          register_foreign_result_layout(category_ancestor/4, single),
           register_foreign_usize_config(category_ancestor/4, max_depth, 10)
         ],
         [category_ancestor/4]
@@ -254,6 +255,7 @@ test_foreign_spec_wrapper_generation :-
             [foreign_lowering(ForeignSpec)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("category_ancestor/4", "single")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
@@ -320,7 +322,9 @@ test_recursive_kernel_spec_generation :-
     (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
         ForeignSpec = foreign_predicate(
             tail_suffix/2,
-            [register_foreign_native_kind(tail_suffix/2, list_suffix2)],
+            [ register_foreign_native_kind(tail_suffix/2, list_suffix2),
+              register_foreign_result_layout(tail_suffix/2, single)
+            ],
             [tail_suffix/2]
         )
     ->  pass(Test)
@@ -410,6 +414,7 @@ test_foreign_lowering_category_ancestor :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("category_ancestor/4", "single")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
@@ -423,6 +428,7 @@ test_foreign_lowering_transitive_closure :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tc_ancestor/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_ancestor/2", "single")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
@@ -437,6 +443,7 @@ test_foreign_lowering_countdown_sum :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tri_sum/2", "countdown_sum2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tri_sum/2", "single")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tri_sum", 2)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("tri_sum".to_string(), 2)')
     ->  pass(Test)
@@ -449,6 +456,7 @@ test_foreign_lowering_list_suffix :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tail_suffix/2", "list_suffix2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffix/2", "single")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffix", 2)'),
         sub_string(S, _, _, _, 'Instruction::CallForeign("tail_suffix".to_string(), 2)')
     ->  pass(Test)
@@ -461,6 +469,7 @@ test_foreign_lowering_reverse_transitive_closure :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tc_descendant/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_descendant/2", "single")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("bob", "tom"), ("liz", "tom"), ("ann", "bob"), ("pat", "bob"), ("jim", "pat")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
@@ -475,6 +484,7 @@ test_foreign_lowering_transitive_distance :-
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'register_foreign_native_kind("tc_distance/3", "transitive_distance3")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_distance/3", "pair")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_distance/3", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_distance", 3)'),
@@ -501,8 +511,11 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'TryMeElse'),
         sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
+        sub_string(S, _, _, _, 'foreign_result_layout(pred_key)'),
         sub_string(S, _, _, _, 'foreign_string_config(&pred_key, "edge_pred")'),
         sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
+        sub_string(S, _, _, _, 'fn finish_foreign_results'),
+        sub_string(S, _, _, _, 'fn apply_foreign_result'),
         sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
         sub_string(S, _, _, _, 'transitive_closure2'),
         sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes')

@@ -259,6 +259,9 @@ ad hoc selection block:
 3. **Metadata-driven foreign spec generation**
    - Foreign setup ops and rewrite targets are derived from kernel metadata,
      rather than one bespoke spec-construction clause per supported family.
+   - Result layouts are also registered from kernel metadata, so result
+     resumption no longer needs to branch on specific kernel names just to
+     distinguish single-result versus pair-result payloads.
 
 That split makes the foreign-lowering path easier to extend without letting
 `rust_target.pl` grow another layer of special cases.
@@ -293,6 +296,15 @@ When `foreign_lowering(true)` is enabled and a registered kernel matches, the
 compiler now prefers the foreign path over earlier generic native clause
 lowering. That keeps recognized recursive kernels on the tested runtime path
 instead of silently taking a less structured lowering tier first.
+
+The runtime now also uses a small foreign-result layout layer:
+
+- `single` for one output register
+- `pair` for two-output payloads packed into one foreign result item
+
+That replaces the older kernel-specific resume branching for result shape and
+makes additional kernels cheaper to add as long as they fit an existing result
+layout.
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and
