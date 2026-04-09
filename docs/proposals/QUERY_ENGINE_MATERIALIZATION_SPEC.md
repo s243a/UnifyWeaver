@@ -36,10 +36,11 @@ retention choice explicit at the runtime/provider boundary instead of hiding it
 inside benchmark-specific wiring. The current runtime now also shares one
 internal measured relation-retention policy layer between DAG relation
 selection and path-aware edge selection, while preserving separate public
-override surfaces for those families. For the path-aware grouped-summary
-family, the runtime now coordinates that relation-retention choice with the
-grouped-summary selector through a small internal materialization planner
-layer.
+override surfaces for those families. The runtime now also shares one
+internal materialization-planner layer above those policy components: the
+path-aware grouped-summary family uses both relation-retention and
+grouped-summary planning through that shared layer, while the DAG family
+currently uses the relation-retention branch of the same planner.
 
 ## Required Capabilities
 
@@ -89,10 +90,10 @@ Examples:
   runtime can choose between them through that same grouped-summary policy
   layer, record measured cost buckets for that choice, and still expose an
   explicit override via `QueryExecutorOptions.PathAwareWeightSumStrategy`
-- when a path-aware operator family has both relation-retention and
-  grouped-summary policy layers available, the runtime can coordinate them
-  through a materialization planner layer instead of treating them as
-  unrelated decisions
+- when an operator family has both relation-retention and grouped-summary
+  policy layers available, the runtime can coordinate them through a shared
+  materialization planner layer instead of treating them as unrelated
+  decisions
 - other operators may request replay buffers or indexes when needed
 
 ### 3. External materialization fallback
@@ -158,11 +159,16 @@ For the current benchmark/runtime surface, the streamed path is:
    runtime can select between them through that same grouped-summary policy
    layer, record measured cost buckets for that decision, and use bounded
    probes in ambiguous cases before falling back to an explicit executor option
-12. for the current path-aware grouped-summary family, a materialization
-   planner layer now coordinates the earlier edge-retention choice with the
-   later grouped-summary choice and records the combined plan in trace output
-13. the operator builds only the retained state it actually needs
-14. benchmark code avoids preloading raw facts into in-memory relations first
+12. the current runtime now routes both path-aware and DAG planning through
+   a shared internal materialization-planner layer
+13. for the current path-aware grouped-summary family, that planner
+   coordinates the earlier edge-retention choice with the later
+   grouped-summary choice and records the combined plan in trace output
+14. for the current DAG family, that same planner currently records the
+   coordinated relation-retention plan before the operator-owned DAG state is
+   built
+15. the operator builds only the retained state it actually needs
+16. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

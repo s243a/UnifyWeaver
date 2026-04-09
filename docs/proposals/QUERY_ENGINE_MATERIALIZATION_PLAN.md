@@ -111,10 +111,12 @@ Status:
 - the current implementation now shares one internal relation-retention policy
   layer for DAG and path-aware edge selection, while keeping separate public
   override knobs for benchmarking and diagnosis
-- the path-aware grouped-summary family now coordinates that relation-retention
-  choice with grouped-summary selection through a small internal
-  materialization-planner layer, while preserving the current per-family
-  override knobs and trace surface
+- the runtime now shares one internal materialization-planner layer above
+  the shared relation-retention and grouped-summary policy components
+- the path-aware grouped-summary family uses both branches of that planner,
+  while the DAG family currently uses the relation-retention branch of the
+  same planner
+- the current per-family override knobs and trace surface are still preserved
 
 Work:
 
@@ -123,8 +125,9 @@ Work:
   - replayable buffering
   - indexed retained state
   - fallback external materialization
-- coordinate relation-retention and grouped-summary choices when both policy
-  layers exist for the same operator family
+- keep broadening the shared planner so relation-retention and
+  grouped-summary choices can be coordinated through one runtime layer when
+  both policy components exist for an operator family
 - keep this heuristic-driven at first, then refine as profiling improves
 
 Success criteria:
