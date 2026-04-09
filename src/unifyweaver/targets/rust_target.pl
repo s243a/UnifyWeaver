@@ -3745,12 +3745,12 @@ rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 rust_recursive_kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 
-rust_recursive_kernel_result_layout(category_ancestor, single).
-rust_recursive_kernel_result_layout(countdown_sum2, single).
-rust_recursive_kernel_result_layout(list_suffix2, single).
-rust_recursive_kernel_result_layout(transitive_closure2, single).
-rust_recursive_kernel_result_layout(transitive_distance3, pair).
-rust_recursive_kernel_result_layout(transitive_parent_distance4, triple).
+rust_recursive_kernel_result_layout(category_ancestor, tuple(1)).
+rust_recursive_kernel_result_layout(countdown_sum2, tuple(1)).
+rust_recursive_kernel_result_layout(list_suffix2, tuple(1)).
+rust_recursive_kernel_result_layout(transitive_closure2, tuple(1)).
+rust_recursive_kernel_result_layout(transitive_distance3, tuple(2)).
+rust_recursive_kernel_result_layout(transitive_parent_distance4, tuple(3)).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],

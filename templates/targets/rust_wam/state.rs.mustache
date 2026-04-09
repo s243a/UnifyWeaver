@@ -87,6 +87,7 @@ pub struct WamState {
     /// Foreign predicate usize configs keyed by "name/arity#config".
     pub foreign_usize_configs: HashMap<String, usize>,
     /// Foreign predicate result layouts keyed by "name/arity".
+    /// Layouts are encoded as "tuple:N".
     pub foreign_result_layouts: HashMap<String, String>,
     /// Variable binding table: maps Unbound variable names to their bound values.
     /// This simulates the WAM heap's shared binding semantics when PutVariable
@@ -206,12 +207,12 @@ impl WamState {
             .copied()
     }
 
-    /// Register a result layout for a foreign predicate.
+    /// Register a tuple layout for a foreign predicate.
     pub fn register_foreign_result_layout(&mut self, pred: &str, layout: &str) {
         self.foreign_result_layouts.insert(pred.to_string(), layout.to_string());
     }
 
-    /// Fetch the result layout for a foreign predicate.
+    /// Fetch the tuple layout for a foreign predicate.
     pub fn foreign_result_layout(&self, pred: &str) -> Option<&str> {
         self.foreign_result_layouts.get(pred).map(|layout| layout.as_str())
     }

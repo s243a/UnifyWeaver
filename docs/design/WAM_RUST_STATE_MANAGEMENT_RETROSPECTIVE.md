@@ -301,15 +301,16 @@ compiler now prefers the foreign path over earlier generic native clause
 lowering. That keeps recognized recursive kernels on the tested runtime path
 instead of silently taking a less structured lowering tier first.
 
-The runtime now also uses a small foreign-result layout layer:
+The runtime now also uses a tuple-shaped foreign-result layout layer:
 
-- `single` for one output register
-- `pair` for two-output payloads packed into one foreign result item
-- `triple` for three-output payloads packed into one foreign result item
+- `tuple:1` for one output register
+- `tuple:2` for two-output payloads packed into one foreign result item
+- `tuple:3` for three-output payloads packed into one foreign result item
 
 That replaces the older kernel-specific resume branching for result shape and
-makes additional kernels cheaper to add as long as they fit an existing result
-layout. `tc_parent_distance/4` is the first kernel using the `triple` path.
+makes additional kernels cheaper to add without adding another arity-specific
+resume path. `tc_parent_distance/4` is the first kernel using the `tuple:3`
+path.
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and
