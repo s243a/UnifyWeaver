@@ -80,6 +80,10 @@ Examples:
   are all viable sources for that edge state, the runtime can choose among
   them through a measured retention selector and still expose an explicit
   override via `QueryExecutorOptions.PathAwareEdgeRetentionStrategy`
+- path-aware grouped-summary operators can now also route their root and seed
+  support relations through that same measured relation-retention boundary,
+  with an explicit override via
+  `QueryExecutorOptions.PathAwareSupportRelationRetentionStrategy`
 - generic closure operators can route edge and support relations through the
   same measured relation-retention boundary before building successor,
   predecessor, or auxiliary lookup indices, with an explicit override via
@@ -176,20 +180,24 @@ For the current benchmark/runtime surface, the streamed path is:
 14. the current runtime now routes path-aware, DAG, generic scan, and
    generic closure planning through a shared internal
    materialization-planner layer
-15. for the current path-aware grouped-summary family, that planner
+15. the current path-aware grouped-summary family now also routes its
+   root and seed support relations through measured planner-driven relation
+   retention before grouped-summary construction
+16. for the current path-aware grouped-summary family, that planner
    coordinates the earlier edge-retention choice with the later
-   grouped-summary choice and records the combined plan in trace output
-16. for the current DAG family, that same planner currently records the
+   grouped-summary choice and records the combined plan in trace output,
+   while support-relation loads now use the same planner trace surface
+17. for the current DAG family, that same planner currently records the
    coordinated relation-retention plan before the operator-owned DAG state is
    built
-17. for the current generic scan family, that same planner currently records
+18. for the current generic scan family, that same planner currently records
    the coordinated relation-retention plan before scan-heavy consumers build
    list/set views
-18. for the current generic closure family, that same planner currently
+19. for the current generic closure family, that same planner currently
    records the coordinated relation-retention plan before closure consumers
    build edge or auxiliary indices
-19. the operator builds only the retained state it actually needs
-20. benchmark code avoids preloading raw facts into in-memory relations first
+20. the operator builds only the retained state it actually needs
+21. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

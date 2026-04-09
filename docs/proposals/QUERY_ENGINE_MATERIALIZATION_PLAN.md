@@ -97,6 +97,10 @@ Status:
   loading can now choose between direct streamed access, replayable
   buffering, and external materialized fallback before building closure
   indices
+- started for path-aware support relations, where grouped minima and weight-sum
+  operators can now choose streaming, replayable buffering, or external
+  materialized access for `RootRelation` and `SeedRelation` before grouped
+  summary construction
 - the runtime can now choose between compact grouped summaries and legacy
   seeded-row regrouping for both operator families through a shared
   grouped-summary policy layer
@@ -123,8 +127,10 @@ Status:
 - the runtime now shares one internal materialization-planner layer above
   the shared relation-retention and grouped-summary policy components
 - the path-aware grouped-summary family uses both branches of that planner,
-  while the DAG family, the generic scan family, and the generic closure
-  family currently use the relation-retention branch of the same planner
+  and now also routes root/seed support-relation access through the shared
+  relation-retention side of the same planner surface, while the DAG family,
+  the generic scan family, and the generic closure family currently use the
+  relation-retention branch of that planner
 - `QueryExecutorOptions.ClosureRelationRetentionStrategy` can force `Auto`,
   `StreamingDirect`, `ReplayableBuffer`, or `ExternalMaterialized` for
   generic closure benchmarking and diagnosis

@@ -2582,6 +2582,18 @@ class Program
         }};
     }}
 
+    static PathAwareSupportRelationRetentionStrategy ReadSupportRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_SUPPORT_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => PathAwareSupportRelationRetentionStrategy.StreamingDirect,
+            "replayable" => PathAwareSupportRelationRetentionStrategy.ReplayableBuffer,
+            "external" => PathAwareSupportRelationRetentionStrategy.ExternalMaterialized,
+            _ => PathAwareSupportRelationRetentionStrategy.Auto
+        }};
+    }}
+
     static void PrintWeightSumStrategies(QueryExecutionTrace? trace)
     {{
         if (trace is null)
@@ -2647,6 +2659,7 @@ class Program
 
         var weightSumStrategy = ReadWeightSumStrategy();
         var edgeRetentionStrategy = ReadEdgeRetentionStrategy();
+        var supportRetentionStrategy = ReadSupportRetentionStrategy();
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
@@ -2654,6 +2667,7 @@ class Program
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
+            PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
             PathAwareWeightSumStrategy: weightSumStrategy));
         var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
@@ -2693,6 +2707,7 @@ class Program
         Console.Error.WriteLine($"root_count={{results.Count}}");
         Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
+        Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintWeightSumPhases(trace);
     }}
@@ -2737,6 +2752,18 @@ class Program
             "replayable" => PathAwareEdgeRetentionStrategy.ReplayableBuffer,
             "external" => PathAwareEdgeRetentionStrategy.ExternalMaterialized,
             _ => PathAwareEdgeRetentionStrategy.Auto
+        }};
+    }}
+
+    static PathAwareSupportRelationRetentionStrategy ReadSupportRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_SUPPORT_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => PathAwareSupportRelationRetentionStrategy.StreamingDirect,
+            "replayable" => PathAwareSupportRelationRetentionStrategy.ReplayableBuffer,
+            "external" => PathAwareSupportRelationRetentionStrategy.ExternalMaterialized,
+            _ => PathAwareSupportRelationRetentionStrategy.Auto
         }};
     }}
 
@@ -2801,6 +2828,7 @@ class Program
 
         var weightSumStrategy = ReadWeightSumStrategy();
         var edgeRetentionStrategy = ReadEdgeRetentionStrategy();
+        var supportRetentionStrategy = ReadSupportRetentionStrategy();
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
@@ -2808,6 +2836,7 @@ class Program
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
+            PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
             PathAwareWeightSumStrategy: weightSumStrategy));
         var rows = executor.Execute(plan, trace: trace).ToList();
         swExec.Stop();
@@ -2840,6 +2869,7 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"weight_sum_strategy_setting={{weightSumStrategy}}");
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
+        Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintWeightSumPhases(trace);
     }}
@@ -2887,6 +2917,18 @@ class Program
             "replayable" => PathAwareEdgeRetentionStrategy.ReplayableBuffer,
             "external" => PathAwareEdgeRetentionStrategy.ExternalMaterialized,
             _ => PathAwareEdgeRetentionStrategy.Auto
+        }};
+    }}
+
+    static PathAwareSupportRelationRetentionStrategy ReadSupportRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_SUPPORT_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => PathAwareSupportRelationRetentionStrategy.StreamingDirect,
+            "replayable" => PathAwareSupportRelationRetentionStrategy.ReplayableBuffer,
+            "external" => PathAwareSupportRelationRetentionStrategy.ExternalMaterialized,
+            _ => PathAwareSupportRelationRetentionStrategy.Auto
         }};
     }}
 
@@ -2951,6 +2993,7 @@ class Program
 
         var pathMinStrategy = ReadPathMinStrategy();
         var edgeRetentionStrategy = ReadEdgeRetentionStrategy();
+        var supportRetentionStrategy = ReadSupportRetentionStrategy();
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
@@ -2958,6 +3001,7 @@ class Program
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
+            PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
             PathAwareGroupedMinStrategy: pathMinStrategy));
         var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
@@ -2989,6 +3033,7 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
+        Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintPathMinPhases(trace);
     }}
@@ -3033,6 +3078,18 @@ class Program
             "replayable" => PathAwareEdgeRetentionStrategy.ReplayableBuffer,
             "external" => PathAwareEdgeRetentionStrategy.ExternalMaterialized,
             _ => PathAwareEdgeRetentionStrategy.Auto
+        }};
+    }}
+
+    static PathAwareSupportRelationRetentionStrategy ReadSupportRetentionStrategy()
+    {{
+        var value = Environment.GetEnvironmentVariable("UNIFYWEAVER_SUPPORT_RETENTION_STRATEGY");
+        return value?.ToLowerInvariant() switch
+        {{
+            "streaming" => PathAwareSupportRelationRetentionStrategy.StreamingDirect,
+            "replayable" => PathAwareSupportRelationRetentionStrategy.ReplayableBuffer,
+            "external" => PathAwareSupportRelationRetentionStrategy.ExternalMaterialized,
+            _ => PathAwareSupportRelationRetentionStrategy.Auto
         }};
     }}
 
@@ -3137,6 +3194,7 @@ class Program
 
         var pathMinStrategy = ReadPathMinStrategy();
         var edgeRetentionStrategy = ReadEdgeRetentionStrategy();
+        var supportRetentionStrategy = ReadSupportRetentionStrategy();
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
@@ -3144,6 +3202,7 @@ class Program
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
+            PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
             PathAwareGroupedMinStrategy: pathMinStrategy));
         var rows = executor.Execute(plan, trace: trace).ToList();
         swQuery.Stop();
@@ -3175,6 +3234,7 @@ class Program
         Console.Error.WriteLine($"article_count={{results.Count}}");
         Console.Error.WriteLine($"path_min_strategy_setting={{pathMinStrategy}}");
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
+        Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintPathMinPhases(trace);
     }}
