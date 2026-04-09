@@ -283,6 +283,7 @@ The current test coverage now includes:
 - compiler-selection tests for:
   - `category_ancestor/4`
   - `tail_suffix/2`
+  - `tail_suffixes/2`
   - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
@@ -290,6 +291,7 @@ The current test coverage now includes:
   - `tc_parent_distance/4`
 - end-to-end generated Rust runtime validation for:
   - `tail_suffix/2`
+  - `tail_suffixes/2`
   - `tri_sum/2`
   - `tc_ancestor/2`
   - `tc_descendant/2`
@@ -301,15 +303,27 @@ compiler now prefers the foreign path over earlier generic native clause
 lowering. That keeps recognized recursive kernels on the tested runtime path
 instead of silently taking a less structured lowering tier first.
 
-The runtime now also uses a small foreign-result layout layer:
+The runtime now separates result shape from result-delivery mode.
 
-- `single` for one output register
-- `pair` for two-output payloads packed into one foreign result item
-- `triple` for three-output payloads packed into one foreign result item
+The tuple-shaped foreign-result layout layer is:
+
+- `tuple:1` for one output register
+- `tuple:2` for two-output payloads packed into one foreign result item
+- `tuple:3` for three-output payloads packed into one foreign result item
 
 That replaces the older kernel-specific resume branching for result shape and
-makes additional kernels cheaper to add as long as they fit an existing result
-layout. `tc_parent_distance/4` is the first kernel using the `triple` path.
+makes additional kernels cheaper to add without adding another arity-specific
+resume path. `tc_parent_distance/4` is the first kernel using the `tuple:3`
+path.
+
+Foreign result delivery now also distinguishes:
+
+- `stream` for predicates that yield one tuple per solution through backtracking
+- `deterministic` for single-result predicates like `tri_sum/2`
+- `deterministic_collection` for predicates that return one collection payload
+  without leaving residual backtracking state
+
+`tail_suffixes/2` is the first deterministic collection kernel on this path.
 
 The reverse transitive-closure path required an additional correctness fix:
 reverse schemas must register fact pairs in `child -> parent` orientation, and

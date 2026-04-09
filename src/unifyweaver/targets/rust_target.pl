@@ -3720,6 +3720,7 @@ rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
 rust_recursive_kernel_detector(category_ancestor, rust_recursive_kernel_category_ancestor).
 rust_recursive_kernel_detector(countdown_sum2, rust_recursive_kernel_countdown_sum).
 rust_recursive_kernel_detector(list_suffix2, rust_recursive_kernel_list_suffix).
+rust_recursive_kernel_detector(list_suffixes2, rust_recursive_kernel_list_suffixes).
 rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
 rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
 rust_recursive_kernel_detector(transitive_parent_distance4, rust_recursive_kernel_transitive_parent_distance).
@@ -3733,33 +3734,47 @@ rust_recursive_kernel_spec(
 
 rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
         [ register_foreign_native_kind(PredIndicator, NativeKind),
-          register_foreign_result_layout(PredIndicator, ResultLayout)
+          register_foreign_result_layout(PredIndicator, ResultLayout),
+          register_foreign_result_mode(PredIndicator, ResultMode)
         |ConfigOps]) :-
     rust_recursive_kernel_native_kind(KernelKind, NativeKind),
     rust_recursive_kernel_result_layout(KernelKind, ResultLayout),
+    rust_recursive_kernel_result_mode(KernelKind, ResultMode),
     rust_recursive_kernel_config_ops(KernelKind, PredIndicator, KernelConfig, ConfigOps).
 
 rust_recursive_kernel_native_kind(category_ancestor, category_ancestor).
 rust_recursive_kernel_native_kind(countdown_sum2, countdown_sum2).
 rust_recursive_kernel_native_kind(list_suffix2, list_suffix2).
+rust_recursive_kernel_native_kind(list_suffixes2, list_suffixes2).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 rust_recursive_kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 rust_recursive_kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
 
-rust_recursive_kernel_result_layout(category_ancestor, single).
-rust_recursive_kernel_result_layout(countdown_sum2, single).
-rust_recursive_kernel_result_layout(list_suffix2, single).
-rust_recursive_kernel_result_layout(transitive_closure2, single).
-rust_recursive_kernel_result_layout(transitive_distance3, pair).
-rust_recursive_kernel_result_layout(transitive_parent_distance4, triple).
-rust_recursive_kernel_result_layout(weighted_shortest_path3, pair).
+rust_recursive_kernel_result_layout(category_ancestor, tuple(1)).
+rust_recursive_kernel_result_layout(countdown_sum2, tuple(1)).
+rust_recursive_kernel_result_layout(list_suffix2, tuple(1)).
+rust_recursive_kernel_result_layout(list_suffixes2, tuple(1)).
+rust_recursive_kernel_result_layout(transitive_closure2, tuple(1)).
+rust_recursive_kernel_result_layout(transitive_distance3, tuple(2)).
+rust_recursive_kernel_result_layout(transitive_parent_distance4, tuple(3)).
+rust_recursive_kernel_result_layout(weighted_shortest_path3, tuple(2)).
+
+rust_recursive_kernel_result_mode(category_ancestor, stream).
+rust_recursive_kernel_result_mode(countdown_sum2, deterministic).
+rust_recursive_kernel_result_mode(list_suffix2, stream).
+rust_recursive_kernel_result_mode(list_suffixes2, deterministic_collection).
+rust_recursive_kernel_result_mode(transitive_closure2, stream).
+rust_recursive_kernel_result_mode(transitive_distance3, stream).
+rust_recursive_kernel_result_mode(transitive_parent_distance4, stream).
+rust_recursive_kernel_result_mode(weighted_shortest_path3, stream).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],
         [register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)]).
 rust_recursive_kernel_config_ops(countdown_sum2, _PredIndicator, [], []).
 rust_recursive_kernel_config_ops(list_suffix2, _PredIndicator, [], []).
+rust_recursive_kernel_config_ops(list_suffixes2, _PredIndicator, [], []).
 rust_recursive_kernel_config_ops(transitive_closure2, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
@@ -3794,6 +3809,10 @@ rust_recursive_kernel_countdown_sum(Pred, Arity, Clauses,
 rust_recursive_kernel_list_suffix(Pred, Arity, Clauses,
         recursive_kernel(list_suffix2, Pred/Arity, [])) :-
     rust_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
+
+rust_recursive_kernel_list_suffixes(Pred, Arity, Clauses,
+        recursive_kernel(list_suffixes2, Pred/Arity, [])) :-
+    rust_foreign_lowerable_list_suffixes(Pred, Arity, Clauses).
 
 rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
         recursive_kernel(transitive_closure2, Pred/Arity,
@@ -3851,6 +3870,13 @@ rust_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
     RecHead =.. [Pred, InputList, Suffix],
     InputList = [_|Tail],
     RecBody =.. [Pred, Tail, Suffix].
+
+rust_foreign_lowerable_list_suffixes(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, [], [[]]],
+    RecHead =.. [Pred, [Head|Tail], [[Head|Tail]|Rest]],
+    RecBody =.. [Pred, Tail, Rest].
 
 rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPairs) :-
     member(BaseHead-BaseBody, Clauses),
