@@ -28,6 +28,7 @@ test_simple_fact(foo, bar).
 
 :- dynamic category_ancestor/4.
 :- dynamic category_parent/2.
+:- dynamic tail_suffix/2.
 :- dynamic tc_ancestor/2.
 :- dynamic tri_sum/2.
 :- dynamic tc_descendant/2.
@@ -40,6 +41,9 @@ category_parent(alpha, beta).
 category_parent(beta, gamma).
 category_parent(gamma, physics).
 category_parent(beta, physics).
+
+tail_suffix(S, S).
+tail_suffix([_|T], S) :- tail_suffix(T, S).
 
 category_ancestor(Cat, Target, 1, Visited) :-
     category_parent(Cat, Target),
@@ -281,6 +285,10 @@ test_recursive_kernel_ir_selection :-
         tri_sum(0, 0)-true,
         tri_sum(N2, Sum2)-((N2 > 0), ((N12 is N2 - 1), (tri_sum(N12, Prev2), Sum2 is Prev2 + N2)))
     ],
+    SuffixClauses = [
+        tail_suffix(S1, S1)-true,
+        tail_suffix([_|T2], S2)-tail_suffix(T2, S2)
+    ],
     DistClauses = [
         tc_distance(S1, T1, 1)-tc_parent(S1, T1),
         tc_distance(S2, T2, D2)-(tc_parent(S2, M2), (tc_distance(M2, T2, D1), D2 is D1 + 1))
@@ -289,6 +297,8 @@ test_recursive_kernel_ir_selection :-
             recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(10)])),
         rust_target:rust_recursive_kernel(tri_sum, 2, SumClauses,
             recursive_kernel(countdown_sum2, tri_sum/2, [])),
+        rust_target:rust_recursive_kernel(tail_suffix, 2, SuffixClauses,
+            recursive_kernel(list_suffix2, tail_suffix/2, [])),
         rust_target:rust_recursive_kernel(tc_descendant, 2, DescClauses,
             recursive_kernel(transitive_closure2, tc_descendant/2,
                 [edge_pred(tc_parent/2), fact_pairs(FactPairs)])),
@@ -304,14 +314,14 @@ test_recursive_kernel_ir_selection :-
 test_recursive_kernel_spec_generation :-
     Test = 'WAM-Rust: recursive kernel IR generates foreign specs declaratively',
     Kernel = recursive_kernel(
-        countdown_sum2,
-        tri_sum/2,
+        list_suffix2,
+        tail_suffix/2,
         []),
     (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
         ForeignSpec = foreign_predicate(
-            tri_sum/2,
-            [register_foreign_native_kind(tri_sum/2, countdown_sum2)],
-            [tri_sum/2]
+            tail_suffix/2,
+            [register_foreign_native_kind(tail_suffix/2, list_suffix2)],
+            [tail_suffix/2]
         )
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
@@ -321,7 +331,7 @@ test_recursive_kernel_registry :-
     Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
     findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
     sort(Kinds0, Kinds),
-    (   Kinds == [category_ancestor, countdown_sum2, transitive_closure2, transitive_distance3]
+    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, transitive_closure2, transitive_distance3]
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
@@ -431,6 +441,18 @@ test_foreign_lowering_countdown_sum :-
         sub_string(S, _, _, _, 'Instruction::CallForeign("tri_sum".to_string(), 2)')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tri_sum/2')
+    ).
+
+test_foreign_lowering_list_suffix :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tail_suffix/2',
+    (   rust_target:compile_predicate_to_rust(user:tail_suffix/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tail_suffix/2", "list_suffix2")'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffix", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tail_suffix".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffix/2')
     ).
 
 test_foreign_lowering_reverse_transitive_closure :-
@@ -756,6 +778,7 @@ run_tests :-
     test_foreign_lowering_category_ancestor,
     test_foreign_lowering_transitive_closure,
     test_foreign_lowering_countdown_sum,
+    test_foreign_lowering_list_suffix,
     test_foreign_lowering_reverse_transitive_closure,
     test_foreign_lowering_transitive_distance,
     test_compile_wam_runtime_output,

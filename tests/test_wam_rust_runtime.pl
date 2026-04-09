@@ -53,6 +53,10 @@ tri_sum(N, Sum) :-
     tri_sum(N1, Prev),
     Sum is Prev + N.
 
+:- dynamic tail_suffix/2.
+tail_suffix(S, S).
+tail_suffix([_|T], S) :- tail_suffix(T, S).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -63,7 +67,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tri_sum/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tri_sum/2, user:tail_suffix/2],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -76,6 +80,7 @@ use runtime_test::tc_ancestor;
 use runtime_test::tc_descendant;
 use runtime_test::tc_distance;
 use runtime_test::tri_sum;
+use runtime_test::tail_suffix;
 
 #[test]
 fn test_generated_predicates() {
@@ -230,6 +235,55 @@ fn test_generated_predicates() {
         Value::Integer(4),
         Value::Integer(11));
     assert!(!ok12, "tri_sum(4, 11) should fail");
+
+    // Test tail_suffix/2 foreign lowering end-to-end
+    let list_abc = Value::List(vec![
+        Value::Atom("a".to_string()),
+        Value::Atom("b".to_string()),
+        Value::Atom("c".to_string()),
+    ]);
+    let mut vm_suffix = WamState::new(vec![], std::collections::HashMap::new());
+    let ok13 = tail_suffix(&mut vm_suffix,
+        list_abc.clone(),
+        Value::Unbound("Suffix".to_string()));
+    assert!(ok13, "tail_suffix([a,b,c], Suffix) first solution should succeed");
+
+    let mut suffixes: Vec<String> = Vec::new();
+    if let Some(value) = vm_suffix.bindings.get("Suffix").cloned() {
+        suffixes.push(format!("{}", value));
+    } else {
+        panic!("expected first tail_suffix result in Suffix");
+    }
+
+    while vm_suffix.backtrack() {
+        if let Some(value) = vm_suffix.bindings.get("Suffix").cloned() {
+            suffixes.push(format!("{}", value));
+        } else {
+            panic!("expected backtracked tail_suffix result in Suffix");
+        }
+    }
+
+    assert_eq!(suffixes, vec![
+        "[a, b, c]".to_string(),
+        "[b, c]".to_string(),
+        "[c]".to_string(),
+        "[]".to_string(),
+    ]);
+
+    let mut vm_suffix_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok14 = tail_suffix(&mut vm_suffix_check,
+        list_abc.clone(),
+        Value::List(vec![
+            Value::Atom("b".to_string()),
+            Value::Atom("c".to_string()),
+        ]));
+    assert!(ok14, "tail_suffix([a,b,c], [b,c]) should succeed");
+
+    let mut vm_suffix_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok15 = tail_suffix(&mut vm_suffix_fail,
+        list_abc,
+        Value::List(vec![Value::Atom("d".to_string())]));
+    assert!(!ok15, "tail_suffix([a,b,c], [d]) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

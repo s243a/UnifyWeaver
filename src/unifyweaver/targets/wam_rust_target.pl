@@ -786,6 +786,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_resume_builtin_to_rust(ResumeCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_compute_native_countdown_sum_to_rust(NativeCountdownSumCode),
+    compile_collect_native_list_suffixes_to_rust(NativeListSuffixCode),
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
     compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
     compile_eval_arith_to_rust(ArithCode),
@@ -803,6 +804,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ResumeCode, '\n\n',
         NativeAncestorCode, '\n\n',
         NativeCountdownSumCode, '\n\n',
+        NativeListSuffixCode, '\n\n',
         NativeClosureCode, '\n\n',
         NativeDistanceCode, '\n\n',
         ArithCode
@@ -1122,6 +1124,48 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
+            "list_suffix2" => {
+                let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let suffix_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let suffix_filter = match self.deref_var(&suffix_reg) {
+                    Value::List(items) => Some(items),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let mut suffixes: Vec<Value> = Vec::new();
+                self.collect_native_list_suffixes(&items, &mut suffixes);
+                if let Some(filter) = suffix_filter {
+                    suffixes.retain(|suffix| matches!(suffix, Value::List(items) if *items == filter));
+                }
+                if suffixes.is_empty() {
+                    return false;
+                }
+                if suffixes.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign_results".to_string(),
+                            args: vec![Value::Atom(pred_key.clone()), suffix_reg.clone()],
+                            data: suffixes[1..].to_vec(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.unify(&suffix_reg, &suffixes[0]) {
+                    self.pc += 1; true
+                } else { false }
+            }
             "transitive_closure2" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
@@ -1285,6 +1329,17 @@ compile_compute_native_countdown_sum_to_rust(Code) :-
             current -= 1;
         }
         Some(total)
+    }'.
+
+compile_collect_native_list_suffixes_to_rust(Code) :-
+    Code = '    pub fn collect_native_list_suffixes(
+        &self,
+        items: &[Value],
+        out: &mut Vec<Value>,
+    ) {
+        for idx in 0..=items.len() {
+            out.push(Value::List(items[idx..].to_vec()));
+        }
     }'.
 
 compile_collect_native_transitive_closure_to_rust(Code) :-
@@ -1534,7 +1589,7 @@ compile_resume_builtin_to_rust(Code) :-
                     None => return false,
                 };
                 match native_kind {
-                    "category_ancestor" | "transitive_closure2" => {
+                    "category_ancestor" | "list_suffix2" | "transitive_closure2" => {
                         let result_reg = match state.args.get(1) {
                             Some(val) => val.clone(),
                             None => return false,
