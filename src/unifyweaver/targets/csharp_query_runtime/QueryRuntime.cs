@@ -51,6 +51,14 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum PathAwareSupportRelationRetentionStrategy
+    {
+        Auto,
+        StreamingDirect,
+        ReplayableBuffer,
+        ExternalMaterialized
+    }
+
     public enum DagRelationRetentionStrategy
     {
         Auto,
@@ -541,12 +549,22 @@ namespace UnifyWeaver.QueryRuntime
         Support
     }
 
+    internal enum PathAwareSupportRelationAccessKind
+    {
+        Roots,
+        Seeds
+    }
+
     internal readonly record struct RelationRetentionSelection(
         RelationRetentionPolicyStrategy Strategy,
         string DecisionMode);
 
     internal readonly record struct PathAwareEdgeRetentionSelection(
         PathAwareEdgeRetentionStrategy Strategy,
+        string DecisionMode);
+
+    internal readonly record struct PathAwareSupportRelationRetentionSelection(
+        PathAwareSupportRelationRetentionStrategy Strategy,
         string DecisionMode);
 
     internal readonly record struct PathAwareGroupedSummarySelection(
@@ -576,6 +594,7 @@ namespace UnifyWeaver.QueryRuntime
         ScanRelationRetentionStrategy ScanRelationRetentionStrategy = ScanRelationRetentionStrategy.Auto,
         ClosureRelationRetentionStrategy ClosureRelationRetentionStrategy = ClosureRelationRetentionStrategy.Auto,
         PathAwareEdgeRetentionStrategy PathAwareEdgeRetentionStrategy = PathAwareEdgeRetentionStrategy.Auto,
+        PathAwareSupportRelationRetentionStrategy PathAwareSupportRelationRetentionStrategy = PathAwareSupportRelationRetentionStrategy.Auto,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
         PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
         int PairProbeCacheMaxEntries = 4096,
@@ -1528,6 +1547,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
         private readonly ClosureRelationRetentionStrategy _closureRelationRetentionStrategy;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
+        private readonly PathAwareSupportRelationRetentionStrategy _pathAwareSupportRelationRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
 
@@ -1547,6 +1567,7 @@ namespace UnifyWeaver.QueryRuntime
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
             _closureRelationRetentionStrategy = options.ClosureRelationRetentionStrategy;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
+            _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
         }
@@ -1808,6 +1829,7 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.ReplayableFactSources.Clear();
             _cacheContext.ScanRelationRetentionSelections.Clear();
             _cacheContext.ClosureRelationRetentionSelections.Clear();
+            _cacheContext.PathAwareSupportRelationRetentionSelections.Clear();
             _cacheContext.PathAwareEdgeStates.Clear();
             _cacheContext.PathAwareEdgeRetentionSelections.Clear();
             _cacheContext.FactSets.Clear();
@@ -6530,6 +6552,133 @@ namespace UnifyWeaver.QueryRuntime
             return facts;
         }
 
+        private PathAwareSupportRelationRetentionSelection GetPathAwareSupportRelationRetentionSelection(
+            PredicateId predicate,
+            PathAwareSupportRelationAccessKind accessKind,
+            EvaluationContext context,
+            PlanNode traceNode)
+        {
+            var cacheKey = (predicate, accessKind);
+            if (context.PathAwareSupportRelationRetentionSelections.TryGetValue(cacheKey, out var cachedSelection))
+            {
+                return cachedSelection;
+            }
+
+            var hasStreaming = TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource);
+            var hasReplayable = TryGetReplayableSource(predicate, context, out var replayableSource);
+            var hasExternal = TryGetExternalFacts(predicate, out var externalFacts);
+            var concreteReplayable = replayableSource as ReplayableRelationSource;
+            var relationBytes = hasStreaming && !string.IsNullOrEmpty(delimitedSource.InputPath) && File.Exists(delimitedSource.InputPath)
+                ? new FileInfo(delimitedSource.InputPath).Length
+                : (long?)null;
+            const int supportProbeRowLimit = 256;
+
+            Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                ? () => MeasureElapsed(() => ProbeFactRows(DelimitedRelationReader.ReadRows(delimitedSource), supportProbeRowLimit))
+                : null;
+            Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                ? () => MeasureElapsed(() =>
+                {
+                    var probeRows = concreteReplayable is not null
+                        ? concreteReplayable.ProbeMaterialize(supportProbeRowLimit)
+                        : replayableSource.Stream().Take(supportProbeRowLimit).ToList();
+                    ProbeFactRows(probeRows, supportProbeRowLimit);
+                })
+                : null;
+            Func<TimeSpan>? measureExternalProbe = hasExternal
+                ? () => MeasureElapsed(() => ProbeFactRows(externalFacts, supportProbeRowLimit))
+                : null;
+
+            var selection = ResolvePathAwareSupportRelationRetentionStrategy(
+                context.Trace,
+                traceNode,
+                _pathAwareSupportRelationRetentionStrategy,
+                accessKind,
+                relationBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                concreteReplayable?.IsMaterialized == true,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            context.PathAwareSupportRelationRetentionSelections[cacheKey] = selection;
+            return selection;
+        }
+
+        private IEnumerable<object[]> GetPathAwareSupportFactStream(
+            PredicateId predicate,
+            PathAwareSupportRelationAccessKind accessKind,
+            EvaluationContext? context,
+            PlanNode traceNode)
+        {
+            if (context is null)
+            {
+                return GetFactStream(predicate, context);
+            }
+
+            if (context.Facts.TryGetValue(predicate, out var cachedFacts))
+            {
+                context.Trace?.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                return cachedFacts;
+            }
+
+            var plan = ResolveMaterializationPlan(
+                context.Trace,
+                traceNode,
+                ToRelationRetentionSelection(GetPathAwareSupportRelationRetentionSelection(predicate, accessKind, context, traceNode)));
+            RecordPathAwareSupportRelationRetentionStrategy(
+                context.Trace,
+                traceNode,
+                accessKind,
+                new PathAwareSupportRelationRetentionSelection(ToPathAwareSupportRelationRetentionStrategy(plan.RelationRetention.Strategy), plan.RelationRetention.DecisionMode));
+            RecordMaterializationPlanStrategy(
+                context.Trace,
+                traceNode,
+                accessKind == PathAwareSupportRelationAccessKind.Roots ? "PathAwareSupportRoots" : "PathAwareSupportSeeds",
+                plan);
+
+            var hasStreaming = TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource);
+            var hasReplayable = TryGetReplayableSource(predicate, context, out var replayableSource);
+            var hasExternal = TryGetExternalFacts(predicate, out var externalFacts);
+            var phasePrefix = accessKind == PathAwareSupportRelationAccessKind.Roots ? "support_roots" : "support_seeds";
+
+            switch (plan.RelationRetention.Strategy)
+            {
+                case RelationRetentionPolicyStrategy.StreamingDirect when hasStreaming:
+                    return DelimitedRelationReader.ReadRows(delimitedSource);
+                case RelationRetentionPolicyStrategy.ReplayableBuffer when hasReplayable:
+                {
+                    var facts = MeasurePhase(context.Trace, traceNode, $"{phasePrefix}_materialize_replayable", () => replayableSource.Materialize());
+                    context.Facts[predicate] = facts;
+                    return facts;
+                }
+                case RelationRetentionPolicyStrategy.ExternalMaterialized when hasExternal:
+                {
+                    var facts = MeasurePhase(context.Trace, traceNode, $"{phasePrefix}_materialize_external_materialized", () => externalFacts as List<object[]> ?? externalFacts.ToList());
+                    context.Facts[predicate] = facts;
+                    return facts;
+                }
+                default:
+                    if (hasReplayable)
+                    {
+                        var facts = MeasurePhase(context.Trace, traceNode, $"{phasePrefix}_materialize_replayable", () => replayableSource.Materialize());
+                        context.Facts[predicate] = facts;
+                        return facts;
+                    }
+
+                    if (hasStreaming)
+                    {
+                        return DelimitedRelationReader.ReadRows(delimitedSource);
+                    }
+
+                    var externalSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+                    var externalList = MeasurePhase(context.Trace, traceNode, $"{phasePrefix}_materialize_external_materialized", () => externalSource as List<object[]> ?? externalSource.ToList());
+                    context.Facts[predicate] = externalList;
+                    return externalList;
+            }
+        }
+
         private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
         {
             if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
@@ -8430,6 +8579,24 @@ namespace UnifyWeaver.QueryRuntime
                 _ => PathAwareEdgeRetentionStrategy.Auto
             };
 
+        private static RelationRetentionPolicyStrategy ToRelationRetentionPolicyStrategy(PathAwareSupportRelationRetentionStrategy strategy)
+            => strategy switch
+            {
+                PathAwareSupportRelationRetentionStrategy.StreamingDirect => RelationRetentionPolicyStrategy.StreamingDirect,
+                PathAwareSupportRelationRetentionStrategy.ReplayableBuffer => RelationRetentionPolicyStrategy.ReplayableBuffer,
+                PathAwareSupportRelationRetentionStrategy.ExternalMaterialized => RelationRetentionPolicyStrategy.ExternalMaterialized,
+                _ => RelationRetentionPolicyStrategy.Auto
+            };
+
+        private static PathAwareSupportRelationRetentionStrategy ToPathAwareSupportRelationRetentionStrategy(RelationRetentionPolicyStrategy strategy)
+            => strategy switch
+            {
+                RelationRetentionPolicyStrategy.StreamingDirect => PathAwareSupportRelationRetentionStrategy.StreamingDirect,
+                RelationRetentionPolicyStrategy.ReplayableBuffer => PathAwareSupportRelationRetentionStrategy.ReplayableBuffer,
+                RelationRetentionPolicyStrategy.ExternalMaterialized => PathAwareSupportRelationRetentionStrategy.ExternalMaterialized,
+                _ => PathAwareSupportRelationRetentionStrategy.Auto
+            };
+
         private static RelationRetentionSelection ToRelationRetentionSelection(DagRelationRetentionSelection selection)
             => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
 
@@ -8440,6 +8607,9 @@ namespace UnifyWeaver.QueryRuntime
             => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
 
         private static RelationRetentionSelection ToRelationRetentionSelection(PathAwareEdgeRetentionSelection selection)
+            => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
+
+        private static RelationRetentionSelection ToRelationRetentionSelection(PathAwareSupportRelationRetentionSelection selection)
             => new(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode);
 
         private static RelationRetentionPolicyStrategy ResolveStructuralRelationRetentionStrategy(
@@ -8918,6 +9088,108 @@ namespace UnifyWeaver.QueryRuntime
                 "ClosureRelationRetention");
         }
 
+        private static PathAwareSupportRelationRetentionStrategy ResolveStructuralPathAwareSupportRelationRetentionStrategy(
+            PathAwareSupportRelationAccessKind accessKind,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var preferredStrategy = accessKind switch
+            {
+                PathAwareSupportRelationAccessKind.Seeds => RelationRetentionPolicyStrategy.StreamingDirect,
+                _ => RelationRetentionPolicyStrategy.StreamingDirect,
+            };
+            return ToPathAwareSupportRelationRetentionStrategy(
+                ResolveStructuralRelationRetentionStrategy(
+                    preferredStrategy,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+        }
+
+        private static bool ShouldProbePathAwareSupportRelationRetentionStrategy(
+            PathAwareSupportRelationAccessKind accessKind,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var thresholdBytes = accessKind switch
+            {
+                PathAwareSupportRelationAccessKind.Roots => 128 * 1024L,
+                _ => 256 * 1024L,
+            };
+            return ShouldProbeRelationRetentionStrategy(
+                relationBytes,
+                thresholdBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized);
+        }
+
+        private static PathAwareSupportRelationRetentionSelection ResolvePathAwareSupportRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareSupportRelationRetentionStrategy configuredStrategy,
+            PathAwareSupportRelationAccessKind accessKind,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized,
+            Func<TimeSpan>? measureStreamingProbe = null,
+            Func<TimeSpan>? measureReplayableProbe = null,
+            Func<TimeSpan>? measureExternalProbe = null)
+        {
+            var structuralStrategy = ToRelationRetentionPolicyStrategy(
+                ResolveStructuralPathAwareSupportRelationRetentionStrategy(
+                    accessKind,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+            var selection = ResolveRelationRetentionStrategy(
+                trace,
+                node,
+                accessKind == PathAwareSupportRelationAccessKind.Roots ? "support_roots_strategy_select" : "support_seeds_strategy_select",
+                accessKind == PathAwareSupportRelationAccessKind.Roots ? "support_roots_probe_streaming_direct" : "support_seeds_probe_streaming_direct",
+                accessKind == PathAwareSupportRelationAccessKind.Roots ? "support_roots_probe_replayable_buffer" : "support_seeds_probe_replayable_buffer",
+                accessKind == PathAwareSupportRelationAccessKind.Roots ? "support_roots_probe_external_materialized" : "support_seeds_probe_external_materialized",
+                ToRelationRetentionPolicyStrategy(configuredStrategy),
+                structuralStrategy,
+                ShouldProbePathAwareSupportRelationRetentionStrategy(accessKind, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            return new PathAwareSupportRelationRetentionSelection(ToPathAwareSupportRelationRetentionStrategy(selection.Strategy), selection.DecisionMode);
+        }
+
+        private static void RecordPathAwareSupportRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareSupportRelationAccessKind accessKind,
+            PathAwareSupportRelationRetentionSelection selection)
+        {
+            RecordRelationRetentionStrategy(
+                trace,
+                node,
+                new RelationRetentionSelection(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode),
+                accessKind == PathAwareSupportRelationAccessKind.Roots
+                    ? "PathAwareSupportRootsRelationRetentionSelection"
+                    : "PathAwareSupportSeedsRelationRetentionSelection",
+                accessKind == PathAwareSupportRelationAccessKind.Roots
+                    ? "PathAwareSupportRootsRelationRetention"
+                    : "PathAwareSupportSeedsRelationRetention");
+        }
+
         private static PathAwareEdgeRetentionStrategy ResolveStructuralPathAwareEdgeRetentionStrategy(
             PlanNode node,
             bool hasStreaming,
@@ -9394,7 +9666,7 @@ namespace UnifyWeaver.QueryRuntime
                 var rootValues = new Dictionary<object, object?>();
                 MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.RootRelation, PathAwareSupportRelationAccessKind.Roots, context, closure))
                     {
                         if (row is null || row.Length == 0)
                         {
@@ -9423,7 +9695,7 @@ namespace UnifyWeaver.QueryRuntime
                 var orderedUniqueSeeds = new List<object?>();
                 MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.SeedRelation, PathAwareSupportRelationAccessKind.Seeds, context, closure))
                     {
                         if (row is null || row.Length < 2)
                         {
@@ -9764,7 +10036,7 @@ namespace UnifyWeaver.QueryRuntime
                 var rootValues = new Dictionary<object, object?>();
                 MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.RootRelation, PathAwareSupportRelationAccessKind.Roots, context, closure))
                     {
                         if (row is null || row.Length == 0)
                         {
@@ -9793,7 +10065,7 @@ namespace UnifyWeaver.QueryRuntime
                 var orderedUniqueSeeds = new List<object?>();
                 MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.SeedRelation, PathAwareSupportRelationAccessKind.Seeds, context, closure))
                     {
                         if (row is null || row.Length < 2)
                         {
@@ -10025,7 +10297,7 @@ namespace UnifyWeaver.QueryRuntime
                 var rootValues = new Dictionary<object, object?>();
                 MeasurePhase(trace, closure, "load_roots", () =>
                 {
-                    foreach (var row in GetFactStream(closure.RootRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.RootRelation, PathAwareSupportRelationAccessKind.Roots, context, closure))
                     {
                         if (row is null || row.Length == 0)
                         {
@@ -10054,7 +10326,7 @@ namespace UnifyWeaver.QueryRuntime
                 var orderedUniqueSeeds = new List<object?>();
                 MeasurePhase(trace, closure, "load_seeds", () =>
                 {
-                    foreach (var row in GetFactStream(closure.SeedRelation, context))
+                    foreach (var row in GetPathAwareSupportFactStream(closure.SeedRelation, PathAwareSupportRelationAccessKind.Seeds, context, closure))
                     {
                         if (row is null || row.Length < 2)
                         {
@@ -17849,6 +18121,7 @@ namespace UnifyWeaver.QueryRuntime
                 ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
                 ScanRelationRetentionSelections = parent?.ScanRelationRetentionSelections ?? new Dictionary<(PredicateId Predicate, ScanRelationAccessKind AccessKind), ScanRelationRetentionSelection>();
                 ClosureRelationRetentionSelections = parent?.ClosureRelationRetentionSelections ?? new Dictionary<(PredicateId Predicate, ClosureRelationAccessKind AccessKind), ClosureRelationRetentionSelection>();
+                PathAwareSupportRelationRetentionSelections = parent?.PathAwareSupportRelationRetentionSelections ?? new Dictionary<(PredicateId Predicate, PathAwareSupportRelationAccessKind AccessKind), PathAwareSupportRelationRetentionSelection>();
                 PathAwareEdgeStates = parent?.PathAwareEdgeStates ?? new Dictionary<PredicateId, PathAwareEdgeState>();
                 PathAwareEdgeRetentionSelections = parent?.PathAwareEdgeRetentionSelections ?? new Dictionary<PredicateId, PathAwareEdgeRetentionSelection>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
@@ -17918,6 +18191,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId Predicate, ScanRelationAccessKind AccessKind), ScanRelationRetentionSelection> ScanRelationRetentionSelections { get; }
 
             public Dictionary<(PredicateId Predicate, ClosureRelationAccessKind AccessKind), ClosureRelationRetentionSelection> ClosureRelationRetentionSelections { get; }
+
+            public Dictionary<(PredicateId Predicate, PathAwareSupportRelationAccessKind AccessKind), PathAwareSupportRelationRetentionSelection> PathAwareSupportRelationRetentionSelections { get; }
 
             public Dictionary<PredicateId, PathAwareEdgeState> PathAwareEdgeStates { get; }
 

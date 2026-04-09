@@ -39,8 +39,12 @@ consumers. That policy now records measured cost buckets like `load_roots`,
 `load_seeds`, `strategy_select`, `build_*`, and `group_reduce`, while the
 earlier path-aware edge-retention boundary now also records buckets like
 `edge_strategy_select`, `edge_probe_*`, `edge_materialize_replayable`, and
-`edge_build_*`. Generic scan planning now adds corresponding scan buckets such
-as `scan_strategy_select`, `scan_probe_*`, `scan_materialize_*`, and
+`edge_build_*`. The grouped path-aware family now also routes its root and
+seed support relations through the same planner surface, adding buckets like
+`support_roots_strategy_select`, `support_roots_probe_*`,
+`support_seeds_strategy_select`, and `support_seeds_materialize_*`. Generic
+scan planning now adds corresponding scan buckets such as
+`scan_strategy_select`, `scan_probe_*`, `scan_materialize_*`, and
 `scan_build_fact_set`. Generic closure planning now adds corresponding closure
 buckets such as `closure_strategy_select`, `closure_probe_*`, and
 `closure_materialize_*`, with focused validation available in
