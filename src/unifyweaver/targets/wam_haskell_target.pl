@@ -251,23 +251,27 @@ wam_to_haskell(builtin_call('\\+/1', 1), Code) :-
 backtrack_haskell(Code) :-
     Code = '-- | Restore state from the top choice point (non-popping).
 -- Uses O(1) Data.Map reference swap for registers and bindings.
+-- When an aggregate frame CP is reached, delegates to finalizeAggregate.
 backtrack :: WamState -> Maybe WamState
 backtrack s = case wsCPs s of
   [] -> Nothing
-  (cp : rest) ->
-    let -- Unwind only binding-table trail entries
-        trailLen = cpTrailLen cp
-        newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
-        bindings'' = foldl'' undoBinding (cpBindings cp) newEntries
-    in Just s { wsPC       = cpNextPC cp
-              , wsRegs     = cpRegs cp       -- O(1): shared reference swap
-              , wsStack    = cpStack cp      -- O(1): shared reference swap
-              , wsCP       = cpCP cp
-              , wsTrail    = drop (length (wsTrail s) - trailLen) (wsTrail s)
-              , wsHeap     = take (cpHeapLen cp) (wsHeap s)
-              , wsBindings = bindings''       -- O(1) base + O(k) trail unwind
-              , wsCutBar   = cpCutBar cp
-              }
+  (cp : rest) -> case cpAggFrame cp of
+    Just af ->
+      -- Aggregate frame: finalize with the accumulated values.
+      finalizeAggregate (afReturnPC af) s
+    Nothing ->
+      let trailLen = cpTrailLen cp
+          newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
+          bindings'' = foldl'' undoBinding (cpBindings cp) newEntries
+      in Just s { wsPC       = cpNextPC cp
+                , wsRegs     = cpRegs cp       -- O(1): shared reference swap
+                , wsStack    = cpStack cp      -- O(1): shared reference swap
+                , wsCP       = cpCP cp
+                , wsTrail    = drop (length (wsTrail s) - trailLen) (wsTrail s)
+                , wsHeap     = take (cpHeapLen cp) (wsHeap s)
+                , wsBindings = bindings''       -- O(1) base + O(k) trail unwind
+                , wsCutBar   = cpCutBar cp
+                }
   where
     undoBinding bindings (TrailEntry key mOld)
       | "__binding__" `isPrefixOf` key =
@@ -571,11 +575,15 @@ step s (BeginAggregate typ valReg resReg) =
              , wsAggAccum = []
              })
 
--- end_aggregate: collect value, force backtrack for more solutions
+-- end_aggregate: collect value, store returnPC in aggregate frame, force backtrack
 step s (EndAggregate valReg) =
   let val = derefVar (wsBindings s) $ fromMaybe (Integer 0) (getReg valReg s)
-      s1 = s { wsAggAccum = val : wsAggAccum s }
       returnPC = wsPC s + 1
+      -- Update the aggregate frame CP with the correct returnPC
+      updatedCPs = map (\\cp -> case cpAggFrame cp of
+          Just af -> cp { cpAggFrame = Just af { afReturnPC = returnPC } }
+          Nothing -> cp) (wsCPs s)
+      s1 = s { wsAggAccum = val : wsAggAccum s, wsCPs = updatedCPs }
   in case backtrackInner returnPC s1 of
     Just s2 -> Just s2
     Nothing -> finalizeAggregate returnPC s1

@@ -29,6 +29,14 @@ main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
+%% power_sum_bound: aggregate_all(sum(W), ...) compiled to WAM instructions
+power_sum_bound(Cat, Root, NegN, WeightSum) :-
+    aggregate_all(sum(W),
+        (category_ancestor(Cat, Root, Hops, [Cat]),
+         H is Hops + 1,
+         W is H ** NegN),
+        WeightSum).
+
 generate_wam_haskell_benchmark(OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
@@ -38,7 +46,8 @@ generate_wam_haskell_benchmark(OutputDir) :-
     Predicates = [
         user:dimension_n/1,
         user:max_depth/1,
-        user:category_ancestor/4
+        user:category_ancestor/4,
+        user:power_sum_bound/4
     ],
     Options = [module_name('wam-haskell-bench')],
 
