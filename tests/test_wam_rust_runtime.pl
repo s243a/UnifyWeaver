@@ -75,6 +75,21 @@ tail_suffix([_|T], S) :- tail_suffix(T, S).
 tail_suffixes([], [[]]).
 tail_suffixes([H|T], [[H|T]|Rest]) :- tail_suffixes(T, Rest).
 
+:- dynamic weighted_edge/3.
+weighted_edge(s, a, 1.0).
+weighted_edge(s, b, 4.0).
+weighted_edge(a, b, 2.0).
+weighted_edge(a, c, 5.0).
+weighted_edge(b, c, 1.0).
+weighted_edge(c, d, 3.0).
+
+:- dynamic weighted_path/3.
+weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
+weighted_path(X, Y, Cost) :-
+    weighted_edge(X, Z, W),
+    weighted_path(Z, Y, RestCost),
+    Cost is W + RestCost.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -85,7 +100,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -102,9 +117,14 @@ use runtime_test::tc_step_parent_distance;
 use runtime_test::tri_sum;
 use runtime_test::tail_suffix;
 use runtime_test::tail_suffixes;
+use runtime_test::weighted_path;
 
 #[test]
 fn test_generated_predicates() {
+    fn assert_close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-9, "expected {}, got {}", expected, actual);
+    }
+
     // Test tc_ancestor/2 foreign lowering end-to-end
     let mut vm_tc = WamState::new(vec![], std::collections::HashMap::new());
     let ok1 = tc_ancestor(&mut vm_tc,
@@ -448,6 +468,67 @@ fn test_generated_predicates() {
         other => panic!("expected deterministic suffix collection in Suffixes, got {:?}", other),
     }
     assert!(!vm_suffixes.backtrack(), "tail_suffixes/2 should not leave backtracking results behind");
+
+    // Test weighted_path/3 foreign lowering end-to-end
+    let mut vm_weighted = WamState::new(vec![], std::collections::HashMap::new());
+    let ok17 = weighted_path(&mut vm_weighted,
+        Value::Atom("s".to_string()),
+        Value::Unbound("TargetW".to_string()),
+        Value::Unbound("CostW".to_string()));
+    assert!(ok17, "weighted_path(s, Target, Cost) first solution should succeed");
+
+    let mut weighted_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_weighted.bindings.get("TargetW").cloned(), vm_weighted.bindings.get("CostW").cloned()) {
+        weighted_results.push((target, cost));
+    } else {
+        panic!("expected first weighted_path result in TargetW/CostW");
+    }
+
+    while vm_weighted.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_weighted.bindings.get("TargetW").cloned(), vm_weighted.bindings.get("CostW").cloned()) {
+            weighted_results.push((target, cost));
+        } else {
+            panic!("expected backtracked weighted_path result in TargetW/CostW");
+        }
+    }
+
+    weighted_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(weighted_results.len(), 4);
+    assert_eq!(weighted_results[0].0, "a".to_string());
+    assert_eq!(weighted_results[1].0, "b".to_string());
+    assert_eq!(weighted_results[2].0, "c".to_string());
+    assert_eq!(weighted_results[3].0, "d".to_string());
+    assert_close(weighted_results[0].1, 1.0);
+    assert_close(weighted_results[1].1, 3.0);
+    assert_close(weighted_results[2].1, 4.0);
+    assert_close(weighted_results[3].1, 7.0);
+
+    let mut vm_weighted_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok18 = weighted_path(&mut vm_weighted_check,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Unbound("CostD".to_string()));
+    assert!(ok18, "weighted_path(s, d, Cost) should succeed");
+    match vm_weighted_check.bindings.get("CostD").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 7.0),
+        other => panic!("expected weighted_path(s, d, CostD) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok19 = weighted_path(&mut vm_weighted_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("c".to_string()),
+        Value::Float(4.0));
+    assert!(ok19, "weighted_path(s, c, 4.0) should succeed");
+
+    let mut vm_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok20 = weighted_path(&mut vm_weighted_fail,
+        Value::Atom("d".to_string()),
+        Value::Atom("s".to_string()),
+        Value::Unbound("CostFail".to_string()));
+    assert!(!ok20, "weighted_path(d, s, Cost) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
