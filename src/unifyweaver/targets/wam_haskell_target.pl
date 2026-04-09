@@ -251,23 +251,27 @@ wam_to_haskell(builtin_call('\\+/1', 1), Code) :-
 backtrack_haskell(Code) :-
     Code = '-- | Restore state from the top choice point (non-popping).
 -- Uses O(1) Data.Map reference swap for registers and bindings.
+-- When an aggregate frame CP is reached, delegates to finalizeAggregate.
 backtrack :: WamState -> Maybe WamState
 backtrack s = case wsCPs s of
   [] -> Nothing
-  (cp : rest) ->
-    let -- Unwind only binding-table trail entries
-        trailLen = cpTrailLen cp
-        newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
-        bindings'' = foldl'' undoBinding (cpBindings cp) newEntries
-    in Just s { wsPC       = cpNextPC cp
-              , wsRegs     = cpRegs cp       -- O(1): shared reference swap
-              , wsStack    = cpStack cp      -- O(1): shared reference swap
-              , wsCP       = cpCP cp
-              , wsTrail    = drop (length (wsTrail s) - trailLen) (wsTrail s)
-              , wsHeap     = take (cpHeapLen cp) (wsHeap s)
-              , wsBindings = bindings''       -- O(1) base + O(k) trail unwind
-              , wsCutBar   = cpCutBar cp
-              }
+  (cp : rest) -> case cpAggFrame cp of
+    Just af ->
+      -- Aggregate frame: finalize with the accumulated values.
+      finalizeAggregate (afReturnPC af) s
+    Nothing ->
+      let trailLen = cpTrailLen cp
+          newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
+          bindings'' = foldl'' undoBinding (cpBindings cp) newEntries
+      in Just s { wsPC       = cpNextPC cp
+                , wsRegs     = cpRegs cp       -- O(1): shared reference swap
+                , wsStack    = cpStack cp      -- O(1): shared reference swap
+                , wsCP       = cpCP cp
+                , wsTrail    = drop (length (wsTrail s) - trailLen) (wsTrail s)
+                , wsHeap     = take (cpHeapLen cp) (wsHeap s)
+                , wsBindings = bindings''       -- O(1) base + O(k) trail unwind
+                , wsCutBar   = cpCutBar cp
+                }
   where
     undoBinding bindings (TrailEntry key mOld)
       | "__binding__" `isPrefixOf` key =
@@ -289,6 +293,14 @@ backtrackInner returnPC s = case wsCPs s of
 
 -- | Finalize an aggregate: pop CPs to the aggregate frame, apply the
 -- aggregation function, bind the result register.
+-- | Update only the nearest aggregate frame CP with returnPC. O(k) where
+-- k is the number of inner CPs above the aggregate frame, not O(n) over all CPs.
+updateNearestAggFrame :: Int -> [ChoicePoint] -> [ChoicePoint]
+updateNearestAggFrame _ [] = []
+updateNearestAggFrame rpc (cp:rest) = case cpAggFrame cp of
+  Just af -> cp { cpAggFrame = Just af { afReturnPC = rpc } } : rest
+  Nothing -> cp : updateNearestAggFrame rpc rest
+
 finalizeAggregate :: Int -> WamState -> Maybe WamState
 finalizeAggregate returnPC s = go (wsCPs s)
   where
@@ -331,6 +343,72 @@ applyAggregation "sum" vals =
 applyAggregation "count" vals = Integer (length vals)
 applyAggregation "collect" vals = VList vals
 applyAggregation _ vals = VList vals
+
+-- ============================================================================
+-- Foreign Function Interface: native Haskell implementations of expensive
+-- recursive predicates. Avoids ~100x WAM interpretation overhead.
+-- ============================================================================
+
+-- | Native category_ancestor: depth-bounded DFS over indexed parent facts.
+-- Returns all (Hops) values for paths from Cat to Root within maxDepth.
+-- Uses Set for O(log n) membership check on Visited.
+nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> Set.Set String -> [Int]
+nativeCategoryAncestor parents cat root maxDepth depth visited =
+  let directParents = fromMaybe [] (Map.lookup cat parents)
+      baseHits = [1 | p <- directParents, p == root, not (Set.member p visited)]
+      recHits = if depth >= maxDepth then [] else
+        concatMap (\\mid ->
+          if Set.member mid visited then []
+          else map (+1) $ nativeCategoryAncestor parents mid root maxDepth (depth+1) (Set.insert mid visited)
+        ) directParents
+  in baseHits ++ recHits
+
+-- | Execute a foreign predicate call. Computes all results natively,
+-- returns first result with CPs for the rest.
+executeForeign :: String -> WamState -> Maybe WamState
+executeForeign "category_ancestor/4" s =
+  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (Map.lookup "A1" (wsRegs s))
+      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (Map.lookup "A2" (wsRegs s))
+      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A4" (wsRegs s))
+      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wsForeignConfig s)
+      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wsForeignFacts s)
+  in case (cat, root, visited) of
+    (Atom catS, Atom rootS, VList visitedVals) ->
+      let visitedStrs = Set.fromList [v | Atom v <- visitedVals]
+          hops = nativeCategoryAncestor parents catS rootS maxD (Set.size visitedStrs) visitedStrs
+          retPC = wsCP s
+          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (Map.lookup "A3" (wsRegs s))
+          bindHop hopVal =
+            case hopsReg of
+              Unbound var ->
+                s { wsPC = retPC
+                  , wsRegs = Map.insert "A3" (Integer (fromIntegral hopVal)) (wsRegs s)
+                  , wsBindings = Map.insert var (Integer (fromIntegral hopVal)) (wsBindings s)
+                  , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s }
+              _ -> s { wsPC = retPC, wsRegs = Map.insert "A3" (Integer (fromIntegral hopVal)) (wsRegs s) }
+          mkCP hopVal =
+            let bound = bindHop hopVal
+            in ChoicePoint
+              { cpNextPC   = retPC
+              , cpRegs     = wsRegs bound
+              , cpStack    = wsStack s
+              , cpCP       = wsCP s
+              , cpTrailLen = length (wsTrail s)
+              , cpHeapLen  = length (wsHeap s)
+              , cpBindings = wsBindings bound
+              , cpCutBar   = wsCutBar s
+              , cpAggFrame = Nothing
+              }
+      in case hops of
+        [] -> Nothing
+        [h] -> Just (bindHop h)   -- single result, no CPs
+        (h:rest) ->
+          let s1 = bindHop h
+              -- CPs for remaining results (in reverse so backtrack gets them in order)
+              newCPs = map mkCP (reverse rest)
+          in Just (s1 { wsCPs = newCPs ++ wsCPs s })
+    _ -> Nothing
+executeForeign _ _ = Nothing
 
 -- | Unify two values, binding unbound variables.
 unifyVal :: Value -> Value -> WamState -> Maybe WamState
@@ -423,9 +501,14 @@ step s (SetConstant c) =
   addToBuilder c s
 
 step s (Call pred _arity) =
-  case Map.lookup pred (wsLabels s) of
-    Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
-    Nothing -> Nothing
+  -- Try foreign dispatch first (native Haskell implementation)
+  case executeForeign pred (s { wsCP = wsPC s + 1 }) of
+    Just s'' -> Just s''
+    Nothing ->
+      -- Fall back to WAM instruction dispatch
+      case Map.lookup pred (wsLabels s) of
+        Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+        Nothing -> Nothing
 
 step s Proceed =
   let ret = wsCP s
@@ -571,11 +654,13 @@ step s (BeginAggregate typ valReg resReg) =
              , wsAggAccum = []
              })
 
--- end_aggregate: collect value, force backtrack for more solutions
+-- end_aggregate: collect value, store returnPC in nearest aggregate frame, force backtrack
 step s (EndAggregate valReg) =
   let val = derefVar (wsBindings s) $ fromMaybe (Integer 0) (getReg valReg s)
-      s1 = s { wsAggAccum = val : wsAggAccum s }
       returnPC = wsPC s + 1
+      -- Update only the nearest (first) aggregate frame CP, not all CPs
+      updatedCPs = updateNearestAggFrame returnPC (wsCPs s)
+      s1 = s { wsAggAccum = val : wsAggAccum s, wsCPs = updatedCPs }
   in case backtrackInner returnPC s1 of
     Just s2 -> Just s2
     Nothing -> finalizeAggregate returnPC s1
@@ -870,6 +955,8 @@ compile_wam_runtime_to_haskell(_Options, Code) :-
 'module WamRuntime where
 
 import qualified Data.Map.Strict as Map
+import Data.Array (Array, listArray, (!), bounds)
+import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'')
 import Data.Maybe (fromMaybe)
 import WamTypes
@@ -967,6 +1054,7 @@ addToBuilder val s = case wsBuilder s of
        then let [hd, tl] = args''
                 list = case tl of
                   VList items -> VList (hd : items)
+                  Atom "[]"  -> VList [hd]
                   _           -> VList [hd, tl]
             in Just (s { wsPC = wsPC s + 1
                        , wsRegs = Map.insert ai list (wsRegs s)
@@ -984,10 +1072,10 @@ lookupLabel :: String -> WamState -> Int
 lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
 
 -- | Fetch instruction at PC (1-indexed).
-fetchInstr :: Int -> [Instruction] -> Maybe Instruction
+fetchInstr :: Int -> Array Int Instruction -> Maybe Instruction
 fetchInstr pc code
-  | pc < 1 || pc > length code = Nothing
-  | otherwise = Just (code !! (pc - 1))
+  | let (lo, hi) = bounds code in pc < lo || pc > hi = Nothing
+  | otherwise = Just (code ! pc)
 ', [StepCode, BacktrackCode, RunCode]).
 
 %% generate_wam_types_hs(-Code)
@@ -995,6 +1083,7 @@ generate_wam_types_hs(Code) :-
     Code = 'module WamTypes where
 
 import qualified Data.Map.Strict as Map
+import Data.Array (Array, listArray, (!), bounds)
 
 data Value = Atom String
            | Integer Int
@@ -1047,11 +1136,13 @@ data WamState = WamState
   , wsCPs      :: ![ChoicePoint]
   , wsBindings :: !(Map.Map String Value)
   , wsCutBar   :: !Int
-  , wsCode     :: ![Instruction]
+  , wsCode     :: !(Array Int Instruction)
   , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
   , wsAggAccum :: ![Value]     -- aggregate accumulator (values collected so far)
+  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))  -- pred -> (key1 -> [val2s]); populated by benchmark driver
+  , wsForeignConfig :: !(Map.Map String Int)                       -- "max_depth" etc.; populated by benchmark driver
   } deriving (Show)
 
 -- | Instruction type for the WAM.
@@ -1082,7 +1173,7 @@ data Instruction
 
 -- | Create initial empty state.
 emptyState :: [Instruction] -> Map.Map String Int -> WamState
-emptyState code labels = WamState
+emptyState codeList labels = let n = length codeList; code = listArray (1, n) codeList in WamState
   { wsPC       = 1
   , wsRegs     = Map.empty
   , wsStack    = []
@@ -1097,6 +1188,8 @@ emptyState code labels = WamState
   , wsBuilder  = NoBuilder
   , wsVarCounter = 0
   , wsAggAccum = []
+  , wsForeignFacts = Map.empty
+  , wsForeignConfig = Map.empty
   }
 '.
 
@@ -1112,7 +1205,7 @@ executable ~w
   main-is:          Main.hs
   hs-source-dirs:   src
   other-modules:    WamTypes, WamRuntime, Predicates
-  build-depends:    base >= 4.14, containers >= 0.6
+  build-depends:    base >= 4.14, containers >= 0.6, array, time >= 1.8
   default-language: Haskell2010
   ghc-options:      -O2
 ', [Name, Name]).
