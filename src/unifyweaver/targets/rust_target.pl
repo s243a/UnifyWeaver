@@ -3726,6 +3726,7 @@ rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_trans
 rust_recursive_kernel_detector(transitive_parent_distance4, rust_recursive_kernel_transitive_parent_distance).
 rust_recursive_kernel_detector(transitive_step_parent_distance5, rust_recursive_kernel_transitive_step_parent_distance).
 rust_recursive_kernel_detector(weighted_shortest_path3, rust_recursive_kernel_weighted_shortest_path).
+rust_recursive_kernel_detector(astar_shortest_path4, rust_recursive_kernel_astar_shortest_path).
 
 rust_recursive_kernel_spec(
         recursive_kernel(KernelKind, PredIndicator, KernelConfig),
@@ -3752,6 +3753,7 @@ rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
 rust_recursive_kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 rust_recursive_kernel_native_kind(transitive_step_parent_distance5, transitive_step_parent_distance5).
 rust_recursive_kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
+rust_recursive_kernel_native_kind(astar_shortest_path4, astar_shortest_path4).
 
 rust_recursive_kernel_result_layout(category_ancestor, tuple(1)).
 rust_recursive_kernel_result_layout(countdown_sum2, tuple(1)).
@@ -3762,6 +3764,7 @@ rust_recursive_kernel_result_layout(transitive_distance3, tuple(2)).
 rust_recursive_kernel_result_layout(transitive_parent_distance4, tuple(3)).
 rust_recursive_kernel_result_layout(transitive_step_parent_distance5, tuple(4)).
 rust_recursive_kernel_result_layout(weighted_shortest_path3, tuple(2)).
+rust_recursive_kernel_result_layout(astar_shortest_path4, tuple(2)).
 
 rust_recursive_kernel_result_mode(category_ancestor, stream).
 rust_recursive_kernel_result_mode(countdown_sum2, deterministic).
@@ -3772,6 +3775,7 @@ rust_recursive_kernel_result_mode(transitive_distance3, stream).
 rust_recursive_kernel_result_mode(transitive_parent_distance4, stream).
 rust_recursive_kernel_result_mode(transitive_step_parent_distance5, stream).
 rust_recursive_kernel_result_mode(weighted_shortest_path3, stream).
+rust_recursive_kernel_result_mode(astar_shortest_path4, stream).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
         [max_depth(MaxDepth)],
@@ -3795,6 +3799,16 @@ rust_recursive_kernel_config_ops(weighted_shortest_path3, PredIndicator,
         [weight_pred(WeightPred/3), fact_triples(FactTriples)],
         [ register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
           register_indexed_weighted_edge(WeightPred/3, FactTriples)
+        ]).
+rust_recursive_kernel_config_ops(astar_shortest_path4, PredIndicator,
+        [weight_pred(WeightPred/3), fact_triples(FactTriples),
+         direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+         dimensionality(Dim)],
+        [ register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+          register_indexed_weighted_edge(WeightPred/3, FactTriples),
+          register_foreign_string_config(PredIndicator, direct_dist_pred, DirectPred/3),
+          register_indexed_weighted_edge(DirectPred/3, DirectTriples),
+          register_foreign_usize_config(PredIndicator, dimensionality, Dim)
         ]).
 
 rust_recursive_kernel_binary_edge_config_ops(PredIndicator,
@@ -3844,6 +3858,14 @@ rust_recursive_kernel_weighted_shortest_path(Pred, Arity, Clauses,
         recursive_kernel(weighted_shortest_path3, Pred/Arity,
             [weight_pred(WeightPred/3), fact_triples(FactTriples)])) :-
     rust_foreign_lowerable_weighted_shortest_path(Pred, Arity, Clauses, WeightPred/3, FactTriples).
+
+rust_recursive_kernel_astar_shortest_path(Pred, Arity, Clauses,
+        recursive_kernel(astar_shortest_path4, Pred/Arity,
+            [weight_pred(WeightPred/3), fact_triples(FactTriples),
+             direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+             dimensionality(Dim)])) :-
+    rust_foreign_lowerable_astar_shortest_path(Pred, Arity, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, Dim).
 
 rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
     member(_-BaseBody, Clauses),
@@ -4051,6 +4073,56 @@ extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
     functor(Rest, Pred, _),
     !,
     fail.  % Don't match — this needs the 4-arity kernel instead
+
+%% rust_foreign_lowerable_astar_shortest_path(+Pred, +Arity, +Clauses,
+%%     -WeightPred, -FactTriples, -DirectPred, -DirectTriples, -Dim)
+%
+%  Recognize the A* weighted shortest path pattern (arity 4):
+%
+%    Base:  Pred(X, Y, _Visited, _Dim, W) :- WeightPred(X, Y, W).
+%    Rec:   Pred(X, Y, Visited, Dim, Cost) :-
+%               WeightPred(X, Z, W), \+ member(Z, Visited),
+%               Pred(Z, Y, [Z|Visited], Dim, RC), Cost is W + RC.
+%
+%  Also detects direct_semantic_dist/3 facts for the heuristic oracle,
+%  and extracts the Dim parameter (default 5).
+%
+rust_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, Dim) :-
+    % Must have a weighted path core (reuse the 3-arity pattern check)
+    % The 4-arity version adds Dim as the 4th arg
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    % Base case: Pred(X, Y, _Visited, _Dim, W) :- WeightPred(X, Y, W)
+    BaseHead =.. [Pred, _, _, _, BaseWeight],
+    BaseBody =.. [WeightPred, _, _, BaseWeight],
+    % Recursive case - extract WeightPred from body
+    RecHead =.. [Pred, _, _, _, _],
+    RecBody = (WeightGoal, _Rest),
+    WeightGoal =.. [WeightPred, _, _, _],
+    % Extract weighted edge facts
+    findall(Left-Right-Weight,
+        ( functor(WHead, WeightPred, 3),
+          user:clause(WHead, true),
+          WHead =.. [WeightPred, Left, Right, Weight],
+          atom(Left), atom(Right), number(Weight)
+        ),
+        FactTriples),
+    FactTriples \= [],
+    % Find direct distance predicate (look for direct_semantic_dist/3)
+    (   current_predicate(user:direct_semantic_dist/3)
+    ->  DirectPred = direct_semantic_dist,
+        findall(L-R-D,
+            ( user:direct_semantic_dist(L, R, D),
+              atom(L), atom(R), number(D)
+            ),
+            DirectTriples)
+    ;   DirectPred = none,
+        DirectTriples = []
+    ),
+    % Default dimensionality
+    Dim = 5.
 
 rust_foreign_edge_pair(forward, Left, Right, Left-Right).
 rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
