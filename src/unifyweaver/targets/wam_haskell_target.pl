@@ -878,6 +878,7 @@ compile_wam_runtime_to_haskell(_Options, Code) :-
 'module WamRuntime where
 
 import qualified Data.Map.Strict as Map
+import Data.Array (Array, listArray, (!), bounds)
 import Data.List (isPrefixOf, foldl'')
 import Data.Maybe (fromMaybe)
 import WamTypes
@@ -993,10 +994,10 @@ lookupLabel :: String -> WamState -> Int
 lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
 
 -- | Fetch instruction at PC (1-indexed).
-fetchInstr :: Int -> [Instruction] -> Maybe Instruction
+fetchInstr :: Int -> Array Int Instruction -> Maybe Instruction
 fetchInstr pc code
-  | pc < 1 || pc > length code = Nothing
-  | otherwise = Just (code !! (pc - 1))
+  | let (lo, hi) = bounds code in pc < lo || pc > hi = Nothing
+  | otherwise = Just (code ! pc)
 ', [StepCode, BacktrackCode, RunCode]).
 
 %% generate_wam_types_hs(-Code)
@@ -1004,6 +1005,7 @@ generate_wam_types_hs(Code) :-
     Code = 'module WamTypes where
 
 import qualified Data.Map.Strict as Map
+import Data.Array (Array, listArray, (!), bounds)
 
 data Value = Atom String
            | Integer Int
@@ -1056,7 +1058,7 @@ data WamState = WamState
   , wsCPs      :: ![ChoicePoint]
   , wsBindings :: !(Map.Map String Value)
   , wsCutBar   :: !Int
-  , wsCode     :: ![Instruction]
+  , wsCode     :: !(Array Int Instruction)
   , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
@@ -1091,7 +1093,7 @@ data Instruction
 
 -- | Create initial empty state.
 emptyState :: [Instruction] -> Map.Map String Int -> WamState
-emptyState code labels = WamState
+emptyState codeList labels = let n = length codeList; code = listArray (1, n) codeList in WamState
   { wsPC       = 1
   , wsRegs     = Map.empty
   , wsStack    = []
@@ -1121,7 +1123,7 @@ executable ~w
   main-is:          Main.hs
   hs-source-dirs:   src
   other-modules:    WamTypes, WamRuntime, Predicates
-  build-depends:    base >= 4.14, containers >= 0.6
+  build-depends:    base >= 4.14, containers >= 0.6, array, time >= 1.8
   default-language: Haskell2010
   ghc-options:      -O2
 ', [Name, Name]).
