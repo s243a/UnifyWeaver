@@ -975,6 +975,7 @@ addToBuilder val s = case wsBuilder s of
        then let [hd, tl] = args''
                 list = case tl of
                   VList items -> VList (hd : items)
+                  Atom "[]"  -> VList [hd]
                   _           -> VList [hd, tl]
             in Just (s { wsPC = wsPC s + 1
                        , wsRegs = Map.insert ai list (wsRegs s)
