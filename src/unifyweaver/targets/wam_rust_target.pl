@@ -790,6 +790,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_collect_native_list_suffixes_to_rust(NativeListSuffixCode),
     compile_collect_native_transitive_closure_to_rust(NativeClosureCode),
     compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
+    compile_collect_native_transitive_parent_distance_to_rust(NativeParentDistanceCode),
     compile_collect_native_weighted_shortest_path_to_rust(NativeWeightedPathCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
@@ -810,6 +811,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         NativeListSuffixCode, '\n\n',
         NativeClosureCode, '\n\n',
         NativeDistanceCode, '\n\n',
+        NativeParentDistanceCode, '\n\n',
         NativeWeightedPathCode, '\n\n',
         ArithCode
     ], RustCode).
@@ -1200,6 +1202,49 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
+            "transitive_parent_distance4" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let parent_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let dist_reg = match self.regs.get("A4").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mut results: Vec<(String, String, i64)> = Vec::new();
+                self.collect_native_transitive_parent_distance_results(&start, &edge_pred, &mut results);
+                if let Some(target) = target_filter {
+                    results.retain(|(node, _, _)| *node == target);
+                }
+                if results.is_empty() {
+                    return false;
+                }
+                let packed_results: Vec<Value> = results.into_iter().map(|(node, parent, dist)| {
+                    Value::Str("__triple__".to_string(), vec![
+                        Value::Atom(node),
+                        Value::Atom(parent),
+                        Value::Integer(dist),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg, parent_reg, dist_reg], packed_results)
+            }
             "weighted_shortest_path3" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
@@ -1301,6 +1346,19 @@ compile_foreign_result_helpers_to_rust(Code) :-
                 match result {
                     Value::Str(functor, args) if functor == "__pair__" && args.len() == 2 => {
                         self.unify(&result_regs[0], &args[0]) && self.unify(&result_regs[1], &args[1])
+                    }
+                    _ => false,
+                }
+            }
+            "triple" => {
+                if result_regs.len() != 3 {
+                    return false;
+                }
+                match result {
+                    Value::Str(functor, args) if functor == "__triple__" && args.len() == 3 => {
+                        self.unify(&result_regs[0], &args[0])
+                            && self.unify(&result_regs[1], &args[1])
+                            && self.unify(&result_regs[2], &args[2])
                     }
                     _ => false,
                 }
@@ -1420,6 +1478,25 @@ compile_collect_native_transitive_distance_to_rust(Code) :-
                     let mut next_path = path.clone();
                     next_path.push(next.clone());
                     stack.push((next.clone(), next_depth, next_path));
+                }
+            }
+        }
+    }'.
+
+compile_collect_native_transitive_parent_distance_to_rust(Code) :-
+    Code = '    pub fn collect_native_transitive_parent_distance_results(
+        &self,
+        start: &str,
+        edge_pred: &str,
+        out: &mut Vec<(String, String, i64)>,
+    ) {
+        let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];
+        while let Some((node, depth)) = stack.pop() {
+            if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
+                for next in next_nodes.iter().rev() {
+                    let next_depth = depth + 1;
+                    out.push((next.clone(), node.clone(), next_depth));
+                    stack.push((next.clone(), next_depth));
                 }
             }
         }

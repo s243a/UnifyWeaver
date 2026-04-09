@@ -3722,6 +3722,7 @@ rust_recursive_kernel_detector(countdown_sum2, rust_recursive_kernel_countdown_s
 rust_recursive_kernel_detector(list_suffix2, rust_recursive_kernel_list_suffix).
 rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
 rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
+rust_recursive_kernel_detector(transitive_parent_distance4, rust_recursive_kernel_transitive_parent_distance).
 rust_recursive_kernel_detector(weighted_shortest_path3, rust_recursive_kernel_weighted_shortest_path).
 
 rust_recursive_kernel_spec(
@@ -3743,6 +3744,7 @@ rust_recursive_kernel_native_kind(countdown_sum2, countdown_sum2).
 rust_recursive_kernel_native_kind(list_suffix2, list_suffix2).
 rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
 rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
+rust_recursive_kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 rust_recursive_kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
 
 rust_recursive_kernel_result_layout(category_ancestor, single).
@@ -3750,6 +3752,7 @@ rust_recursive_kernel_result_layout(countdown_sum2, single).
 rust_recursive_kernel_result_layout(list_suffix2, single).
 rust_recursive_kernel_result_layout(transitive_closure2, single).
 rust_recursive_kernel_result_layout(transitive_distance3, pair).
+rust_recursive_kernel_result_layout(transitive_parent_distance4, triple).
 rust_recursive_kernel_result_layout(weighted_shortest_path3, pair).
 
 rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
@@ -3761,6 +3764,9 @@ rust_recursive_kernel_config_ops(transitive_closure2, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
 rust_recursive_kernel_config_ops(transitive_distance3, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+rust_recursive_kernel_config_ops(transitive_parent_distance4, PredIndicator,
         KernelConfig, ConfigOps) :-
     rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
 rust_recursive_kernel_config_ops(weighted_shortest_path3, PredIndicator,
@@ -3798,6 +3804,11 @@ rust_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
         recursive_kernel(transitive_distance3, Pred/Arity,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
     rust_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_recursive_kernel_transitive_parent_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_parent_distance4, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_parent_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
 
 rust_recursive_kernel_weighted_shortest_path(Pred, Arity, Clauses,
         recursive_kernel(weighted_shortest_path3, Pred/Arity,
@@ -3894,6 +3905,27 @@ rust_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred/2, FactPai
         FactPairs),
     FactPairs \= [].
 
+rust_foreign_lowerable_transitive_parent_distance(Pred, 4, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseStart, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecParent, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget, RecParent, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1],
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
 %% rust_foreign_lowerable_weighted_shortest_path(+Pred, +Arity, +Clauses, -WeightPred, -FactTriples)
 %
 %  Recognize the weighted shortest path pattern:
@@ -3954,10 +3986,9 @@ extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
     !.
 extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
     % 4-arity visited form: Pred(X, Y, Visited, Cost) recursion
-    % Accept the inner predicate having extra args
     Body = (WeightGoal, Rest),
     WeightGoal =.. [WeightPred, Start, _Mid, _W],
-    Rest \= (_,_),  % single recursive goal with is
+    Rest \= (_,_),
     functor(Rest, Pred, _),
     !,
     fail.  % Don't match — this needs the 4-arity kernel instead

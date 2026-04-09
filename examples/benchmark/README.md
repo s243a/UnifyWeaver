@@ -30,10 +30,12 @@ pipelines across the full benchmark range while preserving the same
 all-path semantics. It also now supports cost-guided selection between
 compact grouped weight sums and the legacy seeded-row regrouping path,
 using the same grouped-summary policy layer that now also drives the
-shortest-path minima family. That policy now records measured cost buckets
-like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
-`group_reduce`, while the earlier path-aware edge-retention boundary now also
-records buckets like `edge_strategy_select`, `edge_probe_*`,
+shortest-path minima family. The path-aware family now also coordinates that
+grouped-summary selector with the earlier edge-retention selector through a
+small internal materialization planner layer. That policy now records measured
+cost buckets like `load_roots`, `load_seeds`, `strategy_select`, `build_*`,
+and `group_reduce`, while the earlier path-aware edge-retention boundary now
+also records buckets like `edge_strategy_select`, `edge_probe_*`,
 `edge_materialize_replayable`, and `edge_build_*`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
@@ -295,10 +297,10 @@ python examples/benchmark/benchmark_dependency_depth_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
-# Compare true DAG longest dependency depth across DFS targets
+# Compare true DAG longest dependency depth across query engine and DFS targets
 python examples/benchmark/benchmark_dependency_longest_depth_cross_target.py \
     --scales 300,1k,5k,10k \
-    --targets csharp-dfs,rust-dfs,go-dfs
+    --targets csharp-query,csharp-dfs,rust-dfs,go-dfs
 
 # Measure overhead of the generalized path-aware accumulation runtime
 python examples/benchmark/benchmark_path_aware_accumulation.py \
@@ -554,7 +556,10 @@ Comparison note:
   per-family override knob
 - the path-aware edge relation now also goes through measured retention
   selection, and on the current benchmark surface `Auto` prefers
-  `ReplayableBuffer`; trace output now exposes edge buckets such as
+  `ReplayableBuffer`; that selection now runs through the same internal
+  relation-retention policy layer that also drives the DAG family, while the
+  benchmark-visible override knobs stay separate
+- trace output now exposes edge buckets such as
   `edge_strategy_select`, `edge_probe_streaming_direct`,
   `edge_probe_replayable_buffer`, `edge_materialize_replayable`, and
   `edge_build_replayable_buffer`
@@ -681,35 +686,45 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.064s | 0.044s | 0.002s | 0.002s | match |
-| 1k | 0.082s | 0.048s | 0.007s | 0.008s | match |
-| 5k | 0.072s | 0.172s | 0.157s | 0.109s | match |
-| 10k | 0.073s | 0.528s | 0.733s | 0.481s | match |
+| 300 | 0.081s | 0.051s | 0.002s | 0.003s | match |
+| 1k | 0.102s | 0.056s | 0.008s | 0.008s | match |
+| 5k | 0.090s | 0.183s | 0.157s | 0.118s | match |
+| 10k | 0.098s | 0.583s | 0.683s | 0.501s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.68x | 0.03x | 0.04x |
-| 1k | 0.59x | 0.08x | 0.10x |
-| 5k | 2.39x | 2.18x | 1.52x |
-| 10k | 7.20x | 10.01x | 6.57x |
+| 300 | 0.63x | 0.03x | 0.03x |
+| 1k | 0.55x | 0.08x | 0.08x |
+| 5k | 2.03x | 1.74x | 1.31x |
+| 10k | 5.95x | 6.96x | 5.11x |
 
 Comparison note:
 
 - the current C# query path uses a project-grouped reachability node
   with direct count aggregation inside the query runtime
-- the latest change also moves relation ingestion/materialization for the
-  benchmark inputs into the query runtime via delimited-source streaming,
-  instead of eagerly loading all edge and seed facts into the benchmark
-  program first
+- relation ingestion now also goes through a measured DAG retention
+  selector, and the generated benchmarks expose
+  `UNIFYWEAVER_DAG_RETENTION_STRATEGY=auto|streaming|replayable|external`
+- the DAG selector now shares the same internal relation-retention policy layer
+  as path-aware edge retention, while preserving a DAG-specific public override
+  surface
+- on the current synthetic benchmark surface, `Auto` picks
+  `StreamingDirect` for the reach-count DAG path; at smaller scales it can
+  use bounded probes (`dag_probe_streaming_direct`,
+  `dag_probe_replayable_buffer`), and at larger scales it short-circuits
+  structurally
+- trace output now exposes DAG retention buckets such as
+  `dag_strategy_select`, `dag_probe_*`, `dag_materialize_replayable_*`,
+  and `dag_build_*`
 - for the one-shot generated benchmark programs, disabling query-runtime
   cache reuse still helps slightly by removing bookkeeping that is not
   reused within a single run
-- this pushes the benchmark closer to the intended ownership boundary:
+- this keeps the benchmark closer to the intended ownership boundary:
   the parser streams tuples, and the engine decides what state to retain
   for the operator
-- the query engine is still behind at `300` and `1k`, but is now clearly
+- the query engine is still behind at `300` and `1k`, but is clearly
   ahead of all DFS targets from `5k` onward
 - outputs still match across all four targets
 
@@ -732,36 +747,39 @@ Latest local results:
 
 | Scale | C# Query | C# DFS | Rust DFS | Go DFS | Query vs C# DFS |
 |-------|---------:|--------:|---------:|-------:|-----------------|
-| 300 | 0.056s | 0.041s | 0.002s | 0.002s | match |
-| 1k | 0.053s | 0.044s | 0.004s | 0.003s | match |
-| 5k | 0.070s | 0.053s | 0.007s | 0.006s | match |
-| 10k | 0.077s | 0.053s | 0.012s | 0.011s | match |
+| 300 | 0.070s | 0.044s | 0.002s | 0.002s | match |
+| 1k | 0.069s | 0.044s | 0.003s | 0.004s | match |
+| 5k | 0.086s | 0.052s | 0.008s | 0.006s | match |
+| 10k | 0.085s | 0.064s | 0.014s | 0.012s | match |
 
 Speedups of C# query engine:
 
 | Scale | vs C# DFS | vs Rust DFS | vs Go DFS |
 |-------|----------:|------------:|----------:|
-| 300 | 0.74x | 0.03x | 0.04x |
-| 1k | 0.83x | 0.07x | 0.05x |
-| 5k | 0.76x | 0.10x | 0.08x |
-| 10k | 0.68x | 0.16x | 0.14x |
+| 300 | 0.63x | 0.03x | 0.03x |
+| 1k | 0.63x | 0.04x | 0.05x |
+| 5k | 0.61x | 0.09x | 0.07x |
+| 10k | 0.76x | 0.16x | 0.14x |
 
 Comparison note:
 
 - this benchmark includes a real `csharp-query` DAG longest-depth path
   built on a dedicated query-runtime node
-- the latest change moves edge and seed fact ingestion/materialization
-  into the query runtime via delimited-source streaming, instead of
-  eagerly loading all rows into the benchmark program first
+- DAG relation ingestion now also goes through a measured retention
+  selector, and the generated benchmarks expose
+  `UNIFYWEAVER_DAG_RETENTION_STRATEGY=auto|streaming|replayable|external`
+- on the current benchmark surface, `Auto` also picks
+  `StreamingDirect` for longest depth; at smaller scales it can use
+  bounded probes, and at larger scales it short-circuits structurally
 - set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
-  `csharp-query` longest-depth benchmark to print per-phase timings to
-  `stderr`
+  `csharp-query` longest-depth benchmark to print both per-phase DAG
+  timings and DAG retention strategy buckets to `stderr`
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
   custom TSV loader work, but the query engine now sits closer to that
-  baseline than before while keeping the intended retention boundary in
-  the engine rather than the loader
+  baseline while keeping the intended retention boundary in the engine
+  rather than the loader
 - outputs still match across all four targets, and longest depth remains
   a separate optimization track from reach-count
 

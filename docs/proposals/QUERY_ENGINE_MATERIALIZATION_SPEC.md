@@ -33,7 +33,13 @@ The current runtime now exposes a narrow explicit retention contract:
 
 These hooks do not solve every ingestion case yet, but they make the
 retention choice explicit at the runtime/provider boundary instead of hiding it
-inside benchmark-specific wiring.
+inside benchmark-specific wiring. The current runtime now also shares one
+internal measured relation-retention policy layer between DAG relation
+selection and path-aware edge selection, while preserving separate public
+override surfaces for those families. For the path-aware grouped-summary
+family, the runtime now coordinates that relation-retention choice with the
+grouped-summary selector through a small internal materialization planner
+layer.
 
 ## Required Capabilities
 
@@ -61,6 +67,10 @@ Examples:
 
 - DAG grouped reachability builds adjacency and grouped bitset/count state
 - DAG longest depth builds adjacency and scalar suffix-depth state
+- where direct streamed DAG build, replayable buffering, and external
+  materialized rows are all viable inputs for those DAG operators, the runtime
+  can choose among them through a measured retention selector and still expose
+  an explicit override via `QueryExecutorOptions.DagRelationRetentionStrategy`
 - path-aware shortest-path operators can build compact source->targets edge state
   instead of retaining generic edge tuples
 - where direct streaming, replayable buffering, and external materialized rows
@@ -79,6 +89,10 @@ Examples:
   runtime can choose between them through that same grouped-summary policy
   layer, record measured cost buckets for that choice, and still expose an
   explicit override via `QueryExecutorOptions.PathAwareWeightSumStrategy`
+- when a path-aware operator family has both relation-retention and
+  grouped-summary policy layers available, the runtime can coordinate them
+  through a materialization planner layer instead of treating them as
+  unrelated decisions
 - other operators may request replay buffers or indexes when needed
 
 ### 3. External materialization fallback
@@ -122,26 +136,33 @@ For the current benchmark/runtime surface, the streamed path is:
 2. the runtime requests either `Streaming` or `Replayable` access
 3. replayable bindings can cache a reusable relation source instead of ad hoc `ToList()` calls
 4. DAG, scan, and path-aware operators read rows through that retention boundary
-5. path-aware shortest-path operators can build a compact edge-state cache
+5. DAG grouped reach-count and longest-depth operators can use measured
+   relation-retention selection to choose between direct streamed DAG build,
+   replayable buffering, and external materialized fallback before building
+   their operator-owned graph state
+6. path-aware shortest-path operators can build a compact edge-state cache
    directly from streamed facts instead of generic replayed edge rows
-6. where streaming, replayable buffering, and external materialized rows are
+7. where streaming, replayable buffering, and external materialized rows are
    all viable sources for that cache, the runtime can use measured edge-retention
-   buckets and bounded probes to choose among them before honoring an explicit
-   executor override
-7. shortest-path and weighted-shortest-path operators can emit compact
+   buckets and bounded probes to choose among them through that same shared
+   relation-retention policy layer before honoring an explicit executor override
+8. shortest-path and weighted-shortest-path operators can emit compact
    grouped root minima directly from streamed edge/seed inputs
-8. where grouped minima and legacy seeded-row regrouping both exist, the runtime
+9. where grouped minima and legacy seeded-row regrouping both exist, the runtime
    can select between them through a shared grouped-summary policy layer,
    record measured cost buckets for that decision, and use bounded probes in
    ambiguous cases before falling back to an explicit executor option
-9. effective-distance and category-influence operators can emit compact
+10. effective-distance and category-influence operators can emit compact
    grouped root-weight summaries directly from streamed edge/seed inputs
-10. where grouped weight sums and legacy seeded-row regrouping both exist, the
+11. where grouped weight sums and legacy seeded-row regrouping both exist, the
    runtime can select between them through that same grouped-summary policy
    layer, record measured cost buckets for that decision, and use bounded
    probes in ambiguous cases before falling back to an explicit executor option
-11. the operator builds only the retained state it actually needs
-12. benchmark code avoids preloading raw facts into in-memory relations first
+12. for the current path-aware grouped-summary family, a materialization
+   planner layer now coordinates the earlier edge-retention choice with the
+   later grouped-summary choice and records the combined plan in trace output
+13. the operator builds only the retained state it actually needs
+14. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

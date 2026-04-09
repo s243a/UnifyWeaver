@@ -51,6 +51,14 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum DagRelationRetentionStrategy
+    {
+        Auto,
+        StreamingDirect,
+        ReplayableBuffer,
+        ExternalMaterialized
+    }
+
     public readonly record struct DelimitedRelationSource(
         string InputPath,
         char Delimiter = '	',
@@ -496,6 +504,18 @@ namespace UnifyWeaver.QueryRuntime
         LegacySeededRows
     }
 
+    internal enum RelationRetentionPolicyStrategy
+    {
+        Auto,
+        StreamingDirect,
+        ReplayableBuffer,
+        ExternalMaterialized
+    }
+
+    internal readonly record struct RelationRetentionSelection(
+        RelationRetentionPolicyStrategy Strategy,
+        string DecisionMode);
+
     internal readonly record struct PathAwareEdgeRetentionSelection(
         PathAwareEdgeRetentionStrategy Strategy,
         string DecisionMode);
@@ -504,8 +524,18 @@ namespace UnifyWeaver.QueryRuntime
         PathAwareGroupedSummaryStrategy Strategy,
         string DecisionMode);
 
+    internal readonly record struct PathAwareMaterializationPlanSelection(
+        PathAwareEdgeRetentionSelection EdgeRetention,
+        PathAwareGroupedSummarySelection GroupedSummary,
+        string DecisionMode);
+
+    internal readonly record struct DagRelationRetentionSelection(
+        DagRelationRetentionStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
+        DagRelationRetentionStrategy DagRelationRetentionStrategy = DagRelationRetentionStrategy.Auto,
         PathAwareEdgeRetentionStrategy PathAwareEdgeRetentionStrategy = PathAwareEdgeRetentionStrategy.Auto,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
         PathAwareWeightSumStrategy PathAwareWeightSumStrategy = PathAwareWeightSumStrategy.Auto,
@@ -1455,6 +1485,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
         private readonly int _maxFixpointIterations;
+        private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareWeightSumStrategy;
@@ -1471,6 +1502,7 @@ namespace UnifyWeaver.QueryRuntime
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
+            _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
@@ -1732,6 +1764,7 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext.FactSources.Clear();
             _cacheContext.ReplayableFactSources.Clear();
             _cacheContext.PathAwareEdgeStates.Clear();
+            _cacheContext.PathAwareEdgeRetentionSelections.Clear();
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
@@ -6005,6 +6038,142 @@ namespace UnifyWeaver.QueryRuntime
             seeds.Sort(CompareCacheSeedValues);
         }
 
+        private static void ProbeDagRows(IEnumerable<object[]> edges, IEnumerable<object[]> seeds, int maxEdgeRows, int maxSeedRows)
+        {
+            var nodeIds = new Dictionary<object?, int>();
+            var edgeCount = 0;
+
+            foreach (var edge in edges)
+            {
+                if (edge is null || edge.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!nodeIds.ContainsKey(edge[0]))
+                {
+                    nodeIds.Add(edge[0], nodeIds.Count);
+                }
+
+                if (!nodeIds.ContainsKey(edge[1]))
+                {
+                    nodeIds.Add(edge[1], nodeIds.Count);
+                }
+
+                edgeCount++;
+                if (edgeCount >= maxEdgeRows)
+                {
+                    break;
+                }
+            }
+
+            var groupIds = new Dictionary<object?, int>();
+            var seedCount = 0;
+            foreach (var seed in seeds)
+            {
+                if (seed is null || seed.Length < 2)
+                {
+                    continue;
+                }
+
+                if (!nodeIds.ContainsKey(seed[1]))
+                {
+                    continue;
+                }
+
+                if (!groupIds.ContainsKey(seed[0]))
+                {
+                    groupIds.Add(seed[0], groupIds.Count);
+                }
+
+                seedCount++;
+                if (seedCount >= maxSeedRows)
+                {
+                    break;
+                }
+            }
+        }
+
+        private static void ProbeDagDelimited(DelimitedRelationSource edgeSource, DelimitedRelationSource seedSource, int maxEdgeRows, int maxSeedRows)
+        {
+            var nodeIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var edgeCount = 0;
+
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(edgeSource.InputPath))
+            {
+                for (var i = 0; i < edgeSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, edgeSource.Delimiter, out var left, out var right))
+                    {
+                        continue;
+                    }
+
+                    if (!nodeIds.ContainsKey(left))
+                    {
+                        nodeIds.Add(left, nodeIds.Count);
+                    }
+
+                    if (!nodeIds.ContainsKey(right))
+                    {
+                        nodeIds.Add(right, nodeIds.Count);
+                    }
+
+                    edgeCount++;
+                    if (edgeCount >= maxEdgeRows)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var groupIds = new Dictionary<string, int>(StringComparer.Ordinal);
+            var seedCount = 0;
+            using (var reader = DelimitedRelationReader.OpenSequentialReader(seedSource.InputPath))
+            {
+                for (var i = 0; i < seedSource.SkipRows; i++)
+                {
+                    if (reader.ReadLine() is null)
+                    {
+                        return;
+                    }
+                }
+
+                string? line;
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (!DelimitedRelationReader.TrySplitTwoColumnLine(line, seedSource.Delimiter, out var group, out var node))
+                    {
+                        continue;
+                    }
+
+                    if (!nodeIds.ContainsKey(node))
+                    {
+                        continue;
+                    }
+
+                    if (!groupIds.ContainsKey(group))
+                    {
+                        groupIds.Add(group, groupIds.Count);
+                    }
+
+                    seedCount++;
+                    if (seedCount >= maxSeedRows)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
         private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
         {
             if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
@@ -6134,8 +6303,16 @@ namespace UnifyWeaver.QueryRuntime
                     break;
             }
 
+            context.PathAwareEdgeRetentionSelections[predicate] = selection;
             context.PathAwareEdgeStates[predicate] = state;
             return state;
+        }
+
+        private static PathAwareEdgeRetentionSelection GetCachedPathAwareEdgeRetentionSelection(PredicateId predicate, EvaluationContext context)
+        {
+            return context.PathAwareEdgeRetentionSelections.TryGetValue(predicate, out var selection)
+                ? selection
+                : new PathAwareEdgeRetentionSelection(PathAwareEdgeRetentionStrategy.Auto, "Unavailable");
         }
 
         private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
@@ -7825,8 +8002,44 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private static PathAwareEdgeRetentionStrategy ResolveStructuralPathAwareEdgeRetentionStrategy(
-            PlanNode node,
+        private static RelationRetentionPolicyStrategy ToRelationRetentionPolicyStrategy(DagRelationRetentionStrategy strategy)
+            => strategy switch
+            {
+                DagRelationRetentionStrategy.StreamingDirect => RelationRetentionPolicyStrategy.StreamingDirect,
+                DagRelationRetentionStrategy.ReplayableBuffer => RelationRetentionPolicyStrategy.ReplayableBuffer,
+                DagRelationRetentionStrategy.ExternalMaterialized => RelationRetentionPolicyStrategy.ExternalMaterialized,
+                _ => RelationRetentionPolicyStrategy.Auto
+            };
+
+        private static DagRelationRetentionStrategy ToDagRelationRetentionStrategy(RelationRetentionPolicyStrategy strategy)
+            => strategy switch
+            {
+                RelationRetentionPolicyStrategy.StreamingDirect => DagRelationRetentionStrategy.StreamingDirect,
+                RelationRetentionPolicyStrategy.ReplayableBuffer => DagRelationRetentionStrategy.ReplayableBuffer,
+                RelationRetentionPolicyStrategy.ExternalMaterialized => DagRelationRetentionStrategy.ExternalMaterialized,
+                _ => DagRelationRetentionStrategy.Auto
+            };
+
+        private static RelationRetentionPolicyStrategy ToRelationRetentionPolicyStrategy(PathAwareEdgeRetentionStrategy strategy)
+            => strategy switch
+            {
+                PathAwareEdgeRetentionStrategy.StreamingDirect => RelationRetentionPolicyStrategy.StreamingDirect,
+                PathAwareEdgeRetentionStrategy.ReplayableBuffer => RelationRetentionPolicyStrategy.ReplayableBuffer,
+                PathAwareEdgeRetentionStrategy.ExternalMaterialized => RelationRetentionPolicyStrategy.ExternalMaterialized,
+                _ => RelationRetentionPolicyStrategy.Auto
+            };
+
+        private static PathAwareEdgeRetentionStrategy ToPathAwareEdgeRetentionStrategy(RelationRetentionPolicyStrategy strategy)
+            => strategy switch
+            {
+                RelationRetentionPolicyStrategy.StreamingDirect => PathAwareEdgeRetentionStrategy.StreamingDirect,
+                RelationRetentionPolicyStrategy.ReplayableBuffer => PathAwareEdgeRetentionStrategy.ReplayableBuffer,
+                RelationRetentionPolicyStrategy.ExternalMaterialized => PathAwareEdgeRetentionStrategy.ExternalMaterialized,
+                _ => PathAwareEdgeRetentionStrategy.Auto
+            };
+
+        private static RelationRetentionPolicyStrategy ResolveStructuralRelationRetentionStrategy(
+            RelationRetentionPolicyStrategy preferredStrategy,
             bool hasStreaming,
             bool hasReplayable,
             bool hasExternal,
@@ -7834,54 +8047,44 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (replayableMaterialized && hasReplayable)
             {
-                return PathAwareEdgeRetentionStrategy.ReplayableBuffer;
+                return RelationRetentionPolicyStrategy.ReplayableBuffer;
             }
 
-            if (node is SeedGroupedPathAwareWeightSumNode)
+            if (preferredStrategy == RelationRetentionPolicyStrategy.ReplayableBuffer)
             {
                 if (hasReplayable)
                 {
-                    return PathAwareEdgeRetentionStrategy.ReplayableBuffer;
+                    return RelationRetentionPolicyStrategy.ReplayableBuffer;
                 }
 
                 if (hasStreaming)
                 {
-                    return PathAwareEdgeRetentionStrategy.StreamingDirect;
-                }
-            }
-            else if (node is SeedGroupedPathAwareDepthMinNode or SeedGroupedPathAwareAccumulationMinNode)
-            {
-                if (hasStreaming)
-                {
-                    return PathAwareEdgeRetentionStrategy.StreamingDirect;
-                }
-
-                if (hasReplayable)
-                {
-                    return PathAwareEdgeRetentionStrategy.ReplayableBuffer;
+                    return RelationRetentionPolicyStrategy.StreamingDirect;
                 }
             }
             else
             {
                 if (hasStreaming)
                 {
-                    return PathAwareEdgeRetentionStrategy.StreamingDirect;
+                    return RelationRetentionPolicyStrategy.StreamingDirect;
                 }
 
                 if (hasReplayable)
                 {
-                    return PathAwareEdgeRetentionStrategy.ReplayableBuffer;
+                    return RelationRetentionPolicyStrategy.ReplayableBuffer;
                 }
             }
 
             return hasExternal
-                ? PathAwareEdgeRetentionStrategy.ExternalMaterialized
-                : PathAwareEdgeRetentionStrategy.StreamingDirect;
+                ? RelationRetentionPolicyStrategy.ExternalMaterialized
+                : preferredStrategy == RelationRetentionPolicyStrategy.ReplayableBuffer
+                    ? RelationRetentionPolicyStrategy.ReplayableBuffer
+                    : RelationRetentionPolicyStrategy.StreamingDirect;
         }
 
-        private static bool ShouldProbePathAwareEdgeRetentionStrategy(
-            PlanNode node,
+        private static bool ShouldProbeRelationRetentionStrategy(
             long? relationBytes,
+            long thresholdBytes,
             bool hasStreaming,
             bool hasReplayable,
             bool hasExternal,
@@ -7903,22 +8106,12 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
-            if (node is SeedGroupedPathAwareWeightSumNode)
-            {
-                return relationBytes <= 384 * 1024L;
-            }
-
-            if (node is SeedGroupedPathAwareDepthMinNode or SeedGroupedPathAwareAccumulationMinNode)
-            {
-                return relationBytes <= 320 * 1024L;
-            }
-
-            return relationBytes <= 256 * 1024L;
+            return relationBytes <= thresholdBytes;
         }
 
-        private static PathAwareEdgeRetentionStrategy ResolveMeasuredPathAwareEdgeRetentionStrategy(
-            IReadOnlyDictionary<PathAwareEdgeRetentionStrategy, TimeSpan> probes,
-            PathAwareEdgeRetentionStrategy structuralStrategy)
+        private static RelationRetentionPolicyStrategy ResolveMeasuredRelationRetentionStrategy(
+            IReadOnlyDictionary<RelationRetentionPolicyStrategy, TimeSpan> probes,
+            RelationRetentionPolicyStrategy structuralStrategy)
         {
             var bestStrategy = structuralStrategy;
             var bestTicks = double.PositiveInfinity;
@@ -7942,6 +8135,236 @@ namespace UnifyWeaver.QueryRuntime
             return double.IsInfinity(bestTicks) ? structuralStrategy : bestStrategy;
         }
 
+        private static RelationRetentionSelection ResolveRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string selectPhase,
+            string streamingProbePhase,
+            string replayableProbePhase,
+            string externalProbePhase,
+            RelationRetentionPolicyStrategy configuredStrategy,
+            RelationRetentionPolicyStrategy structuralStrategy,
+            bool shouldProbe,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized,
+            Func<TimeSpan>? measureStreamingProbe = null,
+            Func<TimeSpan>? measureReplayableProbe = null,
+            Func<TimeSpan>? measureExternalProbe = null)
+        {
+            return MeasurePhase(trace, node, selectPhase, () =>
+            {
+                bool IsAvailable(RelationRetentionPolicyStrategy strategy) => strategy switch
+                {
+                    RelationRetentionPolicyStrategy.StreamingDirect => hasStreaming,
+                    RelationRetentionPolicyStrategy.ReplayableBuffer => hasReplayable,
+                    RelationRetentionPolicyStrategy.ExternalMaterialized => hasExternal,
+                    _ => hasStreaming || hasReplayable || hasExternal
+                };
+
+                if (configuredStrategy != RelationRetentionPolicyStrategy.Auto)
+                {
+                    if (IsAvailable(configuredStrategy))
+                    {
+                        return new RelationRetentionSelection(configuredStrategy, "ConfiguredOverride");
+                    }
+
+                    configuredStrategy = RelationRetentionPolicyStrategy.Auto;
+                }
+
+                if (replayableMaterialized && hasReplayable)
+                {
+                    return new RelationRetentionSelection(RelationRetentionPolicyStrategy.ReplayableBuffer, "ReplayableCached");
+                }
+
+                if (!shouldProbe)
+                {
+                    var availableCount = (hasStreaming ? 1 : 0) + (hasReplayable ? 1 : 0) + (hasExternal ? 1 : 0);
+                    return new RelationRetentionSelection(structuralStrategy, availableCount <= 1 ? "OnlyAvailable" : "Structural");
+                }
+
+                var probes = new Dictionary<RelationRetentionPolicyStrategy, TimeSpan>();
+                if (measureStreamingProbe is not null)
+                {
+                    var probe = measureStreamingProbe();
+                    trace?.RecordPhase(node, streamingProbePhase, probe);
+                    probes[RelationRetentionPolicyStrategy.StreamingDirect] = probe;
+                }
+
+                if (measureReplayableProbe is not null)
+                {
+                    var probe = measureReplayableProbe();
+                    trace?.RecordPhase(node, replayableProbePhase, probe);
+                    probes[RelationRetentionPolicyStrategy.ReplayableBuffer] = probe;
+                }
+
+                if (measureExternalProbe is not null)
+                {
+                    var probe = measureExternalProbe();
+                    trace?.RecordPhase(node, externalProbePhase, probe);
+                    probes[RelationRetentionPolicyStrategy.ExternalMaterialized] = probe;
+                }
+
+                if (probes.Count == 0)
+                {
+                    return new RelationRetentionSelection(structuralStrategy, "Structural");
+                }
+
+                return new RelationRetentionSelection(
+                    ResolveMeasuredRelationRetentionStrategy(probes, structuralStrategy),
+                    "MeasuredProbe");
+            });
+        }
+
+        private static void RecordRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            RelationRetentionSelection selection,
+            string selectionPrefix,
+            string strategyPrefix)
+        {
+            trace?.RecordStrategy(node, $"{selectionPrefix}{selection.DecisionMode}");
+            trace?.RecordStrategy(node, $"{strategyPrefix}{selection.Strategy}");
+        }
+
+        private static DagRelationRetentionStrategy ResolveStructuralDagRelationRetentionStrategy(
+            PlanNode node,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var preferredStrategy = node is SeedGroupedTransitiveClosureCountNode or SeedGroupedDagLongestDepthNode
+                ? RelationRetentionPolicyStrategy.StreamingDirect
+                : RelationRetentionPolicyStrategy.ReplayableBuffer;
+            return ToDagRelationRetentionStrategy(
+                ResolveStructuralRelationRetentionStrategy(
+                    preferredStrategy,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+        }
+
+        private static bool ShouldProbeDagRelationRetentionStrategy(
+            PlanNode node,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var thresholdBytes = node switch
+            {
+                SeedGroupedTransitiveClosureCountNode => 384 * 1024L,
+                SeedGroupedDagLongestDepthNode => 320 * 1024L,
+                _ => 256 * 1024L,
+            };
+            return ShouldProbeRelationRetentionStrategy(
+                relationBytes,
+                thresholdBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized);
+        }
+
+        private static DagRelationRetentionSelection ResolveDagRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            DagRelationRetentionStrategy configuredStrategy,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized,
+            Func<TimeSpan>? measureStreamingProbe = null,
+            Func<TimeSpan>? measureReplayableProbe = null,
+            Func<TimeSpan>? measureExternalProbe = null)
+        {
+            var structuralStrategy = ToRelationRetentionPolicyStrategy(
+                ResolveStructuralDagRelationRetentionStrategy(
+                    node,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+            var selection = ResolveRelationRetentionStrategy(
+                trace,
+                node,
+                "dag_strategy_select",
+                "dag_probe_streaming_direct",
+                "dag_probe_replayable_buffer",
+                "dag_probe_external_materialized",
+                ToRelationRetentionPolicyStrategy(configuredStrategy),
+                structuralStrategy,
+                ShouldProbeDagRelationRetentionStrategy(node, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            return new DagRelationRetentionSelection(ToDagRelationRetentionStrategy(selection.Strategy), selection.DecisionMode);
+        }
+
+        private static void RecordDagRelationRetentionStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            DagRelationRetentionSelection selection)
+        {
+            RecordRelationRetentionStrategy(
+                trace,
+                node,
+                new RelationRetentionSelection(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode),
+                "DagRelationRetentionSelection",
+                "DagRelationRetention");
+        }
+
+        private static PathAwareEdgeRetentionStrategy ResolveStructuralPathAwareEdgeRetentionStrategy(
+            PlanNode node,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var preferredStrategy = node is SeedGroupedPathAwareWeightSumNode
+                ? RelationRetentionPolicyStrategy.ReplayableBuffer
+                : RelationRetentionPolicyStrategy.StreamingDirect;
+            return ToPathAwareEdgeRetentionStrategy(
+                ResolveStructuralRelationRetentionStrategy(
+                    preferredStrategy,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+        }
+
+        private static bool ShouldProbePathAwareEdgeRetentionStrategy(
+            PlanNode node,
+            long? relationBytes,
+            bool hasStreaming,
+            bool hasReplayable,
+            bool hasExternal,
+            bool replayableMaterialized)
+        {
+            var thresholdBytes = node switch
+            {
+                SeedGroupedPathAwareWeightSumNode => 384 * 1024L,
+                SeedGroupedPathAwareDepthMinNode or SeedGroupedPathAwareAccumulationMinNode => 320 * 1024L,
+                _ => 256 * 1024L,
+            };
+            return ShouldProbeRelationRetentionStrategy(
+                relationBytes,
+                thresholdBytes,
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized);
+        }
+
         private static PathAwareEdgeRetentionSelection ResolvePathAwareEdgeRetentionStrategy(
             QueryExecutionTrace? trace,
             PlanNode node,
@@ -7955,69 +8378,31 @@ namespace UnifyWeaver.QueryRuntime
             Func<TimeSpan>? measureReplayableProbe = null,
             Func<TimeSpan>? measureExternalProbe = null)
         {
-            return MeasurePhase(trace, node, "edge_strategy_select", () =>
-            {
-                bool IsAvailable(PathAwareEdgeRetentionStrategy strategy) => strategy switch
-                {
-                    PathAwareEdgeRetentionStrategy.StreamingDirect => hasStreaming,
-                    PathAwareEdgeRetentionStrategy.ReplayableBuffer => hasReplayable,
-                    PathAwareEdgeRetentionStrategy.ExternalMaterialized => hasExternal,
-                    _ => hasStreaming || hasReplayable || hasExternal
-                };
-
-                if (configuredStrategy != PathAwareEdgeRetentionStrategy.Auto)
-                {
-                    if (IsAvailable(configuredStrategy))
-                    {
-                        return new PathAwareEdgeRetentionSelection(configuredStrategy, "ConfiguredOverride");
-                    }
-
-                    configuredStrategy = PathAwareEdgeRetentionStrategy.Auto;
-                }
-
-                if (replayableMaterialized && hasReplayable)
-                {
-                    return new PathAwareEdgeRetentionSelection(PathAwareEdgeRetentionStrategy.ReplayableBuffer, "ReplayableCached");
-                }
-
-                var structuralStrategy = ResolveStructuralPathAwareEdgeRetentionStrategy(node, hasStreaming, hasReplayable, hasExternal, replayableMaterialized);
-                if (!ShouldProbePathAwareEdgeRetentionStrategy(node, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized))
-                {
-                    var availableCount = (hasStreaming ? 1 : 0) + (hasReplayable ? 1 : 0) + (hasExternal ? 1 : 0);
-                    return new PathAwareEdgeRetentionSelection(structuralStrategy, availableCount <= 1 ? "OnlyAvailable" : "Structural");
-                }
-
-                var probes = new Dictionary<PathAwareEdgeRetentionStrategy, TimeSpan>();
-                if (measureStreamingProbe is not null)
-                {
-                    var probe = measureStreamingProbe();
-                    trace?.RecordPhase(node, "edge_probe_streaming_direct", probe);
-                    probes[PathAwareEdgeRetentionStrategy.StreamingDirect] = probe;
-                }
-
-                if (measureReplayableProbe is not null)
-                {
-                    var probe = measureReplayableProbe();
-                    trace?.RecordPhase(node, "edge_probe_replayable_buffer", probe);
-                    probes[PathAwareEdgeRetentionStrategy.ReplayableBuffer] = probe;
-                }
-
-                if (measureExternalProbe is not null)
-                {
-                    var probe = measureExternalProbe();
-                    trace?.RecordPhase(node, "edge_probe_external_materialized", probe);
-                    probes[PathAwareEdgeRetentionStrategy.ExternalMaterialized] = probe;
-                }
-
-                if (probes.Count == 0)
-                {
-                    return new PathAwareEdgeRetentionSelection(structuralStrategy, "Structural");
-                }
-
-                return new PathAwareEdgeRetentionSelection(
-                    ResolveMeasuredPathAwareEdgeRetentionStrategy(probes, structuralStrategy),
-                    "MeasuredProbe");
-            });
+            var structuralStrategy = ToRelationRetentionPolicyStrategy(
+                ResolveStructuralPathAwareEdgeRetentionStrategy(
+                    node,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized));
+            var selection = ResolveRelationRetentionStrategy(
+                trace,
+                node,
+                "edge_strategy_select",
+                "edge_probe_streaming_direct",
+                "edge_probe_replayable_buffer",
+                "edge_probe_external_materialized",
+                ToRelationRetentionPolicyStrategy(configuredStrategy),
+                structuralStrategy,
+                ShouldProbePathAwareEdgeRetentionStrategy(node, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
+                hasStreaming,
+                hasReplayable,
+                hasExternal,
+                replayableMaterialized,
+                measureStreamingProbe,
+                measureReplayableProbe,
+                measureExternalProbe);
+            return new PathAwareEdgeRetentionSelection(ToPathAwareEdgeRetentionStrategy(selection.Strategy), selection.DecisionMode);
         }
 
         private static void RecordPathAwareEdgeRetentionStrategy(
@@ -8025,8 +8410,12 @@ namespace UnifyWeaver.QueryRuntime
             PlanNode node,
             PathAwareEdgeRetentionSelection selection)
         {
-            trace?.RecordStrategy(node, $"PathAwareEdgeRetentionSelection{selection.DecisionMode}");
-            trace?.RecordStrategy(node, $"PathAwareEdgeRetention{selection.Strategy}");
+            RecordRelationRetentionStrategy(
+                trace,
+                node,
+                new RelationRetentionSelection(ToRelationRetentionPolicyStrategy(selection.Strategy), selection.DecisionMode),
+                "PathAwareEdgeRetentionSelection",
+                "PathAwareEdgeRetention");
         }
 
         private static PathAwareGroupedSummaryStrategy ToPathAwareGroupedSummaryStrategy(PathAwareGroupedMinStrategy strategy)
@@ -8070,26 +8459,55 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordPhase(node, phase, stopwatch.Elapsed);
         }
 
+        private static long AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+            long estimatedGroupedRows,
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
+        {
+            var factor = edgeRetentionStrategy switch
+            {
+                PathAwareEdgeRetentionStrategy.StreamingDirect => 1.50d,
+                PathAwareEdgeRetentionStrategy.ReplayableBuffer => 0.75d,
+                PathAwareEdgeRetentionStrategy.ExternalMaterialized => 0.90d,
+                _ => 1.0d,
+            };
+
+            var adjusted = (long)Math.Ceiling(Math.Min(long.MaxValue, estimatedLegacyRows * factor));
+            return Math.Max(estimatedGroupedRows, adjusted);
+        }
+
         private static PathAwareGroupedSummaryStrategy ResolveStructuralPathAwareGroupedSummaryStrategy(
             long estimatedGroupedRows,
-            long estimatedLegacyRows) =>
-            estimatedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
+        {
+            var adjustedLegacyRows = AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
+            return adjustedLegacyRows <= Math.Max(64L, estimatedGroupedRows * 4L)
                 ? PathAwareGroupedSummaryStrategy.LegacySeededRows
                 : PathAwareGroupedSummaryStrategy.CompactGrouped;
+        }
 
         private static bool ShouldProbePathAwareGroupedSummaryStrategy(
             long estimatedGroupedRows,
             long estimatedLegacyRows,
-            int uniqueSeedCount)
+            int uniqueSeedCount,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
         {
             if (uniqueSeedCount < 2)
             {
                 return false;
             }
 
+            var adjustedLegacyRows = AdjustEstimatedLegacyRowsForPathAwareEdgeRetention(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
             var lowerBound = Math.Max(64L, estimatedGroupedRows * 2L);
             var upperBound = Math.Max(256L, estimatedGroupedRows * 8L);
-            return estimatedLegacyRows > lowerBound && estimatedLegacyRows < upperBound;
+            return adjustedLegacyRows > lowerBound && adjustedLegacyRows < upperBound;
         }
 
         private static PathAwareGroupedSummaryStrategy ResolveMeasuredPathAwareGroupedSummaryStrategy(
@@ -8098,9 +8516,13 @@ namespace UnifyWeaver.QueryRuntime
             TimeSpan compactProbe,
             TimeSpan legacyProbe,
             long estimatedGroupedRows,
-            long estimatedLegacyRows)
+            long estimatedLegacyRows,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy)
         {
-            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+            var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(
+                estimatedGroupedRows,
+                estimatedLegacyRows,
+                edgeRetentionStrategy);
             if (sampleSeedCount <= 0 || totalSeedCount <= 0)
             {
                 return structuralStrategy;
@@ -8141,6 +8563,7 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyList<object?> orderedUniqueSeeds,
             int rootCount,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            PathAwareEdgeRetentionStrategy edgeRetentionStrategy,
             Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
             Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
         {
@@ -8158,10 +8581,13 @@ namespace UnifyWeaver.QueryRuntime
                 var nodeCount = Math.Max(1, EstimatePathAwareNodeCount(succIndex));
                 var estimatedGroupedRows = (long)effectiveGroups * effectiveRoots;
                 var estimatedLegacyRows = (long)effectiveSeeds * nodeCount;
-                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows);
+                var structuralStrategy = ResolveStructuralPathAwareGroupedSummaryStrategy(
+                    estimatedGroupedRows,
+                    estimatedLegacyRows,
+                    edgeRetentionStrategy);
 
                 if (measureCompactProbe is null || measureLegacyProbe is null ||
-                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount))
+                    !ShouldProbePathAwareGroupedSummaryStrategy(estimatedGroupedRows, estimatedLegacyRows, uniqueSeedCount, edgeRetentionStrategy))
                 {
                     return new PathAwareGroupedSummarySelection(structuralStrategy, "Structural");
                 }
@@ -8179,7 +8605,8 @@ namespace UnifyWeaver.QueryRuntime
                     compactProbe,
                     legacyProbe,
                     estimatedGroupedRows,
-                    estimatedLegacyRows);
+                    estimatedLegacyRows,
+                    edgeRetentionStrategy);
                 return new PathAwareGroupedSummarySelection(measuredStrategy, "MeasuredProbe");
             });
         }
@@ -8194,6 +8621,61 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordStrategy(node, selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                 ? $"{nodeStrategyPrefix}LegacySeededRows"
                 : $"{nodeStrategyPrefix}CompactGrouped");
+        }
+
+        private static PathAwareMaterializationPlanSelection ResolvePathAwareMaterializationPlan(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareEdgeRetentionSelection edgeRetentionSelection,
+            PathAwareGroupedSummaryStrategy configuredSummaryStrategy,
+            int groupCount,
+            IReadOnlyList<object?> orderedUniqueSeeds,
+            int rootCount,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureCompactProbe = null,
+            Func<IReadOnlyList<object?>, TimeSpan>? measureLegacyProbe = null)
+        {
+            return MeasurePhase(trace, node, "materialization_plan_select", () =>
+            {
+                var groupedSummarySelection = ResolvePathAwareGroupedSummaryStrategy(
+                    trace,
+                    node,
+                    configuredSummaryStrategy,
+                    groupCount,
+                    orderedUniqueSeeds,
+                    rootCount,
+                    succIndex,
+                    edgeRetentionSelection.Strategy,
+                    measureCompactProbe,
+                    measureLegacyProbe);
+
+                var decisionMode = groupedSummarySelection.DecisionMode switch
+                {
+                    "ConfiguredOverride" => "ConfiguredSummary",
+                    "MeasuredProbe" when edgeRetentionSelection.DecisionMode == "MeasuredProbe" => "MeasuredRelationAndSummary",
+                    "MeasuredProbe" => "MeasuredSummary",
+                    _ when edgeRetentionSelection.DecisionMode == "MeasuredProbe" => "MeasuredRelation",
+                    _ when edgeRetentionSelection.DecisionMode == "ConfiguredOverride" => "ConfiguredRelation",
+                    _ when edgeRetentionSelection.DecisionMode == "ReplayableCached" => "ReplayableCached",
+                    _ => "Structural"
+                };
+
+                return new PathAwareMaterializationPlanSelection(
+                    edgeRetentionSelection,
+                    groupedSummarySelection,
+                    decisionMode);
+            });
+        }
+
+        private static void RecordPathAwareMaterializationPlanStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string nodeStrategyPrefix,
+            PathAwareMaterializationPlanSelection selection)
+        {
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
+            trace?.RecordStrategy(node,
+                $"{nodeStrategyPrefix}MaterializationPlanEdge{selection.EdgeRetention.Strategy}Summary{selection.GroupedSummary.Strategy}");
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
@@ -8302,6 +8784,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareWeightSum", traceKey, hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
 
                 var rootKeys = new HashSet<object>();
@@ -8422,9 +8905,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareWeightSumFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareWeightSumStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -8432,9 +8916,10 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareWeightSum", materializationPlan.GroupedSummary);
 
-                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                IReadOnlyDictionary<object, Dictionary<object, double>> seedWeightSums = materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                     ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, double>>)ExecuteSeedGroupedPathAwareWeightSumFallback(closure, orderedUniqueSeeds, rootKeys, context))
                     : MeasurePhase(trace, closure, "build_compact_grouped", () =>
@@ -8664,6 +9149,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareDepthMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
@@ -8754,9 +9240,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareDepthMinFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareGroupedMinStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -8764,9 +9251,10 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareDepthMin", materializationPlan.GroupedSummary);
 
-                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
+                IReadOnlyDictionary<object, Dictionary<object, int>> seedDepthMins = materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows
                     ? MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, int>>)ExecuteSeedGroupedPathAwareDepthMinFallback(closure, orderedUniqueSeeds, rootKeys, context))
                     : MeasurePhase(trace, closure, "build_compact_grouped", () =>
@@ -8916,6 +9404,7 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedPathAwareAccumulationMin", $"{closure.Predicate.Name}/{closure.Predicate.Arity}", hit: false, built: true);
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
+                var edgeRetentionSelection = GetCachedPathAwareEdgeRetentionSelection(closure.EdgeRelation, context);
                 var succIndex = edgeState.Successors;
                 var rootKeys = new HashSet<object>();
                 var rootValues = new Dictionary<object, object?>();
@@ -9041,9 +9530,10 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() => _ = ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, sampleSeeds, rootKeys, context));
 
-                var selection = ResolvePathAwareGroupedSummaryStrategy(
+                var materializationPlan = ResolvePathAwareMaterializationPlan(
                     trace,
                     closure,
+                    edgeRetentionSelection,
                     _pathAwareGroupedMinStrategy,
                     groupValues.Count,
                     orderedUniqueSeeds,
@@ -9051,10 +9541,11 @@ namespace UnifyWeaver.QueryRuntime
                     succIndex,
                     MeasureCompactProbe,
                     MeasureLegacyProbe);
-                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", selection);
+                RecordPathAwareMaterializationPlanStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", materializationPlan);
+                RecordPathAwareGroupedSummaryStrategy(trace, closure, "SeedGroupedPathAwareAccumulationMin", materializationPlan.GroupedSummary);
 
                 IReadOnlyDictionary<object, Dictionary<object, object>> seedMinima;
-                if (selection.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
+                if (materializationPlan.GroupedSummary.Strategy == PathAwareGroupedSummaryStrategy.LegacySeededRows)
                 {
                     seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                         (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
@@ -9070,6 +9561,7 @@ namespace UnifyWeaver.QueryRuntime
                     else
                     {
                         trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoPositiveFastPath");
                         seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                             (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                     }
@@ -10328,33 +10820,112 @@ namespace UnifyWeaver.QueryRuntime
                     return cachedRows;
                 }
 
+                trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
+
                 const int MaxDagNodeCount = 16384;
                 const int MaxDagGroupCount = 4096;
                 const int MinDagGroupCount = 64;
                 const int MinDagEdgeCount = 8192;
-                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
-                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
-                    TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out var streamedDagRows))
+                const int DagProbeEdgeRowLimit = 256;
+                const int DagProbeSeedRowLimit = 128;
+
+                var hasStreamingEdge = TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource);
+                var hasStreamingSeed = TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource);
+                var hasStreaming = hasStreamingEdge && hasStreamingSeed;
+                var hasReplayableEdge = TryGetReplayableSource(closure.EdgeRelation, context, out var edgeReplayableSource);
+                var hasReplayableSeed = TryGetReplayableSource(closure.SeedRelation, context, out var seedReplayableSource);
+                var hasReplayable = hasReplayableEdge && hasReplayableSeed;
+                var hasExternalEdge = TryGetExternalFacts(closure.EdgeRelation, out var externalEdgeFacts);
+                var hasExternalSeed = TryGetExternalFacts(closure.SeedRelation, out var externalSeedFacts);
+                var hasExternal = hasExternalEdge && hasExternalSeed;
+                var edgeConcreteReplayable = edgeReplayableSource as ReplayableRelationSource;
+                var seedConcreteReplayable = seedReplayableSource as ReplayableRelationSource;
+                var replayableMaterialized = edgeConcreteReplayable?.IsMaterialized == true && seedConcreteReplayable?.IsMaterialized == true;
+                long? relationBytes = hasStreaming &&
+                    !string.IsNullOrEmpty(edgeSource.InputPath) && File.Exists(edgeSource.InputPath) &&
+                    !string.IsNullOrEmpty(seedSource.InputPath) && File.Exists(seedSource.InputPath)
+                    ? new FileInfo(edgeSource.InputPath).Length + new FileInfo(seedSource.InputPath).Length
+                    : (long?)null;
+
+                Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                    ? () => MeasureElapsed(() => ProbeDagDelimited(edgeSource, seedSource, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+                Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                    ? () => MeasureElapsed(() =>
+                    {
+                        var edgeProbeRows = edgeConcreteReplayable is not null
+                            ? edgeConcreteReplayable.ProbeMaterialize(DagProbeEdgeRowLimit)
+                            : edgeReplayableSource.Stream().Take(DagProbeEdgeRowLimit).ToList();
+                        var seedProbeRows = seedConcreteReplayable is not null
+                            ? seedConcreteReplayable.ProbeMaterialize(DagProbeSeedRowLimit)
+                            : seedReplayableSource.Stream().Take(DagProbeSeedRowLimit).ToList();
+                        ProbeDagRows(edgeProbeRows, seedProbeRows, DagProbeEdgeRowLimit, DagProbeSeedRowLimit);
+                    })
+                    : null;
+                Func<TimeSpan>? measureExternalProbe = hasExternal
+                    ? () => MeasureElapsed(() => ProbeDagRows(externalEdgeFacts, externalSeedFacts, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+
+                var selection = ResolveDagRelationRetentionStrategy(
+                    trace,
+                    closure,
+                    _dagRelationRetentionStrategy,
+                    relationBytes,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized,
+                    measureStreamingProbe,
+                    measureReplayableProbe,
+                    measureExternalProbe);
+                RecordDagRelationRetentionStrategy(trace, closure, selection);
+
+                List<object[]>? edges = null;
+                List<object[]>? seeds = null;
+
+                if (selection.Strategy == DagRelationRetentionStrategy.StreamingDirect && hasStreaming)
                 {
-                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
-                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDagStreamed");
-                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = streamedDagRows;
-                    return streamedDagRows;
+                    List<object[]> streamedDagRows = new();
+                    if (MeasurePhase(trace, closure, "dag_build_streaming_direct", () =>
+                            TryBuildProjectGroupedDagReachCountRowsFromDelimitedSources(edgeSource, seedSource, MinDagEdgeCount, MinDagGroupCount, MaxDagNodeCount, MaxDagGroupCount, out streamedDagRows)))
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDagStreamed");
+                        context.SeedGroupedTransitiveClosureCountResults[cacheKey] = streamedDagRows;
+                        return streamedDagRows;
+                    }
                 }
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var seeds = GetFactsList(closure.SeedRelation, context);
+                if (selection.Strategy == DagRelationRetentionStrategy.ReplayableBuffer && hasReplayable)
+                {
+                    edges = MeasurePhase(trace, closure, "dag_materialize_replayable_edges", () => edgeReplayableSource.Materialize());
+                    seeds = MeasurePhase(trace, closure, "dag_materialize_replayable_seeds", () => seedReplayableSource.Materialize());
+                }
+                else if (selection.Strategy == DagRelationRetentionStrategy.ExternalMaterialized && hasExternal)
+                {
+                    edges = externalEdgeFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_edges", () => externalEdgeFacts.ToList());
+                    seeds = externalSeedFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_seeds", () => externalSeedFacts.ToList());
+                }
+
+                edges ??= GetFactsList(closure.EdgeRelation, context);
+                seeds ??= GetFactsList(closure.SeedRelation, context);
                 if (seeds.Count >= MinDagGroupCount &&
-                    edges.Count >= MinDagEdgeCount &&
-                    TryBuildProjectGroupedDagReachCountRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out var dagRows))
+                    edges.Count >= MinDagEdgeCount)
                 {
-                    trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
-                    trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDag");
-                    context.SeedGroupedTransitiveClosureCountResults[cacheKey] = dagRows;
-                    return dagRows;
+                    List<object[]> dagRows = new();
+                    var buildPhase = selection.Strategy switch
+                    {
+                        DagRelationRetentionStrategy.ReplayableBuffer when hasReplayable => "dag_build_replayable_buffer",
+                        DagRelationRetentionStrategy.ExternalMaterialized when hasExternal => "dag_build_external_materialized",
+                        _ => "dag_build_materialized_fallback"
+                    };
+                    if (MeasurePhase(trace, closure, buildPhase, () =>
+                            TryBuildProjectGroupedDagReachCountRows(edges, seeds, MaxDagNodeCount, MaxDagGroupCount, out dagRows)))
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedTransitiveClosureCountDag");
+                        context.SeedGroupedTransitiveClosureCountResults[cacheKey] = dagRows;
+                        return dagRows;
+                    }
                 }
-
-                trace?.RecordCacheLookup("SeedGroupedTransitiveClosureCount", traceKey, hit: false, built: true);
 
                 var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
                 var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
@@ -10459,17 +11030,91 @@ namespace UnifyWeaver.QueryRuntime
                 trace?.RecordCacheLookup("SeedGroupedDagLongestDepth", traceKey, hit: false, built: true);
 
                 const int MaxDagNodeCount = 65536;
-                if (TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource) &&
-                    TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource) &&
-                    TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out var streamedRows))
+                const int DagProbeEdgeRowLimit = 256;
+                const int DagProbeSeedRowLimit = 128;
+
+                var hasStreamingEdge = TryGetDelimitedSource(closure.EdgeRelation, RelationRetentionMode.Streaming, out var edgeSource);
+                var hasStreamingSeed = TryGetDelimitedSource(closure.SeedRelation, RelationRetentionMode.Streaming, out var seedSource);
+                var hasStreaming = hasStreamingEdge && hasStreamingSeed;
+                var hasReplayableEdge = TryGetReplayableSource(closure.EdgeRelation, context, out var edgeReplayableSource);
+                var hasReplayableSeed = TryGetReplayableSource(closure.SeedRelation, context, out var seedReplayableSource);
+                var hasReplayable = hasReplayableEdge && hasReplayableSeed;
+                var hasExternalEdge = TryGetExternalFacts(closure.EdgeRelation, out var externalEdgeFacts);
+                var hasExternalSeed = TryGetExternalFacts(closure.SeedRelation, out var externalSeedFacts);
+                var hasExternal = hasExternalEdge && hasExternalSeed;
+                var edgeConcreteReplayable = edgeReplayableSource as ReplayableRelationSource;
+                var seedConcreteReplayable = seedReplayableSource as ReplayableRelationSource;
+                var replayableMaterialized = edgeConcreteReplayable?.IsMaterialized == true && seedConcreteReplayable?.IsMaterialized == true;
+                long? relationBytes = hasStreaming &&
+                    !string.IsNullOrEmpty(edgeSource.InputPath) && File.Exists(edgeSource.InputPath) &&
+                    !string.IsNullOrEmpty(seedSource.InputPath) && File.Exists(seedSource.InputPath)
+                    ? new FileInfo(edgeSource.InputPath).Length + new FileInfo(seedSource.InputPath).Length
+                    : (long?)null;
+
+                Func<TimeSpan>? measureStreamingProbe = hasStreaming
+                    ? () => MeasureElapsed(() => ProbeDagDelimited(edgeSource, seedSource, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+                Func<TimeSpan>? measureReplayableProbe = hasReplayable
+                    ? () => MeasureElapsed(() =>
+                    {
+                        var edgeProbeRows = edgeConcreteReplayable is not null
+                            ? edgeConcreteReplayable.ProbeMaterialize(DagProbeEdgeRowLimit)
+                            : edgeReplayableSource.Stream().Take(DagProbeEdgeRowLimit).ToList();
+                        var seedProbeRows = seedConcreteReplayable is not null
+                            ? seedConcreteReplayable.ProbeMaterialize(DagProbeSeedRowLimit)
+                            : seedReplayableSource.Stream().Take(DagProbeSeedRowLimit).ToList();
+                        ProbeDagRows(edgeProbeRows, seedProbeRows, DagProbeEdgeRowLimit, DagProbeSeedRowLimit);
+                    })
+                    : null;
+                Func<TimeSpan>? measureExternalProbe = hasExternal
+                    ? () => MeasureElapsed(() => ProbeDagRows(externalEdgeFacts, externalSeedFacts, DagProbeEdgeRowLimit, DagProbeSeedRowLimit))
+                    : null;
+
+                var selection = ResolveDagRelationRetentionStrategy(
+                    trace,
+                    closure,
+                    _dagRelationRetentionStrategy,
+                    relationBytes,
+                    hasStreaming,
+                    hasReplayable,
+                    hasExternal,
+                    replayableMaterialized,
+                    measureStreamingProbe,
+                    measureReplayableProbe,
+                    measureExternalProbe);
+                RecordDagRelationRetentionStrategy(trace, closure, selection);
+
+                if (selection.Strategy == DagRelationRetentionStrategy.StreamingDirect && hasStreaming)
                 {
-                    context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
-                    return streamedRows;
+                    List<object[]> streamedRows = new();
+                    if (MeasurePhase(trace, closure, "dag_build_streaming_direct", () =>
+                            TryBuildSeedGroupedDagLongestDepthRowsFromDelimitedSources(closure, trace, edgeSource, seedSource, MaxDagNodeCount, out streamedRows)))
+                    {
+                        context.SeedGroupedDagLongestDepthResults[cacheKey] = streamedRows;
+                        return streamedRows;
+                    }
                 }
 
-                var edges = GetFactsList(closure.EdgeRelation, context);
-                var seeds = GetFactsList(closure.SeedRelation, context);
-                if (!TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out var rows))
+                List<object[]>? edges = null;
+                List<object[]>? seeds = null;
+                string buildPhase = "dag_build_materialized_fallback";
+                if (selection.Strategy == DagRelationRetentionStrategy.ReplayableBuffer && hasReplayable)
+                {
+                    edges = MeasurePhase(trace, closure, "dag_materialize_replayable_edges", () => edgeReplayableSource.Materialize());
+                    seeds = MeasurePhase(trace, closure, "dag_materialize_replayable_seeds", () => seedReplayableSource.Materialize());
+                    buildPhase = "dag_build_replayable_buffer";
+                }
+                else if (selection.Strategy == DagRelationRetentionStrategy.ExternalMaterialized && hasExternal)
+                {
+                    edges = externalEdgeFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_edges", () => externalEdgeFacts.ToList());
+                    seeds = externalSeedFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_seeds", () => externalSeedFacts.ToList());
+                    buildPhase = "dag_build_external_materialized";
+                }
+
+                edges ??= GetFactsList(closure.EdgeRelation, context);
+                seeds ??= GetFactsList(closure.SeedRelation, context);
+                List<object[]> rows = new();
+                if (!MeasurePhase(trace, closure, buildPhase, () => TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out rows)))
                 {
                     throw new InvalidOperationException("SeedGroupedDagLongestDepthNode requires an acyclic edge relation.");
                 }
@@ -16572,6 +17217,7 @@ namespace UnifyWeaver.QueryRuntime
                 FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
                 ReplayableFactSources = parent?.ReplayableFactSources ?? new Dictionary<PredicateId, IReplayableRelationSource>();
                 PathAwareEdgeStates = parent?.PathAwareEdgeStates ?? new Dictionary<PredicateId, PathAwareEdgeState>();
+                PathAwareEdgeRetentionSelections = parent?.PathAwareEdgeRetentionSelections ?? new Dictionary<PredicateId, PathAwareEdgeRetentionSelection>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
@@ -16637,6 +17283,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, IReplayableRelationSource> ReplayableFactSources { get; }
 
             public Dictionary<PredicateId, PathAwareEdgeState> PathAwareEdgeStates { get; }
+
+            public Dictionary<PredicateId, PathAwareEdgeRetentionSelection> PathAwareEdgeRetentionSelections { get; }
 
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
