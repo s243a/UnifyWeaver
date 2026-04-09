@@ -785,6 +785,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_execute_foreign_predicate_to_rust(ForeignCode),
     compile_resume_builtin_to_rust(ResumeCode),
     compile_foreign_result_helpers_to_rust(ForeignResultHelpersCode),
+    compile_parse_foreign_tuple_layout_to_rust(ForeignTupleLayoutCode),
     compile_collect_native_category_ancestor_to_rust(NativeAncestorCode),
     compile_compute_native_countdown_sum_to_rust(NativeCountdownSumCode),
     compile_collect_native_list_suffixes_to_rust(NativeListSuffixCode),
@@ -805,6 +806,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         ForeignCode, '\n\n',
         ResumeCode, '\n\n',
         ForeignResultHelpersCode, '\n\n',
+        ForeignTupleLayoutCode, '\n\n',
         NativeAncestorCode, '\n\n',
         NativeCountdownSumCode, '\n\n',
         NativeListSuffixCode, '\n\n',
@@ -1091,7 +1093,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if hops.is_empty() {
                     return false;
                 }
-                let results: Vec<Value> = hops.into_iter().map(Value::Integer).collect();
+                let results: Vec<Value> = hops.into_iter().map(|hop| {
+                    Value::Str("__tuple__".to_string(), vec![Value::Integer(hop)])
+                }).collect();
                 self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
             "countdown_sum2" => {
@@ -1107,7 +1111,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(sum) => sum,
                     None => return false,
                 };
-                self.finish_foreign_results(&pred_key, vec![sum_reg], vec![Value::Integer(sum)])
+                self.finish_foreign_results(&pred_key, vec![sum_reg], vec![
+                    Value::Str("__tuple__".to_string(), vec![Value::Integer(sum)])
+                ])
             }
             "list_suffix2" => {
                 let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1131,7 +1137,24 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if suffixes.is_empty() {
                     return false;
                 }
-                self.finish_foreign_results(&pred_key, vec![suffix_reg], suffixes)
+                let results: Vec<Value> = suffixes.into_iter().map(|suffix| {
+                    Value::Str("__tuple__".to_string(), vec![suffix])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![suffix_reg], results)
+            }
+            "list_suffixes2" => {
+                let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let suffixes_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let mut suffixes: Vec<Value> = Vec::new();
+                self.collect_native_list_suffixes(&items, &mut suffixes);
+                let result = Value::Str("__tuple__".to_string(), vec![Value::List(suffixes)]);
+                self.finish_foreign_results(&pred_key, vec![suffixes_reg], vec![result])
             }
             "transitive_closure2" => {
                 let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
@@ -1159,7 +1182,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 if nodes.is_empty() {
                     return false;
                 }
-                let results: Vec<Value> = nodes.into_iter().map(Value::Atom).collect();
+                let results: Vec<Value> = nodes.into_iter().map(|node| {
+                    Value::Str("__tuple__".to_string(), vec![Value::Atom(node)])
+                }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
             "transitive_distance3" => {
@@ -1193,7 +1218,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__pair__".to_string(), vec![
+                    Value::Str("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Integer(dist),
                     ])
@@ -1235,7 +1260,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     return false;
                 }
                 let packed_results: Vec<Value> = results.into_iter().map(|(node, parent, dist)| {
-                    Value::Str("__triple__".to_string(), vec![
+                    Value::Str("__tuple__".to_string(), vec![
                         Value::Atom(node),
                         Value::Atom(parent),
                         Value::Integer(dist),
@@ -1254,31 +1279,46 @@ compile_foreign_result_helpers_to_rust(Code) :-
         result_regs: Vec<Value>,
         results: Vec<Value>,
     ) -> bool {
+        let result_mode = match self.foreign_result_mode(pred_key) {
+            Some(mode) => mode,
+            None => "stream",
+        };
         if results.is_empty() {
             return false;
         }
-        if results.len() > 1 {
-            self.choice_points.push(ChoicePoint {
-                next_pc: self.pc,
-                saved_args: self.save_regs(),
-                stack: self.stack.clone(),
-                cp: self.cp,
-                trail_len: self.trail.len(),
-                heap_len: self.heap.len(),
-                builtin_state: Some(BuiltinState {
-                    name: "foreign_results".to_string(),
-                    args: {
-                        let mut args = Vec::with_capacity(result_regs.len() + 1);
-                        args.push(Value::Atom(pred_key.to_string()));
-                        args.extend(result_regs.iter().cloned());
-                        args
-                    },
-                    data: results[1..].to_vec(),
-                }),
-                cut_barrier: self.cut_barrier,
-            });
+        match result_mode {
+            "stream" => {
+                if results.len() > 1 {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc,
+                        saved_args: self.save_regs(),
+                        stack: self.stack.clone(),
+                        cp: self.cp,
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: Some(BuiltinState {
+                            name: "foreign_results".to_string(),
+                            args: {
+                                let mut args = Vec::with_capacity(result_regs.len() + 1);
+                                args.push(Value::Atom(pred_key.to_string()));
+                                args.extend(result_regs.iter().cloned());
+                                args
+                            },
+                            data: results[1..].to_vec(),
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.apply_foreign_result(pred_key, &result_regs, &results[0])
+            }
+            "deterministic" | "deterministic_collection" => {
+                if results.len() != 1 {
+                    return false;
+                }
+                self.apply_foreign_result(pred_key, &result_regs, &results[0])
+            }
+            _ => false,
         }
-        self.apply_foreign_result(pred_key, &result_regs, &results[0])
     }
 
     fn apply_foreign_result(
@@ -1287,43 +1327,30 @@ compile_foreign_result_helpers_to_rust(Code) :-
         result_regs: &[Value],
         result: &Value,
     ) -> bool {
-        let layout = match self.foreign_result_layout(pred_key) {
-            Some(layout) => layout,
+        let tuple_arity = match self.foreign_result_layout(pred_key)
+            .and_then(Self::parse_foreign_tuple_layout) {
+            Some(arity) => arity,
             None => return false,
         };
-        match layout {
-            "single" => {
-                if result_regs.len() != 1 {
-                    return false;
-                }
-                self.unify(&result_regs[0], result)
-            }
-            "pair" => {
-                if result_regs.len() != 2 {
-                    return false;
-                }
-                match result {
-                    Value::Str(functor, args) if functor == "__pair__" && args.len() == 2 => {
-                        self.unify(&result_regs[0], &args[0]) && self.unify(&result_regs[1], &args[1])
+        if result_regs.len() != tuple_arity {
+            return false;
+        }
+        match result {
+            Value::Str(functor, args) if functor == "__tuple__" && args.len() == tuple_arity => {
+                for (reg, arg) in result_regs.iter().zip(args.iter()) {
+                    if !self.unify(reg, arg) {
+                        return false;
                     }
-                    _ => false,
                 }
-            }
-            "triple" => {
-                if result_regs.len() != 3 {
-                    return false;
-                }
-                match result {
-                    Value::Str(functor, args) if functor == "__triple__" && args.len() == 3 => {
-                        self.unify(&result_regs[0], &args[0])
-                            && self.unify(&result_regs[1], &args[1])
-                            && self.unify(&result_regs[2], &args[2])
-                    }
-                    _ => false,
-                }
+                true
             }
             _ => false,
         }
+    }'.
+
+compile_parse_foreign_tuple_layout_to_rust(Code) :-
+    Code = '    fn parse_foreign_tuple_layout(layout: &str) -> Option<usize> {
+        layout.strip_prefix("tuple:")?.parse::<usize>().ok()
     }'.
 
 compile_collect_native_category_ancestor_to_rust(Code) :-
@@ -1846,34 +1873,38 @@ compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
-    % Convert WAM instruction string to Rust Instruction enum literals
-    wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
-    foreign_wrapper_setup(Pred/Arity, Options, ForeignSetup, RunExpr),
+    foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
     format(string(RustCode),
 '/// WAM-compiled predicate: ~w/~w
 /// Compiled via WAM for predicates that resist native lowering.
 pub fn ~w(~w) -> bool {
     use std::collections::HashMap;
-    let code: Vec<Instruction> = vec![
+~w
+~w
+~w
+    ~w
+}', [PredStr, Arity, PredStr, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+
+foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
+    (   option(foreign_lowering(ForeignSpec), Options),
+        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
+    ->  InstrSetup = '    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;',
+        rust_foreign_setup_code(SetupOps, Setup),
+        format(string(RunExpr),
+            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
+    ;   wam_code_to_rust_instructions(WamCode, Pred/Arity, Options, InstrLiterals, LabelLiterals),
+        format(string(InstrSetup),
+'    let code: Vec<Instruction> = vec![
 ~w
     ];
     let mut labels: HashMap<String, usize> = HashMap::new();
 ~w
     vm.code = code;
     vm.labels = labels;
-    vm.pc = 1;
-~w
-~w
-    ~w
-}', [PredStr, Arity, PredStr, ArgList, InstrLiterals, LabelLiterals, ForeignSetup, ArgSetup, RunExpr]).
-
-foreign_wrapper_setup(Pred/Arity, Options, Setup, RunExpr) :-
-    (   option(foreign_lowering(ForeignSpec), Options),
-        rust_foreign_spec(Pred/Arity, ForeignSpec, SetupOps, EntryPred/EntryArity)
-    ->  rust_foreign_setup_code(SetupOps, Setup),
-        format(string(RunExpr),
-            'vm.execute_foreign_predicate("~w", ~w)', [EntryPred, EntryArity])
-    ;   Setup = "",
+    vm.pc = 1;', [InstrLiterals, LabelLiterals]),
+        Setup = "",
         RunExpr = 'vm.run()'
     ).
 
@@ -1893,8 +1924,12 @@ rust_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
     format(string(Line),
         '    vm.register_foreign_native_kind("~w/~w", "~w");', [Pred, Arity, Kind]).
 rust_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line) :-
+    rust_foreign_result_layout_literal(Layout, LayoutLiteral),
     format(string(Line),
-        '    vm.register_foreign_result_layout("~w/~w", "~w");', [Pred, Arity, Layout]).
+        '    vm.register_foreign_result_layout("~w/~w", "~w");', [Pred, Arity, LayoutLiteral]).
+rust_foreign_setup_line(register_foreign_result_mode(Pred/Arity, Mode), Line) :-
+    format(string(Line),
+        '    vm.register_foreign_result_mode("~w/~w", "~w");', [Pred, Arity, Mode]).
 rust_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(string(Line),
         '    vm.register_foreign_string_config("~w/~w", "~w", "~w/~w");',
@@ -1922,6 +1957,10 @@ rust_fact_pair_literal(Left-Right, Literal) :-
     escape_rust_string(Right, ERight),
     format(string(Literal), '("~w", "~w")', [ELeft, ERight]).
 
+rust_foreign_result_layout_literal(tuple(Arity), Literal) :-
+    format(string(Literal), 'tuple:~w', [Arity]).
+rust_foreign_result_layout_literal(Layout, Layout).
+
 %% wam_code_to_rust_instructions(+WamCodeStr, +PredIndicator, +Options, -InstrLiterals, -LabelLiterals)
 %  Parses a WAM code string and generates Rust vec![] entries and label map inserts.
 wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, LabelLiterals) :-
@@ -1947,7 +1986,10 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
             wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
             wam_line_to_rust_instr(CleanParts, PredIndicator, Options, RustInstr),
-            format(string(InstrEntry), '        ~w,', [RustInstr]),
+            (   sub_string(RustInstr, 0, _, _, "/*")
+            ->  format(string(InstrEntry), '        ~w', [RustInstr])
+            ;   format(string(InstrEntry), '        ~w,', [RustInstr])
+            ),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
             wam_lines_to_rust(Rest, NPC, PredIndicator, Options, RestInstrs, Labels)
