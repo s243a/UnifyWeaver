@@ -33,7 +33,10 @@ The current runtime now exposes a narrow explicit retention contract:
 
 These hooks do not solve every ingestion case yet, but they make the
 retention choice explicit at the runtime/provider boundary instead of hiding it
-inside benchmark-specific wiring.
+inside benchmark-specific wiring. The current runtime now also shares one
+internal measured relation-retention policy layer between DAG relation
+selection and path-aware edge selection, while preserving separate public
+override surfaces for those families.
 
 ## Required Capabilities
 
@@ -134,8 +137,8 @@ For the current benchmark/runtime surface, the streamed path is:
    directly from streamed facts instead of generic replayed edge rows
 7. where streaming, replayable buffering, and external materialized rows are
    all viable sources for that cache, the runtime can use measured edge-retention
-   buckets and bounded probes to choose among them before honoring an explicit
-   executor override
+   buckets and bounded probes to choose among them through that same shared
+   relation-retention policy layer before honoring an explicit executor override
 8. shortest-path and weighted-shortest-path operators can emit compact
    grouped root minima directly from streamed edge/seed inputs
 9. where grouped minima and legacy seeded-row regrouping both exist, the runtime

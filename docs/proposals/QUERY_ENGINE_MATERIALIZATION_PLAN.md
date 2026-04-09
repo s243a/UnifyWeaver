@@ -108,6 +108,9 @@ Status:
   obvious grouped-summary shapes still short-circuit structurally, while
   path-aware edge retention and DAG relation retention now measure competing
   source paths directly when the structural signal is unclear
+- the current implementation now shares one internal relation-retention policy
+  layer for DAG and path-aware edge selection, while keeping separate public
+  override knobs for benchmarking and diagnosis
 
 Work:
 

@@ -554,7 +554,10 @@ Comparison note:
   per-family override knob
 - the path-aware edge relation now also goes through measured retention
   selection, and on the current benchmark surface `Auto` prefers
-  `ReplayableBuffer`; trace output now exposes edge buckets such as
+  `ReplayableBuffer`; that selection now runs through the same internal
+  relation-retention policy layer that also drives the DAG family, while the
+  benchmark-visible override knobs stay separate
+- trace output now exposes edge buckets such as
   `edge_strategy_select`, `edge_probe_streaming_direct`,
   `edge_probe_replayable_buffer`, `edge_materialize_replayable`, and
   `edge_build_replayable_buffer`
@@ -702,6 +705,9 @@ Comparison note:
 - relation ingestion now also goes through a measured DAG retention
   selector, and the generated benchmarks expose
   `UNIFYWEAVER_DAG_RETENTION_STRATEGY=auto|streaming|replayable|external`
+- the DAG selector now shares the same internal relation-retention policy layer
+  as path-aware edge retention, while preserving a DAG-specific public override
+  surface
 - on the current synthetic benchmark surface, `Auto` picks
   `StreamingDirect` for the reach-count DAG path; at smaller scales it can
   use bounded probes (`dag_probe_streaming_direct`,
