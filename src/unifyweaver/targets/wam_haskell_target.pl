@@ -254,7 +254,7 @@ backtrack_haskell(Code) :-
 backtrack :: WamState -> Maybe WamState
 backtrack s = case wsCPs s of
   [] -> Nothing
-  (cp : _) ->
+  (cp : rest) ->
     let -- Unwind only binding-table trail entries
         trailLen = cpTrailLen cp
         newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
@@ -275,7 +275,77 @@ backtrack s = case wsCPs s of
           in case mOld of
             Just old -> Map.insert var old bindings
             Nothing  -> Map.delete var bindings
-      | otherwise = bindings'.
+      | otherwise = bindings
+
+-- | Backtrack skipping past the aggregate_frame CP. If the top CP is
+-- an aggregate frame, return Nothing (inner solutions exhausted).
+-- Otherwise, normal backtrack.
+backtrackInner :: Int -> WamState -> Maybe WamState
+backtrackInner returnPC s = case wsCPs s of
+  (cp : _)
+    | Just _ <- cpAggFrame cp -> Nothing  -- reached aggregate frame = done
+    | otherwise -> backtrack s
+  [] -> Nothing
+
+-- | Finalize an aggregate: pop CPs to the aggregate frame, apply the
+-- aggregation function, bind the result register.
+finalizeAggregate :: Int -> WamState -> Maybe WamState
+finalizeAggregate returnPC s = go (wsCPs s)
+  where
+    go [] = Nothing
+    go (cp : rest) = case cpAggFrame cp of
+      Just (AggFrame typ _valReg resReg _) ->
+        let accum = reverse (wsAggAccum s)
+            result = applyAggregation typ accum
+            bindings0 = cpBindings cp
+            regs0 = cpRegs cp
+            resVal = derefVar bindings0 <$> Map.lookup resReg regs0
+            (regs1, bindings1, trail1) = case resVal of
+              Just (Unbound var) ->
+                ( Map.insert resReg result regs0
+                , Map.insert var result bindings0
+                , TrailEntry ("__binding__" ++ var) (Map.lookup var bindings0)
+                    : take (cpTrailLen cp) (wsTrail s)
+                )
+              _ -> (regs0, bindings0, take (cpTrailLen cp) (wsTrail s))
+        in Just s { wsPC = returnPC
+                  , wsRegs = regs1
+                  , wsStack = cpStack cp
+                  , wsBindings = bindings1
+                  , wsTrail = trail1
+                  , wsHeap = take (cpHeapLen cp) (wsHeap s)
+                  , wsCP = cpCP cp
+                  , wsCPs = rest
+                  , wsAggAccum = []
+                  }
+      Nothing -> go rest  -- skip non-aggregate CPs
+
+-- | Apply aggregation function to collected values.
+applyAggregation :: String -> [Value] -> Value
+applyAggregation "sum" vals =
+  let toNum (Integer n) = fromIntegral n
+      toNum (Float f) = f
+      toNum _ = 0
+      s = sum (map toNum vals)
+  in if fromIntegral (round s :: Int) == s then Integer (round s) else Float s
+applyAggregation "count" vals = Integer (length vals)
+applyAggregation "collect" vals = VList vals
+applyAggregation _ vals = VList vals
+
+-- | Unify two values, binding unbound variables.
+unifyVal :: Value -> Value -> WamState -> Maybe WamState
+unifyVal (Unbound v) val s =
+  Just (s { wsPC = wsPC s + 1
+          , wsBindings = Map.insert v val (wsBindings s)
+          , wsTrail = TrailEntry ("__binding__" ++ v) (Map.lookup v (wsBindings s)) : wsTrail s
+          })
+unifyVal val (Unbound v) s =
+  Just (s { wsPC = wsPC s + 1
+          , wsBindings = Map.insert v val (wsBindings s)
+          , wsTrail = TrailEntry ("__binding__" ++ v) (Map.lookup v (wsBindings s)) : wsTrail s
+          })
+unifyVal a b s | a == b = Just (s { wsPC = wsPC s + 1 })
+               | otherwise = Nothing'.
 
 % ============================================================================
 % PHASE 3: Step Function + Run Loop
@@ -385,6 +455,7 @@ step s (TryMeElse label) =
         , cpHeapLen  = length (wsHeap s)
         , cpBindings = wsBindings s   -- O(1): Data.Map shared reference
         , cpCutBar   = wsCutBar s
+        , cpAggFrame = Nothing
         }
   in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s })
 
@@ -466,6 +537,48 @@ step s (SwitchOnConstant table) =
         Nothing -> Nothing
       Nothing -> Nothing  -- no match: fail
     Nothing -> Nothing
+
+step s (BuiltinCall ">/2" _) =
+  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
+      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+  in case (v1, v2) of
+    (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
+step s (BuiltinCall "member/2" _) =
+  let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (Map.lookup "A1" (wsRegs s))
+      list_ = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A2" (wsRegs s))
+  in case list_ of
+    VList (x:_) -> unifyVal elem_ x s
+    _ -> Nothing
+
+-- begin_aggregate: push aggregate frame CP, initialize accumulator, continue to goal body
+step s (BeginAggregate typ valReg resReg) =
+  let cp = ChoicePoint
+        { cpNextPC   = wsPC s   -- not used directly; aggregate frame handles return
+        , cpRegs     = wsRegs s
+        , cpStack    = wsStack s
+        , cpCP       = wsCP s
+        , cpTrailLen = length (wsTrail s)
+        , cpHeapLen  = length (wsHeap s)
+        , cpBindings = wsBindings s
+        , cpCutBar   = wsCutBar s
+        , cpAggFrame = Just (AggFrame typ valReg resReg 0)  -- returnPC set by end_aggregate
+        }
+  in Just (s { wsPC = wsPC s + 1
+             , wsCPs = cp : wsCPs s
+             , wsAggAccum = []
+             })
+
+-- end_aggregate: collect value, force backtrack for more solutions
+step s (EndAggregate valReg) =
+  let val = derefVar (wsBindings s) $ fromMaybe (Integer 0) (getReg valReg s)
+      s1 = s { wsAggAccum = val : wsAggAccum s }
+      returnPC = wsPC s + 1
+  in case backtrackInner returnPC s1 of
+    Just s2 -> Just s2
+    Nothing -> finalizeAggregate returnPC s1
 
 -- Fallback for unhandled instructions
 step _ _ = Nothing'.
@@ -782,6 +895,13 @@ evalArith _ (Float f) = Just f
 evalArith bindings (Atom s) = case reads s of
   [(n, "")] -> Just n
   _ -> Nothing
+evalArith bindings (Str op [a]) = do
+  va <- evalArith bindings (derefVar bindings a)
+  let bareOp = takeWhile (/= ''/'') op
+  case bareOp of
+    "-" -> Just (negate va)
+    "abs" -> Just (abs va)
+    _ -> Nothing
 evalArith bindings (Str op [a, b]) = do
   va <- evalArith bindings (derefVar bindings a)
   vb <- evalArith bindings (derefVar bindings b)
@@ -791,6 +911,10 @@ evalArith bindings (Str op [a, b]) = do
     "-" -> Just (va - vb)
     "*" -> Just (va * vb)
     "**" -> Just (va ** vb)
+    "^" -> Just (va ** vb)
+    "/" -> if vb /= 0 then Just (va / vb) else Nothing
+    "//" -> if vb /= 0 then Just (fromIntegral (truncate va `div` truncate vb :: Int)) else Nothing
+    "mod" -> if vb /= 0 then Just (fromIntegral (truncate va `mod` truncate vb :: Int)) else Nothing
     _ -> Nothing
 evalArith _ _ = Nothing
 
@@ -896,6 +1020,15 @@ data ChoicePoint = ChoicePoint
   , cpHeapLen  :: !Int
   , cpBindings :: !(Map.Map String Value)
   , cpCutBar   :: !Int
+  , cpAggFrame :: !(Maybe AggFrame)  -- aggregate frame (if this CP is an aggregate)
+  } deriving (Show)
+
+-- | Aggregate frame for begin_aggregate/end_aggregate.
+data AggFrame = AggFrame
+  { afType      :: !String   -- "sum", "count", "collect", etc.
+  , afValueReg  :: !String   -- register holding value per solution
+  , afResultReg :: !String   -- register for final result
+  , afReturnPC  :: !Int      -- PC after end_aggregate
   } deriving (Show)
 
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
@@ -918,6 +1051,7 @@ data WamState = WamState
   , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
+  , wsAggAccum :: ![Value]     -- aggregate accumulator (values collected so far)
   } deriving (Show)
 
 -- | Instruction type for the WAM.
@@ -942,6 +1076,8 @@ data Instruction
   | RetryMeElse String
   | TrustMe
   | SwitchOnConstant [(Value, String)]
+  | BeginAggregate String String String   -- type, valueReg, resultReg
+  | EndAggregate String                   -- valueReg
   deriving (Show, Eq)
 
 -- | Create initial empty state.
@@ -960,6 +1096,7 @@ emptyState code labels = WamState
   , wsLabels   = labels
   , wsBuilder  = NoBuilder
   , wsVarCounter = 0
+  , wsAggAccum = []
   }
 '.
 
@@ -1118,6 +1255,14 @@ wam_instr_to_haskell(["try_me_else", Label], Hs) :-
 wam_instr_to_haskell(["trust_me"], "TrustMe").
 wam_instr_to_haskell(["retry_me_else", Label], Hs) :-
     format(string(Hs), 'RetryMeElse "~w"', [Label]).
+wam_instr_to_haskell(["set_variable", Xn], Hs) :-
+    format(string(Hs), 'SetVariable "~w"', [Xn]).
+wam_instr_to_haskell(["begin_aggregate", Type, ValReg, ResReg], Hs) :-
+    clean_comma(Type, CT), clean_comma(ValReg, CV), clean_comma(ResReg, CR),
+    format(string(Hs), 'BeginAggregate "~w" "~w" "~w"', [CT, CV, CR]).
+wam_instr_to_haskell(["end_aggregate", ValReg], Hs) :-
+    clean_comma(ValReg, CV),
+    format(string(Hs), 'EndAggregate "~w"', [CV]).
 % Fallback for unknown instructions
 wam_instr_to_haskell(Parts, Hs) :-
     atomic_list_concat(Parts, ' ', Joined),
