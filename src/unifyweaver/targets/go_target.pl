@@ -71,7 +71,9 @@
     % KG Topology Phase 5a: Hierarchical federation
     compile_hierarchical_federation_go/2, % +Options, -GoCode
     % KG Topology Phase 5d: Streaming federation
-    compile_streaming_federation_go/2   % +Options, -GoCode
+    compile_streaming_federation_go/2,  % +Options, -GoCode
+    % Semantic search compilation
+    compile_semantic_rule_go/4          % +PredStr, +HeadArgs, +Goal, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -523,7 +525,9 @@ generate_handler_op_go(Pred, Code) :-
     Pred \= receive, Pred \= respond, Pred \= respond_error,
     format(string(Code), "\t// Execute predicate: ~w", [Pred]).
 
-generate_handler_op_go(_, "\t// Unknown operation").
+generate_handler_op_go(Op, Code) :-
+    print_message(warning, format('Unknown Go handler operation: ~w', [Op])),
+    format(string(Code), "\t// Unknown operation: ~w", [Op]).
 
 %% ============================================
 %% PHASE 2: CROSS-PROCESS SERVICES (Unix Socket)
@@ -8242,23 +8246,310 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
         )
     ).
 
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(go, Goal, Provider, VarMap, Code) :-
+    % Extract Query and TopK from Goal
+    Goal =.. [_, Query, TopK | _],
+    ( option(provider(hugot), Provider) ; option(provider(onnx), Provider) ),
+    !,
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device initialization template for Go (hugot)
+    (   Device == gpu
+    ->  DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithGPU())'
+    ;   Device == cpu
+    ->  DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithCPU())'
+    ;   DeviceInitTpl = '\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w") // Auto device'
+    ),
+    format(string(DeviceInit), DeviceInitTpl, [Model, Model]),
+
+    format(string(Code), '
+\t// Initialize hugot embedder with model ~w
+~w
+\tif err != nil { 
+\t\tlog.Printf("Warning: GPU initialization failed, falling back to CPU: %v", err)
+\t\temb, err = embedder.NewHugotEmbedder("models/~w-onnx", "~w", embedder.WithCPU())
+\t\tif err != nil { log.Fatal(err) }
+\t}
+\tdefer emb.Close()
+
+\t// Embed query: ~w
+\tqVec, err := emb.Embed(~w)
+\tif err != nil { log.Fatal(err) }
+\t
+\t// Search top ~w results
+\tresults, err := search.Search(store, qVec, ~w)
+', [Model, DeviceInit, Model, Model, QueryExpr, QueryExpr, TopKExpr, TopKExpr]).
+
 %% is_semantic_predicate(+Goal)
+is_semantic_predicate(Goal) :-
+    semantic_compiler:is_semantic_predicate(Goal).
+is_semantic_predicate(Goal) :-
+    semantic_compiler:is_fuzzy_predicate(Goal).
 is_semantic_predicate(semantic_search(_, _, _)).
 is_semantic_predicate(crawler_run(_, _)).
 
+% ============================================================================
+% FUZZY LOGIC DISPATCH (Go target)
+% ============================================================================
+%
+% Generates inline Go code for fuzzy operations. Assumes `termScores`
+% (map[string]float64) is in scope from the surrounding search context.
+
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+
+%% f_and: Fuzzy AND (product t-norm)
+%  result = w1*t1 * w2*t2 * ...
+semantic_compiler:fuzzy_dispatch(go, f_and(Terms, _Result), Code) :-
+    generate_go_product_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy AND (product t-norm)
+\tresult := 1.0
+~w', [TermCode]).
+
+%% f_or: Fuzzy OR (probabilistic sum)
+%  result = 1 - (1-w1*t1)(1-w2*t2)...
+semantic_compiler:fuzzy_dispatch(go, f_or(Terms, _Result), Code) :-
+    generate_go_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy OR (probabilistic sum)
+\tcomplement := 1.0
+~w\tresult := 1 - complement
+', [TermCode]).
+
+%% f_dist_or: Distributed OR (base score into each term)
+%  result = 1 - (1-base*w1*t1)(1-base*w2*t2)...
+semantic_compiler:fuzzy_dispatch(go, f_dist_or(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_go_dist_complement_terms(BaseExpr, Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy distributed OR
+\tcomplement := 1.0
+~w\tresult := 1 - complement
+', [TermCode]).
+
+%% f_union: Non-distributed OR (base * OR result)
+%  result = base * (1 - (1-w1*t1)(1-w2*t2)...)
+semantic_compiler:fuzzy_dispatch(go, f_union(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_go_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Fuzzy union (base * OR)
+\tcomplement := 1.0
+~w\tresult := ~w * (1 - complement)
+', [TermCode, BaseExpr]).
+
+%% f_not: Fuzzy NOT (complement)
+semantic_compiler:fuzzy_dispatch(go, f_not(Score, _Result), Code) :-
+    (number(Score) -> format(string(ScoreExpr), "~w", [Score]) ; ScoreExpr = Score),
+    format(string(Code), '\tresult := 1 - ~w\n', [ScoreExpr]).
+
+%% blend_scores: Weighted interpolation
+semantic_compiler:fuzzy_dispatch(go, blend_scores(Alpha, Scores1, Scores2, _Result), Code) :-
+    (number(Alpha) -> format(string(AExpr), "~w", [Alpha]) ; AExpr = Alpha),
+    format(string(Code),
+'\t// Blend scores: alpha*s1 + (1-alpha)*s2
+\tresult := make([]float64, len(~w))
+\tfor i := range result {
+\t\tresult[i] = ~w * ~w[i] + (1-~w) * ~w[i]
+\t}
+', [Scores1, AExpr, Scores1, AExpr, Scores2]).
+
+%% top_k: Get top K items by score
+semantic_compiler:fuzzy_dispatch(go, top_k(Items, K, _Result), Code) :-
+    format(string(Code),
+'\t// Top-K selection
+\tsort.Slice(~w, func(i, j int) bool {
+\t\treturn ~w[i].Score > ~w[j].Score
+\t})
+\tif len(~w) > ~w {
+\t\tresult = ~w[:~w]
+\t} else {
+\t\tresult = ~w
+\t}
+', [Items, Items, Items, Items, K, Items, K, Items]).
+
+% ---- Helpers for generating per-term Go code ----
+
+%% generate_go_product_terms(+Terms, -Code)
+%  Generate: result *= weight * termScores["term"]
+generate_go_product_terms([], '').
+generate_go_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_product_terms(Rest, RestCode),
+    format(string(Line), '\tresult *= ~w * termScores["~w"]\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_product_terms(Rest, RestCode),
+    format(string(Line), '\tresult *= termScores["~w"]\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_complement_terms(+Terms, -Code)
+%  Generate: complement *= (1 - weight * termScores["term"])
+generate_go_complement_terms([], '').
+generate_go_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_complement_terms(Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_complement_terms(Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - termScores["~w"])\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_dist_complement_terms(+BaseExpr, +Terms, -Code)
+%  Generate: complement *= (1 - base * weight * termScores["term"])
+generate_go_dist_complement_terms(_, [], '').
+generate_go_dist_complement_terms(BaseExpr, [w(Term, Weight)|Rest], Code) :-
+    generate_go_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * ~w * termScores["~w"])\n', [BaseExpr, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_go_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
+    atom(Term),
+    generate_go_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '\tcomplement *= (1 - ~w * termScores["~w"])\n', [BaseExpr, Term]),
+    string_concat(Line, RestCode, Code).
+
+% ============================================================================
+% FUZZY BATCH OPERATIONS (Go target)
+% ============================================================================
+%
+% Slice-based batch fuzzy operations. Operates on []float64 score slices,
+% one score per item. Assumes termScoresBatch (map[string][]float64) is in scope.
+
+%% f_and_batch: Batch product t-norm over slices
+semantic_compiler:fuzzy_dispatch(go, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_product_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy AND (product t-norm)
+\tn := batchLen(termScoresBatch)
+\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1.0 }
+~w', [TermCode]).
+
+%% f_or_batch: Batch probabilistic sum over slices
+semantic_compiler:fuzzy_dispatch(go, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy OR (probabilistic sum)
+\tn := batchLen(termScoresBatch)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1 - complement[i] }
+', [TermCode]).
+
+%% f_dist_or_batch: Batch distributed OR
+semantic_compiler:fuzzy_dispatch(go, f_dist_or_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_dist_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy distributed OR
+\tn := len(~w)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = 1 - complement[i] }
+', [BaseScores, TermCode]).
+
+%% f_union_batch: Batch non-distributed OR
+semantic_compiler:fuzzy_dispatch(go, f_union_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_go_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'\t// Batch fuzzy union (base * OR)
+\tn := len(~w)
+\tcomplement := make([]float64, n)
+\tfor i := range complement { complement[i] = 1.0 }
+~w\tresult := make([]float64, n)
+\tfor i := range result { result[i] = ~w[i] * (1 - complement[i]) }
+', [BaseScores, TermCode, BaseScores]).
+
+% ---- Batch helper generators ----
+
+%% generate_go_batch_product_terms(+Terms, -Code)
+%  Generate: for i := range result { result[i] *= weight * scores[i] }
+generate_go_batch_product_terms([], '').
+generate_go_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range result { result[i] *= ~w * scores[i] }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range result { result[i] *= scores[i] }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_batch_complement_terms(+Terms, -Code)
+generate_go_batch_complement_terms([], '').
+generate_go_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - ~w * scores[i]) }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - scores[i]) }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+%% generate_go_batch_dist_complement_terms(+Terms, -Code)
+generate_go_batch_dist_complement_terms([], '').
+generate_go_batch_dist_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_go_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - baseScores[i] * ~w * scores[i]) }
+\t}
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_go_batch_dist_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_go_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'\tif scores, ok := termScoresBatch["~w"]; ok {
+\t\tfor i := range complement { complement[i] *= (1 - baseScores[i] * scores[i]) }
+\t}
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
 %% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
-compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
+compile_semantic_rule_go(PredStr, HeadArgs, Goal, GoCode) :-
     build_var_map(HeadArgs, VarMap),
-    Goal =.. [GoalName | GoalArgs],
     
-    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
-    
-    (   GoalName == semantic_search
-    ->  GoalArgs = [Query, TopK, _Results],
-        term_to_go_expr(Query, VarMap, QueryExpr),
-        term_to_go_expr(TopK, VarMap, TopKExpr),
-        
-        format(string(Body), '
+    (   semantic_compiler:is_semantic_predicate(Goal)
+    ->  semantic_compiler:compile_semantic_call(go, Goal, VarMap, Body),
+        Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
+        format(string(GoCode), 'package main\n\nimport (\n~w\n)\n\nfunc ~w(query string) {\n~w\n\tfor _, res := range results {\n\t\tfmt.Printf("Result: %s (Score: %f)\\n", res.ID, res.Score)\n\t}\n}\n', [Imports, PredStr, Body])
+    ;   Goal =.. [GoalName | GoalArgs],
+        Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
+        (   GoalName == semantic_search
+        ->  GoalArgs = [Query, TopK, _Results],
+            term_to_go_expr(Query, VarMap, QueryExpr),
+            term_to_go_expr(TopK, VarMap, TopKExpr),
+            
+            format(string(Body), '
 \t// Initialize runtime
 \tstore, err := storage.NewStore("data.db")
 \tif err != nil { log.Fatal(err) }
@@ -8280,19 +8571,19 @@ compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
 \t\tfmt.Printf("Result: %%s (Score: %%f)\\n", res.ID, res.Score)
 \t}
 ', [QueryExpr, TopKExpr])
-    ;   GoalName == crawler_run
-    ->  GoalArgs = [Seeds, MaxDepth],
-        term_to_go_expr(MaxDepth, VarMap, DepthExpr),
-        
-        (   is_list(Seeds)
-        ->  maplist(atom_string, Seeds, SeedStrs),
-            atomic_list_concat(SeedStrs, '", "', Inner),
-            format(string(SeedsGo), '[]string{"~w"}', [Inner])
-        ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
-            SeedsGo = SeedsExpr
-        ),
+        ;   GoalName == crawler_run
+        ->  GoalArgs = [Seeds, MaxDepth],
+            term_to_go_expr(MaxDepth, VarMap, DepthExpr),
+            
+            (   is_list(Seeds)
+            ->  maplist(atom_string, Seeds, SeedStrs),
+                atomic_list_concat(SeedStrs, '", "', Inner),
+                format(string(SeedsGo), '[]string{"~w"}', [Inner])
+            ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
+                SeedsGo = SeedsExpr
+            ),
 
-        format(string(Body), '
+            format(string(Body), '
 \t// Initialize runtime
 \tstore, err := storage.NewStore("data.db")
 \tif err != nil { log.Fatal(err) }
@@ -8309,9 +8600,9 @@ compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
 \tcraw := crawler.NewCrawler(store, emb)
 \tcraw.Crawl(~w, int(~w))
 ', [SeedsGo, DepthExpr])
-    ),
-    
-    format(string(GoCode), 'package main
+        ),
+        
+        format(string(GoCode), 'package main
 
 import (
 ~s
@@ -8321,7 +8612,8 @@ func main() {
 \t// Parse input arguments if needed (e.g. if HeadArgs are used)
 \t// For now, we assume simple stdin/args or constants
 ~s}
-', [Imports, Body]).
+', [Imports, Body])
+    ).
 
 %% generate_field_assignments(+Args, -Code)
 %  Generate field assignment statements

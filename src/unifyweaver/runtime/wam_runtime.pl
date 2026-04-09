@@ -34,7 +34,46 @@ prepare_code(Raw, Instructions, Labels) :-
     ;   atomic_list_concat(Lines, '\n', Raw)
     ),
     empty_assoc(L0),
-    parse_lines(Lines, 1, Instructions, L0, Labels).
+    parse_lines(Lines, 1, RawInstructions, L0, Labels),
+    % Post-process: convert switch_on_constant to indexed form for O(log n) dispatch
+    maplist(index_switch_instr, RawInstructions, IndexedInstructions),
+    % Convert list to assoc for O(log n) instruction fetch
+    list_to_code_assoc(IndexedInstructions, 1, Instructions).
+
+%% list_to_code_assoc(+InstrList, +StartPC, -CodeAssoc)
+%  Converts instruction list to a PC → Instruction assoc for O(log n) fetch.
+list_to_code_assoc(InstrList, StartPC, CodeAssoc) :-
+    empty_assoc(A0),
+    foldl(add_instr_to_assoc, InstrList, StartPC-A0, _-CodeAssoc).
+
+add_instr_to_assoc(Instr, PC-AIn, NPC-AOut) :-
+    put_assoc(PC, AIn, Instr, AOut),
+    NPC is PC + 1.
+
+%% index_switch_instr(+RawInstr, -IndexedInstr)
+%  Converts switch_on_constant(K1:L1, K2:L2, ...) to switch_on_constant_index(Assoc).
+index_switch_instr(Instr, Indexed) :-
+    (   Instr =.. [Op|Args],
+        (Op == switch_on_constant ; Op == switch_on_constant_a2),
+        (Args = [Entries], is_list(Entries) -> true ; Entries = Args),
+        Entries \= []
+    ->  entries_to_assoc(Entries, Assoc),
+        Indexed = switch_on_constant_index(Assoc)
+    ;   Indexed = Instr
+    ).
+
+entries_to_assoc(Entries, Assoc) :-
+    empty_assoc(A0),
+    foldl(add_entry, Entries, A0, Assoc).
+
+add_entry(Entry, AIn, AOut) :-
+    (   once(sub_atom(Entry, Before, 1, After, ':'))
+    ->  sub_atom(Entry, 0, Before, _, KeyStr),
+        sub_atom(Entry, _, After, 0, LabelStr),
+        (atom_number(KeyStr, Key) -> true ; Key = KeyStr),
+        put_assoc(Key, AIn, LabelStr, AOut)
+    ;   AOut = AIn
+    ).
 
 parse_lines([], _, [], L, L).
 parse_lines([Line|Rest], PC, Instrs, LIn, LOut) :-
@@ -78,11 +117,26 @@ parse_instr(Str, Term) :-
         sub_string(Str, 0, Before, _, OpStr),
         sub_string(Str, _, After, 0, ArgsStr),
         atom_string(Op, OpStr),
-        split_string(ArgsStr, ",", " \t", ArgList),
+        split_string(ArgsStr, ",", " \t", ArgList0),
+        fix_comma_functor(ArgList0, ArgList),
         maplist(parse_arg, ArgList, ArgAtoms),
         Term =.. [Op|ArgAtoms]
     ;   atom_string(Term, Str)
     ).
+
+%% fix_comma_functor(+ArgList, -Fixed)
+%  When splitting on commas, a functor like ,/2 produces ["", "/2", ...].
+%  Merge the empty string and /N back into ",/N".
+fix_comma_functor([], []).
+fix_comma_functor([""|Rest], Fixed) :-
+    Rest = [SlashN|More],
+    sub_string(SlashN, 0, 1, _, "/"),
+    !,
+    string_concat(",", SlashN, Merged),
+    fix_comma_functor(More, MoreFixed),
+    Fixed = [Merged|MoreFixed].
+fix_comma_functor([H|T], [H|Fixed]) :-
+    fix_comma_functor(T, Fixed).
 
 parse_arg(Str, Val) :-
     (   number_string(Num, Str)
@@ -97,7 +151,355 @@ init_state(Goal, Code, Labels, wam_state(PC, Regs, [], [], [], halt, [], Code, L
     (   get_assoc(Target, Labels, PC) -> true
     ;   PC = 1
     ),
-    build_regs(Args, 1, Regs).
+    build_regs(Args, 1, Regs),
+    % Initialize the WAM variable binding table, counter, and memo table
+    empty_assoc(EmptyB),
+    nb_setval(wam_bind_box, box(EmptyB)),
+    nb_linkval(wam_var_counter, 0),
+    empty_assoc(EmptyMemo),
+    nb_setval(wam_memo_table, EmptyMemo).
+
+% ============================================================================
+% Meta-Predicate Builtins (aggregate_all, findall, setof, keysort)
+% ============================================================================
+
+is_meta_predicate('aggregate_all/3').
+is_meta_predicate('findall/3').
+is_meta_predicate('setof/3').
+is_meta_predicate('keysort/2').
+is_meta_predicate('sort/2').
+
+%% call_meta_predicate(+Pred, +Arity, +StateIn, -StateOut)
+call_meta_predicate('keysort/2', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, ListRaw),
+    wam_deref(ListRaw, DList),
+    deref_wam(DList, StateIn, List),
+    % keysort expects a list of Key-Value pairs
+    (   is_list(List)
+    ->  deref_pairs(List, StateIn, Pairs),
+        keysort(Pairs, Sorted),
+        get_assoc('A2', R, A2Raw), wam_deref(A2Raw, A2),
+        (   is_wam_unbound(A2)
+        ->  trail_binding('A2', R, T, NT),
+            (atom(A2), is_wam_unbound(A2) -> wam_bind(A2, Sorted) ; true),
+            put_assoc('A2', R, Sorted, NR)
+        ;   A2 == Sorted -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+call_meta_predicate('sort/2', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, ListRaw),
+    wam_deref(ListRaw, DList),
+    deref_wam(DList, StateIn, List),
+    is_list(List),
+    sort(List, Sorted),
+    get_assoc('A2', R, A2Raw), wam_deref(A2Raw, A2),
+    (   is_wam_unbound(A2)
+    ->  trail_binding('A2', R, T, NT),
+        (atom(A2), is_wam_unbound(A2) -> wam_bind(A2, Sorted) ; true),
+        put_assoc('A2', R, Sorted, NR)
+    ;   A2 == Sorted -> NR = R, NT = T
+    ;   fail
+    ),
+    StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L).
+
+%% aggregate_all/3: aggregate_all(Template, Goal, Result)
+%  Template is a structure like sum(X). Goal is a structure representing
+%  the body to evaluate. Result is bound to the aggregated value.
+%
+%  A1 = Template (e.g., sum(Var))
+%  A2 = Goal (structure representing the body)
+%  A3 = Result (output)
+%
+%  For the effective-distance workload, this is called with:
+%    aggregate_all(sum(F), (category_ancestor(A,B,G,[A]), H is G+1, F is H**E), C)
+%  where the Goal is a conjunction built as nested str(',/2', ...) on the heap.
+%
+%  Implementation: reconstruct the Goal from the heap, use native Prolog's
+%  aggregate_all to evaluate it, bind the result.
+call_meta_predicate('aggregate_all/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    % Reconstruct Template and Goal from heap structures
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    % Convert heap structures to callable Prolog terms
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    % Execute via native Prolog's aggregate_all
+    (   catch(
+            aggregate_all(TemplateTerm, GoalTerm, Result),
+            _,
+            fail
+        )
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, Result) ; true),
+            put_assoc('A3', R, Result, NR)
+        ;   ResultVar == Result -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% findall/3: findall(Template, Goal, ResultList)
+call_meta_predicate('findall/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    (   catch(findall(TemplateTerm, GoalTerm, ResultList), _, fail)
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, ResultList) ; true),
+            put_assoc('A3', R, ResultList, NR)
+        ;   ResultVar == ResultList -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% setof/3: setof(Template, Goal, ResultList)
+call_meta_predicate('setof/3', _, StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, TemplateRaw),
+    get_assoc('A2', R, GoalRaw),
+    get_assoc('A3', R, ResultRaw),
+    deref_wam(TemplateRaw, StateIn, Template),
+    deref_wam(GoalRaw, StateIn, Goal),
+    wam_deref(ResultRaw, ResultVar),
+    heap_to_term(Template, StateIn, TemplateTerm),
+    heap_to_term(Goal, StateIn, GoalTerm),
+    (   catch(setof(TemplateTerm, GoalTerm, ResultList), _, fail)
+    ->  (   is_wam_unbound(ResultVar)
+        ->  trail_binding('A3', R, T, NT),
+            (atom(ResultVar), is_wam_unbound(ResultVar) -> wam_bind(ResultVar, ResultList) ; true),
+            put_assoc('A3', R, ResultList, NR)
+        ;   ResultVar == ResultList -> NR = R, NT = T
+        ;   fail
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, CPS, Code, L)
+    ;   fail
+    ).
+
+%% heap_to_term(+HeapVal, +State, -PrologTerm)
+%  Convert a heap-constructed WAM structure to a callable Prolog term.
+%  E.g., str('sum/1', [Var]) → sum(Var)
+%       str(',/2', [Goal1, Goal2]) → (Goal1, Goal2)
+heap_to_term(Val, State, Term) :-
+    (   Val = str(FN, Args)
+    ->  % Parse functor/arity
+        (   sub_atom(FN, Before, 1, _, '/')
+        ->  sub_atom(FN, 0, Before, _, Functor)
+        ;   Functor = FN
+        ),
+        maplist({State}/[A, T]>>heap_to_term(A, State, T), Args, TermArgs),
+        (   Functor == ',' -> TermArgs = [T1, T2], Term = (T1, T2)
+        ;   Functor == '-' -> TermArgs = [T1, T2], Term = (T1 - T2)
+        ;   atom_to_term_functor(Functor, TermArgs, Term)
+        )
+    ;   Val = ref(Addr)
+    ->  deref_wam(Val, State, DVal),
+        (DVal == Val -> Term = Val ; heap_to_term(DVal, State, Term))
+    ;   is_wam_unbound(Val)
+    ->  % Unbound WAM variable — check bindings, or leave as Prolog variable
+        wam_deref(Val, DVal),
+        (DVal == Val -> true ; heap_to_term(DVal, State, Term)),
+        (var(Term) -> true ; true)  % Term might still be unbound
+    ;   Term = Val  % atom, number, list
+    ).
+
+atom_to_term_functor(Functor, Args, Term) :-
+    atom_string(FAtom, Functor),
+    Term =.. [FAtom|Args].
+
+deref_pairs([], _, []).
+deref_pairs([H|T], State, [DH|DT]) :-
+    (   H = K-V
+    ->  deref_wam(K, State, DK), deref_wam(V, State, DV),
+        DH = DK-DV
+    ;   DH = H
+    ),
+    deref_pairs(T, State, DT).
+
+% ============================================================================
+% WAM Tabling / Memoization
+% ============================================================================
+%
+% Caches results of WAM predicate calls to avoid redundant recomputation.
+% Key: ground arguments of the call (e.g., category_ancestor(Cat, Root, _, Visited))
+% Value: list of result bindings
+%
+% This is essential for cycle-heavy category graphs where the same
+% (Cat, Root) subproblem appears in many paths.
+
+:- dynamic wam_tabled_predicate/1.  % Predicates to table
+
+%% wam_enable_tabling(+PredKey)
+%  Mark a predicate for tabling (e.g., "category_ancestor/4").
+wam_enable_tabling(PredKey) :-
+    (wam_tabled_predicate(PredKey) -> true ; assert(wam_tabled_predicate(PredKey))).
+
+:- dynamic wam_memo_entry/2.  % Key → Results (hash-indexed by first arg)
+
+%% wam_memo_lookup(+Key, -CachedResults)
+%  Check memo table for cached results. O(1) via first-argument indexing.
+wam_memo_lookup(Key, Results) :-
+    wam_memo_entry(Key, Results).
+
+%% wam_memo_store(+Key, +Results)
+%  Store results in memo table.
+wam_memo_store(Key, Results) :-
+    (retract(wam_memo_entry(Key, _)) -> true ; true),
+    assert(wam_memo_entry(Key, Results)).
+
+%% wam_memo_store_seed(+Pred, +Cat, +Root, +HopsList)
+%  Store cached results for a (Cat, Root) pair after findall_wam.
+%  HopsList is a list of Hops values from successful queries.
+wam_memo_store_seed(Pred, Cat, Root, HopsList) :-
+    Key = Pred-Cat-Root,
+    % Convert Hops list to result format: list of [A1, A2, A3, A4] tuples
+    % A4 is 'any' placeholder (not a Prolog variable to avoid sharing bugs)
+    maplist({Cat, Root}/[Hops, [Cat, Root, Hops, any]]>>true, HopsList, Results),
+    wam_memo_store(Key, Results).
+
+% ============================================================================
+% Fact Table Registry
+% ============================================================================
+
+:- use_module('../core/wam_fact_table').
+:- use_module('../core/wam_dict').
+
+:- dynamic wam_fact_table_entry/2.  % Pred/Arity → FactTable
+
+% Initialize global tables at module load time
+:- empty_assoc(EmptyB0), nb_setval(wam_bind_box, box(EmptyB0)).
+:- nb_linkval(wam_var_counter, 0).
+:- empty_assoc(EmptyM), nb_setval(wam_memo_table, EmptyM).
+
+%% wam_register_fact_table(+PredKey, +FactTable)
+%  Register a fact table for a predicate (e.g., "category_parent/2").
+wam_register_fact_table(PredKey, FactTable) :-
+    retractall(wam_fact_table_entry(PredKey, _)),
+    assert(wam_fact_table_entry(PredKey, FactTable)).
+
+%% wam_fact_table_registered(+PredKey, -FactTable)
+%  Check if a predicate has a registered fact table.
+wam_fact_table_registered(PredKey, FactTable) :-
+    wam_fact_table_entry(PredKey, FactTable).
+
+%% wam_auto_register_facts(+Predicates)
+%  Automatically build and register fact tables for fact predicates.
+wam_auto_register_facts([]).
+wam_auto_register_facts([Pred/Arity|Rest]) :-
+    (   is_fact_predicate(Pred, Arity)
+    ->  build_fact_table(Pred, Arity, Table),
+        format(atom(Key), "~w/~w", [Pred, Arity]),
+        wam_register_fact_table(Key, Table),
+        fact_table_size(Table, N),
+        format(user_error, '  ~w/~w: ~w facts indexed~n', [Pred, Arity, N])
+    ;   true
+    ),
+    wam_auto_register_facts(Rest).
+
+%% call_fact_predicate(+Pred, +Arity, +FactTable, +StateIn, -StateOut)
+%  Execute a fact predicate via indexed table lookup.
+%  A1 is the first argument (lookup key). Remaining args are unified.
+%  Creates choice points for multiple matches.
+call_fact_predicate(_Pred, Arity, FactTable, StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, CPS, Code, L),
+    get_assoc('A1', R, A1Raw),
+    wam_deref(A1Raw, A1),
+    (   \+ is_wam_unbound(A1)
+    ->  % Bound first arg: O(log n) lookup
+        wam_dict_lookup_all(A1, FactTable, Matches),
+        Matches = [FirstMatch|RestMatches],
+        % Save state BEFORE first match for correct backtracking
+        (   RestMatches \= []
+        ->  wam_save_bindings(SB),
+            NCPS = [cp(_, R, S, H, CP, T, fact_retry(A1, FactTable, Arity, RestMatches, CP), SB)|CPS]
+        ;   NCPS = CPS
+        ),
+        % Unify remaining args (A2, A3, ...) AFTER CP creation
+        unify_fact_args(FirstMatch, 2, Arity, R, T, NR, NT),
+        % Return to caller (proceed equivalent)
+        StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L)
+    ;   % Unbound first arg: iterate all facts (expensive)
+        wam_dict_to_list(FactTable, AllEntries),
+        all_fact_matches(AllEntries, Arity, AllMatches),
+        AllMatches = [FirstKey-FirstArgs|RestAll],
+        % Bind A1 to the key
+        trail_binding('A1', R, T, T1),
+        wam_bind(A1, FirstKey),
+        put_assoc('A1', R, FirstKey, R1),
+        unify_fact_args(FirstArgs, 2, Arity, R1, T1, NR, NT),
+        (   RestAll \= []
+        ->  wam_save_bindings(SB),
+            NCPS = [cp(_, R, S, H, CP, T, fact_retry_all(FactTable, Arity, RestAll, CP), SB)|CPS]
+        ;   NCPS = CPS
+        ),
+        StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L)
+    ).
+
+%% unify_fact_args(+ArgValues, +StartIdx, +Arity, +RegsIn, +TrailIn, -RegsOut, -TrailOut)
+%  Unify A2..AN with the fact's argument values.
+%  Collects deferred wam_bind calls to apply only on full success.
+unify_fact_args(Args, StartIdx, Arity, RIn, TIn, ROut, TOut) :-
+    unify_fact_args_(Args, StartIdx, Arity, RIn, TIn, ROut, TOut, DeferredBinds),
+    apply_deferred_binds(DeferredBinds).
+
+unify_fact_args_(_, Idx, Arity, R, T, R, T, []) :- Idx > Arity, !.
+unify_fact_args_([Val|Rest], Idx, Arity, R, T, ROut, TOut, Deferred) :-
+    format(atom(RegKey), "A~w", [Idx]),
+    (get_assoc(RegKey, R, RegVal) -> true ; RegVal = '$missing'),
+    wam_deref(RegVal, DRegVal),
+    (   DRegVal == Val
+    ->  R1 = R, T1 = T, Deferred = RestDeferred
+    ;   is_wam_unbound(DRegVal)
+    ->  trail_binding(RegKey, R, T, T1),
+        put_assoc(RegKey, R, Val, R1),
+        (atom(DRegVal), is_wam_unbound(DRegVal)
+        ->  Deferred = [DRegVal-Val|RestDeferred]
+        ;   Deferred = RestDeferred
+        )
+    ;   fail  % mismatch
+    ),
+    NIdx is Idx + 1,
+    unify_fact_args_(Rest, NIdx, Arity, R1, T1, ROut, TOut, RestDeferred).
+
+apply_deferred_binds([]).
+apply_deferred_binds([VarName-Val|Rest]) :-
+    wam_bind(VarName, Val),
+    apply_deferred_binds(Rest).
+
+all_fact_matches([], _, []).
+all_fact_matches([Key-ValueLists|Rest], Arity, AllMatches) :-
+    maplist([Vs, Key-Vs]>>true, ValueLists, KeyedMatches),
+    all_fact_matches(Rest, Arity, RestMatches),
+    append(KeyedMatches, RestMatches, AllMatches).
+
+is_wam_unbound(Val) :- var(Val), !.
+is_wam_unbound(Val) :-
+    atom(Val),
+    (   sub_atom(Val, 0, 2, _, '_V')
+    ;   sub_atom(Val, 0, 2, _, '_Q')
+    ;   sub_atom(Val, 0, 2, _, '_H')
+    ).
 
 build_regs([], _, R) :- empty_assoc(R).
 build_regs([A|As], I, R) :-
@@ -121,25 +523,31 @@ run_loop(S, Sf) :-
     ).
 
 fetch_instr(wam_state(PC, _, _, _, _, _, _, Code, _), Instr) :-
-    integer(PC), nth1(PC, Code, Instr).
+    integer(PC), get_assoc(PC, Code, Instr).
 
 %% backtrack(+StateIn, -StateOut)
-backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L),
+%% When a builtin CP is exhausted (resume_builtin fails), pop it and try the next CP.
+backtrack(wam_state(_, _, _, _, Trail, _, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L),
           StateOut) :-
     unwind_trail(Trail, SavedTrail, R, RestoredR),
+    wam_restore_bindings(SavedB),
     (   nonvar(BuiltinState)
-    ->  resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L), StateOut)
-    ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState)|CPs], Code, L)
+    ->  (   resume_builtin(BuiltinState, wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L), StateOut)
+        ->  true
+        ;   % Builtin exhausted — pop this CP and try the next one
+            backtrack(wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, CPs, Code, L), StateOut)
+        )
+    ;   StateOut = wam_state(NextPC, RestoredR, S, H, SavedTrail, CP, [cp(NextPC, R, S, H, CP, SavedTrail, BuiltinState, SavedB)|CPs], Code, L)
     ).
 
 %% resume_builtin(+State, +StateIn, -StateOut)
 resume_builtin(member(Elem, ListRaw, PC), StateIn, StateOut) :-
-    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _)|CPs], Code, L),
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
     deref_wam(ListRaw, StateIn, List),
     (   List = [Next|Rest]
     ->  (   Rest == []
         ->  NCPS = CPs
-        ;   NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, member(Elem, Rest, PC))|CPs]
+        ;   NCPS = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, member(Elem, Rest, PC), SB)|CPs]
         ),
         State1 = wam_state(PC, R, S, H, T, CP, NCPS, Code, L),
         (   unify_wam(Elem, Next, State1, State2)
@@ -149,6 +557,28 @@ resume_builtin(member(Elem, ListRaw, PC), StateIn, StateOut) :-
         ;   backtrack(State1, StateOut)
         )
     ;   fail
+    ).
+
+%% resume_builtin for fact_retry: try the next matching fact from the table.
+resume_builtin(fact_retry(A1, FactTable, Arity, RestMatches, SavedCP), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
+    RestMatches = [NextMatch|MoreMatches],
+    % Save bindings BEFORE unify for correct retry
+    (   MoreMatches \= []
+    ->  wam_save_bindings(SB2),
+        NCPS0 = [cp(NextPC, R_orig, S_orig, H_orig, CP_orig, T_orig, fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP), SB2)|CPs]
+    ;   NCPS0 = CPs
+    ),
+    % Try to unify remaining args with the next match
+    (   unify_fact_args(NextMatch, 2, Arity, R, T, NR, NT)
+    ->  StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS0, Code, L)
+    ;   % This match failed — try the next one
+        (   MoreMatches \= []
+        ->  wam_restore_bindings(SB),
+            resume_builtin(fact_retry(A1, FactTable, Arity, MoreMatches, SavedCP),
+                StateIn, StateOut)
+        ;   fail  % no more matches
+        )
     ).
 
 unwind_trail(Trail, SavedTrail, Regs, RestoredRegs) :-
@@ -176,11 +606,18 @@ remove_assoc_key(Key, Assoc, Value, NewAssoc) :-
 
 %% step_wam(+Instruction, +StateIn, -StateOut)
 step_wam(get_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_reg_val(Ai, R, S, Val),
+    % Read raw register value (before deref) for binding
+    (   get_reg(Ai, R, S, RawVal) -> true ; RawVal = '_Vunbound' ),
+    wam_deref(RawVal, Val),
     (   Val == C
     ->  NR = R, NT = T, NPC is PC + 1
     ;   is_unbound_var(Val)
     ->  trail_binding(Ai, R, T, NT),
+        % Bind the RAW atom name (not the deref'd chain endpoint)
+        (   atom(RawVal), is_unbound_var(RawVal)
+        ->  wam_bind(RawVal, C)
+        ;   true
+        ),
         put_assoc(Ai, R, C, NR),
         NPC is PC + 1
     ;   fail
@@ -244,7 +681,8 @@ step_wam(get_structure(FN, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), Sta
 step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
     get_reg_val(Ai, R, S, Val),
     (   is_unbound_var(Val)
-    ->  length(H, Addr),
+    ->  % Write mode: construct list on heap
+        length(H, Addr),
         Ref = ref(Addr),
         append(H, [str('./2')], NH),
         trail_binding(Ai, R, T, T1),
@@ -257,6 +695,13 @@ step_wam(get_list(Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
         ),
         NPC is PC + 1,
         StateOut = wam_state(NPC, NR, [write_ctx(2)|NS], NH, NT, CP, CPS, Code, L)
+    ;   Val = ref(Addr)
+    ->  % Read mode on heap-constructed list
+        nth0(Addr, H, str('./2')),
+        StartIdx is Addr + 1,
+        heap_subargs(H, StartIdx, 2, SubArgs),
+        NPC is PC + 1,
+        StateOut = wam_state(NPC, R, [unify_ctx(SubArgs)|S], H, T, CP, CPS, Code, L)
     ;   is_list(Val), Val = [Head|Tail]
     ->  NPC is PC + 1,
         StateOut = wam_state(NPC, R, [unify_ctx([Head, Tail])|S], H, T, CP, CPS, Code, L)
@@ -298,12 +743,27 @@ step_wam(unify_variable(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, C
     put_reg(Xn, Var, R, NR, BaseS, NewS),
     NPC is PC + 1.
 
+%% unify_value Xn — read mode: unify next sub-arg with Xn's value.
+%%                   Supports unbound variables on either side.
+%%                   write mode: push value of Xn onto heap.
 step_wam(unify_value(Xn), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
-         wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
+         wam_state(NPC, NR, NewS, H, NT, CP, CPS, Code, L)) :-
     get_reg(Xn, R, S, Val),
-    deref_wam(Val, wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L), DV),
-    DV == Arg,
-    (   RestArgs == [] -> NewS = S ; NewS = [unify_ctx(RestArgs)|S] ),
+    (   Val == Arg
+    ->  NR = R, NT = T
+    ;   is_unbound_var(Val)
+    ->  % Xn is unbound — bind it to the sub-arg
+        trail_binding(Xn, R, T, NT),
+        put_reg(Xn, Arg, R, NR, S, _)
+    ;   is_unbound_var(Arg)
+    ->  % Sub-arg is unbound — succeeds (Arg unifies with Val)
+        NR = R, NT = T
+    ;   fail
+    ),
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
     NPC is PC + 1.
 step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
@@ -311,10 +771,19 @@ step_wam(unify_value(Xn), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code
     N1 is N - 1, ( N1 == 0 -> NewS = S ; NewS = [write_ctx(N1)|S] ),
     NPC is PC + 1.
 
+%% unify_constant C — read mode: unify next sub-arg with constant C.
+%%                     Supports unbound sub-args (bind to C).
+%%                     write mode: push C onto heap.
 step_wam(unify_constant(C), wam_state(PC, R, [unify_ctx([Arg|RestArgs])|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, H, T, CP, CPS, Code, L)) :-
-    Arg == C,
-    (   RestArgs == [] -> NewS = S ; NewS = [unify_ctx(RestArgs)|S] ),
+    (   Arg == C -> true
+    ;   is_unbound_var(Arg) -> true  % unbound unifies with any constant
+    ;   fail
+    ),
+    (   RestArgs == []
+    ->  NewS = S
+    ;   NewS = [unify_ctx(RestArgs)|S]
+    ),
     NPC is PC + 1.
 step_wam(unify_constant(C), wam_state(PC, R, [write_ctx(N)|S], H, T, CP, CPS, Code, L),
          wam_state(NPC, R, NewS, NH, T, CP, CPS, Code, L)) :-
@@ -328,7 +797,12 @@ step_wam(put_constant(C, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_s
     NPC is PC + 1.
 
 step_wam(put_variable(Xn, Ai), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, NS, H, NT, CP, CPS, Code, L)) :-
-    format(atom(NewVar), "_V~w", [PC]),
+    % Use monotonic counter for unique variable names across recursion depths.
+    % PC-based names collide when the same instruction runs at different depths.
+    nb_getval(wam_var_counter, VarCount),
+    NVC is VarCount + 1,
+    nb_linkval(wam_var_counter, NVC),
+    format(atom(NewVar), "_V~w", [VarCount]),
     trail_binding(Xn, R, T, T1),
     trail_binding(Ai, R, T1, NT),
     put_reg(Xn, NewVar, R, R1, S, S1),
@@ -371,45 +845,261 @@ step_wam(set_value(Xn), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(N
 step_wam(set_constant(C), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, NH, T, CP, CPS, Code, L)) :-
     append(H, [C], NH), NPC is PC + 1.
 
-step_wam(call(P, _), wam_state(PC, R, S, H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)) :-
-    get_assoc(P, L, NPC),
-    NCP is PC + 1.
+step_wam(call(P, Arity), StateIn, StateOut) :-
+    StateIn = wam_state(PC, R, S, H, T, _, CPS, Code, L),
+    NCP is PC + 1,
+    % Check meta-predicates first (aggregate_all, findall, setof)
+    (   is_meta_predicate(P)
+    ->  call_meta_predicate(P, Arity, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
+    % Check fact table (O(log n) lookup)
+    ;   wam_fact_table_registered(P, FactTable)
+    ->  call_fact_predicate(P, Arity, FactTable, wam_state(PC, R, S, H, T, NCP, CPS, Code, L), StateOut)
+    ;   % Execute via WAM code (with optional memo check for inner recursive calls)
+        get_assoc(P, L, NPC),
+        % TODO: Tabling for context-free predicates (not category_ancestor
+        % which depends on Visited list and call depth).
+        % When enabled, use: wam_tabled_predicate(P), memo_key, wam_memo_lookup
+        StateOut = wam_state(NPC, R, S, H, T, NCP, CPS, Code, L)
+    ).
+
+%% memo_key_from_call(+Pred, +Arity, +Regs, -Key)
+%  Build a memo key from the predicate name and bound argument registers.
+%  Uses the first two args (Cat, Root) as the key since Hops and Visited vary.
+memo_key_from_call(Pred, _Arity, Regs, Key) :-
+    (get_assoc('A1', Regs, A1Raw) -> wam_deref(A1Raw, A1) ; A1 = '_'),
+    (get_assoc('A2', Regs, A2Raw) -> wam_deref(A2Raw, A2) ; A2 = '_'),
+    Key = Pred-A1-A2.
+
+%% return_cached_results(+Results, +Arity, +StateIn, -StateOut)
+%  Return the first cached result, with choice point for the rest.
+return_cached_results([Result|Rest], Arity, StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, CPS, Code, L),
+    apply_cached_result(Result, Arity, R, T, NR, NT),
+    (   Rest \= []
+    ->  wam_save_bindings(SB),
+        NCPS = [cp(_, R, S, H, CP, T, cached_retry(Rest, Arity, CP), SB)|CPS]
+    ;   NCPS = CPS
+    ),
+    StateOut = wam_state(CP, NR, S, H, NT, halt, NCPS, Code, L).
+
+apply_cached_result(Result, Arity, R, T, NR, NT) :-
+    numlist(1, Arity, Indices),
+    foldl(apply_one_result(Result), Indices, R-T, NR-NT).
+
+apply_one_result(Result, I, RIn-TIn, ROut-TOut) :-
+    format(atom(RegName), "A~w", [I]),
+    nth1(I, Result, Val),
+    (   Val == any
+    ->  % Placeholder: don't touch this register
+        ROut = RIn, TOut = TIn
+    ;   get_assoc(RegName, RIn, CurVal),
+        wam_deref(CurVal, DCur),
+        (   DCur == Val -> ROut = RIn, TOut = TIn
+        ;   is_wam_unbound(DCur)
+        ->  trail_binding(RegName, RIn, TIn, TOut),
+            (atom(DCur), is_wam_unbound(DCur) -> wam_bind(DCur, Val) ; true),
+            put_assoc(RegName, RIn, Val, ROut)
+        ;   fail
+        )
+    ).
+
+%% resume_builtin for cached_retry
+resume_builtin(cached_retry(Rest, Arity, SavedCP), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [cp(_, R_orig, S_orig, H_orig, CP_orig, T_orig, _, SB)|CPs], Code, L),
+    Rest = [Result|MoreRest],
+    apply_cached_result(Result, Arity, R, T, NR, NT),
+    (   MoreRest \= []
+    ->  wam_save_bindings(SB2),
+        NCPS = [cp(_, R_orig, S_orig, H_orig, CP_orig, T_orig, cached_retry(MoreRest, Arity, SavedCP), SB2)|CPs]
+    ;   NCPS = CPs
+    ),
+    StateOut = wam_state(SavedCP, NR, S, H, NT, halt, NCPS, Code, L).
 
 step_wam(execute(P), wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     get_assoc(P, L, NPC).
 
 step_wam(proceed, wam_state(_, R, S, H, T, CP, CPS, Code, L), wam_state(CP, R, S, H, T, halt, CPS, Code, L)).
 
-step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP, YRegs)|S], H, T, CP, CPS, Code, L)) :-
-    empty_assoc(YRegs), NPC is PC + 1.
-
-step_wam(deallocate, wam_state(PC, R, [env(OldCP, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
+step_wam(allocate, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, [env(CP, YRegs, CutBarrier)|S], H, T, CP, CPS, Code, L)) :-
+    empty_assoc(YRegs),
+    length(CPS, CutBarrier),  % save CP stack depth as cut barrier
     NPC is PC + 1.
 
-step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, H, CP, T, _)|CPS], Code, L)) :-
-    get_assoc(NextL, L, NextPC), NPC is PC + 1.
+step_wam(deallocate, wam_state(PC, R, [env(OldCP, _, _)|S], H, T, _, CPS, Code, L), wam_state(NPC, R, S, H, T, OldCP, CPS, Code, L)) :-
+    NPC is PC + 1.
+
+step_wam(try_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, [cp(NextPC, R, S, H, CP, T, _, SavedB)|CPS], Code, L)) :-
+    get_assoc(NextL, L, NextPC),
+    wam_save_bindings(SavedB),
+    NPC is PC + 1.
 
 step_wam(trust_me, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     (CPS = [_|NCPS] -> true ; NCPS = CPS), NPC is PC + 1.
 
 step_wam(retry_me_else(NextL), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
     get_assoc(NextL, L, NextPC),
-    (CPS = [_|Rest] -> NCPS = [cp(NextPC, R, S, H, CP, T, _)|Rest] ; NCPS = [cp(NextPC, R, S, H, CP, T, _)]),
+    % Only update next_pc, preserve saved state from try_me_else
+    (CPS = [cp(_, SR, SS, SH, SCP, ST, SBuiltin, SB)|Rest]
+    ->  NCPS = [cp(NextPC, SR, SS, SH, SCP, ST, SBuiltin, SB)|Rest]
+    ;   wam_save_bindings(SB),
+        NCPS = [cp(NextPC, R, S, H, CP, T, _, SB)]
+    ),
     NPC is PC + 1.
 
-%% Indexing instructions — handle both list and variadic forms
+%% Indexing instructions — O(log n) dispatch via assoc lookup.
+%  switch_on_constant entries are pre-parsed into assoc during prepare_code.
+%  Format: switch_on_constant_index(Assoc) where Assoc maps Key → Label.
+step_wam(switch_on_constant_index(IndexAssoc), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val0),
+    wam_deref(Val0, Val),
+    (   \+ is_unbound_var(Val),
+        get_assoc(Val, IndexAssoc, LabelStr),
+        LabelStr \== default,
+        get_assoc(LabelStr, L, TargetPC)
+    ->  NPC = TargetPC
+    ;   NPC is PC + 1
+    ).
+
+%% Legacy switch_on_constant with flat list (fallback for unprocessed code)
 step_wam(Instr, wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
     Instr =.. [Op|Args],
     (Op == switch_on_constant ; Op == switch_on_structure ; Op == switch_on_constant_a2),
     (Args = [Entries], is_list(Entries) -> true ; Entries = Args),
-    (get_assoc('A1', R, Val), \+ is_unbound_var(Val), lookup_index(Val, Entries, L, TargetPC) -> NPC = TargetPC ; NPC is PC + 1).
+    (get_assoc('A1', R, Val0), wam_deref(Val0, Val), \+ is_unbound_var(Val), lookup_index(Val, Entries, L, TargetPC) -> NPC = TargetPC ; NPC is PC + 1).
 
 lookup_index(Val, [Entry|Rest], Labels, TargetPC) :-
     (once(sub_atom(Entry, Before, 1, After, ':')) ->
         sub_atom(Entry, 0, Before, _, KeyStr), sub_atom(Entry, _, After, 0, LabelStr),
-        (number_atom(Key, KeyStr) -> true ; Key = KeyStr),
+        (atom_number(KeyStr, Key) -> true ; Key = KeyStr),
         (Key == Val -> (LabelStr == 'default' -> fail ; get_assoc(LabelStr, Labels, TargetPC)) ; lookup_index(Val, Rest, Labels, TargetPC))
     ; fail).
+
+% ============================================================================
+% Aggregate Instructions (begin_aggregate / end_aggregate)
+% ============================================================================
+%
+% begin_aggregate Type, ValueReg, ResultReg
+%   Save state for solution collection. Initialize accumulator.
+%   Push a special "aggregate frame" on the choice point stack.
+%
+% end_aggregate
+%   Collect the current value from ValueReg, add to accumulator.
+%   Force backtrack to find the next solution.
+%   When backtracking past the begin_aggregate frame:
+%     apply aggregation (sum/count/etc) and bind ResultReg.
+
+:- dynamic wam_aggregate_acc/1.  % Global accumulator for aggregate collection
+
+step_wam(begin_aggregate(Type, ValueReg, ResultReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
+    NPC is PC + 1,
+    % Initialize accumulator
+    retractall(wam_aggregate_acc(_)),
+    assert(wam_aggregate_acc([])),
+    % Push an aggregate frame as a choice point
+    % When backtracking past this frame, finalize the aggregation
+    wam_save_bindings(SB),
+    NCPS = [cp(PC, R, S, H, CP, T, aggregate_frame(Type, ValueReg, ResultReg, NPC), SB)|CPS].
+
+step_wam(end_aggregate(ValueReg), wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut) :-
+    % Collect the current value from the value register
+    get_reg_val(ValueReg, R, S, RawVal),
+    wam_deref(RawVal, Val),
+    retract(wam_aggregate_acc(Acc)),
+    assert(wam_aggregate_acc([Val|Acc])),
+    % Store the return PC (instruction after end_aggregate) for aggregate_frame finalization
+    AfterPC is PC + 1,
+    nb_setval(wam_end_aggregate_pc, AfterPC),
+    % Force backtrack to find next solution
+    (   backtrack(wam_state(PC, R, S, H, T, CP, CPS, Code, L), StateOut)
+    ->  true
+    ;   fail
+    ).
+
+%% resume_builtin for aggregate_frame: finalize aggregation
+resume_builtin(aggregate_frame(Type, _ValueReg, ResultReg, _BeginPC), StateIn, StateOut) :-
+    StateIn = wam_state(_, R, S, H, T, CP, [_|CPs], Code, L),
+    % Use the ReturnPC stored by end_aggregate (instruction after end_aggregate)
+    nb_getval(wam_end_aggregate_pc, ReturnPC),
+    % Collect accumulated values
+    retract(wam_aggregate_acc(AccReversed)),
+    reverse(AccReversed, Acc),
+    assert(wam_aggregate_acc([])),
+    % Apply aggregation
+    apply_aggregation(Type, Acc, Result),
+    % Bind result register
+    get_assoc(ResultReg, R, ResultVar),
+    wam_deref(ResultVar, DResultVar),
+    (   is_wam_unbound(DResultVar)
+    ->  trail_binding(ResultReg, R, T, NT),
+        (atom(DResultVar), is_wam_unbound(DResultVar) -> wam_bind(DResultVar, Result) ; true),
+        put_assoc(ResultReg, R, Result, NR)
+    ;   DResultVar == Result -> NR = R, NT = T
+    ;   fail
+    ),
+    % Return to instruction after end_aggregate
+    StateOut = wam_state(ReturnPC, NR, S, H, NT, CP, CPs, Code, L).
+
+%% apply_aggregation(+Type, +Values, -Result)
+apply_aggregation(sum, Values, Sum) :-
+    foldl([V, Acc, Out]>>(number(V) -> Out is Acc + V ; Out = Acc), Values, 0, Sum).
+apply_aggregation(count, Values, Count) :-
+    length(Values, Count).
+apply_aggregation(max, [H|T], Max) :-
+    foldl([V, Acc, Out]>>(V > Acc -> Out = V ; Out = Acc), T, H, Max).
+apply_aggregation(min, [H|T], Min) :-
+    foldl([V, Acc, Out]>>(V < Acc -> Out = V ; Out = Acc), T, H, Min).
+apply_aggregation(collect, Values, Values).
+
+%% nonvar/1 — succeed if A1 is not an unbound WAM variable.
+step_wam(builtin_call('nonvar/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val), wam_deref(Val, DVal),
+    \+ is_wam_unbound(DVal),
+    NPC is PC + 1.
+
+%% var/1 — succeed if A1 is an unbound WAM variable.
+step_wam(builtin_call('var/1', 1), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, Val), wam_deref(Val, DVal),
+    is_wam_unbound(DVal),
+    NPC is PC + 1.
+
+%% !/0 — cut: truncate choice points to the cut barrier.
+%  The cut barrier is saved at Allocate time in the env frame.
+step_wam(builtin_call('!/0', 0), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, NCPS, Code, L)) :-
+    NPC is PC + 1,
+    % Find the cut barrier from the topmost env frame.
+    % CutBarrier is the CP stack length at Allocate time.
+    % Cut removes CPs added AFTER the barrier (newer CPs at list head).
+    % Keep only the last CutBarrier CPs (the tail of the list).
+    (   member(env(_, _, CutBarrier), S)
+    ->  length(CPS, CPLen),
+        DropN is max(0, CPLen - CutBarrier),
+        length(Prefix, DropN),
+        append(Prefix, NCPS, CPS)
+    ;   NCPS = []  % no env frame — clear all (fallback)
+    ).
+
+%% length/2 — measure list length, bind to A2.
+step_wam(builtin_call('length/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, ListRaw),
+    wam_deref(ListRaw, DList0),
+    deref_wam(DList0, wam_state(PC, R, S, H, T, CP, CPS, Code, L), DList),
+    is_list(DList),
+    length(DList, Len),
+    get_assoc('A2', R, LHS0), wam_deref(LHS0, LHS),
+    (   is_unbound_var(LHS)
+    ->  trail_binding('A2', R, T, NT),
+        wam_bind(LHS, Len),
+        put_assoc('A2', R, Len, NR)
+    ;   number(LHS), LHS =:= Len
+    ->  NR = R, NT = T
+    ;   fail
+    ),
+    NPC is PC + 1.
 
 step_wam(builtin_call(Op, 2), StateIn, StateOut) :-
     is_comparison_op(Op), !, StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
@@ -419,9 +1109,13 @@ step_wam(builtin_call(Op, 2), StateIn, StateOut) :-
     StateOut = wam_state(NPC, R, S, H, T, CP, CPS, Code, L).
 
 step_wam(builtin_call('is/2', 2), wam_state(PC, R, S, H, T, CP, CPS, Code, L), wam_state(NPC, NR, S, H, NT, CP, CPS, Code, L)) :-
-    get_assoc('A2', R, Expr), eval_arith(Expr, R, S, H, Result),
-    get_assoc('A1', R, LHS),
-    (is_unbound_var(LHS) -> trail_binding('A1', R, T, NT), put_assoc('A1', R, Result, NR)
+    get_assoc('A2', R, Expr0), wam_deref(Expr0, Expr),
+    eval_arith(Expr, R, S, H, Result),
+    get_assoc('A1', R, RawLHS), wam_deref(RawLHS, LHS),
+    (is_unbound_var(LHS) ->
+        trail_binding('A1', R, T, NT),
+        (atom(RawLHS), is_unbound_var(RawLHS) -> wam_bind(RawLHS, Result) ; true),
+        put_assoc('A1', R, Result, NR)
     ; number(LHS), LHS =:= Result -> NR = R, NT = T ; fail),
     NPC is PC + 1.
 
@@ -430,7 +1124,8 @@ step_wam(builtin_call('member/2', 2), StateIn, StateOut) :-
     get_assoc('A1', R, ElemRaw), get_assoc('A2', R, ListRaw),
     deref_wam(ElemRaw, StateIn, Elem), deref_wam(ListRaw, StateIn, List),
     (List = [Next|Rest] ->
-        (Rest == [] -> NCPS = CPS ; NCPS = [cp(PC, R, S, H, CP, T, member(Elem, Rest, PC))|CPS]),
+        wam_save_bindings(MemberSB),
+        (Rest == [] -> NCPS = CPS ; NCPS = [cp(PC, R, S, H, CP, T, member(Elem, Rest, PC), MemberSB)|CPS]),
         State1 = wam_state(PC, R, S, H, T, CP, NCPS, Code, L),
         (unify_wam(Elem, Next, State1, State2) ->
             State2 = wam_state(NPC_base, R2, S2, H2, T2, CP2, CPS2, Code2, L2),
@@ -438,8 +1133,79 @@ step_wam(builtin_call('member/2', 2), StateIn, StateOut) :-
         ; backtrack(State1, StateOut))
     ; fail).
 
-step_wam(builtin_call('\\+/1', 1), _, _) :-
-    throw(error(not_supported(negation_as_failure), wam_runtime)).
+%% \+/1 (negation-as-failure): the goal is in A1 as a structure.
+%  Fast path for member/2: directly check list membership.
+%  General path: save state, try goal, negate result.
+step_wam(builtin_call('\\+/1', 1),
+         wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+         wam_state(NPC, R, S, H, T, CP, CPS, Code, L)) :-
+    get_assoc('A1', R, GoalTerm),
+    State = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
+    deref_wam(GoalTerm, State, DGoal0),
+    % If DGoal0 is a heap ref to a str, reconstruct with args from heap
+    reconstruct_goal(DGoal0, H, DGoal),
+    (   naf_try_goal(DGoal, State)
+    ->  fail    % goal succeeded → \+ fails
+    ;   NPC is PC + 1   % goal failed → \+ succeeds
+    ).
+
+%% reconstruct_goal(+HeapVal, +Heap, -Goal)
+%  If the value is str(F/N), extract N args from the heap after it.
+reconstruct_goal(str(FN), Heap, str(FN, Args)) :-
+    !,
+    % Parse arity from functor (e.g., "member/2" → 2)
+    (   sub_atom(FN, B, 1, _, '/'),
+        sub_atom(FN, _, _, 0, ArityAtom),
+        atom_number(ArityAtom, Arity),
+        B > 0
+    ->  true
+    ;   Arity = 0
+    ),
+    % Find the str(FN) on the heap and get the next Arity values
+    (   nth0(Idx, Heap, str(FN))
+    ->  StartIdx is Idx + 1,
+        heap_subargs(Heap, StartIdx, Arity, Args)
+    ;   Args = []
+    ).
+reconstruct_goal(Goal, _, Goal).
+
+%% heap_subargs(+Heap, +Start, +Count, -Args)
+heap_subargs(_, _, 0, []) :- !.
+heap_subargs(Heap, Idx, N, [Arg|Rest]) :-
+    N > 0,
+    nth0(Idx, Heap, Arg),
+    Idx1 is Idx + 1,
+    N1 is N - 1,
+    heap_subargs(Heap, Idx1, N1, Rest).
+
+%% naf_try_goal(+Goal, +State) — succeeds if Goal can be proved
+naf_try_goal(str('member/2', [Elem, List]), State) :-
+    !,
+    % Fast path: check membership directly
+    deref_wam(Elem, State, DElem),
+    deref_wam(List, State, DList),
+    is_list(DList),
+    member(DElem, DList).
+naf_try_goal(Goal, wam_state(_, R, S, H, T, CP, CPS, Code, L)) :-
+    % General path: extract functor/args, set up registers, run
+    Goal = str(Functor, Args),
+    length(Args, Arity),
+    set_args(Args, 1, R, R1),
+    format(atom(PredKey), "~w", [Functor]),
+    init_state_for_call(PredKey, R1, S, H, T, CPS, Code, L, CallState),
+    run_loop(CallState, _).
+
+set_args([], _, R, R).
+set_args([Arg|Rest], N, R, ROut) :-
+    format(atom(RegName), "A~w", [N]),
+    put_assoc(RegName, R, Arg, R1),
+    N1 is N + 1,
+    set_args(Rest, N1, R1, ROut).
+
+init_state_for_call(PredKey, R, S, H, T, CPS, Code, L, wam_state(PC, R, S, H, T, halt, CPS, Code, L)) :-
+    (   get_assoc(PredKey, L, PC) -> true
+    ;   PC = 0  % not found → will fail immediately
+    ).
 
 %% unify_wam(+V1, +V2, +StateIn, -StateOut)
 unify_wam(V1, V2, StateIn, StateOut) :-
@@ -449,11 +1215,13 @@ unify_wam(V1, V2, StateIn, StateOut) :-
     ; var(DV2) -> DV2 = DV1, StateOut = StateIn
     ; is_unbound_var(DV1) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV1, R, T, NT), put_reg(DV1, DV2, R, NR, S, NS),
+        trail_binding(DV1, R, T, NT), wam_bind(DV1, DV2),
+        put_reg(DV1, DV2, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; is_unbound_var(DV2) ->
         StateIn = wam_state(PC, R, S, H, T, CP, CPS, Code, L),
-        trail_binding(DV2, R, T, NT), put_reg(DV2, DV1, R, NR, S, NS),
+        trail_binding(DV2, R, T, NT), wam_bind(DV2, DV1),
+        put_reg(DV2, DV1, R, NR, S, NS),
         StateOut = wam_state(PC, NR, NS, H, NT, CP, CPS, Code, L)
     ; compound(DV1), compound(DV2) ->
         DV1 =.. [F|Args1], DV2 =.. [F|Args2], length(Args1, Len), length(Args2, Len),
@@ -465,8 +1233,19 @@ unify_args([A1|R1], [A2|R2], S0, Sf) :- unify_wam(A1, A2, S0, S1), unify_args(R1
 
 deref_wam(Val, State, Derefed) :-
     State = wam_state(_, R, S, _, _, _, _, _, _),
-    (is_unbound_var(Val) -> (get_reg(Val, R, S, Next) -> (Next == Val -> Derefed = Val ; deref_wam(Next, State, Derefed)) ; Derefed = Val)
-    ; Val = ref(Addr) -> deref_heap(ref(Addr), State, Derefed) ; Derefed = Val).
+    (   is_unbound_var(Val), atom(Val)
+    ->  % First check the binding table
+        (   nb_getval(wam_bind_box, Box_), arg(1, Box_, B_), get_assoc(Val, B_, BoundVal)
+        ->  deref_wam(BoundVal, State, Derefed)
+        ;   % Then check registers
+            (   get_reg(Val, R, S, Next)
+            ->  (Next == Val -> Derefed = Val ; deref_wam(Next, State, Derefed))
+            ;   Derefed = Val
+            )
+        )
+    ;   Val = ref(Addr) -> deref_heap(ref(Addr), State, Derefed)
+    ;   Derefed = Val
+    ).
 
 deref_heap(ref(Addr), State, Term) :- !,
     State = wam_state(_, _, _, Heap, _, _, _, _, _),
@@ -515,22 +1294,60 @@ trail_binding(Key, Regs, Trail, [trail(Key, OldValue)|Trail]) :- (get_assoc(Key,
 
 is_y_reg(Reg) :- atom(Reg), sub_atom(Reg, 0, 1, _, 'Y').
 
+%% WAM binding table — assoc tree stored in a mutable box via nb_setarg.
+%  The box wrapper avoids nb_getval's deep-copy overhead.
+%  Save/restore is O(1) — just capture/restore the tree reference.
+
+%% wam_bind(+VarName, +Value)
+wam_bind(VarName, Value) :-
+    nb_getval(wam_bind_box, Box),
+    arg(1, Box, B),
+    put_assoc(VarName, B, Value, B1),
+    nb_setarg(1, Box, B1).
+
+%% wam_deref(+Val, -Derefed)
+wam_deref(Val, Derefed) :-
+    (   atom(Val), is_unbound_var(Val)
+    ->  nb_getval(wam_bind_box, Box),
+        arg(1, Box, B),
+        (   get_assoc(Val, B, Bound)
+        ->  wam_deref(Bound, Derefed)
+        ;   Derefed = Val
+        )
+    ;   Derefed = Val
+    ).
+
+%% wam_save_bindings(-Saved)
+%  O(1) save — capture assoc tree reference and var counter.
+wam_save_bindings(saved(Bindings, VarCounter)) :-
+    nb_getval(wam_bind_box, Box),
+    arg(1, Box, Bindings),
+    nb_getval(wam_var_counter, VarCounter).
+
+%% wam_restore_bindings(+Saved)
+%  O(1) restore — put back the saved assoc tree reference.
+wam_restore_bindings(saved(Bindings, VarCounter)) :-
+    nb_getval(wam_bind_box, Box),
+    nb_setarg(1, Box, Bindings),
+    nb_linkval(wam_var_counter, VarCounter).
+wam_restore_bindings(_).
+
 get_reg_val(Reg, R, S, Val) :-
     (   get_reg(Reg, R, S, V)
-    ->  Val = V
+    ->  wam_deref(V, Val)
     ;   Val = '_Vunbound'
     ).
 
 get_reg(Reg, _R, Stack, Val) :-
     is_y_reg(Reg), !,
-    member(env(_, YRegs), Stack), !,
+    member(env(_, YRegs, _), Stack), !,
     get_assoc(Reg, YRegs, Val).
 get_reg(Reg, R, _, Val) :-
     get_assoc(Reg, R, Val).
 
 put_reg(Reg, Val, R, R, Stack, NewStack) :- is_y_reg(Reg), !, update_top_env(Stack, Reg, Val, NewStack).
 put_reg(Reg, Val, R, NR, Stack, Stack) :- put_assoc(Reg, R, Val, NR).
-update_top_env([env(CP, YRegs)|Rest], Reg, Val, [env(CP, NewYRegs)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
+update_top_env([env(CP, YRegs, CB)|Rest], Reg, Val, [env(CP, NewYRegs, CB)|Rest]) :- put_assoc(Reg, YRegs, Val, NewYRegs).
 
 get_arity(FN, Arity) :-
     (   once(sub_atom(FN, _, 1, After, '/'))
@@ -555,6 +1372,7 @@ eval_arith_derefed(Expr, R, S, Heap, Result) :- atom(Expr), (is_unbound_var(Expr
 eval_arith_derefed(Expr, R, S, Heap, Result) :- compound(Expr), Expr =.. [Op|Args], maplist({R, S, Heap}/[A, V]>>eval_arith(A, R, S, Heap, V), Args, Vals), (Vals = [V1, V2] -> apply_arith_op(Op, V1, V2, Result) ; Vals = [V1] -> apply_arith_unary(Op, V1, Result) ; fail).
 apply_arith_op(+, A, B, R) :- R is A + B. apply_arith_op(-, A, B, R) :- R is A - B. apply_arith_op(*, A, B, R) :- R is A * B.
 apply_arith_op(/, A, B, R) :- B =\= 0, R is A / B. apply_arith_op(//, A, B, R) :- B =\= 0, R is A // B. apply_arith_op(mod, A, B, R) :- B =\= 0, R is A mod B. apply_arith_op(div, A, B, R) :- B =\= 0, R is A div B.
+apply_arith_op(**, A, B, R) :- R is A ** B. apply_arith_op('^', A, B, R) :- R is A ^ B.
 apply_arith_unary(-, A, R) :- R is -A. apply_arith_unary(abs, A, R) :- R is abs(A).
 
 solve_wam(Instructions, Query, VarNames, Bindings) :-
@@ -606,10 +1424,15 @@ extract_bindings_iter([], _, _, _, []).
 extract_bindings_iter([Name=Var|Rest], Query, Regs, Heap, [Name=Value|RestBindings]) :-
     Query =.. [_|Args],
     (   nth1(Idx, Args, A), A == Var
-    ->  format(atom(RegKey), "A~w", [Idx]),
-        (   get_assoc(RegKey, Regs, RawValue)
-        ->  deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value)
-        ;   Value = Var
+    ->  % First check the binding table for the query variable name
+        (   atom(Var), nb_getval(wam_bind_box, Box_eb), arg(1, Box_eb, B_eb), get_assoc(Var, B_eb, BoundVal)
+        ->  Value = BoundVal
+        ;   % Fallback to register value
+            format(atom(RegKey), "A~w", [Idx]),
+            (   get_assoc(RegKey, Regs, RawValue)
+            ->  deref_wam(RawValue, wam_state(0, Regs, [], Heap, [], 0, [], [], _), Value)
+            ;   Value = Var
+            )
         )
     ;   Value = Var
     ),

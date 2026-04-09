@@ -98,6 +98,58 @@
 
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
+
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+semantic_compiler:semantic_dispatch(python, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
+    option(provider(transformers), Provider),
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+    
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device initialization for Python (transformers)
+    % Supports CUDA (NVIDIA), MPS (Apple Silicon), CPU, and auto-detect
+    (   Device == gpu
+    ->  DeviceStr = "cuda"
+    ;   Device == mps
+    ->  DeviceStr = "mps"
+    ;   Device == cpu
+    ->  DeviceStr = "cpu"
+    ;   DeviceStr = "auto" % auto-detect best available
+    ),
+
+    format(string(Code), '
+import torch
+from sentence_transformers import SentenceTransformer
+
+# Initialize model with device: ~w
+device = "~w"
+if device == "cuda" and not torch.cuda.is_available():
+    print("Warning: CUDA not available, trying MPS or CPU")
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+elif device == "mps" and not torch.backends.mps.is_available():
+    print("Warning: MPS not available, falling back to CPU")
+    device = "cpu"
+elif device == "auto":
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+model = SentenceTransformer("~w", device=device)
+
+# Embed query: ~w (TopK: ~w)
+query_emb = model.encode(~w, convert_to_numpy=True)
+results = searcher.search(query_emb, top_k=~w)
+', [Device, DeviceStr, Model, QueryExpr, TopKExpr, QueryExpr, TopKExpr]).
 :- use_module('../core/advanced/pattern_matchers', [is_per_path_visited_pattern/4]).
 
 % Service validation (Client-Server Phase 2)

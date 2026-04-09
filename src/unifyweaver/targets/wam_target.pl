@@ -452,10 +452,31 @@ pre_bind_unbound_yi([Var|Rest], Bindings, YI, NewBindings) :-
 %% compile_goals(+Goals, +VarMap, +HasEnv, -Vf, -Code)
 compile_goals([], V, _, V, "").
 compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
-    (   Rest == []
+    % Check for aggregate_all/findall first — these are always compiled inline
+    (   Goal = aggregate_all(Template, InnerGoal, Result)
+    ->  compile_aggregate_all(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   Goal = findall(Template, InnerGoal, Result)
+    ->  compile_findall(Template, InnerGoal, Result, V0, V1, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        % For TCO with environments, put arguments BEFORE deallocate
-        % so that Yi registers are still accessible.
         (   HasEnv == yes
         ->  Goal =.. [Pred|Args],
             length(Args, Arity),
@@ -470,9 +491,85 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             )
         ;   compile_goal_execute(Goal, V0, Vf, Code)
         )
-    ;   compile_goal_call(Goal, V0, V1, GoalCode),
+    ;   % Non-last goal: call
+        compile_goal_call(Goal, V0, V1, GoalCode),
         compile_goals(Rest, V1, HasEnv, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
+    ).
+
+%% compile_aggregate_all(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+%  Compile aggregate_all(Template, Goal, Result) to WAM instructions.
+%  Emits: begin_aggregate, Goal body, end_aggregate
+%  The WAM runtime handles solution collection and aggregation.
+compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
+    % Determine aggregation type from Template
+    (   Template = sum(ValueVar) -> AggType = sum
+    ;   Template = count       -> AggType = count, ValueVar = 1
+    ;   Template = max(ValueVar) -> AggType = max
+    ;   Template = min(ValueVar) -> AggType = min
+    ;   AggType = collect, ValueVar = Template  % default: collect all values
+    ),
+    % Find or allocate the Result register (where output goes)
+    (   var(Result), get_var_reg(Result, V0, ResultReg0)
+    ->  V1 = V0
+    ;   allocate_var(Result, V0, V1, ResultReg0)
+    ),
+    % Compile the Value register (what gets collected per solution)
+    (   var(ValueVar)
+    ->  % ValueVar is a Prolog variable — allocate a Y-register for it
+        allocate_var(ValueVar, V1, V2, ValueReg),
+        % Emit put_variable to actually create the Y-register in the env frame
+        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg])
+    ;   % Constant value (e.g., count uses 1) — use A1 as placeholder
+        ValueReg = 'A1', V2 = V1, InitValueCode = ""
+    ),
+    % Flatten the InnerGoal conjunction into a list of goals
+    flatten_conjunction(InnerGoal, GoalList),
+    % Compile each inner goal as a call (never TCO/execute) so control
+    % returns to end_aggregate after each solution
+    compile_inner_call_goals(GoalList, V2, Vf, InnerCode),
+    (   InitValueCode \= ""
+    ->  format(string(Code),
+            "~w~n    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
+            [InitValueCode, AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+    ;   format(string(Code),
+            "    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
+            [AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+    ).
+
+%% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
+compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
+    compile_aggregate_all(collect-Template, InnerGoal, Result, V0, Vf, Code).
+
+%% flatten_conjunction(+Conj, -GoalList)
+%  Flatten (A, B, C) into [A, B, C].
+flatten_conjunction((A, B), Goals) :- !,
+    flatten_conjunction(A, AG),
+    flatten_conjunction(B, BG),
+    append(AG, BG, Goals).
+flatten_conjunction(Goal, [Goal]).
+
+%% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
+%  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.
+compile_inner_call_goals([], V, V, "").
+compile_inner_call_goals([Goal|Rest], V0, Vf, Code) :-
+    compile_goal_call(Goal, V0, V1, GoalCode),
+    compile_inner_call_goals(Rest, V1, Vf, RestCode),
+    (   RestCode == ""
+    ->  Code = GoalCode
+    ;   format(string(Code), "~w~n~w", [GoalCode, RestCode])
+    ).
+
+%% allocate_var(+Var, +VarMapIn, -VarMapOut, -Register)
+%  Allocate a Y-register for a variable if not already allocated.
+allocate_var(Var, VIn, VOut, Reg) :-
+    (   get_var_reg(Var, VIn, ExistingReg)
+    ->  Reg = ExistingReg, VOut = VIn
+    ;   get_yi_alloc(Var, VIn, Reg, VOut)
+    ->  true
+    ;   next_x_reg(VIn, XReg, V_temp),
+        bind_var(Var, XReg, V_temp, VOut),
+        Reg = XReg
     ).
 
 compile_goal_call(Goal, V0, Vf, Code) :-
@@ -687,6 +784,13 @@ peephole_lines([L1, L2|Rest], Result) :-
     match_get_put_passthrough(S1, S2, Reg),
     \+ reg_used_in_rest(Reg, Rest), !,
     peephole_lines(Rest, Result).
+% Eliminate put_variable Xn, Ai followed by put_value Xn, Ai (same register, same arg)
+peephole_lines([L1, L2|Rest], [L1|Result]) :-
+    normalize_ws(L1, N1),
+    normalize_ws(L2, N2),
+    atom_string(N1, S1), atom_string(N2, S2),
+    match_put_variable_put_value(S1, S2), !,
+    peephole_lines(Rest, Result).
 peephole_lines([L|Rest], [L|Result]) :-
     peephole_lines(Rest, Result).
 
@@ -696,17 +800,24 @@ normalize_ws(Str, Normalized) :-
     atomic_list_concat(Clean, ' ', Normalized).
 
 %% match_put_get_identity(+PutStr, +GetStr)
-%  put_value X1, A1 followed by get_variable X1, A1 — the get is redundant.
+%  put_value Xn/Yn, Ai followed by get_variable Xn/Yn, Ai — the get is redundant.
 match_put_get_identity(Put, Get) :-
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]),
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]).
 
-%% match_get_put_passthrough(+GetStr, +PutStr)
-%  get_variable X1, A1 followed by put_value X1, A1 — both redundant
+%% match_get_put_passthrough(+GetStr, +PutStr, -Reg)
+%  get_variable Xn, Ai followed by put_value Xn, Ai — both redundant
 %  (the value is already in Ai and doesn't need round-tripping through Xn).
 match_get_put_passthrough(Get, Put, Reg) :-
     split_string(Get, " ,", " ,", ["get_variable", Reg, Ai]),
     split_string(Put, " ,", " ,", ["put_value", Reg, Ai]).
+
+%% match_put_variable_put_value(+PutVarStr, +PutValStr)
+%  put_variable Xn/Yn, Ai followed by put_value Xn/Yn, Ai where both
+%  use the same register and arg — the put_value is redundant.
+match_put_variable_put_value(PutVar, PutVal) :-
+    split_string(PutVar, " ,", " ,", ["put_variable", Reg, Ai]),
+    split_string(PutVal, " ,", " ,", ["put_value", Reg, Ai]).
 
 %% reg_used_in_rest(+Reg, +Lines)
 %  True if the register name appears in any subsequent line.

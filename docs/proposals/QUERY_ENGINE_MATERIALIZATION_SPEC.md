@@ -63,6 +63,10 @@ Examples:
 - DAG longest depth builds adjacency and scalar suffix-depth state
 - path-aware shortest-path operators can build compact source->targets edge state
   instead of retaining generic edge tuples
+- where direct streaming, replayable buffering, and external materialized rows
+  are all viable sources for that edge state, the runtime can choose among
+  them through a measured retention selector and still expose an explicit
+  override via `QueryExecutorOptions.PathAwareEdgeRetentionStrategy`
 - shortest-path and weighted-shortest-path operators can emit compact
   `(group, root, min_value)` summaries instead of retaining full seeded path rows
 - where both grouped minima and legacy seeded-row regrouping are available, the
@@ -120,20 +124,24 @@ For the current benchmark/runtime surface, the streamed path is:
 4. DAG, scan, and path-aware operators read rows through that retention boundary
 5. path-aware shortest-path operators can build a compact edge-state cache
    directly from streamed facts instead of generic replayed edge rows
-6. shortest-path and weighted-shortest-path operators can emit compact
+6. where streaming, replayable buffering, and external materialized rows are
+   all viable sources for that cache, the runtime can use measured edge-retention
+   buckets and bounded probes to choose among them before honoring an explicit
+   executor override
+7. shortest-path and weighted-shortest-path operators can emit compact
    grouped root minima directly from streamed edge/seed inputs
-7. where grouped minima and legacy seeded-row regrouping both exist, the runtime
+8. where grouped minima and legacy seeded-row regrouping both exist, the runtime
    can select between them through a shared grouped-summary policy layer,
    record measured cost buckets for that decision, and use bounded probes in
    ambiguous cases before falling back to an explicit executor option
-8. effective-distance and category-influence operators can emit compact
+9. effective-distance and category-influence operators can emit compact
    grouped root-weight summaries directly from streamed edge/seed inputs
-9. where grouped weight sums and legacy seeded-row regrouping both exist, the
+10. where grouped weight sums and legacy seeded-row regrouping both exist, the
    runtime can select between them through that same grouped-summary policy
    layer, record measured cost buckets for that decision, and use bounded
    probes in ambiguous cases before falling back to an explicit executor option
-10. the operator builds only the retained state it actually needs
-11. benchmark code avoids preloading raw facts into in-memory relations first
+11. the operator builds only the retained state it actually needs
+12. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.

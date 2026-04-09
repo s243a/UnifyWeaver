@@ -3,6 +3,7 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_runtime.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/rust_target').
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 
@@ -25,8 +26,36 @@ path(a, b).
 path(b, c).
 path(c, d).
 
-:- dynamic test_member/1.
-test_member(X) :- member(X, [1, 2, 3]).
+:- dynamic tc_parent/2.
+tc_parent(tom, bob).
+tc_parent(tom, liz).
+tc_parent(bob, ann).
+tc_parent(bob, pat).
+tc_parent(pat, jim).
+
+:- dynamic tc_ancestor/2.
+tc_ancestor(X, Y) :- tc_parent(X, Y).
+tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
+
+:- dynamic tc_descendant/2.
+tc_descendant(X, Y) :- tc_parent(Y, X).
+tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
+
+:- dynamic tc_distance/3.
+tc_distance(X, Y, 1) :- tc_parent(X, Y).
+tc_distance(X, Y, D) :- tc_parent(X, Z), tc_distance(Z, Y, D1), D is D1 + 1.
+
+:- dynamic tri_sum/2.
+tri_sum(0, 0).
+tri_sum(N, Sum) :-
+    N > 0,
+    N1 is N - 1,
+    tri_sum(N1, Prev),
+    Sum is Prev + N.
+
+:- dynamic tail_suffix/2.
+tail_suffix(S, S).
+tail_suffix([_|T], S) :- tail_suffix(T, S).
 
 %% Integration test
 test_runtime_execution :-
@@ -38,8 +67,8 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:fact/1, user:path/2, user:test_member/1], 
-            [module_name('runtime_test'), wam_fallback(true)], TmpDir),
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tri_sum/2, user:tail_suffix/2],
+            [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
         make_directory_path('output/test_wam_rust_runtime_e2e/tests'),
@@ -47,64 +76,214 @@ test_runtime_execution :-
         TestContent = '
 use runtime_test::value::Value;
 use runtime_test::state::WamState;
-use runtime_test::{fact, path, test_member};
+use runtime_test::tc_ancestor;
+use runtime_test::tc_descendant;
+use runtime_test::tc_distance;
+use runtime_test::tri_sum;
+use runtime_test::tail_suffix;
 
 #[test]
 fn test_generated_predicates() {
-    // Test fact/1
-    let mut vm_fact = WamState::new(vec![], std::collections::HashMap::new());
-    let ok1 = fact(&mut vm_fact, Value::Atom("alice".to_string()));
-    assert!(ok1, "fact(alice) should succeed");
-    
-    let ok2 = fact(&mut vm_fact, Value::Atom("charlie".to_string()));
-    assert!(!ok2, "fact(charlie) should fail");
-    
-    // Test path/2
-    let mut vm_path = WamState::new(vec![], std::collections::HashMap::new());
-    let ok3 = path(&mut vm_path, Value::Atom("a".to_string()), Value::Atom("b".to_string()));
-    assert!(ok3, "path(a, b) should succeed");
+    // Test tc_ancestor/2 foreign lowering end-to-end
+    let mut vm_tc = WamState::new(vec![], std::collections::HashMap::new());
+    let ok1 = tc_ancestor(&mut vm_tc,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Desc".to_string()));
+    assert!(ok1, "tc_ancestor(tom, Desc) first solution should succeed");
 
-    // Test relational member/2 directly
-    let mut vm_direct = WamState::new(vec![], std::collections::HashMap::new());
-    let list = Value::List(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
-    vm_direct.set_reg("A1", Value::Unbound("X".to_string()));
-    vm_direct.set_reg("A2", list);
-    
-    // First solution: X=1
-    let mut ok_mem = vm_direct.execute_builtin("member/2", 2);
-    assert!(ok_mem, "member first call should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(1)));
-    
-    // Backtrack for second solution: X=2
-    ok_mem = vm_direct.backtrack();
-    assert!(ok_mem, "member second solution should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(2)));
-    
-    // Backtrack for third solution: X=3
-    ok_mem = vm_direct.backtrack();
-    assert!(ok_mem, "member third solution should succeed");
-    assert_eq!(vm_direct.get_reg("X"), Some(Value::Integer(3)));
-    
-    // Fourth backtrack: should fail
-    ok_mem = vm_direct.backtrack();
-    assert!(!ok_mem, "member fourth solution should fail");
+    let mut descendants: Vec<String> = Vec::new();
+    if let Some(Value::Atom(desc)) = vm_tc.bindings.get("Desc").cloned() {
+        descendants.push(desc);
+    } else {
+        panic!("expected first tc_ancestor result in Desc");
+    }
 
-    // Test test_member/1 which calls member/2 via WAM instructions
-    let mut vm_nested = WamState::new(vec![], std::collections::HashMap::new());
-    let ok4 = test_member(&mut vm_nested, Value::Unbound("Y".to_string()));
-    assert!(ok4, "test_member(Y) first solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(1)));
+    while vm_tc.backtrack() {
+        if let Some(Value::Atom(desc)) = vm_tc.bindings.get("Desc").cloned() {
+            descendants.push(desc);
+        } else {
+            panic!("expected backtracked tc_ancestor result in Desc");
+        }
+    }
 
-    let ok5 = vm_nested.backtrack();
-    assert!(ok5, "test_member(Y) second solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(2)));
+    descendants.sort();
+    assert_eq!(descendants, vec![
+        "ann".to_string(),
+        "bob".to_string(),
+        "jim".to_string(),
+        "liz".to_string(),
+        "pat".to_string(),
+    ]);
 
-    let ok6 = vm_nested.backtrack();
-    assert!(ok6, "test_member(Y) third solution should succeed");
-    assert_eq!(vm_nested.get_reg("Y"), Some(Value::Integer(3)));
+    let mut vm_tc_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok2 = tc_ancestor(&mut vm_tc_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(ok2, "tc_ancestor(tom, jim) should succeed");
 
-    let ok7 = vm_nested.backtrack();
-    assert!(!ok7, "test_member(Y) fourth solution should fail");
+    let mut vm_tc_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok3 = tc_ancestor(&mut vm_tc_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(!ok3, "tc_ancestor(liz, jim) should fail");
+
+    // Test tc_descendant/2 reverse foreign lowering end-to-end
+    let mut vm_desc = WamState::new(vec![], std::collections::HashMap::new());
+    let ok4 = tc_descendant(&mut vm_desc,
+        Value::Atom("jim".to_string()),
+        Value::Unbound("Anc".to_string()));
+    assert!(ok4, "tc_descendant(jim, Anc) first solution should succeed");
+
+    let mut ancestors: Vec<String> = Vec::new();
+    if let Some(Value::Atom(anc)) = vm_desc.bindings.get("Anc").cloned() {
+        ancestors.push(anc);
+    } else {
+        panic!("expected first tc_descendant result in Anc");
+    }
+
+    while vm_desc.backtrack() {
+        if let Some(Value::Atom(anc)) = vm_desc.bindings.get("Anc").cloned() {
+            ancestors.push(anc);
+        } else {
+            panic!("expected backtracked tc_descendant result in Anc");
+        }
+    }
+
+    ancestors.sort();
+    assert_eq!(ancestors, vec![
+        "bob".to_string(),
+        "pat".to_string(),
+        "tom".to_string(),
+    ]);
+
+    let mut vm_desc_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok5 = tc_descendant(&mut vm_desc_check,
+        Value::Atom("jim".to_string()),
+        Value::Atom("tom".to_string()));
+    assert!(ok5, "tc_descendant(jim, tom) should succeed");
+
+    let mut vm_desc_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok6 = tc_descendant(&mut vm_desc_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()));
+    assert!(!ok6, "tc_descendant(liz, jim) should fail");
+
+    // Test tc_distance/3 foreign lowering end-to-end
+    let mut vm_dist = WamState::new(vec![], std::collections::HashMap::new());
+    let ok7 = tc_distance(&mut vm_dist,
+        Value::Atom("tom".to_string()),
+        Value::Unbound("Target".to_string()),
+        Value::Unbound("Dist".to_string()));
+    assert!(ok7, "tc_distance(tom, Target, Dist) first solution should succeed");
+
+    let mut distances: Vec<String> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Integer(dist))) =
+        (vm_dist.bindings.get("Target").cloned(), vm_dist.bindings.get("Dist").cloned()) {
+        distances.push(format!("{}:{}", target, dist));
+    } else {
+        panic!("expected first tc_distance result in Target/Dist");
+    }
+
+    while vm_dist.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Integer(dist))) =
+            (vm_dist.bindings.get("Target").cloned(), vm_dist.bindings.get("Dist").cloned()) {
+            distances.push(format!("{}:{}", target, dist));
+        } else {
+            panic!("expected backtracked tc_distance result in Target/Dist");
+        }
+    }
+
+    distances.sort();
+    assert_eq!(distances, vec![
+        "ann:2".to_string(),
+        "bob:1".to_string(),
+        "jim:3".to_string(),
+        "liz:1".to_string(),
+        "pat:2".to_string(),
+    ]);
+
+    let mut vm_dist_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok8 = tc_distance(&mut vm_dist_check,
+        Value::Atom("tom".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Integer(3));
+    assert!(ok8, "tc_distance(tom, jim, 3) should succeed");
+
+    let mut vm_dist_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok9 = tc_distance(&mut vm_dist_fail,
+        Value::Atom("liz".to_string()),
+        Value::Atom("jim".to_string()),
+        Value::Unbound("D".to_string()));
+    assert!(!ok9, "tc_distance(liz, jim, D) should fail");
+
+    // Test tri_sum/2 foreign lowering end-to-end
+    let mut vm_sum = WamState::new(vec![], std::collections::HashMap::new());
+    let ok10 = tri_sum(&mut vm_sum,
+        Value::Integer(4),
+        Value::Unbound("Sum".to_string()));
+    assert!(ok10, "tri_sum(4, Sum) should succeed");
+    assert_eq!(vm_sum.bindings.get("Sum").cloned(), Some(Value::Integer(10)));
+
+    let mut vm_sum_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok11 = tri_sum(&mut vm_sum_check,
+        Value::Integer(4),
+        Value::Integer(10));
+    assert!(ok11, "tri_sum(4, 10) should succeed");
+
+    let mut vm_sum_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok12 = tri_sum(&mut vm_sum_fail,
+        Value::Integer(4),
+        Value::Integer(11));
+    assert!(!ok12, "tri_sum(4, 11) should fail");
+
+    // Test tail_suffix/2 foreign lowering end-to-end
+    let list_abc = Value::List(vec![
+        Value::Atom("a".to_string()),
+        Value::Atom("b".to_string()),
+        Value::Atom("c".to_string()),
+    ]);
+    let mut vm_suffix = WamState::new(vec![], std::collections::HashMap::new());
+    let ok13 = tail_suffix(&mut vm_suffix,
+        list_abc.clone(),
+        Value::Unbound("Suffix".to_string()));
+    assert!(ok13, "tail_suffix([a,b,c], Suffix) first solution should succeed");
+
+    let mut suffixes: Vec<String> = Vec::new();
+    if let Some(value) = vm_suffix.bindings.get("Suffix").cloned() {
+        suffixes.push(format!("{}", value));
+    } else {
+        panic!("expected first tail_suffix result in Suffix");
+    }
+
+    while vm_suffix.backtrack() {
+        if let Some(value) = vm_suffix.bindings.get("Suffix").cloned() {
+            suffixes.push(format!("{}", value));
+        } else {
+            panic!("expected backtracked tail_suffix result in Suffix");
+        }
+    }
+
+    assert_eq!(suffixes, vec![
+        "[a, b, c]".to_string(),
+        "[b, c]".to_string(),
+        "[c]".to_string(),
+        "[]".to_string(),
+    ]);
+
+    let mut vm_suffix_check = WamState::new(vec![], std::collections::HashMap::new());
+    let ok14 = tail_suffix(&mut vm_suffix_check,
+        list_abc.clone(),
+        Value::List(vec![
+            Value::Atom("b".to_string()),
+            Value::Atom("c".to_string()),
+        ]));
+    assert!(ok14, "tail_suffix([a,b,c], [b,c]) should succeed");
+
+    let mut vm_suffix_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok15 = tail_suffix(&mut vm_suffix_fail,
+        list_abc,
+        Value::List(vec![Value::Atom("d".to_string())]));
+    assert!(!ok15, "tail_suffix([a,b,c], [d]) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

@@ -82,6 +82,269 @@
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
 
+:- use_module('../core/semantic_compiler').
+
+%% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+%  Target-specific implementation for semantic search.
+%  Handles candle and onnx providers with device-aware initialization.
+semantic_compiler:semantic_dispatch(rust, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
+    option(provider(candle), Provider),
+    !,
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device feature selection for candle
+    (   Device == gpu
+    ->  DeviceInit = 'let device = candle_core::Device::new_cuda(0)\n        .unwrap_or_else(|_| { eprintln!("Warning: CUDA not available, falling back to CPU"); candle_core::Device::Cpu });'
+    ;   Device == cpu
+    ->  DeviceInit = 'let device = candle_core::Device::Cpu;'
+    ;   DeviceInit = 'let device = candle_core::Device::cuda_if_available(0).unwrap_or(candle_core::Device::Cpu);'
+    ),
+
+    format(string(Code), '
+    // Initialize candle searcher with model ~w
+    ~w
+    let searcher = PtSearcher::new("data.redb", "~w", &device)?;
+    let results = searcher.text_search("~w", ~w)?;
+    println!("{}", serde_json::to_string_pretty(&results)?);
+', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
+
+semantic_compiler:semantic_dispatch(rust, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
+    option(provider(onnx), Provider),
+    !,
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+
+    % Lookup variable names in VarMap
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+
+    % Device selection for ONNX Runtime
+    (   Device == gpu
+    ->  DeviceInit = 'let env = ort::Environment::builder().with_execution_providers([ort::CUDAExecutionProvider::default().build()]).build()?;'
+    ;   DeviceInit = 'let env = ort::Environment::builder().build()?;'
+    ),
+
+    format(string(Code), '
+    // Initialize ONNX searcher with model ~w
+    ~w
+    let searcher = OnnxSearcher::new("data.redb", "models/~w-onnx", &env)?;
+    let results = searcher.text_search("~w", ~w)?;
+', [Model, DeviceInit, Model, QueryExpr, TopKExpr]).
+
+% ============================================================================
+% FUZZY LOGIC DISPATCH (Rust target)
+% ============================================================================
+%
+% Generates inline Rust code for fuzzy operations. Assumes `term_scores`
+% (HashMap<String, f64>) is in scope from the surrounding search context.
+
+:- multifile semantic_compiler:fuzzy_dispatch/3.
+
+%% f_and: Fuzzy AND (product t-norm)
+semantic_compiler:fuzzy_dispatch(rust, f_and(Terms, _Result), Code) :-
+    generate_rust_product_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy AND (product t-norm)
+    let mut result: f64 = 1.0;
+~w', [TermCode]).
+
+%% f_or: Fuzzy OR (probabilistic sum)
+semantic_compiler:fuzzy_dispatch(rust, f_or(Terms, _Result), Code) :-
+    generate_rust_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy OR (probabilistic sum)
+    let mut complement: f64 = 1.0;
+~w    let result = 1.0 - complement;
+', [TermCode]).
+
+%% f_dist_or: Distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_dist_or(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_rust_dist_complement_terms(BaseExpr, Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy distributed OR
+    let mut complement: f64 = 1.0;
+~w    let result = 1.0 - complement;
+', [TermCode]).
+
+%% f_union: Non-distributed OR (base * OR result)
+semantic_compiler:fuzzy_dispatch(rust, f_union(BaseScore, Terms, _Result), Code) :-
+    (number(BaseScore) -> format(string(BaseExpr), "~w", [BaseScore]) ; BaseExpr = BaseScore),
+    generate_rust_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Fuzzy union (base * OR)
+    let mut complement: f64 = 1.0;
+~w    let result = ~w * (1.0 - complement);
+', [TermCode, BaseExpr]).
+
+%% f_not: Fuzzy NOT (complement)
+semantic_compiler:fuzzy_dispatch(rust, f_not(Score, _Result), Code) :-
+    (number(Score) -> format(string(ScoreExpr), "~w", [Score]) ; format(string(ScoreExpr), "~w", [Score])),
+    format(string(Code), '    let result = 1.0 - ~w;\n', [ScoreExpr]).
+
+%% blend_scores: Weighted interpolation using iterators
+semantic_compiler:fuzzy_dispatch(rust, blend_scores(Alpha, Scores1, Scores2, _Result), Code) :-
+    (number(Alpha) -> format(string(AExpr), "~w_f64", [Alpha]) ; AExpr = Alpha),
+    format(string(Code),
+'    // Blend scores: alpha*s1 + (1-alpha)*s2
+    let result: Vec<f64> = ~w.iter().zip(~w.iter())
+        .map(|(s1, s2)| ~w * s1 + (1.0 - ~w) * s2)
+        .collect();
+', [Scores1, Scores2, AExpr, AExpr]).
+
+%% top_k: Get top K items by score
+semantic_compiler:fuzzy_dispatch(rust, top_k(Items, K, _Result), Code) :-
+    format(string(Code),
+'    // Top-K selection
+    let mut scored: Vec<_> = ~w.clone();
+    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    let result = scored.into_iter().take(~w).collect::<Vec<_>>();
+', [Items, K]).
+
+% ---- Helpers for generating per-term Rust code ----
+
+generate_rust_product_terms([], '').
+generate_rust_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_product_terms(Rest, RestCode),
+    format(string(Line), '    result *= term_scores.get("~w").copied().unwrap_or(0.5);\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_complement_terms([], '').
+generate_rust_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_complement_terms(Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - term_scores.get("~w").copied().unwrap_or(0.5);\n', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_dist_complement_terms(_, [], '').
+generate_rust_dist_complement_terms(BaseExpr, [w(Term, Weight)|Rest], Code) :-
+    generate_rust_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [BaseExpr, Weight, Term]),
+    string_concat(Line, RestCode, Code).
+generate_rust_dist_complement_terms(BaseExpr, [Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_dist_complement_terms(BaseExpr, Rest, RestCode),
+    format(string(Line), '    complement *= 1.0 - ~w * term_scores.get("~w").copied().unwrap_or(0.5);\n', [BaseExpr, Term]),
+    string_concat(Line, RestCode, Code).
+
+% ---- Batch fuzzy operations (Vec<f64>) ----
+
+%% f_and_batch: Batch product t-norm over Vec<f64>
+semantic_compiler:fuzzy_dispatch(rust, f_and_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_product_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy AND (product t-norm)
+    let n = batch_len(&term_scores_batch);
+    let mut result: Vec<f64> = vec![1.0; n];
+~w', [TermCode]).
+
+%% f_or_batch: Batch probabilistic sum
+semantic_compiler:fuzzy_dispatch(rust, f_or_batch(Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy OR (probabilistic sum)
+    let n = batch_len(&term_scores_batch);
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = complement.iter().map(|c| 1.0 - c).collect();
+', [TermCode]).
+
+%% f_dist_or_batch: Batch distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_dist_or_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_dist_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy distributed OR
+    let n = ~w.len();
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = complement.iter().map(|c| 1.0 - c).collect();
+', [BaseScores, TermCode]).
+
+%% f_union_batch: Batch non-distributed OR
+semantic_compiler:fuzzy_dispatch(rust, f_union_batch(BaseScores, Terms, _ScoresBatch, _Result), Code) :-
+    generate_rust_batch_complement_terms(Terms, TermCode),
+    format(string(Code),
+'    // Batch fuzzy union (base * OR)
+    let n = ~w.len();
+    let mut complement: Vec<f64> = vec![1.0; n];
+~w    let result: Vec<f64> = ~w.iter().zip(complement.iter())
+        .map(|(b, c)| b * (1.0 - c))
+        .collect();
+', [BaseScores, TermCode, BaseScores]).
+
+% ---- Batch helpers ----
+
+generate_rust_batch_product_terms([], '').
+generate_rust_batch_product_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (r, s) in result.iter_mut().zip(scores.iter()) { *r *= ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_product_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_product_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (r, s) in result.iter_mut().zip(scores.iter()) { *r *= s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_batch_complement_terms([], '').
+generate_rust_batch_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (c, s) in complement.iter_mut().zip(scores.iter()) { *c *= 1.0 - ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for (c, s) in complement.iter_mut().zip(scores.iter()) { *c *= 1.0 - s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
+generate_rust_batch_dist_complement_terms([], '').
+generate_rust_batch_dist_complement_terms([w(Term, Weight)|Rest], Code) :-
+    generate_rust_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for ((c, s), b) in complement.iter_mut().zip(scores.iter()).zip(base_scores.iter()) { *c *= 1.0 - b * ~w * s; }
+    }
+', [Term, Weight]),
+    string_concat(Line, RestCode, Code).
+generate_rust_batch_dist_complement_terms([Term|Rest], Code) :-
+    atom(Term),
+    generate_rust_batch_dist_complement_terms(Rest, RestCode),
+    format(string(Line),
+'    if let Some(scores) = term_scores_batch.get("~w") {
+        for ((c, s), b) in complement.iter_mut().zip(scores.iter()).zip(base_scores.iter()) { *c *= 1.0 - b * s; }
+    }
+', [Term]),
+    string_concat(Line, RestCode, Code).
+
 % Per-path visited pattern detection
 :- use_module('../core/advanced/pattern_matchers', [
     is_per_path_visited_pattern/4,
@@ -3338,6 +3601,21 @@ sub_term(Sub, Term) :-
 :- endif.
 % Try native clause body lowering first
 compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
+    option(foreign_lowering(ForeignLowering), Options, false),
+    ForeignLowering == true,
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec),
+    !,
+    wam_target:compile_predicate_to_wam(user:Pred/Arity, Options, WamCode),
+    wam_rust_target:compile_wam_predicate_to_rust(
+        Pred/Arity,
+        WamCode,
+        [foreign_lowering(ForeignSpec)|Options],
+        RustCode
+    ).
+compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(include_main(IncludeMain), Options, true),
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
@@ -3429,6 +3707,182 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     ->  wam_rust_target:compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode)
     ;   fail
     ).
+
+rust_foreign_lowering_spec(Pred, Arity, Clauses, ForeignSpec) :-
+    rust_recursive_kernel(Pred, Arity, Clauses, Kernel),
+    rust_recursive_kernel_spec(Kernel, ForeignSpec).
+
+rust_recursive_kernel(Pred, Arity, Clauses, Kernel) :-
+    rust_recursive_kernel_detector(KernelKind, Detector),
+    call(Detector, Pred, Arity, Clauses, Kernel),
+    Kernel = recursive_kernel(KernelKind, _, _).
+
+rust_recursive_kernel_detector(category_ancestor, rust_recursive_kernel_category_ancestor).
+rust_recursive_kernel_detector(countdown_sum2, rust_recursive_kernel_countdown_sum).
+rust_recursive_kernel_detector(list_suffix2, rust_recursive_kernel_list_suffix).
+rust_recursive_kernel_detector(transitive_closure2, rust_recursive_kernel_transitive_closure).
+rust_recursive_kernel_detector(transitive_distance3, rust_recursive_kernel_transitive_distance).
+
+rust_recursive_kernel_spec(
+        recursive_kernel(KernelKind, PredIndicator, KernelConfig),
+        foreign_predicate(PredIndicator, SetupOps, RewriteTargets)) :-
+    rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig, SetupOps),
+    rust_recursive_kernel_rewrite_targets(KernelKind, PredIndicator, KernelConfig, RewriteTargets).
+
+rust_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
+        [ register_foreign_native_kind(PredIndicator, NativeKind),
+          register_foreign_result_layout(PredIndicator, ResultLayout)
+        |ConfigOps]) :-
+    rust_recursive_kernel_native_kind(KernelKind, NativeKind),
+    rust_recursive_kernel_result_layout(KernelKind, ResultLayout),
+    rust_recursive_kernel_config_ops(KernelKind, PredIndicator, KernelConfig, ConfigOps).
+
+rust_recursive_kernel_native_kind(category_ancestor, category_ancestor).
+rust_recursive_kernel_native_kind(countdown_sum2, countdown_sum2).
+rust_recursive_kernel_native_kind(list_suffix2, list_suffix2).
+rust_recursive_kernel_native_kind(transitive_closure2, transitive_closure2).
+rust_recursive_kernel_native_kind(transitive_distance3, transitive_distance3).
+
+rust_recursive_kernel_result_layout(category_ancestor, single).
+rust_recursive_kernel_result_layout(countdown_sum2, single).
+rust_recursive_kernel_result_layout(list_suffix2, single).
+rust_recursive_kernel_result_layout(transitive_closure2, single).
+rust_recursive_kernel_result_layout(transitive_distance3, pair).
+
+rust_recursive_kernel_config_ops(category_ancestor, category_ancestor/4,
+        [max_depth(MaxDepth)],
+        [register_foreign_usize_config(category_ancestor/4, max_depth, MaxDepth)]).
+rust_recursive_kernel_config_ops(countdown_sum2, _PredIndicator, [], []).
+rust_recursive_kernel_config_ops(list_suffix2, _PredIndicator, [], []).
+rust_recursive_kernel_config_ops(transitive_closure2, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+rust_recursive_kernel_config_ops(transitive_distance3, PredIndicator,
+        KernelConfig, ConfigOps) :-
+    rust_recursive_kernel_binary_edge_config_ops(PredIndicator, KernelConfig, ConfigOps).
+
+rust_recursive_kernel_binary_edge_config_ops(PredIndicator,
+        [edge_pred(EdgePred/2), fact_pairs(FactPairs)],
+        [ register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
+          register_indexed_atom_fact2(EdgePred/2, FactPairs)
+        ]).
+
+rust_recursive_kernel_rewrite_targets(_KernelKind, PredIndicator, _KernelConfig, [PredIndicator]).
+
+rust_recursive_kernel_category_ancestor(Pred, Arity, Clauses,
+        recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(MaxDepth)])) :-
+    rust_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, MaxDepth).
+
+rust_recursive_kernel_countdown_sum(Pred, Arity, Clauses,
+        recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
+    rust_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
+
+rust_recursive_kernel_list_suffix(Pred, Arity, Clauses,
+        recursive_kernel(list_suffix2, Pred/Arity, [])) :-
+    rust_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
+
+rust_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
+        recursive_kernel(transitive_closure2, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_distance3, Pred/Arity,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    rust_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred/2, FactPairs).
+
+rust_foreign_lowerable_category_ancestor(category_ancestor, 4, Clauses, MaxDepth) :-
+    member(_-BaseBody, Clauses),
+    member(_-RecBody, Clauses),
+    BaseBody \= true,
+    RecBody \= true,
+    sub_term(\+ member(_, _), BaseBody),
+    sub_term(\+ member(_, _), RecBody),
+    sub_term((_ is _ + 1), RecBody),
+    current_predicate(user:max_depth/1),
+    user:max_depth(MaxDepth),
+    integer(MaxDepth),
+    MaxDepth > 0.
+
+rust_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, 0, 0],
+    RecHead =.. [Pred, N, Sum],
+    RecBody = (GtGoal, (StepGoal, (RecGoal, SumGoal))),
+    GtGoal =.. [>, N, 0],
+    StepGoal =.. [is, PrevN, StepExpr],
+    (   StepExpr =.. [-, N, 1]
+    ;   StepExpr =.. [+, N, -1]
+    ),
+    RecGoal =.. [Pred, PrevN, PrevSum],
+    SumGoal =.. [is, Sum, SumExpr],
+    SumExpr =.. [+, PrevSum, N].
+
+rust_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseList, BaseList],
+    var(BaseList),
+    RecHead =.. [Pred, InputList, Suffix],
+    InputList = [_|Tail],
+    RecBody =.. [Pred, Tail, Suffix].
+
+rust_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget],
+    RecHead =.. [Pred, RecStart, RecTarget],
+    RecBody = (EdgeGoal, RecGoal),
+    BaseBody =.. [EdgePred, BaseArg1, BaseArg2],
+    EdgeGoal =.. [EdgePred, EdgeArg1, EdgeArg2],
+    RecGoal =.. [Pred, RecMid, RecGoalTarget],
+    RecGoalTarget == RecTarget,
+    (   BaseArg1 == BaseStart,
+        BaseArg2 == BaseTarget,
+        EdgeArg1 == RecStart,
+        EdgeArg2 == RecMid,
+        PairMode = forward
+    ;   BaseArg1 == BaseTarget,
+        BaseArg2 == BaseStart,
+        EdgeArg1 == RecMid,
+        EdgeArg2 == RecStart,
+        PairMode = reverse
+    ),
+    findall(PairLeft-PairRight,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right),
+          rust_foreign_edge_pair(PairMode, Left, Right, PairLeft-PairRight)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
+rust_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred/2, FactPairs) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1],
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          user:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs),
+    FactPairs \= [].
+
+rust_foreign_edge_pair(forward, Left, Right, Left-Right).
+rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),

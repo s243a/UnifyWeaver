@@ -26,6 +26,60 @@ test_simple_fact(foo, bar).
 
 :- dynamic test_failed/0.
 
+:- dynamic category_ancestor/4.
+:- dynamic category_parent/2.
+:- dynamic tail_suffix/2.
+:- dynamic tc_ancestor/2.
+:- dynamic tri_sum/2.
+:- dynamic tc_descendant/2.
+:- dynamic tc_distance/3.
+:- dynamic tc_parent/2.
+:- dynamic max_depth/1.
+
+max_depth(10).
+category_parent(alpha, beta).
+category_parent(beta, gamma).
+category_parent(gamma, physics).
+category_parent(beta, physics).
+
+tail_suffix(S, S).
+tail_suffix([_|T], S) :- tail_suffix(T, S).
+
+category_ancestor(Cat, Target, 1, Visited) :-
+    category_parent(Cat, Target),
+    \+ member(Target, Visited).
+category_ancestor(Cat, Target, Hops, Visited) :-
+    max_depth(MaxD),
+    length(Visited, Depth),
+    Depth < MaxD,
+    !,
+    category_parent(Cat, Mid),
+    \+ member(Mid, Visited),
+    category_ancestor(Mid, Target, H1, [Mid|Visited]),
+    Hops is H1 + 1.
+
+tc_parent(tom, bob).
+tc_parent(tom, liz).
+tc_parent(bob, ann).
+tc_parent(bob, pat).
+tc_parent(pat, jim).
+
+tc_ancestor(X, Y) :- tc_parent(X, Y).
+tc_ancestor(X, Y) :- tc_parent(X, Z), tc_ancestor(Z, Y).
+
+tc_descendant(X, Y) :- tc_parent(Y, X).
+tc_descendant(X, Y) :- tc_parent(Z, X), tc_descendant(Z, Y).
+
+tri_sum(0, 0).
+tri_sum(N, Sum) :-
+    N > 0,
+    N1 is N - 1,
+    tri_sum(N1, Prev),
+    Sum is Prev + N.
+
+tc_distance(X, Y, 1) :- tc_parent(X, Y).
+tc_distance(X, Y, D) :- tc_parent(X, Z), tc_distance(Z, Y, D1), D is D1 + 1.
+
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
 
@@ -63,6 +117,8 @@ test_step_wam_generation :-
         sub_string(S, _, _, _, 'PutValue'),
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'SwitchOnConstant')
     ->  pass(Test)
@@ -77,6 +133,7 @@ test_helpers_generation :-
         sub_string(S, _, _, _, 'fn backtrack'),
         sub_string(S, _, _, _, 'fn unwind_trail'),
         sub_string(S, _, _, _, 'fn execute_builtin'),
+        sub_string(S, _, _, _, 'aggregate_frame'),
         sub_string(S, _, _, _, 'fn eval_arith')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing expected helper functions')
@@ -116,13 +173,24 @@ test_all_instruction_arms :-
         sub_string(S, _, _, _, 'SetVariable'),
         sub_string(S, _, _, _, 'SetValue'),
         sub_string(S, _, _, _, 'SetConstant'),
+        sub_string(S, _, _, _, 'LoadRegisterConstant'),
+        sub_string(S, _, _, _, 'Cons'),
+        sub_string(S, _, _, _, 'NotMember'),
+        sub_string(S, _, _, _, 'ListLengthLt'),
+        sub_string(S, _, _, _, 'BaseCategoryAncestor'),
+        sub_string(S, _, _, _, 'RecurseCategoryAncestor'),
+        sub_string(S, _, _, _, 'ReturnAdd1'),
         % Control
         sub_string(S, _, _, _, 'Allocate'),
         sub_string(S, _, _, _, 'Deallocate'),
         sub_string(S, _, _, _, 'Call('),
+        sub_string(S, _, _, _, 'CallForeign'),
+        sub_string(S, _, _, _, 'CallIndexedAtomFact2'),
         sub_string(S, _, _, _, 'Execute('),
         sub_string(S, _, _, _, 'Proceed'),
         sub_string(S, _, _, _, 'BuiltinCall'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         % Choice points
         sub_string(S, _, _, _, 'TryMeElse'),
         sub_string(S, _, _, _, 'TrustMe'),
@@ -170,6 +238,106 @@ test_predicate_wrapper :-
         sub_string(S, _, _, _, 'set_reg')
     ->  pass(Test)
     ;   fail_test(Test, 'Incorrect predicate wrapper')
+    ).
+
+test_foreign_spec_wrapper_generation :-
+    Test = 'WAM-Rust: generic foreign spec drives wrapper generation',
+    ForeignSpec = foreign_predicate(
+        category_ancestor/4,
+        [ register_foreign_native_kind(category_ancestor/4, category_ancestor),
+          register_foreign_result_layout(category_ancestor/4, single),
+          register_foreign_usize_config(category_ancestor/4, max_depth, 10)
+        ],
+        [category_ancestor/4]
+    ),
+    WamCode = "call category_ancestor/4, 4",
+    (   compile_wam_predicate_to_rust(category_ancestor/4, WamCode,
+            [foreign_lowering(ForeignSpec)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("category_ancestor/4", "single")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
+    ).
+
+test_recursive_kernel_ir_selection :-
+    Test = 'WAM-Rust: recursive kernel IR normalizes supported schemas',
+    CategoryClauses = [
+        category_ancestor(Cat1, Target1, 1, Visited1)-
+            (category_parent(Cat1, Target1), \+ member(Target1, Visited1)),
+        category_ancestor(Cat2, Target2, Hops2, Visited2)-
+            ( max_depth(MaxDepth2),
+              length(Visited2, Depth2),
+              Depth2 < MaxDepth2,
+              !,
+              category_parent(Cat2, Mid2),
+              \+ member(Mid2, Visited2),
+              category_ancestor(Mid2, Target2, H12, [Mid2|Visited2]),
+              Hops2 is H12 + 1
+            )
+    ],
+    DescClauses = [
+        tc_descendant(X1, Y1)-tc_parent(Y1, X1),
+        tc_descendant(X2, Y2)-(tc_parent(Z2, X2), tc_descendant(Z2, Y2))
+    ],
+    SumClauses = [
+        tri_sum(0, 0)-true,
+        tri_sum(N2, Sum2)-((N2 > 0), ((N12 is N2 - 1), (tri_sum(N12, Prev2), Sum2 is Prev2 + N2)))
+    ],
+    SuffixClauses = [
+        tail_suffix(S1, S1)-true,
+        tail_suffix([_|T2], S2)-tail_suffix(T2, S2)
+    ],
+    DistClauses = [
+        tc_distance(S1, T1, 1)-tc_parent(S1, T1),
+        tc_distance(S2, T2, D2)-(tc_parent(S2, M2), (tc_distance(M2, T2, D1), D2 is D1 + 1))
+    ],
+    (   rust_target:rust_recursive_kernel(category_ancestor, 4, CategoryClauses,
+            recursive_kernel(category_ancestor, category_ancestor/4, [max_depth(10)])),
+        rust_target:rust_recursive_kernel(tri_sum, 2, SumClauses,
+            recursive_kernel(countdown_sum2, tri_sum/2, [])),
+        rust_target:rust_recursive_kernel(tail_suffix, 2, SuffixClauses,
+            recursive_kernel(list_suffix2, tail_suffix/2, [])),
+        rust_target:rust_recursive_kernel(tc_descendant, 2, DescClauses,
+            recursive_kernel(transitive_closure2, tc_descendant/2,
+                [edge_pred(tc_parent/2), fact_pairs(FactPairs)])),
+        rust_target:rust_recursive_kernel(tc_distance, 3, DistClauses,
+            recursive_kernel(transitive_distance3, tc_distance/3,
+                [edge_pred(tc_parent/2), fact_pairs(DistancePairs)])),
+        FactPairs == ['bob'-'tom', 'liz'-'tom', 'ann'-'bob', 'pat'-'bob', 'jim'-'pat']
+        , DistancePairs == ['tom'-'bob', 'tom'-'liz', 'bob'-'ann', 'bob'-'pat', 'pat'-'jim']
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel IR did not normalize expected schemas')
+    ).
+
+test_recursive_kernel_spec_generation :-
+    Test = 'WAM-Rust: recursive kernel IR generates foreign specs declaratively',
+    Kernel = recursive_kernel(
+        list_suffix2,
+        tail_suffix/2,
+        []),
+    (   rust_target:rust_recursive_kernel_spec(Kernel, ForeignSpec),
+        ForeignSpec = foreign_predicate(
+            tail_suffix/2,
+            [ register_foreign_native_kind(tail_suffix/2, list_suffix2),
+              register_foreign_result_layout(tail_suffix/2, single)
+            ],
+            [tail_suffix/2]
+        )
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel spec generation did not match expected foreign spec')
+    ).
+
+test_recursive_kernel_registry :-
+    Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
+    findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
+    sort(Kinds0, Kinds),
+    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, transitive_closure2, transitive_distance3]
+    ->  pass(Test)
+    ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
 
 %% Phase 4: WAM fallback integration tests
@@ -240,6 +408,91 @@ test_generated_rust_has_wam_wrapper :-
     ;   fail_test(Test, 'Generated wrapper missing expected elements')
     ).
 
+test_foreign_lowering_category_ancestor :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for category_ancestor/4',
+    (   rust_target:compile_predicate_to_rust(user:category_ancestor/4,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("category_ancestor/4", "category_ancestor")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("category_ancestor/4", "single")'),
+        sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("category_ancestor".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
+    ).
+
+test_foreign_lowering_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_ancestor/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_ancestor/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_ancestor/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_ancestor/2", "single")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_ancestor".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
+    ).
+
+test_foreign_lowering_countdown_sum :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tri_sum/2',
+    (   rust_target:compile_predicate_to_rust(user:tri_sum/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tri_sum/2", "countdown_sum2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tri_sum/2", "single")'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tri_sum", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tri_sum".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tri_sum/2')
+    ).
+
+test_foreign_lowering_list_suffix :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tail_suffix/2',
+    (   rust_target:compile_predicate_to_rust(user:tail_suffix/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tail_suffix/2", "list_suffix2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffix/2", "single")'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffix", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tail_suffix".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffix/2')
+    ).
+
+test_foreign_lowering_reverse_transitive_closure :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_descendant/2',
+    (   rust_target:compile_predicate_to_rust(user:tc_descendant/2,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_descendant/2", "transitive_closure2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_descendant/2", "single")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("bob", "tom"), ("liz", "tom"), ("ann", "bob"), ("pat", "bob"), ("jim", "pat")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_descendant".to_string(), 2)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_descendant/2')
+    ).
+
+test_foreign_lowering_transitive_distance :-
+    Test = 'WAM-Rust: compiler can choose foreign lowering for tc_distance/3',
+    (   rust_target:compile_predicate_to_rust(user:tc_distance/3,
+            [include_main(false), foreign_lowering(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("tc_distance/3", "transitive_distance3")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("tc_distance/3", "pair")'),
+        sub_string(S, _, _, _, 'register_foreign_string_config("tc_distance/3", "edge_pred", "tc_parent/2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
+        sub_string(S, _, _, _, 'execute_foreign_predicate("tc_distance", 3)'),
+        sub_string(S, _, _, _, 'Instruction::CallForeign("tc_distance".to_string(), 3)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign lowering was not selected for tc_distance/3')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -253,8 +506,19 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'fn eval_arith'),
         % Verify key instruction handling
         sub_string(S, _, _, _, 'GetConstant'),
+        sub_string(S, _, _, _, 'BeginAggregate'),
+        sub_string(S, _, _, _, 'EndAggregate'),
         sub_string(S, _, _, _, 'Proceed'),
-        sub_string(S, _, _, _, 'TryMeElse')
+        sub_string(S, _, _, _, 'TryMeElse'),
+        sub_string(S, _, _, _, 'foreign_native_kind(&pred_key)'),
+        sub_string(S, _, _, _, 'foreign_result_layout(pred_key)'),
+        sub_string(S, _, _, _, 'foreign_string_config(&pred_key, "edge_pred")'),
+        sub_string(S, _, _, _, 'foreign_usize_config(&pred_key, "max_depth")'),
+        sub_string(S, _, _, _, 'fn finish_foreign_results'),
+        sub_string(S, _, _, _, 'fn apply_foreign_result'),
+        sub_string(S, _, _, _, 'name: "foreign_results".to_string()'),
+        sub_string(S, _, _, _, 'transitive_closure2'),
+        sub_string(S, _, _, _, 'collect_native_transitive_closure_nodes')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -379,6 +643,17 @@ test_instruction_parser_resistant :-
     ;   fail_test(Test, 'Resistant predicate WAM code incomplete')
     ).
 
+test_aggregate_instruction_parser :-
+    Test = 'WAM-Rust: aggregate instructions lower to Rust enums',
+    WamCode = "agg/1:\n    begin_aggregate sum, Y1, A1\n    end_aggregate Y1\n    proceed",
+    (   compile_wam_predicate_to_rust(agg/1, WamCode, [], RustCode),
+        atom_string(RustCode, S),
+        sub_string(S, _, _, _, 'Instruction::BeginAggregate("sum".to_string(), "Y1".to_string(), "A1".to_string())'),
+        sub_string(S, _, _, _, 'Instruction::EndAggregate("Y1".to_string())')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Aggregate instructions were not lowered')
+    ).
+
 test_cargo_check_not_available :-
     Test = 'WAM-Rust: cargo_check handles missing cargo gracefully',
     (   % On systems without cargo, should return not_available
@@ -428,13 +703,19 @@ test_parser_handles_all_instructions :-
         sub_string(Content, _, _, _, '"set_variable"'),
         sub_string(Content, _, _, _, '"set_value"'),
         sub_string(Content, _, _, _, '"set_constant"'),
+        sub_string(Content, _, _, _, '"cons"'),
+        sub_string(Content, _, _, _, '"not_member"'),
+        sub_string(Content, _, _, _, '"list_length_lt"'),
         % Control
         sub_string(Content, _, _, _, '"allocate"'),
         sub_string(Content, _, _, _, '"deallocate"'),
         sub_string(Content, _, _, _, '"call"'),
+        sub_string(Content, _, _, _, '"call_indexed_atom_fact2"'),
         sub_string(Content, _, _, _, '"execute"'),
         sub_string(Content, _, _, _, '"proceed"'),
         sub_string(Content, _, _, _, '"builtin_call"'),
+        sub_string(Content, _, _, _, '"begin_aggregate"'),
+        sub_string(Content, _, _, _, '"end_aggregate"'),
         % Choice points
         sub_string(Content, _, _, _, '"try_me_else"'),
         sub_string(Content, _, _, _, '"retry_me_else"'),
@@ -498,11 +779,21 @@ run_tests :-
     test_all_instruction_arms,
     test_builtin_dispatch,
     test_predicate_wrapper,
+    test_foreign_spec_wrapper_generation,
+    test_recursive_kernel_ir_selection,
+    test_recursive_kernel_spec_generation,
+    test_recursive_kernel_registry,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
     test_wam_fallback_flag,
     test_generated_rust_has_wam_wrapper,
+    test_foreign_lowering_category_ancestor,
+    test_foreign_lowering_transitive_closure,
+    test_foreign_lowering_countdown_sum,
+    test_foreign_lowering_list_suffix,
+    test_foreign_lowering_reverse_transitive_closure,
+    test_foreign_lowering_transitive_distance,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
@@ -510,6 +801,7 @@ run_tests :-
     test_instruction_parser,
     test_instruction_parser_labels,
     test_instruction_parser_resistant,
+    test_aggregate_instruction_parser,
     test_cargo_check_not_available,
     test_state_template_has_parser,
     test_parser_handles_all_instructions,

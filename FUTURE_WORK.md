@@ -596,11 +596,11 @@ Several example apps exist but lack complete Prolog-based generation scripts:
 
 | App | Current State | Needed |
 |-----|---------------|--------|
-| `examples/pyodide-matrix/` | Has `matrix_module.pl` (generates Python/TS) | Add HTML generation or `generate.pl` script |
-| `examples/curve-plot/` | Has `curve_module.pl` (generates WASM/TS) | Add HTML generation or `generate.pl` script |
-| `examples/wasm-graph/` | Manual TypeScript + HTML | Add `generate.pl` using `graph_generator.pl` |
-| `examples/react-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` |
-| `examples/react-http-cli/` | Manual React app | Add `generate.pl` using `react_generator.pl` + `html_interface_generator.pl` |
+| `examples/pyodide-matrix/` | ✅ Complete | Generated output matches prototype |
+| `examples/curve-plot/` | ✅ Complete | Generated output matches prototype |
+| `examples/wasm-graph/` | ✅ Complete | Generated output matches prototype |
+| `examples/react-cli/` | ✅ Complete | Prolog-driven: mock FS, features, initial state from specs |
+| `examples/react-http-cli/` | ✅ Complete | Prolog-driven: API config, tabs, auth, roots; per-tab modular generation |
 
 **Goal:** Each example app should be fully regenerable from Prolog specifications via a `generate.pl` script.
 

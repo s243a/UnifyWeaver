@@ -81,6 +81,9 @@ Status:
 
 - started for shortest-path and weighted-shortest-path grouped minima
 - started for effective-distance and category-influence grouped weight sums
+- started for path-aware edge-relation retention, where the runtime can now
+  choose between direct streamed edge-state build, replayable buffering, and
+  external materialized fallback before building operator-owned edge state
 - the runtime can now choose between compact grouped summaries and legacy
   seeded-row regrouping for both operator families through a shared
   grouped-summary policy layer
@@ -91,8 +94,12 @@ Status:
 - the current implementation shares one grouped-summary heuristic/resolution
   path internally, now records measured cost buckets at the retention
   decision points, and keeps per-family override knobs for benchmarking
+- `QueryExecutorOptions.PathAwareEdgeRetentionStrategy` can force `Auto`,
+  `StreamingDirect`, `ReplayableBuffer`, or `ExternalMaterialized` for
+  path-aware edge-retention benchmarking
 - the current selector only runs bounded measured probes in ambiguous cases;
-  obvious shapes still short-circuit structurally
+  obvious grouped-summary shapes still short-circuit structurally, while
+  path-aware edge retention now measures competing source paths directly
 
 Work:
 
