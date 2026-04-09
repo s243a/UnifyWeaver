@@ -47,10 +47,11 @@ semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 
 | Target | Default Provider | Alternate Providers | Device Support |
 |--------|------------------|---------------------|----------------|
-| **Python** | `transformers` | `onnx` | CUDA, CPU (MPS planned) |
+| **Python** | `transformers` | `onnx` | CUDA, MPS, CPU, auto |
 | **Go** | `hugot` | `onnx` | GPU, CPU |
 | **Rust** | `candle` | `onnx` | CUDA, CPU |
 | **C#** | `onnx` | — | DirectML, CPU |
+| **Elixir** | `bumblebee` | `nx` | CUDA (EXLA), CPU |
 
 ## 4. Fuzzy Logic Compilation
 
@@ -85,6 +86,7 @@ The `semantic_compiler` also provides a `fuzzy_dispatch/3` multifile hook for co
 | **Go** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch, f\_union\_batch | blend, top\_k |
 | **Rust** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch, f\_union\_batch | blend, top\_k |
 | **C#** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | f\_and\_batch, f\_or\_batch, f\_dist\_or\_batch, f\_union\_batch | blend (LINQ Zip), top\_k (LINQ OrderByDescending) |
+| **Elixir** | f\_and, f\_or, f\_dist\_or, f\_union, f\_not | — | blend (Enum.zip), top\_k (Enum.sort\_by) |
 
 ### 4.5 Usage Example
 

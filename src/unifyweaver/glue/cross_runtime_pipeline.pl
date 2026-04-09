@@ -77,6 +77,8 @@ predicate_runtime(python3:_Name/_Arity, python) :- !.
 predicate_runtime(rust:_Name/_Arity, rust) :- !.
 predicate_runtime(csharp:_Name/_Arity, csharp) :- !.
 predicate_runtime(dotnet:_Name/_Arity, csharp) :- !.
+predicate_runtime(elixir:_Name/_Arity, elixir) :- !.
+predicate_runtime(ex:_Name/_Arity, elixir) :- !.
 predicate_runtime(_Name/_Arity, python).  % Default to python
 
 %% all_same_runtime(+Predicates, -Runtime)
@@ -268,6 +270,10 @@ compile_stage(rust, Predicates, StageNum, _OutputDir, Options, file(FileName, Co
 compile_stage(csharp, Predicates, StageNum, _OutputDir, Options, file(FileName, Code), stage(StageNum, csharp, FileName, Predicates)) :-
     compile_stage_with_semantic(csharp, Predicates, StageNum, Options, Code),
     format(string(FileName), "csharp_stage_~w.cs", [StageNum]).
+
+compile_stage(elixir, Predicates, StageNum, _OutputDir, Options, file(FileName, Code), stage(StageNum, elixir, FileName, Predicates)) :-
+    compile_stage_with_semantic(elixir, Predicates, StageNum, Options, Code),
+    format(string(FileName), "elixir_stage_~w.ex", [StageNum]).
 
 %% compile_stage_with_semantic(+Runtime, +Predicates, +StageNum, +Options, -Code)
 %  Compile a pipeline stage, routing semantic predicates through
