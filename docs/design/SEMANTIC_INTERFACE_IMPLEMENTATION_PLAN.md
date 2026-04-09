@@ -34,8 +34,16 @@
 - [x] Rust batch fuzzy operations (f_and_batch, f_or_batch, f_dist_or_batch, f_union_batch) via Vec<f64> iterators.
 - [x] C# batch fuzzy operations via LINQ Enumerable/Zip patterns.
 
-## Phase 4: Extended Target Coverage & Polish
-- [ ] Implement `semantic_dispatch` for Elixir (via Bumblebee/NX).
-- [ ] Add Python MPS (Apple Silicon) device support.
-- [ ] Create documentation examples for GPU deployment.
-- [ ] Final performance benchmarking across providers and devices.
+## Phase 4: Extended Target Coverage & Polish (Completed)
+- [x] Implement `semantic_dispatch` for Elixir via Bumblebee/Nx/EXLA with CUDA backend support.
+- [x] Implement `fuzzy_dispatch` for Elixir: all 5 core ops + blend_scores + top_k using pipe operator.
+- [x] Add Elixir to `input_source.pl` vector_db_init_code and cross_runtime_pipeline.
+- [x] Add Python MPS (Apple Silicon) device support with CUDA → MPS → CPU fallback chain.
+- [x] Auto-detect device mode: tries CUDA, then MPS, then CPU.
+- [x] Create GPU deployment documentation (`SEMANTIC_GPU_DEPLOYMENT.md`).
+- [x] Tests for Elixir dispatch, Elixir fuzzy, and Python MPS.
+
+## Future Work
+- [ ] Elixir batch fuzzy operations (Nx tensor-based).
+- [ ] Performance benchmarking across providers and devices.
+- [ ] Integration tests loading actual target files (vs inline dispatch clauses).

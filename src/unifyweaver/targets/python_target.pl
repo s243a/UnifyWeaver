@@ -114,22 +114,35 @@ semantic_compiler:semantic_dispatch(python, Goal, Provider, VarMap, Code) :-
     (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
 
     % Device initialization for Python (transformers)
+    % Supports CUDA (NVIDIA), MPS (Apple Silicon), CPU, and auto-detect
     (   Device == gpu
     ->  DeviceStr = "cuda"
+    ;   Device == mps
+    ->  DeviceStr = "mps"
     ;   Device == cpu
     ->  DeviceStr = "cpu"
-    ;   DeviceStr = "None" % auto
+    ;   DeviceStr = "auto" % auto-detect best available
     ),
 
     format(string(Code), '
 import torch
 from sentence_transformers import SentenceTransformer
 
-# Initialize model with device: ~w and fallback
+# Initialize model with device: ~w
 device = "~w"
 if device == "cuda" and not torch.cuda.is_available():
-    print("Warning: CUDA not available, falling back to CPU")
+    print("Warning: CUDA not available, trying MPS or CPU")
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+elif device == "mps" and not torch.backends.mps.is_available():
+    print("Warning: MPS not available, falling back to CPU")
     device = "cpu"
+elif device == "auto":
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
 
 model = SentenceTransformer("~w", device=device)
 

@@ -288,3 +288,9 @@ vector_db_init_code(csharp, vector_db(Path, _Format), Code) :-
 '    // Initialize vector database
     using var store = new VectorStore("~w");
 ', [Path]).
+
+vector_db_init_code(elixir, vector_db(Path, _Format), Code) :-
+    format(string(Code),
+'    # Initialize vector database
+    {:ok, store} = VectorStore.open("~w")
+', [Path]).

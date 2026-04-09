@@ -40,7 +40,10 @@ semantic_compiler:semantic_dispatch(python, Goal, Provider, VarMap, Code) :-
     option(device(Device), Provider, auto),
     (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
     (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
-    (   Device == gpu -> DeviceStr = "cuda" ; DeviceStr = "cpu" ),
+    (   Device == gpu -> DeviceStr = "cuda"
+    ;   Device == mps -> DeviceStr = "mps"
+    ;   DeviceStr = "cpu"
+    ),
     format(string(Code),
         'device = "~w"\nif device == "cuda" and not torch.cuda.is_available():\n    device = "cpu"\nmodel = SentenceTransformer("~w", device=device)\nresults = model.search("~w", ~w)',
         [DeviceStr, Model, QueryExpr, TopKExpr]).
@@ -61,6 +64,43 @@ semantic_compiler:semantic_dispatch(csharp, Goal, Provider, VarMap, Code) :-
         'var opts = new SessionOptions();\n~w\nvar searcher = new OnnxVectorSearch("~w", opts);\nvar results = searcher.Search("~w", ~w);',
         [DeviceInit, Model, QueryExpr, TopKExpr]).
 
+% Minimal Elixir dispatch (mirrors elixir_target.pl)
+semantic_compiler:semantic_dispatch(elixir, Goal, Provider, VarMap, Code) :-
+    Goal =.. [_, Query, TopK | _],
+    ( option(provider(bumblebee), Provider) ; option(provider(nx), Provider) ),
+    !,
+    option(model(Model), Provider, 'all-MiniLM-L6-v2'),
+    option(device(Device), Provider, auto),
+    (   member(Query=QueryVar, VarMap) -> QueryExpr = QueryVar ; QueryExpr = Query ),
+    (   member(TopK=TopKVar, VarMap) -> TopKExpr = TopKVar ; TopKExpr = TopK ),
+    (   Device == gpu -> BackendOpt = 'backend: {EXLA.Backend, client: :cuda}'
+    ;   BackendOpt = ''
+    ),
+    format(string(Code),
+        'model = Bumblebee.load_model({:hf, "~w"}, ~w)\nquery = "~w"\nresults = VectorStore.search(store, query_emb, top_k: ~w)',
+        [Model, BackendOpt, QueryExpr, TopKExpr]).
+
+% Minimal Elixir fuzzy dispatch
+semantic_compiler:fuzzy_dispatch(elixir, f_and(Terms, _Result), Code) :-
+    elixir_product_terms(Terms, TermCode),
+    format(string(Code), '    result = 1.0\n~w', [TermCode]).
+
+semantic_compiler:fuzzy_dispatch(elixir, f_or(Terms, _Result), Code) :-
+    elixir_complement_terms(Terms, TermCode),
+    format(string(Code), '    complement = 1.0\n~w    result = 1.0 - complement\n', [TermCode]).
+
+elixir_product_terms([], '').
+elixir_product_terms([w(Term, Weight)|Rest], Code) :-
+    elixir_product_terms(Rest, RestCode),
+    format(string(Line), '      |> Kernel.*(~w * Map.get(term_scores, "~w", 0.5))\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
+elixir_complement_terms([], '').
+elixir_complement_terms([w(Term, Weight)|Rest], Code) :-
+    elixir_complement_terms(Rest, RestCode),
+    format(string(Line), '      |> Kernel.*(1.0 - ~w * Map.get(term_scores, "~w", 0.5))\n', [Weight, Term]),
+    string_concat(Line, RestCode, Code).
+
 % ============================================================================
 % TEST PROVIDERS
 % ============================================================================
@@ -72,7 +112,15 @@ user:semantic_provider(gpu_search/3, [
     targets([
         target(go, [provider(hugot), model('minilm'), device(gpu)]),
         target(python, [provider(transformers), model('minilm'), device(gpu)]),
-        target(csharp, [provider(onnx), model('minilm'), device(gpu)])
+        target(csharp, [provider(onnx), model('minilm'), device(gpu)]),
+        target(elixir, [provider(bumblebee), model('minilm'), device(gpu)])
+    ])
+]).
+
+% MPS-specific provider for Apple Silicon testing
+user:semantic_provider(mps_search/3, [
+    targets([
+        target(python, [provider(transformers), model('minilm'), device(mps)])
     ])
 ]).
 
@@ -119,7 +167,7 @@ test_guard :-
 test_unknown_target :-
     format('--- Unknown Target ---~n'),
     % A target with no dispatch clause should fail gracefully
-    (   compile_semantic_call(elixir, gpu_search(q, 5, _), [], _)
+    (   compile_semantic_call(fortran, gpu_search(q, 5, _), [], _)
     ->  format('  FAIL: Should not have succeeded for unknown target~n')
     ;   format('  PASS: Correctly failed for unknown target~n')
     ).
@@ -433,7 +481,32 @@ test_vector_init_code :-
     vector_db_init_code(rust, vector_db("search.db", _), RustCode),
     assert_contains(RustCode, "Store::open(\"search.db\")", "Rust DB init"),
     vector_db_init_code(csharp, vector_db("search.db", _), CsCode),
-    assert_contains(CsCode, "VectorStore(\"search.db\")", "C# DB init").
+    assert_contains(CsCode, "VectorStore(\"search.db\")", "C# DB init"),
+    vector_db_init_code(elixir, vector_db("search.db", _), ExCode),
+    assert_contains(ExCode, "VectorStore.open(\"search.db\")", "Elixir DB init").
+
+test_elixir_dispatch :-
+    format('--- Elixir Dispatch ---~n'),
+    compile_semantic_call(elixir, gpu_search(query, 5, _), [], Code),
+    assert_contains(Code, "Bumblebee.load_model", "Bumblebee model load"),
+    assert_contains(Code, "EXLA.Backend", "CUDA backend"),
+    assert_contains(Code, "minilm", "model name").
+
+test_elixir_fuzzy_and :-
+    format('--- Elixir Fuzzy AND ---~n'),
+    compile_fuzzy_call(elixir, f_and([w(bash, 0.9), w(shell, 0.5)], _), Code),
+    assert_contains(Code, "Map.get(term_scores", "Map lookup"),
+    assert_contains(Code, "Kernel.*", "pipeline operator").
+
+test_elixir_fuzzy_or :-
+    format('--- Elixir Fuzzy OR ---~n'),
+    compile_fuzzy_call(elixir, f_or([w(bash, 0.9)], _), Code),
+    assert_contains(Code, "1.0 - complement", "probabilistic sum").
+
+test_python_mps :-
+    format('--- Python MPS ---~n'),
+    compile_semantic_call(python, mps_search(query, 5, _), [], Code),
+    assert_contains(Code, "mps", "MPS device string").
 
 % ---- Helpers ----
 
@@ -471,6 +544,10 @@ test_all :-
     test_csharp_batch_or,
     test_semantic_search_options,
     test_vector_source,
-    test_vector_init_code.
+    test_vector_init_code,
+    test_elixir_dispatch,
+    test_elixir_fuzzy_and,
+    test_elixir_fuzzy_or,
+    test_python_mps.
 
 :- initialization(test_all, main).
