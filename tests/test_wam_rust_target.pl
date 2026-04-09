@@ -42,6 +42,8 @@ test_simple_fact(foo, bar).
 :- dynamic direct_semantic_dist/3.
 :- dynamic min_semantic_dist/3.
 :- dynamic min_semantic_dist_astar/4.
+:- dynamic grouped_min_semantic_dist/3.
+:- dynamic grouped_min_semantic_dist_astar/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -138,6 +140,12 @@ min_semantic_dist(Start, Target, MinDist) :-
 
 min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
     aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), MinDist).
+
+grouped_min_semantic_dist(Start, Target, MinDist) :-
+    aggregate_all(min(Cost), weighted_path(Start, Target, Cost), Target, MinDist).
+
+grouped_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
+    aggregate_all(min(Cost), astar_weighted_path(Start, Target, Dim, Cost), Target, MinDist).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -739,6 +747,36 @@ test_astar_min_aggregate_wrapper :-
     ;   fail_test(Test, 'A* aggregate wrapper did not delegate correctly')
     ).
 
+test_grouped_weighted_min_aggregate_wrapper :-
+    Test = 'WAM-Rust: grouped aggregate min wrapper delegates to weighted_path/3',
+    (   rust_target:compile_predicate_to_rust(user:grouped_min_semantic_dist/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn grouped_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist/3", vec![a2.clone(), a3.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Grouped weighted aggregate wrapper did not delegate correctly')
+    ).
+
+test_grouped_astar_min_aggregate_wrapper :-
+    Test = 'WAM-Rust: grouped aggregate min wrapper delegates to astar_weighted_path/4',
+    (   rust_target:compile_predicate_to_rust(user:grouped_min_semantic_dist_astar/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn grouped_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist_astar/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist_astar/4", vec![a2.clone(), a4.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Grouped A* aggregate wrapper did not delegate correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1055,6 +1093,8 @@ run_tests :-
     test_foreign_lowering_astar_shortest_path,
     test_weighted_min_aggregate_wrapper,
     test_astar_min_aggregate_wrapper,
+    test_grouped_weighted_min_aggregate_wrapper,
+    test_grouped_astar_min_aggregate_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

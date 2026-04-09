@@ -1414,7 +1414,7 @@ compile_execute_foreign_predicate_to_rust(Code) :-
     }'.
 
 compile_foreign_result_helpers_to_rust(Code) :-
-    Code = '    fn finish_foreign_results(
+    Code = '    pub fn finish_foreign_results(
         &mut self,
         pred_key: &str,
         result_regs: Vec<Value>,
