@@ -33,11 +33,15 @@ using the same grouped-summary policy layer that now also drives the
 shortest-path minima family. The path-aware family now coordinates that
 grouped-summary selector with the earlier edge-retention selector through the
 shared internal materialization planner layer that also now covers the DAG
-family's relation-retention planning. That policy now records measured cost
-buckets like `load_roots`, `load_seeds`, `strategy_select`, `build_*`, and
-`group_reduce`, while the earlier path-aware edge-retention boundary now also
-records buckets like `edge_strategy_select`, `edge_probe_*`,
-`edge_materialize_replayable`, and `edge_build_*`.
+family's relation-retention planning and the generic scan family used by
+`RelationScanNode`, `PatternScanNode`, and scan-heavy join/negation/aggregate
+consumers. That policy now records measured cost buckets like `load_roots`,
+`load_seeds`, `strategy_select`, `build_*`, and `group_reduce`, while the
+earlier path-aware edge-retention boundary now also records buckets like
+`edge_strategy_select`, `edge_probe_*`, `edge_materialize_replayable`, and
+`edge_build_*`. Generic scan planning now adds corresponding scan buckets such
+as `scan_strategy_select`, `scan_probe_*`, `scan_materialize_*`, and
+`scan_build_fact_set`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|

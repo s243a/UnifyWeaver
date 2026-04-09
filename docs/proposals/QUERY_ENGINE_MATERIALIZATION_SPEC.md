@@ -159,16 +159,24 @@ For the current benchmark/runtime surface, the streamed path is:
    runtime can select between them through that same grouped-summary policy
    layer, record measured cost buckets for that decision, and use bounded
    probes in ambiguous cases before falling back to an explicit executor option
-12. the current runtime now routes both path-aware and DAG planning through
-   a shared internal materialization-planner layer
-13. for the current path-aware grouped-summary family, that planner
+12. generic `RelationScanNode` and `PatternScanNode` access now also route
+   through measured relation-retention selection, so scan-heavy join,
+   negation, and aggregate paths can choose between direct streaming,
+   replayable buffering, and external materialized fallback before building
+   list/set views
+13. the current runtime now routes path-aware, DAG, and generic scan planning
+   through a shared internal materialization-planner layer
+14. for the current path-aware grouped-summary family, that planner
    coordinates the earlier edge-retention choice with the later
    grouped-summary choice and records the combined plan in trace output
-14. for the current DAG family, that same planner currently records the
+15. for the current DAG family, that same planner currently records the
    coordinated relation-retention plan before the operator-owned DAG state is
    built
-15. the operator builds only the retained state it actually needs
-16. benchmark code avoids preloading raw facts into in-memory relations first
+16. for the current generic scan family, that same planner currently records
+   the coordinated relation-retention plan before scan-heavy consumers build
+   list/set views
+17. the operator builds only the retained state it actually needs
+18. benchmark code avoids preloading raw facts into in-memory relations first
 
 This is still a first step, not the full endpoint, but it is now broader than
 just the original DAG-only fast paths.
