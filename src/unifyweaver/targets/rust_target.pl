@@ -4258,7 +4258,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
     get_dict(expr, AggInfo, Expr),
     get_dict(group, AggInfo, GroupTerm),
     get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _StartArg, TargetArg, _DimArg, CostArg],
+    RelGoal =.. [InnerPred, _, TargetArg, DimArg, CostArg],
     Expr == CostArg,
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == TargetArg,
@@ -4356,13 +4356,14 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
     get_dict(expr, AggInfo, Expr),
     get_dict(relations, GoalInfo, [RelGoal|_]),
     RelGoal =.. [InnerPred, _StartArg, TargetArg, _DimArg, CostArg],
-    Expr == CostArg,
     var(TargetArg),
     functor(InnerHead, InnerPred, 4),
     findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
     Clauses \= [],
     rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
         WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+    rust_foreign_wrapper_goal_logic(GoalInfo, [ignored_start, TargetArg, DimArg, CostArg],
+        Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
@@ -4396,22 +4397,34 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
     vm.set_reg("A3", a3.clone());
     vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
 
+    let dim_value = match &a3 {
+        Value::Integer(d) => *d as f64,
+        Value::Float(d) => *d,
+        _ => ~w_f64,
+    };
+
     if !vm.execute_foreign_predicate("~w", 4) {
         vm.bindings.remove(&temp_target);
         vm.bindings.remove(&temp_cost);
         return false;
     }
 
-    let mut best = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-        Some(Value::Float(cost)) => Some(cost),
-        _ => None,
-    };
-    while vm.backtrack() {
+    let mut best: Option<f64> = None;
+    loop {
         if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+~w            if !(~w) {
+                if !vm.backtrack() {
+                    break;
+                }
+                continue;
+            }
             best = Some(match best {
-                Some(current) => current.min(cost),
-                None => cost,
+                Some(current) => current.min(~w),
+                None => ~w,
             });
+        }
+        if !vm.backtrack() {
+            break;
         }
     }
 
@@ -4425,19 +4438,20 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
 }', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
       WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, InnerPredStr]).
+      InnerPredStr, DefaultDim, DefaultDim, InnerPredStr, SetupCode, FilterCond, ValueExpr, ValueExpr]).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
     get_dict(type, AggInfo, all),
     get_dict(op, AggInfo, min),
     get_dict(expr, AggInfo, Expr),
     get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _StartArg, TargetArg, CostArg],
-    Expr == CostArg,
+    RelGoal =.. [InnerPred, _, TargetArg, CostArg],
     var(TargetArg),
     functor(InnerHead, InnerPred, 3),
     findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
     Clauses \= [],
     rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
+    rust_foreign_wrapper_goal_logic(GoalInfo, [ignored_start, TargetArg, CostArg],
+        Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
@@ -4471,16 +4485,22 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
         return false;
     }
 
-    let mut best = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-        Some(Value::Float(cost)) => Some(cost),
-        _ => None,
-    };
-    while vm.backtrack() {
+    let mut best: Option<f64> = None;
+    loop {
         if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+~w            if !(~w) {
+                if !vm.backtrack() {
+                    break;
+                }
+                continue;
+            }
             best = Some(match best {
-                Some(current) => current.min(cost),
-                None => cost,
+                Some(current) => current.min(~w),
+                None => ~w,
             });
+        }
+        if !vm.backtrack() {
+            break;
         }
     }
 
@@ -4491,7 +4511,97 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
         Some(cost) => vm.unify(&a3, &Value::Float(cost)),
         None => false,
     }
-}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, InnerPredStr]).
+}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, InnerPredStr, SetupCode, FilterCond, ValueExpr, ValueExpr]).
+
+rust_foreign_wrapper_goal_logic(GoalInfo, GoalArgs, Expr, SetupCode, ValueExpr, FilterCond) :-
+    get_dict(other, GoalInfo, []),
+    rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, SetupCode, ValueExpr),
+    get_dict(constraints, GoalInfo, Constraints),
+    findall(Part,
+        ( member(Constraint, Constraints),
+          rust_foreign_wrapper_constraint_expr(Constraint, GoalArgs, Expr, Part)
+        ),
+        Parts),
+    rust_combine_pipeline_conditions(Parts, FilterCond).
+
+rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, "", "cost") :-
+    last(GoalArgs, CostArg),
+    Expr == CostArg,
+    get_dict(other, GoalInfo, []).
+rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, SetupCode, "agg_value") :-
+    get_dict(other, GoalInfo, []),
+    get_dict(arithmetic, GoalInfo, Arithmetic),
+    member(Arithmetic0, Arithmetic),
+    strip_module(Arithmetic0, _, ArithmeticGoal),
+    ArithmeticGoal = (Expr is ArithmeticExpr),
+    rust_foreign_wrapper_numeric_expr(ArithmeticExpr, GoalArgs, Expr, RustExpr),
+    format(string(SetupCode), '            let agg_value = ~w;~n', [RustExpr]).
+
+rust_foreign_wrapper_numeric_expr(Expr, _GoalArgs, _AggExpr, RustExpr) :-
+    number(Expr),
+    !,
+    format(string(RustExpr), '~w_f64', [Expr]).
+rust_foreign_wrapper_numeric_expr(Expr, GoalArgs, _AggExpr, "cost") :-
+    var(Expr),
+    last(GoalArgs, CostArg),
+    Expr == CostArg,
+    !.
+rust_foreign_wrapper_numeric_expr(Expr, GoalArgs, _AggExpr, "dim_value") :-
+    var(Expr),
+    GoalArgs = [_StartArg, _TargetArg, DimArg, _CostArg],
+    Expr == DimArg,
+    !.
+rust_foreign_wrapper_numeric_expr(Expr, GoalArgs, AggExpr, RustExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    member(Op-Sym, [(+)-'+', (-)-'-', (*)-'*', (/)-'/']),
+    rust_foreign_wrapper_numeric_expr(Left, GoalArgs, AggExpr, LeftExpr),
+    rust_foreign_wrapper_numeric_expr(Right, GoalArgs, AggExpr, RightExpr),
+    format(string(RustExpr), '(~w ~w ~w)', [LeftExpr, Sym, RightExpr]).
+
+rust_foreign_wrapper_constraint_expr(Constraint0, GoalArgs, AggExpr, Cond) :-
+    strip_module(Constraint0, _, Constraint),
+    Constraint =.. [Op, Left0, Right0],
+    rust_foreign_wrapper_constraint_operand(Left0, GoalArgs, AggExpr, LeftType, LeftExpr),
+    rust_foreign_wrapper_constraint_operand(Right0, GoalArgs, AggExpr, RightType, RightExpr),
+    rust_foreign_wrapper_constraint_operator(Op, LeftType, RightType, OpExpr),
+    format(string(Cond), '~w ~w ~w', [LeftExpr, OpExpr, RightExpr]).
+
+rust_foreign_wrapper_constraint_operand(Operand, GoalArgs, AggExpr, number, "agg_value") :-
+    var(Operand),
+    Operand == AggExpr,
+    \+ (last(GoalArgs, CostArg), Operand == CostArg),
+    !.
+rust_foreign_wrapper_constraint_operand(Operand, GoalArgs, _AggExpr, number, "cost") :-
+    var(Operand),
+    last(GoalArgs, CostArg),
+    Operand == CostArg,
+    !.
+rust_foreign_wrapper_constraint_operand(Operand, GoalArgs, _AggExpr, number, "dim_value") :-
+    var(Operand),
+    GoalArgs = [_StartArg, _TargetArg, DimArg, _CostArg],
+    Operand == DimArg,
+    !.
+rust_foreign_wrapper_constraint_operand(Operand, GoalArgs, _AggExpr, string, "target.as_str()") :-
+    var(Operand),
+    GoalArgs = [_StartArg, TargetArg|_],
+    Operand == TargetArg,
+    !.
+rust_foreign_wrapper_constraint_operand(Operand, _GoalArgs, _AggExpr, number, RustExpr) :-
+    number(Operand),
+    !,
+    format(string(RustExpr), '~w_f64', [Operand]).
+rust_foreign_wrapper_constraint_operand(Operand, _GoalArgs, _AggExpr, string, RustExpr) :-
+    atom(Operand),
+    !,
+    format(string(RustExpr), '"~w"', [Operand]).
+
+rust_foreign_wrapper_constraint_operator(Op, number, number, Sym) :-
+    member(Op-Sym, [(>)-'>', (<)-'<', (>=)-'>=', (=<)-'<=', (=:=)-'==', (=\\=)-'!=', (==)-'==', (\\==)-'!=']),
+    !.
+rust_foreign_wrapper_constraint_operator(Op, string, string, Sym) :-
+    member(Op-Sym, [(==)-'==', (\\==)-'!=']),
+    !.
 
 rust_weighted_fact_triples_literal(Triples, Literal) :-
     maplist(rust_weighted_fact_triple_literal, Triples, TripleLiterals),
