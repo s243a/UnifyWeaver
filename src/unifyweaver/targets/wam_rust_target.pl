@@ -793,6 +793,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
     compile_collect_native_transitive_distance_to_rust(NativeDistanceCode),
     compile_collect_native_transitive_parent_distance_to_rust(NativeParentDistanceCode),
     compile_collect_native_transitive_step_parent_distance_to_rust(NativeStepParentDistanceCode),
+    compile_collect_native_weighted_shortest_path_to_rust(NativeWeightedPathCode),
     compile_eval_arith_to_rust(ArithCode),
     atomic_list_concat([
         RunLoopCode, '\n\n',
@@ -815,6 +816,7 @@ compile_wam_helpers_to_rust(_Options, RustCode) :-
         NativeDistanceCode, '\n\n',
         NativeParentDistanceCode, '\n\n',
         NativeStepParentDistanceCode, '\n\n',
+        NativeWeightedPathCode, '\n\n',
         ArithCode
     ], RustCode).
 
@@ -1318,6 +1320,44 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![target_reg, step_reg, parent_reg, dist_reg], packed_results)
             }
+            "weighted_shortest_path3" => {
+                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(start)) => start,
+                    _ => return false,
+                };
+                let target_reg = match self.regs.get("A2").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let dist_reg = match self.regs.get("A3").cloned() {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let target_filter = match self.deref_var(&target_reg) {
+                    Value::Atom(target) => Some(target),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let weight_pred = match self.foreign_string_config(&pred_key, "weight_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mut results: Vec<(String, f64)> = Vec::new();
+                self.collect_native_weighted_shortest_path_results(&start, &weight_pred, &mut results);
+                if let Some(target) = target_filter {
+                    results.retain(|(node, _)| *node == target);
+                }
+                if results.is_empty() {
+                    return false;
+                }
+                let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
+                    Value::Str("__tuple__".to_string(), vec![
+                        Value::Atom(node),
+                        Value::Float(dist),
+                    ])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
+            }
             _ => false,
         }
     }'.
@@ -1553,6 +1593,75 @@ compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
                 for (target, parent, dist) in nested {
                     out.push((target, next.clone(), parent, dist + 1));
                 }
+            }
+        }
+    }'.
+
+compile_collect_native_weighted_shortest_path_to_rust(Code) :-
+    Code = '    /// Dijkstra shortest path with precomputed semantic edge weights.
+    /// Returns the minimum-cost path from start to each reachable node.
+    /// Edge weights are f64 (typically 1 - cosine_similarity).
+    /// Uses a BinaryHeap priority queue — greedy expansion naturally
+    /// follows the lowest-cost (most semantically similar) path first,
+    /// with backtracking to alternatives when needed.
+    pub fn collect_native_weighted_shortest_path_results(
+        &self,
+        start: &str,
+        weight_pred: &str,
+        out: &mut Vec<(String, f64)>,
+    ) {
+        use std::collections::BinaryHeap;
+        use std::cmp::Ordering;
+
+        // Min-heap entry (Rust BinaryHeap is max-heap, so reverse ordering)
+        #[derive(PartialEq)]
+        struct State { cost: f64, node: String }
+        impl Eq for State {}
+        impl PartialOrd for State {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                other.cost.partial_cmp(&self.cost) // reversed for min-heap
+            }
+        }
+        impl Ord for State {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+            }
+        }
+
+        let mut dist: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut heap = BinaryHeap::new();
+
+        dist.insert(start.to_string(), 0.0);
+        heap.push(State { cost: 0.0, node: start.to_string() });
+
+        while let Some(State { cost, node }) = heap.pop() {
+            // Skip if we already found a shorter path
+            if let Some(&best) = dist.get(&node) {
+                if cost > best { continue; }
+            }
+
+            // Explore weighted edges from this node
+            if let Some(edges) = self.indexed_weighted_edge.get(weight_pred)
+                .and_then(|table| table.get(&node))
+            {
+                for (next, weight) in edges {
+                    let next_cost = cost + weight;
+                    let is_shorter = match dist.get(next) {
+                        Some(&prev_best) => next_cost < prev_best,
+                        None => true,
+                    };
+                    if is_shorter {
+                        dist.insert(next.clone(), next_cost);
+                        heap.push(State { cost: next_cost, node: next.clone() });
+                    }
+                }
+            }
+        }
+
+        // Collect all reachable nodes (excluding start)
+        for (node, cost) in &dist {
+            if node != start {
+                out.push((node.clone(), *cost));
             }
         }
     }'.
@@ -2015,6 +2124,11 @@ rust_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
     format(string(Line),
         '    vm.register_indexed_atom_fact2_pairs("~w/~w", &~w);',
         [Pred, Arity, PairsLiteral]).
+rust_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line) :-
+    rust_fact_triples_literal(Triples, TriplesLiteral),
+    format(string(Line),
+        '    vm.register_indexed_weighted_edge_triples("~w/~w", &~w);',
+        [Pred, Arity, TriplesLiteral]).
 
 rust_fact_pairs_literal(Pairs, Literal) :-
     maplist(rust_fact_pair_literal, Pairs, PairLiterals),
@@ -2025,6 +2139,16 @@ rust_fact_pair_literal(Left-Right, Literal) :-
     escape_rust_string(Left, ELeft),
     escape_rust_string(Right, ERight),
     format(string(Literal), '("~w", "~w")', [ELeft, ERight]).
+
+rust_fact_triples_literal(Triples, Literal) :-
+    maplist(rust_fact_triple_literal, Triples, TripleLiterals),
+    atomic_list_concat(TripleLiterals, ', ', Joined),
+    format(string(Literal), '[~w]', [Joined]).
+
+rust_fact_triple_literal(Left-Right-Weight, Literal) :-
+    escape_rust_string(Left, ELeft),
+    escape_rust_string(Right, ERight),
+    format(string(Literal), '("~w", "~w", ~w)', [ELeft, ERight, Weight]).
 
 rust_foreign_result_layout_literal(tuple(Arity), Literal) :-
     format(string(Literal), 'tuple:~w', [Arity]).

@@ -405,7 +405,7 @@ test_recursive_kernel_registry :-
     Test = 'WAM-Rust: recursive kernel registry enumerates supported kernels',
     findall(Kind, rust_target:rust_recursive_kernel_detector(Kind, _), Kinds0),
     sort(Kinds0, Kinds),
-    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5]
+    (   Kinds == [category_ancestor, countdown_sum2, list_suffix2, list_suffixes2, transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5, weighted_shortest_path3]
     ->  pass(Test)
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).

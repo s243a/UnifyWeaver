@@ -17,6 +17,9 @@
     extract_search_options/2,        % +Goal, -SearchOptions
     merge_provider_options/3,        % +ProviderInfo, +SearchOptions, -Merged
 
+    % Edge weight precomputation (semantic → distance kernel bridge)
+    compile_edge_weights/4,          % +Target, +EdgePred, +Model, -Code
+
     % Fuzzy logic compilation
     is_fuzzy_predicate/1,            % +Goal
     compile_fuzzy_call/3             % +Target, +Goal, -Code
@@ -160,6 +163,71 @@ merge_provider_options(ProviderInfo, SearchOpts, Merged) :-
 
 :- multifile semantic_dispatch/5.
 % semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
+
+% ============================================================================
+% SEMANTIC EDGE WEIGHT PRECOMPUTATION
+% ============================================================================
+
+%% compile_edge_weights(+Target, +EdgePred, +EmbeddingModel, -Code)
+%
+%  Generate target-language code to precompute semantic edge weights.
+%  For each edge in EdgePred/2, computes:
+%    weight = 1 - cosine_similarity(embedding(From), embedding(To))
+%  and stores as weighted edge facts for the shortest path kernel.
+%
+%  This bridges the semantic interface (embeddings) with the distance
+%  kernel (weighted edges) — edge weights are semantic distances.
+%
+:- multifile compile_edge_weights/4.
+% compile_edge_weights(+Target, +EdgePred, +EmbeddingModel, -Code)
+
+%% Python edge weight precomputation
+compile_edge_weights(python, EdgePred, Model, Code) :-
+    format(string(Code),
+'# Precompute semantic edge weights from embeddings
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+_model = SentenceTransformer("~w")
+
+def precompute_edge_weights(edges):
+    """Compute semantic distance for each edge: 1 - cosine_sim(emb(a), emb(b))"""
+    nodes = list(set([n for e in edges for n in e]))
+    embeddings = {n: _model.encode(n, convert_to_numpy=True) for n in nodes}
+    weights = {}
+    for a, b in edges:
+        sim = np.dot(embeddings[a], embeddings[b]) / (
+            np.linalg.norm(embeddings[a]) * np.linalg.norm(embeddings[b]) + 1e-9)
+        weights[(a, b)] = 1.0 - float(sim)
+    return weights
+
+_edge_weights = precompute_edge_weights(~w_edges)
+', [Model, EdgePred]).
+
+%% Go edge weight precomputation
+compile_edge_weights(go, _EdgePred, Model, Code) :-
+    format(string(Code),
+'\t// Precompute semantic edge weights from embeddings
+\temb, err := embedder.NewHugotEmbedder("models/~w-onnx", "~w")
+\tif err != nil { log.Fatal(err) }
+\tdefer emb.Close()
+\t
+\tfunc precomputeEdgeWeights(emb *embedder.HugotEmbedder, edges [][2]string) map[[2]string]float64 {
+\t\tembCache := make(map[string][]float64)
+\t\tweights := make(map[[2]string]float64)
+\t\tfor _, edge := range edges {
+\t\t\tfor _, node := range edge {
+\t\t\t\tif _, ok := embCache[node]; !ok {
+\t\t\t\t\tv, _ := emb.Embed(node)
+\t\t\t\t\tembCache[node] = v
+\t\t\t\t}
+\t\t\t}
+\t\t\tsim := cosineSim(embCache[edge[0]], embCache[edge[1]])
+\t\t\tweights[edge] = 1.0 - sim
+\t\t}
+\t\treturn weights
+\t}
+', [Model, Model]).
 
 % ============================================================================
 % FUZZY LOGIC COMPILATION
