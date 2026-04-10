@@ -540,13 +540,10 @@ step s (PutValue xn ai) =
     Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
-step s (PutStructure fn ai) =
-  let arity = case break (== ''/'') (reverse fn) of
-                (ra, _:_) -> case reads (reverse ra) of [(n,"")] -> n; _ -> 0
-                _ -> 0
-  in Just (s { wsPC = wsPC s + 1
-             , wsBuilder = BuildStruct fn ai arity []
-             })
+step s (PutStructure fn ai arity) =
+  Just (s { wsPC = wsPC s + 1
+          , wsBuilder = BuildStruct fn ai arity []
+          })
 
 step s (PutList ai) =
   Just (s { wsPC = wsPC s + 1
@@ -1281,7 +1278,7 @@ data Instruction
   | PutConstant Value String
   | PutVariable String String
   | PutValue String String
-  | PutStructure String String
+  | PutStructure String String Int   -- functor, target reg, arity (pre-parsed)
   | PutList String
   | SetValue String
   | SetConstant Value
@@ -1453,7 +1450,22 @@ wam_instr_to_haskell(["put_value", Xn, Ai], Hs) :-
     format(string(Hs), 'PutValue "~w" "~w"', [CXn, CAi]).
 wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    format(string(Hs), 'PutStructure "~w" "~w"', [CFN, CAi]).
+    % Pre-parse arity from "name/N" at compile time so the runtime
+    % doesn''t need to scan the string on every PutStructure step.
+    parse_functor_arity(CFN, Arity),
+    format(string(Hs), 'PutStructure "~w" "~w" ~w', [CFN, CAi, Arity]).
+
+%% parse_functor_arity(+FunctorString, -Arity)
+%  Extract the arity from "name/N" format. Defaults to 0 if no slash.
+parse_functor_arity(FN, Arity) :-
+    atom_string(FNA, FN),
+    (   sub_atom(FNA, Before, 1, _, '/'),
+        After is Before + 1,
+        sub_atom(FNA, After, _, 0, ArityStr),
+        atom_number(ArityStr, Arity)
+    ->  true
+    ;   Arity = 0
+    ).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     format(string(Hs), 'PutList "~w"', [Ai]).
 wam_instr_to_haskell(["set_value", Xn], Hs) :-
