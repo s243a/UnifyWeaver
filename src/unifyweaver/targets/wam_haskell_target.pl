@@ -392,13 +392,27 @@ applyAggregation _ vals = VList vals
 
 -- | Native category_ancestor: depth-bounded DFS over indexed parent facts.
 -- Returns all (Hops) values for paths from Cat to Root within maxDepth.
+--
+-- Hops semantics matches the source Prolog (examples/benchmark/effective_distance.pl):
+--   category_ancestor(Cat, Parent, 1, Visited) :- category_parent(Cat, Parent), \\+ member(Parent, Visited).
+--   category_ancestor(Cat, Ancestor, Hops, Visited) :- ..., category_ancestor(Mid, Ancestor, H1, [Mid|Visited]), Hops is H1 + 1.
+-- A DIRECT parent contributes Hops=1 (not 0!). Grandparent contributes Hops=2.
+-- The recursive case adds 1 per level.
+--
 -- Uses a plain list for visited because depth is bounded (typically <= 10),
 -- so O(depth) elem checks are faster than O(log n) Set operations + the
 -- per-call Set construction overhead.
 nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> [String] -> [Int]
 nativeCategoryAncestor parents cat root maxDepth depth visited =
   let directParents = fromMaybe [] (Map.lookup cat parents)
-      baseHits = [1 | p <- directParents, p == root, p `notElem` visited]
+      -- Base case (Prolog clause 1): any direct parent that IS the root
+      -- contributes Hops=1. The Prolog also requires \\+ member(Parent, Visited)
+      -- but since Visited starts as [Cat] and grows with intermediate categories,
+      -- the root cannot normally appear in Visited unless cat == root, in which
+      -- case the cycle check below covers it.
+      baseHits = [1 | p <- directParents, p == root]
+      -- Recursive case (Prolog clause 2): for each direct parent that is not
+      -- yet visited, recurse and add 1 to every returned Hops.
       recHits = if depth >= maxDepth then [] else
         concatMap (\\mid ->
           if mid `elem` visited then []
@@ -410,11 +424,11 @@ nativeCategoryAncestor parents cat root maxDepth depth visited =
 -- returns first result with CPs for the rest.
 -- | Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 -- O(1) Map lookup, first match returned, FactRetry CP for the rest.
-callIndexedFact2 :: String -> WamState -> Maybe WamState
-callIndexedFact2 pred s =
+callIndexedFact2 :: WamContext -> String -> WamState -> Maybe WamState
+callIndexedFact2 !ctx pred s =
   let basePred = takeWhile (/= ''/'') pred
       retPC = wsCP s
-  in case Map.lookup basePred (wsForeignFacts s) of
+  in case Map.lookup basePred (wcForeignFacts ctx) of
     Nothing -> Nothing
     Just factIndex ->
       let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
@@ -448,13 +462,13 @@ callIndexedFact2 pred s =
           _ -> Nothing
         _ -> Nothing
 
-executeForeign :: String -> WamState -> Maybe WamState
-executeForeign "category_ancestor/4" s =
+executeForeign :: WamContext -> String -> WamState -> Maybe WamState
+executeForeign !ctx "category_ancestor/4" s =
   let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
       root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))
       visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))
-      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wsForeignConfig s)
-      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wsForeignFacts s)
+      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wcForeignConfig ctx)
+      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wcForeignFacts ctx)
   in case (cat, root, visited) of
     (Atom catS, Atom rootS, VList visitedVals) ->
       let visitedStrs = [v | Atom v <- visitedVals]
@@ -486,7 +500,7 @@ executeForeign "category_ancestor/4" s =
                 }
           in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
     _ -> Nothing
-executeForeign _ _ = Nothing
+executeForeign _ _ _ = Nothing
 
 -- | Unify two values, binding unbound variables.
 unifyVal :: Value -> Value -> WamState -> Maybe WamState
@@ -511,8 +525,10 @@ unifyVal a b s | a == b = Just (s { wsPC = wsPC s + 1 })
 
 step_function_haskell(Code) :-
     Code = '-- | Execute a single WAM instruction.
-step :: WamState -> Instruction -> Maybe WamState
-step s (GetConstant c ai) =
+-- The WamContext argument is read-only and threaded through (does NOT
+-- become part of any per-step record allocation).
+step :: WamContext -> WamState -> Instruction -> Maybe WamState
+step !ctx s (GetConstant c ai) =
   let val = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
   in case val of
     Just v | v == c -> Just (s { wsPC = wsPC s + 1 })
@@ -525,13 +541,13 @@ step s (GetConstant c ai) =
               })
     _ -> Nothing
 
-step s (GetVariable xn ai) =
+step !ctx s (GetVariable xn ai) =
   case IM.lookup ai (wsRegs s) of
     Just val -> let dv = derefVar (wsBindings s) val
                 in Just ((putReg xn dv s) { wsPC = wsPC s + 1 })
     Nothing -> Nothing
 
-step s (GetValue xn ai) =
+step !ctx s (GetValue xn ai) =
   let va = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
       vx = getReg xn s
   in case (va, vx) of
@@ -545,10 +561,10 @@ step s (GetValue xn ai) =
               })
     _ -> Nothing
 
-step s (PutConstant c ai) =
+step !ctx s (PutConstant c ai) =
   Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai c (wsRegs s) })
 
-step s (PutVariable xn ai) =
+step !ctx s (PutVariable xn ai) =
   let vid = wsVarCounter s
       var = Unbound vid
       s1 = putReg xn var s
@@ -557,63 +573,63 @@ step s (PutVariable xn ai) =
               , wsVarCounter = vid + 1
               })
 
-step s (PutValue xn ai) =
+step !ctx s (PutValue xn ai) =
   case getReg xn s of
     Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
-step s (PutStructure fn ai arity) =
+step !ctx s (PutStructure fn ai arity) =
   Just (s { wsPC = wsPC s + 1
           , wsBuilder = BuildStruct fn ai arity []
           })
 
-step s (PutList ai) =
+step !ctx s (PutList ai) =
   Just (s { wsPC = wsPC s + 1
            , wsBuilder = BuildList ai []
            })
 
-step s (SetValue xn) =
+step !ctx s (SetValue xn) =
   case getReg xn s of
     Just val -> addToBuilder val s
     Nothing -> Nothing
 
-step s (SetConstant c) =
+step !ctx s (SetConstant c) =
   addToBuilder c s
 
 -- Fast path: call has been pre-resolved to a target PC at load time.
 -- No string lookup, no foreign/indexed dispatch — just a jump.
-step s (CallResolved pc _arity) =
+step !ctx s (CallResolved pc _arity) =
   Just (s { wsPC = pc, wsCP = wsPC s + 1 })
 
-step s (Call pred _arity) =
+step !ctx s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
-  in case executeForeign pred sc of
+  in case executeForeign ctx pred sc of
     Just sr -> Just sr
-    Nothing -> case callIndexedFact2 pred sc of
+    Nothing -> case callIndexedFact2 ctx pred sc of
       Just sr -> Just sr
-      Nothing -> case Map.lookup pred (wsLabels s) of
+      Nothing -> case Map.lookup pred (wcLabels ctx) of
         Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
         Nothing -> Nothing
 
-step s Proceed =
+step !ctx s Proceed =
   let ret = wsCP s
   in if ret == 0 then Just (s { wsPC = 0 })
      else Just (s { wsPC = ret, wsCP = 0 })
 
-step s Allocate =
+step !ctx s Allocate =
   let frame = EnvFrame (wsCP s) IM.empty
   in Just (s { wsPC = wsPC s + 1
              , wsStack = frame : wsStack s
              , wsCutBar = wsCPsLen s
              })
 
-step s Deallocate =
+step !ctx s Deallocate =
   case wsStack s of
     (EnvFrame oldCP _ : rest) -> Just (s { wsPC = wsPC s + 1, wsStack = rest, wsCP = oldCP })
     _ -> Nothing
 
-step s (TryMeElse label) =
-  let nextPC = fromMaybe 0 $ Map.lookup label (wsLabels s)
+step !ctx s (TryMeElse label) =
+  let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
       cp = ChoicePoint
         { cpNextPC   = nextPC
         , cpRegs     = wsRegs s
@@ -627,23 +643,23 @@ step s (TryMeElse label) =
         }
   in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
 
-step s TrustMe =
+step !ctx s TrustMe =
   case wsCPs s of
     (_ : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
     [] -> Nothing
 
-step s (RetryMeElse label) =
+step !ctx s (RetryMeElse label) =
   case wsCPs s of
     (cp : rest) ->
-      let nextPC = fromMaybe 0 $ Map.lookup label (wsLabels s)
+      let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
       in Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
     [] -> Nothing
 
-step s (BuiltinCall "!/0" _) =
+step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
 
-step s (BuiltinCall "is/2" _) =
+step !ctx s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
       result = evalArith (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
@@ -659,7 +675,7 @@ step s (BuiltinCall "is/2" _) =
     (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
-step s (BuiltinCall "length/2" _) =
+step !ctx s (BuiltinCall "length/2" _) =
   let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 1 (wsRegs s))
   in case listVal of
     VList items ->
@@ -678,14 +694,14 @@ step s (BuiltinCall "length/2" _) =
         _ -> Nothing
     _ -> Nothing
 
-step s (BuiltinCall "</2" _) =
+step !ctx s (BuiltinCall "</2" _) =
   let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
       v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
-step s (BuiltinCall "\\\\+/1" _) =
+step !ctx s (BuiltinCall "\\\\+/1" _) =
   let goal = IM.lookup 1 (wsRegs s) >>= derefHeap (wsHeap s)
   in case goal of
     Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
@@ -698,18 +714,18 @@ step s (BuiltinCall "\\\\+/1" _) =
     _ -> Nothing
 
 -- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
-step s (SwitchOnConstant table) =
+step !ctx s (SwitchOnConstant table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })  -- unbound: skip
     Just v -> case Map.lookup v table of
-      Just label -> case Map.lookup label (wsLabels s) of
+      Just label -> case Map.lookup label (wcLabels ctx) of
         Just pc -> Just (s { wsPC = pc })
         Nothing -> Nothing
       Nothing -> Nothing  -- no match: fail
     Nothing -> Nothing
 
-step s (BuiltinCall ">/2" _) =
+step !ctx s (BuiltinCall ">/2" _) =
   let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
       v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
@@ -717,7 +733,7 @@ step s (BuiltinCall ">/2" _) =
     _ -> Nothing
 
 -- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
-step s (BuiltinCall "member/2" _) =
+step !ctx s (BuiltinCall "member/2" _) =
   let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
       list_ = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 2 (wsRegs s))
   in case list_ of
@@ -725,7 +741,7 @@ step s (BuiltinCall "member/2" _) =
     _ -> Nothing
 
 -- begin_aggregate: push aggregate frame CP, initialize accumulator, continue to goal body
-step s (BeginAggregate typ valReg resReg) =
+step !ctx s (BeginAggregate typ valReg resReg) =
   let cp = ChoicePoint
         { cpNextPC   = wsPC s
         , cpRegs     = wsRegs s
@@ -744,7 +760,7 @@ step s (BeginAggregate typ valReg resReg) =
              })
 
 -- end_aggregate: collect value, store returnPC in nearest aggregate frame, force backtrack
-step s (EndAggregate valReg) =
+step !ctx s (EndAggregate valReg) =
   let val = derefVar (wsBindings s) $ fromMaybe (Integer 0) (getReg valReg s)
       returnPC = wsPC s + 1
       -- Update only the nearest (first) aggregate frame CP, not all CPs
@@ -755,22 +771,23 @@ step s (EndAggregate valReg) =
     Nothing -> finalizeAggregate returnPC s1
 
 -- Fallback for unhandled instructions
-step _ _ = Nothing'.
+step _ _ _ = Nothing'.
 
 run_loop_haskell(Code) :-
     Code = '-- | Main execution loop. Runs until halt (pc=0) or failure.
 -- Uses unsafeFetchInstr to avoid Maybe wrapping in the hot path.
 -- Bounds are guaranteed by the WAM compiler: PC=0 is halt, otherwise PC
 -- always points to a valid instruction within the code array.
-run :: WamState -> Maybe WamState
-run s
+-- The WamContext is read-only and threaded through (no per-step alloc).
+run :: WamContext -> WamState -> Maybe WamState
+run !ctx !s
   | wsPC s == 0 = Just s  -- halt
   | otherwise =
-      let instr = unsafeFetchInstr (wsPC s) (wsCode s)
-      in case step s instr of
-           Just s'' -> run s''
+      let instr = unsafeFetchInstr (wsPC s) (wcCode ctx)
+      in case step ctx s instr of
+           Just s'' -> run ctx s''
            Nothing -> case backtrack s of
-             Just s'' -> run s''
+             Just s'' -> run ctx s''
              Nothing -> Nothing'.
 
 % ============================================================================
@@ -994,6 +1011,20 @@ main = do
         n = 5.0 :: Double
         negN = -n
 
+    -- Build a child -> [parents] index for the FFI fast path on
+    -- category_ancestor/4. Without this, executeForeign sees an empty
+    -- parents map and falls through to the WAM-compiled predicate.
+    let parentsIndex = Map.fromListWith (++)
+            [(child, [parent]) | (child, parent) <- categoryParents]
+
+    -- Build the read-only WamContext ONCE before the seed loop. The hot
+    -- WamState gets a fresh copy per seed; the cold context is shared.
+    -- Populate wcForeignFacts/wcForeignConfig so executeForeign can fire.
+    let !ctx = (mkContext mergedCode mergedLabels)
+            { wcForeignFacts  = Map.singleton "category_parent" parentsIndex
+            , wcForeignConfig = Map.singleton "max_depth" 10
+            }
+
     t2 <- getCurrentTime
 
     -- For each seed, run category_ancestor(Cat, Root, Hops, [Cat])
@@ -1002,7 +1033,7 @@ main = do
     -- defer the work until output and the timing will be artificially low.
     seedResultsForced <- mapM (\\cat -> do
         let hopsVarId = 1000000  -- reserved query var ID, won''t collide with wsVarCounter
-            s0 = (emptyState mergedCode mergedLabels)
+            s0 = emptyState
                 { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
                 , wsRegs = IM.fromList
                     [ (1, Atom cat)
@@ -1012,7 +1043,7 @@ main = do
                     ]
                 , wsCP = 0
                 }
-            !solutions = collectSolutions s0
+            !solutions = collectSolutions ctx s0 hopsVarId
             !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
         return (cat, weightSum)
         ) seedCats
@@ -1058,19 +1089,23 @@ main = do
 showFFloat6 :: Double -> String
 showFFloat6 x = Numeric.showFFloat (Just 6) x ""
 
--- | Collect all Hops solutions by reading A3 (hops register) after each run.
--- A3 holds the hops result from category_ancestor/4.
-collectSolutions :: WamState -> [Double]
-collectSolutions s0 =
-    case run s0 of
+-- | Collect all Hops solutions by looking up the query variable in wsBindings.
+-- The seed loop creates an Unbound variable with hopsVarId and stores it in
+-- A3. The WAM binds that variable as it runs (via clause 1''s GetConstant or
+-- clause 2''s is/2). We must NOT read wsRegs[3] directly because the recursive
+-- call''s GetConstant 1 3 will clobber A3 with Integer 1, while the OUTER''s
+-- output variable is bound to the correct higher value via is/2 to wsBindings.
+collectSolutions :: WamContext -> WamState -> Int -> [Double]
+collectSolutions !ctx s0 hopsVarId =
+    case run ctx s0 of
       Nothing -> []
       Just s1 ->
-        let hopsVal = case IM.lookup 3 (wsRegs s1) of
+        let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
               Just v -> extractDouble (derefVar (wsBindings s1) v)
               Nothing -> Nothing
             hops = fromMaybe 0 hopsVal
             rest = case backtrack s1 of
-              Just s2 -> collectSolutions s2
+              Just s2 -> collectSolutions ctx s2 hopsVarId
               Nothing -> []
         in case hopsVal of
           Just _ -> hops : rest
@@ -1113,7 +1148,8 @@ compile_wam_runtime_to_haskell(_Options, Code) :-
     backtrack_haskell(BacktrackCode),
     run_loop_haskell(RunCode),
     format(string(Code),
-'module WamRuntime where
+'{-# LANGUAGE BangPatterns #-}
+module WamRuntime where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
@@ -1235,9 +1271,9 @@ addToBuilder val s = case wsBuilder s of
     -- No builder active, just push to heap (fallback)
     Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val], wsHeapLen = wsHeapLen s + 1 })
 
--- | Lookup a label in the label map.
-lookupLabel :: String -> WamState -> Int
-lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
+-- | Lookup a label in the label map (now in WamContext).
+lookupLabel :: String -> WamContext -> Int
+lookupLabel label ctx = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
 
 -- | Fetch instruction at PC (1-indexed). Bounds-checked, returns Maybe.
 fetchInstr :: Int -> Array Int Instruction -> Maybe Instruction
@@ -1325,6 +1361,19 @@ data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID
              | NoBuilder
              deriving (Show)
 
+-- | Read-only context. Threaded through the run loop / step function as
+-- a separate argument so it doesn''t pay the per-step record-update cost
+-- on the mutable WamState. Built once at startup, never modified.
+data WamContext = WamContext
+  { wcCode          :: !(Array Int Instruction)
+  , wcLabels        :: !(Map.Map String Int)
+  , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
+  , wcForeignConfig :: !(Map.Map String Int)
+  } deriving (Show)
+
+-- | Mutable state. Updated on every WAM step. Held separate from WamContext
+-- so each step transition only allocates a record with the fields that
+-- actually change.
 data WamState = WamState
   { wsPC       :: !Int
   , wsRegs     :: !(IM.IntMap Value)
@@ -1338,13 +1387,9 @@ data WamState = WamState
   , wsCPsLen   :: !Int                          -- cached length(wsCPs) for cut barrier
   , wsBindings :: !(IM.IntMap Value)
   , wsCutBar   :: !Int
-  , wsCode     :: !(Array Int Instruction)
-  , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
   , wsAggAccum :: ![Value]
-  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))
-  , wsForeignConfig :: !(Map.Map String Int)
   } deriving (Show)
 
 -- | Instruction type for the WAM.
@@ -1381,9 +1426,24 @@ data Instruction
   | EndAggregate !RegId                   -- valueReg
   deriving (Show, Eq)
 
--- | Create initial empty state.
-emptyState :: [Instruction] -> Map.Map String Int -> WamState
-emptyState codeList labels = let n = length codeList; code = listArray (1, n) codeList in WamState
+-- | Build the read-only context from compiled code and labels. Called
+-- once at project startup. The context is then threaded into runLoop
+-- and step as a separate argument.
+mkContext :: [Instruction] -> Map.Map String Int -> WamContext
+mkContext codeList labels =
+  let n = length codeList
+      code = listArray (1, n) codeList
+  in WamContext
+    { wcCode          = code
+    , wcLabels        = labels
+    , wcForeignFacts  = Map.empty
+    , wcForeignConfig = Map.empty
+    }
+
+-- | Create initial empty mutable state. The cold fields (code, labels,
+-- foreign facts/config) live in WamContext now.
+emptyState :: WamState
+emptyState = WamState
   { wsPC       = 1
   , wsRegs     = IM.empty
   , wsStack    = []
@@ -1396,13 +1456,9 @@ emptyState codeList labels = let n = length codeList; code = listArray (1, n) co
   , wsCPsLen   = 0
   , wsBindings = IM.empty
   , wsCutBar   = 0
-  , wsCode     = code
-  , wsLabels   = labels
   , wsBuilder  = NoBuilder
   , wsVarCounter = 0
   , wsAggAccum = []
-  , wsForeignFacts = Map.empty
-  , wsForeignConfig = Map.empty
   }
 '.
 
