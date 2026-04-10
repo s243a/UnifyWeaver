@@ -326,6 +326,9 @@ entry:
     i32 22, label %try_me_else
     i32 23, label %retry_me_else
     i32 24, label %trust_me
+    i32 25, label %switch_on_constant
+    i32 26, label %switch_on_structure
+    i32 27, label %switch_on_constant_a2
   ]
 
 ~w
@@ -857,6 +860,29 @@ wam_llvm_case('trust_me',
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
+wam_llvm_case('switch_on_constant',
+'  ; op1 = ptrtoint of %SwitchEntry* table
+  ; op2 = entry count
+  %soc.table = inttoptr i64 %op1 to %SwitchEntry*
+  %soc.count = trunc i64 %op2 to i32
+  %soc.result = call i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %soc.table, i32 %soc.count)
+  ; 0 = no match (backtrack), 1 = matched (PC updated), 2 = unbound (PC advanced)
+  %soc.ok = icmp ne i32 %soc.result, 0
+  ret i1 %soc.ok').
+
+% switch_on_structure: nop fallthrough — safe because the try_me_else/retry_me_else
+% chain still produces correct results. Proper implementation is a follow-up milestone.
+wam_llvm_case('switch_on_structure',
+'  ; Nop fallthrough: just advance PC and continue to the try_me_else chain.
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
+% switch_on_constant_a2: nop fallthrough for now.
+wam_llvm_case('switch_on_constant_a2',
+'  ; Nop fallthrough: just advance PC and continue.
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
 % ============================================================================
@@ -1281,25 +1307,32 @@ wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
 
 %% wam_instruction_to_llvm_literal(+WamInstr, +LabelMap, -LLVMLiteral)
 %  Label-aware variant. LabelMap is a list of LabelName-Index pairs.
+%  NOTE: trailing `; comment` was removed because LLVM treats `;` as a
+%  line comment to end-of-line, which eats the comma separator in array
+%  constants and produces a parser error.
 wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
     lookup_label_index(P, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w } ; call ~w', [LabelIdx, N, P]).
+    format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
 wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
     lookup_label_index(P, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 19, i64 ~w, i64 0 } ; execute ~w', [LabelIdx, P]).
+    format(atom(Lit), '{ i32 19, i64 ~w, i64 0 }', [LabelIdx]).
 wam_instruction_to_llvm_literal(try_me_else(Label), LabelMap, Lit) :- !,
     lookup_label_index(Label, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 22, i64 ~w, i64 0 } ; try_me_else ~w', [LabelIdx, Label]).
+    format(atom(Lit), '{ i32 22, i64 ~w, i64 0 }', [LabelIdx]).
 wam_instruction_to_llvm_literal(retry_me_else(Label), LabelMap, Lit) :- !,
     lookup_label_index(Label, LabelMap, LabelIdx),
-    format(atom(Lit), '{ i32 23, i64 ~w, i64 0 } ; retry_me_else ~w', [LabelIdx, Label]).
+    format(atom(Lit), '{ i32 23, i64 ~w, i64 0 }', [LabelIdx]).
 % Non-label instructions delegate to the /2 form
 wam_instruction_to_llvm_literal(Instr, _LabelMap, Lit) :-
     wam_instruction_to_llvm_literal(Instr, Lit).
 
-wam_instruction_to_llvm_literal(switch_on_constant(_), '; switch_on_constant handled via labels').
-wam_instruction_to_llvm_literal(switch_on_structure(_), '; switch_on_structure handled via labels').
-wam_instruction_to_llvm_literal(switch_on_constant_a2(_), '; switch_on_constant_a2 handled via labels').
+% Switch instructions are deferred: they reference side-table globals that
+% the predicate compiler emits in a second pass. See compile_wam_predicate_to_llvm.
+wam_instruction_to_llvm_literal(switch_on_constant(Entries), switch_deferred(constant, Entries)).
+wam_instruction_to_llvm_literal(switch_on_structure(_Entries),
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_instruction_to_llvm_literal(switch_on_constant_a2(_Entries),
+    '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
 
 % Label pseudo-instruction
 wam_instruction_to_llvm_literal(label(L), Lit) :-
@@ -1376,10 +1409,13 @@ compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_llvm(Lines, 0, LLVMLiterals, LabelEntries),
-    length(LLVMLiterals, InstrCount),
+    % Second pass: resolve switch_deferred terms to real instruction literals
+    % while emitting per-switch %SwitchEntry table globals.
+    resolve_switch_tables(LLVMLiterals, PredStr, 0, ResolvedLiterals, SwitchTableDefs),
+    length(ResolvedLiterals, InstrCount),
     length(LabelEntries, LabelCount),
     % Build instruction array entries
-    maplist([Lit, Entry]>>(format(atom(Entry), '  ~w', [Lit])), LLVMLiterals, Entries),
+    maplist([Lit, Entry]>>(format(atom(Entry), '  ~w', [Lit])), ResolvedLiterals, Entries),
     atomic_list_concat(Entries, ',\n', EntriesStr),
     % Build label array entries
     maplist([_-Idx, Entry]>>(format(atom(Entry), '  i32 ~w', [Idx])), LabelEntries, LabelRows),
@@ -1390,9 +1426,15 @@ compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
     % Build arg setup
     build_llvm_arg_setup(Arity, ArgSetup),
     build_llvm_param_list(Arity, ParamList),
+    % Join switch table definitions (may be empty)
+    ( SwitchTableDefs == []
+    -> SwitchTablesStr = ""
+    ;  atomic_list_concat(SwitchTableDefs, '\n', SwitchTablesStr0),
+       format(atom(SwitchTablesStr), '~w\n', [SwitchTablesStr0])
+    ),
     format(atom(LLVMCode),
 '; WAM-compiled predicate: ~w/~w
-@~w_code = private constant [~w x %Instruction] [
+~w@~w_code = private constant [~w x %Instruction] [
 ~w
 ]
 
@@ -1412,12 +1454,42 @@ entry:
   ret i1 %result
 }
 ', [PredStr, Arity,
+    SwitchTablesStr,
     PredStr, InstrCount, EntriesStr,
     PredStr, LabelCount, LabelsStr,
     PredStr, ParamList,
     InstrCount, InstrCount, PredStr, InstrCount,
     LabelCount, LabelCount, PredStr, LabelCount,
     ArgSetup]).
+
+%% resolve_switch_tables(+LiteralsIn, +PredStr, +NextIdx, -LiteralsOut, -TableDefs)
+%  Walks the literal list, replacing switch_deferred/2 terms with real
+%  %Instruction literals referencing freshly-allocated switch table globals.
+resolve_switch_tables([], _, _, [], []).
+resolve_switch_tables([switch_deferred(constant, Entries) | Rest], PredStr, Idx,
+        [InstrLit | RestOut], [TableDef | RestDefs]) :- !,
+    length(Entries, Count),
+    format(atom(TableName), '~w_switch_~w', [PredStr, Idx]),
+    render_switch_entries(Entries, EntryLines),
+    atomic_list_concat(EntryLines, ',\n', EntriesStr),
+    format(atom(TableDef),
+'@~w = private constant [~w x %SwitchEntry] [
+~w
+]',         [TableName, Count, EntriesStr]),
+    format(atom(InstrLit),
+'%Instruction { i32 25, i64 ptrtoint ([~w x %SwitchEntry]* @~w to i64), i64 ~w }',
+        [Count, TableName, Count]),
+    Idx1 is Idx + 1,
+    resolve_switch_tables(Rest, PredStr, Idx1, RestOut, RestDefs).
+resolve_switch_tables([Lit | Rest], PredStr, Idx, [Lit | RestOut], RestDefs) :-
+    resolve_switch_tables(Rest, PredStr, Idx, RestOut, RestDefs).
+
+render_switch_entries([], []).
+render_switch_entries([entry(Tag, Pay, LabelIdx) | Rest], [Line | RestLines]) :-
+    format(atom(Line),
+        '  %SwitchEntry { i32 ~w, i64 ~w, i32 ~w }',
+        [Tag, Pay, LabelIdx]),
+    render_switch_entries(Rest, RestLines).
 
 %% wam_lines_to_llvm(+Lines, +PC, -LLVMLits, -LabelEntries)
 %  Two-pass approach: first collect all labels and raw instruction parts,
@@ -1488,30 +1560,72 @@ lookup_label_index(LabelName, LabelMap, Options, Index) :-
     ).
 
 % Instructions that need label resolution:
+% NOTE: trailing `; comment` removed — LLVM line comments eat the comma
+% separator in array constants. The label name is preserved for humans by
+% having `llvm-dis` show labels resolved from the label array, not inline.
 wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    atom_string(CP, CPAtom),
-    lookup_label_index(CPAtom, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w } ; call ~w', [LabelIdx, Arity, CP]).
+    lookup_label_index(CP, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
     clean_comma(P, CP),
-    atom_string(CP, CPAtom),
-    lookup_label_index(CPAtom, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 0 } ; execute ~w', [LabelIdx, CP]).
+    lookup_label_index(CP, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 19, i64 ~w, i64 0 }', [LabelIdx]).
 wam_line_to_llvm_literal_resolved(["try_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
-    atom_string(CL, CLAtom),
-    lookup_label_index(CLAtom, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 22, i64 ~w, i64 0 } ; try_me_else ~w', [LabelIdx, CL]).
+    lookup_label_index(CL, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 22, i64 ~w, i64 0 }', [LabelIdx]).
 wam_line_to_llvm_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
-    atom_string(CL, CLAtom),
-    lookup_label_index(CLAtom, LabelMap, LabelIdx),
-    format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 } ; retry_me_else ~w', [LabelIdx, CL]).
+    lookup_label_index(CL, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 }', [LabelIdx]).
+% switch_on_constant: defer until compile_wam_predicate_to_llvm can
+% allocate a switch table global. Returns a switch_deferred(_) term.
+wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
+        switch_deferred(constant, Entries)) :- !,
+    parse_switch_entries(EntryParts, LabelMap, Entries).
+wam_line_to_llvm_literal_resolved(["switch_on_structure" | _], _, Lit) :- !,
+    % nop fallthrough — the try_me_else chain still runs.
+    Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | _], _, Lit) :- !,
+    Lit = '%Instruction { i32 27, i64 0, i64 0 }'.
 % All other instructions: delegate to existing parser (no labels needed)
 wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_llvm_literal(Parts, Lit).
+
+%% parse_switch_entries(+Parts, +LabelMap, -Entries)
+%  Each part is "key:label" possibly with trailing comma. Produces a list
+%  of entry(KeyTag, KeyPayload, LabelIdx) terms. LabelMap has string keys
+%  (from wam_lines_pass1 using sub_string), so we pass label strings
+%  directly without converting to atoms.
+parse_switch_entries([], _, []).
+parse_switch_entries([Part | Rest], LabelMap, [Entry | RestEntries]) :-
+    clean_comma(Part, Clean),
+    ( sub_string(Clean, Before, 1, After, ":")
+    -> sub_string(Clean, 0, Before, _, KeyStr),
+       sub_string(Clean, _, After, 0, LabelStr)
+    ;  KeyStr = Clean, LabelStr = ""
+    ),
+    % Pack the key: integer keys use tag=1, atom keys use tag=0 with interned id.
+    ( number_string(N, KeyStr)
+    -> KeyTag = 1, KeyPayload = N
+    ;  KeyTag = 0,
+       atom_string(KeyAtom, KeyStr),
+       intern_atom(KeyAtom, KeyPayload)
+    ),
+    % "default" is a pseudo-label meaning "fall through to next instruction".
+    % Encode as sentinel -1 which the runtime helper maps to "advance PC".
+    ( LabelStr == "default"
+    -> LabelIdx = -1
+    ;  % Pass the string directly — LabelMap has string keys.
+       ( lookup_label_index(LabelStr, LabelMap, LabelIdx)
+       -> true
+       ;  LabelIdx = 0
+       )
+    ),
+    Entry = entry(KeyTag, KeyPayload, LabelIdx),
+    parse_switch_entries(Rest, LabelMap, RestEntries).
 
 %% wam_line_to_llvm_literal(+Parts, -LLVMLit)
 %  Converts parsed WAM instruction text to LLVM %Instruction struct literal.
@@ -1617,8 +1731,15 @@ wam_line_to_llvm_literal(["builtin_call", Op, N], Lit) :-
     format(atom(Lit), '%Instruction { i32 21, i64 ~w, i64 ~w }', [OpId, Num]).
 wam_line_to_llvm_literal(["trust_me"], '%Instruction { i32 24, i64 0, i64 0 }').
 
-wam_line_to_llvm_literal(["switch_on_constant"|_], '; switch_on_constant — handled via labels').
-wam_line_to_llvm_literal(["switch_on_structure"|_], '; switch_on_structure — handled via labels').
+% Switch instructions: handled in the label-resolved variant (need LabelMap).
+% The /2 form only sees them without labels, so produce nop fallthrough.
+% The real path goes through wam_line_to_llvm_literal_resolved/3 below.
+wam_line_to_llvm_literal(["switch_on_constant"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough (no LabelMap here)
+wam_line_to_llvm_literal(["switch_on_structure"|_],
+    '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
+wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
+    '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),
@@ -1639,11 +1760,14 @@ llvm_pack_value_str(Str, Packed) :-
         llvm_pack_value(atom(A), Packed)
     ).
 
-build_llvm_param_list(0, "%WamState* %vm") :- !.
+% NOTE: we don't take a %WamState param — the function creates its own vm
+% via wam_state_new() in the entry block. Taking %vm as a param conflicted
+% with the local %vm created inside the body.
+build_llvm_param_list(0, "") :- !.
 build_llvm_param_list(Arity, ParamList) :-
     numlist(1, Arity, Indices),
     maplist([I, S]>>(format(atom(S), "%Value %a~w", [I])), Indices, Parts),
-    atomic_list_concat(['%WamState* %vm'|Parts], ', ', ParamList).
+    atomic_list_concat(Parts, ', ', ParamList).
 
 build_llvm_arg_setup(0, "") :- !.
 build_llvm_arg_setup(Arity, Setup) :-

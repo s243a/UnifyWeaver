@@ -14,6 +14,12 @@
 ; Tag: 0-7 head unification, 8-15 body construction, 16-21 control, 22-24 choice, 25-27 indexing
 %Instruction = type { i32, i64, i64 }     ; tag, operand1, operand2
 
+; === Switch Table Entry (for switch_on_constant) ===
+; Used by indexing instructions (tag 25). Tables are emitted as private
+; global arrays of %SwitchEntry; the instruction's operand1 holds a
+; ptrtoint of the table pointer and operand2 holds the entry count.
+%SwitchEntry = type { i32, i64, i32 }     ; key_tag, key_payload, label_idx
+
 ; === Stack Entries ===
 ; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
 %StackEntry = type { i32, i64, %Value* }  ; type, aux (cp or n), data

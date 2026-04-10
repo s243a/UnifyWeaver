@@ -1,8 +1,6 @@
 ; === WAM State Management ===
+; Note: malloc/free/memcpy intrinsic are declared in module.ll.mustache.
 
-declare i8* @malloc(i64)
-declare void @free(i8*)
-declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 
 ; Create a new WamState with given code and labels
 define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %labels, i32 %label_count) {
@@ -220,6 +218,79 @@ lookup:
 
 not_found:
   ret i32 -1
+}
+
+; === Switch-on-constant dispatch ===
+; Linear-scans a %SwitchEntry table for a match against A1 (deref'd).
+; Returns:
+;   1 on match — PC already updated to the target label's PC
+;   2 on unbound — PC advanced by 1 (switch skipped, fall through)
+;   0 on no match — caller should return false (backtrack)
+define i32 @wam_switch_on_constant(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
+entry:
+  ; Fetch A1 (register index 0)
+  %a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  ; NOTE: minimal deref — register array holds the value directly; a proper
+  ; deref chain walk would follow Ref tag=5 chains. The current WAM target
+  ; stores resolved values in registers, so this matches the Rust reference
+  ; (which calls self.deref_var for the same purpose).
+  %is_unbound = call i1 @value_is_unbound(%Value %a1)
+  br i1 %is_unbound, label %skip_switch, label %scan_init
+
+scan_init:
+  %a1_tag = extractvalue %Value %a1, 0
+  %a1_payload = extractvalue %Value %a1, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %scan_init ], [ %i_next, %continue ]
+  %done = icmp uge i32 %i, %count
+  br i1 %done, label %not_match, label %check
+
+check:
+  %entry_ptr = getelementptr %SwitchEntry, %SwitchEntry* %table, i32 %i
+  %key_tag_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 0
+  %key_tag = load i32, i32* %key_tag_ptr
+  %key_pay_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 1
+  %key_pay = load i64, i64* %key_pay_ptr
+  %tag_eq = icmp eq i32 %key_tag, %a1_tag
+  %pay_eq = icmp eq i64 %key_pay, %a1_payload
+  %match = and i1 %tag_eq, %pay_eq
+  br i1 %match, label %found, label %continue
+
+continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+found:
+  ; Look up target PC via label index.
+  ; Sentinel label_idx = -1 means "fall through" (first clause, the
+  ; "default" label in the WAM source).
+  %label_idx_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 2
+  %label_idx = load i32, i32* %label_idx_ptr
+  %is_default = icmp eq i32 %label_idx, -1
+  br i1 %is_default, label %fall_through, label %resolve_label
+
+fall_through:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 1
+
+resolve_label:
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  %valid = icmp sge i32 %target_pc, 0
+  br i1 %valid, label %do_jump, label %not_match
+
+do_jump:
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i32 1
+
+skip_switch:
+  ; Unbound A1: advance PC, continue with next instruction.
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 2
+
+not_match:
+  ret i32 0
 }
 
 ; === Stack Context Helpers (for compound term read/write mode) ===
