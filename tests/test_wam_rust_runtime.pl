@@ -156,6 +156,12 @@ target_label(c, branch_c).
 target_label(d, goal_d1).
 target_label(d, goal_d2).
 
+:- dynamic label_bucket/2.
+label_bucket(branch_b, branch_bucket).
+label_bucket(branch_c, branch_bucket).
+label_bucket(goal_d1, goal_bucket).
+label_bucket(goal_d2, goal_bucket).
+
 :- dynamic labeled_adjusted_weighted_path/3.
 labeled_adjusted_weighted_path(Start, Label, Adjusted) :-
     weighted_path(Start, Target, Cost),
@@ -170,6 +176,22 @@ labeled_adjusted_astar_weighted_path(Start, Label, Dim, Adjusted) :-
     Cost > 2,
     Adjusted is Cost + 1.
 
+:- dynamic bucketed_adjusted_weighted_path/3.
+bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    target_label(Target, Label),
+    label_bucket(Label, Bucket),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+:- dynamic bucketed_adjusted_astar_weighted_path/4.
+bucketed_adjusted_astar_weighted_path(Start, Bucket, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    target_label(Target, Label),
+    label_bucket(Label, Bucket),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -180,7 +202,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4, user:labeled_adjusted_weighted_path/3, user:labeled_adjusted_astar_weighted_path/4],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4, user:labeled_adjusted_weighted_path/3, user:labeled_adjusted_astar_weighted_path/4, user:bucketed_adjusted_weighted_path/3, user:bucketed_adjusted_astar_weighted_path/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -209,6 +231,8 @@ use runtime_test::filtered_adjusted_weighted_path;
 use runtime_test::filtered_adjusted_astar_weighted_path;
 use runtime_test::labeled_adjusted_weighted_path;
 use runtime_test::labeled_adjusted_astar_weighted_path;
+use runtime_test::bucketed_adjusted_weighted_path;
+use runtime_test::bucketed_adjusted_astar_weighted_path;
 
 #[test]
 fn test_generated_predicates() {
@@ -1124,6 +1148,97 @@ fn test_generated_predicates() {
         Value::Integer(5),
         Value::Unbound("AStarMissing".to_string()));
     assert!(!ok54, "labeled_adjusted_astar_weighted_path(s, missing, 5, Adjusted) should fail");
+
+    // Test bucketed_adjusted_weighted_path/3 multi-stage relational wrapper
+    let mut vm_bucketed_weighted = WamState::new(vec![], std::collections::HashMap::new());
+    let ok55 = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted,
+        Value::Atom("s".to_string()),
+        Value::Unbound("WeightedBucket".to_string()),
+        Value::Unbound("WeightedBucketAdjusted".to_string()));
+    assert!(ok55, "bucketed_adjusted_weighted_path(s, Bucket, Adjusted) first solution should succeed");
+    let mut bucketed_weighted_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_weighted.bindings.get("WeightedBucket").cloned(), vm_bucketed_weighted.bindings.get("WeightedBucketAdjusted").cloned()) {
+        bucketed_weighted_results.push((bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_weighted_path result");
+    }
+    while vm_bucketed_weighted.backtrack() {
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_weighted.bindings.get("WeightedBucket").cloned(), vm_bucketed_weighted.bindings.get("WeightedBucketAdjusted").cloned()) {
+            bucketed_weighted_results.push((bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_weighted_path backtrack result");
+        }
+    }
+    bucketed_weighted_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(bucketed_weighted_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("branch_bucket".to_string(), 5.0),
+        ("goal_bucket".to_string(), 8.0),
+        ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok56 = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Float(8.0));
+    assert!(ok56, "bucketed_adjusted_weighted_path(s, goal_bucket, 8.0) should succeed");
+
+    let mut vm_bucketed_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok57 = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing_bucket".to_string()),
+        Value::Unbound("WeightedBucketMissing".to_string()));
+    assert!(!ok57, "bucketed_adjusted_weighted_path(s, missing_bucket, Adjusted) should fail");
+
+    // Test bucketed_adjusted_astar_weighted_path/4 multi-stage relational wrapper
+    let mut vm_bucketed_astar = WamState::new(vec![], std::collections::HashMap::new());
+    let ok58 = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar,
+        Value::Atom("s".to_string()),
+        Value::Unbound("AStarBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarBucketAdjusted".to_string()));
+    assert!(ok58, "bucketed_adjusted_astar_weighted_path(s, Bucket, 5, Adjusted) first solution should succeed");
+    let mut bucketed_astar_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_astar.bindings.get("AStarBucket").cloned(), vm_bucketed_astar.bindings.get("AStarBucketAdjusted").cloned()) {
+            bucketed_astar_results.push((bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_astar_weighted_path result");
+    }
+    while vm_bucketed_astar.backtrack() {
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_astar.bindings.get("AStarBucket").cloned(), vm_bucketed_astar.bindings.get("AStarBucketAdjusted").cloned()) {
+            bucketed_astar_results.push((bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_astar_weighted_path backtrack result");
+        }
+    }
+    bucketed_astar_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(bucketed_astar_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("branch_bucket".to_string(), 5.0),
+        ("goal_bucket".to_string(), 8.0),
+        ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok59 = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Integer(5),
+        Value::Float(8.0));
+    assert!(ok59, "bucketed_adjusted_astar_weighted_path(s, goal_bucket, 5, 8.0) should succeed");
+
+    let mut vm_bucketed_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok60 = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing_bucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarBucketMissing".to_string()));
+    assert!(!ok60, "bucketed_adjusted_astar_weighted_path(s, missing_bucket, 5, Adjusted) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),

@@ -49,8 +49,11 @@ test_simple_fact(foo, bar).
 :- dynamic filtered_adjusted_weighted_path/3.
 :- dynamic filtered_adjusted_astar_weighted_path/4.
 :- dynamic target_label/2.
+:- dynamic label_bucket/2.
 :- dynamic labeled_adjusted_weighted_path/3.
 :- dynamic labeled_adjusted_astar_weighted_path/4.
+:- dynamic bucketed_adjusted_weighted_path/3.
+:- dynamic bucketed_adjusted_astar_weighted_path/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -133,6 +136,10 @@ target_label(b, branch_b).
 target_label(c, branch_c).
 target_label(d, goal_d1).
 target_label(d, goal_d2).
+label_bucket(branch_b, branch_bucket).
+label_bucket(branch_c, branch_bucket).
+label_bucket(goal_d1, goal_bucket).
+label_bucket(goal_d2, goal_bucket).
 
 weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
 weighted_path(X, Y, Cost) :-
@@ -188,6 +195,20 @@ labeled_adjusted_weighted_path(Start, Label, Adjusted) :-
 labeled_adjusted_astar_weighted_path(Start, Label, Dim, Adjusted) :-
     astar_weighted_path(Start, Target, Dim, Cost),
     target_label(Target, Label),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    target_label(Target, Label),
+    label_bucket(Label, Bucket),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+bucketed_adjusted_astar_weighted_path(Start, Bucket, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    target_label(Target, Label),
+    label_bucket(Label, Bucket),
     Cost > 2,
     Adjusted is Cost + 1.
 
@@ -911,6 +932,38 @@ test_labeled_astar_stream_wrapper :-
     ;   fail_test(Test, 'Relational A* stream wrapper did not lower correctly')
     ).
 
+test_bucketed_weighted_stream_wrapper :-
+    Test = 'WAM-Rust: multi-stage relational wrapper expands weighted_path/3 results',
+    (   rust_target:compile_predicate_to_rust(user:bucketed_adjusted_weighted_path/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn bucketed_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Multi-stage weighted wrapper did not lower correctly')
+    ).
+
+test_bucketed_astar_stream_wrapper :-
+    Test = 'WAM-Rust: multi-stage relational wrapper expands astar_weighted_path/4 results',
+    (   rust_target:compile_predicate_to_rust(user:bucketed_adjusted_astar_weighted_path/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn bucketed_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Multi-stage A* wrapper did not lower correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1235,6 +1288,8 @@ run_tests :-
     test_filtered_adjusted_astar_stream_wrapper,
     test_labeled_weighted_stream_wrapper,
     test_labeled_astar_stream_wrapper,
+    test_bucketed_weighted_stream_wrapper,
+    test_bucketed_astar_stream_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,
