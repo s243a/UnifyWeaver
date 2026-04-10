@@ -4274,22 +4274,23 @@ rust_foreign_join_registration_code([join_spec(JoinPredKey, JoinPairsLiteral)|Re
 rust_indent_more(Indent, MoreIndent) :-
     format(string(MoreIndent), '~w    ', [Indent]).
 
-rust_foreign_join_chain_code(JoinSpecs, InputLookupExpr, InputVar, Indent,
-        SetupCode, ValueExpr, FilterCond, Code) :-
-    rust_foreign_join_chain_code_(JoinSpecs, InputLookupExpr, InputVar, Indent, 1,
-        SetupCode, ValueExpr, FilterCond, Code).
+rust_foreign_stage_output_var([], "target").
+rust_foreign_stage_output_var(JoinSpecs, OutputVar) :-
+    length(JoinSpecs, Depth),
+    Depth > 0,
+    format(string(OutputVar), 'joined_value_~w', [Depth]).
 
-rust_foreign_join_chain_code_([], _InputLookupExpr, InputVar, Indent, _Depth,
-        SetupCode, ValueExpr, FilterCond, Code) :-
-    rust_foreign_stream_join_payload(Indent, InputVar, SetupCode, ValueExpr, FilterCond, Code).
-rust_foreign_join_chain_code_([join_spec(JoinPredKey, _)|Rest], InputLookupExpr, _InputVar, Indent,
-        Depth, SetupCode, ValueExpr, FilterCond, Code) :-
+rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code) :-
+    rust_foreign_stage_chain_code_(JoinSpecs, InputLookupExpr, Indent, 1, TerminalCode, Code).
+
+rust_foreign_stage_chain_code_([], _InputLookupExpr, _Indent, _Depth, TerminalCode, TerminalCode).
+rust_foreign_stage_chain_code_([join_spec(JoinPredKey, _)|Rest], InputLookupExpr, Indent,
+        Depth, TerminalCode, Code) :-
     rust_indent_more(Indent, InnerIndent),
     format(string(JoinedValuesVar), 'joined_values_~w', [Depth]),
     format(string(JoinedValueVar), 'joined_value_~w', [Depth]),
     NextDepth is Depth + 1,
-    rust_foreign_join_chain_code_(Rest, JoinedValueVar, JoinedValueVar, InnerIndent, NextDepth,
-        SetupCode, ValueExpr, FilterCond, InnerCode),
+    rust_foreign_stage_chain_code_(Rest, JoinedValueVar, InnerIndent, NextDepth, TerminalCode, InnerCode),
     format(string(Code),
 '~wlet ~w = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(~w)) {
 ~w    Some(values) => values.clone(),
@@ -4302,10 +4303,15 @@ rust_foreign_join_chain_code_([join_spec(JoinPredKey, _)|Rest], InputLookupExpr,
       Indent, JoinedValueVar, JoinedValuesVar,
       InnerCode, Indent]).
 
-rust_foreign_stream_join_payload(Indent, FinalVar, SetupCode, ValueExpr, FilterCond, Code) :-
+rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr) :-
+    format(string(FilterExpr), '~w.as_ref().map(|want| want.as_str() == ~w.as_str()).unwrap_or(true)',
+        [FilterVar, OutputVar]).
+
+rust_foreign_stream_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
     format(string(Code),
 '~w~wlet output_value = ~w;
-~wif (join_filter.as_ref().map(|want| want.as_str() == ~w.as_str()).unwrap_or(true))
+~wif (~w)
 ~w    && (~w)
 ~w    && (result_filter.as_ref().map(|want| (output_value - *want).abs() < 1e-9).unwrap_or(true)) {
 ~w    packed_results.push(Value::Str("__tuple__".to_string(), vec![
@@ -4314,14 +4320,60 @@ rust_foreign_stream_join_payload(Indent, FinalVar, SetupCode, ValueExpr, FilterC
 ~w    ]));
 ~w}
 ', [SetupCode, Indent, ValueExpr,
-      Indent, FinalVar,
+      Indent, FilterExpr,
       Indent, FilterCond,
       Indent,
       Indent,
-      Indent, FinalVar,
+      Indent, OutputVar,
       Indent,
       Indent,
       Indent]).
+
+rust_foreign_scalar_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
+    format(string(Code),
+'~w~wif !(~w) || !(~w) {
+~w    continue;
+~w}
+~wlet agg_value = ~w;
+~wbest = Some(match best {
+~w    Some(current) => current.min(agg_value),
+~w    None => agg_value,
+~w});
+', [SetupCode,
+      Indent, FilterExpr, FilterCond,
+      Indent,
+      Indent,
+      Indent, ValueExpr,
+      Indent,
+      Indent,
+      Indent,
+      Indent]).
+
+rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
+    format(string(Code),
+'~w~wif (~w)
+~w    && (~w) {
+~w    let agg_value = ~w;
+~w    grouped.entry(~w.clone())
+~w        .and_modify(|current| *current = current.min(agg_value))
+~w        .or_insert(agg_value);
+~w}
+', [SetupCode,
+      Indent, FilterExpr,
+      Indent, FilterCond,
+      Indent, ValueExpr,
+      Indent, OutputVar,
+      Indent,
+      Indent,
+      Indent]).
+
+rust_foreign_join_chain_code(JoinSpecs, InputLookupExpr, _InputVar, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_stage_output_var(JoinSpecs, OutputVar),
+    rust_foreign_stream_terminal_code(Indent, "join_filter", OutputVar, SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code).
 
 compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
     rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
@@ -4906,7 +4958,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
         foreign_aggregate_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            [JoinPred1/2, JoinPred2/2],
+            JoinPreds,
             [GoalStart, GoalJoinOut, GoalCost],
             Expr,
             group,
@@ -4921,8 +4973,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_weighted_kernel(
         weighted_kernel(InnerPred, WeightPred/3, FactTriples),
         InnerPredStr, WeightPredKey, TriplesLiteral),
-    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
-        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
+    JoinPreds \= [],
+    rust_render_join_specs(JoinPreds, JoinSpecs),
+    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+    rust_foreign_grouped_min_terminal_code("            ", "group_filter", JoinOutputVar,
+        SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     use std::collections::BTreeMap;
@@ -4938,8 +4995,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     vm.register_foreign_result_mode("~w/3", "stream");
     vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
     vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
+~w
 
     let group_filter = match &a2 {
         Value::Atom(group) => Some(group.clone()),
@@ -4969,25 +5025,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        let joined_values_1 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(&target)) {
-            Some(values) => values.clone(),
-            None => Vec::new(),
-        };
-        for joined_value_1 in joined_values_1.iter() {
-            let joined_values_2 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(joined_value_1)) {
-                Some(values) => values.clone(),
-                None => Vec::new(),
-            };
-            for joined_value_2 in joined_values_2.iter() {
-~w                if (group_filter.as_ref().map(|want| want == joined_value_2).unwrap_or(true))
-                    && (~w) {
-                    let agg_value = ~w;
-                    grouped.entry(joined_value_2.clone())
-                        .and_modify(|current| *current = current.min(agg_value))
-                        .or_insert(agg_value);
-                }
-            }
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -5008,14 +5046,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     }).collect();
     vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
-      InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
-      JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
-      InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr, PredKey]).
+      InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, JoinRegistrationCode,
+      InnerPredStr, JoinTraversalCode, PredKey]).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
     rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
         foreign_aggregate_plan(
             astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            [JoinPred1/2, JoinPred2/2],
+            JoinPreds,
             [GoalStart, GoalJoinOut, GoalDim, GoalCost],
             Expr,
             group,
@@ -5030,8 +5067,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_astar_kernel(
         astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
         InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
-        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
+    JoinPreds \= [],
+    rust_render_join_specs(JoinPreds, JoinSpecs),
+    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+    rust_foreign_grouped_min_terminal_code("            ", "group_filter", JoinOutputVar,
+        SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5050,8 +5092,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
     vm.register_indexed_weighted_edge_triples("~w", &~w);
     vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
+~w
 
     let group_filter = match &a2 {
         Value::Atom(group) => Some(group.clone()),
@@ -5088,25 +5129,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        let joined_values_1 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(&target)) {
-            Some(values) => values.clone(),
-            None => Vec::new(),
-        };
-        for joined_value_1 in joined_values_1.iter() {
-            let joined_values_2 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(joined_value_1)) {
-                Some(values) => values.clone(),
-                None => Vec::new(),
-            };
-            for joined_value_2 in joined_values_2.iter() {
-~w                if (group_filter.as_ref().map(|want| want == joined_value_2).unwrap_or(true))
-                    && (~w) {
-                    let agg_value = ~w;
-                    grouped.entry(joined_value_2.clone())
-                        .and_modify(|current| *current = current.min(agg_value))
-                        .or_insert(agg_value);
-                }
-            }
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -5129,8 +5152,8 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
-      DefaultDim, InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr, PredKey]).
+      InnerPredStr, DefaultDim, JoinRegistrationCode,
+      DefaultDim, InnerPredStr, JoinTraversalCode, PredKey]).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo, _IncludeMain, RustCode) :-
     rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
         foreign_aggregate_plan(
@@ -5318,7 +5341,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
         foreign_aggregate_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            [JoinPred1/2, JoinPred2/2],
+            JoinPreds,
             [GoalStart, GoalJoinOut, GoalCost],
             Expr,
             all,
@@ -5331,8 +5354,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_weighted_kernel(
         weighted_kernel(InnerPred, WeightPred/3, FactTriples),
         InnerPredStr, WeightPredKey, TriplesLiteral),
-    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
-        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
+    JoinPreds \= [],
+    rust_render_join_specs(JoinPreds, JoinSpecs),
+    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+    rust_foreign_scalar_min_terminal_code("            ", "join_filter", JoinOutputVar,
+        SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -5344,8 +5372,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     vm.register_foreign_result_mode("~w/3", "stream");
     vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
     vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
+~w
 
     let temp_target = "__agg_target".to_string();
     let temp_cost = "__agg_cost".to_string();
@@ -5375,26 +5402,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        let joined_values_1 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(&target)) {
-            Some(values) => values.clone(),
-            None => Vec::new(),
-        };
-        for joined_value_1 in joined_values_1.iter() {
-            let joined_values_2 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(joined_value_1)) {
-                Some(values) => values.clone(),
-                None => Vec::new(),
-            };
-            for joined_value_2 in joined_values_2.iter() {
-~w                if !(join_filter.as_ref().map(|want| want == joined_value_2).unwrap_or(true)) || !(~w) {
-                    continue;
-                }
-                let agg_value = ~w;
-                best = Some(match best {
-                    Some(current) => current.min(agg_value),
-                    None => agg_value,
-                });
-            }
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -5408,13 +5416,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
         None => false,
     }
 }', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
-      WeightPredKey, WeightPredKey, TriplesLiteral, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
-      InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr]).
+      WeightPredKey, WeightPredKey, TriplesLiteral, JoinRegistrationCode,
+      InnerPredStr, JoinTraversalCode]).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
     rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
         foreign_aggregate_plan(
             astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            [JoinPred1/2, JoinPred2/2],
+            JoinPreds,
             [GoalStart, GoalJoinOut, GoalDim, GoalCost],
             Expr,
             all,
@@ -5427,8 +5435,13 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_astar_kernel(
         astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
         InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
-        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
+    JoinPreds \= [],
+    rust_render_join_specs(JoinPreds, JoinSpecs),
+    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+    rust_foreign_scalar_min_terminal_code("            ", "join_filter", JoinOutputVar,
+        SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -5443,8 +5456,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
     vm.register_indexed_weighted_edge_triples("~w", &~w);
     vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
-    vm.register_indexed_atom_fact2_pairs("~w", &~w);
+~w
 
     let temp_target = "__agg_target".to_string();
     let temp_cost = "__agg_cost".to_string();
@@ -5481,26 +5493,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        let joined_values_1 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(&target)) {
-            Some(values) => values.clone(),
-            None => Vec::new(),
-        };
-        for joined_value_1 in joined_values_1.iter() {
-            let joined_values_2 = match vm.indexed_atom_fact2.get("~w").and_then(|table| table.get(joined_value_1)) {
-                Some(values) => values.clone(),
-                None => Vec::new(),
-            };
-            for joined_value_2 in joined_values_2.iter() {
-~w                if !(join_filter.as_ref().map(|want| want == joined_value_2).unwrap_or(true)) || !(~w) {
-                    continue;
-                }
-                let agg_value = ~w;
-                best = Some(match best {
-                    Some(current) => current.min(agg_value),
-                    None => agg_value,
-                });
-            }
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -5516,8 +5509,8 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
 }', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
       WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
-      DefaultDim, InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr]).
+      InnerPredStr, DefaultDim, JoinRegistrationCode,
+      DefaultDim, InnerPredStr, JoinTraversalCode]).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
     rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
         foreign_aggregate_plan(
