@@ -1364,34 +1364,75 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            var expectedWidth = Math.Max(2, source.ExpectedWidth);
             string? line;
             while ((line = reader.ReadLine()) is not null)
             {
-                if (!TrySplitTwoColumnLine(line, source.Delimiter, out var left, out var right))
+                if (!TrySplitDelimitedLine(line, source.Delimiter, expectedWidth, out var fields))
                 {
                     continue;
                 }
 
-                yield return new object[] { left, right };
+                yield return fields;
             }
         }
 
         public static StreamReader OpenSequentialReader(string path) =>
             new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
 
+        public static bool TrySplitDelimitedLine(string line, char delimiter, int expectedWidth, out object[] fields)
+        {
+            if (expectedWidth <= 1)
+            {
+                expectedWidth = 2;
+            }
+
+            var parts = new object[expectedWidth];
+            var span = line.AsSpan();
+            var start = 0;
+
+            for (var i = 0; i < expectedWidth - 1; i++)
+            {
+                var remainder = span.Slice(start);
+                var split = remainder.IndexOf(delimiter);
+                if (split <= 0)
+                {
+                    fields = Array.Empty<object>();
+                    return false;
+                }
+
+                parts[i] = remainder.Slice(0, split).ToString();
+                start += split + 1;
+                if (start >= span.Length)
+                {
+                    fields = Array.Empty<object>();
+                    return false;
+                }
+            }
+
+            var tail = span.Slice(start);
+            if (tail.Length == 0 || tail.IndexOf(delimiter) >= 0)
+            {
+                fields = Array.Empty<object>();
+                return false;
+            }
+
+            parts[expectedWidth - 1] = tail.ToString();
+            fields = parts;
+            return true;
+        }
+
         public static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
         {
-            var span = line.AsSpan();
-            var split = span.IndexOf(delimiter);
-            if (split <= 0 || split >= span.Length - 1)
+            if (!TrySplitDelimitedLine(line, delimiter, 2, out var fields))
             {
                 left = string.Empty;
                 right = string.Empty;
                 return false;
             }
 
-            left = span.Slice(0, split).ToString();
-            right = span.Slice(split + 1).ToString();
+            left = fields[0]?.ToString() ?? string.Empty;
+            right = fields[1]?.ToString() ?? string.Empty;
             return true;
         }
     }
@@ -9781,6 +9822,8 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static ClosurePairPlanStrategy ResolveStructuralClosurePairStrategy(
+            int sourceRequestCount,
+            int targetRequestCount,
             bool singleConcretePairRequest,
             bool preferForwardSingleProbe,
             bool hasForwardBatch,
@@ -9796,6 +9839,16 @@ namespace UnifyWeaver.QueryRuntime
                 return preferForwardSingleProbe
                     ? ClosurePairPlanStrategy.SingleProbeForward
                     : ClosurePairPlanStrategy.SingleProbeBackward;
+            }
+
+            if (sourceRequestCount == 1 && targetRequestCount > 1 && canMemoizePairs)
+            {
+                return ClosurePairPlanStrategy.MemoizedBySource;
+            }
+
+            if (targetRequestCount == 1 && sourceRequestCount > 1 && canMemoizePairs)
+            {
+                return ClosurePairPlanStrategy.MemoizedByTarget;
             }
 
             if (hasForwardBatch && hasBackwardBatch)
@@ -9845,6 +9898,8 @@ namespace UnifyWeaver.QueryRuntime
             QueryExecutionTrace? trace,
             PlanNode node,
             ClosurePairStrategy configuredStrategy,
+            int sourceRequestCount,
+            int targetRequestCount,
             bool singleConcretePairRequest,
             bool preferForwardSingleProbe,
             bool canBuildDirectionBatches,
@@ -9868,6 +9923,8 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 var structural = ResolveStructuralClosurePairStrategy(
+                    sourceRequestCount,
+                    targetRequestCount,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     hasForwardBatch,
@@ -13945,6 +14002,8 @@ namespace UnifyWeaver.QueryRuntime
                     trace,
                     closure,
                     _closurePairStrategy,
+                    targetsBySource.Count,
+                    sourcesByTarget.Count,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     canBuildDirectionBatches,
@@ -13995,37 +14054,19 @@ namespace UnifyWeaver.QueryRuntime
                         forwardTargetsBySource,
                         backwardSourcesByTarget,
                         context),
-                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
-                        closure,
-                        inputPositions,
-                        forwardTargetsBySource,
-                        context),
                     ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
                         closure,
                         inputPositions,
                         targetsBySource,
-                        context),
-                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
-                        closure,
-                        inputPositions,
-                        backwardSourcesByTarget,
                         context),
                     ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
                         closure,
                         inputPositions,
                         sourcesByTarget,
                         context),
-                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsForward(
-                        closure,
-                        forwardTargetsBySource,
-                        context),
                     ClosurePairPlanStrategy.Forward => ExecuteSeededGroupedTransitiveClosurePairsForward(
                         closure,
                         targetsBySource,
-                        context),
-                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsBackward(
-                        closure,
-                        backwardSourcesByTarget,
                         context),
                     _ => ExecuteSeededGroupedTransitiveClosurePairsBackward(
                         closure,
@@ -17306,6 +17347,8 @@ namespace UnifyWeaver.QueryRuntime
                     trace,
                     closure,
                     _closurePairStrategy,
+                    bySource.Count,
+                    byTarget.Count,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     canBuildDirectionBatches,
@@ -17352,33 +17395,17 @@ namespace UnifyWeaver.QueryRuntime
                         forwardBySource,
                         backwardByTarget,
                         context),
-                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
-                        closure,
-                        forwardBySource,
-                        context),
                     ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
                         closure,
                         bySource,
-                        context),
-                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
-                        closure,
-                        backwardByTarget,
                         context),
                     ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
                         closure,
                         byTarget,
                         context),
-                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsForward(
-                        closure,
-                        forwardBySource,
-                        context),
                     ClosurePairPlanStrategy.Forward => ExecuteSeededTransitiveClosurePairsForward(
                         closure,
                         bySource,
-                        context),
-                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsBackward(
-                        closure,
-                        backwardByTarget,
                         context),
                     _ => ExecuteSeededTransitiveClosurePairsBackward(
                         closure,
