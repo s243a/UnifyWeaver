@@ -377,15 +377,17 @@ applyAggregation _ vals = VList vals
 
 -- | Native category_ancestor: depth-bounded DFS over indexed parent facts.
 -- Returns all (Hops) values for paths from Cat to Root within maxDepth.
--- Uses Set for O(log n) membership check on Visited.
-nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> Set.Set String -> [Int]
+-- Uses a plain list for visited because depth is bounded (typically <= 10),
+-- so O(depth) elem checks are faster than O(log n) Set operations + the
+-- per-call Set construction overhead.
+nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> [String] -> [Int]
 nativeCategoryAncestor parents cat root maxDepth depth visited =
   let directParents = fromMaybe [] (Map.lookup cat parents)
-      baseHits = [1 | p <- directParents, p == root, not (Set.member p visited)]
+      baseHits = [1 | p <- directParents, p == root, p `notElem` visited]
       recHits = if depth >= maxDepth then [] else
         concatMap (\\mid ->
-          if Set.member mid visited then []
-          else map (+1) $ nativeCategoryAncestor parents mid root maxDepth (depth+1) (Set.insert mid visited)
+          if mid `elem` visited then []
+          else map (+1) $ nativeCategoryAncestor parents mid root maxDepth (depth+1) (mid : visited)
         ) directParents
   in baseHits ++ recHits
 
@@ -438,8 +440,8 @@ executeForeign "category_ancestor/4" s =
       parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wsForeignFacts s)
   in case (cat, root, visited) of
     (Atom catS, Atom rootS, VList visitedVals) ->
-      let visitedStrs = Set.fromList [v | Atom v <- visitedVals]
-          hops = nativeCategoryAncestor parents catS rootS maxD (Set.size visitedStrs) visitedStrs
+      let visitedStrs = [v | Atom v <- visitedVals]
+          hops = nativeCategoryAncestor parents catS rootS maxD (length visitedStrs) visitedStrs
           retPC = wsCP s
           hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
           bindHop hopVal =
@@ -731,16 +733,19 @@ step _ _ = Nothing'.
 
 run_loop_haskell(Code) :-
     Code = '-- | Main execution loop. Runs until halt (pc=0) or failure.
+-- Uses unsafeFetchInstr to avoid Maybe wrapping in the hot path.
+-- Bounds are guaranteed by the WAM compiler: PC=0 is halt, otherwise PC
+-- always points to a valid instruction within the code array.
 run :: WamState -> Maybe WamState
 run s
   | wsPC s == 0 = Just s  -- halt
-  | otherwise = case fetchInstr (wsPC s) (wsCode s) of
-      Nothing -> Nothing
-      Just instr -> case step s instr of
-        Just s'' -> run s''
-        Nothing -> case backtrack s of
-          Just s'' -> run s''
-          Nothing -> Nothing'.
+  | otherwise =
+      let instr = unsafeFetchInstr (wsPC s) (wsCode s)
+      in case step s instr of
+           Just s'' -> run s''
+           Nothing -> case backtrack s of
+             Just s'' -> run s''
+             Nothing -> Nothing'.
 
 % ============================================================================
 % PHASE 4: Project Generation
@@ -1202,11 +1207,18 @@ addToBuilder val s = case wsBuilder s of
 lookupLabel :: String -> WamState -> Int
 lookupLabel label s = fromMaybe 0 $ Map.lookup label (wsLabels s)
 
--- | Fetch instruction at PC (1-indexed).
+-- | Fetch instruction at PC (1-indexed). Bounds-checked, returns Maybe.
 fetchInstr :: Int -> Array Int Instruction -> Maybe Instruction
 fetchInstr pc code
   | let (lo, hi) = bounds code in pc < lo || pc > hi = Nothing
   | otherwise = Just (code ! pc)
+
+-- | Unsafe fetch — no bounds check, no Maybe wrapping. Use only when the
+-- caller can prove PC is in bounds (the run loop handles PC=0 as halt
+-- separately, and a well-formed WAM program never jumps out of bounds).
+{-# INLINE unsafeFetchInstr #-}
+unsafeFetchInstr :: Int -> Array Int Instruction -> Instruction
+unsafeFetchInstr pc code = code ! pc
 
 -- | Resolve Call instructions to CallResolved by looking up labels once at
 -- project load time. Calls to predicates that have foreign/indexed handlers
