@@ -304,6 +304,8 @@ def benchmark_mode(command: list[str], scale: str, mode: str, strategy: str, rep
 
     times: list[float] = []
     stderr = ""
+    if repetitions > 0:
+        run(command + [mode, str(edge_path), str(article_path)], env=env)
     for _ in range(repetitions):
         started = time.perf_counter()
         result = run(command + [mode, str(edge_path), str(article_path)], env=env)

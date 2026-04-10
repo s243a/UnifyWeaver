@@ -8958,12 +8958,70 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static ScanRelationRetentionStrategy ResolveStructuralScanRelationRetentionStrategy(
+            PlanNode node,
             ScanRelationAccessKind accessKind,
+            long? relationBytes,
             bool hasStreaming,
             bool hasReplayable,
             bool hasExternal,
             bool replayableMaterialized)
         {
+            if (replayableMaterialized && hasReplayable)
+            {
+                return ScanRelationRetentionStrategy.ReplayableBuffer;
+            }
+
+            if (accessKind == ScanRelationAccessKind.Set && hasExternal)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
+            if (node is RelationScanNode &&
+                accessKind == ScanRelationAccessKind.Stream &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 1024L * 1024L)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
+            if (node is KeyJoinNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
+            if (node is PatternScanNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
+            if (node is NegationNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
+            if (node is AggregateNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value >= 32 * 1024L &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return ScanRelationRetentionStrategy.ExternalMaterialized;
+            }
+
             var preferredStrategy = accessKind == ScanRelationAccessKind.Stream
                 ? RelationRetentionPolicyStrategy.StreamingDirect
                 : RelationRetentionPolicyStrategy.ReplayableBuffer;
@@ -8977,6 +9035,7 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static bool ShouldProbeScanRelationRetentionStrategy(
+            PlanNode node,
             ScanRelationAccessKind accessKind,
             long? relationBytes,
             bool hasStreaming,
@@ -8984,11 +9043,65 @@ namespace UnifyWeaver.QueryRuntime
             bool hasExternal,
             bool replayableMaterialized)
         {
+            if (accessKind == ScanRelationAccessKind.Set && hasExternal)
+            {
+                return false;
+            }
+
+            if (node is RelationScanNode &&
+                accessKind == ScanRelationAccessKind.Stream &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 1024L * 1024L)
+            {
+                return false;
+            }
+
+            if (node is KeyJoinNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return false;
+            }
+
+            if (node is PatternScanNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return false;
+            }
+
+            if (node is NegationNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return false;
+            }
+
+            if (node is AggregateNode &&
+                accessKind == ScanRelationAccessKind.List &&
+                hasExternal &&
+                relationBytes is not null &&
+                relationBytes.Value >= 32 * 1024L &&
+                relationBytes.Value <= 4 * 1024L * 1024L)
+            {
+                return false;
+            }
+
             var thresholdBytes = accessKind switch
             {
-                ScanRelationAccessKind.Stream => 192 * 1024L,
-                ScanRelationAccessKind.Set => 320 * 1024L,
-                _ => 256 * 1024L,
+                ScanRelationAccessKind.Stream => node is RelationScanNode ? 256 * 1024L : 192 * 1024L,
+                ScanRelationAccessKind.Set => 4 * 1024L * 1024L,
+                ScanRelationAccessKind.List when node is KeyJoinNode => 4 * 1024L * 1024L,
+                ScanRelationAccessKind.List when node is PatternScanNode => 4 * 1024L * 1024L,
+                ScanRelationAccessKind.List when node is AggregateNode => 2 * 1024L * 1024L,
+                _ => 512 * 1024L,
             };
             return ShouldProbeRelationRetentionStrategy(
                 relationBytes,
@@ -9015,7 +9128,9 @@ namespace UnifyWeaver.QueryRuntime
         {
             var structuralStrategy = ToRelationRetentionPolicyStrategy(
                 ResolveStructuralScanRelationRetentionStrategy(
+                    node,
                     accessKind,
+                    relationBytes,
                     hasStreaming,
                     hasReplayable,
                     hasExternal,
@@ -9029,7 +9144,7 @@ namespace UnifyWeaver.QueryRuntime
                 "scan_probe_external_materialized",
                 ToRelationRetentionPolicyStrategy(configuredStrategy),
                 structuralStrategy,
-                ShouldProbeScanRelationRetentionStrategy(accessKind, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
+                ShouldProbeScanRelationRetentionStrategy(node, accessKind, relationBytes, hasStreaming, hasReplayable, hasExternal, replayableMaterialized),
                 hasStreaming,
                 hasReplayable,
                 hasExternal,
