@@ -28,11 +28,17 @@
 %TrailEntry = type { i32, %Value }        ; register index, old value
 
 ; === Choice Point ===
+; agg_type field: -1 = normal CP (not an aggregate frame)
+;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
 %ChoicePoint = type {
-    i32,                                   ; next_pc
-    [32 x %Value],                         ; saved registers
-    i32,                                   ; trail mark
-    i32                                    ; saved cp
+    i32,                                   ; 0: next_pc
+    [32 x %Value],                         ; 1: saved registers
+    i32,                                   ; 2: trail mark
+    i32,                                   ; 3: saved cp
+    i32,                                   ; 4: agg_type (-1 = not aggregate)
+    i32,                                   ; 5: agg_value_reg
+    i32,                                   ; 6: agg_result_reg
+    i32                                    ; 7: agg_return_pc
 }
 
 ; === WAM State ===
@@ -56,5 +62,8 @@
     i32,                                   ; 16: code_length
     i32*,                                  ; 17: labels (label → pc array)
     i32,                                   ; 18: label_count
-    i1                                     ; 19: halted
+    i1,                                    ; 19: halted
+    %Value*,                               ; 20: agg_accum (aggregate accumulator)
+    i32,                                   ; 21: agg_count
+    i32                                    ; 22: agg_cap
 }
