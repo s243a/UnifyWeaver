@@ -331,6 +331,7 @@ entry:
     i32 27, label %switch_on_constant_a2
     i32 28, label %begin_aggregate
     i32 29, label %end_aggregate
+    i32 30, label %call_foreign
   ]
 
 ~w
@@ -971,6 +972,18 @@ wam_llvm_case('end_aggregate',
   ; Fail to force backtrack — backtrack will check the agg frame and
   ; either re-run inner goals (if there are prior CPs) or finalize.
   ret i1 false').
+
+% call_foreign: dispatch to a native foreign kernel.
+% op1 = foreign kind ID (see wam_llvm_foreign_kind_id/2)
+% op2 = arity (for handler selection — different kernels have different
+%              register conventions)
+% Returns the result of @wam_execute_foreign_predicate. If false, the
+% run loop backtracks.
+wam_llvm_case('call_foreign',
+'  %cf.kind = trunc i64 %op1 to i32
+  %cf.arity = trunc i64 %op2 to i32
+  %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.arity)
+  ret i1 %cf.result').
 
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
@@ -1851,6 +1864,33 @@ agg_type_id(max, 3).
 agg_type_id(collect, 4).
 agg_type_id(bag, 5).
 agg_type_id(_, 4).  % fallback: collect
+
+% call_foreign KindName, Arity
+% Dispatches to a registered native foreign kernel. The kind name is
+% resolved via wam_llvm_foreign_kind_id/2 to a stable integer ID that
+% matches the switch cases in @wam_execute_foreign_predicate.
+wam_line_to_llvm_literal(["call_foreign", KindStr, ArityStr], Lit) :- !,
+    clean_comma(KindStr, CK), clean_comma(ArityStr, CA),
+    atom_string(KAtom, CK),
+    ( wam_llvm_foreign_kind_id(KAtom, KindId)
+    -> true
+    ;  KindId = 999  % sentinel for unknown — dispatch returns false
+    ),
+    ( number_string(Arity, CA) -> true ; Arity = 0 ),
+    format(atom(Lit), '%Instruction { i32 30, i64 ~w, i64 ~w }', [KindId, Arity]).
+
+%% wam_llvm_foreign_kind_id(+Kind, -Id)
+%  Map a foreign kernel kind name (atom) to its integer dispatch ID.
+%  The IDs must stay in sync with the switch cases in
+%  @wam_execute_foreign_predicate in state.ll.mustache.
+%  M3 establishes the IDs; M5 will fill in the actual kernel bodies.
+wam_llvm_foreign_kind_id(category_ancestor,        0).
+wam_llvm_foreign_kind_id(countdown_sum2,           1).
+wam_llvm_foreign_kind_id(list_suffix2,             2).
+wam_llvm_foreign_kind_id(transitive_closure2,      3).
+wam_llvm_foreign_kind_id(transitive_distance3,     4).
+wam_llvm_foreign_kind_id(weighted_shortest_path3,  5).
+wam_llvm_foreign_kind_id(astar_shortest_path4,     6).
 % call, execute, try_me_else, retry_me_else are handled by
 % wam_line_to_llvm_literal_resolved/3 (label resolution required).
 wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').
