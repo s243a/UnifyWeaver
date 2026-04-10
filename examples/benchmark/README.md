@@ -53,7 +53,10 @@ corresponding closure buckets such as `closure_strategy_select`,
 available in `benchmark_closure_materialization.py`. Generic closure-pair
 planning now adds `closure_pair_strategy_select` and
 `*TransitiveClosurePairsMaterializationPlanPairs*` traces, with focused
-validation available in `benchmark_closure_pair_planning.py`.
+validation available in `benchmark_closure_pair_planning.py`. That harness now
+uses a real 3-column grouped edge source, produces non-empty grouped rows, and
+reports `best_effective_plan` so override-label fallbacks do not distort the
+comparison.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
