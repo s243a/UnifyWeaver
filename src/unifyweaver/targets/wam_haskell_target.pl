@@ -757,34 +757,89 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'src', SrcDir),
     make_directory_path(SrcDir),
 
+    % Determine map backend: HashMap (faster) or Map (default fallback)
+    option(use_hashmap(UseHM), Options, true),
+
     % Generate WamTypes.hs
-    generate_wam_types_hs(TypesCode),
+    generate_wam_types_hs(TypesCode0),
+    apply_hashmap_rewrite(UseHM, types, TypesCode0, TypesCode),
     directory_file_path(SrcDir, 'WamTypes.hs', TypesPath),
     write_hs_file(TypesPath, TypesCode),
 
     % Generate WamRuntime.hs
-    compile_wam_runtime_to_haskell(Options, RuntimeCode),
+    compile_wam_runtime_to_haskell(Options, RuntimeCode0),
+    apply_hashmap_rewrite(UseHM, runtime, RuntimeCode0, RuntimeCode),
     directory_file_path(SrcDir, 'WamRuntime.hs', RuntimePath),
     write_hs_file(RuntimePath, RuntimeCode),
 
     % Compile predicates
-    compile_predicates_to_haskell(Predicates, Options, PredsCode),
+    compile_predicates_to_haskell(Predicates, Options, PredsCode0),
+    apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
 
     % Generate cabal file
     option(module_name(ModName), Options, 'wam-haskell-bench'),
-    generate_cabal_file(ModName, CabalCode),
+    generate_cabal_file(ModName, UseHM, CabalCode),
     format(atom(CabalFile), '~w.cabal', [ModName]),
     directory_file_path(ProjectDir, CabalFile, CabalPath),
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs
-    generate_main_hs(Predicates, MainCode),
+    generate_main_hs(Predicates, MainCode0),
+    apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
 
-    format(user_error, '[WAM-Haskell] Generated project at: ~w~n', [ProjectDir]).
+    format(user_error, '[WAM-Haskell] Generated project at: ~w (hashmap=~w)~n', [ProjectDir, UseHM]).
+
+%% apply_hashmap_rewrite(+UseHM, +Module, +InCode, -OutCode)
+%  When UseHM=true, rewrite Data.Map.Strict references to Data.HashMap.Strict.
+apply_hashmap_rewrite(false, _, Code, Code) :- !.
+apply_hashmap_rewrite(true, Module, Code0, Code) :-
+    % Replace import line
+    replace_substr(Code0, "import qualified Data.Map.Strict as Map",
+                   "import qualified Data.HashMap.Strict as Map", Code1),
+    % Replace Map.Map type constructor with Map.HashMap
+    replace_substr(Code1, "Map.Map ", "Map.HashMap ", Code2),
+    % HashMap has no toAscList — use toList instead (loses ordering, but
+    % the only use site builds a SwitchOnConstant which doesn''t need it)
+    replace_substr(Code2, "Map.toAscList", "Map.toList", Code3),
+    % For WamTypes, add Hashable instance for Value (needed for HashMap keys)
+    (   Module == types
+    ->  replace_substr(Code3,
+            "module WamTypes where\n\nimport qualified Data.HashMap.Strict as Map",
+            "{-# LANGUAGE DeriveGeneric #-}\nmodule WamTypes where\n\nimport qualified Data.HashMap.Strict as Map\nimport Data.Hashable (Hashable)\nimport GHC.Generics (Generic)",
+            Code4),
+        replace_substr(Code4,
+            "deriving (Eq, Ord, Show)",
+            "deriving (Eq, Ord, Show, Generic)\ninstance Hashable Value",
+            Code)
+    ;   Code = Code3
+    ).
+
+%% replace_substr(+Str, +From, +To, -Result)
+%  Replace all occurrences of From with To in Str.
+replace_substr(Str, From, To, Result) :-
+    atom_string(Str, S),
+    atom_string(From, FS),
+    atom_string(To, TS),
+    split_string(S, "", "", [_]),  % normalize
+    re_split_replace(S, FS, TS, R),
+    atom_string(Result, R).
+
+re_split_replace(S, From, To, Result) :-
+    (   sub_string(S, B, L, A, From)
+    ->  sub_string(S, 0, B, _, Before),
+        sub_string(S, _, A, 0, After),
+        re_split_replace(After, From, To, AfterR),
+        atom_string(BeforeA, Before),
+        atom_string(ToA, To),
+        atom_string(AfterRA, AfterR),
+        atomic_list_concat([BeforeA, ToA, AfterRA], R),
+        atom_string(R, Result)
+    ;   Result = S
+    ).
 
 %% generate_main_hs(+Predicates, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
@@ -1266,8 +1321,12 @@ emptyState codeList labels = let n = length codeList; code = listArray (1, n) co
   }
 '.
 
-%% generate_cabal_file(+Name, -Code)
-generate_cabal_file(Name, Code) :-
+%% generate_cabal_file(+Name, +UseHM, -Code)
+generate_cabal_file(Name, UseHM, Code) :-
+    (   UseHM == true
+    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2"
+    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8"
+    ),
     format(string(Code),
 'cabal-version: 2.4
 name:          ~w
@@ -1278,10 +1337,10 @@ executable ~w
   main-is:          Main.hs
   hs-source-dirs:   src
   other-modules:    WamTypes, WamRuntime, Predicates
-  build-depends:    base >= 4.14, containers >= 0.6, array, time >= 1.8
+  build-depends:    ~w
   default-language: Haskell2010
   ghc-options:      -O2
-', [Name, Name]).
+', [Name, Name, Deps]).
 
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
 %  Compiles all predicates into a single merged code array and label map,
