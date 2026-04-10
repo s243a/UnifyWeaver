@@ -263,6 +263,111 @@ test(write_wat_project) :-
 
 %% --- wat2wasm syntax validation ---
 
+%% --- Functional execution via wat2wasm + node ---
+%%
+%% These tests compile a generated .wat to .wasm and actually run it
+%% via Node.js, which provides the `env` host imports the WAM-WAT
+%% runtime requires (print_i64, print_char, print_newline). This is
+%% the first layer of real runtime validation for the WAM-WAT target
+%% — everything prior was codegen-only. Tests skip gracefully if
+%% either wat2wasm or node is missing.
+
+tool_available(Tool) :-
+    catch(
+        process_create(path(Tool), ['--version'],
+            [stdout(null), stderr(null)]),
+        _, fail).
+
+%% Build the node harness script that loads a .wasm and calls an export.
+%% Written to a tmp file on first use. Returns the RESULT value on stdout.
+node_harness_source(Src) :-
+    Src = "const fs=require('fs');\n\c
+const [,,wasmPath,exportName]=process.argv;\n\c
+const bytes=fs.readFileSync(wasmPath);\n\c
+const log=[];\n\c
+const imports={env:{\n\c
+  print_i64:v=>log.push(String(v)),\n\c
+  print_char:c=>log.push(String.fromCharCode(c)),\n\c
+  print_newline:()=>log.push('\\n')\n\c
+}};\n\c
+(async()=>{\n\c
+  try{\n\c
+    const{instance}=await WebAssembly.instantiate(bytes,imports);\n\c
+    const fn=instance.exports[exportName];\n\c
+    if(typeof fn!=='function'){console.log('ERROR export '+exportName+' not found');process.exit(1);}\n\c
+    const result=fn();\n\c
+    for(const line of log)process.stderr.write(line);\n\c
+    console.log('RESULT '+result);\n\c
+  }catch(e){console.log('ERROR '+e.message);process.exit(1);}\n\c
+})();\n".
+
+ensure_node_harness(HarnessPath) :-
+    HarnessPath = '/data/data/com.termux/files/home/tmp/wam_wat_test_harness.js',
+    (   exists_file(HarnessPath)
+    ->  true
+    ;   node_harness_source(Src),
+        open(HarnessPath, write, S),
+        write(S, Src),
+        close(S)
+    ).
+
+%% run_wam_wat_module_export(+WatFile, +ExportName, -Result)
+%%   Compile WatFile with wat2wasm, run with node harness, unify Result
+%%   with the i32 return value. Throws wam_wat_runtime_skip(Reason) if
+%%   the toolchain is unavailable. Throws wam_wat_runtime_error(Detail)
+%%   on compilation or execution failure.
+run_wam_wat_module_export(WatFile, ExportName, Result) :-
+    (   tool_available(wat2wasm), tool_available(node)
+    ->  true
+    ;   throw(wam_wat_runtime_skip(tools_missing))
+    ),
+    file_name_extension(Base, _, WatFile),
+    file_name_extension(Base, wasm, WasmFile),
+    format(string(CompileCmd), "wat2wasm ~w -o ~w 2>&1", [WatFile, WasmFile]),
+    process_create(path(sh), ['-c', CompileCmd],
+        [stdout(pipe(COut)), process(CPid)]),
+    read_string(COut, _, CompileOut),
+    close(COut),
+    process_wait(CPid, CExit),
+    (   CExit == exit(0)
+    ->  true
+    ;   throw(wam_wat_runtime_error(compile(CompileOut)))
+    ),
+    ensure_node_harness(Harness),
+    process_create(path(node), [Harness, WasmFile, ExportName],
+        [stdout(pipe(ROut)), stderr(null), process(RPid)]),
+    read_string(ROut, _, RunOut),
+    close(ROut),
+    process_wait(RPid, RExit),
+    (   sub_string(RunOut, _, _, _, "RESULT "),
+        split_string(RunOut, " \n", " \n", Parts),
+        append(_, ["RESULT", RS|_], Parts),
+        number_string(Result, RS)
+    ->  true
+    ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
+    ).
+
+test(functional_true_succeeds, [condition(tool_available(wat2wasm)),
+                                 condition(tool_available(node))]) :-
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_true_~w.wat', [T]),
+    assertz(user:test_func_true :- true),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_true/0],
+                                  [module_name(func_true_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_true_0, Result),
+            assertion(Result =:= 1)
+        ),
+        (   retractall(user:test_func_true),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
 test(wat2wasm_validates) :-
     %% Generate a minimal WAM-WAT module and verify wat2wasm accepts it
     %% (exit 0). The earlier version of this test used assertion/1 on
