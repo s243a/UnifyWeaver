@@ -6679,6 +6679,66 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private List<object[]> GetDagFactsList(
+            PredicateId predicate,
+            DagRelationRetentionStrategy strategy,
+            EvaluationContext? context,
+            PlanNode traceNode,
+            bool edgeRelation)
+        {
+            if (context is null)
+            {
+                return MaterializeFacts(predicate, context);
+            }
+
+            if (context.Facts.TryGetValue(predicate, out var cached))
+            {
+                context.Trace?.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                return cached;
+            }
+
+            context.Trace?.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
+
+            var hasStreaming = TryGetDelimitedSource(predicate, RelationRetentionMode.Streaming, out var delimitedSource);
+            var hasReplayable = TryGetReplayableSource(predicate, context, out var replayableSource);
+            var hasExternal = TryGetExternalFacts(predicate, out var externalFacts);
+            var streamingPhase = edgeRelation ? "dag_materialize_streaming_edges" : "dag_materialize_streaming_seeds";
+            var replayablePhase = edgeRelation ? "dag_materialize_replayable_edges" : "dag_materialize_replayable_seeds";
+            var externalPhase = edgeRelation ? "dag_materialize_external_edges" : "dag_materialize_external_seeds";
+            List<object[]> facts;
+
+            switch (strategy)
+            {
+                case DagRelationRetentionStrategy.StreamingDirect when hasStreaming:
+                    facts = MeasurePhase(context.Trace, traceNode, streamingPhase, () => DelimitedRelationReader.ReadRows(delimitedSource).ToList());
+                    break;
+                case DagRelationRetentionStrategy.ReplayableBuffer when hasReplayable:
+                    facts = MeasurePhase(context.Trace, traceNode, replayablePhase, () => replayableSource.Materialize());
+                    break;
+                case DagRelationRetentionStrategy.ExternalMaterialized when hasExternal:
+                    facts = MeasurePhase(context.Trace, traceNode, externalPhase, () => externalFacts as List<object[]> ?? externalFacts.ToList());
+                    break;
+                default:
+                    if (hasReplayable)
+                    {
+                        facts = MeasurePhase(context.Trace, traceNode, replayablePhase, () => replayableSource.Materialize());
+                    }
+                    else if (hasStreaming)
+                    {
+                        facts = MeasurePhase(context.Trace, traceNode, streamingPhase, () => DelimitedRelationReader.ReadRows(delimitedSource).ToList());
+                    }
+                    else
+                    {
+                        var externalSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+                        facts = MeasurePhase(context.Trace, traceNode, externalPhase, () => externalSource as List<object[]> ?? externalSource.ToList());
+                    }
+                    break;
+            }
+
+            context.Facts[predicate] = facts;
+            return facts;
+        }
+
         private IEnumerable<object[]> GetFactStream(PredicateId predicate, EvaluationContext? context = null)
         {
             if (context is not null && TryGetReplayableSource(predicate, context, out var replayableSource))
@@ -11804,14 +11864,15 @@ namespace UnifyWeaver.QueryRuntime
                     seeds = externalSeedFacts as List<object[]> ?? MeasurePhase(trace, closure, "dag_materialize_external_seeds", () => externalSeedFacts.ToList());
                 }
 
-                edges ??= GetFactsList(closure.EdgeRelation, context);
-                seeds ??= GetFactsList(closure.SeedRelation, context);
+                edges ??= GetDagFactsList(closure.EdgeRelation, selection.Strategy, context, closure, edgeRelation: true);
+                seeds ??= GetDagFactsList(closure.SeedRelation, selection.Strategy, context, closure, edgeRelation: false);
                 if (seeds.Count >= MinDagGroupCount &&
                     edges.Count >= MinDagEdgeCount)
                 {
                     List<object[]> dagRows = new();
                     var buildPhase = selection.Strategy switch
                     {
+                        DagRelationRetentionStrategy.StreamingDirect when hasStreaming => "dag_build_streaming_fallback",
                         DagRelationRetentionStrategy.ReplayableBuffer when hasReplayable => "dag_build_replayable_buffer",
                         DagRelationRetentionStrategy.ExternalMaterialized when hasExternal => "dag_build_external_materialized",
                         _ => "dag_build_materialized_fallback"
@@ -12014,8 +12075,15 @@ namespace UnifyWeaver.QueryRuntime
                     buildPhase = "dag_build_external_materialized";
                 }
 
-                edges ??= GetFactsList(closure.EdgeRelation, context);
-                seeds ??= GetFactsList(closure.SeedRelation, context);
+                edges ??= GetDagFactsList(closure.EdgeRelation, selection.Strategy, context, closure, edgeRelation: true);
+                seeds ??= GetDagFactsList(closure.SeedRelation, selection.Strategy, context, closure, edgeRelation: false);
+                buildPhase = selection.Strategy switch
+                {
+                    DagRelationRetentionStrategy.StreamingDirect when hasStreaming => "dag_build_streaming_fallback",
+                    DagRelationRetentionStrategy.ReplayableBuffer when hasReplayable => "dag_build_replayable_buffer",
+                    DagRelationRetentionStrategy.ExternalMaterialized when hasExternal => "dag_build_external_materialized",
+                    _ => buildPhase
+                };
                 List<object[]> rows = new();
                 if (!MeasurePhase(trace, closure, buildPhase, () => TryBuildSeedGroupedDagLongestDepthRows(closure, trace, edges, seeds, MaxDagNodeCount, out rows)))
                 {

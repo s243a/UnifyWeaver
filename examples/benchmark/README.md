@@ -33,7 +33,8 @@ using the same grouped-summary policy layer that now also drives the
 shortest-path minima family. The path-aware family now coordinates that
 grouped-summary selector with the earlier edge-retention selector through the
 shared internal materialization planner layer that also now covers the DAG
-family's relation-retention planning and the generic scan family used by
+family's relation-retention planning, including planner-driven fallback
+edge/seed materialization, and the generic scan family used by
 `RelationScanNode`, `PatternScanNode`, and scan-heavy join/negation/aggregate
 consumers. That policy now records measured cost buckets like `load_roots`,
 `load_seeds`, `strategy_select`, `build_*`, and `group_reduce`, while the
