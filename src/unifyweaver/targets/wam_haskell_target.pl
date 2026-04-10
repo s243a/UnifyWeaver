@@ -556,6 +556,11 @@ step s (SetValue xn) =
 step s (SetConstant c) =
   addToBuilder c s
 
+-- Fast path: call has been pre-resolved to a target PC at load time.
+-- No string lookup, no foreign/indexed dispatch — just a jump.
+step s (CallResolved pc _arity) =
+  Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+
 step s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
   in case executeForeign pred sc of
@@ -942,9 +947,15 @@ main = do
         acEnd = cpEnd + length acCode
         (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
 
-        mergedCode = allCode ++ cpCode ++ acCode ++ rcCode
+        mergedCodeRaw = allCode ++ cpCode ++ acCode ++ rcCode
         mergedLabels = Map.union allLabels
                      $ Map.fromList (cpLabels ++ acLabels ++ rcLabels)
+        -- Pre-resolve Call instructions to CallResolved at startup so the
+        -- hot path skips wsLabels string lookups. Foreign/indexed predicates
+        -- are kept as Call so runtime dispatch (executeForeign/callIndexedFact2)
+        -- still applies.
+        foreignPreds = ["category_ancestor/4"]
+        mergedCode = resolveCallInstrs mergedLabels foreignPreds mergedCodeRaw
 
     -- Collect seed categories
     let seedCats = nub $ sort $ map snd articleCategories
@@ -1196,6 +1207,22 @@ fetchInstr :: Int -> Array Int Instruction -> Maybe Instruction
 fetchInstr pc code
   | let (lo, hi) = bounds code in pc < lo || pc > hi = Nothing
   | otherwise = Just (code ! pc)
+
+-- | Resolve Call instructions to CallResolved by looking up labels once at
+-- project load time. Calls to predicates that have foreign/indexed handlers
+-- (e.g., category_ancestor/4 via FFI, category_parent/2 via indexed facts)
+-- are LEFT as Call so the runtime dispatch chain still applies. Only Call
+-- targets that have a matching label and no foreign/indexed override are
+-- pre-resolved to a direct PC jump.
+resolveCallInstrs :: Map.Map String Int -> [String] -> [Instruction] -> [Instruction]
+resolveCallInstrs labels foreignPreds = map resolve
+  where
+    resolve (Call pred arity)
+      | pred `elem` foreignPreds = Call pred arity   -- keep dispatch
+      | otherwise = case Map.lookup pred labels of
+          Just pc -> CallResolved pc arity
+          Nothing -> Call pred arity   -- unresolvable, leave as-is
+    resolve i = i
 ', [StepCode, BacktrackCode, RunCode]).
 
 %% generate_wam_types_hs(-Code)
@@ -1294,7 +1321,8 @@ data Instruction
   | SetConstant Value
   | Allocate
   | Deallocate
-  | Call String !Int
+  | Call String !Int                  -- pre-resolution form (string-keyed)
+  | CallResolved !Int !Int            -- post-resolution: target PC + arity
   | Execute String
   | Proceed
   | BuiltinCall String !Int
