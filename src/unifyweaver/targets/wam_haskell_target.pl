@@ -790,7 +790,8 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Loads facts from TSV, runs category_ancestor queries, outputs TSV.
 generate_main_hs(_Predicates, Code) :-
-    Code = 'module Main where
+    Code = '{-# LANGUAGE BangPatterns #-}
+module Main where
 
 import qualified Data.Map.Strict as Map
 import Data.List (nub, sort, isPrefixOf, intercalate)
@@ -903,8 +904,11 @@ main = do
     t2 <- getCurrentTime
 
     -- For each seed, run category_ancestor(Cat, Root, Hops, [Cat])
-    let seedResults = map (\\cat ->
-          let s0 = (emptyState mergedCode mergedLabels)
+    -- IMPORTANT: use mapM in IO with strict bang patterns to force actual
+    -- computation BEFORE timing endpoint, otherwise lazy evaluation will
+    -- defer the work until output and the timing will be artificially low.
+    seedResultsForced <- mapM (\\cat -> do
+        let s0 = (emptyState mergedCode mergedLabels)
                 { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
                 , wsRegs = Map.fromList
                     [ ("A1", Atom cat)
@@ -914,12 +918,13 @@ main = do
                     ]
                 , wsCP = 0
                 }
-              solutions = collectSolutions s0
-              weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
-          in (cat, weightSum)
-          ) seedCats
+            !solutions = collectSolutions s0
+            !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
+        return (cat, weightSum)
+        ) seedCats
 
-    let seedWeightSums = Map.fromList [(cat, ws) | (cat, ws) <- seedResults, ws > 0]
+    let !seedWeightSums = Map.fromList [(cat, ws) | (cat, ws) <- seedResultsForced, ws > 0]
+        !forcedSize = Map.size seedWeightSums  -- force the map
 
     t3 <- getCurrentTime
     let queryMs = round (diffUTCTime t3 t2 * 1000) :: Int
