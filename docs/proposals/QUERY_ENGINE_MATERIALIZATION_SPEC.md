@@ -91,6 +91,11 @@ Examples:
   same measured relation-retention boundary before building successor,
   predecessor, or auxiliary lookup indices, with an explicit override via
   `QueryExecutorOptions.ClosureRelationRetentionStrategy`
+- generic closure pair probes can now choose among forward, backward, mixed,
+  mixed-with-pair-probe-cache, and memoized source/target strategies through
+  an explicit planner surface, with an override via
+  `QueryExecutorOptions.ClosurePairStrategy` and focused validation in
+  `examples/benchmark/benchmark_closure_pair_planning.py`
 - generic scan planning now also has focused validation coverage in
   `examples/benchmark/benchmark_scan_materialization.py`, so scan-heavy join,
   negation, aggregate, relation-scan, and pattern-scan paths can be checked

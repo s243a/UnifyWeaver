@@ -83,6 +83,17 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum ClosurePairStrategy
+    {
+        Auto,
+        Forward,
+        Backward,
+        MemoizedBySource,
+        MemoizedByTarget,
+        MixedDirection,
+        MixedDirectionWithPairProbeCache
+    }
+
     public readonly record struct DelimitedRelationSource(
         string InputPath,
         char Delimiter = '	',
@@ -549,6 +560,18 @@ namespace UnifyWeaver.QueryRuntime
         Support
     }
 
+    internal enum ClosurePairPlanStrategy
+    {
+        Forward,
+        Backward,
+        MemoizedBySource,
+        MemoizedByTarget,
+        MixedDirection,
+        MixedDirectionWithPairProbeCache,
+        SingleProbeForward,
+        SingleProbeBackward
+    }
+
     internal enum PathAwareSupportRelationAccessKind
     {
         Roots,
@@ -588,11 +611,16 @@ namespace UnifyWeaver.QueryRuntime
         ClosureRelationRetentionStrategy Strategy,
         string DecisionMode);
 
+    internal readonly record struct ClosurePairStrategySelection(
+        ClosurePairPlanStrategy Strategy,
+        string DecisionMode);
+
     public sealed record QueryExecutorOptions(
         bool ReuseCaches = false,
         DagRelationRetentionStrategy DagRelationRetentionStrategy = DagRelationRetentionStrategy.Auto,
         ScanRelationRetentionStrategy ScanRelationRetentionStrategy = ScanRelationRetentionStrategy.Auto,
         ClosureRelationRetentionStrategy ClosureRelationRetentionStrategy = ClosureRelationRetentionStrategy.Auto,
+        ClosurePairStrategy ClosurePairStrategy = ClosurePairStrategy.Auto,
         PathAwareEdgeRetentionStrategy PathAwareEdgeRetentionStrategy = PathAwareEdgeRetentionStrategy.Auto,
         PathAwareSupportRelationRetentionStrategy PathAwareSupportRelationRetentionStrategy = PathAwareSupportRelationRetentionStrategy.Auto,
         PathAwareGroupedMinStrategy PathAwareGroupedMinStrategy = PathAwareGroupedMinStrategy.Auto,
@@ -1546,6 +1574,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
         private readonly ClosureRelationRetentionStrategy _closureRelationRetentionStrategy;
+        private readonly ClosurePairStrategy _closurePairStrategy;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareSupportRelationRetentionStrategy _pathAwareSupportRelationRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
@@ -1566,6 +1595,7 @@ namespace UnifyWeaver.QueryRuntime
             _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
             _closureRelationRetentionStrategy = options.ClosureRelationRetentionStrategy;
+            _closurePairStrategy = options.ClosurePairStrategy;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
@@ -9728,6 +9758,145 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private static ClosurePairPlanStrategy? ResolveConfiguredClosurePairStrategy(
+            ClosurePairStrategy configuredStrategy,
+            bool singleConcretePairRequest,
+            bool canBuildDirectionBatches)
+        {
+            return configuredStrategy switch
+            {
+                ClosurePairStrategy.Auto => null,
+                ClosurePairStrategy.Forward => singleConcretePairRequest
+                    ? ClosurePairPlanStrategy.SingleProbeForward
+                    : ClosurePairPlanStrategy.Forward,
+                ClosurePairStrategy.Backward => singleConcretePairRequest
+                    ? ClosurePairPlanStrategy.SingleProbeBackward
+                    : ClosurePairPlanStrategy.Backward,
+                ClosurePairStrategy.MemoizedBySource => ClosurePairPlanStrategy.MemoizedBySource,
+                ClosurePairStrategy.MemoizedByTarget => ClosurePairPlanStrategy.MemoizedByTarget,
+                ClosurePairStrategy.MixedDirection when canBuildDirectionBatches => ClosurePairPlanStrategy.MixedDirection,
+                ClosurePairStrategy.MixedDirectionWithPairProbeCache when canBuildDirectionBatches => ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache,
+                _ => null
+            };
+        }
+
+        private static ClosurePairPlanStrategy ResolveStructuralClosurePairStrategy(
+            bool singleConcretePairRequest,
+            bool preferForwardSingleProbe,
+            bool hasForwardBatch,
+            bool hasBackwardBatch,
+            bool canUseBatchedPairProbeCache,
+            bool canMemoizeForwardBatch,
+            bool canMemoizeBackwardBatch,
+            bool canMemoizePairs,
+            bool preferForwardFallback)
+        {
+            if (singleConcretePairRequest)
+            {
+                return preferForwardSingleProbe
+                    ? ClosurePairPlanStrategy.SingleProbeForward
+                    : ClosurePairPlanStrategy.SingleProbeBackward;
+            }
+
+            if (hasForwardBatch && hasBackwardBatch)
+            {
+                return canUseBatchedPairProbeCache
+                    ? ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache
+                    : ClosurePairPlanStrategy.MixedDirection;
+            }
+
+            if (hasForwardBatch)
+            {
+                if (canUseBatchedPairProbeCache)
+                {
+                    return ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache;
+                }
+
+                return canMemoizeForwardBatch
+                    ? ClosurePairPlanStrategy.MemoizedBySource
+                    : ClosurePairPlanStrategy.Forward;
+            }
+
+            if (hasBackwardBatch)
+            {
+                if (canUseBatchedPairProbeCache)
+                {
+                    return ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache;
+                }
+
+                return canMemoizeBackwardBatch
+                    ? ClosurePairPlanStrategy.MemoizedByTarget
+                    : ClosurePairPlanStrategy.Backward;
+            }
+
+            if (canMemoizePairs)
+            {
+                return preferForwardFallback
+                    ? ClosurePairPlanStrategy.MemoizedBySource
+                    : ClosurePairPlanStrategy.MemoizedByTarget;
+            }
+
+            return preferForwardFallback
+                ? ClosurePairPlanStrategy.Forward
+                : ClosurePairPlanStrategy.Backward;
+        }
+
+        private static ClosurePairStrategySelection ResolveClosurePairStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            ClosurePairStrategy configuredStrategy,
+            bool singleConcretePairRequest,
+            bool preferForwardSingleProbe,
+            bool canBuildDirectionBatches,
+            bool hasForwardBatch,
+            bool hasBackwardBatch,
+            bool canUseBatchedPairProbeCache,
+            bool canMemoizeForwardBatch,
+            bool canMemoizeBackwardBatch,
+            bool canMemoizePairs,
+            bool preferForwardFallback)
+        {
+            return MeasurePhase(trace, node, "closure_pair_strategy_select", () =>
+            {
+                var configured = ResolveConfiguredClosurePairStrategy(
+                    configuredStrategy,
+                    singleConcretePairRequest,
+                    canBuildDirectionBatches);
+                if (configured is { } configuredSelection)
+                {
+                    return new ClosurePairStrategySelection(configuredSelection, "ConfiguredOverride");
+                }
+
+                var structural = ResolveStructuralClosurePairStrategy(
+                    singleConcretePairRequest,
+                    preferForwardSingleProbe,
+                    hasForwardBatch,
+                    hasBackwardBatch,
+                    canUseBatchedPairProbeCache,
+                    canMemoizeForwardBatch,
+                    canMemoizeBackwardBatch,
+                    canMemoizePairs,
+                    preferForwardFallback);
+
+                if (configuredStrategy != ClosurePairStrategy.Auto)
+                {
+                    return new ClosurePairStrategySelection(structural, "ConfiguredFallback");
+                }
+
+                return new ClosurePairStrategySelection(structural, "Structural");
+            });
+        }
+
+        private static void RecordClosurePairStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string nodeStrategyPrefix,
+            ClosurePairStrategySelection selection)
+        {
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
+            trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanPairs{selection.Strategy}");
+        }
+
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
             SeedGroupedPathAwareWeightSumNode closure,
             IReadOnlyList<object?> orderedUniqueSeeds,
@@ -13706,231 +13875,248 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairs");
 
-                if (IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget))
+                const int MaxMemoizedGroupedPairSeeds = 32;
+                var singleConcretePairRequest = IsSingleConcreteGroupedPairRequest(targetsBySource, sourcesByTarget);
+                var preferForwardSingleProbe = true;
+                Dictionary<RowWrapper, List<object[]>>? singleSuccIndex = null;
+                Dictionary<RowWrapper, List<object[]>>? singlePredIndex = null;
+                var singleForwardCost = 0;
+                var singleBackwardCost = 0;
+
+                if (singleConcretePairRequest)
                 {
-                    var probeCount = ComputeSingleGroupedPairProbeNormalizationCount(parameters, inputPositions, closure.GroupIndices);
-                    var seedEntry = targetsBySource.First();
-                    var sourceKey = seedEntry.Key.Row;
-                    var target = seedEntry.Value.First();
+                    var sourceEntry = targetsBySource.First();
+                    var sourceKey = sourceEntry.Key.Row;
+                    var target = sourceEntry.Value.First();
                     var targetKey = new object[sourceKey.Length];
                     Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
                     targetKey[sourceKey.Length - 1] = target;
 
                     var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
-                    var groupKeyCount = closure.GroupIndices.Count;
-                    var fromKeyIndices = new int[groupKeyCount + 1];
-                    var toKeyIndices = new int[groupKeyCount + 1];
-                    for (var i = 0; i < groupKeyCount; i++)
+                    var keyCount = closure.GroupIndices.Count;
+                    var fromKeyIndices = new int[keyCount + 1];
+                    var toKeyIndices = new int[keyCount + 1];
+                    for (var i = 0; i < keyCount; i++)
                     {
                         fromKeyIndices[i] = closure.GroupIndices[i];
                         toKeyIndices[i] = closure.GroupIndices[i];
                     }
-                    fromKeyIndices[groupKeyCount] = 0;
-                    toKeyIndices[groupKeyCount] = 1;
 
-                    var succIndex = GetJoinIndex(closure.EdgeRelation, fromKeyIndices, edges, context);
-                    var predIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
-                    var forwardCost = CountEdgeBucket(succIndex, sourceKey);
-                    var backwardCost = CountEdgeBucket(predIndex, targetKey);
-                    var groupedCacheKey = (closure.EdgeRelation, closure.Predicate, string.Join(",", closure.GroupIndices));
-                    var groupedPairKey = new object[sourceKey.Length + 1];
-                    Array.Copy(sourceKey, groupedPairKey, sourceKey.Length);
-                    groupedPairKey[sourceKey.Length] = target;
-                    var sourceLabel = string.Join("|", sourceKey.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
-                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
-                    var traceKey =
-                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
-                    var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
-
-                    if (canReusePairProbeCache &&
-                        context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
-                        TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(groupedPairKey), out var pairReachable))
-                    {
-                        trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
-                        if (!pairReachable)
-                        {
-                            return Array.Empty<object[]>();
-                        }
-
-                        return new List<object[]>
-                        {
-                            BuildGroupedClosureRow(closure.Predicate.Arity, groupKeyCount, closure.GroupIndices, groupedPairKey)
-                        };
-                    }
-
-                    trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
-
-                    var rows = forwardCost <= backwardCost
-                        ? ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context).ToList()
-                        : ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context).ToList();
-
-                    if (forwardCost <= backwardCost)
-                    {
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeForward");
-                    }
-                    else
-                    {
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsSingleProbeBackward");
-                    }
-
-                    if (canReusePairProbeCache)
-                    {
-                        if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
-                        {
-                            pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
-                            context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
-                        }
-
-                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
-                            forwardCost,
-                            backwardCost,
-                            probeCount,
-                            useCostPerProbeGate: true);
-                        TryAdmitLruBoundedRowWrapperCacheEntry(
-                            pairStore,
-                            new RowWrapper(groupedPairKey),
-                            rows.Count > 0,
-                            _pairProbeCacheMaxEntries,
-                            admitPairProbeCache,
-                            trace,
-                            "GroupedTransitiveClosurePairsSingleProbe",
-                            traceKey);
-                    }
-
-                    return rows;
+                    fromKeyIndices[keyCount] = 0;
+                    toKeyIndices[keyCount] = 1;
+                    singleSuccIndex = GetJoinIndex(closure.EdgeRelation, fromKeyIndices, edges, context);
+                    singlePredIndex = GetJoinIndex(closure.EdgeRelation, toKeyIndices, edges, context);
+                    singleForwardCost = CountEdgeBucket(singleSuccIndex, sourceKey);
+                    singleBackwardCost = CountEdgeBucket(singlePredIndex, targetKey);
+                    preferForwardSingleProbe = singleForwardCost <= singleBackwardCost;
                 }
 
-                const int MaxMemoizedGroupedPairSeeds = 32;
-                if (TryBuildGroupedPairProbeDirectionBatches(
+                Dictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource = new(wrapperComparer);
+                Dictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget = new(wrapperComparer);
+                var canBuildDirectionBatches = !singleConcretePairRequest &&
+                    TryBuildGroupedPairProbeDirectionBatches(
                         closure,
                         targetsBySource,
                         context,
-                        out var forwardTargetsBySource,
-                        out var backwardSourcesByTarget))
-                {
-                    var canReuseBatchedPairProbeCache =
-                        _pairProbeCacheMaxEntries > 0 &&
-                        _pairProbeCacheAdmissionMinCostPerProbe > 0d;
-
-                    if (forwardTargetsBySource.Count > 0 && backwardSourcesByTarget.Count > 0)
-                    {
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeMixed");
-                        if (canReuseBatchedPairProbeCache)
-                        {
-                            return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                                closure,
-                                inputPositions,
-                                forwardTargetsBySource,
-                                backwardSourcesByTarget,
-                                context);
-                        }
-
-                        return ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
-                            closure,
-                            inputPositions,
-                            forwardTargetsBySource,
-                            backwardSourcesByTarget,
-                            context);
-                    }
-
-                    if (forwardTargetsBySource.Count > 0)
-                    {
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeForward");
-                        if (canReuseBatchedPairProbeCache)
-                        {
-                            return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                                closure,
-                                inputPositions,
-                                forwardTargetsBySource,
-                                backwardSourcesByTarget,
-                                context);
-                        }
-
-                        if (_cacheContext is not null && forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds)
-                        {
-                            trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                            trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
-                            return ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
-                                closure,
-                                inputPositions,
-                                forwardTargetsBySource,
-                                context);
-                        }
-
-                        return ExecuteSeededGroupedTransitiveClosurePairsForward(
-                            closure,
-                            forwardTargetsBySource,
-                            context);
-                    }
-
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBatchedSingleProbeBackward");
-                    if (canReuseBatchedPairProbeCache)
-                    {
-                        return ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                            closure,
-                            inputPositions,
-                            forwardTargetsBySource,
-                            backwardSourcesByTarget,
-                            context);
-                    }
-
-                    if (_cacheContext is not null && backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds)
-                    {
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                        trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
-                        return ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
-                            closure,
-                            inputPositions,
-                            backwardSourcesByTarget,
-                            context);
-                    }
-
-                    return ExecuteSeededGroupedTransitiveClosurePairsBackward(
-                        closure,
-                        backwardSourcesByTarget,
-                        context);
-                }
-
+                        out forwardTargetsBySource,
+                        out backwardSourcesByTarget);
+                var canReuseBatchedPairProbeCache =
+                    canBuildDirectionBatches &&
+                    _pairProbeCacheMaxEntries > 0 &&
+                    _pairProbeCacheAdmissionMinCostPerProbe > 0d;
+                var canMemoizeForwardBatch =
+                    canBuildDirectionBatches &&
+                    _cacheContext is not null &&
+                    forwardTargetsBySource.Count > 0 &&
+                    forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds;
+                var canMemoizeBackwardBatch =
+                    canBuildDirectionBatches &&
+                    _cacheContext is not null &&
+                    backwardSourcesByTarget.Count > 0 &&
+                    backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
                 var canMemoizePairs =
+                    !singleConcretePairRequest &&
                     _cacheContext is not null &&
                     targetsBySource.Count <= MaxMemoizedGroupedPairSeeds &&
                     sourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
+                var preferForwardFallback = targetsBySource.Count <= sourcesByTarget.Count;
 
-                if (canMemoizePairs && targetsBySource.Count <= sourcesByTarget.Count)
+                var pairStrategySelection = ResolveClosurePairStrategy(
+                    trace,
+                    closure,
+                    _closurePairStrategy,
+                    singleConcretePairRequest,
+                    preferForwardSingleProbe,
+                    canBuildDirectionBatches,
+                    forwardTargetsBySource.Count > 0,
+                    backwardSourcesByTarget.Count > 0,
+                    canReuseBatchedPairProbeCache,
+                    canMemoizeForwardBatch,
+                    canMemoizeBackwardBatch,
+                    canMemoizePairs,
+                    preferForwardFallback);
+                RecordClosurePairStrategy(trace, closure, "GroupedTransitiveClosurePairs", pairStrategySelection);
+
+                return pairStrategySelection.Strategy switch
                 {
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
-                    return ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                    ClosurePairPlanStrategy.SingleProbeForward => ExecuteSeededGroupedTransitiveClosurePairsSingleProbe(
+                        closure,
+                        inputPositions,
+                        parameters,
+                        targetsBySource,
+                        sourcesByTarget,
+                        context,
+                        preferForward: true,
+                        singleSuccIndex!,
+                        singlePredIndex!,
+                        singleForwardCost,
+                        singleBackwardCost),
+                    ClosurePairPlanStrategy.SingleProbeBackward => ExecuteSeededGroupedTransitiveClosurePairsSingleProbe(
+                        closure,
+                        inputPositions,
+                        parameters,
+                        targetsBySource,
+                        sourcesByTarget,
+                        context,
+                        preferForward: false,
+                        singleSuccIndex!,
+                        singlePredIndex!,
+                        singleForwardCost,
+                        singleBackwardCost),
+                    ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache => ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        inputPositions,
+                        forwardTargetsBySource,
+                        backwardSourcesByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MixedDirection => ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+                        closure,
+                        inputPositions,
+                        forwardTargetsBySource,
+                        backwardSourcesByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        inputPositions,
+                        forwardTargetsBySource,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
                         closure,
                         inputPositions,
                         targetsBySource,
-                        context);
-                }
-
-                if (canMemoizePairs)
-                {
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
-                    return ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                        context),
+                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        inputPositions,
+                        backwardSourcesByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
                         closure,
                         inputPositions,
                         sourcesByTarget,
-                        context);
-                }
-
-                if (targetsBySource.Count <= sourcesByTarget.Count)
-                {
-                    trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsForward");
-                    return ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context);
-                }
-
-                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsBackward");
-                return ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context);
+                        context),
+                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsForward(
+                        closure,
+                        forwardTargetsBySource,
+                        context),
+                    ClosurePairPlanStrategy.Forward => ExecuteSeededGroupedTransitiveClosurePairsForward(
+                        closure,
+                        targetsBySource,
+                        context),
+                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                        closure,
+                        backwardSourcesByTarget,
+                        context),
+                    _ => ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                        closure,
+                        sourcesByTarget,
+                        context)
+                };
             }
             finally
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsSingleProbe(
+            GroupedTransitiveClosureNode closure,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget,
+            EvaluationContext context,
+            bool preferForward,
+            Dictionary<RowWrapper, List<object[]>> succIndex,
+            Dictionary<RowWrapper, List<object[]>> predIndex,
+            int forwardCost,
+            int backwardCost)
+        {
+            var trace = context.Trace;
+            var probeCount = ComputeSingleGroupedPairProbeNormalizationCount(parameters, inputPositions, closure.GroupIndices);
+            var sourceEntry = targetsBySource.First();
+            var sourceKey = sourceEntry.Key.Row;
+            var target = sourceEntry.Value.First();
+            var targetKey = new object[sourceKey.Length];
+            Array.Copy(sourceKey, targetKey, sourceKey.Length - 1);
+            targetKey[sourceKey.Length - 1] = target;
+            var groupedCacheKey = (closure.EdgeRelation, closure.Predicate, string.Join(",", closure.GroupIndices));
+            var groupedPairKey = new object[sourceKey.Length + 1];
+            Array.Copy(sourceKey, groupedPairKey, sourceKey.Length);
+            groupedPairKey[sourceKey.Length] = target;
+            var sourceLabel = string.Join("|", sourceKey.Select(value => value is null ? "<null>" : FormatCacheSeedValue(value)));
+            var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+            var traceKey =
+                $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:groups={string.Join(",", closure.GroupIndices)}:pair={sourceLabel}->{targetLabel}";
+            var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
+
+            if (canReusePairProbeCache &&
+                context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var cachedByPair) &&
+                TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(groupedPairKey), out var pairReachable))
+            {
+                trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                if (!pairReachable)
+                {
+                    return Array.Empty<object[]>();
+                }
+
+                return new List<object[]>
+                {
+                    BuildGroupedClosureRow(closure.Predicate.Arity, closure.GroupIndices.Count, closure.GroupIndices, groupedPairKey)
+                };
+            }
+
+            trace?.RecordCacheLookup("GroupedTransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+
+            var rows = preferForward
+                ? ExecuteSeededGroupedTransitiveClosurePairsForward(closure, targetsBySource, context).ToList()
+                : ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, sourcesByTarget, context).ToList();
+
+            if (canReusePairProbeCache)
+            {
+                if (!context.GroupedTransitiveClosurePairProbeResults.TryGetValue(groupedCacheKey, out var pairStore))
+                {
+                    pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                    context.GroupedTransitiveClosurePairProbeResults.Add(groupedCacheKey, pairStore);
+                }
+
+                var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                    forwardCost,
+                    backwardCost,
+                    probeCount,
+                    useCostPerProbeGate: true);
+                TryAdmitLruBoundedRowWrapperCacheEntry(
+                    pairStore,
+                    new RowWrapper(groupedPairKey),
+                    rows.Count > 0,
+                    _pairProbeCacheMaxEntries,
+                    admitPairProbeCache,
+                    trace,
+                    "GroupedTransitiveClosurePairsSingleProbe",
+                    traceKey);
+            }
+
+            return rows;
         }
 
         private IEnumerable<object[]> ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
@@ -13940,49 +14126,12 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
             EvaluationContext context)
         {
-            const int MaxMemoizedGroupedPairSeeds = 32;
-            var canMemoizeForwardPairs =
-                _cacheContext is not null &&
-                forwardTargetsBySource.Count <= MaxMemoizedGroupedPairSeeds;
-            var canMemoizeBackwardPairs =
-                _cacheContext is not null &&
-                backwardSourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
-
-            var trace = context.Trace;
-            var forwardRows = canMemoizeForwardPairs
-                ? ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
-                    closure,
-                    inputPositions,
-                    forwardTargetsBySource,
-                    context)
-                : ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context);
-
-            if (canMemoizeForwardPairs)
-            {
-                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedForward");
-            }
-
-            foreach (var row in forwardRows)
+            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context))
             {
                 yield return row;
             }
 
-            var backwardRows = canMemoizeBackwardPairs
-                ? ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
-                    closure,
-                    inputPositions,
-                    backwardSourcesByTarget,
-                    context)
-                : ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context);
-
-            if (canMemoizeBackwardPairs)
-            {
-                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoized");
-                trace?.RecordStrategy(closure, "GroupedTransitiveClosurePairsMemoizedBackward");
-            }
-
-            foreach (var row in backwardRows)
+            foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsBackward(closure, backwardSourcesByTarget, context))
             {
                 yield return row;
             }
@@ -17103,184 +17252,214 @@ namespace UnifyWeaver.QueryRuntime
 
                 trace?.RecordStrategy(closure, "TransitiveClosurePairs");
 
-                if (IsSingleConcretePairRequest(bySource, byTarget))
+                const int MaxMemoizedPairSeeds = 32;
+                var singleConcretePairRequest = IsSingleConcretePairRequest(bySource, byTarget);
+                var preferForwardSingleProbe = true;
+                Dictionary<object, List<object[]>>? singleSuccIndex = null;
+                Dictionary<object, List<object[]>>? singlePredIndex = null;
+                var singleForwardCost = 0;
+                var singleBackwardCost = 0;
+
+                if (singleConcretePairRequest)
                 {
-                    var probeCount = ComputeSinglePairProbeNormalizationCount(parameters);
                     var source = bySource.First().Key;
                     var target = bySource.First().Value.First();
                     var edges = GetClosureFactsList(closure.EdgeRelation, ClosureRelationAccessKind.Edge, context, closure);
-                    var succIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
-                    var predIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
-                    var forwardCost = CountEdgeBucket(succIndex, source);
-                    var backwardCost = CountEdgeBucket(predIndex, target);
-                    var pairCacheKey = (closure.EdgeRelation, closure.Predicate);
-                    var pairProbeKey = new object[] { source!, target! };
-                    var sourceLabel = source is null ? "<null>" : FormatCacheSeedValue(source);
-                    var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
-                    var traceKey =
-                        $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
-                    var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
-
-                    if (canReusePairProbeCache &&
-                        context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
-                        TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(pairProbeKey), out var pairReachable))
-                    {
-                        trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
-                        if (!pairReachable)
-                        {
-                            return Array.Empty<object[]>();
-                        }
-
-                        return new List<object[]> { new object[] { source!, target! } };
-                    }
-
-                    trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
-
-                    var rows = forwardCost <= backwardCost
-                        ? ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context).ToList()
-                        : ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context).ToList();
-
-                    if (forwardCost <= backwardCost)
-                    {
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeForward");
-                    }
-                    else
-                    {
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsSingleProbeBackward");
-                    }
-
-                    if (canReusePairProbeCache)
-                    {
-                        if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
-                        {
-                            pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
-                            context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
-                        }
-
-                        var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
-                            forwardCost,
-                            backwardCost,
-                            probeCount,
-                            useCostPerProbeGate: true);
-                        TryAdmitLruBoundedRowWrapperCacheEntry(
-                            pairStore,
-                            new RowWrapper(pairProbeKey),
-                            rows.Count > 0,
-                            _pairProbeCacheMaxEntries,
-                            admitPairProbeCache,
-                            trace,
-                            "TransitiveClosurePairsSingleProbe",
-                            traceKey);
-                    }
-
-                    return rows;
+                    singleSuccIndex = GetFactIndex(closure.EdgeRelation, 0, edges, context);
+                    singlePredIndex = GetFactIndex(closure.EdgeRelation, 1, edges, context);
+                    singleForwardCost = CountEdgeBucket(singleSuccIndex, source);
+                    singleBackwardCost = CountEdgeBucket(singlePredIndex, target);
+                    preferForwardSingleProbe = singleForwardCost <= singleBackwardCost;
                 }
 
-                const int MaxMemoizedPairSeeds = 32;
-                if (TryBuildPairProbeDirectionBatches(
+                Dictionary<object?, HashSet<object?>> forwardBySource = new();
+                Dictionary<object?, HashSet<object?>> backwardByTarget = new();
+                var canBuildDirectionBatches = !singleConcretePairRequest &&
+                    TryBuildPairProbeDirectionBatches(
                         closure,
                         bySource,
                         context,
-                        out var forwardBySource,
-                        out var backwardByTarget))
-                {
-                    var canReuseBatchedPairProbeCache =
-                        _pairProbeCacheMaxEntries > 0 &&
-                        _pairProbeCacheAdmissionMinCostPerProbe > 0d;
-
-                    if (forwardBySource.Count > 0 && backwardByTarget.Count > 0)
-                    {
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeMixed");
-                        if (canReuseBatchedPairProbeCache)
-                        {
-                            return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                                closure,
-                                forwardBySource,
-                                backwardByTarget,
-                                context);
-                        }
-
-                        return ExecuteSeededTransitiveClosurePairsMixedDirection(
-                            closure,
-                            forwardBySource,
-                            backwardByTarget,
-                            context);
-                    }
-
-                    if (forwardBySource.Count > 0)
-                    {
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeForward");
-                        if (canReuseBatchedPairProbeCache)
-                        {
-                            return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                                closure,
-                                forwardBySource,
-                                backwardByTarget,
-                                context);
-                        }
-
-                        if (_cacheContext is not null && forwardBySource.Count <= MaxMemoizedPairSeeds)
-                        {
-                            trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                            trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
-                            return ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context);
-                        }
-
-                        return ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context);
-                    }
-
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsBatchedSingleProbeBackward");
-                    if (canReuseBatchedPairProbeCache)
-                    {
-                        return ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
-                            closure,
-                            forwardBySource,
-                            backwardByTarget,
-                            context);
-                    }
-
-                    if (_cacheContext is not null && backwardByTarget.Count <= MaxMemoizedPairSeeds)
-                    {
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                        trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
-                        return ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context);
-                    }
-
-                    return ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context);
-                }
-
+                        out forwardBySource,
+                        out backwardByTarget);
+                var canReuseBatchedPairProbeCache =
+                    canBuildDirectionBatches &&
+                    _pairProbeCacheMaxEntries > 0 &&
+                    _pairProbeCacheAdmissionMinCostPerProbe > 0d;
+                var canMemoizeForwardBatch =
+                    canBuildDirectionBatches &&
+                    _cacheContext is not null &&
+                    forwardBySource.Count > 0 &&
+                    forwardBySource.Count <= MaxMemoizedPairSeeds;
+                var canMemoizeBackwardBatch =
+                    canBuildDirectionBatches &&
+                    _cacheContext is not null &&
+                    backwardByTarget.Count > 0 &&
+                    backwardByTarget.Count <= MaxMemoizedPairSeeds;
                 var canMemoizePairs =
+                    !singleConcretePairRequest &&
                     _cacheContext is not null &&
                     bySource.Count <= MaxMemoizedPairSeeds &&
                     byTarget.Count <= MaxMemoizedPairSeeds;
+                var preferForwardFallback = bySource.Count <= byTarget.Count;
 
-                if (canMemoizePairs && bySource.Count <= byTarget.Count)
+                var pairStrategySelection = ResolveClosurePairStrategy(
+                    trace,
+                    closure,
+                    _closurePairStrategy,
+                    singleConcretePairRequest,
+                    preferForwardSingleProbe,
+                    canBuildDirectionBatches,
+                    forwardBySource.Count > 0,
+                    backwardByTarget.Count > 0,
+                    canReuseBatchedPairProbeCache,
+                    canMemoizeForwardBatch,
+                    canMemoizeBackwardBatch,
+                    canMemoizePairs,
+                    preferForwardFallback);
+                RecordClosurePairStrategy(trace, closure, "TransitiveClosurePairs", pairStrategySelection);
+
+                return pairStrategySelection.Strategy switch
                 {
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
-                    return ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, bySource, context);
-                }
-
-                if (canMemoizePairs)
-                {
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
-                    return ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, byTarget, context);
-                }
-
-                if (bySource.Count <= byTarget.Count)
-                {
-                    trace?.RecordStrategy(closure, "TransitiveClosurePairsForward");
-                    return ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context);
-                }
-
-                trace?.RecordStrategy(closure, "TransitiveClosurePairsBackward");
-                return ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context);
+                    ClosurePairPlanStrategy.SingleProbeForward => ExecuteSeededTransitiveClosurePairsSingleProbe(
+                        closure,
+                        parameters,
+                        bySource,
+                        byTarget,
+                        context,
+                        preferForward: true,
+                        singleSuccIndex!,
+                        singlePredIndex!,
+                        singleForwardCost,
+                        singleBackwardCost),
+                    ClosurePairPlanStrategy.SingleProbeBackward => ExecuteSeededTransitiveClosurePairsSingleProbe(
+                        closure,
+                        parameters,
+                        bySource,
+                        byTarget,
+                        context,
+                        preferForward: false,
+                        singleSuccIndex!,
+                        singlePredIndex!,
+                        singleForwardCost,
+                        singleBackwardCost),
+                    ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache => ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        forwardBySource,
+                        backwardByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MixedDirection => ExecuteSeededTransitiveClosurePairsMixedDirection(
+                        closure,
+                        forwardBySource,
+                        backwardByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        forwardBySource,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        bySource,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        backwardByTarget,
+                        context),
+                    ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        byTarget,
+                        context),
+                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsForward(
+                        closure,
+                        forwardBySource,
+                        context),
+                    ClosurePairPlanStrategy.Forward => ExecuteSeededTransitiveClosurePairsForward(
+                        closure,
+                        bySource,
+                        context),
+                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsBackward(
+                        closure,
+                        backwardByTarget,
+                        context),
+                    _ => ExecuteSeededTransitiveClosurePairsBackward(
+                        closure,
+                        byTarget,
+                        context)
+                };
             }
             finally
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsSingleProbe(
+            TransitiveClosureNode closure,
+            IReadOnlyList<object[]> parameters,
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> byTarget,
+            EvaluationContext context,
+            bool preferForward,
+            Dictionary<object, List<object[]>> succIndex,
+            Dictionary<object, List<object[]>> predIndex,
+            int forwardCost,
+            int backwardCost)
+        {
+            var trace = context.Trace;
+            var probeCount = ComputeSinglePairProbeNormalizationCount(parameters);
+            var source = bySource.First().Key;
+            var target = bySource.First().Value.First();
+            var pairCacheKey = (closure.EdgeRelation, closure.Predicate);
+            var pairProbeKey = new object[] { source!, target! };
+            var sourceLabel = source is null ? "<null>" : FormatCacheSeedValue(source);
+            var targetLabel = target is null ? "<null>" : FormatCacheSeedValue(target);
+            var traceKey =
+                $"{closure.Predicate.Name}/{closure.Predicate.Arity}:edge={closure.EdgeRelation.Name}/{closure.EdgeRelation.Arity}:pair={sourceLabel}->{targetLabel}";
+            var canReusePairProbeCache = _pairProbeCacheMaxEntries > 0;
+
+            if (canReusePairProbeCache &&
+                context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var cachedByPair) &&
+                TryGetLruRowWrapperCacheValue(cachedByPair, new RowWrapper(pairProbeKey), out var pairReachable))
+            {
+                trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: true, built: false);
+                if (!pairReachable)
+                {
+                    return Array.Empty<object[]>();
+                }
+
+                return new List<object[]> { new object[] { source!, target! } };
+            }
+
+            trace?.RecordCacheLookup("TransitiveClosurePairsSingleProbe", traceKey, hit: false, built: true);
+
+            var rows = preferForward
+                ? ExecuteSeededTransitiveClosurePairsForward(closure, bySource, context).ToList()
+                : ExecuteSeededTransitiveClosurePairsBackward(closure, byTarget, context).ToList();
+
+            if (canReusePairProbeCache)
+            {
+                if (!context.TransitiveClosurePairProbeResults.TryGetValue(pairCacheKey, out var pairStore))
+                {
+                    pairStore = new Dictionary<RowWrapper, bool>(StructuralRowWrapperComparer);
+                    context.TransitiveClosurePairProbeResults.Add(pairCacheKey, pairStore);
+                }
+
+                var admitPairProbeCache = ShouldAdmitPairProbeCacheEntry(
+                    forwardCost,
+                    backwardCost,
+                    probeCount,
+                    useCostPerProbeGate: true);
+                TryAdmitLruBoundedRowWrapperCacheEntry(
+                    pairStore,
+                    new RowWrapper(pairProbeKey),
+                    rows.Count > 0,
+                    _pairProbeCacheMaxEntries,
+                    admitPairProbeCache,
+                    trace,
+                    "TransitiveClosurePairsSingleProbe",
+                    traceKey);
+            }
+
+            return rows;
         }
 
         private IEnumerable<object[]> ExecuteSeededTransitiveClosurePairsMixedDirection(
@@ -17289,41 +17468,12 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
             EvaluationContext context)
         {
-            const int MaxMemoizedPairSeeds = 32;
-            var canMemoizeForwardPairs =
-                _cacheContext is not null &&
-                forwardBySource.Count <= MaxMemoizedPairSeeds;
-            var canMemoizeBackwardPairs =
-                _cacheContext is not null &&
-                backwardByTarget.Count <= MaxMemoizedPairSeeds;
-
-            var trace = context.Trace;
-            var forwardRows = canMemoizeForwardPairs
-                ? ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context)
-                : ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context);
-
-            if (canMemoizeForwardPairs)
-            {
-                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedForward");
-            }
-
-            foreach (var row in forwardRows)
+            foreach (var row in ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context))
             {
                 yield return row;
             }
 
-            var backwardRows = canMemoizeBackwardPairs
-                ? ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context)
-                : ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context);
-
-            if (canMemoizeBackwardPairs)
-            {
-                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoized");
-                trace?.RecordStrategy(closure, "TransitiveClosurePairsMemoizedBackward");
-            }
-
-            foreach (var row in backwardRows)
+            foreach (var row in ExecuteSeededTransitiveClosurePairsBackward(closure, backwardByTarget, context))
             {
                 yield return row;
             }
