@@ -273,24 +273,21 @@ backtrack s = case wsCPs s of
               , wsCutBar   = cpCutBar cp
               } } }
   where
-    undoBinding bindings (TrailEntry key mOld)
-      | "__binding__" `isPrefixOf` key =
-          let var = drop (length "__binding__") key
-          in case mOld of
-            Just old -> Map.insert var old bindings
-            Nothing  -> Map.delete var bindings
-      | otherwise = bindings
+    undoBinding bindings (TrailEntry vid mOld) =
+      case mOld of
+        Just old -> IM.insert vid old bindings
+        Nothing  -> IM.delete vid bindings
 
 -- | Resume a builtin choice point. Tries next match, updates or pops CP.
 resumeBuiltin :: BuiltinState -> ChoicePoint -> [ChoicePoint] -> WamState -> Maybe WamState
 resumeBuiltin (FactRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
-resumeBuiltin (FactRetry var (v:vs) retPC) cp rest s =
-  let newBindings = Map.insert var (Atom v) (cpBindings cp)
+resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
+  let newBindings = IM.insert vid (Atom v) (cpBindings cp)
       newRegs = IM.insert 2 (Atom v) (cpRegs cp)
       newCPs = case vs of
         [] -> rest
-        _  -> cp { cpBuiltin = Just (FactRetry var vs retPC) } : rest
+        _  -> cp { cpBuiltin = Just (FactRetry vid vs retPC) } : rest
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
             , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
@@ -298,12 +295,12 @@ resumeBuiltin (FactRetry var (v:vs) retPC) cp rest s =
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 resumeBuiltin (HopsRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
-resumeBuiltin (HopsRetry var (h:hs) retPC) cp rest s =
-  let newBindings = Map.insert var (Integer (fromIntegral h)) (cpBindings cp)
+resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
+  let newBindings = IM.insert vid (Integer (fromIntegral h)) (cpBindings cp)
       newRegs = IM.insert 3 (Integer (fromIntegral h)) (cpRegs cp)
       newCPs = case hs of
         [] -> rest
-        _  -> cp { cpBuiltin = Just (HopsRetry var hs retPC) } : rest
+        _  -> cp { cpBuiltin = Just (HopsRetry vid hs retPC) } : rest
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
             , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
@@ -342,10 +339,10 @@ finalizeAggregate returnPC s = go (wsCPs s)
             regs0 = cpRegs cp
             resVal = derefVar bindings0 <$> IM.lookup resReg regs0
             (regs1, bindings1, trail1) = case resVal of
-              Just (Unbound var) ->
+              Just (Unbound vid) ->
                 ( IM.insert resReg result regs0
-                , Map.insert var result bindings0
-                , TrailEntry ("__binding__" ++ var) (Map.lookup var bindings0)
+                , IM.insert vid result bindings0
+                , TrailEntry vid (IM.lookup vid bindings0)
                     : take (cpTrailLen cp) (wsTrail s)
                 )
               _ -> (regs0, bindings0, take (cpTrailLen cp) (wsTrail s))
@@ -404,14 +401,14 @@ callIndexedFact2 pred s =
     Nothing -> Nothing
     Just factIndex ->
       let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
-          a2 = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 2 (wsRegs s))
+          a2 = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
       in case a1 of
         Atom key -> case Map.lookup key factIndex of
           Just (v:rest) -> case a2 of
-            Unbound var ->
+            Unbound vid ->
               let newRegs = IM.insert 2 (Atom v) (wsRegs s)
-                  newBindings = Map.insert var (Atom v) (wsBindings s)
-                  newTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+                  newBindings = IM.insert vid (Atom v) (wsBindings s)
+                  newTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
                   newCPs = case rest of
                     [] -> wsCPs s  -- single match, no CP
                     _  -> ChoicePoint
@@ -419,7 +416,7 @@ callIndexedFact2 pred s =
                             , cpCP = wsCP s, cpTrailLen = length (wsTrail s)
                             , cpHeapLen = length (wsHeap s), cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
-                            , cpBuiltin = Just (FactRetry var rest retPC)
+                            , cpBuiltin = Just (FactRetry vid rest retPC)
                             } : wsCPs s
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
                          , wsTrail = newTrail, wsCPs = newCPs })
@@ -444,14 +441,14 @@ executeForeign "category_ancestor/4" s =
       let visitedStrs = Set.fromList [v | Atom v <- visitedVals]
           hops = nativeCategoryAncestor parents catS rootS maxD (Set.size visitedStrs) visitedStrs
           retPC = wsCP s
-          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 3 (wsRegs s))
+          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
           bindHop hopVal =
             case hopsReg of
-              Unbound var ->
+              Unbound vid ->
                 s { wsPC = retPC
                   , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)
-                  , wsBindings = Map.insert var (Integer (fromIntegral hopVal)) (wsBindings s)
-                  , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s }
+                  , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)
+                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s }
               _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }
       in case hops of
         [] -> Nothing
@@ -459,7 +456,7 @@ executeForeign "category_ancestor/4" s =
         (h:restHops) ->
           let s1 = bindHop h
               -- Single HopsRetry CP for all remaining matches (self-popping)
-              hopsVar = case hopsReg of { Unbound v -> v; _ -> "" }
+              hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }
               cp = ChoicePoint
                 { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
                 , cpCP = wsCP s, cpTrailLen = length (wsTrail s)
@@ -473,15 +470,15 @@ executeForeign _ _ = Nothing
 
 -- | Unify two values, binding unbound variables.
 unifyVal :: Value -> Value -> WamState -> Maybe WamState
-unifyVal (Unbound v) val s =
+unifyVal (Unbound vid) val s =
   Just (s { wsPC = wsPC s + 1
-          , wsBindings = Map.insert v val (wsBindings s)
-          , wsTrail = TrailEntry ("__binding__" ++ v) (Map.lookup v (wsBindings s)) : wsTrail s
+          , wsBindings = IM.insert vid val (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
           })
-unifyVal val (Unbound v) s =
+unifyVal val (Unbound vid) s =
   Just (s { wsPC = wsPC s + 1
-          , wsBindings = Map.insert v val (wsBindings s)
-          , wsTrail = TrailEntry ("__binding__" ++ v) (Map.lookup v (wsBindings s)) : wsTrail s
+          , wsBindings = IM.insert vid val (wsBindings s)
+          , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
           })
 unifyVal a b s | a == b = Just (s { wsPC = wsPC s + 1 })
                | otherwise = Nothing'.
@@ -497,11 +494,11 @@ step s (GetConstant c ai) =
   let val = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
   in case val of
     Just v | v == c -> Just (s { wsPC = wsPC s + 1 })
-    Just (Unbound var) ->
+    Just (Unbound vid) ->
       Just (s { wsPC = wsPC s + 1
               , wsRegs = IM.insert ai c (wsRegs s)
-              , wsBindings = Map.insert var c (wsBindings s)
-              , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+              , wsBindings = IM.insert vid c (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
               })
     _ -> Nothing
 
@@ -516,11 +513,11 @@ step s (GetValue xn ai) =
       vx = getReg xn s
   in case (va, vx) of
     (Just a, Just x) | a == x -> Just (s { wsPC = wsPC s + 1 })
-    (Just (Unbound n), Just x) ->
+    (Just (Unbound vid), Just x) ->
       Just (s { wsPC = wsPC s + 1
               , wsRegs = IM.insert ai x (wsRegs s)
-              , wsBindings = Map.insert n x (wsBindings s)
-              , wsTrail = TrailEntry ("__binding__" ++ n) (Map.lookup n (wsBindings s)) : wsTrail s
+              , wsBindings = IM.insert vid x (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
               })
     _ -> Nothing
 
@@ -528,11 +525,12 @@ step s (PutConstant c ai) =
   Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai c (wsRegs s) })
 
 step s (PutVariable xn ai) =
-  let var = Unbound ("_V" ++ show (wsVarCounter s))
+  let vid = wsVarCounter s
+      var = Unbound vid
       s1 = putReg xn var s
   in Just (s1 { wsPC = wsPC s + 1
               , wsRegs = IM.insert ai var (wsRegs s1)
-              , wsVarCounter = wsVarCounter s + 1
+              , wsVarCounter = vid + 1
               })
 
 step s (PutValue xn ai) =
@@ -620,12 +618,12 @@ step s (BuiltinCall "is/2" _) =
       result = evalArith (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case (lhs, result) of
-    (Just (Unbound var), Just r) ->
+    (Just (Unbound vid), Just r) ->
       let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
       in Just (s { wsPC = wsPC s + 1
                  , wsRegs = IM.insert 1 val (wsRegs s)
-                 , wsBindings = Map.insert var val (wsBindings s)
-                 , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+                 , wsBindings = IM.insert vid val (wsBindings s)
+                 , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
                  })
     (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
@@ -637,12 +635,12 @@ step s (BuiltinCall "length/2" _) =
       let len = length items
           lhs = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
       in case lhs of
-        Just (Unbound var) ->
+        Just (Unbound vid) ->
           let val = Integer len
           in Just (s { wsPC = wsPC s + 1
                      , wsRegs = IM.insert 2 val (wsRegs s)
-                     , wsBindings = Map.insert var val (wsBindings s)
-                     , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
+                     , wsBindings = IM.insert vid val (wsBindings s)
+                     , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
                      })
         Just (Integer n) | n == len -> Just (s { wsPC = wsPC s + 1 })
         _ -> Nothing
@@ -688,7 +686,7 @@ step s (BuiltinCall ">/2" _) =
 
 -- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
 step s (BuiltinCall "member/2" _) =
-  let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 1 (wsRegs s))
+  let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
       list_ = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 2 (wsRegs s))
   in case list_ of
     VList (x:_) -> unifyVal elem_ x s
@@ -961,12 +959,13 @@ main = do
     -- computation BEFORE timing endpoint, otherwise lazy evaluation will
     -- defer the work until output and the timing will be artificially low.
     seedResultsForced <- mapM (\\cat -> do
-        let s0 = (emptyState mergedCode mergedLabels)
+        let hopsVarId = 1000000  -- reserved query var ID, won''t collide with wsVarCounter
+            s0 = (emptyState mergedCode mergedLabels)
                 { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
                 , wsRegs = IM.fromList
                     [ (1, Atom cat)
                     , (2, Atom root)
-                    , (3, Unbound "Hops")
+                    , (3, Unbound hopsVarId)
                     , (4, VList [Atom cat])
                     ]
                 , wsCP = 0
@@ -1017,13 +1016,14 @@ main = do
 showFFloat6 :: Double -> String
 showFFloat6 x = Numeric.showFFloat (Just 6) x ""
 
--- | Collect all Hops solutions from a query by repeated run + backtrack.
+-- | Collect all Hops solutions by reading A3 (hops register) after each run.
+-- A3 holds the hops result from category_ancestor/4.
 collectSolutions :: WamState -> [Double]
 collectSolutions s0 =
     case run s0 of
       Nothing -> []
       Just s1 ->
-        let hopsVal = case Map.lookup "Hops" (wsBindings s1) of
+        let hopsVal = case IM.lookup 3 (wsRegs s1) of
               Just v -> extractDouble (derefVar (wsBindings s1) v)
               Nothing -> Nothing
             hops = fromMaybe 0 hopsVal
@@ -1032,7 +1032,7 @@ collectSolutions s0 =
               Nothing -> []
         in case hopsVal of
           Just _ -> hops : rest
-          Nothing -> rest  -- skip solutions where Hops is not bound
+          Nothing -> rest
 
 -- | Extract a Double from a Value.
 extractDouble :: Value -> Maybe Double
@@ -1088,15 +1088,15 @@ import WamTypes
 ~w
 
 -- | Dereference an Unbound variable through the binding table.
-derefVar :: Map.Map String Value -> Value -> Value
-derefVar bindings (Unbound name) =
-  case Map.lookup name bindings of
+derefVar :: IM.IntMap Value -> Value -> Value
+derefVar bindings (Unbound vid) =
+  case IM.lookup vid bindings of
     Just val -> derefVar bindings val
-    Nothing  -> Unbound name
+    Nothing  -> Unbound vid
 derefVar _ v = v
 
 -- | Evaluate arithmetic expression.
-evalArith :: Map.Map String Value -> Value -> Maybe Double
+evalArith :: IM.IntMap Value -> Value -> Maybe Double
 evalArith _ (Integer n) = Just (fromIntegral n)
 evalArith _ (Float f) = Just f
 evalArith bindings (Atom s) = case reads s of
@@ -1211,14 +1211,14 @@ data Value = Atom String
            | Float Double
            | VList [Value]
            | Str String [Value]
-           | Unbound String
+           | Unbound !Int   -- variable ID (interned via wsVarCounter)
            | Ref Int
            deriving (Eq, Ord, Show)
 
 data EnvFrame = EnvFrame !Int !(IM.IntMap Value)   -- saved CP + Y-regs (IntMap)
               deriving (Show)
 
-data TrailEntry = TrailEntry !String !(Maybe Value)
+data TrailEntry = TrailEntry !Int !(Maybe Value)   -- variable ID, old value
                 deriving (Show)
 
 data ChoicePoint = ChoicePoint
@@ -1228,7 +1228,7 @@ data ChoicePoint = ChoicePoint
   , cpCP       :: !Int
   , cpTrailLen :: !Int
   , cpHeapLen  :: !Int
-  , cpBindings :: !(Map.Map String Value)
+  , cpBindings :: !(IM.IntMap Value)    -- IntMap (variable bindings)
   , cpCutBar   :: !Int
   , cpAggFrame :: !(Maybe AggFrame)
   , cpBuiltin  :: !(Maybe BuiltinState)
@@ -1236,8 +1236,8 @@ data ChoicePoint = ChoicePoint
 
 -- | Builtin state for choice points that need custom retry logic.
 data BuiltinState
-  = FactRetry !String ![String] !Int  -- varName, remaining values, returnPC
-  | HopsRetry !String ![Int] !Int     -- varName, remaining Hops values, returnPC
+  = FactRetry !Int ![String] !Int  -- variable ID, remaining values, returnPC
+  | HopsRetry !Int ![Int] !Int     -- variable ID, remaining Hops values, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
@@ -1256,16 +1256,16 @@ data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID
 
 data WamState = WamState
   { wsPC       :: !Int
-  , wsRegs     :: !(IM.IntMap Value)                         -- IntMap for O(1) integer key access
+  , wsRegs     :: !(IM.IntMap Value)                         -- registers (Int keys)
   , wsStack    :: ![EnvFrame]
   , wsHeap     :: ![Value]
   , wsTrail    :: ![TrailEntry]
   , wsCP       :: !Int
   , wsCPs      :: ![ChoicePoint]
-  , wsBindings :: !(Map.Map String Value)
+  , wsBindings :: !(IM.IntMap Value)                         -- variable bindings (Int keys)
   , wsCutBar   :: !Int
   , wsCode     :: !(Array Int Instruction)
-  , wsLabels   :: !(Map.Map String Int)
+  , wsLabels   :: !(Map.Map String Int)                      -- labels stay String-keyed (cold)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
   , wsAggAccum :: ![Value]
@@ -1316,7 +1316,7 @@ emptyState codeList labels = let n = length codeList; code = listArray (1, n) co
   , wsTrail    = []
   , wsCP       = 0
   , wsCPs      = []
-  , wsBindings = Map.empty
+  , wsBindings = IM.empty
   , wsCutBar   = 0
   , wsCode     = code
   , wsLabels   = labels
