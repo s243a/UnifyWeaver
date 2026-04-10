@@ -179,6 +179,32 @@ test(helpers_generated) :-
     assertion(sub_string(HelpersCode, _, _, _, "$unify_regs")),
     assertion(sub_string(HelpersCode, _, _, _, "$execute_builtin")).
 
+%% --- Phase 2.1: arg/3 codegen ---
+
+test(arg_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('arg/3', 19)).
+
+test(arg_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    %% The $builtin_arg function must be emitted
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_arg")),
+    %% It must be reachable from $execute_builtin's dispatch — the
+    %% if-chain checks id == 19 and calls $builtin_arg.
+    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 19)")),
+    %% Sanity: the helper body should reference the arity-extraction
+    %% shift (high 32 bits of compound payload).
+    assertion(sub_string(HelpersCode, _, _, _, "i64.shr_u")).
+
+test(arg_builtin_call_encoding) :-
+    %% Verify a builtin_call arg/3 instruction encodes with builtin ID 19.
+    wam_instruction_to_wat_bytes(builtin_call('arg/3', 3), [], Hex),
+    assertion(atom(Hex)),
+    %% Tag byte is builtin_call = 21 = 0x15
+    assertion(sub_string(Hex, 0, _, _, "\\15")),
+    %% Op1 (low byte of i64) should be builtin ID 19 = 0x13
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\13').
+
 %% --- Predicate compilation ---
 
 test(compile_simple_predicate) :-

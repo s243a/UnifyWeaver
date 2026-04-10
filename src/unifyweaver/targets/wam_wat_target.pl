@@ -104,6 +104,13 @@ builtin_id('number/1', 14).
 builtin_id('true/0',   15).
 builtin_id('fail/0',   16).
 builtin_id('!/0',      17).
+%% Term inspection builtins (WAM_TERM_BUILTINS plan). IDs 18-21 are
+%% reserved here in one block; individual backends may implement them
+%% incrementally. An unimplemented ID returns fail from $execute_builtin.
+builtin_id('functor/3',   18).
+builtin_id('arg/3',       19).
+builtin_id('=../2',       20).
+builtin_id('copy_term/2', 21).
 
 % ============================================================================
 % Register name -> index mapping
@@ -1028,6 +1035,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (call $set_cp_count (i32.const 0))
     (return (i32.const 1))
   )
+  ;; --- Term inspection builtins (IDs 18-21) ---
+  ;; Handled via a short if-chain after the main br_table default.
+  ;; These are not hot paths, so the extra compares are negligible.
+  (if (i32.eq (local.get $id) (i32.const 19))
+    (then (return (call $builtin_arg))))
   (i32.const 0)
 )
 
@@ -1061,6 +1073,61 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     ) (return (i64.ge_s (local.get $a) (local.get $b))))
   )
   (i32.const 0)
+)
+
+;; --- arg/3: A1 = N (1-based), A2 = T (ref->compound), A3 = result ---
+;; Reads the Nth argument cell of the compound T references, unifies it
+;; with A3. Argument cells are laid out contiguously after the compound
+;; header, each cell 12 bytes. Arity is recovered from the high 32 bits
+;; of the compound header payload (see encode_structure_op1 in
+;; wam_wat_target.pl).
+(func $builtin_arg (result i32)
+  (local $n i32)
+  (local $t_tag i32)
+  (local $comp_addr i32)
+  (local $comp_tag i32)
+  (local $comp_payload i64)
+  (local $arity i32)
+  (local $arg_off i32)
+  (local $arg_tag i32)
+  (local $arg_payload i64)
+  (local $a3_tag i32)
+  ;; N from A1 (register index 0). Payload is the raw integer value.
+  (local.set $n (i32.wrap_i64 (call $get_reg_payload (i32.const 0))))
+  (if (i32.lt_s (local.get $n) (i32.const 1))
+    (then (return (i32.const 0))))
+  ;; T from A2 (register index 1). Must be a ref (tag=5).
+  (local.set $t_tag (call $get_reg_tag (i32.const 1)))
+  (if (i32.ne (local.get $t_tag) (i32.const 5))
+    (then (return (i32.const 0))))
+  (local.set $comp_addr (i32.wrap_i64 (call $get_reg_payload (i32.const 1))))
+  (local.set $comp_tag (call $val_tag (local.get $comp_addr)))
+  (if (i32.ne (local.get $comp_tag) (i32.const 3))
+    (then (return (i32.const 0))))
+  (local.set $comp_payload (call $val_payload (local.get $comp_addr)))
+  (local.set $arity
+    (i32.wrap_i64 (i64.shr_u (local.get $comp_payload) (i64.const 32))))
+  (if (i32.gt_s (local.get $n) (local.get $arity))
+    (then (return (i32.const 0))))
+  ;; Argument N at compound_addr + N*12 (header at +0, args start at +12).
+  (local.set $arg_off
+    (i32.add (local.get $comp_addr)
+             (i32.mul (local.get $n) (i32.const 12))))
+  (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+  (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+  ;; A3 (register index 2): bind if unbound, else shallow compare.
+  (local.set $a3_tag (call $get_reg_tag (i32.const 2)))
+  (if (i32.eq (local.get $a3_tag) (i32.const 6))
+    (then
+      (call $trail_binding (i32.const 2))
+      (call $set_reg (i32.const 2) (local.get $arg_tag) (local.get $arg_payload))
+      (return (i32.const 1))))
+  (if (result i32)
+    (i32.and
+      (i32.eq (local.get $a3_tag) (local.get $arg_tag))
+      (i64.eq (call $get_reg_payload (i32.const 2)) (local.get $arg_payload)))
+    (then (i32.const 1))
+    (else (i32.const 0)))
 )
 ', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
 
