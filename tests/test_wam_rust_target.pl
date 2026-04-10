@@ -48,6 +48,9 @@ test_simple_fact(foo, bar).
 :- dynamic filtered_adjusted_min_semantic_dist_astar/4.
 :- dynamic filtered_adjusted_weighted_path/3.
 :- dynamic filtered_adjusted_astar_weighted_path/4.
+:- dynamic target_label/2.
+:- dynamic labeled_adjusted_weighted_path/3.
+:- dynamic labeled_adjusted_astar_weighted_path/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -126,6 +129,11 @@ direct_semantic_dist(b, c, 1.0).
 direct_semantic_dist(b, d, 4.0).
 direct_semantic_dist(c, d, 3.0).
 
+target_label(b, branch_b).
+target_label(c, branch_c).
+target_label(d, goal_d1).
+target_label(d, goal_d2).
+
 weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
 weighted_path(X, Y, Cost) :-
     weighted_edge(X, Z, W),
@@ -168,6 +176,18 @@ filtered_adjusted_weighted_path(Start, Target, Adjusted) :-
 
 filtered_adjusted_astar_weighted_path(Start, Target, Dim, Adjusted) :-
     astar_weighted_path(Start, Target, Dim, Cost),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+labeled_adjusted_weighted_path(Start, Label, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    target_label(Target, Label),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+labeled_adjusted_astar_weighted_path(Start, Label, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    target_label(Target, Label),
     Cost > 2,
     Adjusted is Cost + 1.
 
@@ -861,6 +881,36 @@ test_filtered_adjusted_astar_stream_wrapper :-
     ;   fail_test(Test, 'Mixed-goal A* stream wrapper did not lower correctly')
     ).
 
+test_labeled_weighted_stream_wrapper :-
+    Test = 'WAM-Rust: relational join stream wrapper expands weighted_path/3 results',
+    (   rust_target:compile_predicate_to_rust(user:labeled_adjusted_weighted_path/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn labeled_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let joined_values = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'for joined_value in joined_values.iter() {'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Relational weighted stream wrapper did not lower correctly')
+    ).
+
+test_labeled_astar_stream_wrapper :-
+    Test = 'WAM-Rust: relational join stream wrapper expands astar_weighted_path/4 results',
+    (   rust_target:compile_predicate_to_rust(user:labeled_adjusted_astar_weighted_path/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn labeled_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let joined_values = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'for joined_value in joined_values.iter() {'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Relational A* stream wrapper did not lower correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1183,6 +1233,8 @@ run_tests :-
     test_filtered_adjusted_astar_min_wrapper,
     test_filtered_adjusted_weighted_stream_wrapper,
     test_filtered_adjusted_astar_stream_wrapper,
+    test_labeled_weighted_stream_wrapper,
+    test_labeled_astar_stream_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

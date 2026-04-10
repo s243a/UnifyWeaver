@@ -150,6 +150,26 @@ filtered_adjusted_astar_weighted_path(Start, Target, Dim, Adjusted) :-
     Cost > 2,
     Adjusted is Cost + 1.
 
+:- dynamic target_label/2.
+target_label(b, branch_b).
+target_label(c, branch_c).
+target_label(d, goal_d1).
+target_label(d, goal_d2).
+
+:- dynamic labeled_adjusted_weighted_path/3.
+labeled_adjusted_weighted_path(Start, Label, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    target_label(Target, Label),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+:- dynamic labeled_adjusted_astar_weighted_path/4.
+labeled_adjusted_astar_weighted_path(Start, Label, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    target_label(Target, Label),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -160,7 +180,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4, user:labeled_adjusted_weighted_path/3, user:labeled_adjusted_astar_weighted_path/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -187,6 +207,8 @@ use runtime_test::filtered_adjusted_min_semantic_dist;
 use runtime_test::filtered_adjusted_min_semantic_dist_astar;
 use runtime_test::filtered_adjusted_weighted_path;
 use runtime_test::filtered_adjusted_astar_weighted_path;
+use runtime_test::labeled_adjusted_weighted_path;
+use runtime_test::labeled_adjusted_astar_weighted_path;
 
 #[test]
 fn test_generated_predicates() {
@@ -1011,6 +1033,97 @@ fn test_generated_predicates() {
         Value::Integer(5),
         Value::Unbound("AStarStreamNoPath".to_string()));
     assert!(!ok48, "filtered_adjusted_astar_weighted_path(s, a, 5, Adjusted) should fail");
+
+    // Test labeled_adjusted_weighted_path/3 relational join wrapper
+    let mut vm_labeled_weighted = WamState::new(vec![], std::collections::HashMap::new());
+    let ok49 = labeled_adjusted_weighted_path(&mut vm_labeled_weighted,
+        Value::Atom("s".to_string()),
+        Value::Unbound("WeightedLabel".to_string()),
+        Value::Unbound("WeightedAdjusted".to_string()));
+    assert!(ok49, "labeled_adjusted_weighted_path(s, Label, Adjusted) first solution should succeed");
+    let mut labeled_weighted_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(label)), Some(Value::Float(cost))) =
+        (vm_labeled_weighted.bindings.get("WeightedLabel").cloned(), vm_labeled_weighted.bindings.get("WeightedAdjusted").cloned()) {
+        labeled_weighted_results.push((label, cost));
+    } else {
+        panic!("expected first labeled_adjusted_weighted_path result");
+    }
+    while vm_labeled_weighted.backtrack() {
+        if let (Some(Value::Atom(label)), Some(Value::Float(cost))) =
+            (vm_labeled_weighted.bindings.get("WeightedLabel").cloned(), vm_labeled_weighted.bindings.get("WeightedAdjusted").cloned()) {
+            labeled_weighted_results.push((label, cost));
+        } else {
+            panic!("expected labeled_adjusted_weighted_path backtrack result");
+        }
+    }
+    labeled_weighted_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(labeled_weighted_results, vec![
+        ("branch_b".to_string(), 4.0),
+        ("branch_c".to_string(), 5.0),
+        ("goal_d1".to_string(), 8.0),
+        ("goal_d2".to_string(), 8.0),
+    ]);
+
+    let mut vm_labeled_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok50 = labeled_adjusted_weighted_path(&mut vm_labeled_weighted_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_d2".to_string()),
+        Value::Float(8.0));
+    assert!(ok50, "labeled_adjusted_weighted_path(s, goal_d2, 8.0) should succeed");
+
+    let mut vm_labeled_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok51 = labeled_adjusted_weighted_path(&mut vm_labeled_weighted_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing".to_string()),
+        Value::Unbound("WeightedMissing".to_string()));
+    assert!(!ok51, "labeled_adjusted_weighted_path(s, missing, Adjusted) should fail");
+
+    // Test labeled_adjusted_astar_weighted_path/4 relational join wrapper
+    let mut vm_labeled_astar = WamState::new(vec![], std::collections::HashMap::new());
+    let ok52 = labeled_adjusted_astar_weighted_path(&mut vm_labeled_astar,
+        Value::Atom("s".to_string()),
+        Value::Unbound("AStarLabel".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarAdjusted".to_string()));
+    assert!(ok52, "labeled_adjusted_astar_weighted_path(s, Label, 5, Adjusted) first solution should succeed");
+    let mut labeled_astar_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(label)), Some(Value::Float(cost))) =
+        (vm_labeled_astar.bindings.get("AStarLabel").cloned(), vm_labeled_astar.bindings.get("AStarAdjusted").cloned()) {
+        labeled_astar_results.push((label, cost));
+    } else {
+        panic!("expected first labeled_adjusted_astar_weighted_path result");
+    }
+    while vm_labeled_astar.backtrack() {
+        if let (Some(Value::Atom(label)), Some(Value::Float(cost))) =
+            (vm_labeled_astar.bindings.get("AStarLabel").cloned(), vm_labeled_astar.bindings.get("AStarAdjusted").cloned()) {
+            labeled_astar_results.push((label, cost));
+        } else {
+            panic!("expected labeled_adjusted_astar_weighted_path backtrack result");
+        }
+    }
+    labeled_astar_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(labeled_astar_results, vec![
+        ("branch_b".to_string(), 4.0),
+        ("branch_c".to_string(), 5.0),
+        ("goal_d1".to_string(), 8.0),
+        ("goal_d2".to_string(), 8.0),
+    ]);
+
+    let mut vm_labeled_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok53 = labeled_adjusted_astar_weighted_path(&mut vm_labeled_astar_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_d1".to_string()),
+        Value::Integer(5),
+        Value::Float(8.0));
+    assert!(ok53, "labeled_adjusted_astar_weighted_path(s, goal_d1, 5, 8.0) should succeed");
+
+    let mut vm_labeled_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok54 = labeled_adjusted_astar_weighted_path(&mut vm_labeled_astar_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarMissing".to_string()));
+    assert!(!ok54, "labeled_adjusted_astar_weighted_path(s, missing, 5, Adjusted) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
