@@ -572,6 +572,71 @@ test_recursive_kernel_registry :-
     ;   fail_test(Test, 'Recursive kernel registry did not match expected supported kernels')
     ).
 
+test_foreign_stream_wrapper_plan_ir :-
+    Test = 'WAM-Rust: foreign stream wrapper plan normalizes multistage joins',
+    Head =.. [bucketed_adjusted_weighted_path, Start, Bucket, Adjusted],
+    Body = ( weighted_path(Start, Target, Cost),
+             target_label(Target, Label),
+             label_bucket(Label, Bucket),
+             Cost > 2,
+             Adjusted is Cost + 1 ),
+    (   rust_target:rust_foreign_stream_wrapper_plan(bucketed_adjusted_weighted_path, 3, Head, Body, Plan),
+        Plan = foreign_wrapper_plan(
+            weighted_kernel(weighted_path, weighted_edge/3,
+                ['s'-'a'-1.0, 's'-'b'-4.0, 'a'-'b'-2.0, 'a'-'c'-5.0, 'b'-'c'-1.0, 'c'-'d'-3.0]),
+            [target_label/2, label_bucket/2],
+            [Start, Bucket, Cost],
+            Adjusted,
+            _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign stream wrapper plan IR did not match expected multistage shape')
+    ).
+
+test_foreign_aggregate_wrapper_plan_ir :-
+    Test = 'WAM-Rust: foreign aggregate wrapper plan normalizes scalar and grouped terminals',
+    ScalarHead =.. [bucketed_min_semantic_dist, Start, Bucket, MinDist],
+    ScalarBody = aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        MinDist),
+    GroupedHead =.. [grouped_bucketed_min_semantic_dist, Start, Bucket, GroupMin],
+    GroupedBody = aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        GroupMin),
+    rust_target:classify_aggregate(ScalarBody, ScalarAggInfo),
+    rust_target:classify_aggregate(GroupedBody, GroupedAggInfo),
+    (   rust_target:rust_foreign_aggregate_wrapper_plan(bucketed_min_semantic_dist, 3, ScalarHead, ScalarAggInfo, ScalarPlan),
+        ScalarPlan = foreign_aggregate_plan(
+            weighted_kernel(weighted_path, weighted_edge/3, _),
+            [target_label/2, label_bucket/2],
+            [Start, Bucket, Cost],
+            Adjusted,
+            all,
+            none,
+            _),
+        rust_target:rust_foreign_aggregate_wrapper_plan(grouped_bucketed_min_semantic_dist, 3, GroupedHead, GroupedAggInfo, GroupedPlan),
+        GroupedPlan = foreign_aggregate_plan(
+            weighted_kernel(weighted_path, weighted_edge/3, _),
+            [target_label/2, label_bucket/2],
+            [Start, Bucket, Cost],
+            Adjusted,
+            group,
+            Bucket,
+            _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign aggregate wrapper plan IR did not match expected scalar/grouped shapes')
+    ).
+
 %% Phase 4: WAM fallback integration tests
 
 test_wam_fallback_enabled :-
@@ -1381,6 +1446,8 @@ run_tests :-
     test_recursive_kernel_ir_selection,
     test_recursive_kernel_spec_generation,
     test_recursive_kernel_registry,
+    test_foreign_stream_wrapper_plan_ir,
+    test_foreign_aggregate_wrapper_plan_ir,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
     test_native_still_preferred,
