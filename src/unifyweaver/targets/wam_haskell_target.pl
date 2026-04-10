@@ -392,13 +392,27 @@ applyAggregation _ vals = VList vals
 
 -- | Native category_ancestor: depth-bounded DFS over indexed parent facts.
 -- Returns all (Hops) values for paths from Cat to Root within maxDepth.
+--
+-- Hops semantics matches the source Prolog (examples/benchmark/effective_distance.pl):
+--   category_ancestor(Cat, Parent, 1, Visited) :- category_parent(Cat, Parent), \\+ member(Parent, Visited).
+--   category_ancestor(Cat, Ancestor, Hops, Visited) :- ..., category_ancestor(Mid, Ancestor, H1, [Mid|Visited]), Hops is H1 + 1.
+-- A DIRECT parent contributes Hops=1 (not 0!). Grandparent contributes Hops=2.
+-- The recursive case adds 1 per level.
+--
 -- Uses a plain list for visited because depth is bounded (typically <= 10),
 -- so O(depth) elem checks are faster than O(log n) Set operations + the
 -- per-call Set construction overhead.
 nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> [String] -> [Int]
 nativeCategoryAncestor parents cat root maxDepth depth visited =
   let directParents = fromMaybe [] (Map.lookup cat parents)
-      baseHits = [1 | p <- directParents, p == root, p `notElem` visited]
+      -- Base case (Prolog clause 1): any direct parent that IS the root
+      -- contributes Hops=1. The Prolog also requires \\+ member(Parent, Visited)
+      -- but since Visited starts as [Cat] and grows with intermediate categories,
+      -- the root cannot normally appear in Visited unless cat == root, in which
+      -- case the cycle check below covers it.
+      baseHits = [1 | p <- directParents, p == root]
+      -- Recursive case (Prolog clause 2): for each direct parent that is not
+      -- yet visited, recurse and add 1 to every returned Hops.
       recHits = if depth >= maxDepth then [] else
         concatMap (\\mid ->
           if mid `elem` visited then []
@@ -997,9 +1011,19 @@ main = do
         n = 5.0 :: Double
         negN = -n
 
+    -- Build a child -> [parents] index for the FFI fast path on
+    -- category_ancestor/4. Without this, executeForeign sees an empty
+    -- parents map and falls through to the WAM-compiled predicate.
+    let parentsIndex = Map.fromListWith (++)
+            [(child, [parent]) | (child, parent) <- categoryParents]
+
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
-    let !ctx = mkContext mergedCode mergedLabels
+    -- Populate wcForeignFacts/wcForeignConfig so executeForeign can fire.
+    let !ctx = (mkContext mergedCode mergedLabels)
+            { wcForeignFacts  = Map.singleton "category_parent" parentsIndex
+            , wcForeignConfig = Map.singleton "max_depth" 10
+            }
 
     t2 <- getCurrentTime
 
@@ -1019,7 +1043,7 @@ main = do
                     ]
                 , wsCP = 0
                 }
-            !solutions = collectSolutions ctx s0
+            !solutions = collectSolutions ctx s0 hopsVarId
             !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
         return (cat, weightSum)
         ) seedCats
@@ -1065,20 +1089,23 @@ main = do
 showFFloat6 :: Double -> String
 showFFloat6 x = Numeric.showFFloat (Just 6) x ""
 
--- | Collect all Hops solutions by reading A3 (hops register) after each run.
--- A3 holds the hops result from category_ancestor/4.
--- Takes the read-only WamContext (cold fields) plus the per-query WamState.
-collectSolutions :: WamContext -> WamState -> [Double]
-collectSolutions !ctx s0 =
+-- | Collect all Hops solutions by looking up the query variable in wsBindings.
+-- The seed loop creates an Unbound variable with hopsVarId and stores it in
+-- A3. The WAM binds that variable as it runs (via clause 1''s GetConstant or
+-- clause 2''s is/2). We must NOT read wsRegs[3] directly because the recursive
+-- call''s GetConstant 1 3 will clobber A3 with Integer 1, while the OUTER''s
+-- output variable is bound to the correct higher value via is/2 to wsBindings.
+collectSolutions :: WamContext -> WamState -> Int -> [Double]
+collectSolutions !ctx s0 hopsVarId =
     case run ctx s0 of
       Nothing -> []
       Just s1 ->
-        let hopsVal = case IM.lookup 3 (wsRegs s1) of
+        let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
               Just v -> extractDouble (derefVar (wsBindings s1) v)
               Nothing -> Nothing
             hops = fromMaybe 0 hopsVal
             rest = case backtrack s1 of
-              Just s2 -> collectSolutions ctx s2
+              Just s2 -> collectSolutions ctx s2 hopsVarId
               Nothing -> []
         in case hopsVal of
           Just _ -> hops : rest
