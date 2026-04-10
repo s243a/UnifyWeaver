@@ -50,7 +50,10 @@ scan planning now adds corresponding scan buckets such as
 `benchmark_scan_materialization.py`. Generic closure planning now adds
 corresponding closure buckets such as `closure_strategy_select`,
 `closure_probe_*`, and `closure_materialize_*`, with focused validation
-available in `benchmark_closure_materialization.py`.
+available in `benchmark_closure_materialization.py`. Generic closure-pair
+planning now adds `closure_pair_strategy_select` and
+`*TransitiveClosurePairsMaterializationPlanPairs*` traces, with focused
+validation available in `benchmark_closure_pair_planning.py`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -228,6 +231,7 @@ Tables:
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
+| `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |

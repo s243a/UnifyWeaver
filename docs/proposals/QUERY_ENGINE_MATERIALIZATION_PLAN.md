@@ -101,6 +101,12 @@ Status:
   loading can now choose between direct streamed access, replayable
   buffering, and external materialized fallback before building closure
   indices
+- started for generic closure pair strategy planning, where seeded and grouped
+  closure-pair probes can now choose among forward, backward, mixed,
+  mixed-with-pair-probe-cache, and memoized source/target strategies through
+  an explicit planner surface
+- focused validation for that closure-pair planner surface now lives in
+  `examples/benchmark/benchmark_closure_pair_planning.py`
 - started for path-aware support relations, where grouped minima and weight-sum
   operators can now choose streaming, replayable buffering, or external
   materialized access for `RootRelation` and `SeedRelation` before grouped
@@ -138,6 +144,10 @@ Status:
 - `QueryExecutorOptions.ClosureRelationRetentionStrategy` can force `Auto`,
   `StreamingDirect`, `ReplayableBuffer`, or `ExternalMaterialized` for
   generic closure benchmarking and diagnosis
+- `QueryExecutorOptions.ClosurePairStrategy` can force `Auto`, `Forward`,
+  `Backward`, `MemoizedBySource`, `MemoizedByTarget`, `MixedDirection`, or
+  `MixedDirectionWithPairProbeCache` for closure-pairs benchmarking and
+  diagnosis
 - the current per-family override knobs and trace surface are still preserved
 
 Work:
