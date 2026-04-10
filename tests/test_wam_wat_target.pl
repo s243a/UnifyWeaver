@@ -71,6 +71,21 @@ test(encode_get_structure) :-
     assertion(atom(Hex)),
     assertion(sub_string(Hex, 0, _, _, "\\03")).  % tag=3
 
+%% Verify arity is packed into the high 32 bits of the op1 i64.
+%% Byte layout: bytes 0-3 = tag, 4-11 = op1 (little-endian), 12-19 = op2.
+%% Each byte renders as 3 chars in the hex atom: "\XX". So byte N starts
+%% at offset N*3. Bytes 8-11 (high 32 bits of op1) contain the arity.
+%% For 'f/2' we expect \02\00\00\00 at bytes 8-11 (offset 24, length 12).
+test(encode_get_structure_arity_packed) :-
+    wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
+    sub_atom(Hex, 24, 12, _, HighBytes),
+    assertion(HighBytes == '\\02\\00\\00\\00').
+
+test(encode_put_structure_arity_packed) :-
+    wam_instruction_to_wat_bytes(put_structure('g/3', 'A1'), [], Hex),
+    sub_atom(Hex, 24, 12, _, HighBytes),
+    assertion(HighBytes == '\\03\\00\\00\\00').
+
 test(encode_get_list) :-
     wam_instruction_to_wat_bytes(get_list('A1'), [], Hex),
     assertion(atom(Hex)),

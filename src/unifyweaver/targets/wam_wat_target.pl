@@ -164,9 +164,9 @@ wam_instruction_to_wat_bytes(get_value(Xn, Ai), _Labels, Hex) :-
 
 wam_instruction_to_wat_bytes(get_structure(F, Ai), _Labels, Hex) :-
     instr_tag(get_structure, Tag),
-    atom_hash_i64(F, FHash),
+    encode_structure_op1(F, Op1),
     reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, FHash, AiIdx, Hex).
+    encode_instr_hex(Tag, Op1, AiIdx, Hex).
 
 wam_instruction_to_wat_bytes(get_list(Ai), _Labels, Hex) :-
     instr_tag(get_list, Tag),
@@ -208,9 +208,9 @@ wam_instruction_to_wat_bytes(put_value(Xn, Ai), _Labels, Hex) :-
 
 wam_instruction_to_wat_bytes(put_structure(F, Ai), _Labels, Hex) :-
     instr_tag(put_structure, Tag),
-    atom_hash_i64(F, FHash),
+    encode_structure_op1(F, Op1),
     reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, FHash, AiIdx, Hex).
+    encode_instr_hex(Tag, Op1, AiIdx, Hex).
 
 wam_instruction_to_wat_bytes(put_list(Ai), _Labels, Hex) :-
     instr_tag(put_list, Tag),
@@ -284,6 +284,31 @@ encode_constant(N, N) :- integer(N), !.
 encode_constant(N, Bits) :- float(N), !, Bits is float_integer_part(N).
 encode_constant(A, Hash) :- atom(A), !, atom_hash_i64(A, Hash).
 encode_constant(_, 0).
+
+%% encode_structure_op1(+FSlashArity, -I64)
+%  Encodes a functor/arity descriptor (e.g. 'f/2') as an i64 payload.
+%  Layout: high 32 bits = arity, low 32 bits = DJB2 hash of the full
+%  'Functor/Arity' atom form. The low 32 bits retain the existing hash
+%  behavior so backwards compatibility with earlier encoding is exact
+%  when arity fits in 31 bits (it always does here — atom_hash_i64
+%  already limits the hash to 2^31-1). The high 32 bits let the runtime
+%  recover arity for functor/3 and arg/3 without a separate table.
+encode_structure_op1(FSlashArity, Op1) :-
+    atom_hash_i64(FSlashArity, Hash),
+    functor_arity_of(FSlashArity, Arity),
+    Op1 is (Arity << 32) \/ (Hash /\ 0xFFFFFFFF).
+
+%% functor_arity_of(+FSlashArity, -Arity)
+%  Extracts the integer arity from an atom of the form 'Functor/Arity'.
+%  Falls back to 0 if the atom does not match this shape.
+functor_arity_of(FSlashArity, Arity) :-
+    atom_string(FSlashArity, Str),
+    (   split_string(Str, "/", "", Parts),
+        Parts = [_, AStr],
+        number_string(A, AStr)
+    ->  Arity = A
+    ;   Arity = 0
+    ).
 
 %% resolve_label(+Label, +LabelMap, -PC)
 resolve_label(Label, Labels, PC) :-
