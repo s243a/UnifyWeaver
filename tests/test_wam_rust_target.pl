@@ -54,6 +54,8 @@ test_simple_fact(foo, bar).
 :- dynamic labeled_adjusted_astar_weighted_path/4.
 :- dynamic bucketed_adjusted_weighted_path/3.
 :- dynamic bucketed_adjusted_astar_weighted_path/4.
+:- dynamic grouped_bucketed_min_semantic_dist/3.
+:- dynamic grouped_bucketed_min_semantic_dist_astar/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -211,6 +213,28 @@ bucketed_adjusted_astar_weighted_path(Start, Bucket, Dim, Adjusted) :-
     label_bucket(Label, Bucket),
     Cost > 2,
     Adjusted is Cost + 1.
+
+grouped_bucketed_min_semantic_dist(Start, Bucket, MinDist) :-
+    aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        MinDist).
+
+grouped_bucketed_min_semantic_dist_astar(Start, Bucket, Dim, MinDist) :-
+    aggregate_all(min(Adjusted),
+        ( astar_weighted_path(Start, Target, Dim, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        MinDist).
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -964,6 +988,44 @@ test_bucketed_astar_stream_wrapper :-
     ;   fail_test(Test, 'Multi-stage A* wrapper did not lower correctly')
     ).
 
+test_grouped_bucketed_weighted_min_wrapper :-
+    Test = 'WAM-Rust: grouped aggregate wrapper delegates over weighted_path/3 with two joins',
+    (   rust_target:compile_predicate_to_rust(user:grouped_bucketed_min_semantic_dist/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn grouped_bucketed_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'grouped.entry(joined_value_2.clone())'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_bucketed_min_semantic_dist/3", vec![a2.clone(), a3.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Grouped weighted multistage aggregate wrapper did not lower correctly')
+    ).
+
+test_grouped_bucketed_astar_min_wrapper :-
+    Test = 'WAM-Rust: grouped aggregate wrapper delegates over astar_weighted_path/4 with two joins',
+    (   rust_target:compile_predicate_to_rust(user:grouped_bucketed_min_semantic_dist_astar/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn grouped_bucketed_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist_astar/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'grouped.entry(joined_value_2.clone())'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_bucketed_min_semantic_dist_astar/4", vec![a2.clone(), a4.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Grouped A* multistage aggregate wrapper did not lower correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1290,6 +1352,8 @@ run_tests :-
     test_labeled_astar_stream_wrapper,
     test_bucketed_weighted_stream_wrapper,
     test_bucketed_astar_stream_wrapper,
+    test_grouped_bucketed_weighted_min_wrapper,
+    test_grouped_bucketed_astar_min_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

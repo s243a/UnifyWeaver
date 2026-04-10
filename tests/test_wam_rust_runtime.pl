@@ -192,6 +192,30 @@ bucketed_adjusted_astar_weighted_path(Start, Bucket, Dim, Adjusted) :-
     Cost > 2,
     Adjusted is Cost + 1.
 
+:- dynamic grouped_bucketed_min_semantic_dist/3.
+grouped_bucketed_min_semantic_dist(Start, Bucket, MinDist) :-
+    aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        MinDist).
+
+:- dynamic grouped_bucketed_min_semantic_dist_astar/4.
+grouped_bucketed_min_semantic_dist_astar(Start, Bucket, Dim, MinDist) :-
+    aggregate_all(min(Adjusted),
+        ( astar_weighted_path(Start, Target, Dim, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        MinDist).
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -202,7 +226,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4, user:labeled_adjusted_weighted_path/3, user:labeled_adjusted_astar_weighted_path/4, user:bucketed_adjusted_weighted_path/3, user:bucketed_adjusted_astar_weighted_path/4],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4, user:labeled_adjusted_weighted_path/3, user:labeled_adjusted_astar_weighted_path/4, user:bucketed_adjusted_weighted_path/3, user:bucketed_adjusted_astar_weighted_path/4, user:grouped_bucketed_min_semantic_dist/3, user:grouped_bucketed_min_semantic_dist_astar/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -233,6 +257,8 @@ use runtime_test::labeled_adjusted_weighted_path;
 use runtime_test::labeled_adjusted_astar_weighted_path;
 use runtime_test::bucketed_adjusted_weighted_path;
 use runtime_test::bucketed_adjusted_astar_weighted_path;
+use runtime_test::grouped_bucketed_min_semantic_dist;
+use runtime_test::grouped_bucketed_min_semantic_dist_astar;
 
 #[test]
 fn test_generated_predicates() {
@@ -1239,6 +1265,101 @@ fn test_generated_predicates() {
         Value::Integer(5),
         Value::Unbound("AStarBucketMissing".to_string()));
     assert!(!ok60, "bucketed_adjusted_astar_weighted_path(s, missing_bucket, 5, Adjusted) should fail");
+
+    // Test grouped_bucketed_min_semantic_dist/3 grouped aggregate over multi-stage weighted wrapper shape
+    let mut vm_grouped_bucketed_weighted = WamState::new(vec![], std::collections::HashMap::new());
+    let ok61 = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted,
+        Value::Atom("s".to_string()),
+        Value::Unbound("GroupedBucket".to_string()),
+        Value::Unbound("GroupedBucketMin".to_string()));
+    assert!(ok61, "grouped_bucketed_min_semantic_dist(s, Bucket, Min) first grouped result should succeed");
+    let mut grouped_bucketed_weighted_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_weighted.bindings.get("GroupedBucket").cloned(), vm_grouped_bucketed_weighted.bindings.get("GroupedBucketMin").cloned()) {
+        grouped_bucketed_weighted_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist result");
+    }
+    while vm_grouped_bucketed_weighted.backtrack() {
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_weighted.bindings.get("GroupedBucket").cloned(), vm_grouped_bucketed_weighted.bindings.get("GroupedBucketMin").cloned()) {
+            grouped_bucketed_weighted_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist backtrack result");
+        }
+    }
+    grouped_bucketed_weighted_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_weighted_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_grouped_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok62 = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Unbound("GroupedGoalBucket".to_string()));
+    assert!(ok62, "grouped_bucketed_min_semantic_dist(s, goal_bucket, Min) should succeed");
+    match vm_grouped_bucketed_weighted_exact.bindings.get("GroupedGoalBucket").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 8.0),
+        other => panic!("expected grouped_bucketed_min_semantic_dist(s, goal_bucket, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_grouped_bucketed_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok63 = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing_bucket".to_string()),
+        Value::Unbound("GroupedMissingBucket".to_string()));
+    assert!(!ok63, "grouped_bucketed_min_semantic_dist(s, missing_bucket, Min) should fail");
+
+    // Test grouped_bucketed_min_semantic_dist_astar/4 grouped aggregate over multi-stage A* wrapper shape
+    let mut vm_grouped_bucketed_astar = WamState::new(vec![], std::collections::HashMap::new());
+    let ok64 = grouped_bucketed_min_semantic_dist_astar(&mut vm_grouped_bucketed_astar,
+        Value::Atom("s".to_string()),
+        Value::Unbound("GroupedAStarBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarBucketMin".to_string()));
+    assert!(ok64, "grouped_bucketed_min_semantic_dist_astar(s, Bucket, 5, Min) first grouped result should succeed");
+    let mut grouped_bucketed_astar_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_astar.bindings.get("GroupedAStarBucket").cloned(), vm_grouped_bucketed_astar.bindings.get("GroupedAStarBucketMin").cloned()) {
+        grouped_bucketed_astar_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist_astar result");
+    }
+    while vm_grouped_bucketed_astar.backtrack() {
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_astar.bindings.get("GroupedAStarBucket").cloned(), vm_grouped_bucketed_astar.bindings.get("GroupedAStarBucketMin").cloned()) {
+            grouped_bucketed_astar_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist_astar backtrack result");
+        }
+    }
+    grouped_bucketed_astar_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_astar_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_grouped_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok65 = grouped_bucketed_min_semantic_dist_astar(&mut vm_grouped_bucketed_astar_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarGoalBucket".to_string()));
+    assert!(ok65, "grouped_bucketed_min_semantic_dist_astar(s, goal_bucket, 5, Min) should succeed");
+    match vm_grouped_bucketed_astar_exact.bindings.get("GroupedAStarGoalBucket").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 8.0),
+        other => panic!("expected grouped_bucketed_min_semantic_dist_astar(s, goal_bucket, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_grouped_bucketed_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok66 = grouped_bucketed_min_semantic_dist_astar(&mut vm_grouped_bucketed_astar_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("missing_bucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarMissingBucket".to_string()));
+    assert!(!ok66, "grouped_bucketed_min_semantic_dist_astar(s, missing_bucket, 5, Min) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
