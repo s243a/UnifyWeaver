@@ -4149,33 +4149,133 @@ rust_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses,
 rust_foreign_edge_pair(forward, Left, Right, Left-Right).
 rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
 
-compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadJoinOut, HeadResult],
+rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
+        foreign_wrapper_plan(KernelSpec, JoinPreds, GoalArgs, HeadResult, GoalInfo)) :-
+    Head =.. [Pred, HeadStart, HeadOutput, HeadResult],
     classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
-    HeadStart == GoalStart,
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
-    HeadJoinOut == GoalJoinOut,
+    get_dict(relations, GoalInfo, [RelGoal|JoinGoals]),
     get_dict(other, GoalInfo, []),
+    rust_foreign_kernel_spec(RelGoal, KernelSpec),
+    rust_foreign_wrapper_output_arg(RelGoal, JoinGoals, GoalOutput),
+    RelGoal =.. [_InnerPred, GoalStart, _GoalTarget, GoalCost],
+    HeadStart == GoalStart,
+    HeadOutput == GoalOutput,
+    GoalArgs = [GoalStart, GoalOutput, GoalCost],
+    rust_join_goals_to_preds(JoinGoals, JoinPreds).
+rust_foreign_stream_wrapper_plan(Pred, 4, Head, Body,
+        foreign_wrapper_plan(KernelSpec, JoinPreds, GoalArgs, HeadResult, GoalInfo)) :-
+    Head =.. [Pred, HeadStart, HeadOutput, HeadDim, HeadResult],
+    classify_aggregate_goal(Body, GoalInfo),
+    get_dict(relations, GoalInfo, [RelGoal|JoinGoals]),
+    get_dict(other, GoalInfo, []),
+    rust_foreign_kernel_spec(RelGoal, KernelSpec),
+    rust_foreign_wrapper_output_arg(RelGoal, JoinGoals, GoalOutput),
+    RelGoal =.. [_InnerPred, GoalStart, _GoalTarget, GoalDim, GoalCost],
+    HeadStart == GoalStart,
+    HeadOutput == GoalOutput,
+    HeadDim == GoalDim,
+    GoalArgs = [GoalStart, GoalOutput, GoalDim, GoalCost],
+    rust_join_goals_to_preds(JoinGoals, JoinPreds).
+
+rust_foreign_aggregate_wrapper_plan(_Pred, 3, _Head, AggInfo,
+        foreign_aggregate_plan(KernelSpec, JoinPreds, GoalArgs, Expr, Type, GroupTerm, GoalInfo)) :-
+    get_dict(type, AggInfo, Type),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(group, AggInfo, GroupTerm),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    get_dict(relations, GoalInfo, [RelGoal|JoinGoals]),
+    rust_foreign_kernel_spec(RelGoal, KernelSpec),
+    rust_foreign_wrapper_output_arg(RelGoal, JoinGoals, GoalOutput),
+    RelGoal =.. [_InnerPred, GoalStart, _GoalTarget, GoalCost],
+    GoalArgs = [GoalStart, GoalOutput, GoalCost],
+    rust_join_goals_to_preds(JoinGoals, JoinPreds).
+rust_foreign_aggregate_wrapper_plan(_Pred, 4, _Head, AggInfo,
+        foreign_aggregate_plan(KernelSpec, JoinPreds, GoalArgs, Expr, Type, GroupTerm, GoalInfo)) :-
+    get_dict(type, AggInfo, Type),
+    get_dict(op, AggInfo, min),
+    get_dict(expr, AggInfo, Expr),
+    get_dict(group, AggInfo, GroupTerm),
+    get_dict(goal_info, AggInfo, GoalInfo),
+    get_dict(relations, GoalInfo, [RelGoal|JoinGoals]),
+    rust_foreign_kernel_spec(RelGoal, KernelSpec),
+    rust_foreign_wrapper_output_arg(RelGoal, JoinGoals, GoalOutput),
+    RelGoal =.. [_InnerPred, GoalStart, _GoalTarget, GoalDim, GoalCost],
+    GoalArgs = [GoalStart, GoalOutput, GoalDim, GoalCost],
+    rust_join_goals_to_preds(JoinGoals, JoinPreds).
+
+rust_foreign_kernel_spec(RelGoal, weighted_kernel(InnerPred, WeightPred/3, FactTriples)) :-
+    RelGoal =.. [InnerPred, _GoalStart, _GoalTarget, _GoalCost],
     functor(InnerHead, InnerPred, 3),
     findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
     Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
+    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples).
+rust_foreign_kernel_spec(RelGoal,
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim)) :-
+    RelGoal =.. [InnerPred, _GoalStart, _GoalTarget, _GoalDim, _GoalCost],
+    functor(InnerHead, InnerPred, 4),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim).
+
+rust_render_weighted_kernel(weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral) :-
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral).
+
+rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim) :-
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
+    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral).
+
+rust_foreign_wrapper_output_arg(RelGoal, [], OutputArg) :-
+    arg(2, RelGoal, OutputArg).
+rust_foreign_wrapper_output_arg(_RelGoal, JoinGoals, OutputArg) :-
+    last(JoinGoals, LastJoinGoal),
+    arg(2, LastJoinGoal, OutputArg).
+
+rust_join_goals_to_preds([], []).
+rust_join_goals_to_preds([JoinGoal|Rest], [JoinPred/2|PredRest]) :-
+    JoinGoal =.. [JoinPred, JoinLeft, JoinRight],
+    atom(JoinPred),
+    var(JoinLeft),
+    var(JoinRight),
+    rust_binary_atom_fact_pairs(JoinPred/2, _),
+    rust_join_goals_to_preds(Rest, PredRest).
+
+rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral) :-
+    rust_binary_atom_fact_pairs(JoinPred/2, JoinPairs),
+    format(string(JoinPredKey), '~w/2', [JoinPred]),
+    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral).
+
+rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2) :-
+    rust_render_join_pred(JoinPred1/2, JoinPredKey1, JoinPairsLiteral1),
+    rust_render_join_pred(JoinPred2/2, JoinPredKey2, JoinPairsLiteral2).
+
+compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
+    rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
+        foreign_wrapper_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
     rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4260,23 +4360,13 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _Includ
       JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
       InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, ValueExpr, FilterCond, PredKey]).
 compile_rust_foreign_multistage_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadJoinOut, HeadDim, HeadResult],
-    classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
-    HeadStart == GoalStart,
-    HeadDim == GoalDim,
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
-    HeadJoinOut == GoalJoinOut,
-    get_dict(other, GoalInfo, []),
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
+    rust_foreign_stream_wrapper_plan(Pred, 4, Head, Body,
+        foreign_wrapper_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -4284,12 +4374,10 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 4, Head, Body, _Includ
     format(string(PredKey), '~w/4', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
     format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
     rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
     rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4386,36 +4474,21 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 4, Head, Body, _Includ
       DefaultDim, InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, ValueExpr, FilterCond, PredKey]).
 
 compile_rust_foreign_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadJoinOut, HeadResult],
-    classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
-    HeadStart == GoalStart,
-    JoinGoal =.. [JoinPred, GoalTarget, GoalJoinOut],
-    HeadJoinOut == GoalJoinOut,
-    get_dict(other, GoalInfo, []),
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
-    findall(JoinLeft-JoinRight,
-        ( functor(JoinHead, JoinPred, 2),
-          user:clause(JoinHead, true),
-          JoinHead =.. [JoinPred, JoinLeft, JoinRight],
-          atom(JoinLeft),
-          atom(JoinRight)
-        ),
-        JoinPairs),
-    JoinPairs \= [],
+    rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
+        foreign_wrapper_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [JoinPred/2],
+            [GoalStart, GoalJoinOut, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey), '~w/2', [JoinPred]),
     rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral),
+    rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4492,29 +4565,13 @@ compile_rust_foreign_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, Rust
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, JoinPredKey, JoinPairsLiteral,
       InnerPredStr, JoinPredKey, SetupCode, ValueExpr, FilterCond, PredKey]).
 compile_rust_foreign_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadJoinOut, HeadDim, HeadResult],
-    classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
-    HeadStart == GoalStart,
-    HeadDim == GoalDim,
-    JoinGoal =.. [JoinPred, GoalTarget, GoalJoinOut],
-    HeadJoinOut == GoalJoinOut,
-    get_dict(other, GoalInfo, []),
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-    findall(JoinLeft-JoinRight,
-        ( functor(JoinHead, JoinPred, 2),
-          user:clause(JoinHead, true),
-          JoinHead =.. [JoinPred, JoinLeft, JoinRight],
-          atom(JoinLeft),
-          atom(JoinRight)
-        ),
-        JoinPairs),
-    JoinPairs \= [],
+    rust_foreign_stream_wrapper_plan(Pred, 4, Head, Body,
+        foreign_wrapper_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [JoinPred/2],
+            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -4522,10 +4579,9 @@ compile_rust_foreign_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, Rust
     format(string(PredKey), '~w/4', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
     format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey), '~w/2', [JoinPred]),
     rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
     rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral),
+    rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4615,24 +4671,20 @@ compile_rust_foreign_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, Rust
       JoinPredKey, SetupCode, ValueExpr, FilterCond, PredKey]).
 
 compile_rust_foreign_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadTarget, HeadResult],
-    classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
-    HeadStart == GoalStart,
-    HeadTarget == GoalTarget,
-    get_dict(other, GoalInfo, []),
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
+    rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
+        foreign_wrapper_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [],
+            [GoalStart, GoalTarget, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4710,28 +4762,20 @@ compile_rust_foreign_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode)
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
       InnerPredStr, SetupCode, ValueExpr, FilterCond, PredKey]).
 compile_rust_foreign_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, RustCode) :-
-    Head =.. [Pred, HeadStart, HeadTarget, HeadDim, HeadResult],
-    classify_aggregate_goal(Body, GoalInfo),
-    get_dict(relations, GoalInfo, [RelGoal]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
-    HeadStart == GoalStart,
-    HeadTarget == GoalTarget,
-    HeadDim == GoalDim,
-    get_dict(other, GoalInfo, []),
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+    rust_foreign_stream_wrapper_plan(Pred, 4, Head, Body,
+        foreign_wrapper_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [],
+            [GoalStart, GoalTarget, GoalDim, GoalCost],
+            HeadResult,
+            GoalInfo)),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4855,34 +4899,27 @@ compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCo
     ;   fail
     ).
 
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, group),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(group, AggInfo, GroupTerm),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
+        foreign_aggregate_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalCost],
+            Expr,
+            group,
+            GroupTerm,
+            GoalInfo)),
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == GoalJoinOut,
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     use std::collections::BTreeMap;
@@ -4971,37 +5008,27 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
       JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
       InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, group),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(group, AggInfo, GroupTerm),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
+        foreign_aggregate_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
+            Expr,
+            group,
+            GroupTerm,
+            GoalInfo)),
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == GoalJoinOut,
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5101,25 +5128,24 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
       InnerPredStr, DefaultDim, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
       DefaultDim, InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, group),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(group, AggInfo, GroupTerm),
-    get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _StartArg, TargetArg, CostArg],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
+        foreign_aggregate_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [],
+            [_, TargetArg, CostArg],
+            Expr,
+            group,
+            GroupTerm,
+            _)),
     Expr == CostArg,
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == TargetArg,
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5191,28 +5217,24 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
       InnerPredStr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, group),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(group, AggInfo, GroupTerm),
-    get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _, TargetArg, DimArg, CostArg],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
+        foreign_aggregate_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [],
+            [_, TargetArg, _, CostArg],
+            Expr,
+            group,
+            GroupTerm,
+            _)),
     Expr == CostArg,
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == TargetArg,
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5289,31 +5311,25 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
       InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
       InnerPredStr, DefaultDim, InnerPredStr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, all),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
+        foreign_aggregate_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalCost],
+            Expr,
+            all,
+            _GroupTerm,
+            GoalInfo)),
     var(GoalJoinOut),
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -5391,34 +5407,25 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
 }', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
       WeightPredKey, WeightPredKey, TriplesLiteral, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
       InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, all),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(relations, GoalInfo, [RelGoal, JoinGoal1, JoinGoal2]),
-    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
-    JoinGoal1 =.. [JoinPred1, GoalTarget, JoinMid],
-    JoinGoal2 =.. [JoinPred2, JoinMid, GoalJoinOut],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
+        foreign_aggregate_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [JoinPred1/2, JoinPred2/2],
+            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
+            Expr,
+            all,
+            _GroupTerm,
+            GoalInfo)),
     var(GoalJoinOut),
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -5508,26 +5515,23 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
       InnerPredStr, DefaultDim, JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2,
       DefaultDim, InnerPredStr, JoinPredKey1, JoinPredKey2, SetupCode, FilterCond, ValueExpr]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, all),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _StartArg, TargetArg, _DimArg, CostArg],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
+        foreign_aggregate_plan(
+            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+            [],
+            [GoalStart, TargetArg, GoalDim, CostArg],
+            Expr,
+            all,
+            _GroupTerm,
+            GoalInfo)),
     var(TargetArg),
-    functor(InnerHead, InnerPred, 4),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
-        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [ignored_start, TargetArg, DimArg, CostArg],
+    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, GoalDim, CostArg],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -5597,23 +5601,23 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _Inc
       WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
       InnerPredStr, DefaultDim, DefaultDim, InnerPredStr, SetupCode, FilterCond, ValueExpr, ValueExpr]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    get_dict(type, AggInfo, all),
-    get_dict(op, AggInfo, min),
-    get_dict(expr, AggInfo, Expr),
-    get_dict(relations, GoalInfo, [RelGoal|_]),
-    RelGoal =.. [InnerPred, _, TargetArg, CostArg],
+compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
+    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
+        foreign_aggregate_plan(
+            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+            [],
+            [GoalStart, TargetArg, CostArg],
+            Expr,
+            all,
+            _GroupTerm,
+            GoalInfo)),
     var(TargetArg),
-    functor(InnerHead, InnerPred, 3),
-    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
-    Clauses \= [],
-    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [ignored_start, TargetArg, CostArg],
+    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, CostArg],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
