@@ -261,14 +261,17 @@ backtrack s = case wsCPs s of
     case cpBuiltin cp of { Just bs -> resumeBuiltin bs cp rest s; Nothing ->
     -- 3. Normal: restore from CP
     let trailLen = cpTrailLen cp
-        newEntries = reverse $ take (length (wsTrail s) - trailLen) (wsTrail s)
+        diff = wsTrailLen s - trailLen
+        newEntries = reverse $ take diff (wsTrail s)
         restoredBindings = foldl'' undoBinding (cpBindings cp) newEntries
     in Just s { wsPC       = cpNextPC cp
               , wsRegs     = cpRegs cp
               , wsStack    = cpStack cp
               , wsCP       = cpCP cp
-              , wsTrail    = drop (length (wsTrail s) - trailLen) (wsTrail s)
+              , wsTrail    = drop diff (wsTrail s)
+              , wsTrailLen = trailLen
               , wsHeap     = take (cpHeapLen cp) (wsHeap s)
+              , wsHeapLen  = cpHeapLen cp
               , wsBindings = restoredBindings
               , wsCutBar   = cpCutBar cp
               } } }
@@ -288,10 +291,13 @@ resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
       newCPs = case vs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (FactRetry vid vs retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
-            , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
             , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 resumeBuiltin (HopsRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
@@ -301,10 +307,13 @@ resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
       newCPs = case hs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (HopsRetry vid hs retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
-            , wsTrail = drop (length (wsTrail s) - cpTrailLen cp) (wsTrail s)
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
             , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
@@ -338,20 +347,25 @@ finalizeAggregate returnPC s = go (wsCPs s)
             bindings0 = cpBindings cp
             regs0 = cpRegs cp
             resVal = derefVar bindings0 <$> IM.lookup resReg regs0
-            (regs1, bindings1, trail1) = case resVal of
+            -- Restore trail to the CP''s snapshot (drop entries added since)
+            diff = wsTrailLen s - cpTrailLen cp
+            restoredTrail = drop diff (wsTrail s)
+            (regs1, bindings1, trail1, trail1Len) = case resVal of
               Just (Unbound vid) ->
                 ( IM.insert resReg result regs0
                 , IM.insert vid result bindings0
-                , TrailEntry vid (IM.lookup vid bindings0)
-                    : take (cpTrailLen cp) (wsTrail s)
+                , TrailEntry vid (IM.lookup vid bindings0) : restoredTrail
+                , cpTrailLen cp + 1
                 )
-              _ -> (regs0, bindings0, take (cpTrailLen cp) (wsTrail s))
+              _ -> (regs0, bindings0, restoredTrail, cpTrailLen cp)
         in Just s { wsPC = returnPC
                   , wsRegs = regs1
                   , wsStack = cpStack cp
                   , wsBindings = bindings1
                   , wsTrail = trail1
+                  , wsTrailLen = trail1Len
                   , wsHeap = take (cpHeapLen cp) (wsHeap s)
+                  , wsHeapLen = cpHeapLen cp
                   , wsCP = cpCP cp
                   , wsCPs = rest
                   , wsAggAccum = []
@@ -415,13 +429,13 @@ callIndexedFact2 pred s =
                     [] -> wsCPs s  -- single match, no CP
                     _  -> ChoicePoint
                             { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
-                            , cpCP = wsCP s, cpTrailLen = length (wsTrail s)
-                            , cpHeapLen = length (wsHeap s), cpBindings = wsBindings s
+                            , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                            , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                             , cpBuiltin = Just (FactRetry vid rest retPC)
                             } : wsCPs s
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
-                         , wsTrail = newTrail, wsCPs = newCPs })
+                         , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1, wsCPs = newCPs })
             Atom existing ->
               if existing == v then Just (s { wsPC = retPC })
               else case filter (== existing) rest of
@@ -450,7 +464,8 @@ executeForeign "category_ancestor/4" s =
                 s { wsPC = retPC
                   , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)
                   , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)
-                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s }
+                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                  , wsTrailLen = wsTrailLen s + 1 }
               _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }
       in case hops of
         [] -> Nothing
@@ -461,8 +476,8 @@ executeForeign "category_ancestor/4" s =
               hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }
               cp = ChoicePoint
                 { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
-                , cpCP = wsCP s, cpTrailLen = length (wsTrail s)
-                , cpHeapLen = length (wsHeap s), cpBindings = wsBindings s
+                , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                 , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                 , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)
                 }
@@ -476,11 +491,13 @@ unifyVal (Unbound vid) val s =
   Just (s { wsPC = wsPC s + 1
           , wsBindings = IM.insert vid val (wsBindings s)
           , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1
           })
 unifyVal val (Unbound vid) s =
   Just (s { wsPC = wsPC s + 1
           , wsBindings = IM.insert vid val (wsBindings s)
           , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+          , wsTrailLen = wsTrailLen s + 1
           })
 unifyVal a b s | a == b = Just (s { wsPC = wsPC s + 1 })
                | otherwise = Nothing'.
@@ -501,6 +518,7 @@ step s (GetConstant c ai) =
               , wsRegs = IM.insert ai c (wsRegs s)
               , wsBindings = IM.insert vid c (wsBindings s)
               , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
               })
     _ -> Nothing
 
@@ -520,6 +538,7 @@ step s (GetValue xn ai) =
               , wsRegs = IM.insert ai x (wsRegs s)
               , wsBindings = IM.insert vid x (wsBindings s)
               , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
               })
     _ -> Nothing
 
@@ -594,11 +613,11 @@ step s (TryMeElse label) =
   let nextPC = fromMaybe 0 $ Map.lookup label (wsLabels s)
       cp = ChoicePoint
         { cpNextPC   = nextPC
-        , cpRegs     = wsRegs s       -- O(1): Data.Map shared reference
-        , cpStack    = wsStack s      -- O(1): list shared reference
+        , cpRegs     = wsRegs s
+        , cpStack    = wsStack s
         , cpCP       = wsCP s
-        , cpTrailLen = length (wsTrail s)
-        , cpHeapLen  = length (wsHeap s)
+        , cpTrailLen = wsTrailLen s
+        , cpHeapLen  = wsHeapLen s
         , cpBindings = wsBindings s   -- O(1): Data.Map shared reference
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
@@ -631,6 +650,7 @@ step s (BuiltinCall "is/2" _) =
                  , wsRegs = IM.insert 1 val (wsRegs s)
                  , wsBindings = IM.insert vid val (wsBindings s)
                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                 , wsTrailLen = wsTrailLen s + 1
                  })
     (Just (Integer n), Just r) | fromIntegral n == r -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
@@ -648,6 +668,7 @@ step s (BuiltinCall "length/2" _) =
                      , wsRegs = IM.insert 2 val (wsRegs s)
                      , wsBindings = IM.insert vid val (wsBindings s)
                      , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                     , wsTrailLen = wsTrailLen s + 1
                      })
         Just (Integer n) | n == len -> Just (s { wsPC = wsPC s + 1 })
         _ -> Nothing
@@ -702,12 +723,12 @@ step s (BuiltinCall "member/2" _) =
 -- begin_aggregate: push aggregate frame CP, initialize accumulator, continue to goal body
 step s (BeginAggregate typ valReg resReg) =
   let cp = ChoicePoint
-        { cpNextPC   = wsPC s   -- not used directly; aggregate frame handles return
+        { cpNextPC   = wsPC s
         , cpRegs     = wsRegs s
         , cpStack    = wsStack s
         , cpCP       = wsCP s
-        , cpTrailLen = length (wsTrail s)
-        , cpHeapLen  = length (wsHeap s)
+        , cpTrailLen = wsTrailLen s
+        , cpHeapLen  = wsHeapLen s
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Just (AggFrame typ valReg resReg 0), cpBuiltin = Nothing
@@ -1295,16 +1316,18 @@ data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID
 
 data WamState = WamState
   { wsPC       :: !Int
-  , wsRegs     :: !(IM.IntMap Value)                         -- registers (Int keys)
+  , wsRegs     :: !(IM.IntMap Value)
   , wsStack    :: ![EnvFrame]
   , wsHeap     :: ![Value]
+  , wsHeapLen  :: !Int                          -- cached length(wsHeap), avoids O(n) length calls
   , wsTrail    :: ![TrailEntry]
+  , wsTrailLen :: !Int                          -- cached length(wsTrail)
   , wsCP       :: !Int
   , wsCPs      :: ![ChoicePoint]
-  , wsBindings :: !(IM.IntMap Value)                         -- variable bindings (Int keys)
+  , wsBindings :: !(IM.IntMap Value)
   , wsCutBar   :: !Int
   , wsCode     :: !(Array Int Instruction)
-  , wsLabels   :: !(Map.Map String Int)                      -- labels stay String-keyed (cold)
+  , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
   , wsAggAccum :: ![Value]
@@ -1353,7 +1376,9 @@ emptyState codeList labels = let n = length codeList; code = listArray (1, n) co
   , wsRegs     = IM.empty
   , wsStack    = []
   , wsHeap     = []
+  , wsHeapLen  = 0
   , wsTrail    = []
+  , wsTrailLen = 0
   , wsCP       = 0
   , wsCPs      = []
   , wsBindings = IM.empty
