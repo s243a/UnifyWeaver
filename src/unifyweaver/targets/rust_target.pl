@@ -4249,6 +4249,16 @@ rust_join_goals_to_preds([JoinGoal|Rest], [JoinPred/2|PredRest]) :-
     rust_binary_atom_fact_pairs(JoinPred/2, _),
     rust_join_goals_to_preds(Rest, PredRest).
 
+rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral) :-
+    rust_binary_atom_fact_pairs(JoinPred/2, JoinPairs),
+    format(string(JoinPredKey), '~w/2', [JoinPred]),
+    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral).
+
+rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2) :-
+    rust_render_join_pred(JoinPred1/2, JoinPredKey1, JoinPairsLiteral1),
+    rust_render_join_pred(JoinPred2/2, JoinPredKey2, JoinPairsLiteral2).
+
 compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
     rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body,
         foreign_wrapper_plan(
@@ -4257,19 +4267,15 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _Includ
             [GoalStart, GoalJoinOut, GoalCost],
             HeadResult,
             GoalInfo)),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
     rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4361,8 +4367,6 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 4, Head, Body, _Includ
             [GoalStart, GoalJoinOut, GoalDim, GoalCost],
             HeadResult,
             GoalInfo)),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -4370,12 +4374,10 @@ compile_rust_foreign_multistage_join_stream_wrapper(Pred, 4, Head, Body, _Includ
     format(string(PredKey), '~w/4', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
     format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
     rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
     rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4479,16 +4481,14 @@ compile_rust_foreign_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, Rust
             [GoalStart, GoalJoinOut, GoalCost],
             HeadResult,
             GoalInfo)),
-    rust_binary_atom_fact_pairs(JoinPred/2, JoinPairs),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(JoinPredKey), '~w/2', [JoinPred]),
     rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral),
+    rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4572,7 +4572,6 @@ compile_rust_foreign_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, Rust
             [GoalStart, GoalJoinOut, GoalDim, GoalCost],
             HeadResult,
             GoalInfo)),
-    rust_binary_atom_fact_pairs(JoinPred/2, JoinPairs),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -4580,10 +4579,9 @@ compile_rust_foreign_join_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, Rust
     format(string(PredKey), '~w/4', [Pred]),
     format(string(WeightPredKey), '~w/3', [WeightPred]),
     format(string(DirectPredKey), '~w/3', [DirectPred]),
-    format(string(JoinPredKey), '~w/2', [JoinPred]),
     rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
     rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
-    rust_atom_fact_pairs_literal(JoinPairs, JoinPairsLiteral),
+    rust_render_join_pred(JoinPred/2, JoinPredKey, JoinPairsLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4913,8 +4911,6 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             GoalInfo)),
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == GoalJoinOut,
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -4922,10 +4918,8 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_weighted_kernel(
         weighted_kernel(InnerPred, WeightPred/3, FactTriples),
         InnerPredStr, WeightPredKey, TriplesLiteral),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5026,8 +5020,6 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             GoalInfo)),
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == GoalJoinOut,
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
@@ -5035,10 +5027,8 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_render_astar_kernel(
         astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
         InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5332,18 +5322,14 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             _GroupTerm,
             GoalInfo)),
     var(GoalJoinOut),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     rust_render_weighted_kernel(
         weighted_kernel(InnerPred, WeightPred/3, FactTriples),
         InnerPredStr, WeightPredKey, TriplesLiteral),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -5432,18 +5418,14 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
             _GroupTerm,
             GoalInfo)),
     var(GoalJoinOut),
-    rust_binary_atom_fact_pairs(JoinPred1/2, JoinPairs1),
-    rust_binary_atom_fact_pairs(JoinPred2/2, JoinPairs2),
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
     rust_render_astar_kernel(
         astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
         InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    format(string(JoinPredKey1), '~w/2', [JoinPred1]),
-    format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
-    rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
+    rust_render_join_preds([JoinPred1/2, JoinPred2/2],
+        JoinPredKey1, JoinPairsLiteral1, JoinPredKey2, JoinPairsLiteral2),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
