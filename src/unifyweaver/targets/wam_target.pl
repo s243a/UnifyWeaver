@@ -617,6 +617,10 @@ is_builtin_pred(\+, 1).      % negation-as-failure
 is_builtin_pred(member, 2).  % list operations
 is_builtin_pred(append, 3).
 is_builtin_pred(length, 2).
+is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
+is_builtin_pred(arg, 3).     % term inspection: Nth argument access
+is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
+is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-
