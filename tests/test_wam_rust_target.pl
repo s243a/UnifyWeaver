@@ -46,6 +46,8 @@ test_simple_fact(foo, bar).
 :- dynamic grouped_min_semantic_dist_astar/4.
 :- dynamic filtered_adjusted_min_semantic_dist/3.
 :- dynamic filtered_adjusted_min_semantic_dist_astar/4.
+:- dynamic filtered_adjusted_weighted_path/3.
+:- dynamic filtered_adjusted_astar_weighted_path/4.
 :- dynamic tc_parent/2.
 :- dynamic max_depth/1.
 
@@ -158,6 +160,16 @@ filtered_adjusted_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
     aggregate_all(min(Adjusted),
         (astar_weighted_path(Start, Target, Dim, Cost), Cost > 2, Adjusted is Cost + 1),
         MinDist).
+
+filtered_adjusted_weighted_path(Start, Target, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+filtered_adjusted_astar_weighted_path(Start, Target, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    Cost > 2,
+    Adjusted is Cost + 1.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -815,6 +827,40 @@ test_filtered_adjusted_astar_min_wrapper :-
     ;   fail_test(Test, 'Mixed-goal A* aggregate wrapper did not lower correctly')
     ).
 
+test_filtered_adjusted_weighted_stream_wrapper :-
+    Test = 'WAM-Rust: mixed-goal stream wrapper filters and adjusts weighted_path/3',
+    (   rust_target:compile_predicate_to_rust(user:filtered_adjusted_weighted_path/3,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn filtered_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_weighted_path/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_weighted_path/3", "stream")'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'let output_value = agg_value;'),
+        sub_string(S, _, _, _, '(cost > 2_f64)'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed-goal weighted stream wrapper did not lower correctly')
+    ).
+
+test_filtered_adjusted_astar_stream_wrapper :-
+    Test = 'WAM-Rust: mixed-goal stream wrapper filters and adjusts astar_weighted_path/4',
+    (   rust_target:compile_predicate_to_rust(user:filtered_adjusted_astar_weighted_path/4,
+            [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'pub fn filtered_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_astar_weighted_path/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_astar_weighted_path/4", "stream")'),
+        sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(S, _, _, _, 'let output_value = agg_value;'),
+        sub_string(S, _, _, _, '(cost > 2_f64)'),
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed-goal A* stream wrapper did not lower correctly')
+    ).
+
 test_compile_wam_runtime_output :-
     Test = 'WAM-Rust E2E: full runtime generates valid impl block',
     (   compile_wam_runtime_to_rust([], Code),
@@ -1135,6 +1181,8 @@ run_tests :-
     test_grouped_astar_min_aggregate_wrapper,
     test_filtered_adjusted_weighted_min_wrapper,
     test_filtered_adjusted_astar_min_wrapper,
+    test_filtered_adjusted_weighted_stream_wrapper,
+    test_filtered_adjusted_astar_stream_wrapper,
     test_compile_wam_runtime_output,
     test_write_wam_rust_project,
     test_project_cargo_content,

@@ -349,7 +349,8 @@ generate_rust_batch_dist_complement_terms([Term|Rest], Code) :-
 :- use_module('../core/advanced/pattern_matchers', [
     is_per_path_visited_pattern/4,
     parse_table_spec/2,
-    classify_aggregate/2
+    classify_aggregate/2,
+    classify_aggregate_goal/2
 ]).
 
 % Track collected components for code generation
@@ -3627,6 +3628,13 @@ compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(include_main(IncludeMain), Options, true),
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses = [SingleHead-SingleBody],
+    compile_rust_foreign_stream_wrapper(Pred, Arity, SingleHead, SingleBody, IncludeMain, RustCode),
+    !.
+compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
+    option(include_main(IncludeMain), Options, true),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
     Clauses \= [],
     native_rust_clause_body(Pred/Arity, Clauses, FuncBody),
     !,
@@ -4126,6 +4134,212 @@ rust_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses,
 
 rust_foreign_edge_pair(forward, Left, Right, Left-Right).
 rust_foreign_edge_pair(reverse, Left, Right, Right-Left).
+
+compile_rust_foreign_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
+    Head =.. [Pred, HeadStart, HeadTarget, HeadResult],
+    classify_aggregate_goal(Body, GoalInfo),
+    get_dict(relations, GoalInfo, [RelGoal]),
+    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalCost],
+    HeadStart == GoalStart,
+    HeadTarget == GoalTarget,
+    get_dict(other, GoalInfo, []),
+    functor(InnerHead, InnerPred, 3),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_weighted_shortest_path(InnerPred, 3, Clauses, WeightPred/3, FactTriples),
+    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalCost],
+        HeadResult, SetupCode, ValueExpr, FilterCond),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(PredKey), '~w/3', [Pred]),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
+    vm.register_foreign_result_layout("~w/3", "tuple:2");
+    vm.register_foreign_result_mode("~w/3", "stream");
+    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+
+    let target_filter = match &a2 {
+        Value::Atom(target) => Some(target.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let result_filter = match &a3 {
+        Value::Float(value) => Some(*value),
+        Value::Integer(value) => Some(*value as f64),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let temp_target = "__wrapper_target".to_string();
+    let temp_cost = "__wrapper_cost".to_string();
+    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
+
+    if !vm.execute_foreign_predicate("~w", 3) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut packed_results: Vec<Value> = Vec::new();
+    loop {
+        let target = match &a2 {
+            Value::Atom(target) => target.clone(),
+            Value::Unbound(_) => match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Atom(target)) => target,
+                _ => break,
+            },
+            _ => break,
+        };
+        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Float(cost)) => cost,
+            _ => break,
+        };
+~w        let output_value = ~w;
+        if (target_filter.as_ref().map(|want| want == &target).unwrap_or(true))
+            && (~w)
+            && (result_filter.as_ref().map(|want| (output_value - *want).abs() < 1e-9).unwrap_or(true)) {
+            packed_results.push(Value::Str("__tuple__".to_string(), vec![
+                Value::Atom(target.clone()),
+                Value::Float(output_value),
+            ]));
+        }
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+    vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
+}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
+      InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
+      InnerPredStr, SetupCode, ValueExpr, FilterCond, PredKey]).
+compile_rust_foreign_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, RustCode) :-
+    Head =.. [Pred, HeadStart, HeadTarget, HeadDim, HeadResult],
+    classify_aggregate_goal(Body, GoalInfo),
+    get_dict(relations, GoalInfo, [RelGoal]),
+    RelGoal =.. [InnerPred, GoalStart, GoalTarget, GoalDim, GoalCost],
+    HeadStart == GoalStart,
+    HeadTarget == GoalTarget,
+    HeadDim == GoalDim,
+    get_dict(other, GoalInfo, []),
+    functor(InnerHead, InnerPred, 4),
+    findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
+    Clauses \= [],
+    rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
+        WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalDim, GoalCost],
+        HeadResult, SetupCode, ValueExpr, FilterCond),
+    atom_string(Pred, PredStr),
+    atom_string(InnerPred, InnerPredStr),
+    format(string(PredKey), '~w/4', [Pred]),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
+    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
+    vm.register_foreign_result_layout("~w/4", "tuple:2");
+    vm.register_foreign_result_mode("~w/4", "stream");
+    vm.register_foreign_string_config("~w/4", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+    vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
+
+    let target_filter = match &a2 {
+        Value::Atom(target) => Some(target.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let result_filter = match &a4 {
+        Value::Float(value) => Some(*value),
+        Value::Integer(value) => Some(*value as f64),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };
+    let temp_target = "__wrapper_target".to_string();
+    let temp_cost = "__wrapper_cost".to_string();
+    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
+
+    let dim_value = match &a3 {
+        Value::Integer(d) => *d as f64,
+        Value::Float(d) => *d,
+        _ => ~w_f64,
+    };
+
+    if !vm.execute_foreign_predicate("~w", 4) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut packed_results: Vec<Value> = Vec::new();
+    loop {
+        let target = match &a2 {
+            Value::Atom(target) => target.clone(),
+            Value::Unbound(_) => match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Atom(target)) => target,
+                _ => break,
+            },
+            _ => break,
+        };
+        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Float(cost)) => cost,
+            _ => break,
+        };
+~w        let output_value = ~w;
+        if (target_filter.as_ref().map(|want| want == &target).unwrap_or(true))
+            && (~w)
+            && (result_filter.as_ref().map(|want| (output_value - *want).abs() < 1e-9).unwrap_or(true)) {
+            packed_results.push(Value::Str("__tuple__".to_string(), vec![
+                Value::Atom(target.clone()),
+                Value::Float(output_value),
+            ]));
+        }
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+    vm.finish_foreign_results("~w", vec![a2.clone(), a4.clone()], packed_results)
+}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
+      InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
+      InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
+      InnerPredStr, DefaultDim, DefaultDim, InnerPredStr, SetupCode, ValueExpr, FilterCond, PredKey]).
 
 compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCode) :-
     get_dict(goal, AggInfo, Goal),

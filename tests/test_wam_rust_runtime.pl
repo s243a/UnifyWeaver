@@ -138,6 +138,18 @@ filtered_adjusted_min_semantic_dist_astar(Start, Target, Dim, MinDist) :-
         (astar_weighted_path(Start, Target, Dim, Cost), Cost > 2, Adjusted is Cost + 1),
         MinDist).
 
+:- dynamic filtered_adjusted_weighted_path/3.
+filtered_adjusted_weighted_path(Start, Target, Adjusted) :-
+    weighted_path(Start, Target, Cost),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
+:- dynamic filtered_adjusted_astar_weighted_path/4.
+filtered_adjusted_astar_weighted_path(Start, Target, Dim, Adjusted) :-
+    astar_weighted_path(Start, Target, Dim, Cost),
+    Cost > 2,
+    Adjusted is Cost + 1.
+
 %% Integration test
 test_runtime_execution :-
     Test = 'WAM-Rust Runtime: end-to-end execution',
@@ -148,7 +160,7 @@ test_runtime_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         % 1. Generate project
-        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4],
+        write_wam_rust_project([user:tc_ancestor/2, user:tc_descendant/2, user:tc_distance/3, user:tc_parent_distance/4, user:tc_step_parent_distance/5, user:tri_sum/2, user:tail_suffix/2, user:tail_suffixes/2, user:weighted_path/3, user:astar_weighted_path/4, user:min_semantic_dist/3, user:min_semantic_dist_astar/4, user:grouped_min_semantic_dist/3, user:grouped_min_semantic_dist_astar/4, user:filtered_adjusted_min_semantic_dist/3, user:filtered_adjusted_min_semantic_dist_astar/4, user:filtered_adjusted_weighted_path/3, user:filtered_adjusted_astar_weighted_path/4],
             [module_name('runtime_test'), wam_fallback(true), foreign_lowering(true)], TmpDir),
         
         % 2. Add a test file
@@ -173,6 +185,8 @@ use runtime_test::grouped_min_semantic_dist;
 use runtime_test::grouped_min_semantic_dist_astar;
 use runtime_test::filtered_adjusted_min_semantic_dist;
 use runtime_test::filtered_adjusted_min_semantic_dist_astar;
+use runtime_test::filtered_adjusted_weighted_path;
+use runtime_test::filtered_adjusted_astar_weighted_path;
 
 #[test]
 fn test_generated_predicates() {
@@ -908,6 +922,95 @@ fn test_generated_predicates() {
         Value::Integer(5),
         Value::Unbound("FilteredAStarNoPath".to_string()));
     assert!(!ok42, "filtered_adjusted_min_semantic_dist_astar(s, a, 5, Min) should fail");
+
+    // Test filtered_adjusted_weighted_path/3 mixed-goal non-aggregate wrapper
+    let mut vm_weighted_stream = WamState::new(vec![], std::collections::HashMap::new());
+    let ok43 = filtered_adjusted_weighted_path(&mut vm_weighted_stream,
+        Value::Atom("s".to_string()),
+        Value::Unbound("WeightedStreamTarget".to_string()),
+        Value::Unbound("WeightedStreamAdjusted".to_string()));
+    assert!(ok43, "filtered_adjusted_weighted_path(s, Target, Adjusted) first solution should succeed");
+    let mut weighted_stream_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_weighted_stream.bindings.get("WeightedStreamTarget").cloned(), vm_weighted_stream.bindings.get("WeightedStreamAdjusted").cloned()) {
+        weighted_stream_results.push((target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_weighted_path result");
+    }
+    while vm_weighted_stream.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_weighted_stream.bindings.get("WeightedStreamTarget").cloned(), vm_weighted_stream.bindings.get("WeightedStreamAdjusted").cloned()) {
+            weighted_stream_results.push((target, cost));
+        } else {
+            panic!("expected filtered_adjusted_weighted_path backtrack result");
+        }
+    }
+    weighted_stream_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(weighted_stream_results, vec![
+        ("b".to_string(), 4.0),
+        ("c".to_string(), 5.0),
+        ("d".to_string(), 8.0),
+    ]);
+
+    let mut vm_weighted_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok44 = filtered_adjusted_weighted_path(&mut vm_weighted_stream_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Float(8.0));
+    assert!(ok44, "filtered_adjusted_weighted_path(s, d, 8.0) should succeed");
+
+    let mut vm_weighted_stream_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok45 = filtered_adjusted_weighted_path(&mut vm_weighted_stream_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("a".to_string()),
+        Value::Unbound("WeightedStreamNoPath".to_string()));
+    assert!(!ok45, "filtered_adjusted_weighted_path(s, a, Adjusted) should fail");
+
+    // Test filtered_adjusted_astar_weighted_path/4 mixed-goal non-aggregate wrapper
+    let mut vm_astar_stream = WamState::new(vec![], std::collections::HashMap::new());
+    let ok46 = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream,
+        Value::Atom("s".to_string()),
+        Value::Unbound("AStarStreamTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarStreamAdjusted".to_string()));
+    assert!(ok46, "filtered_adjusted_astar_weighted_path(s, Target, 5, Adjusted) first solution should succeed");
+    let mut astar_stream_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_astar_stream.bindings.get("AStarStreamTarget").cloned(), vm_astar_stream.bindings.get("AStarStreamAdjusted").cloned()) {
+        astar_stream_results.push((target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_astar_weighted_path result");
+    }
+    while vm_astar_stream.backtrack() {
+        if let (Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_astar_stream.bindings.get("AStarStreamTarget").cloned(), vm_astar_stream.bindings.get("AStarStreamAdjusted").cloned()) {
+            astar_stream_results.push((target, cost));
+        } else {
+            panic!("expected filtered_adjusted_astar_weighted_path backtrack result");
+        }
+    }
+    astar_stream_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.partial_cmp(&b.1).unwrap()));
+    assert_eq!(astar_stream_results, vec![
+        ("b".to_string(), 4.0),
+        ("c".to_string(), 5.0),
+        ("d".to_string(), 8.0),
+    ]);
+
+    let mut vm_astar_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
+    let ok47 = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_exact,
+        Value::Atom("s".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Float(8.0));
+    assert!(ok47, "filtered_adjusted_astar_weighted_path(s, d, 5, 8.0) should succeed");
+
+    let mut vm_astar_stream_fail = WamState::new(vec![], std::collections::HashMap::new());
+    let ok48 = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_fail,
+        Value::Atom("s".to_string()),
+        Value::Atom("a".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarStreamNoPath".to_string()));
+    assert!(!ok48, "filtered_adjusted_astar_weighted_path(s, a, 5, Adjusted) should fail");
 }
 ',
         setup_call_cleanup(open(TestPath, write, S), format(S, "~w", [TestContent]), close(S)),
