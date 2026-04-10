@@ -79,6 +79,16 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %halt_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19
   store i1 false, i1* %halt_ptr
 
+  ; agg_accum: allocate initial capacity 64 (64 * sizeof(%Value) = 64 * 16)
+  %agg_mem = call i8* @malloc(i64 1024)
+  %agg_typed = bitcast i8* %agg_mem to %Value*
+  %agg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  store %Value* %agg_typed, %Value** %agg_ptr
+  %agc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  store i32 0, i32* %agc_ptr
+  %agcap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 22
+  store i32 64, i32* %agcap_ptr
+
   ret %WamState* %vm
 }
 
@@ -471,4 +481,255 @@ do_pop:
 
 done:
   ret void
+}
+
+; === Aggregate Frame Helpers ===
+; Support for aggregate_all(Template, Goal, Result):
+;   begin_aggregate: push a choice point with agg_type >= 0
+;   end_aggregate:   push value to accumulator, fail to trigger backtrack
+;   backtrack on agg frame -> finalize_aggregate applies the operator
+; Note: malloc and @llvm.memcpy.p0i8.p0i8.i64 are declared in module.ll.mustache.
+
+; Push a %Value to the aggregate accumulator, growing if needed.
+define void @wam_agg_push(%WamState* %vm, %Value %val) {
+entry:
+  %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  %count = load i32, i32* %count_ptr
+  %cap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 22
+  %cap = load i32, i32* %cap_ptr
+  %needs_grow = icmp sge i32 %count, %cap
+  br i1 %needs_grow, label %grow, label %store
+
+grow:
+  ; Double the capacity
+  %new_cap = mul i32 %cap, 2
+  store i32 %new_cap, i32* %cap_ptr
+  ; Allocate new buffer (16 bytes per %Value)
+  %new_cap64 = zext i32 %new_cap to i64
+  %new_bytes = mul i64 %new_cap64, 16
+  %new_mem = call i8* @malloc(i64 %new_bytes)
+  %new_typed = bitcast i8* %new_mem to %Value*
+  ; Copy old contents
+  %old_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %old_ptr = load %Value*, %Value** %old_ptr_ptr
+  %count64 = zext i32 %count to i64
+  %old_bytes = mul i64 %count64, 16
+  %new_raw = bitcast %Value* %new_typed to i8*
+  %old_raw = bitcast %Value* %old_ptr to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new_raw, i8* %old_raw, i64 %old_bytes, i1 false)
+  store %Value* %new_typed, %Value** %old_ptr_ptr
+  ; Free old (we skip this to avoid use-after-free complications in minimal impl)
+  br label %store
+
+store:
+  %accum_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
+  %slot = getelementptr %Value, %Value* %accum_ptr, i32 %count
+  store %Value %val, %Value* %slot
+  %new_count = add i32 %count, 1
+  store i32 %new_count, i32* %count_ptr
+  ret void
+}
+
+; Apply the aggregation operator to the accumulator and return a %Value.
+; agg_type: 0=sum, 1=count, 2=min, 3=max, 4=collect, 5=bag
+; For count, we just return Integer(count).
+; For sum/min/max, we iterate over the %Value array.
+; collect/bag return a sentinel atom for now (full list support is TODO).
+define %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum, i32 %count) {
+entry:
+  switch i32 %agg_type, label %default_case [
+    i32 0, label %sum_case
+    i32 1, label %count_case
+    i32 2, label %min_case
+    i32 3, label %max_case
+  ]
+
+count_case:
+  %c_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
+  %cnt64 = sext i32 %count to i64
+  %c_final = insertvalue %Value %c_val, i64 %cnt64, 1
+  ret %Value %c_final
+
+sum_case:
+  br label %sum_loop
+sum_loop:
+  %i_s = phi i32 [0, %sum_case], [%next_s, %sum_body]
+  %acc_s = phi i64 [0, %sum_case], [%new_acc_s, %sum_body]
+  %done_s = icmp sge i32 %i_s, %count
+  br i1 %done_s, label %sum_done, label %sum_body
+sum_body:
+  %slot_s = getelementptr %Value, %Value* %accum, i32 %i_s
+  %val_s = load %Value, %Value* %slot_s
+  %pay_s = extractvalue %Value %val_s, 1
+  %new_acc_s = add i64 %acc_s, %pay_s
+  %next_s = add i32 %i_s, 1
+  br label %sum_loop
+sum_done:
+  %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
+  %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
+  ret %Value %s_final
+
+min_case:
+  ; Initial value: take first element if count > 0, else 0
+  %has_m = icmp sgt i32 %count, 0
+  br i1 %has_m, label %min_init, label %min_empty
+min_empty:
+  %me_val = insertvalue %Value undef, i32 1, 0
+  %me_final = insertvalue %Value %me_val, i64 0, 1
+  ret %Value %me_final
+min_init:
+  %first_m = load %Value, %Value* %accum
+  %first_pay_m = extractvalue %Value %first_m, 1
+  br label %min_loop
+min_loop:
+  %i_m = phi i32 [1, %min_init], [%next_m, %min_body]
+  %best_m = phi i64 [%first_pay_m, %min_init], [%new_best_m, %min_body]
+  %done_m = icmp sge i32 %i_m, %count
+  br i1 %done_m, label %min_done, label %min_body
+min_body:
+  %slot_m = getelementptr %Value, %Value* %accum, i32 %i_m
+  %val_m = load %Value, %Value* %slot_m
+  %pay_m = extractvalue %Value %val_m, 1
+  %is_lt = icmp slt i64 %pay_m, %best_m
+  %new_best_m = select i1 %is_lt, i64 %pay_m, i64 %best_m
+  %next_m = add i32 %i_m, 1
+  br label %min_loop
+min_done:
+  %m_val = insertvalue %Value undef, i32 1, 0
+  %m_final = insertvalue %Value %m_val, i64 %best_m, 1
+  ret %Value %m_final
+
+max_case:
+  %has_x = icmp sgt i32 %count, 0
+  br i1 %has_x, label %max_init, label %max_empty
+max_empty:
+  %xe_val = insertvalue %Value undef, i32 1, 0
+  %xe_final = insertvalue %Value %xe_val, i64 0, 1
+  ret %Value %xe_final
+max_init:
+  %first_x = load %Value, %Value* %accum
+  %first_pay_x = extractvalue %Value %first_x, 1
+  br label %max_loop
+max_loop:
+  %i_x = phi i32 [1, %max_init], [%next_x, %max_body]
+  %best_x = phi i64 [%first_pay_x, %max_init], [%new_best_x, %max_body]
+  %done_x = icmp sge i32 %i_x, %count
+  br i1 %done_x, label %max_done, label %max_body
+max_body:
+  %slot_x = getelementptr %Value, %Value* %accum, i32 %i_x
+  %val_x = load %Value, %Value* %slot_x
+  %pay_x = extractvalue %Value %val_x, 1
+  %is_gt = icmp sgt i64 %pay_x, %best_x
+  %new_best_x = select i1 %is_gt, i64 %pay_x, i64 %best_x
+  %next_x = add i32 %i_x, 1
+  br label %max_loop
+max_done:
+  %x_val = insertvalue %Value undef, i32 1, 0
+  %x_final = insertvalue %Value %x_val, i64 %best_x, 1
+  ret %Value %x_final
+
+default_case:
+  ; collect/bag: return sentinel atom 0 for now (minimal scope)
+  %d_val = insertvalue %Value undef, i32 0, 0
+  %d_final = insertvalue %Value %d_val, i64 0, 1
+  ret %Value %d_final
+}
+
+; Update the agg_return_pc of the nearest aggregate-frame CP.
+define void @wam_update_agg_return_pc(%WamState* %vm, i32 %return_pc) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  br label %loop
+
+loop:
+  %i = phi i32 [%cpn, %entry], [%i_next, %continue]
+  %done = icmp sle i32 %i, 0
+  br i1 %done, label %exit, label %check
+
+check:
+  %idx = sub i32 %i, 1
+  %cp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %idx
+  %agg_type_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_ptr, i32 0, i32 4
+  %agg_type = load i32, i32* %agg_type_ptr
+  %is_agg = icmp sge i32 %agg_type, 0
+  br i1 %is_agg, label %found, label %continue
+
+continue:
+  %i_next = sub i32 %i, 1
+  br label %loop
+
+found:
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_ptr, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_ptr
+  ret void
+
+exit:
+  ret void
+}
+
+; Finalize the top aggregate frame: apply aggregation, bind result reg,
+; restore state, pop CP. Returns true on success, false if no agg frame.
+define i1 @wam_finalize_aggregate(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %has_cp = icmp sgt i32 %cpn, 0
+  br i1 %has_cp, label %check, label %fail
+
+check:
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+  %agg_type_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 4
+  %agg_type = load i32, i32* %agg_type_ptr
+  %is_agg = icmp sge i32 %agg_type, 0
+  br i1 %is_agg, label %do_finalize, label %fail
+
+do_finalize:
+  ; Read agg frame fields
+  %res_reg_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 6
+  %res_reg = load i32, i32* %res_reg_ptr
+  %ret_pc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %ret_pc = load i32, i32* %ret_pc_ptr
+
+  ; Apply aggregation over accumulator
+  %accum_ptr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %accum_ptr = load %Value*, %Value** %accum_ptr_ptr
+  %count_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  %count = load i32, i32* %count_ptr
+  %result = call %Value @wam_apply_aggregation(i32 %agg_type, %Value* %accum_ptr, i32 %count)
+
+  ; Restore trail (unwind to CP's mark)
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  ; Restore registers from CP
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  ; Bind result register to computed value
+  call void @wam_set_reg(%WamState* %vm, i32 %res_reg, %Value %result)
+
+  ; Pop the aggregate frame
+  store i32 %top_idx, i32* %cpn_ptr
+
+  ; Clear the accumulator
+  store i32 0, i32* %count_ptr
+
+  ; Set PC to return_pc
+  call void @wam_set_pc(%WamState* %vm, i32 %ret_pc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  ret i1 true
+
+fail:
+  ret i1 false
 }

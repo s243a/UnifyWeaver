@@ -329,6 +329,8 @@ entry:
     i32 25, label %switch_on_constant
     i32 26, label %switch_on_structure
     i32 27, label %switch_on_constant_a2
+    i32 28, label %begin_aggregate
+    i32 29, label %end_aggregate
   ]
 
 ~w
@@ -829,6 +831,15 @@ wam_llvm_case('try_me_else',
   %tme.saved_cp = call i32 @wam_get_cp(%WamState* %vm)
   %tme.scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 3
   store i32 %tme.saved_cp, i32* %tme.scp_ptr
+  ; Initialize agg fields: agg_type = -1 (not an aggregate frame)
+  %tme.at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 4
+  store i32 -1, i32* %tme.at_ptr
+  %tme.avr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 5
+  store i32 0, i32* %tme.avr_ptr
+  %tme.arr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 6
+  store i32 0, i32* %tme.arr_ptr
+  %tme.arpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 7
+  store i32 0, i32* %tme.arpc_ptr
   ; Increment choice point count
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr
@@ -883,6 +894,84 @@ wam_llvm_case('switch_on_constant_a2',
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
+% begin_aggregate: push an aggregate-frame choice point and reset accumulator.
+% op1 = (agg_type)
+% op2 = (value_reg_idx << 16) | result_reg_idx
+wam_llvm_case('begin_aggregate',
+'  %ba.agg_type = trunc i64 %op1 to i32
+  %ba.op2_trunc = trunc i64 %op2 to i32
+  %ba.val_reg = lshr i32 %ba.op2_trunc, 16
+  %ba.res_reg = and i32 %ba.op2_trunc, 65535
+
+  ; Push a choice point
+  %ba.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %ba.cpn = load i32, i32* %ba.cpn_ptr
+  %ba.cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %ba.cps = load %ChoicePoint*, %ChoicePoint** %ba.cps_ptr
+  %ba.cp_slot = getelementptr %ChoicePoint, %ChoicePoint* %ba.cps, i32 %ba.cpn
+
+  ; next_pc: unused for aggregate frames (finalize uses agg_return_pc instead)
+  %ba.npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 0
+  store i32 0, i32* %ba.npc_ptr
+
+  ; Save registers
+  %ba.dst_regs = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 1, i32 0
+  %ba.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %ba.dst_raw = bitcast %Value* %ba.dst_regs to i8*
+  %ba.src_raw = bitcast %Value* %ba.src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ba.dst_raw, i8* %ba.src_raw, i64 512, i1 false)
+
+  ; Save trail mark
+  %ba.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ba.ts = load i32, i32* %ba.ts_ptr
+  %ba.tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 2
+  store i32 %ba.ts, i32* %ba.tm_ptr
+
+  ; Save cp
+  %ba.saved_cp = call i32 @wam_get_cp(%WamState* %vm)
+  %ba.scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 3
+  store i32 %ba.saved_cp, i32* %ba.scp_ptr
+
+  ; Set agg fields
+  %ba.at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 4
+  store i32 %ba.agg_type, i32* %ba.at_ptr
+  %ba.avr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 5
+  store i32 %ba.val_reg, i32* %ba.avr_ptr
+  %ba.arr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 6
+  store i32 %ba.res_reg, i32* %ba.arr_ptr
+  %ba.arpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 7
+  store i32 0, i32* %ba.arpc_ptr  ; placeholder, end_aggregate updates this
+
+  ; Increment choice point count
+  %ba.new_cpn = add i32 %ba.cpn, 1
+  store i32 %ba.new_cpn, i32* %ba.cpn_ptr
+
+  ; Reset accumulator count
+  %ba.accnt_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 21
+  store i32 0, i32* %ba.accnt_ptr
+
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
+% end_aggregate: push value to accumulator, update nearest agg frame's
+% return PC, then fail to trigger backtrack (which calls finalize).
+% op1 = value_reg_idx
+wam_llvm_case('end_aggregate',
+'  %ea.val_reg = trunc i64 %op1 to i32
+  %ea.val = call %Value @wam_get_reg(%WamState* %vm, i32 %ea.val_reg)
+
+  ; Push value to accumulator
+  call void @wam_agg_push(%WamState* %vm, %Value %ea.val)
+
+  ; Update the nearest aggregate frame''s return_pc = current PC + 1
+  %ea.pc = call i32 @wam_get_pc(%WamState* %vm)
+  %ea.ret_pc = add i32 %ea.pc, 1
+  call void @wam_update_agg_return_pc(%WamState* %vm, i32 %ea.ret_pc)
+
+  ; Fail to force backtrack — backtrack will check the agg frame and
+  ; either re-run inner goals (if there are prior CPs) or finalize.
+  ret i1 false').
+
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
 % ============================================================================
@@ -907,7 +996,22 @@ entry:
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %cpn = load i32, i32* %cpn_ptr
   %has_cp = icmp sgt i32 %cpn, 0
-  br i1 %has_cp, label %restore, label %fail
+  br i1 %has_cp, label %check_agg, label %fail
+
+check_agg:
+  ; If the top CP is an aggregate frame, delegate to finalize_aggregate.
+  %ca_top_idx = sub i32 %cpn, 1
+  %ca_cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %ca_cps = load %ChoicePoint*, %ChoicePoint** %ca_cps_ptr
+  %ca_top = getelementptr %ChoicePoint, %ChoicePoint* %ca_cps, i32 %ca_top_idx
+  %ca_at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ca_top, i32 0, i32 4
+  %ca_at = load i32, i32* %ca_at_ptr
+  %is_agg = icmp sge i32 %ca_at, 0
+  br i1 %is_agg, label %do_finalize, label %restore
+
+do_finalize:
+  %fin_ok = call i1 @wam_finalize_aggregate(%WamState* %vm)
+  ret i1 %fin_ok
 
 restore:
   %top_idx = sub i32 %cpn, 1
@@ -1720,6 +1824,33 @@ wam_line_to_llvm_literal(["set_constant", C], Lit) :-
 
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
+
+% begin_aggregate type, ValueReg, ResultReg
+wam_line_to_llvm_literal(["begin_aggregate", TypeStr, ValRegStr, ResRegStr], Lit) :- !,
+    clean_comma(TypeStr, CT), clean_comma(ValRegStr, CV), clean_comma(ResRegStr, CR),
+    atom_string(CTAtom, CT),
+    agg_type_id(CTAtom, TypeId),
+    atom_string(CVAtom, CV), reg_name_to_index(CVAtom, ValIdx),
+    atom_string(CRAtom, CR), reg_name_to_index(CRAtom, ResIdx),
+    % Pack op2 = (val_idx << 16) | res_idx
+    Op2 is (ValIdx << 16) \/ ResIdx,
+    format(atom(Lit), '%Instruction { i32 28, i64 ~w, i64 ~w }', [TypeId, Op2]).
+
+% end_aggregate ValueReg
+wam_line_to_llvm_literal(["end_aggregate", ValRegStr], Lit) :- !,
+    clean_comma(ValRegStr, CV),
+    atom_string(CVAtom, CV),
+    reg_name_to_index(CVAtom, ValIdx),
+    format(atom(Lit), '%Instruction { i32 29, i64 ~w, i64 0 }', [ValIdx]).
+
+% agg_type_id(+Name, -Id): pack aggregation operator name to integer id.
+agg_type_id(sum, 0).
+agg_type_id(count, 1).
+agg_type_id(min, 2).
+agg_type_id(max, 3).
+agg_type_id(collect, 4).
+agg_type_id(bag, 5).
+agg_type_id(_, 4).  % fallback: collect
 % call, execute, try_me_else, retry_me_else are handled by
 % wam_line_to_llvm_literal_resolved/3 (label resolution required).
 wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').
