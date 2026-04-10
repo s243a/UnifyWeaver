@@ -287,7 +287,7 @@ resumeBuiltin (FactRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
 resumeBuiltin (FactRetry var (v:vs) retPC) cp rest s =
   let newBindings = Map.insert var (Atom v) (cpBindings cp)
-      newRegs = Map.insert "A2" (Atom v) (cpRegs cp)
+      newRegs = IM.insert 2 (Atom v) (cpRegs cp)
       newCPs = case vs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (FactRetry var vs retPC) } : rest
@@ -300,7 +300,7 @@ resumeBuiltin (HopsRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest })
 resumeBuiltin (HopsRetry var (h:hs) retPC) cp rest s =
   let newBindings = Map.insert var (Integer (fromIntegral h)) (cpBindings cp)
-      newRegs = Map.insert "A3" (Integer (fromIntegral h)) (cpRegs cp)
+      newRegs = IM.insert 3 (Integer (fromIntegral h)) (cpRegs cp)
       newCPs = case hs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (HopsRetry var hs retPC) } : rest
@@ -340,10 +340,10 @@ finalizeAggregate returnPC s = go (wsCPs s)
             result = applyAggregation typ accum
             bindings0 = cpBindings cp
             regs0 = cpRegs cp
-            resVal = derefVar bindings0 <$> Map.lookup resReg regs0
+            resVal = derefVar bindings0 <$> IM.lookup resReg regs0
             (regs1, bindings1, trail1) = case resVal of
               Just (Unbound var) ->
-                ( Map.insert resReg result regs0
+                ( IM.insert resReg result regs0
                 , Map.insert var result bindings0
                 , TrailEntry ("__binding__" ++ var) (Map.lookup var bindings0)
                     : take (cpTrailLen cp) (wsTrail s)
@@ -403,13 +403,13 @@ callIndexedFact2 pred s =
   in case Map.lookup basePred (wsForeignFacts s) of
     Nothing -> Nothing
     Just factIndex ->
-      let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (Map.lookup "A1" (wsRegs s))
-          a2 = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (Map.lookup "A2" (wsRegs s))
+      let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
+          a2 = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 2 (wsRegs s))
       in case a1 of
         Atom key -> case Map.lookup key factIndex of
           Just (v:rest) -> case a2 of
             Unbound var ->
-              let newRegs = Map.insert "A2" (Atom v) (wsRegs s)
+              let newRegs = IM.insert 2 (Atom v) (wsRegs s)
                   newBindings = Map.insert var (Atom v) (wsBindings s)
                   newTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
                   newCPs = case rest of
@@ -434,9 +434,9 @@ callIndexedFact2 pred s =
 
 executeForeign :: String -> WamState -> Maybe WamState
 executeForeign "category_ancestor/4" s =
-  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (Map.lookup "A1" (wsRegs s))
-      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (Map.lookup "A2" (wsRegs s))
-      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A4" (wsRegs s))
+  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
+      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))
+      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))
       maxD = fromMaybe 10 $ Map.lookup "max_depth" (wsForeignConfig s)
       parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wsForeignFacts s)
   in case (cat, root, visited) of
@@ -444,15 +444,15 @@ executeForeign "category_ancestor/4" s =
       let visitedStrs = Set.fromList [v | Atom v <- visitedVals]
           hops = nativeCategoryAncestor parents catS rootS maxD (Set.size visitedStrs) visitedStrs
           retPC = wsCP s
-          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (Map.lookup "A3" (wsRegs s))
+          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 3 (wsRegs s))
           bindHop hopVal =
             case hopsReg of
               Unbound var ->
                 s { wsPC = retPC
-                  , wsRegs = Map.insert "A3" (Integer (fromIntegral hopVal)) (wsRegs s)
+                  , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)
                   , wsBindings = Map.insert var (Integer (fromIntegral hopVal)) (wsBindings s)
                   , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s }
-              _ -> s { wsPC = retPC, wsRegs = Map.insert "A3" (Integer (fromIntegral hopVal)) (wsRegs s) }
+              _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }
       in case hops of
         [] -> Nothing
         [h] -> Just (bindHop h)   -- single result, no CPs
@@ -494,50 +494,50 @@ step_function_haskell(Code) :-
     Code = '-- | Execute a single WAM instruction.
 step :: WamState -> Instruction -> Maybe WamState
 step s (GetConstant c ai) =
-  let val = derefVar (wsBindings s) <$> Map.lookup ai (wsRegs s)
+  let val = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
   in case val of
     Just v | v == c -> Just (s { wsPC = wsPC s + 1 })
     Just (Unbound var) ->
       Just (s { wsPC = wsPC s + 1
-              , wsRegs = Map.insert ai c (wsRegs s)
+              , wsRegs = IM.insert ai c (wsRegs s)
               , wsBindings = Map.insert var c (wsBindings s)
               , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
               })
     _ -> Nothing
 
 step s (GetVariable xn ai) =
-  case Map.lookup ai (wsRegs s) of
+  case IM.lookup ai (wsRegs s) of
     Just val -> let dv = derefVar (wsBindings s) val
                 in Just ((putReg xn dv s) { wsPC = wsPC s + 1 })
     Nothing -> Nothing
 
 step s (GetValue xn ai) =
-  let va = derefVar (wsBindings s) <$> Map.lookup ai (wsRegs s)
+  let va = derefVar (wsBindings s) <$> IM.lookup ai (wsRegs s)
       vx = getReg xn s
   in case (va, vx) of
     (Just a, Just x) | a == x -> Just (s { wsPC = wsPC s + 1 })
     (Just (Unbound n), Just x) ->
       Just (s { wsPC = wsPC s + 1
-              , wsRegs = Map.insert ai x (wsRegs s)
+              , wsRegs = IM.insert ai x (wsRegs s)
               , wsBindings = Map.insert n x (wsBindings s)
               , wsTrail = TrailEntry ("__binding__" ++ n) (Map.lookup n (wsBindings s)) : wsTrail s
               })
     _ -> Nothing
 
 step s (PutConstant c ai) =
-  Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai c (wsRegs s) })
+  Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai c (wsRegs s) })
 
 step s (PutVariable xn ai) =
   let var = Unbound ("_V" ++ show (wsVarCounter s))
       s1 = putReg xn var s
   in Just (s1 { wsPC = wsPC s + 1
-              , wsRegs = Map.insert ai var (wsRegs s1)
+              , wsRegs = IM.insert ai var (wsRegs s1)
               , wsVarCounter = wsVarCounter s + 1
               })
 
 step s (PutValue xn ai) =
   case getReg xn s of
-    Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = Map.insert ai val (wsRegs s) })
+    Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
 step s (PutStructure fn ai arity) =
@@ -574,7 +574,7 @@ step s Proceed =
      else Just (s { wsPC = ret, wsCP = 0 })
 
 step s Allocate =
-  let frame = EnvFrame (wsCP s) Map.empty
+  let frame = EnvFrame (wsCP s) IM.empty
   in Just (s { wsPC = wsPC s + 1
              , wsStack = frame : wsStack s
              , wsCutBar = length (wsCPs s)
@@ -616,14 +616,14 @@ step s (BuiltinCall "!/0" _) =
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s) })
 
 step s (BuiltinCall "is/2" _) =
-  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (Map.lookup "A2" (wsRegs s))
+  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
       result = evalArith (wsBindings s) expr
-      lhs = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
+      lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case (lhs, result) of
     (Just (Unbound var), Just r) ->
       let val = if fromIntegral (round r :: Int) == r then Integer (round r) else Float r
       in Just (s { wsPC = wsPC s + 1
-                 , wsRegs = Map.insert "A1" val (wsRegs s)
+                 , wsRegs = IM.insert 1 val (wsRegs s)
                  , wsBindings = Map.insert var val (wsBindings s)
                  , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
                  })
@@ -631,16 +631,16 @@ step s (BuiltinCall "is/2" _) =
     _ -> Nothing
 
 step s (BuiltinCall "length/2" _) =
-  let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A1" (wsRegs s))
+  let listVal = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 1 (wsRegs s))
   in case listVal of
     VList items ->
       let len = length items
-          lhs = derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s)
+          lhs = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
       in case lhs of
         Just (Unbound var) ->
           let val = Integer len
           in Just (s { wsPC = wsPC s + 1
-                     , wsRegs = Map.insert "A2" val (wsRegs s)
+                     , wsRegs = IM.insert 2 val (wsRegs s)
                      , wsBindings = Map.insert var val (wsBindings s)
                      , wsTrail = TrailEntry ("__binding__" ++ var) (Map.lookup var (wsBindings s)) : wsTrail s
                      })
@@ -649,14 +649,14 @@ step s (BuiltinCall "length/2" _) =
     _ -> Nothing
 
 step s (BuiltinCall "</2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 step s (BuiltinCall "\\\\+/1" _) =
-  let goal = Map.lookup "A1" (wsRegs s) >>= derefHeap (wsHeap s)
+  let goal = IM.lookup 1 (wsRegs s) >>= derefHeap (wsHeap s)
   in case goal of
     Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
       let n = derefVar (wsBindings s) needle
@@ -669,7 +669,7 @@ step s (BuiltinCall "\\\\+/1" _) =
 
 -- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
 step s (SwitchOnConstant table) =
-  let val = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
+  let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })  -- unbound: skip
     Just v -> case Map.lookup v table of
@@ -680,16 +680,16 @@ step s (SwitchOnConstant table) =
     Nothing -> Nothing
 
 step s (BuiltinCall ">/2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 -- member/2 builtin: A1=Elem, A2=List. Creates choice points for backtracking.
 step s (BuiltinCall "member/2" _) =
-  let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (Map.lookup "A1" (wsRegs s))
-      list_ = derefVar (wsBindings s) $ fromMaybe (VList []) (Map.lookup "A2" (wsRegs s))
+  let elem_ = derefVar (wsBindings s) $ fromMaybe (Unbound "_") (IM.lookup 1 (wsRegs s))
+      list_ = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 2 (wsRegs s))
   in case list_ of
     VList (x:_) -> unifyVal elem_ x s
     _ -> Nothing
@@ -846,6 +846,7 @@ generate_main_hs(_Predicates, Code) :-
 module Main where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import Data.List (nub, sort, isPrefixOf, intercalate)
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -903,7 +904,7 @@ buildFact2Code predName pairs startPC =
                   if i == 0 then [TryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
                   else if i == n - 1 then [TrustMe]
                   else [RetryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
-                factInstrs = [GetConstant (Atom a) "A1", GetConstant (Atom b) "A2", Proceed]
+                factInstrs = [GetConstant (Atom a) 1, GetConstant (Atom b) 2, Proceed]
                 label = (pn ++ "_g_" ++ key ++ "_" ++ show i, curPC)
             in (choiceInstr ++ factInstrs, [label], curPC + length choiceInstr + length factInstrs)
           (allCode, allLabels, finalPC) = foldl (\\(c, l, p) (i, f) ->
@@ -916,7 +917,7 @@ buildFact1Code :: String -> [String] -> Int -> ([Instruction], [(String, Int)])
 buildFact1Code predName vals startPC =
     let disp = [(Atom v, predName ++ "_" ++ show i) | (i, v) <- zip [0..] vals]
         switchInstr = SwitchOnConstant (Map.fromList disp)
-        factCode = concatMap (\\(i, v) -> [GetConstant (Atom v) "A1", Proceed]) (zip [0..] vals)
+        factCode = concatMap (\\(i, v) -> [GetConstant (Atom v) 1, Proceed]) (zip [0..] vals)
         factLabels = [(predName ++ "_" ++ show i, startPC + 1 + i * 2) | i <- [0..length vals - 1]]
     in (switchInstr : factCode, (predName ++ "/1", startPC) : factLabels)
 
@@ -962,11 +963,11 @@ main = do
     seedResultsForced <- mapM (\\cat -> do
         let s0 = (emptyState mergedCode mergedLabels)
                 { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
-                , wsRegs = Map.fromList
-                    [ ("A1", Atom cat)
-                    , ("A2", Atom root)
-                    , ("A3", Unbound "Hops")
-                    , ("A4", VList [Atom cat])
+                , wsRegs = IM.fromList
+                    [ (1, Atom cat)
+                    , (2, Atom root)
+                    , (3, Unbound "Hops")
+                    , (4, VList [Atom cat])
                     ]
                 , wsCP = 0
                 }
@@ -1073,6 +1074,7 @@ compile_wam_runtime_to_haskell(_Options, Code) :-
 'module WamRuntime where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'')
@@ -1123,26 +1125,26 @@ evalArith bindings (Str op [a, b]) = do
     _ -> Nothing
 evalArith _ _ = Nothing
 
--- | Get register value (Y-registers from topmost env frame).
-getReg :: String -> WamState -> Maybe Value
-getReg name s
-  | "Y" `isPrefixOf` name = findYReg name (wsStack s)
-  | otherwise = derefVar (wsBindings s) <$> Map.lookup name (wsRegs s)
+-- | Get register value. Y-registers (id >= 200) come from the env frame.
+getReg :: Int -> WamState -> Maybe Value
+getReg rid s
+  | rid >= 200 = findYReg rid (wsStack s)
+  | otherwise = derefVar (wsBindings s) <$> IM.lookup rid (wsRegs s)
   where
     findYReg _ [] = Nothing
-    findYReg n (EnvFrame _ yregs : _) = derefVar (wsBindings s) <$> Map.lookup n yregs
-    findYReg n (_ : rest) = findYReg n rest
+    findYReg r (EnvFrame _ yregs : _) = derefVar (wsBindings s) <$> IM.lookup r yregs
+    findYReg r (_ : rest) = findYReg r rest
 
--- | Set register value.
-putReg :: String -> Value -> WamState -> WamState
-putReg name val s
-  | "Y" `isPrefixOf` name = s { wsStack = updateTopEnv name val (wsStack s) }
-  | otherwise = s { wsRegs = Map.insert name val (wsRegs s) }
+-- | Set register value. Y-registers go to the topmost env frame.
+putReg :: Int -> Value -> WamState -> WamState
+putReg rid val s
+  | rid >= 200 = s { wsStack = updateTopEnv rid val (wsStack s) }
+  | otherwise = s { wsRegs = IM.insert rid val (wsRegs s) }
   where
     updateTopEnv _ _ [] = []
-    updateTopEnv n v (EnvFrame cp yregs : rest) =
-      EnvFrame cp (Map.insert n v yregs) : rest
-    updateTopEnv n v (x : rest) = x : updateTopEnv n v rest
+    updateTopEnv r v (EnvFrame cp yregs : rest) =
+      EnvFrame cp (IM.insert r v yregs) : rest
+    updateTopEnv r v (x : rest) = x : updateTopEnv r v rest
 
 -- | Dereference a heap reference.
 derefHeap :: [Value] -> Value -> Maybe Value
@@ -1160,7 +1162,7 @@ addToBuilder val s = case wsBuilder s of
     let args'' = args ++ [val]
     in if length args'' == arity
        then Just (s { wsPC = wsPC s + 1
-                    , wsRegs = Map.insert ai (Str fn args'') (wsRegs s)
+                    , wsRegs = IM.insert ai (Str fn args'') (wsRegs s)
                     , wsBuilder = NoBuilder
                     })
        else Just (s { wsPC = wsPC s + 1
@@ -1175,7 +1177,7 @@ addToBuilder val s = case wsBuilder s of
                   Atom "[]"  -> VList [hd]
                   _           -> VList [hd, tl]
             in Just (s { wsPC = wsPC s + 1
-                       , wsRegs = Map.insert ai list (wsRegs s)
+                       , wsRegs = IM.insert ai list (wsRegs s)
                        , wsBuilder = NoBuilder
                        })
        else Just (s { wsPC = wsPC s + 1
@@ -1201,6 +1203,7 @@ generate_wam_types_hs(Code) :-
     Code = 'module WamTypes where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import Data.Array (Array, listArray, (!), bounds)
 
 data Value = Atom String
@@ -1212,7 +1215,7 @@ data Value = Atom String
            | Ref Int
            deriving (Eq, Ord, Show)
 
-data EnvFrame = EnvFrame !Int !(Map.Map String Value)
+data EnvFrame = EnvFrame !Int !(IM.IntMap Value)   -- saved CP + Y-regs (IntMap)
               deriving (Show)
 
 data TrailEntry = TrailEntry !String !(Maybe Value)
@@ -1220,15 +1223,15 @@ data TrailEntry = TrailEntry !String !(Maybe Value)
 
 data ChoicePoint = ChoicePoint
   { cpNextPC   :: !Int
-  , cpRegs     :: !(Map.Map String Value)
+  , cpRegs     :: !(IM.IntMap Value)    -- IntMap (registers)
   , cpStack    :: ![EnvFrame]
   , cpCP       :: !Int
   , cpTrailLen :: !Int
   , cpHeapLen  :: !Int
   , cpBindings :: !(Map.Map String Value)
   , cpCutBar   :: !Int
-  , cpAggFrame :: !(Maybe AggFrame)     -- aggregate frame (if this CP is an aggregate)
-  , cpBuiltin  :: !(Maybe BuiltinState) -- builtin state for fact_retry, member, etc.
+  , cpAggFrame :: !(Maybe AggFrame)
+  , cpBuiltin  :: !(Maybe BuiltinState)
   } deriving (Show)
 
 -- | Builtin state for choice points that need custom retry logic.
@@ -1240,20 +1243,20 @@ data BuiltinState
 -- | Aggregate frame for begin_aggregate/end_aggregate.
 data AggFrame = AggFrame
   { afType      :: !String   -- "sum", "count", "collect", etc.
-  , afValueReg  :: !String   -- register holding value per solution
-  , afResultReg :: !String   -- register for final result
+  , afValueReg  :: !Int      -- register ID holding value per solution
+  , afResultReg :: !Int      -- register ID for final result
   , afReturnPC  :: !Int      -- PC after end_aggregate
   } deriving (Show)
 
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
-data Builder = BuildStruct !String !String !Int ![Value]  -- functor, target reg, arity, collected args
-             | BuildList !String ![Value]                  -- target reg, collected [head, tail]
+data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID, arity, collected args
+             | BuildList !Int ![Value]                  -- target reg ID, collected [head, tail]
              | NoBuilder
              deriving (Show)
 
 data WamState = WamState
   { wsPC       :: !Int
-  , wsRegs     :: !(Map.Map String Value)
+  , wsRegs     :: !(IM.IntMap Value)                         -- IntMap for O(1) integer key access
   , wsStack    :: ![EnvFrame]
   , wsHeap     :: ![Value]
   , wsTrail    :: ![TrailEntry]
@@ -1265,42 +1268,49 @@ data WamState = WamState
   , wsLabels   :: !(Map.Map String Int)
   , wsBuilder  :: !Builder
   , wsVarCounter :: !Int
-  , wsAggAccum :: ![Value]     -- aggregate accumulator (values collected so far)
-  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))  -- pred -> (key1 -> [val2s]); populated by benchmark driver
-  , wsForeignConfig :: !(Map.Map String Int)                       -- "max_depth" etc.; populated by benchmark driver
+  , wsAggAccum :: ![Value]
+  , wsForeignFacts :: !(Map.Map String (Map.Map String [String]))
+  , wsForeignConfig :: !(Map.Map String Int)
   } deriving (Show)
 
 -- | Instruction type for the WAM.
+-- | Register IDs are pre-interned at compile time as Ints to avoid string
+-- hashing on register access. Encoding:
+--   A1-A99: 1-99
+--   X1-X99: 101-199
+--   Y1-Y99: 201-299
+type RegId = Int
+
 data Instruction
-  = GetConstant Value String
-  | GetVariable String String
-  | GetValue String String
-  | PutConstant Value String
-  | PutVariable String String
-  | PutValue String String
-  | PutStructure String String Int   -- functor, target reg, arity (pre-parsed)
-  | PutList String
-  | SetValue String
+  = GetConstant Value !RegId
+  | GetVariable !RegId !RegId
+  | GetValue !RegId !RegId
+  | PutConstant Value !RegId
+  | PutVariable !RegId !RegId
+  | PutValue !RegId !RegId
+  | PutStructure String !RegId !Int   -- functor, target reg, arity (pre-parsed)
+  | PutList !RegId
+  | SetValue !RegId
   | SetConstant Value
   | Allocate
   | Deallocate
-  | Call String Int
+  | Call String !Int
   | Execute String
   | Proceed
-  | BuiltinCall String Int
+  | BuiltinCall String !Int
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
   | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
-  | BeginAggregate String String String   -- type, valueReg, resultReg
-  | EndAggregate String                   -- valueReg
+  | BeginAggregate String !RegId !RegId   -- type, valueReg, resultReg
+  | EndAggregate !RegId                   -- valueReg
   deriving (Show, Eq)
 
 -- | Create initial empty state.
 emptyState :: [Instruction] -> Map.Map String Int -> WamState
 emptyState codeList labels = let n = length codeList; code = listArray (1, n) codeList in WamState
   { wsPC       = 1
-  , wsRegs     = Map.empty
+  , wsRegs     = IM.empty
   , wsStack    = []
   , wsHeap     = []
   , wsTrail    = []
@@ -1426,34 +1436,53 @@ wam_lines_to_haskell([Line|Rest], PC, Instrs, Labels, FinalPC) :-
         )
     ).
 
+%% reg_name_to_int(+RegName, -Int)
+%  Encode register name string to integer ID for IntMap-based register storage.
+%  A1-A99 -> 1-99, X1-X99 -> 101-199, Y1-Y99 -> 201-299.
+reg_name_to_int(Reg, Int) :-
+    atom_string(RegA, Reg),
+    sub_atom(RegA, 0, 1, _, Bank),
+    sub_atom(RegA, 1, _, 0, NumA),
+    atom_number(NumA, Num),
+    (   Bank == 'A' -> Int = Num
+    ;   Bank == 'X' -> Int is Num + 100
+    ;   Bank == 'Y' -> Int is Num + 200
+    ;   Int = 0
+    ).
+
 %% wam_instr_to_haskell(+Parts, -HaskellExpr)
 %  Converts parsed WAM instruction parts to a Haskell Instruction constructor.
 wam_instr_to_haskell(["get_constant", C, Ai], Hs) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     wam_value_to_haskell(CC, HsVal),
-    format(string(Hs), 'GetConstant (~w) "~w"', [HsVal, CAi]).
+    reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetConstant (~w) ~w', [HsVal, AiI]).
 wam_instr_to_haskell(["get_variable", Xn, Ai], Hs) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Hs), 'GetVariable "~w" "~w"', [CXn, CAi]).
+    reg_name_to_int(CXn, XnI), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetVariable ~w ~w', [XnI, AiI]).
 wam_instr_to_haskell(["get_value", Xn, Ai], Hs) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Hs), 'GetValue "~w" "~w"', [CXn, CAi]).
+    reg_name_to_int(CXn, XnI), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'GetValue ~w ~w', [XnI, AiI]).
 wam_instr_to_haskell(["put_constant", C, Ai], Hs) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     wam_value_to_haskell(CC, HsVal),
-    format(string(Hs), 'PutConstant (~w) "~w"', [HsVal, CAi]).
+    reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'PutConstant (~w) ~w', [HsVal, AiI]).
 wam_instr_to_haskell(["put_variable", Xn, Ai], Hs) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Hs), 'PutVariable "~w" "~w"', [CXn, CAi]).
+    reg_name_to_int(CXn, XnI), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'PutVariable ~w ~w', [XnI, AiI]).
 wam_instr_to_haskell(["put_value", Xn, Ai], Hs) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Hs), 'PutValue "~w" "~w"', [CXn, CAi]).
+    reg_name_to_int(CXn, XnI), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'PutValue ~w ~w', [XnI, AiI]).
 wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    % Pre-parse arity from "name/N" at compile time so the runtime
-    % doesn''t need to scan the string on every PutStructure step.
     parse_functor_arity(CFN, Arity),
-    format(string(Hs), 'PutStructure "~w" "~w" ~w', [CFN, CAi, Arity]).
+    reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'PutStructure "~w" ~w ~w', [CFN, AiI, Arity]).
 
 %% parse_functor_arity(+FunctorString, -Arity)
 %  Extract the arity from "name/N" format. Defaults to 0 if no slash.
@@ -1467,9 +1496,11 @@ parse_functor_arity(FN, Arity) :-
     ;   Arity = 0
     ).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
-    format(string(Hs), 'PutList "~w"', [Ai]).
+    clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
+    format(string(Hs), 'PutList ~w', [AiI]).
 wam_instr_to_haskell(["set_value", Xn], Hs) :-
-    format(string(Hs), 'SetValue "~w"', [Xn]).
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'SetValue ~w', [XnI]).
 wam_instr_to_haskell(["set_constant", C], Hs) :-
     wam_value_to_haskell(C, HsVal),
     format(string(Hs), 'SetConstant (~w)', [HsVal]).
@@ -1505,10 +1536,12 @@ wam_instr_to_haskell(["switch_on_constant_a2"|Entries], Hs) :-
     format(string(Hs), 'SwitchOnConstant (Map.fromList [~w])', [PairsStr]).
 wam_instr_to_haskell(["begin_aggregate", Type, ValReg, ResReg], Hs) :-
     clean_comma(Type, CT), clean_comma(ValReg, CV), clean_comma(ResReg, CR),
-    format(string(Hs), 'BeginAggregate "~w" "~w" "~w"', [CT, CV, CR]).
+    reg_name_to_int(CV, VI), reg_name_to_int(CR, RI),
+    format(string(Hs), 'BeginAggregate "~w" ~w ~w', [CT, VI, RI]).
 wam_instr_to_haskell(["end_aggregate", ValReg], Hs) :-
     clean_comma(ValReg, CV),
-    format(string(Hs), 'EndAggregate "~w"', [CV]).
+    reg_name_to_int(CV, VI),
+    format(string(Hs), 'EndAggregate ~w', [VI]).
 % Fallback for unknown instructions
 wam_instr_to_haskell(Parts, Hs) :-
     atomic_list_concat(Parts, ' ', Joined),
