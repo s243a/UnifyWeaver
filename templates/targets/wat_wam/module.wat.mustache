@@ -3,13 +3,13 @@
 ;; Module: {{module_name}}
 
 (module
-  ;; Memory: page 0 = native WAT, page 1 = WAM state, page 2+ = WAM heap
-  (memory (export "memory") {{memory_pages}})
-
-  ;; Host imports for I/O
+  ;; Host imports for I/O — must appear before any non-import definition
   (import "env" "print_i64" (func $print_i64 (param i64)))
   (import "env" "print_char" (func $print_char (param i32)))
   (import "env" "print_newline" (func $print_newline))
+
+  ;; Memory: page 0 = native WAT, page 1 = WAM state, page 2+ = WAM heap
+  (memory (export "memory") {{memory_pages}})
 
   ;; === Data segments: instruction arrays ===
   {{data_segments}}

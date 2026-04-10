@@ -264,31 +264,42 @@ test(write_wat_project) :-
 %% --- wat2wasm syntax validation ---
 
 test(wat2wasm_validates) :-
+    %% Generate a minimal WAM-WAT module and verify wat2wasm accepts it
+    %% (exit 0). The earlier version of this test used assertion/1 on
+    %% the exit code, which only *warns* on failure rather than failing
+    %% the test; that allowed the step-dispatch off-by-one bug and a
+    %% paren imbalance in $builtin_arith_cmp to ship unnoticed. The
+    %% assertion is now replaced with a direct unification that fails
+    %% the test on non-zero exit.
     get_time(T),
-    format(atom(TmpWat), '/tmp/test_wam_validate_~w.wat', [T]),
-    format(atom(TmpWasm), '/tmp/test_wam_validate_~w.wasm', [T]),
+    TmpDir = '/data/data/com.termux/files/home/tmp',
+    format(atom(TmpWat), '~w/test_wam_validate_~w.wat', [TmpDir, T]),
+    format(atom(TmpWasm), '~w/test_wam_validate_~w.wasm', [TmpDir, T]),
     assertz(user:test_validate :- true),
     Predicates = [test_validate/0],
     Options = [module_name(validate_test)],
-    (   catch(
-            write_wam_wat_project(Predicates, Options, TmpWat),
-            _, fail)
-    ->  %% Try wat2wasm validation
-        (   catch(process_create(path(wat2wasm), ['--version'],
-                    [stdout(null), stderr(null)]), _, fail)
-        ->  format(string(Cmd), "wat2wasm ~w -o ~w 2>&1", [TmpWat, TmpWasm]),
-            process_create(path(sh), ['-c', Cmd],
-                [stdout(pipe(Out)), process(Pid)]),
-            read_string(Out, _, Output),
-            process_wait(Pid, Exit),
-            format('wat2wasm output: ~s~n', [Output]),
-            assertion(Exit == exit(0))
-        ;   format("wat2wasm not found, skipping syntax validation.~n")
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project(Predicates, Options, TmpWat),
+            (   catch(process_create(path(wat2wasm), ['--version'],
+                        [stdout(null), stderr(null)]), _, fail)
+            ->  format(string(Cmd), "wat2wasm ~w -o ~w 2>&1", [TmpWat, TmpWasm]),
+                process_create(path(sh), ['-c', Cmd],
+                    [stdout(pipe(Out)), process(Pid)]),
+                read_string(Out, _, Output),
+                process_wait(Pid, Exit),
+                (   Exit == exit(0)
+                ->  true
+                ;   format(user_error, 'wat2wasm failed: ~s~n', [Output]),
+                    fail
+                )
+            ;   format("wat2wasm not found, skipping syntax validation.~n")
+            )
+        ),
+        (   retractall(user:test_validate),
+            (exists_file(TmpWat) -> delete_file(TmpWat) ; true),
+            (exists_file(TmpWasm) -> delete_file(TmpWasm) ; true)
         )
-    ;   format("write_wam_wat_project failed, skipping validation.~n")
-    ),
-    retractall(user:test_validate),
-    (exists_file(TmpWat) -> delete_file(TmpWat) ; true),
-    (exists_file(TmpWasm) -> delete_file(TmpWasm) ; true).
+    ).
 
 :- end_tests(wam_wat_target).

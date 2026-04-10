@@ -506,9 +506,19 @@ gen_do_func(Tag-Body, Code) :-
 
 gen_step_function(Cases, Code) :-
     %% Generate br_table dispatch with nested blocks.
-    %% WAT br_table jumps to block N (counting from innermost).
-    %% We nest blocks so that tag 0 breaks to the outermost (first to close),
-    %% and after each block close we call the corresponding do_ function.
+    %%
+    %% Block nesting: $default is outermost, $b0 is innermost. br_table
+    %% dispatches tag N to $bN. Exiting $bN puts control just after
+    %% $bN's close, where the case body for tag N runs — a return that
+    %% exits the function with the $do_<instr> call result.
+    %%
+    %% There must be NO bare `)` between br_table and the first case
+    %% body: if present, that `)` would close $b0 before its case body,
+    %% making tag N run the body for tag N-1 (an off-by-one dispatch
+    %% bug). The original WAM-WAT target PR #1224 had this bug; it went
+    %% unnoticed because wat2wasm_validates used assertion/1 which
+    %% warns rather than failing the test, so runtime behavior was
+    %% never actually validated.
     length(Cases, N),
     MaxTag is N - 1,
     %% br_table labels: $b0 $b1 ... $bN $default
@@ -519,7 +529,7 @@ gen_step_function(Cases, Code) :-
     maplist(open_block, TagNums, OpenBlocks),
     reverse(OpenBlocks, RevOpenBlocks),
     atomic_list_concat(RevOpenBlocks, '\n', OpenBlocksStr),
-    %% Closing blocks + dispatch calls (outermost first = tag 0)
+    %% Closing blocks + dispatch calls (innermost first = tag 0)
     maplist(close_and_call, Cases, CloseBlocks),
     atomic_list_concat(CloseBlocks, '\n', CloseBlocksStr),
     format(atom(Code),
@@ -533,8 +543,8 @@ gen_step_function(Cases, Code) :-
   (block $default
 ~w
     (br_table ~w $default (local.get $tag))
-  )
 ~w
+  )
   (i32.const 0)
 )', [OpenBlocksStr, BrTableStr, CloseBlocksStr]).
 
@@ -1060,6 +1070,15 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 )
 
 ;; --- Arithmetic comparison: 0==eq, 1==ne, 2==lt, 3==gt, 4==le, 5==ge ---
+;; Nested-block br_table dispatch. Each case line has the form
+;;   ) (return (i64.XX ...))
+;; where the leading `)` closes the corresponding $XX block and the
+;; return expression must balance its own parens — one too many closes
+;; per line makes the function paren-imbalanced and wat2wasm rejects
+;; the entire module with cascading "undefined function" errors on
+;; downstream symbols. (The original WAM-WAT target PR #1224 had an
+;; extra `)` per line; it was never caught because the wat2wasm_validates
+;; test used assertion/1 which only warns rather than failing the test.)
 (func $builtin_arith_cmp (param $op i32) (result i32)
   (local $a i64) (local $b i64)
   (local.set $a (call $get_reg_payload (i32.const 0)))
@@ -1067,12 +1086,12 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (block $default
     (block $ge (block $le (block $gt (block $lt (block $ne (block $eq
       (br_table $eq $ne $lt $gt $le $ge $default (local.get $op))
-    ) (return (i64.eq (local.get $a) (local.get $b))))
-    ) (return (i64.ne (local.get $a) (local.get $b))))
-    ) (return (i64.lt_s (local.get $a) (local.get $b))))
-    ) (return (i64.gt_s (local.get $a) (local.get $b))))
-    ) (return (i64.le_s (local.get $a) (local.get $b))))
-    ) (return (i64.ge_s (local.get $a) (local.get $b))))
+    ) (return (i64.eq (local.get $a) (local.get $b)))
+    ) (return (i64.ne (local.get $a) (local.get $b)))
+    ) (return (i64.lt_s (local.get $a) (local.get $b)))
+    ) (return (i64.gt_s (local.get $a) (local.get $b)))
+    ) (return (i64.le_s (local.get $a) (local.get $b)))
+    ) (return (i64.ge_s (local.get $a) (local.get $b)))
   )
   (i32.const 0)
 )
