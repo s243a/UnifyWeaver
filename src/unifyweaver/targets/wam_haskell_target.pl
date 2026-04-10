@@ -1130,6 +1130,7 @@ import WamTypes
 ~w
 
 -- | Dereference an Unbound variable through the binding table.
+{-# INLINE derefVar #-}
 derefVar :: IM.IntMap Value -> Value -> Value
 derefVar bindings (Unbound vid) =
   case IM.lookup vid bindings of
@@ -1168,6 +1169,7 @@ evalArith bindings (Str op [a, b]) = do
 evalArith _ _ = Nothing
 
 -- | Get register value. Y-registers (id >= 200) come from the env frame.
+{-# INLINE getReg #-}
 getReg :: Int -> WamState -> Maybe Value
 getReg rid s
   | rid >= 200 = findYReg rid (wsStack s)
@@ -1178,6 +1180,7 @@ getReg rid s
     findYReg r (_ : rest) = findYReg r rest
 
 -- | Set register value. Y-registers go to the topmost env frame.
+{-# INLINE putReg #-}
 putReg :: Int -> Value -> WamState -> WamState
 putReg rid val s
   | rid >= 200 = s { wsStack = updateTopEnv rid val (wsStack s) }
