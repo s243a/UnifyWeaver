@@ -284,7 +284,7 @@ backtrack s = case wsCPs s of
 -- | Resume a builtin choice point. Tries next match, updates or pops CP.
 resumeBuiltin :: BuiltinState -> ChoicePoint -> [ChoicePoint] -> WamState -> Maybe WamState
 resumeBuiltin (FactRetry _ [] _) _ rest s =
-  backtrack (s { wsCPs = rest })
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
 resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
   let newBindings = IM.insert vid (Atom v) (cpBindings cp)
       newRegs = IM.insert 2 (Atom v) (cpRegs cp)
@@ -300,7 +300,7 @@ resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 resumeBuiltin (HopsRetry _ [] _) _ rest s =
-  backtrack (s { wsCPs = rest })
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
 resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
   let newBindings = IM.insert vid (Integer (fromIntegral h)) (cpBindings cp)
       newRegs = IM.insert 3 (Integer (fromIntegral h)) (cpRegs cp)
@@ -368,6 +368,7 @@ finalizeAggregate returnPC s = go (wsCPs s)
                   , wsHeapLen = cpHeapLen cp
                   , wsCP = cpCP cp
                   , wsCPs = rest
+                  , wsCPsLen = wsCPsLen s - 1
                   , wsAggAccum = []
                   }
       Nothing -> go rest  -- skip non-aggregate CPs
@@ -434,8 +435,10 @@ callIndexedFact2 pred s =
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                             , cpBuiltin = Just (FactRetry vid rest retPC)
                             } : wsCPs s
+                  newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
-                         , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1, wsCPs = newCPs })
+                         , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1
+                         , wsCPs = newCPs, wsCPsLen = newCPsLen })
             Atom existing ->
               if existing == v then Just (s { wsPC = retPC })
               else case filter (== existing) rest of
@@ -481,7 +484,7 @@ executeForeign "category_ancestor/4" s =
                 , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                 , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)
                 }
-          in Just (s1 { wsCPs = cp : wsCPs s })
+          in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
     _ -> Nothing
 executeForeign _ _ = Nothing
 
@@ -601,7 +604,7 @@ step s Allocate =
   let frame = EnvFrame (wsCP s) IM.empty
   in Just (s { wsPC = wsPC s + 1
              , wsStack = frame : wsStack s
-             , wsCutBar = length (wsCPs s)
+             , wsCutBar = wsCPsLen s
              })
 
 step s Deallocate =
@@ -618,15 +621,15 @@ step s (TryMeElse label) =
         , cpCP       = wsCP s
         , cpTrailLen = wsTrailLen s
         , cpHeapLen  = wsHeapLen s
-        , cpBindings = wsBindings s   -- O(1): Data.Map shared reference
+        , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
         }
-  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s })
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
 
 step s TrustMe =
   case wsCPs s of
-    (_ : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest })
+    (_ : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
     [] -> Nothing
 
 step s (RetryMeElse label) =
@@ -637,7 +640,8 @@ step s (RetryMeElse label) =
     [] -> Nothing
 
 step s (BuiltinCall "!/0" _) =
-  Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s) })
+  -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
+  Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
 
 step s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
@@ -735,6 +739,7 @@ step s (BeginAggregate typ valReg resReg) =
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
+             , wsCPsLen = wsCPsLen s + 1
              , wsAggAccum = []
              })
 
@@ -1196,19 +1201,22 @@ derefHeap _ v = Just v
 addToBuilder :: Value -> WamState -> Maybe WamState
 addToBuilder val s = case wsBuilder s of
   BuildStruct fn ai arity args ->
-    let args'' = args ++ [val]
+    -- Cons to front (O(1)) and reverse only on finalize. Track count via list length
+    -- but only when finalizing — args grows from 0 to arity, max arity is small.
+    let args'' = val : args
     in if length args'' == arity
        then Just (s { wsPC = wsPC s + 1
-                    , wsRegs = IM.insert ai (Str fn args'') (wsRegs s)
+                    , wsRegs = IM.insert ai (Str fn (reverse args'')) (wsRegs s)
                     , wsBuilder = NoBuilder
                     })
        else Just (s { wsPC = wsPC s + 1
                     , wsBuilder = BuildStruct fn ai arity args''
                     })
   BuildList ai args ->
-    let args'' = args ++ [val]
+    -- BuildList always has exactly 2 args [head, tail]
+    let args'' = val : args
     in if length args'' == 2
-       then let [hd, tl] = args''
+       then let [tl, hd] = args''   -- reversed because we cons-built
                 list = case tl of
                   VList items -> VList (hd : items)
                   Atom "[]"  -> VList [hd]
@@ -1222,7 +1230,7 @@ addToBuilder val s = case wsBuilder s of
                     })
   NoBuilder ->
     -- No builder active, just push to heap (fallback)
-    Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val] })
+    Just (s { wsPC = wsPC s + 1, wsHeap = wsHeap s ++ [val], wsHeapLen = wsHeapLen s + 1 })
 
 -- | Lookup a label in the label map.
 lookupLabel :: String -> WamState -> Int
@@ -1324,6 +1332,7 @@ data WamState = WamState
   , wsTrailLen :: !Int                          -- cached length(wsTrail)
   , wsCP       :: !Int
   , wsCPs      :: ![ChoicePoint]
+  , wsCPsLen   :: !Int                          -- cached length(wsCPs) for cut barrier
   , wsBindings :: !(IM.IntMap Value)
   , wsCutBar   :: !Int
   , wsCode     :: !(Array Int Instruction)
@@ -1381,6 +1390,7 @@ emptyState codeList labels = let n = length codeList; code = listArray (1, n) co
   , wsTrailLen = 0
   , wsCP       = 0
   , wsCPs      = []
+  , wsCPsLen   = 0
   , wsBindings = IM.empty
   , wsCutBar   = 0
   , wsCode     = code
