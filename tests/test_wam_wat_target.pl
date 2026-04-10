@@ -205,6 +205,27 @@ test(arg_builtin_call_encoding) :-
     sub_atom(Hex, 12, 3, _, FirstOp1Byte),
     assertion(FirstOp1Byte == '\\13').
 
+%% --- Phase 2.2: functor/3 codegen ---
+
+test(functor_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('functor/3', 18)).
+
+test(functor_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_functor")),
+    %% Both modes: construct branch uses i64.shl to pack arity,
+    %% read branch uses i64.shr_u to extract it.
+    assertion(sub_string(HelpersCode, _, _, _, "i64.shl")),
+    %% Dispatch: if-chain checks id == 18 for functor/3.
+    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 18)")).
+
+test(functor_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('functor/3', 3), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 18 = 0x12
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\12').
+
 %% --- Predicate compilation ---
 
 test(compile_simple_predicate) :-

@@ -1038,6 +1038,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   ;; --- Term inspection builtins (IDs 18-21) ---
   ;; Handled via a short if-chain after the main br_table default.
   ;; These are not hot paths, so the extra compares are negligible.
+  (if (i32.eq (local.get $id) (i32.const 18))
+    (then (return (call $builtin_functor))))
   (if (i32.eq (local.get $id) (i32.const 19))
     (then (return (call $builtin_arg))))
   (i32.const 0)
@@ -1128,6 +1130,94 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (i64.eq (call $get_reg_payload (i32.const 2)) (local.get $arg_payload)))
     (then (i32.const 1))
     (else (i32.const 0)))
+)
+
+;; --- functor/3: A1 = T, A2 = N, A3 = A ---
+;; Two modes determined by A1''s tag:
+;;   - Unbound A1: construct mode. Read N and A from A2/A3, allocate a
+;;     fresh compound with $arity unbound args, bind A1 to the result.
+;;   - Instantiated A1: read mode. Extract functor/arity and bind A2/A3.
+;; Atomic T (atom/integer/float): N = T, A = 0.
+;; List case (tag=4) not handled in v1 — returns fail. Follow-up.
+(func $builtin_functor (result i32)
+  (local $t_tag i32)
+  (local $t_payload i64)
+  (local $n_tag i32)
+  (local $n_payload i64)
+  (local $arity i32)
+  (local $comp_addr i32)
+  (local $header_payload i64)
+  (local $i i32)
+  (local.set $t_tag (call $get_reg_tag (i32.const 0)))
+  ;; --- Construct mode ---
+  (if (i32.eq (local.get $t_tag) (i32.const 6))
+    (then
+      (local.set $n_tag (call $get_reg_tag (i32.const 1)))
+      (local.set $n_payload (call $get_reg_payload (i32.const 1)))
+      (local.set $arity
+        (i32.wrap_i64 (call $get_reg_payload (i32.const 2))))
+      ;; Arity must be >= 0.
+      (if (i32.lt_s (local.get $arity) (i32.const 0))
+        (then (return (i32.const 0))))
+      ;; Arity 0: bind T to N verbatim (atom or integer).
+      (if (i32.eq (local.get $arity) (i32.const 0))
+        (then
+          (call $trail_binding (i32.const 0))
+          (call $set_reg (i32.const 0) (local.get $n_tag) (local.get $n_payload))
+          (return (i32.const 1))))
+      ;; Arity > 0: N must be an atom to form a valid compound.
+      (if (i32.ne (local.get $n_tag) (i32.const 0))
+        (then (return (i32.const 0))))
+      ;; header payload = (arity << 32) | (hash & 0xFFFFFFFF)
+      (local.set $header_payload
+        (i64.or
+          (i64.shl (i64.extend_i32_u (local.get $arity)) (i64.const 32))
+          (i64.and (local.get $n_payload) (i64.const 0xFFFFFFFF))))
+      (local.set $comp_addr
+        (call $heap_push_val (i32.const 3) (local.get $header_payload)))
+      ;; Push $arity fresh unbound argument cells.
+      (local.set $i (i32.const 0))
+      (block $done_args
+        (loop $arg_loop
+          (br_if $done_args (i32.ge_s (local.get $i) (local.get $arity)))
+          (drop (call $heap_push_val (i32.const 6) (i64.const 0)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $arg_loop)))
+      ;; Bind T = ref(comp_addr).
+      (call $trail_binding (i32.const 0))
+      (call $set_reg (i32.const 0) (i32.const 5)
+        (i64.extend_i32_u (local.get $comp_addr)))
+      (return (i32.const 1))))
+  ;; --- Read mode: compound via ref ---
+  (if (i32.eq (local.get $t_tag) (i32.const 5))
+    (then
+      (local.set $comp_addr
+        (i32.wrap_i64 (call $get_reg_payload (i32.const 0))))
+      (if (i32.eq (call $val_tag (local.get $comp_addr)) (i32.const 3))
+        (then
+          (local.set $header_payload (call $val_payload (local.get $comp_addr)))
+          (local.set $arity
+            (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
+          ;; Bind A2 = atom(functor_hash)
+          (call $trail_binding (i32.const 1))
+          (call $set_reg (i32.const 1) (i32.const 0)
+            (i64.and (local.get $header_payload) (i64.const 0xFFFFFFFF)))
+          ;; Bind A3 = integer(arity)
+          (call $trail_binding (i32.const 2))
+          (call $set_reg (i32.const 2) (i32.const 1)
+            (i64.extend_i32_u (local.get $arity)))
+          (return (i32.const 1))))))
+  ;; --- Read mode: atomic (atom/integer/float) ---
+  ;; For atomic T: N = T (same tag + payload), A = 0
+  (if (i32.le_u (local.get $t_tag) (i32.const 2))
+    (then
+      (local.set $t_payload (call $get_reg_payload (i32.const 0)))
+      (call $trail_binding (i32.const 1))
+      (call $set_reg (i32.const 1) (local.get $t_tag) (local.get $t_payload))
+      (call $trail_binding (i32.const 2))
+      (call $set_reg (i32.const 2) (i32.const 1) (i64.const 0))
+      (return (i32.const 1))))
+  (i32.const 0)
 )
 ', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
 
