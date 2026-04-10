@@ -4219,6 +4219,21 @@ rust_foreign_kernel_spec(RelGoal,
     rust_foreign_lowerable_astar_shortest_path(InnerPred, 4, Clauses,
         WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim).
 
+rust_render_weighted_kernel(weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral) :-
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral).
+
+rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim) :-
+    atom_string(InnerPred, InnerPredStr),
+    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
+    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral).
+
 rust_foreign_wrapper_output_arg(RelGoal, [], OutputArg) :-
     arg(2, RelGoal, OutputArg).
 rust_foreign_wrapper_output_arg(_RelGoal, JoinGoals, OutputArg) :-
@@ -4668,10 +4683,10 @@ compile_rust_foreign_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode)
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
@@ -4759,12 +4774,10 @@ compile_rust_foreign_stream_wrapper(Pred, 4, Head, Body, _IncludeMain, RustCode)
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalTarget, GoalDim, GoalCost],
         HeadResult, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -4905,12 +4918,12 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(JoinPredKey1), '~w/2', [JoinPred1]),
     format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
     rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
     rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
     format(string(RustCode),
@@ -5018,14 +5031,12 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(JoinPredKey1), '~w/2', [JoinPred1]),
     format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
     rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
     rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
     format(string(RustCode),
@@ -5141,10 +5152,10 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == TargetArg,
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/3', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5230,12 +5241,10 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
     parse_group_term_rust(GroupTerm, [GroupVar]),
     GroupVar == TargetArg,
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
     format(string(PredKey), '~w/4', [Pred]),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
@@ -5328,11 +5337,11 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(JoinPredKey1), '~w/2', [JoinPred1]),
     format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
     rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
     rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
     format(string(RustCode),
@@ -5428,13 +5437,11 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(JoinPredKey1), '~w/2', [JoinPred1]),
     format(string(JoinPredKey2), '~w/2', [JoinPred2]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
     rust_atom_fact_pairs_literal(JoinPairs1, JoinPairsLiteral1),
     rust_atom_fact_pairs_literal(JoinPairs2, JoinPairsLiteral2),
     format(string(RustCode),
@@ -5540,11 +5547,9 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, GoalDim, CostArg],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    format(string(DirectPredKey), '~w/3', [DirectPred]),
-    rust_weighted_fact_triples_literal(FactTriples, WeightTriplesLiteral),
-    rust_weighted_fact_triples_literal(DirectTriples, DirectTriplesLiteral),
+    rust_render_astar_kernel(
+        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
+        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
@@ -5628,9 +5633,9 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, CostArg],
         Expr, SetupCode, ValueExpr, FilterCond),
     atom_string(Pred, PredStr),
-    atom_string(InnerPred, InnerPredStr),
-    format(string(WeightPredKey), '~w/3', [WeightPred]),
-    rust_weighted_fact_triples_literal(FactTriples, TriplesLiteral),
+    rust_render_weighted_kernel(
+        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
+        InnerPredStr, WeightPredKey, TriplesLiteral),
     format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
     vm.reset_query();
