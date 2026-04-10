@@ -46,10 +46,11 @@ seed support relations through the same planner surface, adding buckets like
 `support_seeds_strategy_select`, and `support_seeds_materialize_*`. Generic
 scan planning now adds corresponding scan buckets such as
 `scan_strategy_select`, `scan_probe_*`, `scan_materialize_*`, and
-`scan_build_fact_set`. Generic closure planning now adds corresponding closure
-buckets such as `closure_strategy_select`, `closure_probe_*`, and
-`closure_materialize_*`, with focused validation available in
-`benchmark_closure_materialization.py`.
+`scan_build_fact_set`, with focused validation available in
+`benchmark_scan_materialization.py`. Generic closure planning now adds
+corresponding closure buckets such as `closure_strategy_select`,
+`closure_probe_*`, and `closure_materialize_*`, with focused validation
+available in `benchmark_closure_materialization.py`.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -225,6 +226,7 @@ Tables:
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
+| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |

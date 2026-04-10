@@ -93,6 +93,9 @@ Status:
   `PatternScanNode`, and scan-heavy join/negation/aggregate consumers can now
   choose between direct streamed scan access, replayable buffering, and
   external materialized fallback before building list/set views
+- focused validation for that generic scan planner surface now lives in
+  `examples/benchmark/benchmark_scan_materialization.py`, mirroring the
+  earlier focused closure harness
 - started for generic closure relation retention, where `TransitiveClosureNode`,
   grouped closure variants, and `PathAwareAccumulationNode` auxiliary-relation
   loading can now choose between direct streamed access, replayable

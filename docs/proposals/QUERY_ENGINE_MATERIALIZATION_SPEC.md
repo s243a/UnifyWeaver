@@ -91,6 +91,10 @@ Examples:
   same measured relation-retention boundary before building successor,
   predecessor, or auxiliary lookup indices, with an explicit override via
   `QueryExecutorOptions.ClosureRelationRetentionStrategy`
+- generic scan planning now also has focused validation coverage in
+  `examples/benchmark/benchmark_scan_materialization.py`, so scan-heavy join,
+  negation, aggregate, relation-scan, and pattern-scan paths can be checked
+  directly rather than only through indirect workload coverage
 - shortest-path and weighted-shortest-path operators can emit compact
   `(group, root, min_value)` summaries instead of retaining full seeded path rows
 - where both grouped minima and legacy seeded-row regrouping are available, the
