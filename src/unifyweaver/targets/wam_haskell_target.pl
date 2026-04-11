@@ -502,6 +502,46 @@ executeForeign !ctx "category_ancestor/4" s =
     _ -> Nothing
 executeForeign _ _ _ = Nothing
 
+-- | Bind an output register to a value WITHOUT advancing PC.
+-- Used by term-inspection builtins that need to bind multiple
+-- output positions in sequence before a single PC advance at the
+-- end of the case. If the register is already bound to an equal
+-- value, succeeds without side-effects; if it''s bound to an
+-- unequal value, fails. Otherwise binds and trails.
+bindOutput :: Int -> Value -> WamState -> Maybe WamState
+bindOutput reg val s = case derefVar (wsBindings s) <$> IM.lookup reg (wsRegs s) of
+  Just (Unbound vid) -> Just (s
+    { wsRegs = IM.insert reg val (wsRegs s)
+    , wsBindings = IM.insert vid val (wsBindings s)
+    , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+    , wsTrailLen = wsTrailLen s + 1
+    })
+  Just existing | existing == val -> Just s
+  _ -> Nothing
+
+-- | copy_term/2 walker: recursively copies a Value, mapping each
+-- distinct source variable id to exactly one fresh destination
+-- variable id to preserve sharing within the copy. Threaded state
+-- is (counter, varMap). Atomic values clone as-is.
+copyTermWalk :: Int -> IM.IntMap Int -> Value -> (Value, Int, IM.IntMap Int)
+copyTermWalk !c !m (Unbound vid) = case IM.lookup vid m of
+  Just nv -> (Unbound nv, c, m)
+  Nothing -> (Unbound c, c + 1, IM.insert vid c m)
+copyTermWalk !c !m (Str fn args) =
+  let (newArgs, c1, m1) = copyTermArgs c m args
+  in (Str fn newArgs, c1, m1)
+copyTermWalk !c !m (VList items) =
+  let (newItems, c1, m1) = copyTermArgs c m items
+  in (VList newItems, c1, m1)
+copyTermWalk !c !m v = (v, c, m)
+
+copyTermArgs :: Int -> IM.IntMap Int -> [Value] -> ([Value], Int, IM.IntMap Int)
+copyTermArgs !c !m [] = ([], c, m)
+copyTermArgs !c !m (x : xs) =
+  let (x1, c1, m1) = copyTermWalk c m x
+      (xs1, c2, m2) = copyTermArgs c1 m1 xs
+  in (x1 : xs1, c2, m2)
+
 -- | Unify two values, binding unbound variables.
 unifyVal :: Value -> Value -> WamState -> Maybe WamState
 unifyVal (Unbound vid) val s =
@@ -769,6 +809,130 @@ step !ctx s (EndAggregate valReg) =
   in case backtrackInner returnPC s1 of
     Just s2 -> Just s2
     Nothing -> finalizeAggregate returnPC s1
+
+-- functor/3: A1 = T, A2 = N, A3 = A. Read and construct modes
+-- are dispatched on A1''s tag after dereferencing.
+step !_ctx s (BuiltinCall "functor/3" _) =
+  let t = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+  in case t of
+    Just (Unbound vid) ->
+      -- Construct mode: need A2 (atom name) and A3 (integer arity).
+      let nArg = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+          aArg = derefVar (wsBindings s) <$> IM.lookup 3 (wsRegs s)
+      in case (nArg, aArg) of
+        (Just nameVal, Just (Integer arity)) | arity >= 0 ->
+          let mBuilt = if arity == 0
+                then Just (nameVal, wsVarCounter s)
+                else case nameVal of
+                  Atom fname ->
+                    let c0 = wsVarCounter s
+                        newArgs = [Unbound (c0 + i) | i <- [0 .. arity - 1]]
+                    in Just (Str fname newArgs, c0 + arity)
+                  _ -> Nothing
+          in case mBuilt of
+            Nothing -> Nothing
+            Just (built, newCounter) -> Just (s
+              { wsPC = wsPC s + 1
+              , wsRegs = IM.insert 1 built (wsRegs s)
+              , wsBindings = IM.insert vid built (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
+              , wsVarCounter = newCounter
+              })
+        _ -> Nothing
+    Just tVal ->
+      -- Read mode: extract functor name and arity.
+      let mInfo = case tVal of
+            Str fn args -> Just (Atom fn, length args)
+            VList [] -> Just (Atom "[]", 0)
+            VList _ -> Just (Atom ".", 2)
+            Atom _ -> Just (tVal, 0)
+            Integer _ -> Just (tVal, 0)
+            Float _ -> Just (tVal, 0)
+            _ -> Nothing
+      in case mInfo of
+        Nothing -> Nothing
+        Just (name, arity) ->
+          case bindOutput 2 name s of
+            Nothing -> Nothing
+            Just s1 -> case bindOutput 3 (Integer arity) s1 of
+              Nothing -> Nothing
+              Just s2 -> Just (s2 { wsPC = wsPC s2 + 1 })
+    Nothing -> Nothing
+
+-- arg/3: A1 = N (integer, 1-based), A2 = T (compound/list),
+-- A3 = output unified with the selected argument.
+step !_ctx s (BuiltinCall "arg/3" _) =
+  let n = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+      t = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+  in case (n, t) of
+    (Just (Integer idx), Just tVal) | idx >= 1 ->
+      let mArg = case tVal of
+            Str _ args | idx <= length args -> Just (args !! (idx - 1))
+            VList (x : _) | idx == 1 -> Just x
+            VList (_ : xs) | idx == 2 -> Just (VList xs)
+            _ -> Nothing
+      in case mArg of
+        Nothing -> Nothing
+        Just a -> case bindOutput 3 a s of
+          Nothing -> Nothing
+          Just s1 -> Just (s1 { wsPC = wsPC s1 + 1 })
+    _ -> Nothing
+
+-- =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
+-- compose (unbound A1, list in A2).
+step !_ctx s (BuiltinCall "=../2" _) =
+  let t = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+  in case t of
+    Just (Unbound vid) ->
+      -- Compose mode: read proper list from A2.
+      let l = derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s)
+      in case l of
+        Just (VList items) ->
+          let mBuilt = case items of
+                [] -> Nothing
+                [x] -> Just x
+                (Atom fname : rest) -> Just (Str fname rest)
+                _ -> Nothing
+          in case mBuilt of
+            Nothing -> Nothing
+            Just built -> Just (s
+              { wsPC = wsPC s + 1
+              , wsRegs = IM.insert 1 built (wsRegs s)
+              , wsBindings = IM.insert vid built (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
+              })
+        _ -> Nothing
+    Just tVal ->
+      -- Decompose mode: build list from T.
+      let mList = case tVal of
+            Str fn args -> Just (VList (Atom fn : args))
+            Atom _ -> Just (VList [tVal])
+            Integer _ -> Just (VList [tVal])
+            Float _ -> Just (VList [tVal])
+            VList [] -> Just (VList [Atom "[]"])
+            VList (x : xs) -> Just (VList [Atom ".", x, VList xs])
+            _ -> Nothing
+      in case mList of
+        Nothing -> Nothing
+        Just lv -> case bindOutput 2 lv s of
+          Nothing -> Nothing
+          Just s1 -> Just (s1 { wsPC = wsPC s1 + 1 })
+    Nothing -> Nothing
+
+-- copy_term/2: A1 = T, A2 = Copy. Walks T with a var map to
+-- preserve sharing, bumps wsVarCounter, binds A2 to the fresh copy.
+step !_ctx s (BuiltinCall "copy_term/2" _) =
+  let t = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+  in case t of
+    Just tVal ->
+      let (copy, newCounter, _) = copyTermWalk (wsVarCounter s) IM.empty tVal
+          s0 = s { wsVarCounter = newCounter }
+      in case bindOutput 2 copy s0 of
+        Nothing -> Nothing
+        Just s1 -> Just (s1 { wsPC = wsPC s1 + 1 })
+    Nothing -> Nothing
 
 -- Fallback for unhandled instructions
 step _ _ _ = Nothing'.

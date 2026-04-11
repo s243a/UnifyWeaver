@@ -1056,7 +1056,198 @@ compile_execute_term_builtin_to_rust(Code) :-
                 eprintln!("Warning: append/3 is not yet implemented in WAM-Rust runtime");
                 false
             }
+            "functor/3" => {
+                let t = self.regs.get("A1").cloned()
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                match t {
+                    Some(Value::Unbound(ref var_name)) => {
+                        // Construct mode: read N (atom) and A (integer).
+                        let n = self.regs.get("A2").cloned()
+                            .map(|v| self.deref_heap(&self.deref_var(&v)));
+                        let a = self.regs.get("A3").cloned()
+                            .map(|v| self.deref_heap(&self.deref_var(&v)));
+                        match (n, a) {
+                            (Some(name_val), Some(Value::Integer(arity))) if arity >= 0 => {
+                                let built = if arity == 0 {
+                                    name_val
+                                } else if let Value::Atom(fname) = name_val {
+                                    let args: Vec<Value> = (0..arity as usize).map(|_| {
+                                        self.var_counter += 1;
+                                        Value::Unbound(format!("_F{}", self.var_counter))
+                                    }).collect();
+                                    Value::Str(fname, args)
+                                } else { return false; };
+                                self.trail_binding("A1");
+                                self.regs.insert("A1".to_string(), built.clone());
+                                self.bind_var(var_name, built);
+                                self.pc += 1; true
+                            }
+                            _ => false,
+                        }
+                    }
+                    Some(t_val) => {
+                        // Read mode: extract functor name and arity.
+                        let (name, arity): (Value, i64) = match &t_val {
+                            Value::Str(f, args) => (Value::Atom(f.clone()), args.len() as i64),
+                            Value::List(items) if items.is_empty() =>
+                                (Value::Atom("[]".to_string()), 0),
+                            Value::List(_) => (Value::Atom(".".to_string()), 2),
+                            Value::Atom(s) => (Value::Atom(s.clone()), 0),
+                            Value::Integer(_) | Value::Float(_) | Value::Bool(_) =>
+                                (t_val.clone(), 0),
+                            _ => return false,
+                        };
+                        if let Some(a2) = self.regs.get("A2").cloned() {
+                            let derefed = self.deref_var(&self.deref_heap(&a2));
+                            if !self.unify(&derefed, &name) { return false; }
+                        }
+                        if let Some(a3) = self.regs.get("A3").cloned() {
+                            let derefed = self.deref_var(&self.deref_heap(&a3));
+                            if !self.unify(&derefed, &Value::Integer(arity)) { return false; }
+                        }
+                        self.pc += 1; true
+                    }
+                    None => false,
+                }
+            }
+            "arg/3" => {
+                let n_val = self.regs.get("A1").cloned()
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                let t_val = self.regs.get("A2").cloned()
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                match (n_val, t_val) {
+                    (Some(Value::Integer(n)), Some(t)) if n >= 1 => {
+                        let idx = (n - 1) as usize;
+                        let arg = match &t {
+                            Value::Str(_, args) => args.get(idx).cloned(),
+                            Value::List(items) if n == 1 && !items.is_empty() =>
+                                Some(items[0].clone()),
+                            Value::List(items) if n == 2 && !items.is_empty() =>
+                                Some(Value::List(items[1..].to_vec())),
+                            _ => None,
+                        };
+                        match arg {
+                            Some(a) => {
+                                if let Some(a3) = self.regs.get("A3").cloned() {
+                                    let derefed = self.deref_var(&self.deref_heap(&a3));
+                                    if self.unify(&derefed, &a) { self.pc += 1; true }
+                                    else { false }
+                                } else { false }
+                            }
+                            None => false,
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            "=../2" => {
+                let t_val = self.regs.get("A1").cloned()
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                match t_val {
+                    Some(Value::Unbound(ref var_name)) => {
+                        // Compose mode: build T from list in A2.
+                        let l_val = self.regs.get("A2").cloned()
+                            .map(|v| self.deref_heap(&self.deref_var(&v)));
+                        if let Some(Value::List(items)) = l_val {
+                            if items.is_empty() { return false; }
+                            let built = if items.len() == 1 {
+                                items[0].clone()
+                            } else if let Value::Atom(fname) = &items[0] {
+                                Value::Str(fname.clone(), items[1..].to_vec())
+                            } else { return false; };
+                            self.trail_binding("A1");
+                            self.regs.insert("A1".to_string(), built.clone());
+                            self.bind_var(var_name, built);
+                            self.pc += 1; true
+                        } else { false }
+                    }
+                    Some(t) => {
+                        // Decompose mode: build list from T.
+                        let list = match &t {
+                            Value::Str(f, args) => {
+                                let mut items = vec![Value::Atom(f.clone())];
+                                items.extend(args.iter().cloned());
+                                Value::List(items)
+                            }
+                            Value::Atom(_) | Value::Integer(_)
+                            | Value::Float(_) | Value::Bool(_) => {
+                                Value::List(vec![t.clone()])
+                            }
+                            Value::List(items) if items.is_empty() => {
+                                Value::List(vec![Value::Atom("[]".to_string())])
+                            }
+                            Value::List(items) => Value::List(vec![
+                                Value::Atom(".".to_string()),
+                                items[0].clone(),
+                                Value::List(items[1..].to_vec()),
+                            ]),
+                            _ => return false,
+                        };
+                        if let Some(a2) = self.regs.get("A2").cloned() {
+                            let derefed = self.deref_var(&self.deref_heap(&a2));
+                            if self.unify(&derefed, &list) { self.pc += 1; true }
+                            else { false }
+                        } else { false }
+                    }
+                    None => false,
+                }
+            }
+            "copy_term/2" => {
+                let t_val = self.regs.get("A1").cloned()
+                    .map(|v| self.deref_heap(&self.deref_var(&v)));
+                if let Some(t) = t_val {
+                    // Sharing is preserved via a var_map from source
+                    // variable name to the single fresh name used for
+                    // ALL occurrences of that source variable. The
+                    // counter is bumped once per distinct source var.
+                    let mut var_map: std::collections::HashMap<String, String>
+                        = std::collections::HashMap::new();
+                    let copy = Self::copy_term_walk(
+                        &mut self.var_counter, &mut var_map, &t);
+                    if let Some(a2) = self.regs.get("A2").cloned() {
+                        let derefed = self.deref_var(&self.deref_heap(&a2));
+                        if self.unify(&derefed, &copy) { self.pc += 1; true }
+                        else { false }
+                    } else { false }
+                } else { false }
+            }
             _ => false,
+        }
+    }
+
+    /// Recursive walker for copy_term/2. Preserves variable sharing
+    /// by mapping each source variable name to exactly one fresh
+    /// destination variable name via var_map. Non-var values are
+    /// rebuilt structurally; atomic values clone as-is.
+    fn copy_term_walk(
+        counter: &mut usize,
+        var_map: &mut std::collections::HashMap<String, String>,
+        v: &Value,
+    ) -> Value {
+        match v {
+            Value::Unbound(name) => {
+                if let Some(new_name) = var_map.get(name) {
+                    Value::Unbound(new_name.clone())
+                } else {
+                    *counter += 1;
+                    let new_name = format!("_C{}", counter);
+                    var_map.insert(name.clone(), new_name.clone());
+                    Value::Unbound(new_name)
+                }
+            }
+            Value::Str(f, args) => {
+                let new_args: Vec<Value> = args.iter()
+                    .map(|a| Self::copy_term_walk(counter, var_map, a))
+                    .collect();
+                Value::Str(f.clone(), new_args)
+            }
+            Value::List(items) => {
+                let new_items: Vec<Value> = items.iter()
+                    .map(|i| Self::copy_term_walk(counter, var_map, i))
+                    .collect();
+                Value::List(new_items)
+            }
+            _ => v.clone(),
         }
     }'.
 
