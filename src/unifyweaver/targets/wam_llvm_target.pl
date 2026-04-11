@@ -38,7 +38,8 @@
     llvm_emit_weighted_edge_table/3,     % +TableName, +Triples, -LLVMGlobal
     % Foreign lowering pipeline (M5.6)
     llvm_foreign_kernel_spec/3,          % ?Pred/Arity, ?KernelKind, ?Config (dynamic)
-    clear_llvm_foreign_kernel_specs/0    % retractall helper (for test isolation)
+    clear_llvm_foreign_kernel_specs/0,   % retractall helper (for test isolation)
+    foreign_kernel/3                     % +Pred/Arity, +Kind, +Config (user directive)
 ]).
 
 :- use_module(library(lists)).
@@ -102,6 +103,23 @@ assert_foreign_entry(PredArity - Kind - Config) :- !,
 assert_foreign_entry(foreign_kernel(PredArity, Kind, Config)) :- !,
     assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
 assert_foreign_entry(_) :- true.  % ignore unrecognized shapes
+
+%% foreign_kernel(+PredArity, +Kind, +Config) is det.
+%
+%  M5.6b: user-facing directive-style entry point. A user source file
+%  can import this predicate and use it as a directive to declare that
+%  a predicate should be lowered to a native foreign kernel:
+%
+%    :- use_module(library(wam_llvm_target),
+%         [foreign_kernel/3, write_wam_llvm_project/3]).
+%    :- foreign_kernel(my_distance/3, transitive_distance3,
+%         [edge_pred(edge/2)]).
+%
+%  The directive simply asserts a llvm_foreign_kernel_spec/3 fact —
+%  the rest of the pipeline treats it identically to specs that come
+%  in via the options-list path or the auto-detector path.
+foreign_kernel(PredArity, Kind, Config) :-
+    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
 
 %% lookup_foreign_kernel_spec(+Pred, +Arity, -Kind, -Config) is semidet.
 %
