@@ -932,7 +932,7 @@ test_grouped_weighted_min_aggregate_wrapper :-
         sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist/3", "tuple:2")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
-        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'grouped.entry(target.clone())'),
         sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist/3", vec![a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Grouped weighted aggregate wrapper did not delegate correctly')
@@ -947,7 +947,7 @@ test_grouped_astar_min_aggregate_wrapper :-
         sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist_astar/4", "tuple:2")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
-        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'grouped.entry(target.clone())'),
         sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist_astar/4", vec![a2.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Grouped A* aggregate wrapper did not delegate correctly')

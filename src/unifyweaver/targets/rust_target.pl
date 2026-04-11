@@ -4387,6 +4387,18 @@ rust_foreign_scalar_wrapper_traversal_code(JoinPreds, FilterVar, _OutputVar, Inp
         SetupCode, ValueExpr, FilterCond, TerminalCode),
     rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code).
 
+rust_foreign_grouped_wrapper_traversal_code([], FilterVar, OutputVar, _InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
+rust_foreign_grouped_wrapper_traversal_code(JoinPreds, FilterVar, _OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    JoinPreds \= [],
+    rust_render_join_specs(JoinPreds, JoinSpecs),
+    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+    rust_foreign_grouped_min_terminal_code("            ", FilterVar, JoinOutputVar,
+        SetupCode, ValueExpr, FilterCond, TerminalCode),
+    rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code).
+
 compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
         foreign_wrapper_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
@@ -4763,24 +4775,10 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          format(string(TraversalCode),
-'~w        if (output_filter.as_ref().map(|want| want.as_str() == target.as_str()).unwrap_or(true))
-~w            && (~w) {
-~w            let agg_value = ~w;
-~w            grouped.entry(target)
-~w                .and_modify(|current| *current = current.min(agg_value))
-~w                .or_insert(agg_value);
-~w        }
-', [SetupCode,
-      "        ", FilterCond,
-      "        ", ValueExpr,
-      "        ",
-      "        ",
-      "        ",
-      "        "])
+          rust_foreign_grouped_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
+              SetupCode, ValueExpr, FilterCond, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-         rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
          FilterCode =
 '    let output_filter = match &a2 {
         Value::Atom(group) => Some(group.clone()),
@@ -4796,9 +4794,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_grouped_min_terminal_code("            ", "output_filter", JoinOutputVar,
-             SetupCode, ValueExpr, FilterCond, TerminalCode),
-         rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+         rust_foreign_grouped_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+             SetupCode, ValueExpr, FilterCond, TraversalCode)
        ),
        format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
@@ -5007,24 +5004,10 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          format(string(TraversalCode),
-'~w        if (output_filter.as_ref().map(|want| want.as_str() == target.as_str()).unwrap_or(true))
-~w            && (~w) {
-~w            let agg_value = ~w;
-~w            grouped.entry(target)
-~w                .and_modify(|current| *current = current.min(agg_value))
-~w                .or_insert(agg_value);
-~w        }
-', [SetupCode,
-      "        ", FilterCond,
-      "        ", ValueExpr,
-      "        ",
-      "        ",
-      "        ",
-      "        "])
+          rust_foreign_grouped_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
+              SetupCode, ValueExpr, FilterCond, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-         rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
          FilterCode =
 '    let output_filter = match &a2 {
         Value::Atom(group) => Some(group.clone()),
@@ -5041,9 +5024,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_grouped_min_terminal_code("            ", "output_filter", JoinOutputVar,
-             SetupCode, ValueExpr, FilterCond, TerminalCode),
-         rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+         rust_foreign_grouped_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+             SetupCode, ValueExpr, FilterCond, TraversalCode)
        ),
        format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
