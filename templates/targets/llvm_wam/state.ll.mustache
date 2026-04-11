@@ -1085,6 +1085,196 @@ fail_free:
   ret i1 false
 }
 
+; === M5.4: A* over a %WeightedFact table ===
+; Same as @wam_dijkstra_weighted_distance but orders the frontier by
+; f(n) = g(n) + h(n) instead of just g(n), where g is the best known
+; actual distance from %start and h is a precomputed heuristic estimate
+; of the remaining distance to %target.
+;
+; The heuristic is supplied as a plain double[] indexed by atom ID;
+; %heuristic[i] = estimated distance from node i to %target. Must be
+; admissible (never overestimate) for the result to be optimal.
+;
+; Returns the same g value Dijkstra would return — the heuristic only
+; affects exploration order, not the reported distance.
+;
+; With a zero heuristic this degenerates to Dijkstra. We keep the two
+; helpers separate so the simpler one has no extra parameter and so
+; callers don't allocate a zeroed h[] when they don't want A*.
+define i1 @wam_astar_weighted_distance(
+    i64 %start, i64 %target,
+    %WeightedFact* %table, i64 %len,
+    double* %heuristic,
+    i64 %max_atom_id,
+    double* %out_dist) {
+entry:
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store double 0.0, double* %out_dist
+  ret i1 true
+
+alloc:
+  %n = add i64 %max_atom_id, 1
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes  = shl i64 %n, 2
+
+  %best_mem = call i8* @malloc(i64 %best_bytes)
+  %vis_mem  = call i8* @malloc(i64 %vis_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+
+  br label %init
+
+init:
+  %ii = phi i64 [0, %alloc], [%ii_next, %init_body]
+  %ii_cmp = icmp ult i64 %ii, %n
+  br i1 %ii_cmp, label %init_body, label %seed
+
+init_body:
+  %best_slot = getelementptr double, double* %best, i64 %ii
+  store double 0x7FF0000000000000, double* %best_slot
+  %vis_slot = getelementptr i32, i32* %visited, i64 %ii
+  store i32 0, i32* %vis_slot
+  %ii_next = add i64 %ii, 1
+  br label %init
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start
+  store double 0.0, double* %best_start
+  br label %outer
+
+outer:
+  br label %min_scan
+
+min_scan:
+  %mi = phi i64 [0, %outer], [%mi_next, %min_next]
+  %cur_min_node = phi i64 [-1, %outer], [%upd_node, %min_next]
+  %cur_min_f    = phi double [0x7FF0000000000000, %outer], [%upd_f, %min_next]
+  %mi_cmp = icmp ult i64 %mi, %n
+  br i1 %mi_cmp, label %min_body, label %min_done
+
+min_body:
+  %vis_mi_ptr = getelementptr i32, i32* %visited, i64 %mi
+  %vis_mi = load i32, i32* %vis_mi_ptr
+  %is_unvisited = icmp eq i32 %vis_mi, 0
+  br i1 %is_unvisited, label %min_check_val, label %min_next_noupd
+
+min_check_val:
+  %best_mi_ptr = getelementptr double, double* %best, i64 %mi
+  %best_mi = load double, double* %best_mi_ptr
+  %h_mi_ptr = getelementptr double, double* %heuristic, i64 %mi
+  %h_mi = load double, double* %h_mi_ptr
+  %f_mi = fadd double %best_mi, %h_mi
+  %better = fcmp olt double %f_mi, %cur_min_f
+  br i1 %better, label %min_update, label %min_next_noupd
+
+min_update:
+  br label %min_next
+
+min_next_noupd:
+  br label %min_next
+
+min_next:
+  %upd_node = phi i64 [%mi, %min_update], [%cur_min_node, %min_next_noupd]
+  %upd_f    = phi double [%f_mi, %min_update], [%cur_min_f, %min_next_noupd]
+  %mi_next = add i64 %mi, 1
+  br label %min_scan
+
+min_done:
+  %no_node = icmp eq i64 %cur_min_node, -1
+  br i1 %no_node, label %fail_free, label %check_inf
+
+check_inf:
+  %is_inf = fcmp oeq double %cur_min_f, 0x7FF0000000000000
+  br i1 %is_inf, label %fail_free, label %pick
+
+pick:
+  %pick_vis_ptr = getelementptr i32, i32* %visited, i64 %cur_min_node
+  store i32 1, i32* %pick_vis_ptr
+
+  %is_target = icmp eq i64 %cur_min_node, %target
+  br i1 %is_target, label %hit, label %relax
+
+hit:
+  ; Return g value (actual distance), not f. Load best[target].
+  %best_target_ptr = getelementptr double, double* %best, i64 %target
+  %best_target = load double, double* %best_target_ptr
+  store double %best_target, double* %out_dist
+  br label %free_ok
+
+relax:
+  ; Load the selected node's g value for edge relaxation.
+  %best_pick_ptr = getelementptr double, double* %best, i64 %cur_min_node
+  %best_pick = load double, double* %best_pick_ptr
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %outer
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to   = load i64, i64* %fp_to
+  %edge_w    = load double, double* %fp_w
+
+  %from_match = icmp eq i64 %edge_from, %cur_min_node
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %best_pick, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_new, label %relax_cont
+
+store_new:
+  store double %alt, double* %best_to_ptr
+  br label %relax_cont
+
+relax_cont:
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+free_ok:
+  call void @free(i8* %best_mem)
+  call void @free(i8* %vis_mem)
+  ret i1 true
+
+fail_free:
+  call void @free(i8* %best_mem)
+  call void @free(i8* %vis_mem)
+  ret i1 false
+}
+
+; === M5.5: Foreign kernel impl default stub ===
+; The dispatcher's stub_transitive_distance3 case delegates to
+; @wam_td3_kernel_impl. The default implementation (below) returns
+; false, so pure WAM modules behave as if foreign dispatch is
+; disabled. When foreign_lowering is enabled, the compile pipeline
+; will emit a non-default definition of this function in place of
+; the default — LLVM doesn't allow two definitions of the same
+; function in one module, so the compile path picks one or the
+; other at generation time.
+;
+; The default definition being here (rather than declared-only) lets
+; llvm-as resolve the call inside stub_transitive_distance3 even for
+; pure-WAM builds that never exercise the stub at runtime.
+define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {
+  ret i1 false
+}
+
 define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %arity) {
 entry:
   switch i32 %kind, label %not_registered [
@@ -1114,8 +1304,11 @@ stub_transitive_closure2:
   ret i1 false
 
 stub_transitive_distance3:
-  ; M5: transitive_distance(Start, End, Dist) via DFS with cycle detection
-  ret i1 false
+  ; Delegate to the user-provided impl. When foreign_lowering is off
+  ; the impl is only declared (not defined) and this stub is never
+  ; actually reached at runtime, so the missing symbol is benign.
+  %td3_r = call i1 @wam_td3_kernel_impl(%WamState* %vm)
+  ret i1 %td3_r
 
 stub_weighted_shortest_path3:
   ; M5: weighted_shortest_path(Start, End, Dist) via Dijkstra
