@@ -960,7 +960,7 @@ test_filtered_adjusted_weighted_min_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(S, _, _, _, 'if cost > 2_f64 {'),
+        sub_string(S, _, _, _, '&& (cost > 2_f64) {'),
         sub_string(S, _, _, _, 'current.min(agg_value)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal weighted aggregate wrapper did not lower correctly')
@@ -973,7 +973,7 @@ test_filtered_adjusted_astar_min_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(S, _, _, _, 'if cost > 2_f64 {'),
+        sub_string(S, _, _, _, '&& (cost > 2_f64) {'),
         sub_string(S, _, _, _, 'current.min(agg_value)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal A* aggregate wrapper did not lower correctly')
