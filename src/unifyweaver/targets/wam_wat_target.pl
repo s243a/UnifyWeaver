@@ -1828,31 +1828,136 @@ write_wam_wat_project(Predicates, Options, OutputFile) :-
     write_file(OutputFile, FullModule),
     format('WAM-WAT module written to: ~w~n', [OutputFile]).
 
-%% compile_wat_predicates(+Preds, +Opts, +BaseOff, -DataSegs, -Funcs, -Exports)
-compile_wat_predicates([], _, _, '', '', '').
-compile_wat_predicates([PredInd|Rest], Options, BaseOff, DataSegs, Funcs, Exports) :-
+%% compile_wat_predicates(+Preds, +Opts, +CodeBase, -DataSegs, -Funcs, -Exports)
+%
+%  Two-pass project-level compilation:
+%
+%    Pass 1: parse each predicate's WAM text into instructions + local
+%            labels, compute each predicate's cumulative start PC.
+%    Build:  global label table = union of every predicate's labels
+%            with their local PCs shifted by the predicate's start PC.
+%            Each predicate's entry label (e.g. 'sum_ints/3') lives at
+%            its start PC, so cross-predicate call/execute instructions
+%            resolve correctly.
+%    Pass 2: re-encode each predicate's instructions using the global
+%            label table so internal labels (try_me_else targets) and
+%            external references (call sibling/N) both resolve to
+%            absolute PCs within a single merged instruction array.
+%    Assemble: concatenate all encoded bytes into ONE data segment at
+%            CodeBase. Entry functions share the same CodeBase and
+%            total instruction count, but each sets PC to its own
+%            start offset before calling $run_loop.
+%
+%  Prior to this change, each predicate had its own per-predicate
+%  label table and emitted its own data segment at a distinct base.
+%  Cross-predicate Execute / Call instructions encoded the target
+%  with local-label resolution, which defaults to PC=0 on miss —
+%  the VM would then jump to PC=0 of the CALLING predicate's code,
+%  silently re-entering the caller and creating an infinite loop
+%  (or immediate failure if the re-entry path failed a guard). This
+%  fix unifies the label namespace across all predicates in a
+%  project, making multi-predicate WAM programs runnable end-to-end.
+compile_wat_predicates(Predicates, Options, CodeBase, DataSegs, Funcs, Exports) :-
+    %% Pass 1: parse + collect per-predicate data with cumulative PCs.
+    pass1_parse_predicates(Predicates, Options, 0, PredData, TotalInstrs),
+    %% Build global label table (shift each predicate's local labels).
+    build_global_labels(PredData, [], GlobalLabels),
+    %% Pass 2: re-encode each predicate's instructions against global
+    %% labels and concatenate the byte sequences.
+    encode_all_predicates(PredData, GlobalLabels, AllHex),
+    (   AllHex == ''
+    ->  DataSegs = ''
+    ;   format(atom(DataSegs),
+            '(data (i32.const ~w) "~w")', [CodeBase, AllHex])
+    ),
+    %% Entry functions: one per predicate, each setting its own
+    %% start PC before invoking the shared run loop.
+    option(wam_heap_start(HeapStart), Options, 196608),
+    gen_all_entry_funcs(PredData, HeapStart, CodeBase, TotalInstrs,
+                        Funcs, Exports).
+
+%% pass1_parse_predicates(+Preds, +Opts, +StartPC, -PredData, -TotalInstrs)
+%
+%  PredData is a list of pred_data(Pred/Arity, Instrs, LocalLabels,
+%  StartPC, NumInstrs) entries in input order, where StartPC is the
+%  cumulative instruction index at which this predicate's first
+%  instruction lives in the merged instruction array.
+pass1_parse_predicates([], _, _, [], 0).
+pass1_parse_predicates([PredInd|Rest], Options, StartPC,
+                       [pred_data(Pred/Arity, Instrs, LocalLabels,
+                                  StartPC, NumInstrs) | RestData],
+                       TotalInstrs) :-
     (   PredInd = _Module:Pred/Arity -> true
     ;   PredInd = Pred/Arity
     ),
-    %% Try WAM compilation
     (   catch(
             wam_target:compile_predicate_to_wam(PredInd, Options, WamCode),
             _, fail)
-    ->  PredOpts = [code_base(BaseOff)|Options],
-        compile_wam_predicate_to_wat(Pred/Arity, WamCode, PredOpts, WatResult),
-        WatResult = wat_pred(DS, EF, _, NumInstrs),
-        NextBase is BaseOff + NumInstrs * 20,
-        format(user_error, '  ~w/~w: WAM compilation (~w instructions)~n',
-               [Pred, Arity, NumInstrs]),
-        wat_pred_name(Pred, Arity, FName),
-        format(atom(Export), '  ;; exported: ~w', [FName])
-    ;   DS = '', EF = '', NextBase = BaseOff,
-        Export = '',
+    ->  atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_lines_to_instrs(Lines, 0, Instrs, LocalLabels),
+        length(Instrs, NumInstrs),
+        format(user_error,
+               '  ~w/~w: WAM compilation (~w instructions, start PC ~w)~n',
+               [Pred, Arity, NumInstrs, StartPC])
+    ;   Instrs = [], LocalLabels = [], NumInstrs = 0,
         format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity])
     ),
-    compile_wat_predicates(Rest, Options, NextBase, RestDS, RestFuncs, RestExports),
-    atomic_list_concat([DS, '\n', RestDS], DataSegs),
-    atomic_list_concat([EF, '\n', RestFuncs], Funcs),
+    NextPC is StartPC + NumInstrs,
+    pass1_parse_predicates(Rest, Options, NextPC, RestData, RestTotal),
+    TotalInstrs is NumInstrs + RestTotal.
+
+%% build_global_labels(+PredData, +Acc, -GlobalLabels)
+%  For each predicate, shift its local labels by its start PC and
+%  accumulate into a single project-wide LabelName-PC list. Labels
+%  are expected to be globally unique (internal WAM labels already
+%  encode the predicate name; entry labels are the Pred/Arity form).
+build_global_labels([], Acc, Acc).
+build_global_labels([pred_data(_, _, LocalLabels, StartPC, _)|Rest],
+                    Acc, GlobalLabels) :-
+    shift_labels(LocalLabels, StartPC, Shifted),
+    append(Shifted, Acc, NewAcc),
+    build_global_labels(Rest, NewAcc, GlobalLabels).
+
+shift_labels([], _, []).
+shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
+    GlobalPC is LocalPC + Shift,
+    shift_labels(Rest, Shift, RestShifted).
+
+%% encode_all_predicates(+PredData, +GlobalLabels, -AllHex)
+%  Re-encode every predicate's instructions against the merged label
+%  table, concatenating the resulting hex byte strings in predicate
+%  order. The order matches pass1 so instruction indices remain
+%  consistent with start PCs.
+encode_all_predicates([], _, '').
+encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
+                      GlobalLabels, AllHex) :-
+    maplist(encode_instr_with_labels(GlobalLabels), Instrs, HexParts),
+    atomic_list_concat(HexParts, PredHex),
+    encode_all_predicates(Rest, GlobalLabels, RestHex),
+    atomic_list_concat([PredHex, RestHex], AllHex).
+
+%% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
+%%                     -Funcs, -Exports)
+%  Emit one exported entry function per predicate. All entry functions
+%  share the same CodeBase and TotalInstrs; they differ only in their
+%  StartPC, which each function writes into the VM's PC register
+%  immediately after $wam_init (before invoking the run loop).
+gen_all_entry_funcs([], _, _, _, '', '').
+gen_all_entry_funcs([pred_data(Pred/Arity, _, _, StartPC, _)|Rest],
+                    HeapStart, CodeBase, TotalInstrs,
+                    EntryFuncs, Exports) :-
+    wat_pred_name(Pred, Arity, FName),
+    format(atom(EF),
+'(func $~w (export "~w") (result i32)
+  (call $wam_init (i32.const ~w))
+  (call $set_pc (i32.const ~w))
+  (call $run_loop (i32.const ~w) (i32.const ~w)))',
+        [FName, FName, HeapStart, StartPC, CodeBase, TotalInstrs]),
+    format(atom(Export), '  ;; exported: ~w', [FName]),
+    gen_all_entry_funcs(Rest, HeapStart, CodeBase, TotalInstrs,
+                        RestEF, RestExports),
+    atomic_list_concat([EF, '\n', RestEF], EntryFuncs),
     atomic_list_concat([Export, '\n', RestExports], Exports).
 
 %% read_template_file(+Path, -Content)
