@@ -4699,250 +4699,116 @@ compile_aggregate_rule_to_rust(Pred, _Arity, _Head, AggInfo, IncludeMain, RustCo
     ).
 
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
-        foreign_aggregate_plan(
-            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            JoinPreds,
-            [GoalStart, GoalJoinOut, GoalCost],
-            Expr,
-            group,
-            GroupTerm,
-            GoalInfo)),
-    parse_group_term_rust(GroupTerm, [GroupVar]),
-    GroupVar == GoalJoinOut,
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    format(string(PredKey), '~w/3', [Pred]),
-    rust_render_weighted_kernel(
-        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-        InnerPredStr, WeightPredKey, TriplesLiteral),
-    JoinPreds \= [],
-    rust_render_join_specs(JoinPreds, JoinSpecs),
-    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
-    rust_foreign_grouped_min_terminal_code("            ", "group_filter", JoinOutputVar,
-        SetupCode, ValueExpr, FilterCond, TerminalCode),
-    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
-    use std::collections::BTreeMap;
-
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_result_layout("~w", "tuple:2");
-    vm.register_foreign_result_mode("~w", "stream");
-    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
-    vm.register_foreign_result_layout("~w/3", "tuple:2");
-    vm.register_foreign_result_mode("~w/3", "stream");
-    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-~w
-
-    let group_filter = match &a2 {
-        Value::Atom(group) => Some(group.clone()),
-        Value::Unbound(_) => None,
-        _ => return false,
-    };
-    let temp_target = "__agg_target".to_string();
-    let temp_cost = "__agg_cost".to_string();
-
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
-
-    if !vm.execute_foreign_predicate("~w", 3) {
-        vm.bindings.remove(&temp_target);
-        vm.bindings.remove(&temp_cost);
-        return false;
-    }
-
-    let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
-    loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Atom(target)) => target,
-            _ => break,
-        };
-        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Float(cost)) => cost,
-            _ => break,
-        };
-~w
-        if !vm.backtrack() {
-            break;
-        }
-    }
-
-    vm.bindings.remove(&temp_target);
-    vm.bindings.remove(&temp_cost);
-
-    if grouped.is_empty() {
-        return false;
-    }
-
-    let packed_results: Vec<Value> = grouped.into_iter().map(|(group_key, cost)| {
-        Value::Str("__tuple__".to_string(), vec![
-            Value::Atom(group_key),
-            Value::Float(cost),
-        ])
-    }).collect();
-    vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
-}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
-      InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, JoinRegistrationCode,
-      InnerPredStr, JoinTraversalCode, PredKey]).
+    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo, Plan),
+    compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3, Plan, RustCode).
 compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
-        foreign_aggregate_plan(
-            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            JoinPreds,
-            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
-            Expr,
-            group,
-            GroupTerm,
-            GoalInfo)),
-    parse_group_term_rust(GroupTerm, [GroupVar]),
-    GroupVar == GoalJoinOut,
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    format(string(PredKey), '~w/4', [Pred]),
-    rust_render_astar_kernel(
-        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    JoinPreds \= [],
-    rust_render_join_specs(JoinPreds, JoinSpecs),
-    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
-    rust_foreign_grouped_min_terminal_code("            ", "group_filter", JoinOutputVar,
-        SetupCode, ValueExpr, FilterCond, TerminalCode),
-    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
-    use std::collections::BTreeMap;
+    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo, Plan),
+    compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4, Plan, RustCode).
 
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_result_layout("~w", "tuple:2");
-    vm.register_foreign_result_mode("~w", "stream");
-    vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
-    vm.register_foreign_result_layout("~w/4", "tuple:2");
-    vm.register_foreign_result_mode("~w/4", "stream");
-    vm.register_foreign_string_config("~w/4", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
-~w
-
-    let group_filter = match &a2 {
-        Value::Atom(group) => Some(group.clone()),
-        Value::Unbound(_) => None,
-        _ => return false,
-    };
-    let temp_target = "__agg_target".to_string();
-    let temp_cost = "__agg_cost".to_string();
-
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", a3.clone());
-    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
-
-    let dim_value = match &a3 {
-        Value::Integer(d) => *d as f64,
-        Value::Float(d) => *d,
-        _ => ~w_f64,
-    };
-
-    if !vm.execute_foreign_predicate("~w", 4) {
-        vm.bindings.remove(&temp_target);
-        vm.bindings.remove(&temp_cost);
-        return false;
-    }
-
-    let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
-    loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Atom(target)) => target,
-            _ => break,
-        };
-        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Float(cost)) => cost,
-            _ => break,
-        };
-~w
-        if !vm.backtrack() {
-            break;
-        }
-    }
-
-    vm.bindings.remove(&temp_target);
-    vm.bindings.remove(&temp_cost);
-
-    if grouped.is_empty() {
-        return false;
-    }
-
-    let packed_results: Vec<Value> = grouped.into_iter().map(|(group_key, cost)| {
-        Value::Str("__tuple__".to_string(), vec![
-            Value::Atom(group_key),
-            Value::Float(cost),
-        ])
-    }).collect();
-    vm.finish_foreign_results("~w", vec![a2.clone(), a4.clone()], packed_results)
-}', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
-      InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
-      InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, JoinRegistrationCode,
-      DefaultDim, InnerPredStr, JoinTraversalCode, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
+compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
         foreign_aggregate_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            [],
-            [_, TargetArg, CostArg],
+            JoinPreds,
+            [GoalStart, GoalOutput, GoalCost],
             Expr,
-            group,
+            Type,
             GroupTerm,
-            _)),
-    Expr == CostArg,
-    parse_group_term_rust(GroupTerm, [GroupVar]),
-    GroupVar == TargetArg,
+            GoalInfo),
+        RustCode) :-
     atom_string(Pred, PredStr),
     format(string(PredKey), '~w/3', [Pred]),
     rust_render_weighted_kernel(
         weighted_kernel(InnerPred, WeightPred/3, FactTriples),
         InnerPredStr, WeightPredKey, TriplesLiteral),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
-    use std::collections::BTreeMap;
-
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_result_layout("~w", "tuple:2");
-    vm.register_foreign_result_mode("~w", "stream");
-    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
-    vm.register_foreign_result_layout("~w/3", "tuple:2");
-    vm.register_foreign_result_mode("~w/3", "stream");
-    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-
-    let target_filter = match &a2 {
+    ( Type == group
+    -> parse_group_term_rust(GroupTerm, [GroupVar]),
+       GroupVar == GoalOutput,
+       rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalCost],
+           Expr, SetupCode, ValueExpr, FilterCond),
+       ( JoinPreds == []
+       -> FilterCode =
+'    let output_filter = match &a2 {
         Value::Atom(target) => Some(target.clone()),
         Value::Unbound(_) => None,
         _ => return false,
+    };',
+          A2RegCode =
+'    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
     };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));',
+          TargetReadCode =
+'        let target = match &a2 {
+            Value::Atom(target) => target.clone(),
+            Value::Unbound(_) => match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Atom(target)) => target,
+                _ => break,
+            },
+            _ => break,
+        };',
+          JoinRegistrationCode = "",
+          format(string(TraversalCode),
+'~w        if (output_filter.as_ref().map(|want| want.as_str() == target.as_str()).unwrap_or(true))
+~w            && (~w) {
+~w            let agg_value = ~w;
+~w            grouped.entry(target)
+~w                .and_modify(|current| *current = current.min(agg_value))
+~w                .or_insert(agg_value);
+~w        }
+', [SetupCode,
+      "        ", FilterCond,
+      "        ", ValueExpr,
+      "        ",
+      "        ",
+      "        ",
+      "        "])
+       ; rust_render_join_specs(JoinPreds, JoinSpecs),
+         rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+         rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+         FilterCode =
+'    let output_filter = match &a2 {
+        Value::Atom(group) => Some(group.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };',
+         A2RegCode =
+'    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));',
+         TargetReadCode =
+'        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Atom(target)) => target,
+            _ => break,
+        };',
+         rust_foreign_grouped_min_terminal_code("            ", "output_filter", JoinOutputVar,
+             SetupCode, ValueExpr, FilterCond, TerminalCode),
+         rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+       ),
+       format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    use std::collections::BTreeMap;
+
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_mode("~w", "stream");
+    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
+    vm.register_foreign_result_layout("~w/3", "tuple:2");
+    vm.register_foreign_result_mode("~w/3", "stream");
+    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+~w
+~w
     let temp_target = "__agg_target".to_string();
     let temp_cost = "__agg_cost".to_string();
 
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
+~w
 
     if !vm.execute_foreign_predicate("~w", 3) {
         vm.bindings.remove(&temp_target);
@@ -4952,19 +4818,12 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
 
     let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
     loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Atom(target)) => target,
-            _ => break,
-        };
+~w
         let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        if target_filter.as_ref().map(|want| want == &target).unwrap_or(true) {
-            grouped.entry(target)
-                .and_modify(|current| *current = current.min(cost))
-                .or_insert(cost);
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -4977,35 +4836,200 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
         return false;
     }
 
-    let packed_results: Vec<Value> = grouped.into_iter().map(|(target, cost)| {
+    let packed_results: Vec<Value> = grouped.into_iter().map(|(group_key, cost)| {
         Value::Str("__tuple__".to_string(), vec![
-            Value::Atom(target),
+            Value::Atom(group_key),
             Value::Float(cost),
         ])
     }).collect();
     vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
-      InnerPredStr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
+      JoinRegistrationCode, FilterCode, A2RegCode, InnerPredStr, TargetReadCode,
+      TraversalCode, PredKey])
+    ; Type == all,
+      rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalCost],
+          Expr, SetupCode, ValueExpr, FilterCond),
+      ( JoinPreds == []
+      -> FilterCode = "",
+         A2RegCode =
+'    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));',
+         TargetReadCode = "",
+         JoinRegistrationCode = "",
+         format(string(TraversalCode),
+'~w        if ~w {
+            let agg_value = ~w;
+            best = Some(match best {
+                Some(current) => current.min(agg_value),
+                None => agg_value,
+            });
+        }
+', [SetupCode, FilterCond, ValueExpr])
+      ; rust_render_join_specs(JoinPreds, JoinSpecs),
+        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+        rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+        FilterCode =
+'    let output_filter = match &a2 {
+        Value::Unbound(_) => None,
+        Value::Atom(group) => Some(group.clone()),
+        _ => return false,
+    };',
+        A2RegCode =
+'    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
+    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));',
+        TargetReadCode =
+'        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Atom(target)) => target,
+            _ => break,
+        };',
+        rust_foreign_scalar_min_terminal_code("            ", "output_filter", JoinOutputVar,
+            SetupCode, ValueExpr, FilterCond, TerminalCode),
+        rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+      ),
+      format(string(RustCode),
+'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
+    vm.reset_query();
+    vm.code = Vec::new();
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
+    vm.register_foreign_result_layout("~w/3", "tuple:2");
+    vm.register_foreign_result_mode("~w/3", "stream");
+    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
+    vm.register_indexed_weighted_edge_triples("~w", &~w);
+~w
+~w
+    let temp_target = "__agg_target".to_string();
+    let temp_cost = "__agg_cost".to_string();
+
+~w
+
+    if !vm.execute_foreign_predicate("~w", 3) {
+        vm.bindings.remove(&temp_target);
+        vm.bindings.remove(&temp_cost);
+        return false;
+    }
+
+    let mut best: Option<f64> = None;
+    loop {
+~w
+        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Float(cost)) => cost,
+            _ => break,
+        };
+~w
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    vm.bindings.remove(&temp_target);
+    vm.bindings.remove(&temp_cost);
+
+    match best {
+        Some(cost) => vm.unify(&a3, &Value::Float(cost)),
+        None => false,
+    }
+}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
+      WeightPredKey, WeightPredKey, TriplesLiteral,
+      JoinRegistrationCode, FilterCode, A2RegCode, InnerPredStr, TargetReadCode,
+      TraversalCode])
+    ).
+
+compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
         foreign_aggregate_plan(
             astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            [],
-            [_, TargetArg, _, CostArg],
+            JoinPreds,
+            [GoalStart, GoalOutput, GoalDim, GoalCost],
             Expr,
-            group,
+            Type,
             GroupTerm,
-            _)),
-    Expr == CostArg,
-    parse_group_term_rust(GroupTerm, [GroupVar]),
-    GroupVar == TargetArg,
+            GoalInfo),
+        RustCode) :-
     atom_string(Pred, PredStr),
     format(string(PredKey), '~w/4', [Pred]),
     rust_render_astar_kernel(
         astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
         InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    format(string(RustCode),
+    ( Type == group
+    -> parse_group_term_rust(GroupTerm, [GroupVar]),
+       GroupVar == GoalOutput,
+       rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalDim, GoalCost],
+           Expr, SetupCode, ValueExpr, FilterCond),
+       ( JoinPreds == []
+       -> FilterCode =
+'    let output_filter = match &a2 {
+        Value::Atom(target) => Some(target.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };',
+          A2RegCode =
+'    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
+    };
+
+    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));',
+          TargetReadCode =
+'        let target = match &a2 {
+            Value::Atom(target) => target.clone(),
+            Value::Unbound(_) => match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Atom(target)) => target,
+                _ => break,
+            },
+            _ => break,
+        };',
+          JoinRegistrationCode = "",
+          format(string(TraversalCode),
+'~w        if (output_filter.as_ref().map(|want| want.as_str() == target.as_str()).unwrap_or(true))
+~w            && (~w) {
+~w            let agg_value = ~w;
+~w            grouped.entry(target)
+~w                .and_modify(|current| *current = current.min(agg_value))
+~w                .or_insert(agg_value);
+~w        }
+', [SetupCode,
+      "        ", FilterCond,
+      "        ", ValueExpr,
+      "        ",
+      "        ",
+      "        ",
+      "        "])
+       ; rust_render_join_specs(JoinPreds, JoinSpecs),
+         rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+         rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+         FilterCode =
+'    let output_filter = match &a2 {
+        Value::Atom(group) => Some(group.clone()),
+        Value::Unbound(_) => None,
+        _ => return false,
+    };',
+         A2RegCode =
+'    vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));',
+         TargetReadCode =
+'        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+            Some(Value::Atom(target)) => target,
+            _ => break,
+        };',
+         rust_foreign_grouped_min_terminal_code("            ", "output_filter", JoinOutputVar,
+             SetupCode, ValueExpr, FilterCond, TerminalCode),
+         rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+       ),
+       format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     use std::collections::BTreeMap;
 
@@ -5023,19 +5047,18 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
     vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
     vm.register_indexed_weighted_edge_triples("~w", &~w);
     vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
-
-    let target_filter = match &a2 {
-        Value::Atom(target) => Some(target.clone()),
-        Value::Unbound(_) => None,
-        _ => return false,
-    };
+~w
+~w
     let temp_target = "__agg_target".to_string();
     let temp_cost = "__agg_cost".to_string();
 
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", a3.clone());
-    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
+~w
+
+    let dim_value = match &a3 {
+        Value::Integer(d) => *d as f64,
+        Value::Float(d) => *d,
+        _ => ~w_f64,
+    };
 
     if !vm.execute_foreign_predicate("~w", 4) {
         vm.bindings.remove(&temp_target);
@@ -5045,19 +5068,12 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
 
     let mut grouped: BTreeMap<String, f64> = BTreeMap::new();
     loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Atom(target)) => target,
-            _ => break,
-        };
+~w
         let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
             Some(Value::Float(cost)) => cost,
             _ => break,
         };
-        if target_filter.as_ref().map(|want| want == &target).unwrap_or(true) {
-            grouped.entry(target)
-                .and_modify(|current| *current = current.min(cost))
-                .or_insert(cost);
-        }
+~w
         if !vm.backtrack() {
             break;
         }
@@ -5070,9 +5086,9 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
         return false;
     }
 
-    let packed_results: Vec<Value> = grouped.into_iter().map(|(target, cost)| {
+    let packed_results: Vec<Value> = grouped.into_iter().map(|(group_key, cost)| {
         Value::Str("__tuple__".to_string(), vec![
-            Value::Atom(target),
+            Value::Atom(group_key),
             Value::Float(cost),
         ])
     }).collect();
@@ -5080,113 +5096,58 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _OuterGoalInfo, AggInfo
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, InnerPredStr, PredKey]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
-        foreign_aggregate_plan(
-            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            JoinPreds,
-            [GoalStart, GoalJoinOut, GoalCost],
-            Expr,
-            all,
-            _GroupTerm,
-            GoalInfo)),
-    var(GoalJoinOut),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalCost],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    rust_render_weighted_kernel(
-        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-        InnerPredStr, WeightPredKey, TriplesLiteral),
-    JoinPreds \= [],
-    rust_render_join_specs(JoinPreds, JoinSpecs),
-    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
-    rust_foreign_scalar_min_terminal_code("            ", "join_filter", JoinOutputVar,
-        SetupCode, ValueExpr, FilterCond, TerminalCode),
-    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
-    vm.register_foreign_result_layout("~w/3", "tuple:2");
-    vm.register_foreign_result_mode("~w/3", "stream");
-    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-~w
-
-    let temp_target = "__agg_target".to_string();
-    let temp_cost = "__agg_cost".to_string();
-    let join_filter = match &a2 {
-        Value::Unbound(_) => None,
-        Value::Atom(group) => Some(group.clone()),
-        _ => return false,
+      InnerPredStr, DefaultDim, JoinRegistrationCode, FilterCode, A2RegCode,
+      DefaultDim, InnerPredStr, TargetReadCode, TraversalCode, PredKey])
+    ; Type == all,
+      rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalDim, GoalCost],
+          Expr, SetupCode, ValueExpr, FilterCond),
+      ( JoinPreds == []
+      -> FilterCode = "",
+         A2RegCode =
+'    let target_arg = match &a2 {
+        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
+        _ => a2.clone(),
     };
 
     vm.set_reg("A1", a1.clone());
+    vm.set_reg("A2", target_arg);
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));',
+         TargetReadCode = "",
+         JoinRegistrationCode = "",
+         format(string(TraversalCode),
+'~w        if ~w {
+            let agg_value = ~w;
+            best = Some(match best {
+                Some(current) => current.min(agg_value),
+                None => agg_value,
+            });
+        }
+', [SetupCode, FilterCond, ValueExpr])
+      ; rust_render_join_specs(JoinPreds, JoinSpecs),
+        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
+        rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
+        FilterCode =
+'    let output_filter = match &a2 {
+        Value::Unbound(_) => None,
+        Value::Atom(group) => Some(group.clone()),
+        _ => return false,
+    };',
+        A2RegCode =
+'    vm.set_reg("A1", a1.clone());
     vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
-
-    if !vm.execute_foreign_predicate("~w", 3) {
-        vm.bindings.remove(&temp_target);
-        vm.bindings.remove(&temp_cost);
-        return false;
-    }
-
-    let mut best: Option<f64> = None;
-    loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
+    vm.set_reg("A3", a3.clone());
+    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));',
+        TargetReadCode =
+'        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
             Some(Value::Atom(target)) => target,
             _ => break,
-        };
-        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Float(cost)) => cost,
-            _ => break,
-        };
-~w
-        if !vm.backtrack() {
-            break;
-        }
-    }
-
-    vm.bindings.remove(&temp_target);
-    vm.bindings.remove(&temp_cost);
-
-    match best {
-        Some(cost) => vm.unify(&a3, &Value::Float(cost)),
-        None => false,
-    }
-}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
-      WeightPredKey, WeightPredKey, TriplesLiteral, JoinRegistrationCode,
-      InnerPredStr, JoinTraversalCode]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
-        foreign_aggregate_plan(
-            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            JoinPreds,
-            [GoalStart, GoalJoinOut, GoalDim, GoalCost],
-            Expr,
-            all,
-            _GroupTerm,
-            GoalInfo)),
-    var(GoalJoinOut),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalJoinOut, GoalDim, GoalCost],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    rust_render_astar_kernel(
-        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    JoinPreds \= [],
-    rust_render_join_specs(JoinPreds, JoinSpecs),
-    rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-    rust_foreign_stage_output_var(JoinSpecs, JoinOutputVar),
-    rust_foreign_scalar_min_terminal_code("            ", "join_filter", JoinOutputVar,
-        SetupCode, ValueExpr, FilterCond, TerminalCode),
-    rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, JoinTraversalCode),
-    format(string(RustCode),
+        };',
+        rust_foreign_scalar_min_terminal_code("            ", "output_filter", JoinOutputVar,
+            SetupCode, ValueExpr, FilterCond, TerminalCode),
+        rust_foreign_stage_chain_code(JoinSpecs, "&target", "        ", TerminalCode, TraversalCode)
+      ),
+      format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
     vm.reset_query();
     vm.code = Vec::new();
@@ -5201,19 +5162,11 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
     vm.register_indexed_weighted_edge_triples("~w", &~w);
     vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
 ~w
-
+~w
     let temp_target = "__agg_target".to_string();
     let temp_cost = "__agg_cost".to_string();
-    let join_filter = match &a2 {
-        Value::Unbound(_) => None,
-        Value::Atom(group) => Some(group.clone()),
-        _ => return false,
-    };
 
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", Value::Unbound(temp_target.clone()));
-    vm.set_reg("A3", a3.clone());
-    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
+~w
 
     let dim_value = match &a3 {
         Value::Integer(d) => *d as f64,
@@ -5229,10 +5182,7 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
 
     let mut best: Option<f64> = None;
     loop {
-        let target = match vm.bindings.get(&temp_target).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Atom(target)) => target,
-            _ => break,
-        };
+~w
         let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
             Some(Value::Float(cost)) => cost,
             _ => break,
@@ -5253,167 +5203,9 @@ compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _In
 }', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
       WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, JoinRegistrationCode,
-      DefaultDim, InnerPredStr, JoinTraversalCode]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 4, _Head, AggInfo,
-        foreign_aggregate_plan(
-            astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-            [],
-            [GoalStart, TargetArg, GoalDim, CostArg],
-            Expr,
-            all,
-            _GroupTerm,
-            GoalInfo)),
-    var(TargetArg),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, GoalDim, CostArg],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    rust_render_astar_kernel(
-        astar_kernel(InnerPred, WeightPred/3, FactTriples, DirectPred/3, DirectTriples, DefaultDim),
-        InnerPredStr, WeightPredKey, WeightTriplesLiteral, DirectPredKey, DirectTriplesLiteral, DefaultDim),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
-    vm.register_foreign_result_layout("~w/4", "tuple:2");
-    vm.register_foreign_result_mode("~w/4", "stream");
-    vm.register_foreign_string_config("~w/4", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_foreign_string_config("~w/4", "direct_dist_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-    vm.register_foreign_usize_config("~w/4", "dimensionality", ~w);
-
-    let temp_target = "__agg_target".to_string();
-    let temp_cost = "__agg_cost".to_string();
-    let target_arg = match &a2 {
-        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
-        _ => a2.clone(),
-    };
-
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", target_arg);
-    vm.set_reg("A3", a3.clone());
-    vm.set_reg("A4", Value::Unbound(temp_cost.clone()));
-
-    let dim_value = match &a3 {
-        Value::Integer(d) => *d as f64,
-        Value::Float(d) => *d,
-        _ => ~w_f64,
-    };
-
-    if !vm.execute_foreign_predicate("~w", 4) {
-        vm.bindings.remove(&temp_target);
-        vm.bindings.remove(&temp_cost);
-        return false;
-    }
-
-    let mut best: Option<f64> = None;
-    loop {
-        if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-~w            if !(~w) {
-                if !vm.backtrack() {
-                    break;
-                }
-                continue;
-            }
-            best = Some(match best {
-                Some(current) => current.min(~w),
-                None => ~w,
-            });
-        }
-        if !vm.backtrack() {
-            break;
-        }
-    }
-
-    vm.bindings.remove(&temp_target);
-    vm.bindings.remove(&temp_cost);
-
-    match best {
-        Some(cost) => vm.unify(&a4, &Value::Float(cost)),
-        None => false,
-    }
-}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr,
-      WeightPredKey, WeightPredKey, WeightTriplesLiteral,
-      InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, DefaultDim, InnerPredStr, SetupCode, FilterCond, ValueExpr, ValueExpr]).
-compile_rust_weighted_min_aggregate_wrapper(Pred, _Goal, _GoalInfo, AggInfo, _IncludeMain, RustCode) :-
-    rust_foreign_aggregate_wrapper_plan(Pred, 3, _Head, AggInfo,
-        foreign_aggregate_plan(
-            weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-            [],
-            [GoalStart, TargetArg, CostArg],
-            Expr,
-            all,
-            _GroupTerm,
-            GoalInfo)),
-    var(TargetArg),
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, TargetArg, CostArg],
-        Expr, SetupCode, ValueExpr, FilterCond),
-    atom_string(Pred, PredStr),
-    rust_render_weighted_kernel(
-        weighted_kernel(InnerPred, WeightPred/3, FactTriples),
-        InnerPredStr, WeightPredKey, TriplesLiteral),
-    format(string(RustCode),
-'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
-    vm.reset_query();
-    vm.code = Vec::new();
-    vm.labels = HashMap::new();
-    vm.pc = 1;
-    vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
-    vm.register_foreign_result_layout("~w/3", "tuple:2");
-    vm.register_foreign_result_mode("~w/3", "stream");
-    vm.register_foreign_string_config("~w/3", "weight_pred", "~w");
-    vm.register_indexed_weighted_edge_triples("~w", &~w);
-
-    let temp_target = "__agg_target".to_string();
-    let temp_cost = "__agg_cost".to_string();
-    let target_arg = match &a2 {
-        Value::Unbound(_) => Value::Unbound(temp_target.clone()),
-        _ => a2.clone(),
-    };
-
-    vm.set_reg("A1", a1.clone());
-    vm.set_reg("A2", target_arg);
-    vm.set_reg("A3", Value::Unbound(temp_cost.clone()));
-
-    if !vm.execute_foreign_predicate("~w", 3) {
-        vm.bindings.remove(&temp_target);
-        vm.bindings.remove(&temp_cost);
-        return false;
-    }
-
-    let mut best: Option<f64> = None;
-    loop {
-        if let Some(Value::Float(cost)) = vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-~w            if !(~w) {
-                if !vm.backtrack() {
-                    break;
-                }
-                continue;
-            }
-            best = Some(match best {
-                Some(current) => current.min(~w),
-                None => ~w,
-            });
-        }
-        if !vm.backtrack() {
-            break;
-        }
-    }
-
-    vm.bindings.remove(&temp_target);
-    vm.bindings.remove(&temp_cost);
-
-    match best {
-        Some(cost) => vm.unify(&a3, &Value::Float(cost)),
-        None => false,
-    }
-}', [PredStr, InnerPredStr, InnerPredStr, InnerPredStr, InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral, InnerPredStr, SetupCode, FilterCond, ValueExpr, ValueExpr]).
+      InnerPredStr, DefaultDim, JoinRegistrationCode, FilterCode, A2RegCode,
+      DefaultDim, InnerPredStr, TargetReadCode, TraversalCode])
+    ).
 
 rust_foreign_wrapper_goal_logic(GoalInfo, GoalArgs, Expr, SetupCode, ValueExpr, FilterCond) :-
     get_dict(other, GoalInfo, []),
