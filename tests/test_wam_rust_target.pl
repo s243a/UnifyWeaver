@@ -302,7 +302,14 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
         sub_string(S, _, _, _, 'builtin_state'),
-        sub_string(S, _, _, _, 'eprintln!')
+        sub_string(S, _, _, _, 'eprintln!'),
+        %% Phase 4: Group A term inspection builtins are present.
+        sub_string(S, _, _, _, '"functor/3"'),
+        sub_string(S, _, _, _, '"arg/3"'),
+        sub_string(S, _, _, _, '"=../2"'),
+        sub_string(S, _, _, _, '"copy_term/2"'),
+        %% copy_term_walk helper (sharing-preserving recursive copy).
+        sub_string(S, _, _, _, 'copy_term_walk')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
     ).
