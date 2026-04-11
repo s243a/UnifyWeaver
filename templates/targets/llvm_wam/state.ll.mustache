@@ -761,6 +761,159 @@ exit:
 ;   4 = transitive_distance3
 ;   5 = weighted_shortest_path3
 ;   6 = astar_shortest_path4
+; === M5.2: BFS over an %AtomFactPair table ===
+; Computes the shortest path length (in edges) from %start to %target in
+; the directed graph described by an array of (from, to) atom ID pairs.
+;
+; On success, writes the distance to *%out_dist and returns true.
+; On failure (target unreachable, or start == target handled specially):
+;   - If %start == %target, writes 0 and returns true.
+;   - Otherwise returns false and does not touch *%out_dist.
+;
+; The caller must supply %max_atom_id — the largest atom ID that could
+; appear in either %start, %target, or any row of %table. This bounds
+; the visited / queue arrays. A safe upper bound is (2 * %len + 1) since
+; the table has at most 2*%len distinct atom IDs, but a tighter bound
+; improves cache behavior.
+;
+; Allocates three scratch buffers via malloc (visited, queue, dqueue),
+; all freed before return via a shared cleanup block.
+define i1 @wam_bfs_atom_distance(
+    i64 %start, i64 %target,
+    %AtomFactPair* %table, i64 %len,
+    i64 %max_atom_id,
+    i64* %out_dist) {
+entry:
+  ; Edge case: start == target → distance 0, success, no allocation needed.
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store i64 0, i64* %out_dist
+  ret i1 true
+
+alloc:
+  ; Size = (max_atom_id + 1) entries.
+  %n = add i64 %max_atom_id, 1
+  %vis_bytes = shl i64 %n, 2     ; n * 4
+  %q_bytes   = shl i64 %n, 3     ; n * 8
+  %dq_bytes  = shl i64 %n, 2     ; n * 4
+
+  %vis_mem = call i8* @malloc(i64 %vis_bytes)
+  %q_mem   = call i8* @malloc(i64 %q_bytes)
+  %dq_mem  = call i8* @malloc(i64 %dq_bytes)
+
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue   = bitcast i8* %q_mem  to i64*
+  %dqueue  = bitcast i8* %dq_mem to i32*
+
+  ; Zero-init visited[].
+  br label %vis_init
+
+vis_init:
+  %vi = phi i64 [0, %alloc], [%vi_next, %vis_init_body]
+  %vi_cmp = icmp ult i64 %vi, %n
+  br i1 %vi_cmp, label %vis_init_body, label %seed
+
+vis_init_body:
+  %vi_slot = getelementptr i32, i32* %visited, i64 %vi
+  store i32 0, i32* %vi_slot
+  %vi_next = add i64 %vi, 1
+  br label %vis_init
+
+seed:
+  ; Mark start as visited and push onto queue with depth 0.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %loop
+
+loop:
+  %head = phi i64 [0, %seed], [%head_next, %loop_back]
+  %tail = phi i64 [1, %seed], [%tail_cur, %loop_back]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %pop, label %fail_free
+
+pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %depth = load i32, i32* %dq_slot
+  %head_next = add i64 %head, 1
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %pop], [%si_next, %scan_cont]
+  %tail_cur = phi i64 [%tail, %pop], [%tail_kept, %scan_cont]
+  %scan_cmp = icmp ult i64 %si, %len
+  br i1 %scan_cmp, label %scan_body, label %loop_back
+
+scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr   = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from = load i64, i64* %from_ptr
+  %to   = load i64, i64* %to_ptr
+
+  ; Skip rows whose from != current node.
+  %from_match = icmp eq i64 %from, %node
+  br i1 %from_match, label %check_to, label %scan_cont
+
+check_to:
+  ; Safety: skip if to > max_atom_id.
+  %to_in_range = icmp ule i64 %to, %max_atom_id
+  br i1 %to_in_range, label %check_visited, label %scan_cont
+
+check_visited:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to
+  %vis_to = load i32, i32* %vis_to_ptr
+  %is_unseen = icmp eq i32 %vis_to, 0
+  br i1 %is_unseen, label %visit, label %scan_cont
+
+visit:
+  store i32 1, i32* %vis_to_ptr
+  %new_depth = add i32 %depth, 1
+  %is_target = icmp eq i64 %to, %target
+  br i1 %is_target, label %hit, label %enqueue
+
+hit:
+  %new_depth_64 = sext i32 %new_depth to i64
+  store i64 %new_depth_64, i64* %out_dist
+  br label %free_buffers_ok
+
+enqueue:
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to, i64* %q_push
+  %dq_push = getelementptr i32, i32* %dqueue, i64 %tail_cur
+  store i32 %new_depth, i32* %dq_push
+  %tail_after_push = add i64 %tail_cur, 1
+  br label %scan_cont
+
+scan_cont:
+  ; Merge tail across all paths: unchanged on skip, +1 on enqueue.
+  %tail_kept = phi i64 [%tail_cur, %scan_body], [%tail_cur, %check_to], [%tail_cur, %check_visited], [%tail_after_push, %enqueue]
+  %si_next = add i64 %si, 1
+  br label %scan
+
+loop_back:
+  br label %loop
+
+free_buffers_ok:
+  call void @free(i8* %vis_mem)
+  call void @free(i8* %q_mem)
+  call void @free(i8* %dq_mem)
+  ret i1 true
+
+fail_free:
+  call void @free(i8* %vis_mem)
+  call void @free(i8* %q_mem)
+  call void @free(i8* %dq_mem)
+  ret i1 false
+}
+
 define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %arity) {
 entry:
   switch i32 %kind, label %not_registered [
