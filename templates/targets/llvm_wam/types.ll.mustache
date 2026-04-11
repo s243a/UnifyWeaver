@@ -20,6 +20,17 @@
 ; ptrtoint of the table pointer and operand2 holds the entry count.
 %SwitchEntry = type { i32, i64, i32 }     ; key_tag, key_payload, label_idx
 
+; === Indexed Fact Tables (for foreign kernels) ===
+; Used by transitive_closure, transitive_distance, and similar graph
+; kernels. Facts are emitted as global constant arrays; kernels scan
+; them via direct GEP loops. Atom values are stored as interned IDs
+; (same encoding used by switch_on_constant's atom keys).
+%AtomFactPair = type { i64, i64 }         ; from_atom_id, to_atom_id
+
+; Weighted edge fact for Dijkstra / A* / effective semantic distance.
+; Weight is an f64 semantic distance (1 - cosine_similarity).
+%WeightedFact = type { i64, i64, double } ; from, to, weight
+
 ; === Stack Entries ===
 ; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
 %StackEntry = type { i32, i64, %Value* }  ; type, aux (cp or n), data

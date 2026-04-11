@@ -30,7 +30,12 @@
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
     write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
     build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
-    builtin_op_to_id/2                   % +OpName, -IntId
+    builtin_op_to_id/2,                  % +OpName, -IntId
+    % Foreign dispatch (M3)
+    wam_llvm_foreign_kind_id/2,          % +Kind, -Id
+    % Indexed fact table emission (M4)
+    llvm_emit_atom_fact2_table/3,        % +TableName, +Pairs, -LLVMGlobal
+    llvm_emit_weighted_edge_table/3      % +TableName, +Triples, -LLVMGlobal
 ]).
 
 :- use_module(library(lists)).
@@ -40,6 +45,8 @@
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 
 :- discontiguous wam_llvm_case/2.
+:- discontiguous wam_line_to_llvm_literal/2.
+:- discontiguous wam_instruction_to_llvm_literal/2.
 
 % ============================================================================
 % PHASE 5: Hybrid Module Assembly
@@ -1607,6 +1614,92 @@ render_switch_entries([entry(Tag, Pay, LabelIdx) | Rest], [Line | RestLines]) :-
         '  %SwitchEntry { i32 ~w, i64 ~w, i32 ~w }',
         [Tag, Pay, LabelIdx]),
     render_switch_entries(Rest, RestLines).
+
+%% llvm_emit_atom_fact2_table(+TableName, +Pairs, -LLVMGlobal)
+%
+%  Emit a private global constant array of %AtomFactPair entries for
+%  a list of (FromAtom, ToAtom) facts. Both atoms are interned via
+%  intern_atom/2 so the IDs stay consistent with switch_on_constant
+%  tables and kernel lookups.
+%
+%  Example:
+%      llvm_emit_atom_fact2_table('category_parent_table',
+%          [fact('Physics', 'Science'), fact('Chemistry', 'Science')],
+%          Code)
+%
+%  Produces an LLVM global definition:
+%      @category_parent_table = private constant [2 x %AtomFactPair] [
+%        %AtomFactPair { i64 1, i64 2 },
+%        %AtomFactPair { i64 3, i64 2 }
+%      ]
+%
+llvm_emit_atom_fact2_table(TableName, Pairs, Code) :-
+    maplist(render_atom_fact_pair, Pairs, Lines),
+    length(Pairs, Count),
+    (   Count == 0
+    ->  format(atom(Code),
+            '@~w = private constant [1 x %AtomFactPair] [%AtomFactPair { i64 0, i64 0 }]',
+            [TableName])
+    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
+        format(atom(Code),
+'@~w = private constant [~w x %AtomFactPair] [
+~w
+]', [TableName, Count, EntriesStr])
+    ).
+
+render_atom_fact_pair(fact(From, To), Line) :-
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    format(atom(Line),
+        '  %AtomFactPair { i64 ~w, i64 ~w }',
+        [FromId, ToId]).
+render_atom_fact_pair(From-To, Line) :-
+    render_atom_fact_pair(fact(From, To), Line).
+
+%% llvm_emit_weighted_edge_table(+TableName, +Triples, -LLVMGlobal)
+%
+%  Emit a private global constant array of %WeightedFact entries for
+%  a list of (From, To, Weight) weighted edges. Atoms interned, weight
+%  emitted as a double (LLVM requires decimal form for fp constants).
+%
+%  Example:
+%      llvm_emit_weighted_edge_table('cat_weighted',
+%          [edge('ml', 'ai', 0.12), edge('ai', 'cs', 0.18)], Code)
+%
+llvm_emit_weighted_edge_table(TableName, Triples, Code) :-
+    maplist(render_weighted_fact, Triples, Lines),
+    length(Triples, Count),
+    (   Count == 0
+    ->  format(atom(Code),
+            '@~w = private constant [1 x %WeightedFact] [%WeightedFact { i64 0, i64 0, double 0.0 }]',
+            [TableName])
+    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
+        format(atom(Code),
+'@~w = private constant [~w x %WeightedFact] [
+~w
+]', [TableName, Count, EntriesStr])
+    ).
+
+render_weighted_fact(edge(From, To, Weight), Line) :-
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    format_weight_literal(Weight, WeightStr),
+    format(atom(Line),
+        '  %WeightedFact { i64 ~w, i64 ~w, double ~w }',
+        [FromId, ToId, WeightStr]).
+render_weighted_fact(From-To-Weight, Line) :-
+    render_weighted_fact(edge(From, To, Weight), Line).
+
+%% format_weight_literal(+Weight, -Str)
+%  LLVM's double literal parser requires either decimal form (3.14) or
+%  hex form. An integer printed as "1" is rejected where a double is
+%  expected; we must emit "1.0". Also, "0" must become "0.0".
+format_weight_literal(W, Str) :-
+    number(W),
+    ( integer(W)
+    -> format(string(Str), '~w.0', [W])
+    ;  format(string(Str), '~w', [W])
+    ).
 
 %% wam_lines_to_llvm(+Lines, +PC, -LLVMLits, -LabelEntries)
 %  Two-pass approach: first collect all labels and raw instruction parts,
