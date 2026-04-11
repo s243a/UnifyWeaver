@@ -97,10 +97,11 @@ Examples:
 - generic closure pair probes can now choose among forward, backward, mixed,
   mixed-with-pair-probe-cache, and memoized source/target strategies through
   an explicit planner surface, with an override via
-  `QueryExecutorOptions.ClosurePairStrategy` and focused validation in
-  `examples/benchmark/benchmark_closure_pair_planning.py`; that harness now
-  produces non-empty grouped rows and reports the best effective pair plan
-  separately from the raw override label
+  `QueryExecutorOptions.ClosurePairStrategy`; `Auto` can now use bounded
+  measured probes for ambiguous mixed request sets, and focused validation in
+  `examples/benchmark/benchmark_closure_pair_planning.py` now produces
+  non-empty grouped rows and reports the best effective pair plan separately
+  from the raw override label
 - generic scan planning now also has focused validation coverage in
   `examples/benchmark/benchmark_scan_materialization.py`, so scan-heavy join,
   negation, aggregate, relation-scan, and pattern-scan paths can be checked
