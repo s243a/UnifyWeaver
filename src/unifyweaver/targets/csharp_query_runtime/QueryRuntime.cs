@@ -9894,10 +9894,187 @@ namespace UnifyWeaver.QueryRuntime
                 : ClosurePairPlanStrategy.Backward;
         }
 
+        private static IReadOnlyList<ClosurePairPlanStrategy> DetermineClosurePairProbeStrategies(
+            ClosurePairPlanStrategy structuralStrategy,
+            int sourceRequestCount,
+            int targetRequestCount,
+            bool singleConcretePairRequest,
+            bool hasForwardBatch,
+            bool hasBackwardBatch,
+            bool canUseBatchedPairProbeCache,
+            bool canMemoizeForwardBatch,
+            bool canMemoizeBackwardBatch,
+            bool canMemoizePairs)
+        {
+            var strategies = new List<ClosurePairPlanStrategy>();
+
+            void Add(ClosurePairPlanStrategy strategy)
+            {
+                if (!strategies.Contains(strategy))
+                {
+                    strategies.Add(strategy);
+                }
+            }
+
+            Add(structuralStrategy);
+
+            if (singleConcretePairRequest)
+            {
+                return strategies;
+            }
+
+            if (sourceRequestCount == 1 && targetRequestCount > 1)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedBySource);
+                Add(ClosurePairPlanStrategy.Forward);
+                Add(ClosurePairPlanStrategy.Backward);
+                if (hasForwardBatch && hasBackwardBatch)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirection);
+                    if (canUseBatchedPairProbeCache)
+                    {
+                        Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                    }
+                }
+
+                return strategies;
+            }
+
+            if (targetRequestCount == 1 && sourceRequestCount > 1)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedByTarget);
+                Add(ClosurePairPlanStrategy.Backward);
+                Add(ClosurePairPlanStrategy.Forward);
+                if (hasForwardBatch && hasBackwardBatch)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirection);
+                    if (canUseBatchedPairProbeCache)
+                    {
+                        Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                    }
+                }
+
+                return strategies;
+            }
+
+            if (hasForwardBatch && hasBackwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.MixedDirection);
+                if (canUseBatchedPairProbeCache)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                }
+
+                Add(ClosurePairPlanStrategy.Forward);
+                Add(ClosurePairPlanStrategy.Backward);
+                return strategies;
+            }
+
+            if (hasForwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.Forward);
+                if (canMemoizeForwardBatch || canMemoizePairs)
+                {
+                    Add(ClosurePairPlanStrategy.MemoizedBySource);
+                }
+                Add(ClosurePairPlanStrategy.Backward);
+                return strategies;
+            }
+
+            if (hasBackwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.Backward);
+                if (canMemoizeBackwardBatch || canMemoizePairs)
+                {
+                    Add(ClosurePairPlanStrategy.MemoizedByTarget);
+                }
+                Add(ClosurePairPlanStrategy.Forward);
+                return strategies;
+            }
+
+            if (canMemoizePairs)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedBySource);
+                Add(ClosurePairPlanStrategy.MemoizedByTarget);
+            }
+
+            Add(ClosurePairPlanStrategy.Forward);
+            Add(ClosurePairPlanStrategy.Backward);
+            return strategies;
+        }
+
+        private static bool ShouldProbeClosurePairStrategy(
+            int requestCount,
+            bool singleConcretePairRequest,
+            IReadOnlyCollection<ClosurePairPlanStrategy> candidateStrategies)
+        {
+            if (singleConcretePairRequest || requestCount <= 1)
+            {
+                return false;
+            }
+
+            if (candidateStrategies.Count <= 1)
+            {
+                return false;
+            }
+
+            return requestCount <= 16;
+        }
+
+        private static ClosurePairPlanStrategy ResolveMeasuredClosurePairStrategy(
+            IReadOnlyDictionary<ClosurePairPlanStrategy, TimeSpan> probes,
+            ClosurePairPlanStrategy structuralStrategy)
+        {
+            if (probes.Count == 0)
+            {
+                return structuralStrategy;
+            }
+
+            var bestProbe = probes
+                .Where(entry => entry.Value > TimeSpan.Zero && entry.Value < TimeSpan.MaxValue)
+                .OrderBy(entry => entry.Value)
+                .FirstOrDefault();
+
+            if (bestProbe.Equals(default(KeyValuePair<ClosurePairPlanStrategy, TimeSpan>)) && !probes.ContainsKey(default))
+            {
+                return structuralStrategy;
+            }
+
+            if (!probes.TryGetValue(structuralStrategy, out var structuralProbe) ||
+                structuralProbe <= TimeSpan.Zero ||
+                structuralProbe == TimeSpan.MaxValue)
+            {
+                return bestProbe.Key;
+            }
+
+            if (bestProbe.Key == structuralStrategy)
+            {
+                return structuralStrategy;
+            }
+
+            return bestProbe.Value.Ticks * 1.05 < structuralProbe.Ticks
+                ? bestProbe.Key
+                : structuralStrategy;
+        }
+
+        private static string GetClosurePairProbePhase(ClosurePairPlanStrategy strategy) => strategy switch
+        {
+            ClosurePairPlanStrategy.SingleProbeForward => "closure_pair_probe_single_forward",
+            ClosurePairPlanStrategy.SingleProbeBackward => "closure_pair_probe_single_backward",
+            ClosurePairPlanStrategy.Forward => "closure_pair_probe_forward",
+            ClosurePairPlanStrategy.Backward => "closure_pair_probe_backward",
+            ClosurePairPlanStrategy.MemoizedBySource => "closure_pair_probe_memo_source",
+            ClosurePairPlanStrategy.MemoizedByTarget => "closure_pair_probe_memo_target",
+            ClosurePairPlanStrategy.MixedDirection => "closure_pair_probe_mixed",
+            ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache => "closure_pair_probe_mixed_cache",
+            _ => "closure_pair_probe_unknown"
+        };
+
         private static ClosurePairStrategySelection ResolveClosurePairStrategy(
             QueryExecutionTrace? trace,
             PlanNode node,
             ClosurePairStrategy configuredStrategy,
+            int requestCount,
             int sourceRequestCount,
             int targetRequestCount,
             bool singleConcretePairRequest,
@@ -9909,7 +10086,8 @@ namespace UnifyWeaver.QueryRuntime
             bool canMemoizeForwardBatch,
             bool canMemoizeBackwardBatch,
             bool canMemoizePairs,
-            bool preferForwardFallback)
+            bool preferForwardFallback,
+            IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measureProbes = null)
         {
             return MeasurePhase(trace, node, "closure_pair_strategy_select", () =>
             {
@@ -9940,7 +10118,56 @@ namespace UnifyWeaver.QueryRuntime
                     return new ClosurePairStrategySelection(structural, "ConfiguredFallback");
                 }
 
-                return new ClosurePairStrategySelection(structural, "Structural");
+                if (sourceRequestCount <= 1 || targetRequestCount <= 1)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                var candidateStrategies = DetermineClosurePairProbeStrategies(
+                    structural,
+                    sourceRequestCount,
+                    targetRequestCount,
+                    singleConcretePairRequest,
+                    hasForwardBatch,
+                    hasBackwardBatch,
+                    canUseBatchedPairProbeCache,
+                    canMemoizeForwardBatch,
+                    canMemoizeBackwardBatch,
+                    canMemoizePairs);
+
+                if (!ShouldProbeClosurePairStrategy(requestCount, singleConcretePairRequest, candidateStrategies) ||
+                    measureProbes is null ||
+                    measureProbes.Count == 0)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                var probes = new Dictionary<ClosurePairPlanStrategy, TimeSpan>();
+                foreach (var candidate in candidateStrategies)
+                {
+                    if (!measureProbes.TryGetValue(candidate, out var measureProbe))
+                    {
+                        continue;
+                    }
+
+                    var probe = measureProbe();
+                    if (probe <= TimeSpan.Zero || probe == TimeSpan.MaxValue)
+                    {
+                        continue;
+                    }
+
+                    trace?.RecordPhase(node, GetClosurePairProbePhase(candidate), probe);
+                    probes[candidate] = probe;
+                }
+
+                if (probes.Count == 0)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                return new ClosurePairStrategySelection(
+                    ResolveMeasuredClosurePairStrategy(probes, structural),
+                    "MeasuredProbe");
             });
         }
 
@@ -9952,6 +10179,350 @@ namespace UnifyWeaver.QueryRuntime
         {
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanPairs{selection.Strategy}");
+        }
+
+        private static int CountClosurePairRequests(IEnumerable<HashSet<object?>> requestSets) =>
+            requestSets.Sum(requestSet => requestSet.Count);
+
+        private const int MaxMeasuredClosurePairProbeRequests = 4;
+
+        private static void TakeClosurePairRequestSample(
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            int maxRequestCount,
+            out Dictionary<object?, HashSet<object?>> sampleBySource,
+            out Dictionary<object?, HashSet<object?>> sampleByTarget)
+        {
+            sampleBySource = new Dictionary<object?, HashSet<object?>>();
+            sampleByTarget = new Dictionary<object?, HashSet<object?>>();
+            var remaining = maxRequestCount;
+            var active = bySource
+                .Select(entry => (Source: entry.Key, Targets: entry.Value.GetEnumerator()))
+                .ToList();
+
+            while (remaining > 0 && active.Count > 0)
+            {
+                for (var i = 0; i < active.Count && remaining > 0;)
+                {
+                    var (source, targets) = active[i];
+                    if (!targets.MoveNext())
+                    {
+                        active.RemoveAt(i);
+                        continue;
+                    }
+
+                    var target = targets.Current;
+                    if (!sampleBySource.TryGetValue(source, out var sampleTargets))
+                    {
+                        sampleTargets = new HashSet<object?>();
+                        sampleBySource.Add(source, sampleTargets);
+                    }
+
+                    sampleTargets.Add(target);
+
+                    if (!sampleByTarget.TryGetValue(target, out var sampleSources))
+                    {
+                        sampleSources = new HashSet<object?>();
+                        sampleByTarget.Add(target, sampleSources);
+                    }
+
+                    sampleSources.Add(source);
+                    remaining--;
+                    i++;
+                }
+            }
+        }
+
+        private static void TakeGroupedClosurePairRequestSample(
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            int maxRequestCount,
+            out Dictionary<RowWrapper, HashSet<object?>> sampleTargetsBySource,
+            out Dictionary<RowWrapper, HashSet<object?>> sampleSourcesByTarget)
+        {
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            sampleTargetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            sampleSourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            var remaining = maxRequestCount;
+            var active = targetsBySource
+                .Select(entry => (SourceWrapper: entry.Key, Targets: entry.Value.GetEnumerator()))
+                .ToList();
+
+            while (remaining > 0 && active.Count > 0)
+            {
+                for (var i = 0; i < active.Count && remaining > 0;)
+                {
+                    var (sourceWrapper, targets) = active[i];
+                    if (!targets.MoveNext())
+                    {
+                        active.RemoveAt(i);
+                        continue;
+                    }
+
+                    var sourceRow = sourceWrapper.Row;
+                    var source = sourceRow[sourceRow.Length - 1];
+                    var target = targets.Current;
+                    if (!sampleTargetsBySource.TryGetValue(sourceWrapper, out var sampleTargets))
+                    {
+                        sampleTargets = new HashSet<object?>();
+                        sampleTargetsBySource.Add(sourceWrapper, sampleTargets);
+                    }
+
+                    sampleTargets.Add(target);
+
+                    var targetRow = new object[sourceRow.Length];
+                    Array.Copy(sourceRow, targetRow, sourceRow.Length - 1);
+                    targetRow[sourceRow.Length - 1] = target;
+                    var targetWrapper = new RowWrapper(targetRow);
+
+                    if (!sampleSourcesByTarget.TryGetValue(targetWrapper, out var sampleSources))
+                    {
+                        sampleSources = new HashSet<object?>();
+                        sampleSourcesByTarget.Add(targetWrapper, sampleSources);
+                    }
+
+                    sampleSources.Add(source);
+                    remaining--;
+                    i++;
+                }
+            }
+        }
+
+        private EvaluationContext CreateClosurePairProbeContext(EvaluationContext context)
+        {
+            var probeContext = new EvaluationContext(trace: new QueryExecutionTrace(), cancellationToken: context.CancellationToken)
+            {
+                Current = context.Current,
+                FixpointDepth = context.FixpointDepth
+            };
+
+            foreach (var kvp in context.Facts)
+            {
+                probeContext.Facts[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.FactSources)
+            {
+                probeContext.FactSources[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.ReplayableFactSources)
+            {
+                probeContext.ReplayableFactSources[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.ClosureRelationRetentionSelections)
+            {
+                probeContext.ClosureRelationRetentionSelections[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.FactIndices)
+            {
+                probeContext.FactIndices[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.JoinIndices)
+            {
+                probeContext.JoinIndices[kvp.Key] = kvp.Value;
+            }
+
+            return probeContext;
+        }
+
+        private TimeSpan MeasureGroupedClosurePairStrategyProbe(
+            GroupedTransitiveClosureNode closure,
+            ClosurePairPlanStrategy strategy,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
+            EvaluationContext context)
+        {
+            var sampleTargetsBySource = targetsBySource;
+            var sampleSourcesByTarget = sourcesByTarget;
+            var sampleForwardTargetsBySource = forwardTargetsBySource;
+            var sampleBackwardSourcesByTarget = backwardSourcesByTarget;
+
+            if (CountClosurePairRequests(targetsBySource.Values) > MaxMeasuredClosurePairProbeRequests)
+            {
+                TakeGroupedClosurePairRequestSample(
+                    targetsBySource,
+                    MaxMeasuredClosurePairProbeRequests,
+                    out var limitedTargetsBySource,
+                    out var limitedSourcesByTarget);
+                sampleTargetsBySource = limitedTargetsBySource;
+                sampleSourcesByTarget = limitedSourcesByTarget;
+
+                var batchProbeContext = CreateClosurePairProbeContext(context);
+                if (!TryBuildGroupedPairProbeDirectionBatches(
+                    closure,
+                    sampleTargetsBySource,
+                    batchProbeContext,
+                    out var limitedForwardTargetsBySource,
+                    out var limitedBackwardSourcesByTarget))
+                {
+                    var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+                    limitedForwardTargetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+                    limitedBackwardSourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+                }
+
+                sampleForwardTargetsBySource = limitedForwardTargetsBySource;
+                sampleBackwardSourcesByTarget = limitedBackwardSourcesByTarget;
+            }
+
+            return strategy switch
+            {
+                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache when sampleForwardTargetsBySource.Count > 0 && sampleBackwardSourcesByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        inputPositions,
+                        sampleForwardTargetsBySource,
+                        sampleBackwardSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MixedDirection when sampleForwardTargetsBySource.Count > 0 && sampleBackwardSourcesByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+                        closure,
+                        inputPositions,
+                        sampleForwardTargetsBySource,
+                        sampleBackwardSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedBySource => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        inputPositions,
+                        sampleTargetsBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedByTarget => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        inputPositions,
+                        sampleSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Forward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsForward(
+                        closure,
+                        sampleTargetsBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Backward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                        closure,
+                        sampleSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                _ => TimeSpan.MaxValue
+            };
+        }
+
+        private TimeSpan MeasureUngroupedClosurePairStrategyProbe(
+            TransitiveClosureNode closure,
+            ClosurePairPlanStrategy strategy,
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> byTarget,
+            IReadOnlyDictionary<object?, HashSet<object?>> forwardBySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
+            EvaluationContext context)
+        {
+            var sampleBySource = bySource;
+            var sampleByTarget = byTarget;
+            var sampleForwardBySource = forwardBySource;
+            var sampleBackwardByTarget = backwardByTarget;
+
+            if (CountClosurePairRequests(bySource.Values) > MaxMeasuredClosurePairProbeRequests)
+            {
+                TakeClosurePairRequestSample(
+                    bySource,
+                    MaxMeasuredClosurePairProbeRequests,
+                    out var limitedBySource,
+                    out var limitedByTarget);
+                sampleBySource = limitedBySource;
+                sampleByTarget = limitedByTarget;
+
+                var batchProbeContext = CreateClosurePairProbeContext(context);
+                if (!TryBuildPairProbeDirectionBatches(
+                    closure,
+                    sampleBySource,
+                    batchProbeContext,
+                    out var limitedForwardBySource,
+                    out var limitedBackwardByTarget))
+                {
+                    limitedForwardBySource = new Dictionary<object?, HashSet<object?>>();
+                    limitedBackwardByTarget = new Dictionary<object?, HashSet<object?>>();
+                }
+
+                sampleForwardBySource = limitedForwardBySource;
+                sampleBackwardByTarget = limitedBackwardByTarget;
+            }
+
+            return strategy switch
+            {
+                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache when sampleForwardBySource.Count > 0 && sampleBackwardByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        sampleForwardBySource,
+                        sampleBackwardByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MixedDirection when sampleForwardBySource.Count > 0 && sampleBackwardByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMixedDirection(
+                        closure,
+                        sampleForwardBySource,
+                        sampleBackwardByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedBySource => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        sampleBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedByTarget => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        sampleByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Forward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsForward(
+                        closure,
+                        sampleBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Backward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsBackward(
+                        closure,
+                        sampleByTarget,
+                        probeContext).ToList();
+                }),
+                _ => TimeSpan.MaxValue
+            };
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
@@ -13997,11 +14568,94 @@ namespace UnifyWeaver.QueryRuntime
                     targetsBySource.Count <= MaxMemoizedGroupedPairSeeds &&
                     sourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
                 var preferForwardFallback = targetsBySource.Count <= sourcesByTarget.Count;
+                var pairRequestCount = CountClosurePairRequests(targetsBySource.Values);
+                IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
+                if (!singleConcretePairRequest && pairRequestCount > 1 && pairRequestCount <= 16)
+                {
+                    var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
+                    {
+                        [ClosurePairPlanStrategy.Forward] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Forward,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context),
+                        [ClosurePairPlanStrategy.Backward] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Backward,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context)
+                    };
+
+                    if (canMemoizeForwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedBySource] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedBySource,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    if (canMemoizeBackwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedByTarget] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedByTarget,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    if (canBuildDirectionBatches &&
+                        forwardTargetsBySource.Count > 0 &&
+                        backwardSourcesByTarget.Count > 0)
+                    {
+                        probes[ClosurePairPlanStrategy.MixedDirection] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MixedDirection,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            probes[ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache] = () => MeasureGroupedClosurePairStrategyProbe(
+                                closure,
+                                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache,
+                                inputPositions,
+                                targetsBySource,
+                                sourcesByTarget,
+                                forwardTargetsBySource,
+                                backwardSourcesByTarget,
+                                context);
+                        }
+                    }
+
+                    measurePairStrategyProbes = probes;
+                }
 
                 var pairStrategySelection = ResolveClosurePairStrategy(
                     trace,
                     closure,
                     _closurePairStrategy,
+                    pairRequestCount,
                     targetsBySource.Count,
                     sourcesByTarget.Count,
                     singleConcretePairRequest,
@@ -14013,7 +14667,8 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "GroupedTransitiveClosurePairs", pairStrategySelection);
 
                 return pairStrategySelection.Strategy switch
@@ -17342,11 +17997,88 @@ namespace UnifyWeaver.QueryRuntime
                     bySource.Count <= MaxMemoizedPairSeeds &&
                     byTarget.Count <= MaxMemoizedPairSeeds;
                 var preferForwardFallback = bySource.Count <= byTarget.Count;
+                var pairRequestCount = CountClosurePairRequests(bySource.Values);
+                IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
+                if (!singleConcretePairRequest && pairRequestCount > 1 && pairRequestCount <= 16)
+                {
+                    var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
+                    {
+                        [ClosurePairPlanStrategy.Forward] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Forward,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context),
+                        [ClosurePairPlanStrategy.Backward] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Backward,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context)
+                    };
+
+                    if (canMemoizeForwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedBySource] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedBySource,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
+                    if (canMemoizeBackwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedByTarget] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedByTarget,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
+                    if (canBuildDirectionBatches &&
+                        forwardBySource.Count > 0 &&
+                        backwardByTarget.Count > 0)
+                    {
+                        probes[ClosurePairPlanStrategy.MixedDirection] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MixedDirection,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            probes[ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache] = () => MeasureUngroupedClosurePairStrategyProbe(
+                                closure,
+                                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache,
+                                bySource,
+                                byTarget,
+                                forwardBySource,
+                                backwardByTarget,
+                                context);
+                        }
+                    }
+
+                    measurePairStrategyProbes = probes;
+                }
 
                 var pairStrategySelection = ResolveClosurePairStrategy(
                     trace,
                     closure,
                     _closurePairStrategy,
+                    pairRequestCount,
                     bySource.Count,
                     byTarget.Count,
                     singleConcretePairRequest,
@@ -17358,7 +18090,8 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "TransitiveClosurePairs", pairStrategySelection);
 
                 return pairStrategySelection.Strategy switch

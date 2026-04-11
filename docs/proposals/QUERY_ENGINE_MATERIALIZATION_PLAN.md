@@ -104,11 +104,13 @@ Status:
 - started for generic closure pair strategy planning, where seeded and grouped
   closure-pair probes can now choose among forward, backward, mixed,
   mixed-with-pair-probe-cache, and memoized source/target strategies through
-  an explicit planner surface
+  an explicit planner surface, and `Auto` can now run bounded measured probes
+  for ambiguous mixed request sets
 - focused validation for that closure-pair planner surface now lives in
   `examples/benchmark/benchmark_closure_pair_planning.py`; the grouped mode now
-  produces non-empty rows, and the summary reports the best effective pair plan
-  separately from the requested override label
+  produces non-empty rows, the summary reports the best effective pair plan
+  separately from the requested override label, and measured runs emit
+  `closure_pair_probe_*` phases
 - started for path-aware support relations, where grouped minima and weight-sum
   operators can now choose streaming, replayable buffering, or external
   materialized access for `RootRelation` and `SeedRelation` before grouped
