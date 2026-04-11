@@ -1258,6 +1258,23 @@ fail_free:
   ret i1 false
 }
 
+; === M5.5: Foreign kernel impl default stub ===
+; The dispatcher's stub_transitive_distance3 case delegates to
+; @wam_td3_kernel_impl. The default implementation (below) returns
+; false, so pure WAM modules behave as if foreign dispatch is
+; disabled. When foreign_lowering is enabled, the compile pipeline
+; will emit a non-default definition of this function in place of
+; the default — LLVM doesn't allow two definitions of the same
+; function in one module, so the compile path picks one or the
+; other at generation time.
+;
+; The default definition being here (rather than declared-only) lets
+; llvm-as resolve the call inside stub_transitive_distance3 even for
+; pure-WAM builds that never exercise the stub at runtime.
+define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {
+  ret i1 false
+}
+
 define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %arity) {
 entry:
   switch i32 %kind, label %not_registered [
@@ -1287,8 +1304,11 @@ stub_transitive_closure2:
   ret i1 false
 
 stub_transitive_distance3:
-  ; M5: transitive_distance(Start, End, Dist) via DFS with cycle detection
-  ret i1 false
+  ; Delegate to the user-provided impl. When foreign_lowering is off
+  ; the impl is only declared (not defined) and this stub is never
+  ; actually reached at runtime, so the missing symbol is benign.
+  %td3_r = call i1 @wam_td3_kernel_impl(%WamState* %vm)
+  ret i1 %td3_r
 
 stub_weighted_shortest_path3:
   ; M5: weighted_shortest_path(Start, End, Dist) via Dijkstra
