@@ -4348,9 +4348,6 @@ rust_foreign_scalar_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, V
       Indent,
       Indent,
       Indent,
-      Indent,
-      Indent,
-      Indent,
       Indent]).
 
 rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
@@ -4375,25 +4372,7 @@ rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, 
 rust_foreign_terminal_code(stream, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
     rust_foreign_stream_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
 rust_foreign_terminal_code(scalar_min, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
-    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
-    format(string(Code),
-'~w~wif (~w)
-~w    && (~w) {
-~w    let agg_value = ~w;
-~w    best = Some(match best {
-~w        Some(current) => current.min(agg_value),
-~w        None => agg_value,
-~w    });
-~w}
-', [SetupCode,
-      Indent, FilterExpr,
-      Indent, FilterCond,
-      Indent, ValueExpr,
-      Indent,
-      Indent,
-      Indent,
-      Indent,
-      Indent]).
+    rust_foreign_scalar_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
 rust_foreign_terminal_code(grouped_min, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
     rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
 
@@ -5221,15 +5200,41 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
     ).
 
 rust_foreign_wrapper_goal_logic(GoalInfo, GoalArgs, Expr, SetupCode, ValueExpr, FilterCond) :-
+    rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
+    rust_foreign_wrapper_render_stage_plan(StagePlan, SetupCode, ValueExpr, FilterCond).
+
+rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr,
+        wrapper_stage_plan(ComputeStage, FilterStages)) :-
     get_dict(other, GoalInfo, []),
-    rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, SetupCode, ValueExpr),
+    rust_foreign_wrapper_compute_stage(Expr, GoalInfo, GoalArgs, ComputeStage),
     get_dict(constraints, GoalInfo, Constraints),
-    findall(Part,
+    findall(filter_stage(Part),
         ( member(Constraint, Constraints),
           rust_foreign_wrapper_constraint_expr(Constraint, GoalArgs, Expr, Part)
         ),
-        Parts),
+        FilterStages).
+
+rust_foreign_wrapper_render_stage_plan(wrapper_stage_plan(ComputeStage, FilterStages),
+        SetupCode, ValueExpr, FilterCond) :-
+    rust_foreign_wrapper_render_compute_stage(ComputeStage, SetupCode, ValueExpr),
+    findall(Part, member(filter_stage(Part), FilterStages), Parts),
     rust_combine_pipeline_conditions(Parts, FilterCond).
+
+rust_foreign_wrapper_compute_stage(Expr, GoalInfo, GoalArgs, passthrough_stage("cost")) :-
+    last(GoalArgs, CostArg),
+    Expr == CostArg,
+    get_dict(other, GoalInfo, []).
+rust_foreign_wrapper_compute_stage(Expr, GoalInfo, GoalArgs, compute_stage("agg_value", RustExpr)) :-
+    get_dict(other, GoalInfo, []),
+    get_dict(arithmetic, GoalInfo, Arithmetic),
+    member(Arithmetic0, Arithmetic),
+    strip_module(Arithmetic0, _, ArithmeticGoal),
+    ArithmeticGoal = (Expr is ArithmeticExpr),
+    rust_foreign_wrapper_numeric_expr(ArithmeticExpr, GoalArgs, Expr, RustExpr).
+
+rust_foreign_wrapper_render_compute_stage(passthrough_stage(ValueExpr), "", ValueExpr).
+rust_foreign_wrapper_render_compute_stage(compute_stage(ValueExpr, RustExpr), SetupCode, ValueExpr) :-
+    format(string(SetupCode), '            let ~w = ~w;~n', [ValueExpr, RustExpr]).
 
 rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, "", "cost") :-
     last(GoalArgs, CostArg),
