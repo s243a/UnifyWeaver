@@ -35,7 +35,11 @@
     wam_llvm_foreign_kind_id/2,          % +Kind, -Id
     % Indexed fact table emission (M4)
     llvm_emit_atom_fact2_table/3,        % +TableName, +Pairs, -LLVMGlobal
-    llvm_emit_weighted_edge_table/3      % +TableName, +Triples, -LLVMGlobal
+    llvm_emit_weighted_edge_table/3,     % +TableName, +Triples, -LLVMGlobal
+    % Foreign lowering pipeline (M5.6)
+    llvm_foreign_kernel_spec/3,          % ?Pred/Arity, ?KernelKind, ?Config (dynamic)
+    clear_llvm_foreign_kernel_specs/0,   % retractall helper (for test isolation)
+    foreign_kernel/3                     % +Pred/Arity, +Kind, +Config (user directive)
 ]).
 
 :- use_module(library(lists)).
@@ -47,6 +51,355 @@
 :- discontiguous wam_llvm_case/2.
 :- discontiguous wam_line_to_llvm_literal/2.
 :- discontiguous wam_instruction_to_llvm_literal/2.
+
+% ============================================================================
+% Foreign Lowering Spec Table (M5.6)
+% ============================================================================
+%
+% The canonical record for "this predicate should be lowered to a native
+% foreign kernel instead of being compiled to WAM". Populated via three
+% user-facing paths that all funnel into this single table:
+%
+%   (a) :- foreign_kernel(Pred/Arity, Kind, Config) directive (M5.6b)
+%   (b) foreign_predicates([...]) entry in Options (M5.6a, this commit)
+%   (c) foreign_lowering(true) + automatic pattern matching (M5.6c)
+%
+% Path (b) is a thin wrapper around (a) — the options-list helper just
+% asserts the same facts the directive would. Path (c) invokes detector
+% predicates that inspect clause shape and assert specs when a known
+% recursive kernel pattern matches.
+%
+% The compile pipeline checks this table *before* trying native LLVM
+% lowering or WAM fallback. When a spec exists, the predicate body is
+% replaced with a single `call_foreign Kind, Arity` instruction, and the
+% runtime template's weak @wam_<kind>_kernel_impl default is spliced
+% out and replaced with a concrete body that reads registers, scans the
+% fact table, and writes the result.
+
+:- dynamic llvm_foreign_kernel_spec/3.
+
+clear_llvm_foreign_kernel_specs :-
+    retractall(llvm_foreign_kernel_spec(_, _, _)).
+
+%% apply_foreign_predicates_option(+Options) is det.
+%
+%  Reads a `foreign_predicates([...])` entry from the options list and
+%  asserts a llvm_foreign_kernel_spec/3 fact for each entry. Accepted
+%  entry shapes:
+%
+%    Pred/Arity - Kind - Config
+%    foreign_kernel(Pred/Arity, Kind, Config)
+%
+%  Any other shape is silently ignored so future extensions don't break
+%  old option lists.
+apply_foreign_predicates_option(Options) :-
+    ( option(foreign_predicates(Entries), Options)
+    -> forall(member(Entry, Entries), assert_foreign_entry(Entry))
+    ; true
+    ).
+
+assert_foreign_entry(PredArity - Kind - Config) :- !,
+    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
+assert_foreign_entry(foreign_kernel(PredArity, Kind, Config)) :- !,
+    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
+assert_foreign_entry(_) :- true.  % ignore unrecognized shapes
+
+%% foreign_kernel(+PredArity, +Kind, +Config) is det.
+%
+%  M5.6b: user-facing directive-style entry point. A user source file
+%  can import this predicate and use it as a directive to declare that
+%  a predicate should be lowered to a native foreign kernel:
+%
+%    :- use_module(library(wam_llvm_target),
+%         [foreign_kernel/3, write_wam_llvm_project/3]).
+%    :- foreign_kernel(my_distance/3, transitive_distance3,
+%         [edge_pred(edge/2)]).
+%
+%  The directive simply asserts a llvm_foreign_kernel_spec/3 fact —
+%  the rest of the pipeline treats it identically to specs that come
+%  in via the options-list path or the auto-detector path.
+foreign_kernel(PredArity, Kind, Config) :-
+    assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
+
+% ============================================================================
+% M5.6c — Automatic Foreign Kernel Detection
+% ============================================================================
+%
+% When `foreign_lowering(true)` is set in Options, the compile pipeline
+% walks each user predicate's clauses and runs them against a registry
+% of detectors. A detector is a predicate that returns a
+% `recursive_kernel(Kind, Pred/Arity, Config)` term when the clauses
+% match a known recursive-kernel shape. The matched spec is then
+% asserted into the same llvm_foreign_kernel_spec/3 table that paths
+% (a) and (b) populate, so there's only one downstream code path.
+%
+% This mirrors the Rust target's rust_recursive_kernel_detector/2
+% registry at rust_target.pl:3742-3751 and the matcher predicates at
+% rust_target.pl:3968-3988. Currently only transitive_distance3 is
+% implemented; weighted_shortest_path3 and astar_shortest_path4 can
+% be added by porting the same matcher structure once their
+% dispatcher stubs are wired (the M5.5 weak-default pattern only
+% covers td3 so far).
+
+%% llvm_recursive_kernel_detector(?Kind, ?DetectorPredicate).
+%
+%  Registry of kernel kinds and the predicates that can detect them.
+%  DetectorPredicate(+Pred, +Arity, +Clauses, -RecKernel) should bind
+%  RecKernel to a `recursive_kernel(Kind, Pred/Arity, Config)` term
+%  on success.
+llvm_recursive_kernel_detector(transitive_distance3,
+    llvm_recursive_kernel_transitive_distance).
+
+%% llvm_recursive_kernel_transitive_distance(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the transitive_distance3 shape:
+%    pred(Start, Target, 1)     :- edge(Start, Target).
+%    pred(Start, Target, Depth) :-
+%        edge(Start, Mid),
+%        pred(Mid, Target, PrevDepth),
+%        Depth is PrevDepth + 1.
+%
+%  On success binds RecKernel to
+%    recursive_kernel(transitive_distance3, Pred/Arity,
+%                     [edge_pred(EdgePred/2)]).
+llvm_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_distance3, Pred/Arity,
+            [edge_pred(EdgePred/2)])) :-
+    llvm_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred).
+
+%% llvm_foreign_lowerable_transitive_distance(+Pred, +Arity, +Clauses, -EdgePred).
+%
+%  Clause-shape matcher ported from rust_target.pl:3968. The only
+%  difference from the Rust version is that we do not gather the
+%  fact pairs here — the M5.6a build_td3_concrete_impl/6 helper
+%  reads them from the user module at codegen time, so the matcher
+%  just needs to confirm the EdgePred name and arity.
+llvm_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1].
+
+%% llvm_auto_detect_foreign_kernels(+Predicates) is det.
+%
+%  For each predicate indicator in the list, read its clauses from
+%  the user module and run them against every registered detector.
+%  When a detector matches, assert a llvm_foreign_kernel_spec/3 fact
+%  for the result. Idempotent — if a spec already exists for the
+%  predicate (e.g., from the options-list path), the auto-detect
+%  skips it to avoid duplicate registration.
+llvm_auto_detect_foreign_kernels([]).
+llvm_auto_detect_foreign_kernels([PredIndicator|Rest]) :-
+    ( PredIndicator = Module:Pred/Arity -> true
+    ; PredIndicator = Pred/Arity, Module = user
+    ),
+    ( lookup_foreign_kernel_spec(Pred, Arity, _, _)
+    -> true   % already registered via (a) or (b); don't override
+    ;  llvm_collect_clause_pairs(Module, Pred, Arity, Clauses),
+       ( llvm_try_detectors(Pred, Arity, Clauses, Kind, Config)
+       -> assertz(llvm_foreign_kernel_spec(Pred/Arity, Kind, Config))
+       ;  true
+       )
+    ),
+    llvm_auto_detect_foreign_kernels(Rest).
+
+%% llvm_collect_clause_pairs(+Module, +Pred, +Arity, -Pairs) is det.
+%
+%  Gather (Head - Body) pairs for every clause of Module:Pred/Arity.
+%  Catch + default to empty list so predicates with no clauses (or
+%  predicates that are opaque to clause/2) don't blow up the compile.
+llvm_collect_clause_pairs(Module, Pred, Arity, Pairs) :-
+    catch(
+        findall(Head-Body,
+            ( functor(Head, Pred, Arity),
+              clause(Module:Head, Body)
+            ),
+            Pairs),
+        _, Pairs = []).
+
+%% llvm_try_detectors(+Pred, +Arity, +Clauses, -Kind, -Config) is semidet.
+%
+%  Iterate the detector registry and return the first match.
+llvm_try_detectors(Pred, Arity, Clauses, Kind, Config) :-
+    llvm_recursive_kernel_detector(Kind, DetectorName),
+    Goal =.. [DetectorName, Pred, Arity, Clauses, Result],
+    call(Goal),
+    Result = recursive_kernel(Kind, _, Config),
+    !.
+
+%% lookup_foreign_kernel_spec(+Pred, +Arity, -Kind, -Config) is semidet.
+%
+%  Succeeds iff a spec is registered for the given predicate. Strips
+%  any Module: qualifier so callers can pass `user:foo/3` or `foo/3`
+%  interchangeably.
+lookup_foreign_kernel_spec(Pred, Arity, Kind, Config) :-
+    ( llvm_foreign_kernel_spec(Pred/Arity, Kind, Config)
+    ; llvm_foreign_kernel_spec(_:Pred/Arity, Kind, Config)
+    ), !.
+
+%% substitute_foreign_kernel_impls(+StateFuncsRaw, -StateFuncs, -Globals).
+%
+%  Post-processes the rendered state template output to splice concrete
+%  kernel impl bodies in place of the weak defaults, and collects any
+%  module-level globals (fact tables, etc.) the impls depend on.
+%
+%  When no foreign specs are registered this is a pass-through:
+%    StateFuncs = StateFuncsRaw, Globals = ''.
+%
+%  For each registered td3 spec, the weak default
+%    define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {
+%      ret i1 false
+%    }
+%  is replaced with a concrete body that reads A1/A2 atoms, calls
+%  @wam_bfs_atom_distance over a module-local %AtomFactPair table, and
+%  writes A3 via @wam_set_reg_int. The fact table is emitted as a
+%  private constant and returned via Globals.
+substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
+    findall(td3(PredArity, Config),
+        llvm_foreign_kernel_spec(PredArity, transitive_distance3, Config),
+        Td3Specs),
+    ( Td3Specs == []
+    -> StateFuncs = StateFuncsRaw,
+       Globals = ''
+    ;  % Current design: one concrete impl regardless of how many td3
+       % predicates are foreign-lowered. They all go through the same
+       % @wam_td3_kernel_impl entry point and read the same fact table.
+       % If multiple predicates use *different* edge_preds this needs
+       % refinement — currently the first wins.
+       Td3Specs = [td3(_FirstPred, FirstConfig)|_],
+       build_td3_concrete_impl(FirstConfig, ImplBody, FactTableIR, TableName, TableLen, MaxAtomId),
+       replace_td3_weak_default(StateFuncsRaw, ImplBody, StateFuncs),
+       format(atom(Globals),
+'; === M5.6 foreign kernel support globals ===
+~w
+
+; max_atom_id upper bound baked into the concrete kernel at compile time:
+;   table=~w  len=~w  max_atom_id=~w
+', [FactTableIR, TableName, TableLen, MaxAtomId])
+    ).
+
+%% build_td3_concrete_impl(+Config, -ImplBody, -FactTableIR, -TableName, -TableLen, -MaxAtomId).
+%
+%  Reads the edge predicate facts from Config, emits an %AtomFactPair
+%  global constant for them, computes max_atom_id from the interned
+%  atom IDs, and builds the LLVM IR for a concrete @wam_td3_kernel_impl
+%  that calls @wam_bfs_atom_distance against that table.
+build_td3_concrete_impl(Config, ImplBody, FactTableIR, TableName, TableLen, MaxAtomId) :-
+    ( member(edge_pred(EdgePred), Config) -> true
+    ; EdgePred = edge/2  % sensible default for smoke tests
+    ),
+    EdgePred = EPName/EPArity,
+    ( EPArity =:= 2 -> true
+    ; throw(foreign_lowering_edge_pred_arity(EPName/EPArity))
+    ),
+    % Gather facts from the user module. Wrap in findall/catch so a
+    % missing predicate produces an empty table rather than crashing.
+    catch(
+        findall(fact(From, To),
+            ( Goal =.. [EPName, From, To],
+              user:Goal
+            ),
+            Pairs),
+        _, Pairs = []),
+    % Intern all atoms to get a tight max_atom_id bound.
+    compute_max_atom_id(Pairs, MaxAtomId),
+    format(atom(TableName), 'foreign_td3_~w_~w', [EPName, EPArity]),
+    llvm_emit_atom_fact2_table(TableName, Pairs, FactTableIR),
+    length(Pairs, TableLen),
+    % When len == 0, llvm_emit_atom_fact2_table produces a 1-entry
+    % placeholder. The kernel still needs to be told len=0 so it
+    % doesn't scan the placeholder as a real row.
+    ( TableLen == 0 -> EffectiveLen = 0 ; EffectiveLen = TableLen ),
+    ( TableLen == 0 -> GepLen = 1 ; GepLen = TableLen ),
+    format(atom(ImplBody),
+'define i1 @wam_td3_kernel_impl(%WamState* %vm) {
+entry:
+  ; M5.6 concrete td3 impl — generated from edge_pred(~w).
+  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_is_atom = icmp eq i32 %s_tag, 0
+  br i1 %s_is_atom, label %check_t, label %bail
+
+check_t:
+  %t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %t_is_atom = icmp eq i32 %t_tag, 0
+  br i1 %t_is_atom, label %run, label %bail
+
+run:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %table_ptr = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
+  %dist_slot = alloca i64
+  %ok = call i1 @wam_bfs_atom_distance(
+      i64 %start_id, i64 %target_id,
+      %AtomFactPair* %table_ptr, i64 ~w,
+      i64 ~w,
+      i64* %dist_slot)
+  br i1 %ok, label %hit, label %bail
+
+hit:
+  %dist = load i64, i64* %dist_slot
+  call void @wam_set_reg_int(%WamState* %vm, i32 2, i64 %dist)
+  ret i1 true
+
+bail:
+  ret i1 false
+}',
+        [EPName, GepLen, GepLen, TableName, EffectiveLen, MaxAtomId]).
+
+%% compute_max_atom_id(+Pairs, -MaxAtomId).
+%
+%  Interns every atom in a list of fact(From, To) pairs and returns
+%  the highest resulting ID. Empty list → 0.
+compute_max_atom_id([], 0).
+compute_max_atom_id(Pairs, MaxAtomId) :-
+    findall(Id,
+        ( member(fact(From, To), Pairs),
+          ( intern_atom(From, Id)
+          ; intern_atom(To, Id)
+          )
+        ),
+        Ids),
+    ( Ids == []
+    -> MaxAtomId = 0
+    ;  max_list(Ids, MaxAtomId)
+    ).
+
+%% replace_td3_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+%
+%  Replaces the M5.5 weak default of @wam_td3_kernel_impl with NewBody
+%  in the rendered state template. If the exact weak-default fragment
+%  isn't found (template drift, etc.) the original text is returned
+%  unchanged and an error is logged — the M5.5 delegation test would
+%  have caught any drift in the weak-default fragment itself.
+replace_td3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: M5.6 could not find td3 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
+
+%% string_replace(+Haystack, +Needle, +Replacement, -Result) is semidet.
+%
+%  Simple substring replacement. Fails if Needle is not found.
+string_replace(Haystack, Needle, Replacement, Result) :-
+    ( atom(Haystack) -> atom_string(Haystack, HayStr) ; HayStr = Haystack ),
+    ( atom(Needle)   -> atom_string(Needle, NeedleStr) ; NeedleStr = Needle ),
+    ( atom(Replacement) -> atom_string(Replacement, ReplStr) ; ReplStr = Replacement ),
+    sub_string(HayStr, Before, _, After, NeedleStr), !,
+    sub_string(HayStr, 0, Before, _, Prefix),
+    string_length(HayStr, HayLen),
+    SuffixStart is HayLen - After,
+    sub_string(HayStr, SuffixStart, After, 0, Suffix),
+    string_concat(Prefix, ReplStr, Tmp),
+    string_concat(Tmp, Suffix, Result).
 
 % ============================================================================
 % PHASE 5: Hybrid Module Assembly
@@ -62,6 +415,16 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
 
+    % M5.6: populate the foreign kernel spec table.
+    % Path (a) directives have already run by load time. Path (b) is
+    % the options-list form; path (c) walks clause shapes when
+    % foreign_lowering(true) is set.
+    apply_foreign_predicates_option(Options),
+    ( option(foreign_lowering(true), Options)
+    -> llvm_auto_detect_foreign_kernels(Predicates)
+    ;  true
+    ),
+
     % Read and render type definitions template
     read_template_file('templates/targets/llvm_wam/types.ll.mustache', TypesTemplate),
     render_template(TypesTemplate, [module_name=ModuleName, date=Date], TypesDef),
@@ -70,9 +433,12 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     read_template_file('templates/targets/llvm_wam/value.ll.mustache', ValueTemplate),
     render_template(ValueTemplate, [], ValueFuncs),
 
-    % Read and render state functions template
+    % Read and render state functions template. When foreign lowering
+    % is active, splice concrete kernel impl bodies in place of the
+    % weak defaults in the rendered state template.
     read_template_file('templates/targets/llvm_wam/state.ll.mustache', StateTemplate),
-    render_template(StateTemplate, [], StateFuncs),
+    render_template(StateTemplate, [], StateFuncsRaw),
+    substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, ForeignGlobals),
 
     % Generate runtime (step + helpers)
     compile_step_wam_to_llvm(Options, StepFunc),
@@ -83,8 +449,17 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         helper_functions=HelpersCode
     ], RuntimeFuncs),
 
-    % Compile predicates (native or WAM fallback)
+    % Compile predicates (native or WAM fallback). Any predicate with a
+    % llvm_foreign_kernel_spec/3 entry is compiled to a body of
+    % WAM instructions ending in `call_foreign Kind, Arity`.
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
+
+    % Prepend foreign kernel globals (fact tables, etc.) to the native
+    % predicates section so they are at module scope before any use.
+    ( ForeignGlobals == ''
+    -> FinalNativeCode = NativeCode
+    ;  atomic_list_concat([ForeignGlobals, '\n\n', NativeCode], FinalNativeCode)
+    ),
 
     % Assemble full module
     read_template_file('templates/targets/llvm_wam/module.ll.mustache', ModuleTemplate),
@@ -97,7 +472,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         value_functions=ValueFuncs,
         state_functions=StateFuncs,
         runtime_functions=RuntimeFuncs,
-        native_predicates=NativeCode,
+        native_predicates=FinalNativeCode,
         wam_predicates=WamCode,
         interop_bridge=""
     ], FullModule),
@@ -267,7 +642,13 @@ compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts)
     ;   PredIndicator = Pred/Arity, Module = user
     ),
     compile_predicates_collect(Rest, Options, RestNative, RestWam),
-    (   % Try native LLVM lowering first
+    (   % M5.6: foreign kernel lowering — check spec table first.
+        lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
+    ->  format(user_error, '  ~w/~w: foreign kernel (~w)~n', [Pred, Arity, Kind]),
+        compile_foreign_kernel_predicate(Pred/Arity, Kind, Arity, Options, PredCode),
+        NativeParts = RestNative,
+        WamParts = [PredCode | RestWam]
+    ;   % Try native LLVM lowering
         catch(
             llvm_target:compile_predicate_to_llvm(Module:Pred/Arity, Options, PredCode),
             _, fail)
@@ -288,6 +669,22 @@ compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts)
         format(atom(FailComment), '; ~w/~w: compilation failed', [Pred, Arity]),
         WamParts = [FailComment | RestWam]
     ).
+
+%% compile_foreign_kernel_predicate(+PredArity, +Kind, +Arity, +Options, -PredCode).
+%
+%  Generate an LLVM predicate body consisting of a single
+%  `call_foreign Kind, Arity` instruction followed by `proceed`. Takes
+%  the WAM-fallback compile path (not native) so the result plugs into
+%  the same %Instruction array / step dispatch machinery as any
+%  WAM-compiled predicate.
+%
+%  compile_wam_predicate_to_llvm/4 expects WamCode as a newline-joined
+%  atom/string (it splits internally), so we format the two lines into
+%  a single blob here.
+compile_foreign_kernel_predicate(Pred/Arity, Kind, Arity, Options, PredCode) :-
+    wam_llvm_foreign_kind_id(Kind, _KindId),  % fail fast if kind unknown
+    format(atom(WamCode), 'call_foreign ~w, ~w\nproceed', [Kind, Arity]),
+    compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, PredCode).
 
 % ============================================================================
 % PHASE 2: step_wam/3 → LLVM switch dispatch
@@ -1541,11 +1938,17 @@ compile_wam_predicate_to_llvm(Pred/Arity, WamCode, _Options, LLVMCode) :-
     % Build instruction array entries
     maplist([Lit, Entry]>>(format(atom(Entry), '  ~w', [Lit])), ResolvedLiterals, Entries),
     atomic_list_concat(Entries, ',\n', EntriesStr),
-    % Build label array entries
+    % Build label array entries. When the predicate has zero labels we
+    % still emit a 1-element placeholder (LLVM rejects [0 x i32] with a
+    % 1-element initializer, and vice versa). The logical count passed
+    % to wam_state_new stays zero, but the declared array type has to
+    % match the initializer length so the two are tracked separately.
     maplist([_-Idx, Entry]>>(format(atom(Entry), '  i32 ~w', [Idx])), LabelEntries, LabelRows),
     (   LabelRows == []
-    ->  LabelsStr = "  i32 0"
-    ;   atomic_list_concat(LabelRows, ',\n', LabelsStr)
+    ->  LabelsStr = "  i32 0",
+        LabelArraySize = 1
+    ;   atomic_list_concat(LabelRows, ',\n', LabelsStr),
+        LabelArraySize = LabelCount
     ),
     % Build arg setup
     build_llvm_arg_setup(Arity, ArgSetup),
@@ -1580,10 +1983,10 @@ entry:
 ', [PredStr, Arity,
     SwitchTablesStr,
     PredStr, InstrCount, EntriesStr,
-    PredStr, LabelCount, LabelsStr,
+    PredStr, LabelArraySize, LabelsStr,
     PredStr, ParamList,
     InstrCount, InstrCount, PredStr, InstrCount,
-    LabelCount, LabelCount, PredStr, LabelCount,
+    LabelArraySize, LabelArraySize, PredStr, LabelCount,
     ArgSetup]).
 
 %% resolve_switch_tables(+LiteralsIn, +PredStr, +NextIdx, -LiteralsOut, -TableDefs)
