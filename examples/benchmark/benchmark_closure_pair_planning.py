@@ -438,6 +438,19 @@ def parse_metrics(stderr: str) -> dict[str, str]:
     return metrics
 
 
+def parse_phase_summary(summary: str) -> dict[str, float]:
+    phases: dict[str, float] = {}
+    for part in summary.split("|"):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        try:
+            phases[key] = float(value)
+        except ValueError:
+            continue
+    return phases
+
+
 def extract_effective_pair_plan(planner_summary: str) -> str:
     for part in planner_summary.split("|"):
         marker = "MaterializationPlanPairs"
@@ -536,6 +549,13 @@ def main() -> int:
                 print(f"{scale}	{mode}	best_effective_plan	{extract_effective_pair_plan(metrics_by_strategy[best_effective.strategy].get('closure_pair_planner_strategies', ''))}")
                 print(f"{scale}	{mode}	auto_vs_best_effective	{effective_ratio:.2f}x")
                 print(f"{scale}	{mode}	auto_planner	{auto_metrics.get('closure_pair_planner_strategies', '')}")
+                auto_phases = parse_phase_summary(auto_metrics.get("closure_pair_phase_summary", ""))
+                probe_ms = sum(
+                    value
+                    for phase, value in auto_phases.items()
+                    if phase.startswith("closure_pair_probe_"))
+                print(f"{scale}	{mode}	auto_strategy_select_ms	{auto_phases.get('closure_pair_strategy_select', 0.0):.3f}")
+                print(f"{scale}	{mode}	auto_probe_ms	{probe_ms:.3f}")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
