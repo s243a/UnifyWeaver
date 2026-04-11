@@ -9843,12 +9843,14 @@ namespace UnifyWeaver.QueryRuntime
 
             if (sourceRequestCount == 1 && targetRequestCount > 1 && canMemoizePairs)
             {
-                return ClosurePairPlanStrategy.MemoizedBySource;
+                return ClosurePairPlanStrategy.Forward;
             }
 
             if (targetRequestCount == 1 && sourceRequestCount > 1 && canMemoizePairs)
             {
-                return ClosurePairPlanStrategy.MemoizedByTarget;
+                return hasBackwardBatch
+                    ? ClosurePairPlanStrategy.Backward
+                    : ClosurePairPlanStrategy.MemoizedByTarget;
             }
 
             if (hasForwardBatch && hasBackwardBatch)
@@ -9957,6 +9959,19 @@ namespace UnifyWeaver.QueryRuntime
                 return strategies;
             }
 
+            if (hasForwardBatch && hasBackwardBatch &&
+                (structuralStrategy == ClosurePairPlanStrategy.MixedDirection ||
+                 structuralStrategy == ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache))
+            {
+                Add(ClosurePairPlanStrategy.MixedDirection);
+                if (canUseBatchedPairProbeCache)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                }
+
+                return strategies;
+            }
+
             if (hasForwardBatch && hasBackwardBatch)
             {
                 Add(ClosurePairPlanStrategy.MixedDirection);
@@ -10021,6 +10036,8 @@ namespace UnifyWeaver.QueryRuntime
             return requestCount <= 16;
         }
 
+        private const double ClosurePairProbeOverrideMargin = 1.15d;
+
         private static ClosurePairPlanStrategy ResolveMeasuredClosurePairStrategy(
             IReadOnlyDictionary<ClosurePairPlanStrategy, TimeSpan> probes,
             ClosurePairPlanStrategy structuralStrategy)
@@ -10052,7 +10069,7 @@ namespace UnifyWeaver.QueryRuntime
                 return structuralStrategy;
             }
 
-            return bestProbe.Value.Ticks * 1.05 < structuralProbe.Ticks
+            return bestProbe.Value.Ticks * ClosurePairProbeOverrideMargin < structuralProbe.Ticks
                 ? bestProbe.Key
                 : structuralStrategy;
         }
