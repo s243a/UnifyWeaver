@@ -4388,6 +4388,12 @@ rust_foreign_wrapper_traversal_code(JoinPreds, FilterVar, _OutputVar, InputLooku
         SetupCode, ValueExpr, FilterCond, TerminalCode),
     rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code).
 
+rust_foreign_wrapper_stage_traversal_code(JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        TerminalMode, StagePlan, Code) :-
+    rust_foreign_wrapper_render_stage_plan(StagePlan, SetupCode, ValueExpr, FilterCond),
+    rust_foreign_wrapper_traversal_code(JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        TerminalMode, SetupCode, ValueExpr, FilterCond, Code).
+
 compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
         foreign_wrapper_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
@@ -4396,8 +4402,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
             HeadResult,
             GoalInfo),
         RustCode) :-
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalCost],
-        HeadResult, SetupCode, ValueExpr, FilterCond),
+    GoalArgs = [GoalStart, GoalOutput, GoalCost],
+    rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, HeadResult, StagePlan),
     ( JoinPreds == []
     -> TargetFilterCode =
 '    let target_filter = match &a2 {
@@ -4423,8 +4429,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
             },
             _ => break,
         };',
-       rust_foreign_wrapper_traversal_code([], "target_filter", "target", "&target", "        ",
-           stream, SetupCode, ValueExpr, FilterCond, TraversalCode)
+       rust_foreign_wrapper_stage_traversal_code([], "target_filter", "target", "&target", "        ",
+           stream, StagePlan, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
 '    let join_filter = match &a2 {
@@ -4443,8 +4449,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
         };',
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-       rust_foreign_wrapper_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
-           stream, SetupCode, ValueExpr, FilterCond, TraversalCode)
+       rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
+           stream, StagePlan, TraversalCode)
     ; fail
     ),
     atom_string(Pred, PredStr),
@@ -4518,8 +4524,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
             HeadResult,
             GoalInfo),
         RustCode) :-
-    rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalDim, GoalCost],
-        HeadResult, SetupCode, ValueExpr, FilterCond),
+    GoalArgs = [GoalStart, GoalOutput, GoalDim, GoalCost],
+    rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, HeadResult, StagePlan),
     ( JoinPreds == []
     -> TargetFilterCode =
 '    let target_filter = match &a2 {
@@ -4546,8 +4552,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
             },
             _ => break,
         };',
-       rust_foreign_wrapper_traversal_code([], "target_filter", "target", "&target", "        ",
-           stream, SetupCode, ValueExpr, FilterCond, TraversalCode)
+       rust_foreign_wrapper_stage_traversal_code([], "target_filter", "target", "&target", "        ",
+           stream, StagePlan, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
 '    let join_filter = match &a2 {
@@ -4567,8 +4573,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
         };',
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-       rust_foreign_wrapper_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
-           stream, SetupCode, ValueExpr, FilterCond, TraversalCode)
+       rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
+           stream, StagePlan, TraversalCode)
     ; fail
     ),
     rust_render_astar_kernel(
