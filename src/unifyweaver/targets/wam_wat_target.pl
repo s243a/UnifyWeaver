@@ -1021,15 +1021,26 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (i64.eq (local.get $p1) (local.get $p2))))
 
 ;; --- Builtin dispatch ---
+;; O(1) br_table dispatch for ALL builtins including term inspection
+;; (functor/3, arg/3, =../2, copy_term/2 at IDs 18-21). Earlier
+;; versions routed 18-21 through a linear if-chain AFTER the br_table
+;; default — correct but O(k) in the number of term builtins, and
+;; on the hot path for any predicate that uses them. Folding them
+;; into the br_table makes every builtin call one compare (the
+;; br_table bounds check) and one indirect branch regardless of
+;; which builtin is selected.
 (func $execute_builtin (param $id i32) (param $arity i32) (result i32)
   (block $default
+    (block $copy_term (block $univ (block $arg (block $functor
     (block $cut (block $fail (block $true_b
     (block $arith_ge (block $arith_le (block $arith_gt (block $arith_lt
     (block $arith_ne (block $arith_eq (block $is
     (block $nl (block $write
       (br_table $write $nl $is $arith_eq $arith_ne $arith_lt $arith_gt $arith_le $arith_ge
                 $default $default $default $default $default $default
-                $true_b $fail $cut $default (local.get $id))
+                $true_b $fail $cut
+                $functor $arg $univ $copy_term
+                $default (local.get $id))
     ) ;; write
     (call $print_i64 (call $get_reg_payload (i32.const 0)))
     (return (i32.const 1))
@@ -1057,18 +1068,16 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     ) ;; cut
     (call $set_cp_count (i32.const 0))
     (return (i32.const 1))
+    ) ;; functor/3 (ID 18)
+    (return (call $builtin_functor))
+    ) ;; arg/3 (ID 19)
+    (return (call $builtin_arg))
+    ) ;; =../2 (ID 20)
+    (return (call $builtin_univ))
+    ) ;; copy_term/2 (ID 21)
+    (return (call $builtin_copy_term))
   )
-  ;; --- Term inspection builtins (IDs 18-21) ---
-  ;; Handled via a short if-chain after the main br_table default.
-  ;; These are not hot paths, so the extra compares are negligible.
-  (if (i32.eq (local.get $id) (i32.const 18))
-    (then (return (call $builtin_functor))))
-  (if (i32.eq (local.get $id) (i32.const 19))
-    (then (return (call $builtin_arg))))
-  (if (i32.eq (local.get $id) (i32.const 20))
-    (then (return (call $builtin_univ))))
-  (if (i32.eq (local.get $id) (i32.const 21))
-    (then (return (call $builtin_copy_term))))
+  ;; $default fall-through: unknown builtin ID
   (i32.const 0)
 )
 
@@ -1458,62 +1467,99 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; the SAME fresh variable in the copy (the spec''s critical property
 ;; for copy_term/2).
 ;;
-;; v1 scope:
+;; Scope (deep):
 ;;   - Atomic T (atom/integer/float): bind Copy = T verbatim.
-;;   - Unbound T: allocate a fresh unbound on the heap and bind Copy
-;;     to a ref to it.
-;;   - Ref to compound T: SHALLOW copy with sharing preserved. The new
-;;     compound header is copied, and each argument cell is either
-;;     copied verbatim (non-unbound) or materialized as a fresh
-;;     unbound / ref-to-shared-unbound.
-;;   - Nested compounds inside the args are NOT deep-copied — they are
-;;     structure-shared with the source. This is a documented v1
-;;     limitation; a follow-up would use a work stack.
-;;   - Lists (tag=4) are not handled in v1.
+;;   - Unbound T: allocate a fresh unbound and bind Copy to a ref.
+;;   - Ref to compound or list T: iterative deep copy via a work stack,
+;;     recursing through nested compounds and lists at arbitrary depth
+;;     without using WAT''s call stack. Sharing is preserved across the
+;;     entire traversal, not just the top level.
 ;;
-;; Sharing preservation algorithm:
-;;   - Maintain a small var map keyed on the source unbound''s payload
-;;     (the variable id), valued at the heap address where the fresh
-;;     cell for that variable was materialized.
-;;   - First occurrence of variable V: push a tag=6 cell in-place in
-;;     the next arg slot. Record (src_payload, that addr) in the map.
-;;     The arg slot IS the fresh variable.
-;;   - Subsequent occurrences: look up V in the map, push a tag=5 ref
-;;     cell whose payload is the recorded addr. Dereffing the arg
-;;     reaches the first occurrence''s cell — the two slots share.
+;; Algorithm (iterative, work-stack driven):
 ;;
-;; Var map layout: 256 bytes allocated at heap_top before the copy
-;; starts, consumed but never reclaimed (each call wastes 256 heap
-;; bytes — acceptable for v1 test scale). Each entry is 12 bytes:
-;; [key:i64 source_payload][new_offset:i32]. 21 entries max.
+;;   Scratch region (page 4, fixed offset 262144):
+;;     262144..262911 (768 B) — var map: 64 entries x 12 bytes
+;;                              [src_payload:i64][dst_addr:i32]
+;;                              src_payload is the source unbound''s
+;;                              variable id; dst_addr is the heap address
+;;                              of the fresh cell materialized the first
+;;                              time we saw that source var.
+;;     262912..263935 (1024 B) — work stack: 128 entries x 8 bytes
+;;                              [src_addr:i32][dst_addr:i32]
+;;                              Each entry asks "copy the cell at src_addr
+;;                              into the existing cell at dst_addr".
+;;
+;;   Top-level setup: allocate one placeholder unbound cell on the heap.
+;;   Push (root_src_addr, placeholder) onto the work stack. The worklist
+;;   loop will rewrite the placeholder in-place with a direct value
+;;   (atomic) or a ref to a freshly-built nested structure.
+;;
+;;   Worklist loop (LIFO, pop until empty):
+;;     atomic (tag <= 2)  — val_store tag/payload at dst
+;;     unbound (tag = 6)  — lookup src_payload in var map
+;;                            hit:  val_store ref(existing) at dst
+;;                            miss: heap_push_val a fresh unbound cell;
+;;                                  record (src_payload, new_addr) in map;
+;;                                  val_store ref(new_addr) at dst
+;;     ref (tag = 5)      — repush (src''s target, dst) — follow once
+;;     compound (tag = 3) — read arity-packed header; heap_push_val a new
+;;                          header; heap_push_val arity placeholder cells
+;;                          immediately after; val_store ref(new_comp) at
+;;                          dst; push (arg_src, new_comp + i*12) for each
+;;                          source arg so the next iteration fills the
+;;                          reserved slot.
+;;     list (tag = 4)     — heap_push_val a list header + head + tail
+;;                          placeholders (3 cells); val_store ref(new_list)
+;;                          at dst; push (tail_src, new_list+24) then
+;;                          (head_src, new_list+12).
+;;
+;;   Each iteration ends with br $work. The loop exits via br_if $done
+;;   when the work stack empties. After exit, read the placeholder''s
+;;   tag/payload and bind A2 to that exact pair.
+;;
+;; The scratch is FIXED-OFFSET in page 4, separate from the WAM heap.
+;; This means copy_term does NOT permanently bloat heap_top with
+;; bookkeeping — successive calls simply overwrite the same 1792-byte
+;; scratch. copy_term is not re-entrant (no nested copy_term calls
+;; inside itself), so the single scratch region is sufficient.
+;;
+;; Hard limits (v1): 64 distinct source variables per call; 128 pending
+;; work items at any time. Overflow triggers fail (return 0).
 (func $builtin_copy_term (result i32)
   (local $t_tag i32)
   (local $t_payload i64)
   (local $src_addr i32)
-  (local $dst_addr i32)
-  (local $header_payload i64)
-  (local $arity i32)
-  (local $i i32)
-  (local $j i32)
-  (local $arg_src i32)
-  (local $arg_tag i32)
-  (local $arg_payload i64)
+  (local $top_placeholder i32)
+  (local $result_tag i32)
+  (local $result_payload i64)
   (local $map_base i32)
+  (local $stack_base i32)
+  (local $stack_end i32)
   (local $map_n i32)
   (local $map_limit i32)
+  (local $stack_top i32)
+  (local $s i32)
+  (local $d i32)
+  (local $s_tag i32)
+  (local $s_payload i64)
+  (local $header_payload i64)
+  (local $arity i32)
+  (local $new_comp i32)
+  (local $new_cell i32)
+  (local $i i32)
+  (local $j i32)
   (local $entry_off i32)
   (local $found i32)
   (local $found_off i32)
-  (local $new_cell i32)
   (local.set $t_tag (call $get_reg_tag (i32.const 0)))
   (local.set $t_payload (call $get_reg_payload (i32.const 0)))
-  ;; --- Atomic T ---
+  ;; --- Atomic T: direct bind ---
   (if (i32.le_u (local.get $t_tag) (i32.const 2))
     (then
       (call $trail_binding (i32.const 1))
       (call $set_reg (i32.const 1) (local.get $t_tag) (local.get $t_payload))
       (return (i32.const 1))))
-  ;; --- Unbound T ---
+  ;; --- Unbound T: fresh unbound, bind ref ---
   (if (i32.eq (local.get $t_tag) (i32.const 6))
     (then
       (local.set $new_cell
@@ -1522,97 +1568,198 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (call $set_reg (i32.const 1) (i32.const 5)
         (i64.extend_i32_u (local.get $new_cell)))
       (return (i32.const 1))))
-  ;; --- Ref to compound T ---
+  ;; --- Ref T: worklist-driven deep copy ---
   (if (i32.eq (local.get $t_tag) (i32.const 5))
     (then
       (local.set $src_addr (i32.wrap_i64 (local.get $t_payload)))
-      (if (i32.eq (call $val_tag (local.get $src_addr)) (i32.const 3))
-        (then
-          (local.set $header_payload
-            (call $val_payload (local.get $src_addr)))
-          (local.set $arity
-            (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
-          ;; Reserve var map: 256 bytes (21 entries x 12 bytes), not
-          ;; reclaimed. The fresh compound header will sit right after
-          ;; the map area.
-          (local.set $map_base (call $get_heap_top))
-          (call $set_heap_top
-            (i32.add (local.get $map_base) (i32.const 256)))
-          (local.set $map_n (i32.const 0))
-          (local.set $map_limit (i32.const 21))
-          ;; Allocate fresh compound header (header payload carries the
-          ;; arity-packed functor, same as the source).
-          (local.set $dst_addr
-            (call $heap_push_val (i32.const 3) (local.get $header_payload)))
-          ;; Walk source args i=1..arity and materialize each dst arg.
-          (local.set $i (i32.const 1))
-          (block $done_args
-            (loop $arg_loop
-              (br_if $done_args (i32.gt_s (local.get $i) (local.get $arity)))
-              (local.set $arg_src
-                (i32.add (local.get $src_addr)
-                         (i32.mul (local.get $i) (i32.const 12))))
-              (local.set $arg_tag (call $val_tag (local.get $arg_src)))
-              (local.set $arg_payload (call $val_payload (local.get $arg_src)))
-              (if (i32.eq (local.get $arg_tag) (i32.const 6))
+      ;; Scratch base at page 4 start (262144). Layout:
+      ;;   [262144..262911] var map (768 B, 64 entries x 12)
+      ;;   [262912..263935] work stack (1024 B, 128 entries x 8)
+      (local.set $map_base (i32.const 262144))
+      (local.set $stack_base (i32.const 262912))
+      (local.set $stack_end (i32.const 263936))
+      (local.set $map_n (i32.const 0))
+      (local.set $map_limit (i32.const 64))
+      (local.set $stack_top (local.get $stack_base))
+      ;; Top-level placeholder on the heap — the worklist rewrites
+      ;; this cell in-place with the root of the copy.
+      (local.set $top_placeholder
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      ;; Push initial work item (src, top_placeholder).
+      (i32.store (local.get $stack_top) (local.get $src_addr))
+      (i32.store (i32.add (local.get $stack_top) (i32.const 4))
+                 (local.get $top_placeholder))
+      (local.set $stack_top (i32.add (local.get $stack_top) (i32.const 8)))
+      ;; Main worklist loop.
+      (block $done
+        (loop $work
+          ;; Empty? done.
+          (br_if $done
+            (i32.le_u (local.get $stack_top) (local.get $stack_base)))
+          ;; Pop.
+          (local.set $stack_top
+            (i32.sub (local.get $stack_top) (i32.const 8)))
+          (local.set $s (i32.load (local.get $stack_top)))
+          (local.set $d
+            (i32.load (i32.add (local.get $stack_top) (i32.const 4))))
+          (local.set $s_tag (call $val_tag (local.get $s)))
+          (local.set $s_payload (call $val_payload (local.get $s)))
+          ;; --- Atomic: write direct value ---
+          (if (i32.le_u (local.get $s_tag) (i32.const 2))
+            (then
+              (call $val_store (local.get $d) (local.get $s_tag)
+                                (local.get $s_payload))
+              (br $work)))
+          ;; --- Unbound: var-map lookup, materialize or share ---
+          (if (i32.eq (local.get $s_tag) (i32.const 6))
+            (then
+              (local.set $found (i32.const 0))
+              (local.set $found_off (i32.const 0))
+              (local.set $j (i32.const 0))
+              (block $search_done
+                (loop $search
+                  (br_if $search_done
+                    (i32.ge_u (local.get $j) (local.get $map_n)))
+                  (local.set $entry_off
+                    (i32.add (local.get $map_base)
+                             (i32.mul (local.get $j) (i32.const 12))))
+                  (if (i64.eq (i64.load (local.get $entry_off))
+                              (local.get $s_payload))
+                    (then
+                      (local.set $found_off
+                        (i32.load
+                          (i32.add (local.get $entry_off) (i32.const 8))))
+                      (local.set $found (i32.const 1))
+                      (br $search_done)))
+                  (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                  (br $search)))
+              (if (local.get $found)
                 (then
-                  ;; Unbound source arg — search the var map.
-                  (local.set $found (i32.const 0))
-                  (local.set $found_off (i32.const 0))
-                  (local.set $j (i32.const 0))
-                  (block $search_done
-                    (loop $search
-                      (br_if $search_done
-                        (i32.ge_u (local.get $j) (local.get $map_n)))
+                  ;; Shared: write ref to existing fresh cell.
+                  (call $val_store (local.get $d) (i32.const 5)
+                    (i64.extend_i32_u (local.get $found_off))))
+                (else
+                  ;; First occurrence: allocate fresh unbound, record.
+                  (local.set $new_cell
+                    (call $heap_push_val (i32.const 6) (i64.const 0)))
+                  (if (i32.lt_u (local.get $map_n) (local.get $map_limit))
+                    (then
                       (local.set $entry_off
                         (i32.add (local.get $map_base)
-                                 (i32.mul (local.get $j) (i32.const 12))))
-                      (if (i64.eq (i64.load (local.get $entry_off))
-                                  (local.get $arg_payload))
-                        (then
-                          (local.set $found_off
-                            (i32.load
-                              (i32.add (local.get $entry_off) (i32.const 8))))
-                          (local.set $found (i32.const 1))
-                          (br $search_done)))
-                      (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                      (br $search)))
-                  (if (local.get $found)
-                    (then
-                      ;; Subsequent occurrence: push ref to existing cell.
-                      (drop (call $heap_push_val (i32.const 5)
-                              (i64.extend_i32_u (local.get $found_off)))))
+                                 (i32.mul (local.get $map_n) (i32.const 12))))
+                      (i64.store (local.get $entry_off)
+                                 (local.get $s_payload))
+                      (i32.store
+                        (i32.add (local.get $entry_off) (i32.const 8))
+                        (local.get $new_cell))
+                      (local.set $map_n
+                        (i32.add (local.get $map_n) (i32.const 1))))
                     (else
-                      ;; First occurrence: materialize in-place as an
-                      ;; unbound cell. heap_push_val returns this arg
-                      ;; slot''s addr, which becomes the map value for
-                      ;; future occurrences of the same source var.
-                      (local.set $new_cell
-                        (call $heap_push_val (i32.const 6) (i64.const 0)))
-                      (if (i32.lt_u (local.get $map_n) (local.get $map_limit))
-                        (then
-                          (local.set $entry_off
-                            (i32.add (local.get $map_base)
-                                     (i32.mul (local.get $map_n) (i32.const 12))))
-                          (i64.store (local.get $entry_off)
-                                     (local.get $arg_payload))
-                          (i32.store
-                            (i32.add (local.get $entry_off) (i32.const 8))
-                            (local.get $new_cell))
-                          (local.set $map_n
-                            (i32.add (local.get $map_n) (i32.const 1))))))))
-                (else
-                  ;; Non-unbound: copy tag/payload verbatim (v1: no
-                  ;; deep copy of nested compounds).
-                  (drop (call $heap_push_val
-                          (local.get $arg_tag)
-                          (local.get $arg_payload)))))
-              (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $arg_loop)))
-          (call $trail_binding (i32.const 1))
-          (call $set_reg (i32.const 1) (i32.const 5)
-            (i64.extend_i32_u (local.get $dst_addr)))
-          (return (i32.const 1))))))
+                      ;; Map full — fail.
+                      (return (i32.const 0))))
+                  (call $val_store (local.get $d) (i32.const 5)
+                    (i64.extend_i32_u (local.get $new_cell)))))
+              (br $work)))
+          ;; --- Ref: follow one level by re-pushing ---
+          (if (i32.eq (local.get $s_tag) (i32.const 5))
+            (then
+              (if (i32.ge_u
+                    (i32.add (local.get $stack_top) (i32.const 8))
+                    (local.get $stack_end))
+                (then (return (i32.const 0))))
+              (i32.store (local.get $stack_top)
+                         (i32.wrap_i64 (local.get $s_payload)))
+              (i32.store
+                (i32.add (local.get $stack_top) (i32.const 4))
+                (local.get $d))
+              (local.set $stack_top
+                (i32.add (local.get $stack_top) (i32.const 8)))
+              (br $work)))
+          ;; --- Compound: allocate header + placeholder args, push work ---
+          (if (i32.eq (local.get $s_tag) (i32.const 3))
+            (then
+              (local.set $header_payload (local.get $s_payload))
+              (local.set $arity
+                (i32.wrap_i64
+                  (i64.shr_u (local.get $header_payload) (i64.const 32))))
+              (local.set $new_comp
+                (call $heap_push_val (i32.const 3)
+                                     (local.get $header_payload)))
+              ;; Reserve $arity placeholder arg slots.
+              (local.set $i (i32.const 0))
+              (block $rsv_done
+                (loop $reserve
+                  (br_if $rsv_done (i32.ge_s (local.get $i) (local.get $arity)))
+                  (drop (call $heap_push_val (i32.const 6) (i64.const 0)))
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $reserve)))
+              ;; d := ref(new_comp)
+              (call $val_store (local.get $d) (i32.const 5)
+                (i64.extend_i32_u (local.get $new_comp)))
+              ;; Push (arg_src, arg_dst) pairs for i=1..arity.
+              (local.set $i (i32.const 1))
+              (block $push_done
+                (loop $push_args
+                  (br_if $push_done
+                    (i32.gt_s (local.get $i) (local.get $arity)))
+                  (if (i32.ge_u
+                        (i32.add (local.get $stack_top) (i32.const 8))
+                        (local.get $stack_end))
+                    (then (return (i32.const 0))))
+                  (i32.store (local.get $stack_top)
+                    (i32.add (local.get $s)
+                             (i32.mul (local.get $i) (i32.const 12))))
+                  (i32.store
+                    (i32.add (local.get $stack_top) (i32.const 4))
+                    (i32.add (local.get $new_comp)
+                             (i32.mul (local.get $i) (i32.const 12))))
+                  (local.set $stack_top
+                    (i32.add (local.get $stack_top) (i32.const 8)))
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $push_args)))
+              (br $work)))
+          ;; --- List: header + head + tail placeholders, push 2 work items ---
+          (if (i32.eq (local.get $s_tag) (i32.const 4))
+            (then
+              (local.set $new_comp
+                (call $heap_push_val (i32.const 4) (i64.const 0)))
+              (drop (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (drop (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (call $val_store (local.get $d) (i32.const 5)
+                (i64.extend_i32_u (local.get $new_comp)))
+              ;; Capacity: need 2 slots.
+              (if (i32.ge_u
+                    (i32.add (local.get $stack_top) (i32.const 16))
+                    (local.get $stack_end))
+                (then (return (i32.const 0))))
+              ;; Push tail first (LIFO pops it second).
+              (i32.store (local.get $stack_top)
+                (i32.add (local.get $s) (i32.const 24)))
+              (i32.store
+                (i32.add (local.get $stack_top) (i32.const 4))
+                (i32.add (local.get $new_comp) (i32.const 24)))
+              (local.set $stack_top
+                (i32.add (local.get $stack_top) (i32.const 8)))
+              ;; Push head.
+              (i32.store (local.get $stack_top)
+                (i32.add (local.get $s) (i32.const 12)))
+              (i32.store
+                (i32.add (local.get $stack_top) (i32.const 4))
+                (i32.add (local.get $new_comp) (i32.const 12)))
+              (local.set $stack_top
+                (i32.add (local.get $stack_top) (i32.const 8)))
+              (br $work)))
+          ;; Unknown tag — fail.
+          (return (i32.const 0))))
+      ;; Worklist done. Read the placeholder''s final tag/payload and
+      ;; bind A2 to that value.
+      (local.set $result_tag (call $val_tag (local.get $top_placeholder)))
+      (local.set $result_payload
+        (call $val_payload (local.get $top_placeholder)))
+      (call $trail_binding (i32.const 1))
+      (call $set_reg (i32.const 1) (local.get $result_tag)
+                                    (local.get $result_payload))
+      (return (i32.const 1))))
   (i32.const 0)
 )
 ', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
@@ -1654,8 +1801,13 @@ write_wam_wat_project(Predicates, Options, OutputFile) :-
     wam_heap_base(HeapBase),
     compile_wat_predicates(Predicates, Options, HeapBase, DataSegs, PredFuncs, Exports),
 
-    %% Calculate memory pages needed (3 minimum: native WAT + WAM state + heap)
-    MemPages = 4,
+    %% Memory pages: 0=native WAT strings/memo; 1=WAM state (regs, trail,
+    %% env/choice stack); 2=code (instruction data segments); 3=WAM heap;
+    %% 4=copy_term scratch (var map + work stack, fixed offsets at 262144).
+    %% See $builtin_copy_term for the scratch layout. The scratch lives
+    %% outside the heap so deep copy_term calls don''t permanently bloat
+    %% heap_top with unreclaimable bookkeeping.
+    MemPages = 5,
 
     %% Assemble module
     read_template_file('templates/targets/wat_wam/module.wat.mustache', ModuleTemplate),

@@ -188,9 +188,12 @@ test(arg_helper_generated) :-
     wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
     %% The $builtin_arg function must be emitted
     assertion(sub_string(HelpersCode, _, _, _, "$builtin_arg")),
-    %% It must be reachable from $execute_builtin's dispatch — the
-    %% if-chain checks id == 19 and calls $builtin_arg.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 19)")),
+    %% It must be reachable from $execute_builtin''s O(1) br_table
+    %% dispatch — Phase 6 moved term builtins from a linear if-chain
+    %% into the main br_table. The $arg label must appear inside the
+    %% table and a (block $arg ...) must wrap its handler.
+    assertion(sub_string(HelpersCode, _, _, _, "$arg $univ")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $arg")),
     %% Sanity: the helper body should reference the arity-extraction
     %% shift (high 32 bits of compound payload).
     assertion(sub_string(HelpersCode, _, _, _, "i64.shr_u")).
@@ -216,8 +219,10 @@ test(functor_helper_generated) :-
     %% Both modes: construct branch uses i64.shl to pack arity,
     %% read branch uses i64.shr_u to extract it.
     assertion(sub_string(HelpersCode, _, _, _, "i64.shl")),
-    %% Dispatch: if-chain checks id == 18 for functor/3.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 18)")).
+    %% Dispatch: $functor label present in the main br_table and
+    %% wrapped by a (block $functor ...) after the optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$functor $arg")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $functor")).
 
 test(functor_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('functor/3', 3), [], Hex),
@@ -238,8 +243,10 @@ test(univ_helper_generated) :-
     %% The empty-list atom hash literal 2914 must appear as the nil
     %% terminator in the decompose-mode build path.
     assertion(sub_string(HelpersCode, _, _, _, "2914")),
-    %% Dispatch: if-chain checks id == 20.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 20)")).
+    %% Dispatch: $univ label present in the main br_table after the
+    %% Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $univ")).
 
 test(univ_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('=../2', 2), [], Hex),
@@ -258,8 +265,10 @@ test(copy_term_helper_generated) :-
     assertion(sub_string(HelpersCode, _, _, _, "$builtin_copy_term")),
     %% Sharing-preservation var map is referenced explicitly.
     assertion(sub_string(HelpersCode, _, _, _, "var map")),
-    %% Dispatch: if-chain checks id == 21.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 21)")).
+    %% Dispatch: $copy_term label present in the main br_table and
+    %% wrapped by its own block after the Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $copy_term")).
 
 test(copy_term_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('copy_term/2', 2), [], Hex),
@@ -389,13 +398,43 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
     ).
 
+test(functional_copy_term_nested, [condition(tool_available(wat2wasm)),
+                                     condition(tool_available(node))]) :-
+    %% Deep copy_term follow-up: copy_term(outer(inner(a, b), c), _)
+    %% exercises the worklist''s compound→compound recursion. The v1
+    %% shallow impl would copy the outer compound but leave `inner(a,b)`
+    %% structure-shared with the source; the deep impl allocates a
+    %% fresh inner compound and recursively copies its args. A return
+    %% value of 1 means the worklist processed every level and the
+    %% final root value was written back to A2.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_nested_~w.wat', [T]),
+    assertz(user:test_func_copy_nested :- copy_term(outer(inner(a, b), c), _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_copy_nested/0],
+                                  [module_name(func_copy_nested_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_copy_nested_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(copy_term_nested_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_copy_nested),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
 test(functional_copy_term_compound, [condition(tool_available(wat2wasm)),
                                        condition(tool_available(node))]) :-
-    %% End-to-end: copy_term(foo(a, b), _) should succeed. The source
-    %% compound has only atomic args, so the sharing-preservation path
-    %% is not exercised here — that is covered by codegen assertions
-    %% only in v1. The test validates that the dispatch + in-place
-    %% compound copy + trail binding path all run to completion.
+    %% Flat compound case: copy_term(foo(a, b), _). Validates the
+    %; worklist''s trivial path (one compound, no nesting, no vars).
+    %% With the deep impl this is still a meaningful sanity test and
+    %% a regression guard.
     get_time(T),
     format(atom(WatFile),
         '/data/data/com.termux/files/home/tmp/test_wam_func_copy_~w.wat', [T]),
