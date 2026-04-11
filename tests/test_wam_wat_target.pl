@@ -389,13 +389,43 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
     ).
 
+test(functional_copy_term_nested, [condition(tool_available(wat2wasm)),
+                                     condition(tool_available(node))]) :-
+    %% Deep copy_term follow-up: copy_term(outer(inner(a, b), c), _)
+    %% exercises the worklist''s compound→compound recursion. The v1
+    %% shallow impl would copy the outer compound but leave `inner(a,b)`
+    %% structure-shared with the source; the deep impl allocates a
+    %% fresh inner compound and recursively copies its args. A return
+    %% value of 1 means the worklist processed every level and the
+    %% final root value was written back to A2.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_nested_~w.wat', [T]),
+    assertz(user:test_func_copy_nested :- copy_term(outer(inner(a, b), c), _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_copy_nested/0],
+                                  [module_name(func_copy_nested_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_copy_nested_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(copy_term_nested_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_copy_nested),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
 test(functional_copy_term_compound, [condition(tool_available(wat2wasm)),
                                        condition(tool_available(node))]) :-
-    %% End-to-end: copy_term(foo(a, b), _) should succeed. The source
-    %% compound has only atomic args, so the sharing-preservation path
-    %% is not exercised here — that is covered by codegen assertions
-    %% only in v1. The test validates that the dispatch + in-place
-    %% compound copy + trail binding path all run to completion.
+    %% Flat compound case: copy_term(foo(a, b), _). Validates the
+    %; worklist''s trivial path (one compound, no nesting, no vars).
+    %% With the deep impl this is still a meaningful sanity test and
+    %% a regression guard.
     get_time(T),
     format(atom(WatFile),
         '/data/data/com.termux/files/home/tmp/test_wam_func_copy_~w.wat', [T]),
