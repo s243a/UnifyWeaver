@@ -4399,6 +4399,24 @@ rust_foreign_grouped_wrapper_traversal_code(JoinPreds, FilterVar, _OutputVar, In
         SetupCode, ValueExpr, FilterCond, TerminalCode),
     rust_foreign_stage_chain_code(JoinSpecs, InputLookupExpr, Indent, TerminalCode, Code).
 
+rust_foreign_wrapper_traversal_code(stream, JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    (   JoinPreds == []
+    ->  rust_foreign_stream_terminal_code(Indent, FilterVar, OutputVar,
+            SetupCode, ValueExpr, FilterCond, Code)
+    ;   rust_render_join_specs(JoinPreds, JoinSpecs),
+        rust_foreign_join_chain_code(JoinSpecs, InputLookupExpr, OutputVar, Indent,
+            SetupCode, ValueExpr, FilterCond, Code)
+    ).
+rust_foreign_wrapper_traversal_code(scalar_min, JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_scalar_wrapper_traversal_code(JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code).
+rust_foreign_wrapper_traversal_code(grouped_min, JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_grouped_wrapper_traversal_code(JoinPreds, FilterVar, OutputVar, InputLookupExpr, Indent,
+        SetupCode, ValueExpr, FilterCond, Code).
+
 compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
         foreign_wrapper_plan(
             weighted_kernel(InnerPred, WeightPred/3, FactTriples),
@@ -4434,7 +4452,8 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
             },
             _ => break,
         };',
-       rust_foreign_stream_terminal_code("        ", "target_filter", "target", SetupCode, ValueExpr, FilterCond, TraversalCode)
+       rust_foreign_wrapper_traversal_code(stream, [], "target_filter", "target", "&target", "        ",
+           SetupCode, ValueExpr, FilterCond, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
 '    let join_filter = match &a2 {
@@ -4453,7 +4472,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
         };',
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-       rust_foreign_join_chain_code(JoinSpecs, "&target", "target", "        ",
+       rust_foreign_wrapper_traversal_code(stream, JoinPreds, "join_filter", "target", "&target", "        ",
            SetupCode, ValueExpr, FilterCond, TraversalCode)
     ; fail
     ),
@@ -4556,7 +4575,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
             },
             _ => break,
         };',
-       rust_foreign_stream_terminal_code("        ", "target_filter", "target",
+       rust_foreign_wrapper_traversal_code(stream, [], "target_filter", "target", "&target", "        ",
            SetupCode, ValueExpr, FilterCond, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
@@ -4577,7 +4596,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
         };',
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
-       rust_foreign_join_chain_code(JoinSpecs, "&target", "target", "        ",
+       rust_foreign_wrapper_traversal_code(stream, JoinPreds, "join_filter", "target", "&target", "        ",
            SetupCode, ValueExpr, FilterCond, TraversalCode)
     ; fail
     ),
@@ -4775,7 +4794,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          rust_foreign_grouped_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
+          rust_foreign_wrapper_traversal_code(grouped_min, [], "output_filter", "target", "&target", "        ",
               SetupCode, ValueExpr, FilterCond, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
@@ -4794,7 +4813,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_grouped_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+         rust_foreign_wrapper_traversal_code(grouped_min, JoinPreds, "output_filter", "target", "&target", "        ",
              SetupCode, ValueExpr, FilterCond, TraversalCode)
        ),
        format(string(RustCode),
@@ -4885,7 +4904,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             _ => break,
         };',
          JoinRegistrationCode = "",
-         rust_foreign_scalar_wrapper_traversal_code([], "target_filter", "target", "&target", "        ",
+         rust_foreign_wrapper_traversal_code(scalar_min, [], "target_filter", "target", "&target", "        ",
              SetupCode, ValueExpr, FilterCond, TraversalCode)
       ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
@@ -4904,7 +4923,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-        rust_foreign_scalar_wrapper_traversal_code(JoinPreds, "target_filter", "target", "&target", "        ",
+        rust_foreign_wrapper_traversal_code(scalar_min, JoinPreds, "target_filter", "target", "&target", "        ",
             SetupCode, ValueExpr, FilterCond, TraversalCode)
       ),
       format(string(RustCode),
@@ -5004,7 +5023,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          rust_foreign_grouped_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
+          rust_foreign_wrapper_traversal_code(grouped_min, [], "output_filter", "target", "&target", "        ",
               SetupCode, ValueExpr, FilterCond, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
@@ -5024,7 +5043,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_grouped_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+         rust_foreign_wrapper_traversal_code(grouped_min, JoinPreds, "output_filter", "target", "&target", "        ",
              SetupCode, ValueExpr, FilterCond, TraversalCode)
        ),
        format(string(RustCode),
@@ -5126,7 +5145,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             _ => break,
         };',
          JoinRegistrationCode = "",
-         rust_foreign_scalar_wrapper_traversal_code([], "target_filter", "target", "&target", "        ",
+         rust_foreign_wrapper_traversal_code(scalar_min, [], "target_filter", "target", "&target", "        ",
              SetupCode, ValueExpr, FilterCond, TraversalCode)
       ; rust_render_join_specs(JoinPreds, JoinSpecs),
         rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
@@ -5146,7 +5165,7 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-        rust_foreign_scalar_wrapper_traversal_code(JoinPreds, "target_filter", "target", "&target", "        ",
+        rust_foreign_wrapper_traversal_code(scalar_min, JoinPreds, "target_filter", "target", "&target", "        ",
             SetupCode, ValueExpr, FilterCond, TraversalCode)
       ),
       format(string(RustCode),
