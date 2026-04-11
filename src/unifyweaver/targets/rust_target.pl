@@ -5205,10 +5205,6 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
       DefaultDim, InnerPredStr, TargetReadCode, TraversalCode])
     ).
 
-rust_foreign_wrapper_goal_logic(GoalInfo, GoalArgs, Expr, SetupCode, ValueExpr, FilterCond) :-
-    rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
-    rust_foreign_wrapper_render_stage_plan(StagePlan, SetupCode, ValueExpr, FilterCond).
-
 rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr,
         wrapper_stage_plan(ComputeStage, FilterStages)) :-
     get_dict(other, GoalInfo, []),
@@ -5241,19 +5237,6 @@ rust_foreign_wrapper_compute_stage(Expr, GoalInfo, GoalArgs, compute_stage("agg_
 rust_foreign_wrapper_render_compute_stage(passthrough_stage(ValueExpr), "", ValueExpr).
 rust_foreign_wrapper_render_compute_stage(compute_stage(ValueExpr, RustExpr), SetupCode, ValueExpr) :-
     format(string(SetupCode), '            let ~w = ~w;~n', [ValueExpr, RustExpr]).
-
-rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, "", "cost") :-
-    last(GoalArgs, CostArg),
-    Expr == CostArg,
-    get_dict(other, GoalInfo, []).
-rust_foreign_wrapper_value_expr(Expr, GoalInfo, GoalArgs, SetupCode, "agg_value") :-
-    get_dict(other, GoalInfo, []),
-    get_dict(arithmetic, GoalInfo, Arithmetic),
-    member(Arithmetic0, Arithmetic),
-    strip_module(Arithmetic0, _, ArithmeticGoal),
-    ArithmeticGoal = (Expr is ArithmeticExpr),
-    rust_foreign_wrapper_numeric_expr(ArithmeticExpr, GoalArgs, Expr, RustExpr),
-    format(string(SetupCode), '            let agg_value = ~w;~n', [RustExpr]).
 
 rust_foreign_wrapper_numeric_expr(Expr, _GoalArgs, _AggExpr, RustExpr) :-
     number(Expr),
