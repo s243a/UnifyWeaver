@@ -30,7 +30,12 @@
     write_wam_llvm_project/3,            % +Predicates, +Options, +OutputFile
     write_wam_llvm_wasm_project/3,       % +Predicates, +Options, +OutputFile (WASM variant)
     build_wam_wasm_module/3,             % +LLFile, +OutputName, -Commands
-    builtin_op_to_id/2                   % +OpName, -IntId
+    builtin_op_to_id/2,                  % +OpName, -IntId
+    % Foreign dispatch (M3)
+    wam_llvm_foreign_kind_id/2,          % +Kind, -Id
+    % Indexed fact table emission (M4)
+    llvm_emit_atom_fact2_table/3,        % +TableName, +Pairs, -LLVMGlobal
+    llvm_emit_weighted_edge_table/3      % +TableName, +Triples, -LLVMGlobal
 ]).
 
 :- use_module(library(lists)).
@@ -40,6 +45,8 @@
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 
 :- discontiguous wam_llvm_case/2.
+:- discontiguous wam_line_to_llvm_literal/2.
+:- discontiguous wam_instruction_to_llvm_literal/2.
 
 % ============================================================================
 % PHASE 5: Hybrid Module Assembly
@@ -331,6 +338,7 @@ entry:
     i32 27, label %switch_on_constant_a2
     i32 28, label %begin_aggregate
     i32 29, label %end_aggregate
+    i32 30, label %call_foreign
   ]
 
 ~w
@@ -972,6 +980,18 @@ wam_llvm_case('end_aggregate',
   ; either re-run inner goals (if there are prior CPs) or finalize.
   ret i1 false').
 
+% call_foreign: dispatch to a native foreign kernel.
+% op1 = foreign kind ID (see wam_llvm_foreign_kind_id/2)
+% op2 = arity (for handler selection — different kernels have different
+%              register conventions)
+% Returns the result of @wam_execute_foreign_predicate. If false, the
+% run loop backtracks.
+wam_llvm_case('call_foreign',
+'  %cf.kind = trunc i64 %op1 to i32
+  %cf.arity = trunc i64 %op2 to i32
+  %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.arity)
+  ret i1 %cf.result').
+
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
 % ============================================================================
@@ -1595,6 +1615,92 @@ render_switch_entries([entry(Tag, Pay, LabelIdx) | Rest], [Line | RestLines]) :-
         [Tag, Pay, LabelIdx]),
     render_switch_entries(Rest, RestLines).
 
+%% llvm_emit_atom_fact2_table(+TableName, +Pairs, -LLVMGlobal)
+%
+%  Emit a private global constant array of %AtomFactPair entries for
+%  a list of (FromAtom, ToAtom) facts. Both atoms are interned via
+%  intern_atom/2 so the IDs stay consistent with switch_on_constant
+%  tables and kernel lookups.
+%
+%  Example:
+%      llvm_emit_atom_fact2_table('category_parent_table',
+%          [fact('Physics', 'Science'), fact('Chemistry', 'Science')],
+%          Code)
+%
+%  Produces an LLVM global definition:
+%      @category_parent_table = private constant [2 x %AtomFactPair] [
+%        %AtomFactPair { i64 1, i64 2 },
+%        %AtomFactPair { i64 3, i64 2 }
+%      ]
+%
+llvm_emit_atom_fact2_table(TableName, Pairs, Code) :-
+    maplist(render_atom_fact_pair, Pairs, Lines),
+    length(Pairs, Count),
+    (   Count == 0
+    ->  format(atom(Code),
+            '@~w = private constant [1 x %AtomFactPair] [%AtomFactPair { i64 0, i64 0 }]',
+            [TableName])
+    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
+        format(atom(Code),
+'@~w = private constant [~w x %AtomFactPair] [
+~w
+]', [TableName, Count, EntriesStr])
+    ).
+
+render_atom_fact_pair(fact(From, To), Line) :-
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    format(atom(Line),
+        '  %AtomFactPair { i64 ~w, i64 ~w }',
+        [FromId, ToId]).
+render_atom_fact_pair(From-To, Line) :-
+    render_atom_fact_pair(fact(From, To), Line).
+
+%% llvm_emit_weighted_edge_table(+TableName, +Triples, -LLVMGlobal)
+%
+%  Emit a private global constant array of %WeightedFact entries for
+%  a list of (From, To, Weight) weighted edges. Atoms interned, weight
+%  emitted as a double (LLVM requires decimal form for fp constants).
+%
+%  Example:
+%      llvm_emit_weighted_edge_table('cat_weighted',
+%          [edge('ml', 'ai', 0.12), edge('ai', 'cs', 0.18)], Code)
+%
+llvm_emit_weighted_edge_table(TableName, Triples, Code) :-
+    maplist(render_weighted_fact, Triples, Lines),
+    length(Triples, Count),
+    (   Count == 0
+    ->  format(atom(Code),
+            '@~w = private constant [1 x %WeightedFact] [%WeightedFact { i64 0, i64 0, double 0.0 }]',
+            [TableName])
+    ;   atomic_list_concat(Lines, ',\n', EntriesStr),
+        format(atom(Code),
+'@~w = private constant [~w x %WeightedFact] [
+~w
+]', [TableName, Count, EntriesStr])
+    ).
+
+render_weighted_fact(edge(From, To, Weight), Line) :-
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    format_weight_literal(Weight, WeightStr),
+    format(atom(Line),
+        '  %WeightedFact { i64 ~w, i64 ~w, double ~w }',
+        [FromId, ToId, WeightStr]).
+render_weighted_fact(From-To-Weight, Line) :-
+    render_weighted_fact(edge(From, To, Weight), Line).
+
+%% format_weight_literal(+Weight, -Str)
+%  LLVM's double literal parser requires either decimal form (3.14) or
+%  hex form. An integer printed as "1" is rejected where a double is
+%  expected; we must emit "1.0". Also, "0" must become "0.0".
+format_weight_literal(W, Str) :-
+    number(W),
+    ( integer(W)
+    -> format(string(Str), '~w.0', [W])
+    ;  format(string(Str), '~w', [W])
+    ).
+
 %% wam_lines_to_llvm(+Lines, +PC, -LLVMLits, -LabelEntries)
 %  Two-pass approach: first collect all labels and raw instruction parts,
 %  then generate LLVM literals with resolved label indices.
@@ -1851,6 +1957,33 @@ agg_type_id(max, 3).
 agg_type_id(collect, 4).
 agg_type_id(bag, 5).
 agg_type_id(_, 4).  % fallback: collect
+
+% call_foreign KindName, Arity
+% Dispatches to a registered native foreign kernel. The kind name is
+% resolved via wam_llvm_foreign_kind_id/2 to a stable integer ID that
+% matches the switch cases in @wam_execute_foreign_predicate.
+wam_line_to_llvm_literal(["call_foreign", KindStr, ArityStr], Lit) :- !,
+    clean_comma(KindStr, CK), clean_comma(ArityStr, CA),
+    atom_string(KAtom, CK),
+    ( wam_llvm_foreign_kind_id(KAtom, KindId)
+    -> true
+    ;  KindId = 999  % sentinel for unknown — dispatch returns false
+    ),
+    ( number_string(Arity, CA) -> true ; Arity = 0 ),
+    format(atom(Lit), '%Instruction { i32 30, i64 ~w, i64 ~w }', [KindId, Arity]).
+
+%% wam_llvm_foreign_kind_id(+Kind, -Id)
+%  Map a foreign kernel kind name (atom) to its integer dispatch ID.
+%  The IDs must stay in sync with the switch cases in
+%  @wam_execute_foreign_predicate in state.ll.mustache.
+%  M3 establishes the IDs; M5 will fill in the actual kernel bodies.
+wam_llvm_foreign_kind_id(category_ancestor,        0).
+wam_llvm_foreign_kind_id(countdown_sum2,           1).
+wam_llvm_foreign_kind_id(list_suffix2,             2).
+wam_llvm_foreign_kind_id(transitive_closure2,      3).
+wam_llvm_foreign_kind_id(transitive_distance3,     4).
+wam_llvm_foreign_kind_id(weighted_shortest_path3,  5).
+wam_llvm_foreign_kind_id(astar_shortest_path4,     6).
 % call, execute, try_me_else, retry_me_else are handled by
 % wam_line_to_llvm_literal_resolved/3 (label resolution required).
 wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').

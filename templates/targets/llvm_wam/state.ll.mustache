@@ -671,6 +671,66 @@ exit:
   ret void
 }
 
+; === Foreign Predicate Dispatch (M3 scaffolding) ===
+; Dispatches a call_foreign instruction to a native kernel.
+; In M3, every kind returns false — M5 will replace the stubs with real
+; kernel implementations (transitive_distance, weighted_shortest_path, etc).
+; When foreign_lowering is disabled (the default), the compile path emits
+; no call_foreign instructions and this function is never reached, so the
+; pure WAM behavior is preserved for testing.
+;
+; Kind IDs (keep in sync with wam_llvm_foreign_kind_id/2 in wam_llvm_target.pl):
+;   0 = category_ancestor
+;   1 = countdown_sum2
+;   2 = list_suffix2
+;   3 = transitive_closure2
+;   4 = transitive_distance3
+;   5 = weighted_shortest_path3
+;   6 = astar_shortest_path4
+define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %arity) {
+entry:
+  switch i32 %kind, label %not_registered [
+    i32 0, label %stub_category_ancestor
+    i32 1, label %stub_countdown_sum2
+    i32 2, label %stub_list_suffix2
+    i32 3, label %stub_transitive_closure2
+    i32 4, label %stub_transitive_distance3
+    i32 5, label %stub_weighted_shortest_path3
+    i32 6, label %stub_astar_shortest_path4
+  ]
+
+stub_category_ancestor:
+  ; M5: category_ancestor(Cat, Root, Hops, Visited)
+  ret i1 false
+
+stub_countdown_sum2:
+  ; M5: countdown_sum(N, Sum)
+  ret i1 false
+
+stub_list_suffix2:
+  ; M5: list_suffix(List, Suffix)
+  ret i1 false
+
+stub_transitive_closure2:
+  ; M5: transitive_closure(From, To) via indexed_atom_fact2
+  ret i1 false
+
+stub_transitive_distance3:
+  ; M5: transitive_distance(Start, End, Dist) via DFS with cycle detection
+  ret i1 false
+
+stub_weighted_shortest_path3:
+  ; M5: weighted_shortest_path(Start, End, Dist) via Dijkstra
+  ret i1 false
+
+stub_astar_shortest_path4:
+  ; M5: astar_shortest_path(Start, End, Dim, Dist) via L_D norm A*
+  ret i1 false
+
+not_registered:
+  ret i1 false
+}
+
 ; Finalize the top aggregate frame: apply aggregation, bind result reg,
 ; restore state, pop CP. Returns true on success, false if no agg frame.
 define i1 @wam_finalize_aggregate(%WamState* %vm) {
