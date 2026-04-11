@@ -134,6 +134,98 @@ WAM-level recursion).
 
 The fix is tracked as a follow-up; it's out of scope for Phase 6.
 
+### 4.4 Post-commit update: WAM-WAT cross-predicate fix landed
+
+Immediately after Phase 6, the WAM-WAT half of this blocker was
+fixed in [`feat/wam-cross-pred-labels`](#). The fix restructures
+`compile_wat_predicates/6` into a two-pass project-level pipeline:
+
+  1. **Pass 1** parses every predicate's WAM text into `(Instrs,
+     LocalLabels, NumInstrs)` and computes each predicate's
+     cumulative start PC in a single merged instruction array.
+  2. **Label merge** shifts every local label by its predicate's
+     start PC and accumulates into one project-wide table.
+  3. **Pass 2** re-encodes every predicate's instructions against
+     the merged global labels, so both internal try_me_else targets
+     and external `call`/`execute` targets resolve to correct
+     absolute PCs.
+  4. **Assembly** emits ONE data segment at a fixed `CodeBase` with
+     all bytes concatenated; every predicate's entry function now
+     calls `$set_pc` with its start PC before invoking a `$run_loop`
+     that takes the shared `CodeBase` and the total instruction
+     count.
+
+Validation: `tests/test_wam_wat_target.pl` gains
+`functional_cross_predicate_call`, which compiles
+
+```prolog
+simple_id(X, X).
+cross_caller :- simple_id(hello, _).
+```
+
+through `write_wam_wat_project`, runs `cross_caller_0` via
+wat2wasm + node, and asserts the return value is 1. This is the
+first WAM-WAT test in the suite that exercises a WAM-level call
+from one user predicate to another. Before the fix it returned 0
+(the `execute simple_id/2` encoded PC=0 and re-entered the caller);
+after the fix it returns 1.
+
+### 4.5 New layer of blockers surfaced by the cross-predicate fix
+
+Unblocking cross-predicate calls let Phase 6 attempt to run the
+`sum_ints` benchmark end-to-end for the first time. The attempt
+failed with `memory access out of bounds`, and tracing back from
+the generated WAM revealed two **separate** layers of blockers that
+the previous cross-predicate blocker had been masking:
+
+  **(a) Type-check builtins are stubs / missing.**
+  `integer/1`, `atom/1`, `var/1`, `nonvar/1`, `float/1`,
+  `number/1` (IDs 9–14) are reserved in the builtin table but map
+  to `$default` in `$execute_builtin`'s `br_table`, which returns
+  0 (fail). Sum_ints's first clause guards on `integer(T)`, so it
+  always fails and always triggers backtracking to clause 2 —
+  correct for the walker path on compound terms, but means no
+  workload that relies on any type check can make forward
+  progress via its "happy path".
+
+  **(b) `=/2` is lowered as an external predicate call rather than
+  primitive unification.** The canonical WAM compiler emits
+  `execute =/2` (or `call =/2, 2`) for body goals of the form
+  `X = Y`, but `=/2` is not in WAM-WAT's `builtin_id/2` table, so
+  it is treated as a regular user predicate. `resolve_label/3`
+  misses and returns `PC = 0`; at runtime the VM jumps to the
+  first instruction of the merged project (the first predicate's
+  allocate or put_value), corrupting state and eventually hitting
+  an out-of-bounds memory access on some downstream load. The
+  proper fix is to lower `=/2` into `get_value`/`unify_value`
+  directly in the canonical WAM layer, as standard Prolog WAM
+  implementations do.
+
+Both are orthogonal to Group A, orthogonal to cross-predicate
+labels, and orthogonal to each other. They are new tracked items in
+§8.
+
+### 4.6 WAM-Rust port status
+
+The same cross-predicate fix has NOT yet been ported to WAM-Rust.
+The architectures differ substantially:
+
+  * WAM-WAT emits a single data segment with absolute PCs; the run
+    loop is a shared `$run_loop(code_base, num_instrs)` function.
+  * WAM-Rust emits one `pub fn pred_name(vm, a1, ..)` per predicate,
+    each of which constructs its own local `code: Vec<Instruction>`
+    and `labels: HashMap<String, usize>`, assigns `vm.code = code;
+    vm.labels = labels`, and calls `vm.run()`. The instruction Vec
+    and label map are ephemeral per-call.
+
+Porting the fix requires either (i) switching to a module-level
+shared `static CODE: OnceLock<Vec<Instruction>>` + `static LABELS:
+OnceLock<HashMap<_>>` with thin `pub fn` wrappers that set PC and
+call `vm.run()`, or (ii) lazily merging all predicates' code into
+one shared Vec at first call. Both are larger refactors than the
+WAM-WAT case and deserve their own PR/branch — tracked as a
+follow-up in §8.
+
 ## 5. Optimization: O(1) term-builtin dispatch
 
 Even without end-to-end benchmarking, one concrete optimization was
@@ -262,15 +354,32 @@ future refactor breaks the shared `HashMap` threading.
 
 ## 8. Follow-ups (explicitly out of scope here)
 
-- **Cross-predicate label resolution** in both WAM-Rust and WAM-WAT
-  (fix `resolve_label/3` + its callers to use a project-level label
-  table built in `write_wam_*_project/3`).
+- **~~Cross-predicate label resolution in WAM-WAT~~** —
+  landed in `feat/wam-cross-pred-labels` as a two-pass project-level
+  pipeline with a merged global label table and single shared data
+  segment. Validated by `functional_cross_predicate_call`. See §4.4.
+- **Cross-predicate label resolution in WAM-Rust** — still pending
+  (§4.6). Larger refactor than the WAT case due to the per-predicate
+  `pub fn` architecture; needs a module-level shared CODE/LABELS.
+- **Type-check builtin handlers** for IDs 9–14 (`var/1`, `nonvar/1`,
+  `atom/1`, `integer/1`, `float/1`, `number/1`) in WAM-WAT's
+  `$execute_builtin` br_table. Currently all fall through to
+  `$default` which returns 0. Blocks any benchmark with a type
+  guard on its happy path — including the `sum_ints` walker.
+- **`=/2` lowering** in the canonical WAM compiler — currently
+  emits `execute =/2` which is not a recognized builtin and
+  resolves to PC=0 at runtime, corrupting execution. Should lower
+  to `get_value` / `unify_value` instructions directly, as
+  standard WAM implementations do.
 - **If-then-else lowering hang** in the canonical WAM compiler on
   hybrid backends — would remove the need for cut-style rewrites of
   benchmark predicates.
-- **Rerun perf comparison** once (1) lands: measure `sum_ints` on
-  host SWI, WAM-WAT (via wat2wasm + node), and WAM-Rust (via cargo
-  test), and tabulate ns/call for each. Report honestly, even if
-  native WAM is 10–100x slower.
+- **Rerun perf comparison** once all three codegen blockers above
+  land: measure `sum_ints` on host SWI, WAM-WAT (via wat2wasm +
+  node), and WAM-Rust (via cargo test), and tabulate ns/call for
+  each. Report honestly, even if native WAM is 10–100x slower.
 - **Profile-guided optimization of the `$unify` / `$deref` hot
   paths** in WAM-WAT if the rerun shows they dominate the cost.
+- **`copy_term` scratch overflow** — currently hard-caps at 64
+  distinct source variables and 128 pending work items per call.
+  A dynamic scratch region would lift this.

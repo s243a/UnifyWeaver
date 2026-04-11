@@ -398,6 +398,56 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
     ).
 
+test(functional_cross_predicate_call, [condition(tool_available(wat2wasm)),
+                                         condition(tool_available(node))]) :-
+    %% Cross-predicate label resolution end-to-end:
+    %%
+    %%   simple_id(X, X).
+    %%   cross_caller :- simple_id(hello, _).
+    %%
+    %% cross_caller executes simple_id/2 as a tail call. Before the
+    %% cross-predicate fix, resolve_label/3 used each predicate''s
+    %% LOCAL label table — so `execute simple_id/2` from inside
+    %% cross_caller''s instruction stream would not find simple_id/2
+    %% (it''s in simple_id''s own label table, not cross_caller''s),
+    %% fall back to PC=0, and the VM would re-enter cross_caller,
+    %% creating an infinite loop or silent failure depending on
+    %% exact timing.
+    %%
+    %% The two-pass compile_wat_predicates/6 builds a project-level
+    %% merged label table where both cross_caller''s and simple_id''s
+    %% entries live at their absolute start PCs in the single merged
+    %% instruction array. A return value of 1 proves:
+    %%   (a) cross_caller''s entry PC is set correctly on the VM
+    %%   (b) the `execute simple_id/2` encodes an absolute PC that
+    %%       reaches simple_id''s first instruction
+    %%   (c) simple_id''s head unifies with A1 and A2 correctly
+    %%       using the shared single data segment
+    %%   (d) simple_id''s proceed halts cleanly since CP=-1
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_cross_~w.wat', [T]),
+    assertz(user:simple_id(X, X)),
+    assertz(user:cross_caller :- simple_id(hello, _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([cross_caller/0, simple_id/2],
+                                  [module_name(func_cross_test)], WatFile),
+            run_wam_wat_module_export(WatFile, cross_caller_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(cross_pred_failed(Result)))
+            )
+        ),
+        (   retractall(user:simple_id/2),
+            retractall(user:cross_caller),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
 test(functional_copy_term_nested, [condition(tool_available(wat2wasm)),
                                      condition(tool_available(node))]) :-
     %% Deep copy_term follow-up: copy_term(outer(inner(a, b), c), _)
