@@ -106,6 +106,80 @@ define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
   ret void
 }
 
+; === FFI Bridge Helpers (for M5 native kernels) ===
+; Kernels called via @wam_execute_foreign_predicate use these to read and
+; write WAM registers without constructing %Value structs inline. All
+; helpers take a register index in the 0..31 range (A1..A16 → 0..15,
+; X1..X16 → 16..31).
+;
+; Value tag encoding (from types.ll.mustache):
+;   0 = Atom     (payload = interned atom id)
+;   1 = Integer  (payload = signed int as i64)
+;   2 = Float    (payload = double bitcast to i64)
+;   3 = Compound
+;   4 = List
+;   5 = Ref
+;   6 = Unbound
+;   7 = Bool     (payload = 0 or 1)
+
+; Get the tag of a register value.
+define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %tag = load i32, i32* %tag_ptr
+  ret i32 %tag
+}
+
+; Get the raw i64 payload of a register value. Caller is responsible for
+; knowing the tag (use wam_get_reg_tag first if the type is not known).
+define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  ret i64 %pay
+}
+
+; Get a register payload as a double. Tag must be 2 (Float) — the caller
+; is responsible for checking. Performs an i64 → double bitcast.
+define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  %d = bitcast i64 %pay to double
+  ret double %d
+}
+
+; Set a register to an Atom value with the given interned atom ID.
+define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 0, i32* %tag_ptr
+  store i64 %atom_id, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to an Integer value.
+define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 1, i32* %tag_ptr
+  store i64 %n, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to a Float value. Performs a double → i64 bitcast.
+define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = bitcast double %d to i64
+  store i32 2, i32* %tag_ptr
+  store i64 %pay, i64* %pay_ptr
+  ret void
+}
+
 ; Increment PC
 define void @wam_inc_pc(%WamState* %vm) {
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
