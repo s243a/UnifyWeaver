@@ -592,6 +592,28 @@ test_foreign_stream_wrapper_plan_ir :-
     ;   fail_test(Test, 'Foreign stream wrapper plan IR did not match expected multistage shape')
     ).
 
+test_foreign_wrapper_stage_plan_ir :-
+    Test = 'WAM-Rust: foreign wrapper stage plan separates compute and filter stages',
+    Head =.. [bucketed_adjusted_weighted_path, Start, Bucket, Adjusted],
+    Body = ( weighted_path(Start, Target, Cost),
+             target_label(Target, Label),
+             label_bucket(Label, Bucket),
+             Cost > 2,
+             Adjusted is Cost + 1 ),
+    (   rust_target:rust_foreign_stream_wrapper_plan(bucketed_adjusted_weighted_path, 3, Head, Body,
+            foreign_wrapper_plan(_, _, GoalArgs, Adjusted, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Adjusted, StagePlan),
+        StagePlan = wrapper_stage_plan(
+            compute_stage("agg_value", "(cost + 1_f64)"),
+            [filter_stage("cost > 2_f64")]),
+        rust_target:rust_foreign_wrapper_render_stage_plan(StagePlan, SetupCode, ValueExpr, FilterCond),
+        SetupCode == "            let agg_value = (cost + 1_f64);\n",
+        ValueExpr == "agg_value",
+        FilterCond == 'cost > 2_f64'
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign wrapper stage plan did not separate compute/filter stages')
+    ).
+
 test_foreign_aggregate_wrapper_plan_ir :-
     Test = 'WAM-Rust: foreign aggregate wrapper plan normalizes scalar and grouped terminals',
     ScalarHead =.. [bucketed_min_semantic_dist, Start, Bucket, MinDist],
@@ -1447,6 +1469,7 @@ run_tests :-
     test_recursive_kernel_spec_generation,
     test_recursive_kernel_registry,
     test_foreign_stream_wrapper_plan_ir,
+    test_foreign_wrapper_stage_plan_ir,
     test_foreign_aggregate_wrapper_plan_ir,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
