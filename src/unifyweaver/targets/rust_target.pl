@@ -4743,8 +4743,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
     ( Type == group
     -> parse_group_term_rust(GroupTerm, [GroupVar]),
        GroupVar == GoalOutput,
-       rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalCost],
-           Expr, SetupCode, ValueExpr, FilterCond),
+       GoalArgs = [GoalStart, GoalOutput, GoalCost],
+       rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
        ( JoinPreds == []
        -> FilterCode =
 '    let output_filter = match &a2 {
@@ -4771,8 +4771,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          rust_foreign_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
-              grouped_min, SetupCode, ValueExpr, FilterCond, TraversalCode)
+          rust_foreign_wrapper_stage_traversal_code([], "output_filter", "target", "&target", "        ",
+              grouped_min, StagePlan, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
          FilterCode =
@@ -4790,8 +4790,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 3,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
-             grouped_min, SetupCode, ValueExpr, FilterCond, TraversalCode)
+         rust_foreign_wrapper_stage_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+             grouped_min, StagePlan, TraversalCode)
        ),
        format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool {
@@ -4971,8 +4971,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
     ( Type == group
     -> parse_group_term_rust(GroupTerm, [GroupVar]),
        GroupVar == GoalOutput,
-       rust_foreign_wrapper_goal_logic(GoalInfo, [GoalStart, GoalOutput, GoalDim, GoalCost],
-           Expr, SetupCode, ValueExpr, FilterCond),
+       GoalArgs = [GoalStart, GoalOutput, GoalDim, GoalCost],
+       rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
        ( JoinPreds == []
        -> FilterCode =
 '    let output_filter = match &a2 {
@@ -5000,8 +5000,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             _ => break,
         };',
           JoinRegistrationCode = "",
-          rust_foreign_wrapper_traversal_code([], "output_filter", "target", "&target", "        ",
-              grouped_min, SetupCode, ValueExpr, FilterCond, TraversalCode)
+          rust_foreign_wrapper_stage_traversal_code([], "output_filter", "target", "&target", "        ",
+              grouped_min, StagePlan, TraversalCode)
        ; rust_render_join_specs(JoinPreds, JoinSpecs),
          rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
          FilterCode =
@@ -5020,8 +5020,8 @@ compile_rust_foreign_min_aggregate_wrapper_from_plan(Pred, 4,
             Some(Value::Atom(target)) => target,
             _ => break,
         };',
-         rust_foreign_wrapper_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
-             grouped_min, SetupCode, ValueExpr, FilterCond, TraversalCode)
+         rust_foreign_wrapper_stage_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+             grouped_min, StagePlan, TraversalCode)
        ),
        format(string(RustCode),
 'pub fn ~w(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool {

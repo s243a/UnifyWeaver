@@ -669,6 +669,34 @@ test_foreign_scalar_stage_traversal_ir :-
     ;   fail_test(Test, 'Foreign scalar stage traversal did not render expected joined min traversal')
     ).
 
+test_foreign_grouped_stage_traversal_ir :-
+    Test = 'WAM-Rust: foreign grouped wrapper stage emitter renders joined min traversal',
+    GroupedHead =.. [grouped_bucketed_min_semantic_dist, Start, Bucket, GroupMin],
+    GroupedBody = aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        GroupMin),
+    rust_target:classify_aggregate(GroupedBody, GroupedAggInfo),
+    (   rust_target:rust_foreign_aggregate_wrapper_plan(grouped_bucketed_min_semantic_dist, 3,
+            GroupedHead, GroupedAggInfo,
+            foreign_aggregate_plan(_, JoinPreds, GoalArgs, Expr, group, Bucket, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
+        rust_target:rust_foreign_wrapper_stage_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+            grouped_min, StagePlan, TraversalCode),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(TraversalCode, _, _, _, 'grouped.entry(joined_value_2.clone())'),
+        sub_string(TraversalCode, _, _, _, '.and_modify(|current| *current = current.min(agg_value))')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign grouped stage traversal did not render expected joined min traversal')
+    ).
+
 test_foreign_aggregate_wrapper_plan_ir :-
     Test = 'WAM-Rust: foreign aggregate wrapper plan normalizes scalar and grouped terminals',
     ScalarHead =.. [bucketed_min_semantic_dist, Start, Bucket, MinDist],
@@ -1527,6 +1555,7 @@ run_tests :-
     test_foreign_wrapper_stage_plan_ir,
     test_foreign_stream_stage_traversal_ir,
     test_foreign_scalar_stage_traversal_ir,
+    test_foreign_grouped_stage_traversal_ir,
     test_foreign_aggregate_wrapper_plan_ir,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
