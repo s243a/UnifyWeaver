@@ -1021,15 +1021,26 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (i64.eq (local.get $p1) (local.get $p2))))
 
 ;; --- Builtin dispatch ---
+;; O(1) br_table dispatch for ALL builtins including term inspection
+;; (functor/3, arg/3, =../2, copy_term/2 at IDs 18-21). Earlier
+;; versions routed 18-21 through a linear if-chain AFTER the br_table
+;; default — correct but O(k) in the number of term builtins, and
+;; on the hot path for any predicate that uses them. Folding them
+;; into the br_table makes every builtin call one compare (the
+;; br_table bounds check) and one indirect branch regardless of
+;; which builtin is selected.
 (func $execute_builtin (param $id i32) (param $arity i32) (result i32)
   (block $default
+    (block $copy_term (block $univ (block $arg (block $functor
     (block $cut (block $fail (block $true_b
     (block $arith_ge (block $arith_le (block $arith_gt (block $arith_lt
     (block $arith_ne (block $arith_eq (block $is
     (block $nl (block $write
       (br_table $write $nl $is $arith_eq $arith_ne $arith_lt $arith_gt $arith_le $arith_ge
                 $default $default $default $default $default $default
-                $true_b $fail $cut $default (local.get $id))
+                $true_b $fail $cut
+                $functor $arg $univ $copy_term
+                $default (local.get $id))
     ) ;; write
     (call $print_i64 (call $get_reg_payload (i32.const 0)))
     (return (i32.const 1))
@@ -1057,18 +1068,16 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     ) ;; cut
     (call $set_cp_count (i32.const 0))
     (return (i32.const 1))
+    ) ;; functor/3 (ID 18)
+    (return (call $builtin_functor))
+    ) ;; arg/3 (ID 19)
+    (return (call $builtin_arg))
+    ) ;; =../2 (ID 20)
+    (return (call $builtin_univ))
+    ) ;; copy_term/2 (ID 21)
+    (return (call $builtin_copy_term))
   )
-  ;; --- Term inspection builtins (IDs 18-21) ---
-  ;; Handled via a short if-chain after the main br_table default.
-  ;; These are not hot paths, so the extra compares are negligible.
-  (if (i32.eq (local.get $id) (i32.const 18))
-    (then (return (call $builtin_functor))))
-  (if (i32.eq (local.get $id) (i32.const 19))
-    (then (return (call $builtin_arg))))
-  (if (i32.eq (local.get $id) (i32.const 20))
-    (then (return (call $builtin_univ))))
-  (if (i32.eq (local.get $id) (i32.const 21))
-    (then (return (call $builtin_copy_term))))
+  ;; $default fall-through: unknown builtin ID
   (i32.const 0)
 )
 

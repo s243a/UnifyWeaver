@@ -188,9 +188,12 @@ test(arg_helper_generated) :-
     wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
     %% The $builtin_arg function must be emitted
     assertion(sub_string(HelpersCode, _, _, _, "$builtin_arg")),
-    %% It must be reachable from $execute_builtin's dispatch — the
-    %% if-chain checks id == 19 and calls $builtin_arg.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 19)")),
+    %% It must be reachable from $execute_builtin''s O(1) br_table
+    %% dispatch — Phase 6 moved term builtins from a linear if-chain
+    %% into the main br_table. The $arg label must appear inside the
+    %% table and a (block $arg ...) must wrap its handler.
+    assertion(sub_string(HelpersCode, _, _, _, "$arg $univ")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $arg")),
     %% Sanity: the helper body should reference the arity-extraction
     %% shift (high 32 bits of compound payload).
     assertion(sub_string(HelpersCode, _, _, _, "i64.shr_u")).
@@ -216,8 +219,10 @@ test(functor_helper_generated) :-
     %% Both modes: construct branch uses i64.shl to pack arity,
     %% read branch uses i64.shr_u to extract it.
     assertion(sub_string(HelpersCode, _, _, _, "i64.shl")),
-    %% Dispatch: if-chain checks id == 18 for functor/3.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 18)")).
+    %% Dispatch: $functor label present in the main br_table and
+    %% wrapped by a (block $functor ...) after the optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$functor $arg")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $functor")).
 
 test(functor_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('functor/3', 3), [], Hex),
@@ -238,8 +243,10 @@ test(univ_helper_generated) :-
     %% The empty-list atom hash literal 2914 must appear as the nil
     %% terminator in the decompose-mode build path.
     assertion(sub_string(HelpersCode, _, _, _, "2914")),
-    %% Dispatch: if-chain checks id == 20.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 20)")).
+    %% Dispatch: $univ label present in the main br_table after the
+    %% Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $univ")).
 
 test(univ_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('=../2', 2), [], Hex),
@@ -258,8 +265,10 @@ test(copy_term_helper_generated) :-
     assertion(sub_string(HelpersCode, _, _, _, "$builtin_copy_term")),
     %% Sharing-preservation var map is referenced explicitly.
     assertion(sub_string(HelpersCode, _, _, _, "var map")),
-    %% Dispatch: if-chain checks id == 21.
-    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 21)")).
+    %% Dispatch: $copy_term label present in the main br_table and
+    %% wrapped by its own block after the Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $copy_term")).
 
 test(copy_term_builtin_call_encoding) :-
     wam_instruction_to_wat_bytes(builtin_call('copy_term/2', 2), [], Hex),
