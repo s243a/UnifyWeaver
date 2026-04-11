@@ -226,6 +226,28 @@ test(functor_builtin_call_encoding) :-
     sub_atom(Hex, 12, 3, _, FirstOp1Byte),
     assertion(FirstOp1Byte == '\\12').
 
+%% --- Phase 2.3: =../2 (univ) codegen ---
+
+test(univ_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('=../2', 20)).
+
+test(univ_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_univ")),
+    %% Cons cells use tag=4 (list) to match put_list''s runtime layout.
+    %% The empty-list atom hash literal 2914 must appear as the nil
+    %% terminator in the decompose-mode build path.
+    assertion(sub_string(HelpersCode, _, _, _, "2914")),
+    %% Dispatch: if-chain checks id == 20.
+    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 20)")).
+
+test(univ_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('=../2', 2), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 20 = 0x14
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\14').
+
 %% --- Predicate compilation ---
 
 test(compile_simple_predicate) :-
@@ -345,6 +367,37 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
         number_string(Result, RS)
     ->  true
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
+    ).
+
+test(functional_univ_decompose_compound, [condition(tool_available(wat2wasm)),
+                                            condition(tool_available(node))]) :-
+    %% End-to-end: bar(a, b) =.. L should succeed (L is a fresh var on
+    %% first use so decompose mode just builds a fresh cons list and
+    %% binds L). We do not try to unify L with a pre-built list here —
+    %% v1 decompose mode does not structurally unify a bound A2; that
+    %% path is deferred. The test exercises the entire pipeline:
+    %% canonical WAM → builtin_call =../2 → $builtin_univ → cons-list
+    %% construction on the heap → success return.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_univ_~w.wat', [T]),
+    assertz(user:test_func_univ :- (bar(a, b) =.. _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_univ/0],
+                                  [module_name(func_univ_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_univ_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(univ_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_univ),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
     ).
 
 test(functional_true_succeeds, [condition(tool_available(wat2wasm)),
