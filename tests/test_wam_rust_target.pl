@@ -621,6 +621,27 @@ test_foreign_wrapper_stage_plan_ir :-
     ;   fail_test(Test, 'Foreign wrapper stage plan did not separate compute/filter stages')
     ).
 
+test_foreign_stream_stage_traversal_ir :-
+    Test = 'WAM-Rust: foreign stream wrapper stage emitter renders joined traversal',
+    Head =.. [bucketed_adjusted_weighted_path, Start, Bucket, Adjusted],
+    Body = ( weighted_path(Start, Target, Cost),
+             target_label(Target, Label),
+             label_bucket(Label, Bucket),
+             Cost > 2,
+             Adjusted is Cost + 1 ),
+    (   rust_target:rust_foreign_stream_wrapper_plan(bucketed_adjusted_weighted_path, 3, Head, Body,
+            foreign_wrapper_plan(_, JoinPreds, GoalArgs, Adjusted, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Adjusted, StagePlan),
+        rust_target:rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
+            stream, StagePlan, TraversalCode),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::Str("__tuple__".to_string(), vec![')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign stream stage traversal did not render expected joined traversal')
+    ).
+
 test_foreign_aggregate_wrapper_plan_ir :-
     Test = 'WAM-Rust: foreign aggregate wrapper plan normalizes scalar and grouped terminals',
     ScalarHead =.. [bucketed_min_semantic_dist, Start, Bucket, MinDist],
@@ -1477,6 +1498,7 @@ run_tests :-
     test_recursive_kernel_registry,
     test_foreign_stream_wrapper_plan_ir,
     test_foreign_wrapper_stage_plan_ir,
+    test_foreign_stream_stage_traversal_ir,
     test_foreign_aggregate_wrapper_plan_ir,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
