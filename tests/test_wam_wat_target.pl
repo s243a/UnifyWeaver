@@ -248,6 +248,26 @@ test(univ_builtin_call_encoding) :-
     sub_atom(Hex, 12, 3, _, FirstOp1Byte),
     assertion(FirstOp1Byte == '\\14').
 
+%% --- Phase 2.4: copy_term/2 codegen ---
+
+test(copy_term_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('copy_term/2', 21)).
+
+test(copy_term_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_copy_term")),
+    %% Sharing-preservation var map is referenced explicitly.
+    assertion(sub_string(HelpersCode, _, _, _, "var map")),
+    %% Dispatch: if-chain checks id == 21.
+    assertion(sub_string(HelpersCode, _, _, _, "(i32.const 21)")).
+
+test(copy_term_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('copy_term/2', 2), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 21 = 0x15
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\15').
+
 %% --- Predicate compilation ---
 
 test(compile_simple_predicate) :-
@@ -367,6 +387,35 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
         number_string(Result, RS)
     ->  true
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
+    ).
+
+test(functional_copy_term_compound, [condition(tool_available(wat2wasm)),
+                                       condition(tool_available(node))]) :-
+    %% End-to-end: copy_term(foo(a, b), _) should succeed. The source
+    %% compound has only atomic args, so the sharing-preservation path
+    %% is not exercised here — that is covered by codegen assertions
+    %% only in v1. The test validates that the dispatch + in-place
+    %% compound copy + trail binding path all run to completion.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_~w.wat', [T]),
+    assertz(user:test_func_copy :- copy_term(foo(a, b), _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_copy/0],
+                                  [module_name(func_copy_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_copy_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(copy_term_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_copy),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
     ).
 
 test(functional_univ_decompose_compound, [condition(tool_available(wat2wasm)),

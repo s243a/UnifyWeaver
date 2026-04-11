@@ -1067,6 +1067,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (then (return (call $builtin_arg))))
   (if (i32.eq (local.get $id) (i32.const 20))
     (then (return (call $builtin_univ))))
+  (if (i32.eq (local.get $id) (i32.const 21))
+    (then (return (call $builtin_copy_term))))
   (i32.const 0)
 )
 
@@ -1446,6 +1448,171 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (call $set_reg (i32.const 0) (i32.const 5)
         (i64.extend_i32_u (local.get $comp_addr)))
       (return (i32.const 1))))
+  (i32.const 0)
+)
+
+;; --- copy_term/2: A1 = T, A2 = Copy ---
+;; Builds a structurally identical copy of T in which every unbound
+;; variable has been replaced by a fresh unbound. Sharing is preserved
+;; within the copy: two positions that share a source variable map to
+;; the SAME fresh variable in the copy (the spec''s critical property
+;; for copy_term/2).
+;;
+;; v1 scope:
+;;   - Atomic T (atom/integer/float): bind Copy = T verbatim.
+;;   - Unbound T: allocate a fresh unbound on the heap and bind Copy
+;;     to a ref to it.
+;;   - Ref to compound T: SHALLOW copy with sharing preserved. The new
+;;     compound header is copied, and each argument cell is either
+;;     copied verbatim (non-unbound) or materialized as a fresh
+;;     unbound / ref-to-shared-unbound.
+;;   - Nested compounds inside the args are NOT deep-copied — they are
+;;     structure-shared with the source. This is a documented v1
+;;     limitation; a follow-up would use a work stack.
+;;   - Lists (tag=4) are not handled in v1.
+;;
+;; Sharing preservation algorithm:
+;;   - Maintain a small var map keyed on the source unbound''s payload
+;;     (the variable id), valued at the heap address where the fresh
+;;     cell for that variable was materialized.
+;;   - First occurrence of variable V: push a tag=6 cell in-place in
+;;     the next arg slot. Record (src_payload, that addr) in the map.
+;;     The arg slot IS the fresh variable.
+;;   - Subsequent occurrences: look up V in the map, push a tag=5 ref
+;;     cell whose payload is the recorded addr. Dereffing the arg
+;;     reaches the first occurrence''s cell — the two slots share.
+;;
+;; Var map layout: 256 bytes allocated at heap_top before the copy
+;; starts, consumed but never reclaimed (each call wastes 256 heap
+;; bytes — acceptable for v1 test scale). Each entry is 12 bytes:
+;; [key:i64 source_payload][new_offset:i32]. 21 entries max.
+(func $builtin_copy_term (result i32)
+  (local $t_tag i32)
+  (local $t_payload i64)
+  (local $src_addr i32)
+  (local $dst_addr i32)
+  (local $header_payload i64)
+  (local $arity i32)
+  (local $i i32)
+  (local $j i32)
+  (local $arg_src i32)
+  (local $arg_tag i32)
+  (local $arg_payload i64)
+  (local $map_base i32)
+  (local $map_n i32)
+  (local $map_limit i32)
+  (local $entry_off i32)
+  (local $found i32)
+  (local $found_off i32)
+  (local $new_cell i32)
+  (local.set $t_tag (call $get_reg_tag (i32.const 0)))
+  (local.set $t_payload (call $get_reg_payload (i32.const 0)))
+  ;; --- Atomic T ---
+  (if (i32.le_u (local.get $t_tag) (i32.const 2))
+    (then
+      (call $trail_binding (i32.const 1))
+      (call $set_reg (i32.const 1) (local.get $t_tag) (local.get $t_payload))
+      (return (i32.const 1))))
+  ;; --- Unbound T ---
+  (if (i32.eq (local.get $t_tag) (i32.const 6))
+    (then
+      (local.set $new_cell
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      (call $trail_binding (i32.const 1))
+      (call $set_reg (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $new_cell)))
+      (return (i32.const 1))))
+  ;; --- Ref to compound T ---
+  (if (i32.eq (local.get $t_tag) (i32.const 5))
+    (then
+      (local.set $src_addr (i32.wrap_i64 (local.get $t_payload)))
+      (if (i32.eq (call $val_tag (local.get $src_addr)) (i32.const 3))
+        (then
+          (local.set $header_payload
+            (call $val_payload (local.get $src_addr)))
+          (local.set $arity
+            (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
+          ;; Reserve var map: 256 bytes (21 entries x 12 bytes), not
+          ;; reclaimed. The fresh compound header will sit right after
+          ;; the map area.
+          (local.set $map_base (call $get_heap_top))
+          (call $set_heap_top
+            (i32.add (local.get $map_base) (i32.const 256)))
+          (local.set $map_n (i32.const 0))
+          (local.set $map_limit (i32.const 21))
+          ;; Allocate fresh compound header (header payload carries the
+          ;; arity-packed functor, same as the source).
+          (local.set $dst_addr
+            (call $heap_push_val (i32.const 3) (local.get $header_payload)))
+          ;; Walk source args i=1..arity and materialize each dst arg.
+          (local.set $i (i32.const 1))
+          (block $done_args
+            (loop $arg_loop
+              (br_if $done_args (i32.gt_s (local.get $i) (local.get $arity)))
+              (local.set $arg_src
+                (i32.add (local.get $src_addr)
+                         (i32.mul (local.get $i) (i32.const 12))))
+              (local.set $arg_tag (call $val_tag (local.get $arg_src)))
+              (local.set $arg_payload (call $val_payload (local.get $arg_src)))
+              (if (i32.eq (local.get $arg_tag) (i32.const 6))
+                (then
+                  ;; Unbound source arg — search the var map.
+                  (local.set $found (i32.const 0))
+                  (local.set $found_off (i32.const 0))
+                  (local.set $j (i32.const 0))
+                  (block $search_done
+                    (loop $search
+                      (br_if $search_done
+                        (i32.ge_u (local.get $j) (local.get $map_n)))
+                      (local.set $entry_off
+                        (i32.add (local.get $map_base)
+                                 (i32.mul (local.get $j) (i32.const 12))))
+                      (if (i64.eq (i64.load (local.get $entry_off))
+                                  (local.get $arg_payload))
+                        (then
+                          (local.set $found_off
+                            (i32.load
+                              (i32.add (local.get $entry_off) (i32.const 8))))
+                          (local.set $found (i32.const 1))
+                          (br $search_done)))
+                      (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                      (br $search)))
+                  (if (local.get $found)
+                    (then
+                      ;; Subsequent occurrence: push ref to existing cell.
+                      (drop (call $heap_push_val (i32.const 5)
+                              (i64.extend_i32_u (local.get $found_off)))))
+                    (else
+                      ;; First occurrence: materialize in-place as an
+                      ;; unbound cell. heap_push_val returns this arg
+                      ;; slot''s addr, which becomes the map value for
+                      ;; future occurrences of the same source var.
+                      (local.set $new_cell
+                        (call $heap_push_val (i32.const 6) (i64.const 0)))
+                      (if (i32.lt_u (local.get $map_n) (local.get $map_limit))
+                        (then
+                          (local.set $entry_off
+                            (i32.add (local.get $map_base)
+                                     (i32.mul (local.get $map_n) (i32.const 12))))
+                          (i64.store (local.get $entry_off)
+                                     (local.get $arg_payload))
+                          (i32.store
+                            (i32.add (local.get $entry_off) (i32.const 8))
+                            (local.get $new_cell))
+                          (local.set $map_n
+                            (i32.add (local.get $map_n) (i32.const 1))))))))
+                (else
+                  ;; Non-unbound: copy tag/payload verbatim (v1: no
+                  ;; deep copy of nested compounds).
+                  (drop (call $heap_push_val
+                          (local.get $arg_tag)
+                          (local.get $arg_payload)))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $arg_loop)))
+          (call $trail_binding (i32.const 1))
+          (call $set_reg (i32.const 1) (i32.const 5)
+            (i64.extend_i32_u (local.get $dst_addr)))
+          (return (i32.const 1))))))
   (i32.const 0)
 )
 ', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
