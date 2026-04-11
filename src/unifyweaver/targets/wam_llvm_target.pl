@@ -121,6 +121,118 @@ assert_foreign_entry(_) :- true.  % ignore unrecognized shapes
 foreign_kernel(PredArity, Kind, Config) :-
     assertz(llvm_foreign_kernel_spec(PredArity, Kind, Config)).
 
+% ============================================================================
+% M5.6c — Automatic Foreign Kernel Detection
+% ============================================================================
+%
+% When `foreign_lowering(true)` is set in Options, the compile pipeline
+% walks each user predicate's clauses and runs them against a registry
+% of detectors. A detector is a predicate that returns a
+% `recursive_kernel(Kind, Pred/Arity, Config)` term when the clauses
+% match a known recursive-kernel shape. The matched spec is then
+% asserted into the same llvm_foreign_kernel_spec/3 table that paths
+% (a) and (b) populate, so there's only one downstream code path.
+%
+% This mirrors the Rust target's rust_recursive_kernel_detector/2
+% registry at rust_target.pl:3742-3751 and the matcher predicates at
+% rust_target.pl:3968-3988. Currently only transitive_distance3 is
+% implemented; weighted_shortest_path3 and astar_shortest_path4 can
+% be added by porting the same matcher structure once their
+% dispatcher stubs are wired (the M5.5 weak-default pattern only
+% covers td3 so far).
+
+%% llvm_recursive_kernel_detector(?Kind, ?DetectorPredicate).
+%
+%  Registry of kernel kinds and the predicates that can detect them.
+%  DetectorPredicate(+Pred, +Arity, +Clauses, -RecKernel) should bind
+%  RecKernel to a `recursive_kernel(Kind, Pred/Arity, Config)` term
+%  on success.
+llvm_recursive_kernel_detector(transitive_distance3,
+    llvm_recursive_kernel_transitive_distance).
+
+%% llvm_recursive_kernel_transitive_distance(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the transitive_distance3 shape:
+%    pred(Start, Target, 1)     :- edge(Start, Target).
+%    pred(Start, Target, Depth) :-
+%        edge(Start, Mid),
+%        pred(Mid, Target, PrevDepth),
+%        Depth is PrevDepth + 1.
+%
+%  On success binds RecKernel to
+%    recursive_kernel(transitive_distance3, Pred/Arity,
+%                     [edge_pred(EdgePred/2)]).
+llvm_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
+        recursive_kernel(transitive_distance3, Pred/Arity,
+            [edge_pred(EdgePred/2)])) :-
+    llvm_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred).
+
+%% llvm_foreign_lowerable_transitive_distance(+Pred, +Arity, +Clauses, -EdgePred).
+%
+%  Clause-shape matcher ported from rust_target.pl:3968. The only
+%  difference from the Rust version is that we do not gather the
+%  fact pairs here — the M5.6a build_td3_concrete_impl/6 helper
+%  reads them from the user module at codegen time, so the matcher
+%  just needs to confirm the EdgePred name and arity.
+llvm_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget, 1],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDepth],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecBody = (EdgeGoal, (RecGoal, IsGoal)),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
+    IsGoal =.. [is, RecDepth, Expr],
+    Expr =.. [+, PrevDepth, 1].
+
+%% llvm_auto_detect_foreign_kernels(+Predicates) is det.
+%
+%  For each predicate indicator in the list, read its clauses from
+%  the user module and run them against every registered detector.
+%  When a detector matches, assert a llvm_foreign_kernel_spec/3 fact
+%  for the result. Idempotent — if a spec already exists for the
+%  predicate (e.g., from the options-list path), the auto-detect
+%  skips it to avoid duplicate registration.
+llvm_auto_detect_foreign_kernels([]).
+llvm_auto_detect_foreign_kernels([PredIndicator|Rest]) :-
+    ( PredIndicator = Module:Pred/Arity -> true
+    ; PredIndicator = Pred/Arity, Module = user
+    ),
+    ( lookup_foreign_kernel_spec(Pred, Arity, _, _)
+    -> true   % already registered via (a) or (b); don't override
+    ;  llvm_collect_clause_pairs(Module, Pred, Arity, Clauses),
+       ( llvm_try_detectors(Pred, Arity, Clauses, Kind, Config)
+       -> assertz(llvm_foreign_kernel_spec(Pred/Arity, Kind, Config))
+       ;  true
+       )
+    ),
+    llvm_auto_detect_foreign_kernels(Rest).
+
+%% llvm_collect_clause_pairs(+Module, +Pred, +Arity, -Pairs) is det.
+%
+%  Gather (Head - Body) pairs for every clause of Module:Pred/Arity.
+%  Catch + default to empty list so predicates with no clauses (or
+%  predicates that are opaque to clause/2) don't blow up the compile.
+llvm_collect_clause_pairs(Module, Pred, Arity, Pairs) :-
+    catch(
+        findall(Head-Body,
+            ( functor(Head, Pred, Arity),
+              clause(Module:Head, Body)
+            ),
+            Pairs),
+        _, Pairs = []).
+
+%% llvm_try_detectors(+Pred, +Arity, +Clauses, -Kind, -Config) is semidet.
+%
+%  Iterate the detector registry and return the first match.
+llvm_try_detectors(Pred, Arity, Clauses, Kind, Config) :-
+    llvm_recursive_kernel_detector(Kind, DetectorName),
+    Goal =.. [DetectorName, Pred, Arity, Clauses, Result],
+    call(Goal),
+    Result = recursive_kernel(Kind, _, Config),
+    !.
+
 %% lookup_foreign_kernel_spec(+Pred, +Arity, -Kind, -Config) is semidet.
 %
 %  Succeeds iff a spec is registered for the given predicate. Strips
@@ -303,10 +415,15 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
 
-    % M5.6: populate the foreign kernel spec table from the options list.
-    % Path (a) directives have already run by the time we get here; (c)
-    % auto-detection runs later. This call handles (b).
+    % M5.6: populate the foreign kernel spec table.
+    % Path (a) directives have already run by load time. Path (b) is
+    % the options-list form; path (c) walks clause shapes when
+    % foreign_lowering(true) is set.
     apply_foreign_predicates_option(Options),
+    ( option(foreign_lowering(true), Options)
+    -> llvm_auto_detect_foreign_kernels(Predicates)
+    ;  true
+    ),
 
     % Read and render type definitions template
     read_template_file('templates/targets/llvm_wam/types.ll.mustache', TypesTemplate),
