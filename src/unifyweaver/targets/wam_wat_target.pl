@@ -45,9 +45,12 @@ wam_heap_base(131072).    % page 2
 % Register and choice point geometry (derived from register count)
 wam_num_regs(64).
 wam_val_size(12).         % bytes per tagged value
-%% wam_cp_size = 16 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top)
-%%             + num_regs * val_size
-wam_cp_size(Size) :- wam_num_regs(N), wam_val_size(V), Size is 16 + N * V.
+%% wam_cp_size = 20 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top
+%%               + saved_env_base) + 32 A/X regs * val_size.
+%% Only A/X registers (indices 0-31) are saved in choice points. Y registers
+%% (indices 32-63) live in environment frames on the stack and are managed by
+%% allocate/deallocate, not by choice points.
+wam_cp_size(Size) :- wam_val_size(V), Size is 20 + 32 * V.
 
 % Tag constants
 tag_atom(0).
@@ -120,13 +123,23 @@ builtin_id('=/2',         22).
 
 %% reg_name_to_index(+Name, -Index)
 %  A1-A32 -> 0-31, X1-X32 -> 32-63, Y1-Y32 -> 32-63 (share X space)
+%% Register index mapping:
+%%   A1-A32 → 0-31   (argument registers, in register file)
+%%   X1-X32 → 32-63  (temporaries, in register file)
+%%   Y1-Y32 → 64-95  (permanent variables, in environment frame on stack)
+%% Y indices are in a SEPARATE range (64+) from X (32+) so that
+%% $reg_offset can route them to different storage: register file for
+%% A/X, environment frame for Y. Prior to this fix, X and Y shared
+%% the same index range (both N+31), causing runtime collisions when
+%% a callee's Y registers stomped the caller's Y registers via the
+%% global register file.
 reg_name_to_index(Name, Index) :-
     atom_string(Name, Str),
     string_codes(Str, [Prefix|Rest]),
     number_codes(N, Rest),
     (   Prefix =:= 0'A -> Index is N - 1
     ;   Prefix =:= 0'X -> Index is N + 31
-    ;   Prefix =:= 0'Y -> Index is N + 31
+    ;   Prefix =:= 0'Y -> Index is N + 63
     ;   Index = 0
     ).
 
@@ -826,20 +839,34 @@ wam_wat_case(set_constant,
 % --- Control flow ---
 
 wam_wat_case(allocate,
-'  ;; Push environment frame: save CP on stack
+'  ;; Push a new environment frame on the stack. Y registers live
+  ;; inside this frame (accessed via $env_base in $reg_offset), so
+  ;; each call level gets its own Y storage and there is no need to
+  ;; save/restore Y explicitly — the frame IS the Y storage.
+  ;; Frame: [prev_env_base:i32 +0][CP:i32 +4][32 Y slots: 384 bytes +8] = 392 bytes.
   (local $soff i32)
   (local.set $soff (call $get_stack_top))
-  (i32.store (local.get $soff) (call $get_cp))
-  (call $set_stack_top (i32.add (local.get $soff) (i32.const 4)))
+  ;; Save previous env_base and CP
+  (i32.store (local.get $soff) (global.get $env_base))
+  (i32.store (i32.add (local.get $soff) (i32.const 4)) (call $get_cp))
+  ;; This frame becomes the current environment
+  (global.set $env_base (local.get $soff))
+  (call $set_stack_top (i32.add (local.get $soff) (i32.const 392)))
   (call $inc_pc)
   (i32.const 1)').
 
 wam_wat_case(deallocate,
-'  ;; Pop environment frame: restore CP
-  (local $soff i32)
-  (local.set $soff (i32.sub (call $get_stack_top) (i32.const 4)))
-  (call $set_cp (i32.load (local.get $soff)))
-  (call $set_stack_top (local.get $soff))
+'  ;; Pop the current environment frame. Restores $env_base to the
+  ;; previous frame and CP from the frame header. The Y slots in the
+  ;; popped frame become dead (stack_top moves back).
+  (local $frame i32)
+  (local.set $frame (global.get $env_base))
+  ;; Restore CP from the frame
+  (call $set_cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  ;; Restore previous env_base
+  (global.set $env_base (i32.load (local.get $frame)))
+  ;; Pop the frame
+  (call $set_stack_top (local.get $frame))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -957,7 +984,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   ;; pushed — standard WAM behavior that prevents stale Ref cells in
   ;; restored registers from pointing to garbage on the heap).
   (call $set_heap_top (call $cp_get_saved_heap_top))
-  ;; Restore registers from choice point
+  ;; Restore env_base (so Y register access via $reg_offset goes to
+  ;; the correct environment frame on the stack).
+  (global.set $env_base (call $cp_get_saved_env_base))
+  ;; Restore A/X registers from choice point (Y registers are in the
+  ;; environment frame and do not need separate CP save/restore).
   (call $cp_restore_regs)
   ;; Restore state
   (call $set_pc (local.get $next_pc))
@@ -996,7 +1027,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 
 ;; --- Choice point management ---
 ;; Choice points stored in a dedicated area starting at offset 98304 (page 1.5)
-;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][~w regs: ~w bytes +16] = ~w bytes
+;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][env_base:i32 +16][32 A/X regs: 384 bytes +20] = ~w bytes
 
 (func $cp_base_offset (result i32) (i32.const 98304))
 
@@ -1007,18 +1038,21 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $n i32) (local $off i32) (local $i i32)
   (local.set $n (call $get_cp_count))
   (local.set $off (call $cp_offset (local.get $n)))
-  ;; Save next_pc, trail mark, CP, heap_top
+  ;; Save next_pc, trail mark, CP, heap_top, env_base
   (i32.store (local.get $off) (local.get $next_pc))
   (i32.store (i32.add (local.get $off) (i32.const 4)) (call $get_trail_top))
   (i32.store (i32.add (local.get $off) (i32.const 8)) (call $get_cp))
   (i32.store (i32.add (local.get $off) (i32.const 12)) (call $get_heap_top))
-  ;; Save all 64 registers (64 x 12 = 768 bytes) starting at +16
+  (i32.store (i32.add (local.get $off) (i32.const 16)) (global.get $env_base))
+  ;; Save A/X registers only (indices 0-31, 32 x 12 = 384 bytes) at +20.
+  ;; Y registers are in environment frames on the stack and are NOT
+  ;; saved here — they are managed by allocate/deallocate.
   (local.set $i (i32.const 0))
   (block $done
     (loop $save
-      (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 32)))
       (call $copy_from_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 16))
+        (i32.add (i32.add (local.get $off) (i32.const 20))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $save)))
@@ -1053,6 +1087,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
   (i32.load (i32.add (local.get $off) (i32.const 12))))
 
+(func $cp_get_saved_env_base (result i32)
+  (local $off i32)
+  (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
+  (i32.load (i32.add (local.get $off) (i32.const 16))))
+
 (func $cp_restore_regs
   (local $off i32) (local $i i32)
   (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
@@ -1061,12 +1100,10 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (loop $restore
       (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_to_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 16))
+        (i32.add (i32.add (local.get $off) (i32.const 20))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $restore)))
-  ;; Pop the choice point
-  (call $pop_choice_point_no_restore))
+      (br $restore))))
 
 ;; --- Unification ---
 ;; Unify two registers. Follows Ref chains via $deref_reg_addr so
@@ -1920,7 +1957,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (return (i32.const 1))))
   (i32.const 0)
 )
-', [CPSize, NumRegs, NumRegs, RegBytes, CPSize, CPSize, NumRegs, NumRegs]).
+', [CPSize, 32, CPSize, CPSize, 32]).
 
 %% compile_wam_runtime_to_wat(+Options, -WatCode)
 compile_wam_runtime_to_wat(Options, WatCode) :-

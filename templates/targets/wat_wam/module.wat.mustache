@@ -14,6 +14,11 @@
   ;; Arithmetic evaluation success flag for $eval_arith.
   (global $arith_ok (mut i32) (i32.const 0))
 
+  ;; Current environment frame base (set by allocate, restored by
+  ;; deallocate). Y registers (indices 32+) are stored in the
+  ;; environment frame on the stack, not in the global register file.
+  (global $env_base (mut i32) (i32.const 0))
+
   ;; === Data segments: instruction arrays ===
   {{data_segments}}
 

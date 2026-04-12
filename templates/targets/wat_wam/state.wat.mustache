@@ -150,11 +150,30 @@
 (func $set_mode (param $m i32)
   (i32.store (i32.const 65564) (local.get $m)))
 
-;; --- Register file (base at 65536 + 64 = 65600, 64 regs x 12 bytes) ---
-;; A1-A32 = indices 0-31, X1-X32 = indices 32-63
+;; --- Register file ---
+;; A1-A32 (indices 0-31) and X temporaries live in the fixed register
+;; file at 65600. Y registers (indices 32-63) live in the current
+;; environment frame on the stack, accessed via the $env_base global
+;; set by allocate. This ensures each predicate invocation has its
+;; own Y storage, so a callee's Y writes don't stomp the caller's
+;; permanent variables.
+;;
+;; Frame layout (set by allocate, popped by deallocate):
+;;   +0: prev_env_base (i32)
+;;   +4: saved CP (i32)
+;;   +8: Y1 slot (12 bytes), +20: Y2 slot, ..., +8+(N-1)*12: YN
+;; Total: 8 + 32*12 = 392 bytes per frame.
 
 (func $reg_offset (param $idx i32) (result i32)
-  (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))
+  (if (result i32) (i32.ge_u (local.get $idx) (i32.const 64))
+    (then
+      ;; Y register (index 64+): slot in current environment frame.
+      ;; Y_n has index n+63, so frame slot = (idx - 64) * 12 + 8.
+      (i32.add (i32.add (global.get $env_base) (i32.const 8))
+               (i32.mul (i32.sub (local.get $idx) (i32.const 64)) (i32.const 12))))
+    (else
+      ;; A/X register (index 0-63): slot in fixed register file.
+      (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))))
 
 (func $get_reg_tag (param $idx i32) (result i32)
   (i32.load (call $reg_offset (local.get $idx))))
