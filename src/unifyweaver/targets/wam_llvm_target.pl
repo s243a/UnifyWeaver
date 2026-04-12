@@ -147,6 +147,8 @@ foreign_kernel(PredArity, Kind, Config) :-
 %  DetectorPredicate(+Pred, +Arity, +Clauses, -RecKernel) should bind
 %  RecKernel to a `recursive_kernel(Kind, Pred/Arity, Config)` term
 %  on success.
+llvm_recursive_kernel_detector(countdown_sum2,
+    llvm_recursive_kernel_countdown_sum).
 llvm_recursive_kernel_detector(transitive_closure2,
     llvm_recursive_kernel_transitive_closure).
 llvm_recursive_kernel_detector(transitive_distance3,
@@ -170,6 +172,31 @@ llvm_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
         recursive_kernel(transitive_distance3, Pred/Arity,
             [edge_pred(EdgePred/2)])) :-
     llvm_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred).
+
+%% llvm_recursive_kernel_countdown_sum(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the countdown_sum2 clause shape:
+%    pred(0, 0).
+%    pred(N, Sum) :- N > 0, N1 is N - 1, pred(N1, PrevSum), Sum is PrevSum + N.
+llvm_recursive_kernel_countdown_sum(Pred, Arity, Clauses,
+        recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
+    llvm_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
+
+%% llvm_foreign_lowerable_countdown_sum(+Pred, +Arity, +Clauses).
+%
+%  Ported from rust_target.pl:3902. Matches the countdown-sum recurrence.
+llvm_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, 0, 0],
+    RecHead =.. [Pred, N, Sum],
+    RecBody = (GtGoal, (StepGoal, (RecGoal, SumGoal))),
+    GtGoal =.. [>, N, 0],
+    StepGoal =.. [is, PrevN, StepExpr],
+    ( StepExpr =.. [-, N, 1] ; StepExpr =.. [+, N, -1] ),
+    RecGoal =.. [Pred, PrevN, PrevSum],
+    SumGoal =.. [is, Sum, SumExpr],
+    SumExpr =.. [+, PrevSum, N].
 
 %% llvm_recursive_kernel_transitive_closure(+Pred, +Arity, +Clauses, -RecKernel).
 %
@@ -333,14 +360,23 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
     ;  build_td3_instance_switch(Td3Entries, Td3ImplBody, Td3Tables),
        replace_td3_weak_default(StateFuncsRaw, Td3ImplBody, StateFuncs0)
     ),
+    % cds2 pass — countdown_sum2 (deterministic arithmetic).
+    findall(CdsPredArity-CdsConfig,
+        llvm_foreign_kernel_spec(CdsPredArity, countdown_sum2, CdsConfig),
+        Cds2Entries),
+    ( Cds2Entries == []
+    -> StateFuncsCds = StateFuncs0, Cds2Tables = ''
+    ;  build_cds2_instance_switch(Cds2Entries, Cds2ImplBody, Cds2Tables),
+       replace_cds2_weak_default(StateFuncs0, Cds2ImplBody, StateFuncsCds)
+    ),
     % tc2 pass — transitive_closure2 (boolean reachability).
     findall(TcPredArity-TcConfig,
         llvm_foreign_kernel_spec(TcPredArity, transitive_closure2, TcConfig),
         Tc2Entries),
     ( Tc2Entries == []
-    -> StateFuncsTc = StateFuncs0, Tc2Tables = ''
+    -> StateFuncsTc = StateFuncsCds, Tc2Tables = ''
     ;  build_tc2_instance_switch(Tc2Entries, Tc2ImplBody, Tc2Tables),
-       replace_tc2_weak_default(StateFuncs0, Tc2ImplBody, StateFuncsTc)
+       replace_tc2_weak_default(StateFuncsCds, Tc2ImplBody, StateFuncsTc)
     ),
     % wsp3 pass — mirror of the td3 pass but for weighted_shortest_path3.
     findall(WspPredArity-WspConfig,
@@ -361,11 +397,11 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
        replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
     ),
     % Concatenate the per-kind global tables into one Globals blob.
-    ( Td3Tables == '', Tc2Tables == '', Wsp3Tables == '', Astar4Tables == ''
+    ( Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Wsp3Tables == '', Astar4Tables == ''
     -> Globals = ''
     ;  atomic_list_concat([
            '; === foreign kernel support globals ===\n',
-           Tc2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
+           Cds2Tables, '\n', Tc2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
        ], Globals)
     ).
 
@@ -454,6 +490,50 @@ build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) 
     llvm_emit_atom_fact2_table(TableName, Pairs, TableIR),
     length(Pairs, Len),
     ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
+
+%% build_cds2_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  countdown_sum2 is pure arithmetic — no per-instance tables. Every
+%  case calls the same @wam_cds2_run helper. TablesIR is always ''.
+build_cds2_instance_switch(Entries, ImplBody, '') :-
+    build_cds2_instance_parts(Entries, 0, SwitchCases, CaseBodies),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    format(atom(ImplBody),
+'define i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %cds_bail [
+~w
+  ]
+
+~w
+
+cds_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_cds2_instance_parts([], _, [], []).
+build_cds2_instance_parts([_PredArity-_Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies]) :-
+    format(atom(SwitchCase), '    i32 ~w, label %cds_inst_~w', [Index, Index]),
+    format(atom(Body),
+'cds_inst_~w:
+  %cds_r_~w = call i1 @wam_cds2_run(%WamState* %vm)
+  ret i1 %cds_r_~w',
+        [Index, Index, Index]),
+    NextIndex is Index + 1,
+    build_cds2_instance_parts(Rest, NextIndex, RestCases, RestBodies).
+
+%% replace_cds2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_cds2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: could not find cds2 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
 
 %% build_tc2_instance_switch(+Entries, -ImplBody, -TablesIR).
 %
