@@ -10007,8 +10007,9 @@ test_rust_pipeline_generator :-
     % Test 7: Pipeline chain code for generator
     format("Test 7: Pipeline chain code for generator mode... ", []),
     (   compile_rust_pipeline([derive/1, transform/1], [pipeline_mode(generator)], Code7),
-        sub_string(Code7, _, _, _, "stage_derive_out"),
-        sub_string(Code7, _, _, _, "stage_transform_out")
+        sub_string(Code7, _, _, _, "let mut new_records: Vec<HashMap<String, Value>> = Vec::new();"),
+        sub_string(Code7, _, _, _, "new_records.extend(stage_derive(current.clone()));"),
+        sub_string(Code7, _, _, _, "new_records.extend(stage_transform(current.clone()));")
     ->  format("PASS~n", [])
     ;   format("FAIL~n", []), fail
     ),
