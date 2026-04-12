@@ -11,6 +11,9 @@
   ;; Memory: page 0 = native WAT, page 1 = WAM state, page 2+ = WAM heap
   (memory (export "memory") {{memory_pages}})
 
+  ;; Arithmetic evaluation success flag for $eval_arith.
+  (global $arith_ok (mut i32) (i32.const 0))
+
   ;; === Data segments: instruction arrays ===
   {{data_segments}}
 

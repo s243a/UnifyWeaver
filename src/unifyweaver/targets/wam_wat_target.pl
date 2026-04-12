@@ -612,19 +612,21 @@ close_and_call(Tag-_, Code) :-
 
 wam_wat_case(get_constant,
 '  ;; op2 layout: high 32 = value-cell tag hint, low 32 = reg idx.
-  (local $reg_idx i32) (local $c_tag i32)
+  ;; Deref through Ref chains so heap-aliased variables are handled.
+  (local $reg_idx i32) (local $c_tag i32) (local $d_addr i32)
   (local.set $reg_idx (i32.wrap_i64 (local.get $op2)))
   (local.set $c_tag (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
-  (if (result i32) (call $val_is_unbound (call $reg_offset (local.get $reg_idx)))
+  (local.set $d_addr (call $deref_reg_addr (local.get $reg_idx)))
+  (if (result i32) (i32.eq (call $val_tag (local.get $d_addr)) (i32.const 6))
     (then
-      (call $trail_binding (local.get $reg_idx))
-      (call $set_reg (local.get $reg_idx) (local.get $c_tag) (local.get $op1))
+      (call $trail_binding_at (local.get $d_addr))
+      (call $val_store (local.get $d_addr) (local.get $c_tag) (local.get $op1))
       (call $inc_pc)
       (i32.const 1))
     (else
       (if (result i32) (i32.and
-            (i32.eq (call $get_reg_tag (local.get $reg_idx)) (local.get $c_tag))
-            (i64.eq (call $get_reg_payload (local.get $reg_idx)) (local.get $op1)))
+            (i32.eq (call $val_tag (local.get $d_addr)) (local.get $c_tag))
+            (i64.eq (call $val_payload (local.get $d_addr)) (local.get $op1)))
         (then (call $inc_pc) (i32.const 1))
         (else (i32.const 0)))))').
 
@@ -645,16 +647,17 @@ wam_wat_case(get_value,
     (else (i32.const 0)))').
 
 wam_wat_case(get_structure,
-'  ;; op1 = functor hash, op2 = reg index
-  (local $ai i32) (local $tag i32) (local $addr i32)
+'  ;; op1 = functor hash, op2 = reg index. Deref through Ref chains.
+  (local $ai i32) (local $d_addr i32) (local $tag i32) (local $addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
-  (local.set $tag (call $get_reg_tag (local.get $ai)))
+  (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
+  (local.set $tag (call $val_tag (local.get $d_addr)))
   (if (result i32) (i32.eq (local.get $tag) (i32.const 6)) ;; unbound
     (then
-      ;; Write mode: allocate compound on heap
+      ;; Write mode: allocate compound on heap, bind the dereffed cell
       (local.set $addr (call $heap_push_val (i32.const 3) (local.get $op1)))
-      (call $trail_binding (local.get $ai))
-      (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
+      (call $trail_binding_at (local.get $d_addr))
+      (call $val_store (local.get $d_addr) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
       (call $set_mode (i32.const 1))
       (call $inc_pc)
       (i32.const 1))
@@ -662,7 +665,7 @@ wam_wat_case(get_structure,
       ;; Read mode: check functor match
       (if (result i32) (i32.and
             (i32.eq (local.get $tag) (i32.const 3))
-            (i64.eq (call $get_reg_payload (local.get $ai)) (local.get $op1)))
+            (i64.eq (call $val_payload (local.get $d_addr)) (local.get $op1)))
         (then
           (call $set_mode (i32.const 0))
           (call $inc_pc)
@@ -670,14 +673,16 @@ wam_wat_case(get_structure,
         (else (i32.const 0)))))').
 
 wam_wat_case(get_list,
-'  (local $ai i32) (local $tag i32) (local $addr i32)
+'  ;; Deref through Ref chains.
+  (local $ai i32) (local $d_addr i32) (local $tag i32) (local $addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op1)))
-  (local.set $tag (call $get_reg_tag (local.get $ai)))
+  (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
+  (local.set $tag (call $val_tag (local.get $d_addr)))
   (if (result i32) (i32.eq (local.get $tag) (i32.const 6)) ;; unbound
     (then
       (local.set $addr (call $heap_push_val (i32.const 4) (i64.const 0)))
-      (call $trail_binding (local.get $ai))
-      (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
+      (call $trail_binding_at (local.get $d_addr))
+      (call $val_store (local.get $d_addr) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
       (call $set_mode (i32.const 1))
       (call $inc_pc)
       (i32.const 1))
@@ -709,8 +714,8 @@ wam_wat_case(unify_value,
     (then
       ;; Push register value to heap
       (drop (call $heap_push_val
-        (call $get_reg_tag (local.get $xn))
-        (call $get_reg_payload (local.get $xn))))
+        (call $deref_reg_tag (local.get $xn))
+        (call $deref_reg_payload (local.get $xn))))
       (call $inc_pc)
       (i32.const 1))
     (else
@@ -746,12 +751,20 @@ wam_wat_case(put_constant,
   (i32.const 1)').
 
 wam_wat_case(put_variable,
-'  (local $xn i32) (local $ai i32)
+'  ;; Allocate ONE unbound cell on the heap and point both Xn and Ai
+  ;; at it via Ref(H). This is the standard WAM variable aliasing
+  ;; mechanism: any subsequent binding of Ai (e.g. by a callee) is
+  ;; visible when Xn is later read, because both dereference to the
+  ;; same heap cell. Prior to this fix, put_variable created two
+  ;; independent Unbound cells with the same payload — bindings on
+  ;; Ai did not propagate to Xn, silently breaking multi-goal
+  ;; predicates.
+  (local $xn i32) (local $ai i32) (local $addr i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
-  ;; Create unbound variable in both Xn and Ai
-  (call $set_reg (local.get $xn) (i32.const 6) (i64.extend_i32_u (local.get $xn)))
-  (call $set_reg (local.get $ai) (i32.const 6) (i64.extend_i32_u (local.get $xn)))
+  (local.set $addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (local.get $xn) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
+  (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -782,11 +795,13 @@ wam_wat_case(put_list,
   (i32.const 1)').
 
 wam_wat_case(set_variable,
-'  (local $xn i32) (local $addr i32)
+'  ;; Allocate an unbound cell on the heap and set Xn to Ref(addr).
+  ;; Used inside put_structure/put_list bodies to create a slot for
+  ;; a variable argument.
+  (local $xn i32) (local $addr i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
-  ;; Create new unbound on heap
-  (local.set $addr (call $heap_push_val (i32.const 6) (i64.extend_i32_u (local.get $xn))))
-  (call $set_reg (local.get $xn) (i32.const 6) (i64.extend_i32_u (local.get $xn)))
+  (local.set $addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (local.get $xn) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -794,8 +809,8 @@ wam_wat_case(set_value,
 '  (local $xn i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (drop (call $heap_push_val
-    (call $get_reg_tag (local.get $xn))
-    (call $get_reg_payload (local.get $xn))))
+    (call $deref_reg_tag (local.get $xn))
+    (call $deref_reg_payload (local.get $xn))))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -948,9 +963,13 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 )
 
 ;; --- Trail unwinding ---
+;; Trail entries now store a memory offset (register OR heap address),
+;; not a register index. Unwind uses val_store to restore the cell
+;; at that offset, which works uniformly for both register cells
+;; and heap cells created by put_variable.
 (func $unwind_trail (param $mark i32)
   (local $toff i32)
-  (local $reg_idx i32)
+  (local $mem_off i32)
   (local $old_tag i32)
   (local $old_payload i64)
   (block $done
@@ -960,11 +979,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       ;; Back up one entry (16 bytes)
       (local.set $toff (i32.sub (local.get $toff) (i32.const 16)))
       (call $set_trail_top (local.get $toff))
-      ;; Restore register
-      (local.set $reg_idx (i32.load (local.get $toff)))
+      ;; Restore cell at the saved memory offset
+      (local.set $mem_off (i32.load (local.get $toff)))
       (local.set $old_tag (i32.load (i32.add (local.get $toff) (i32.const 4))))
       (local.set $old_payload (i64.load (i32.add (local.get $toff) (i32.const 8))))
-      (call $set_reg (local.get $reg_idx) (local.get $old_tag) (local.get $old_payload))
+      (call $val_store (local.get $mem_off) (local.get $old_tag) (local.get $old_payload))
       (br $unwind)
     )
   )
@@ -1039,26 +1058,32 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (call $pop_choice_point_no_restore))
 
 ;; --- Unification ---
-;; Unify two registers. No occurs check (standard Prolog semantics).
+;; Unify two registers. Follows Ref chains via $deref_reg_addr so
+;; heap-allocated variable cells created by put_variable are properly
+;; reached and bound. No occurs check (standard Prolog semantics).
 (func $unify_regs (param $r1 i32) (param $r2 i32) (result i32)
+  (local $a1 i32) (local $a2 i32)
   (local $t1 i32) (local $t2 i32) (local $p1 i64) (local $p2 i64)
-  (local.set $t1 (call $get_reg_tag (local.get $r1)))
-  (local.set $p1 (call $get_reg_payload (local.get $r1)))
-  (local.set $t2 (call $get_reg_tag (local.get $r2)))
-  (local.set $p2 (call $get_reg_payload (local.get $r2)))
-  ;; If r1 is unbound, bind it to r2
+  ;; Deref both registers to the final cell address (may be on heap).
+  (local.set $a1 (call $deref_reg_addr (local.get $r1)))
+  (local.set $a2 (call $deref_reg_addr (local.get $r2)))
+  (local.set $t1 (call $val_tag (local.get $a1)))
+  (local.set $p1 (call $val_payload (local.get $a1)))
+  (local.set $t2 (call $val_tag (local.get $a2)))
+  (local.set $p2 (call $val_payload (local.get $a2)))
+  ;; If cell 1 is unbound, bind it to cell 2 value
   (if (i32.eq (local.get $t1) (i32.const 6))
     (then
-      (call $trail_binding (local.get $r1))
-      (call $set_reg (local.get $r1) (local.get $t2) (local.get $p2))
+      (call $trail_binding_at (local.get $a1))
+      (call $val_store (local.get $a1) (local.get $t2) (local.get $p2))
       (return (i32.const 1))))
-  ;; If r2 is unbound, bind it to r1
+  ;; If cell 2 is unbound, bind it to cell 1 value
   (if (i32.eq (local.get $t2) (i32.const 6))
     (then
-      (call $trail_binding (local.get $r2))
-      (call $set_reg (local.get $r2) (local.get $t1) (local.get $p1))
+      (call $trail_binding_at (local.get $a2))
+      (call $val_store (local.get $a2) (local.get $t1) (local.get $p1))
       (return (i32.const 1))))
-  ;; Both bound: check equality
+  ;; Both bound: shallow equality check
   (i32.and
     (i32.eq (local.get $t1) (local.get $t2))
     (i64.eq (local.get $p1) (local.get $p2))))
@@ -1092,7 +1117,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
                 $eq
                 $default (local.get $id))
     ) ;; write
-    (call $print_i64 (call $get_reg_payload (i32.const 0)))
+    (call $print_i64 (call $deref_reg_payload (i32.const 0)))
     (return (i32.const 1))
     ) ;; nl
     (call $print_newline)
@@ -1112,19 +1137,19 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     ) ;; >=
     (return (call $builtin_arith_cmp (i32.const 5)))
     ) ;; var/1 (ID 9): A1 tag == 6 (unbound)
-    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 6)))
+    (return (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 6)))
     ) ;; nonvar/1 (ID 10): A1 tag != 6
-    (return (i32.ne (call $get_reg_tag (i32.const 0)) (i32.const 6)))
+    (return (i32.ne (call $deref_reg_tag (i32.const 0)) (i32.const 6)))
     ) ;; atom/1 (ID 11): A1 tag == 0
-    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 0)))
+    (return (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 0)))
     ) ;; integer/1 (ID 12): A1 tag == 1
-    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 1)))
+    (return (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 1)))
     ) ;; float/1 (ID 13): A1 tag == 2
-    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 2)))
+    (return (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 2)))
     ) ;; number/1 (ID 14): A1 tag == 1 (integer) or 2 (float)
     (return (i32.or
-              (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 1))
-              (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 2))))
+              (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 1))
+              (i32.eq (call $deref_reg_tag (i32.const 0)) (i32.const 2))))
     ) ;; true (ID 15)
     (return (i32.const 1))
     ) ;; fail (ID 16)
@@ -1148,17 +1173,98 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 )
 
 ;; --- is/2: A1 = eval(A2) ---
+;; Evaluates the arithmetic expression in A2, binds (or checks) A1 to
+;; the result. Uses $eval_arith for recursive compound evaluation.
 (func $builtin_is (result i32)
-  (local $val i64)
-  ;; For now, just copy A2 to A1 if A2 is an integer
-  ;; TODO: full arithmetic expression evaluation
-  (if (call $val_is_integer (call $reg_offset (i32.const 1)))
+  (local $val i64) (local $a1_addr i32) (local $a2_addr i32)
+  ;; Evaluate A2 as an arithmetic expression.
+  (global.set $arith_ok (i32.const 1))
+  (local.set $a2_addr (call $deref_reg_addr (i32.const 1)))
+  (local.set $val (call $eval_arith (local.get $a2_addr)))
+  (if (i32.eqz (global.get $arith_ok))
+    (then (return (i32.const 0))))
+  ;; Bind or check A1.
+  (local.set $a1_addr (call $deref_reg_addr (i32.const 0)))
+  (if (i32.eq (call $val_tag (local.get $a1_addr)) (i32.const 6))
     (then
-      (local.set $val (call $get_reg_payload (i32.const 1)))
-      (call $trail_binding (i32.const 0))
-      (call $set_reg (i32.const 0) (i32.const 1) (local.get $val))
+      (call $trail_binding_at (local.get $a1_addr))
+      (call $val_store (local.get $a1_addr) (i32.const 1) (local.get $val))
       (return (i32.const 1))))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $a1_addr)) (i32.const 1))
+        (i64.eq (call $val_payload (local.get $a1_addr)) (local.get $val)))
+    (then (return (i32.const 1))))
   (i32.const 0)
+)
+
+;; --- Recursive arithmetic evaluator ---
+;; Reads the cell at $addr and evaluates it as an integer arithmetic
+;; expression. Handles:
+;;   tag=1 (integer) → return payload directly
+;;   tag=5 (ref)     → follow to target, retry
+;;   tag=3 (compound) with arity 2 → dispatch on functor hash:
+;;     42830 = hash("+/2")  → add
+;;     44752 = hash("-/2")  → subtract
+;;     41869 = hash("*/2")  → multiply
+;;   tag=3 with arity 1 → dispatch:
+;;     44751 = hash("-/1")  → unary negate
+;;   anything else → set $arith_ok = 0, return 0
+;; Functor hashes are pre-computed DJB2 (acc*31+char mod 2^31-1)
+;; matching atom_hash_i64/2 in the Prolog compile layer.
+(func $eval_arith (param $addr i32) (result i64)
+  (local $tag i32) (local $payload i64) (local $target i32)
+  (local $header i64) (local $functor_hash i32) (local $arity i32)
+  (local $a i64) (local $b i64)
+  (local.set $tag (call $val_tag (local.get $addr)))
+  (local.set $payload (call $val_payload (local.get $addr)))
+  ;; Integer leaf
+  (if (i32.eq (local.get $tag) (i32.const 1))
+    (then (return (local.get $payload))))
+  ;; Ref: follow one level then retry
+  (if (i32.eq (local.get $tag) (i32.const 5))
+    (then
+      (return (call $eval_arith
+                (i32.wrap_i64 (local.get $payload))))))
+  ;; Compound: read header, dispatch on functor hash
+  (if (i32.eq (local.get $tag) (i32.const 3))
+    (then
+      (local.set $header (local.get $payload))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u (local.get $header) (i64.const 32))))
+      (local.set $functor_hash
+        (i32.wrap_i64 (i64.and (local.get $header) (i64.const 0xFFFFFFFF))))
+      ;; Binary operators (arity 2)
+      (if (i32.eq (local.get $arity) (i32.const 2))
+        (then
+          (local.set $a (call $eval_arith
+                          (i32.add (local.get $addr) (i32.const 12))))
+          (if (i32.eqz (global.get $arith_ok)) (then (return (i64.const 0))))
+          (local.set $b (call $eval_arith
+                          (i32.add (local.get $addr) (i32.const 24))))
+          (if (i32.eqz (global.get $arith_ok)) (then (return (i64.const 0))))
+          ;; + (hash 42830)
+          (if (i32.eq (local.get $functor_hash) (i32.const 42830))
+            (then (return (i64.add (local.get $a) (local.get $b)))))
+          ;; - (hash 44752)
+          (if (i32.eq (local.get $functor_hash) (i32.const 44752))
+            (then (return (i64.sub (local.get $a) (local.get $b)))))
+          ;; * (hash 41869)
+          (if (i32.eq (local.get $functor_hash) (i32.const 41869))
+            (then (return (i64.mul (local.get $a) (local.get $b)))))
+          ))
+      ;; Unary operators (arity 1)
+      (if (i32.eq (local.get $arity) (i32.const 1))
+        (then
+          (local.set $a (call $eval_arith
+                          (i32.add (local.get $addr) (i32.const 12))))
+          (if (i32.eqz (global.get $arith_ok)) (then (return (i64.const 0))))
+          ;; unary - (hash 44751)
+          (if (i32.eq (local.get $functor_hash) (i32.const 44751))
+            (then (return (i64.sub (i64.const 0) (local.get $a)))))
+          ))))
+  ;; Failure: not evaluable
+  (global.set $arith_ok (i32.const 0))
+  (i64.const 0)
 )
 
 ;; --- Arithmetic comparison: 0==eq, 1==ne, 2==lt, 3==gt, 4==le, 5==ge ---
@@ -1173,8 +1279,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; test used assertion/1 which only warns rather than failing the test.)
 (func $builtin_arith_cmp (param $op i32) (result i32)
   (local $a i64) (local $b i64)
-  (local.set $a (call $get_reg_payload (i32.const 0)))
-  (local.set $b (call $get_reg_payload (i32.const 1)))
+  (local.set $a (call $deref_reg_payload (i32.const 0)))
+  (local.set $b (call $deref_reg_payload (i32.const 1)))
   (block $default
     (block $ge (block $le (block $gt (block $lt (block $ne (block $eq
       (br_table $eq $ne $lt $gt $le $ge $default (local.get $op))
@@ -1206,17 +1312,14 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $arg_payload i64)
   (local $a3_tag i32)
   ;; N from A1 (register index 0). Payload is the raw integer value.
-  (local.set $n (i32.wrap_i64 (call $get_reg_payload (i32.const 0))))
+  (local.set $n (i32.wrap_i64 (call $deref_reg_payload (i32.const 0))))
   (if (i32.lt_s (local.get $n) (i32.const 1))
     (then (return (i32.const 0))))
-  ;; T from A2 (register index 1). Must be a ref (tag=5).
-  (local.set $t_tag (call $get_reg_tag (i32.const 1)))
-  (if (i32.ne (local.get $t_tag) (i32.const 5))
+  ;; T from A2 (register index 1). Must be a compound (tag=3 after deref).
+  (local.set $t_tag (call $deref_reg_tag (i32.const 1)))
+  (if (i32.ne (local.get $t_tag) (i32.const 3))
     (then (return (i32.const 0))))
-  (local.set $comp_addr (i32.wrap_i64 (call $get_reg_payload (i32.const 1))))
-  (local.set $comp_tag (call $val_tag (local.get $comp_addr)))
-  (if (i32.ne (local.get $comp_tag) (i32.const 3))
-    (then (return (i32.const 0))))
+  (local.set $comp_addr (call $deref_reg_addr (i32.const 1)))
   (local.set $comp_payload (call $val_payload (local.get $comp_addr)))
   (local.set $arity
     (i32.wrap_i64 (i64.shr_u (local.get $comp_payload) (i64.const 32))))
@@ -1229,16 +1332,15 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $arg_tag (call $val_tag (local.get $arg_off)))
   (local.set $arg_payload (call $val_payload (local.get $arg_off)))
   ;; A3 (register index 2): bind if unbound, else shallow compare.
-  (local.set $a3_tag (call $get_reg_tag (i32.const 2)))
+  (local.set $a3_tag (call $deref_reg_tag (i32.const 2)))
   (if (i32.eq (local.get $a3_tag) (i32.const 6))
     (then
-      (call $trail_binding (i32.const 2))
-      (call $set_reg (i32.const 2) (local.get $arg_tag) (local.get $arg_payload))
+      (call $bind_reg_deref (i32.const 2) (local.get $arg_tag) (local.get $arg_payload))
       (return (i32.const 1))))
   (if (result i32)
     (i32.and
       (i32.eq (local.get $a3_tag) (local.get $arg_tag))
-      (i64.eq (call $get_reg_payload (i32.const 2)) (local.get $arg_payload)))
+      (i64.eq (call $deref_reg_payload (i32.const 2)) (local.get $arg_payload)))
     (then (i32.const 1))
     (else (i32.const 0)))
 )
@@ -1259,22 +1361,21 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $comp_addr i32)
   (local $header_payload i64)
   (local $i i32)
-  (local.set $t_tag (call $get_reg_tag (i32.const 0)))
+  (local.set $t_tag (call $deref_reg_tag (i32.const 0)))
   ;; --- Construct mode ---
   (if (i32.eq (local.get $t_tag) (i32.const 6))
     (then
-      (local.set $n_tag (call $get_reg_tag (i32.const 1)))
-      (local.set $n_payload (call $get_reg_payload (i32.const 1)))
+      (local.set $n_tag (call $deref_reg_tag (i32.const 1)))
+      (local.set $n_payload (call $deref_reg_payload (i32.const 1)))
       (local.set $arity
-        (i32.wrap_i64 (call $get_reg_payload (i32.const 2))))
+        (i32.wrap_i64 (call $deref_reg_payload (i32.const 2))))
       ;; Arity must be >= 0.
       (if (i32.lt_s (local.get $arity) (i32.const 0))
         (then (return (i32.const 0))))
       ;; Arity 0: bind T to N verbatim (atom or integer).
       (if (i32.eq (local.get $arity) (i32.const 0))
         (then
-          (call $trail_binding (i32.const 0))
-          (call $set_reg (i32.const 0) (local.get $n_tag) (local.get $n_payload))
+          (call $bind_reg_deref (i32.const 0) (local.get $n_tag) (local.get $n_payload))
           (return (i32.const 1))))
       ;; Arity > 0: N must be an atom to form a valid compound.
       (if (i32.ne (local.get $n_tag) (i32.const 0))
@@ -1295,38 +1396,30 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $arg_loop)))
       ;; Bind T = ref(comp_addr).
-      (call $trail_binding (i32.const 0))
-      (call $set_reg (i32.const 0) (i32.const 5)
+      (call $bind_reg_deref (i32.const 0) (i32.const 5)
         (i64.extend_i32_u (local.get $comp_addr)))
       (return (i32.const 1))))
-  ;; --- Read mode: compound via ref ---
-  (if (i32.eq (local.get $t_tag) (i32.const 5))
+  ;; --- Read mode: compound (tag=3 after deref) ---
+  (if (i32.eq (local.get $t_tag) (i32.const 3))
     (then
-      (local.set $comp_addr
-        (i32.wrap_i64 (call $get_reg_payload (i32.const 0))))
-      (if (i32.eq (call $val_tag (local.get $comp_addr)) (i32.const 3))
-        (then
-          (local.set $header_payload (call $val_payload (local.get $comp_addr)))
-          (local.set $arity
-            (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
-          ;; Bind A2 = atom(functor_hash)
-          (call $trail_binding (i32.const 1))
-          (call $set_reg (i32.const 1) (i32.const 0)
-            (i64.and (local.get $header_payload) (i64.const 0xFFFFFFFF)))
-          ;; Bind A3 = integer(arity)
-          (call $trail_binding (i32.const 2))
-          (call $set_reg (i32.const 2) (i32.const 1)
-            (i64.extend_i32_u (local.get $arity)))
-          (return (i32.const 1))))))
+      (local.set $comp_addr (call $deref_reg_addr (i32.const 0)))
+      (local.set $header_payload (call $val_payload (local.get $comp_addr)))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
+      ;; Bind A2 = atom(functor_hash)
+      (call $bind_reg_deref (i32.const 1) (i32.const 0)
+        (i64.and (local.get $header_payload) (i64.const 0xFFFFFFFF)))
+      ;; Bind A3 = integer(arity)
+      (call $bind_reg_deref (i32.const 2) (i32.const 1)
+        (i64.extend_i32_u (local.get $arity)))
+      (return (i32.const 1))))
   ;; --- Read mode: atomic (atom/integer/float) ---
   ;; For atomic T: N = T (same tag + payload), A = 0
   (if (i32.le_u (local.get $t_tag) (i32.const 2))
     (then
-      (local.set $t_payload (call $get_reg_payload (i32.const 0)))
-      (call $trail_binding (i32.const 1))
-      (call $set_reg (i32.const 1) (local.get $t_tag) (local.get $t_payload))
-      (call $trail_binding (i32.const 2))
-      (call $set_reg (i32.const 2) (i32.const 1) (i64.const 0))
+      (local.set $t_payload (call $deref_reg_payload (i32.const 0)))
+      (call $bind_reg_deref (i32.const 1) (local.get $t_tag) (local.get $t_payload))
+      (call $bind_reg_deref (i32.const 2) (i32.const 1) (i64.const 0))
       (return (i32.const 1))))
   (i32.const 0)
 )
@@ -1369,11 +1462,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $tail_payload i64)
   (local $nelts i32)
   (local $list_start i32)
-  (local.set $t_tag (call $get_reg_tag (i32.const 0)))
+  (local.set $t_tag (call $deref_reg_tag (i32.const 0)))
   ;; --- Decompose: atomic T (atom/integer/float, tag <= 2) ---
   (if (i32.le_u (local.get $t_tag) (i32.const 2))
     (then
-      (local.set $t_payload (call $get_reg_payload (i32.const 0)))
+      (local.set $t_payload (call $deref_reg_payload (i32.const 0)))
       ;; Cons cell header (tag=4, payload 0) — head and tail follow.
       (local.set $list_root
         (call $heap_push_val (i32.const 4) (i64.const 0)))
@@ -1381,72 +1474,65 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (drop (call $heap_push_val (local.get $t_tag) (local.get $t_payload)))
       ;; tail = atom([])
       (drop (call $heap_push_val (i32.const 0) (i64.const 2914)))
-      (call $trail_binding (i32.const 1))
-      (call $set_reg (i32.const 1) (i32.const 5)
+      (call $bind_reg_deref (i32.const 1) (i32.const 5)
         (i64.extend_i32_u (local.get $list_root)))
       (return (i32.const 1))))
-  ;; --- Decompose: compound T via ref ---
-  (if (i32.eq (local.get $t_tag) (i32.const 5))
+  ;; --- Decompose: compound T (tag=3 after deref) ---
+  (if (i32.eq (local.get $t_tag) (i32.const 3))
     (then
-      (local.set $comp_addr
-        (i32.wrap_i64 (call $get_reg_payload (i32.const 0))))
-      (if (i32.eq (call $val_tag (local.get $comp_addr)) (i32.const 3))
-        (then
-          (local.set $header_payload (call $val_payload (local.get $comp_addr)))
-          (local.set $arity
-            (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
-          (local.set $functor_hash
-            (i64.and (local.get $header_payload) (i64.const 0xFFFFFFFF)))
-          ;; Allocate (arity+1) cons cells in heap order. Each cons cell
-          ;; takes 36 bytes: list header at base+i*36, head at +12,
-          ;; tail at +24.
-          (local.set $list_root (call $get_heap_top))
-          (local.set $i (i32.const 0))
-          (block $done_cells
-            (loop $cell_loop
-              (br_if $done_cells
-                (i32.gt_s (local.get $i) (local.get $arity)))
-              ;; List header
-              (local.set $cons_addr
-                (call $heap_push_val (i32.const 4) (i64.const 0)))
-              ;; Head
-              (if (i32.eqz (local.get $i))
-                (then
-                  ;; element 0 = functor atom
-                  (drop (call $heap_push_val (i32.const 0)
-                          (local.get $functor_hash))))
-                (else
-                  ;; element i (i>=1) = compound''s i-th arg cell
-                  (local.set $arg_off
-                    (i32.add (local.get $comp_addr)
-                             (i32.mul (local.get $i) (i32.const 12))))
-                  (drop (call $heap_push_val
-                          (call $val_tag (local.get $arg_off))
-                          (call $val_payload (local.get $arg_off))))))
-              ;; Tail
-              (if (i32.eq (local.get $i) (local.get $arity))
-                (then
-                  (drop (call $heap_push_val (i32.const 0) (i64.const 2914))))
-                (else
-                  (local.set $next_cons
-                    (i32.add (local.get $cons_addr) (i32.const 36)))
-                  (drop (call $heap_push_val (i32.const 5)
-                          (i64.extend_i32_u (local.get $next_cons))))))
-              (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $cell_loop)))
-          (call $trail_binding (i32.const 1))
-          (call $set_reg (i32.const 1) (i32.const 5)
-            (i64.extend_i32_u (local.get $list_root)))
-          (return (i32.const 1))))
-      (return (i32.const 0))))
+      (local.set $comp_addr (call $deref_reg_addr (i32.const 0)))
+      (local.set $header_payload (call $val_payload (local.get $comp_addr)))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u (local.get $header_payload) (i64.const 32))))
+      (local.set $functor_hash
+        (i64.and (local.get $header_payload) (i64.const 0xFFFFFFFF)))
+      ;; Allocate (arity+1) cons cells in heap order. Each cons cell
+      ;; takes 36 bytes: list header at base+i*36, head at +12,
+      ;; tail at +24.
+      (local.set $list_root (call $get_heap_top))
+      (local.set $i (i32.const 0))
+      (block $done_cells
+        (loop $cell_loop
+          (br_if $done_cells
+            (i32.gt_s (local.get $i) (local.get $arity)))
+          ;; List header
+          (local.set $cons_addr
+            (call $heap_push_val (i32.const 4) (i64.const 0)))
+          ;; Head
+          (if (i32.eqz (local.get $i))
+            (then
+              ;; element 0 = functor atom
+              (drop (call $heap_push_val (i32.const 0)
+                      (local.get $functor_hash))))
+            (else
+              ;; element i (i>=1) = compound''s i-th arg cell
+              (local.set $arg_off
+                (i32.add (local.get $comp_addr)
+                         (i32.mul (local.get $i) (i32.const 12))))
+              (drop (call $heap_push_val
+                      (call $val_tag (local.get $arg_off))
+                      (call $val_payload (local.get $arg_off))))))
+          ;; Tail
+          (if (i32.eq (local.get $i) (local.get $arity))
+            (then
+              (drop (call $heap_push_val (i32.const 0) (i64.const 2914))))
+            (else
+              (local.set $next_cons
+                (i32.add (local.get $cons_addr) (i32.const 36)))
+              (drop (call $heap_push_val (i32.const 5)
+                      (i64.extend_i32_u (local.get $next_cons))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $cell_loop)))
+      (call $bind_reg_deref (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $list_root)))
+      (return (i32.const 1))))
   ;; --- Compose: A1 unbound, A2 = cons-list. ---
   (if (i32.eq (local.get $t_tag) (i32.const 6))
     (then
-      ;; A2 must be a ref to a cons cell (tag=4).
-      (if (i32.ne (call $get_reg_tag (i32.const 1)) (i32.const 5))
+      ;; A2 must be a cons cell (tag=4 after deref).
+      (if (i32.ne (call $deref_reg_tag (i32.const 1)) (i32.const 4))
         (then (return (i32.const 0))))
-      (local.set $list_start
-        (i32.wrap_i64 (call $get_reg_payload (i32.const 1))))
+      (local.set $list_start (call $deref_reg_addr (i32.const 1)))
       ;; Pass 1: count elements and validate cons-list structure.
       (local.set $cur (local.get $list_start))
       (local.set $nelts (i32.const 0))
@@ -1481,8 +1567,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       ;; Single-element list: bind T to that element verbatim.
       (if (i32.eq (local.get $nelts) (i32.const 1))
         (then
-          (call $trail_binding (i32.const 0))
-          (call $set_reg (i32.const 0) (local.get $head_tag) (local.get $head_payload))
+          (call $bind_reg_deref (i32.const 0) (local.get $head_tag) (local.get $head_payload))
           (return (i32.const 1))))
       ;; Multi-element list: head must be an atom (the functor).
       (if (i32.ne (local.get $head_tag) (i32.const 0))
@@ -1519,8 +1604,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
                   (call $val_payload (i32.add (local.get $cur) (i32.const 24)))))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $copy_loop)))
-      (call $trail_binding (i32.const 0))
-      (call $set_reg (i32.const 0) (i32.const 5)
+      (call $bind_reg_deref (i32.const 0) (i32.const 5)
         (i64.extend_i32_u (local.get $comp_addr)))
       (return (i32.const 1))))
   (i32.const 0)
@@ -1617,27 +1701,25 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $entry_off i32)
   (local $found i32)
   (local $found_off i32)
-  (local.set $t_tag (call $get_reg_tag (i32.const 0)))
-  (local.set $t_payload (call $get_reg_payload (i32.const 0)))
+  (local.set $t_tag (call $deref_reg_tag (i32.const 0)))
+  (local.set $t_payload (call $deref_reg_payload (i32.const 0)))
   ;; --- Atomic T: direct bind ---
   (if (i32.le_u (local.get $t_tag) (i32.const 2))
     (then
-      (call $trail_binding (i32.const 1))
-      (call $set_reg (i32.const 1) (local.get $t_tag) (local.get $t_payload))
+      (call $bind_reg_deref (i32.const 1) (local.get $t_tag) (local.get $t_payload))
       (return (i32.const 1))))
   ;; --- Unbound T: fresh unbound, bind ref ---
   (if (i32.eq (local.get $t_tag) (i32.const 6))
     (then
       (local.set $new_cell
         (call $heap_push_val (i32.const 6) (i64.const 0)))
-      (call $trail_binding (i32.const 1))
-      (call $set_reg (i32.const 1) (i32.const 5)
+      (call $bind_reg_deref (i32.const 1) (i32.const 5)
         (i64.extend_i32_u (local.get $new_cell)))
       (return (i32.const 1))))
-  ;; --- Ref T: worklist-driven deep copy ---
-  (if (i32.eq (local.get $t_tag) (i32.const 5))
+  ;; --- Compound T (tag=3 after deref): worklist-driven deep copy ---
+  (if (i32.eq (local.get $t_tag) (i32.const 3))
     (then
-      (local.set $src_addr (i32.wrap_i64 (local.get $t_payload)))
+      (local.set $src_addr (call $deref_reg_addr (i32.const 0)))
       ;; Scratch base at page 4 start (262144). Layout:
       ;;   [262144..262911] var map (768 B, 64 entries x 12)
       ;;   [262912..263935] work stack (1024 B, 128 entries x 8)
@@ -1822,8 +1904,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (local.set $result_tag (call $val_tag (local.get $top_placeholder)))
       (local.set $result_payload
         (call $val_payload (local.get $top_placeholder)))
-      (call $trail_binding (i32.const 1))
-      (call $set_reg (i32.const 1) (local.get $result_tag)
+      (call $bind_reg_deref (i32.const 1) (local.get $result_tag)
                                     (local.get $result_payload))
       (return (i32.const 1))))
   (i32.const 0)
