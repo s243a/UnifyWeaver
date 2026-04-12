@@ -7154,6 +7154,11 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
+cache_query_executor_options(_Cache, BaseOptions, OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        '~w, EnableMeasuredClosurePairStrategy: false, UseSeededClosureCachesForPairBatches: true',
+        [BaseOptions]).
+
 harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
     (   Params == []
     ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\n',
@@ -7164,6 +7169,7 @@ harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
         WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, parameters, warmTrace).ToList();\n',
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7173,7 +7179,7 @@ harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
  using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  string FormatValue(object? value) => value switch
@@ -7202,7 +7208,7 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Cache, Source) :-
     (   WarmParams == []
@@ -7219,6 +7225,7 @@ harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Ca
         format(atom(ExecDecl), 'var parameters = ~w;~n', [ExecLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7228,7 +7235,7 @@ harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Ca
  using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 ~w~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
@@ -7258,7 +7265,7 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_pair_cache_flag_warm_exec_normalized(
         ModuleClass,
@@ -7283,6 +7290,10 @@ harness_source_with_pair_cache_flag_warm_exec_normalized(
         format(atom(ExecDecl), 'var parameters = ~w;~n', [ExecLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7294,11 +7305,7 @@ harness_source_with_pair_cache_flag_warm_exec_normalized(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 ~w~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
@@ -7328,12 +7335,16 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, PairLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w',
+        [PairLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7345,7 +7356,7 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7382,7 +7393,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
   var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
   Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
         ModuleClass,
@@ -7397,6 +7408,10 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7408,11 +7423,7 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7449,12 +7460,16 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_seed_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, SeedLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w',
+        [SeedLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7466,7 +7481,7 @@ harness_source_with_cache_flag_two_warm_exec_seed_limit(ModuleClass, WarmParams1
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7503,7 +7518,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_pair_cache_lru_recency_flag(
         ModuleClass,
@@ -7522,6 +7537,10 @@ harness_source_with_pair_cache_lru_recency_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w',
+        [PairLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7530,7 +7549,7 @@ harness_source_with_pair_cache_lru_recency_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7556,7 +7575,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_pair_cache_lru_recency_normalized_flag(
         ModuleClass,
@@ -7577,6 +7596,10 @@ harness_source_with_pair_cache_lru_recency_normalized_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7585,11 +7608,7 @@ harness_source_with_pair_cache_lru_recency_normalized_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7615,7 +7634,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_seed_cache_lru_recency_flag(
         ModuleClass,
@@ -7634,6 +7653,10 @@ harness_source_with_seed_cache_lru_recency_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w',
+        [SeedLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7642,7 +7665,7 @@ harness_source_with_seed_cache_lru_recency_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7668,7 +7691,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 seed_cache_admission_options(SeedLimit, MinRows, none, OptionsLiteral) :-
     format(atom(OptionsLiteral),
@@ -7703,6 +7726,7 @@ harness_source_with_cache_admission_internal(
     csharp_params_literal(WarmColdParams, WarmColdLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    cache_query_executor_options(Cache, OptionsLiteral, EffectiveOptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7735,7 +7759,7 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, OptionsLiteral, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, EffectiveOptionsLiteral, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_seed_cache_admission_flag(
         ModuleClass,
@@ -7831,6 +7855,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
         format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
     format(atom(Source),
 'using System;
   using System.Linq;
@@ -7840,7 +7865,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
   using System.Text.Json.Nodes;
 
  var result = UnifyWeaver.Generated.~w.Build();
- var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
  ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
   string FormatValue(object? value) => value switch
@@ -7869,7 +7894,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
   
     var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
     Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, ParamDecl, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, ParamDecl, ExecCall, Cache, Cache]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),
