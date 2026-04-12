@@ -236,7 +236,7 @@ Tables:
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
-| `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
+| `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
@@ -937,6 +937,13 @@ Use `--weight-mode nonnegative-zero` to keep degree-one source weights at zero
 and exercise the broader non-negative additive `Min` path that would otherwise
 fall back to the exact visited-state frontier.
 
+Use `--weight-mode negative --recurrence-mode additive` to force the exact
+frontier fallback for negative additive steps. Use
+`--weight-mode positive --recurrence-mode multiplicative` to force the exact
+frontier fallback for positive multiplicative recurrence. These variants emit
+the `min_frontier_*` trace metrics used to profile candidate growth, dominance
+checks, subset checks, and retained frontier bucket sizes.
+
 Latest local results:
 
 | Scale | All | Min | Speedup | Output Match |
@@ -971,6 +978,14 @@ trace label, while zero-cost non-negative steps report
 `metric_scc_probe_local_states_explored`, and
 `metric_scc_probe_outer_dag_states_explored`; on the current benchmark
 shape the selector keeps the layered path when the SCC probe is slower.
+
+Fallback metric runs on `300` and `1k` show that broad dominance-candidate
+scans, not the raw number of exact subset checks, dominate the measured
+frontier counters. The negative-additive fallback reached
+`104,874,704` dominance-candidate checks at `300` and `112,962,813` at `1k`.
+The multiplicative fallback reached `36,195,447` at `300` and `39,638,003` at
+`1k`. That points the next optimization toward exact frontier-state hashing or
+bucket partitioning before a narrow multiplicative-specific transform.
 
 ### Available Targets
 
