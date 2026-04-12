@@ -59,12 +59,17 @@ tokenize(Line, Term) :-
 
 wam_haskell_lowerable(_PI, WamCode, _Reason) :-
     parse_wam_text(WamCode, PCInstrs, _),
-    % Phase 4 restriction: only single-clause predicates (no try_me_else)
-    % are lowerable. Multi-clause lowering requires resolving the dispatch
-    % conflict between executeForeign (which returns Nothing for "no
-    % solutions") and the lowered function (which would fruitlessly explore
-    % the graph via WAM dispatch). See fix/wam-haskell-lowered-backtrack.
     PCInstrs = [pc(_, FirstInstr)|_],
+    % Multi-clause predicates (try_me_else) are not lowerable yet:
+    %   - Detected kernels (e.g. category_ancestor) use the FFI path
+    %     (executeForeign takes dispatch priority) — lowering them would
+    %     produce dead code that never runs.
+    %   - Non-kernel multi-clause predicates cause exponential blowup
+    %     because clause-1-only lowering + interpreter clause-2 recursion
+    %     bypasses the FFI's authoritative "no solutions" signal.
+    % Multi-clause lowering requires either auto-generated kernel FFI
+    % (see docs/proposals/WAM_FOREIGN_DISPATCH_RETURN_TYPE.md) or the
+    % full all-clauses-inline approach from the spec §2.4.
     FirstInstr \= try_me_else(_),
     clause1_instrs(PCInstrs, C1),
     forall(member(I, C1), supported(I)).

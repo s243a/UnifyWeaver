@@ -1,0 +1,43 @@
+-- | Execute a foreign predicate call. Auto-generated from kernel detection.
+-- Dispatch: checks predicate name, reads registers, calls the native kernel,
+-- returns first result with CPs for the rest.
+executeForeign :: WamContext -> String -> WamState -> Maybe WamState
+{{#kernels}}
+executeForeign !ctx "{{pred_indicator}}" s =
+  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
+      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))
+      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))
+      maxD = fromMaybe {{max_depth}} $ Map.lookup "max_depth" (wcForeignConfig ctx)
+      parents = fromMaybe Map.empty $ Map.lookup "{{edge_pred}}" (wcForeignFacts ctx)
+  in case (cat, root, visited) of
+    (Atom catS, Atom rootS, VList visitedVals) ->
+      let visitedStrs = [v | Atom v <- visitedVals]
+          hops = nativeKernel_category_ancestor parents catS rootS maxD (length visitedStrs) visitedStrs
+          retPC = wsCP s
+          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
+          bindHop hopVal =
+            case hopsReg of
+              Unbound vid ->
+                s { wsPC = retPC
+                  , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)
+                  , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)
+                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                  , wsTrailLen = wsTrailLen s + 1 }
+              _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }
+      in case hops of
+        [] -> Nothing
+        [h] -> Just (bindHop h)
+        (h:restHops) ->
+          let s1 = bindHop h
+              hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }
+              cp = ChoicePoint
+                { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
+                , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)
+                }
+          in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+    _ -> Nothing
+{{/kernels}}
+executeForeign _ _ _ = Nothing

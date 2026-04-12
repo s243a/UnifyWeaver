@@ -28,7 +28,7 @@
 
 :- module(wam_haskell_target, [
     compile_wam_predicate_to_haskell/4,  % +Pred/Arity, +WamCode, +Options, -HaskellCode
-    compile_wam_runtime_to_haskell/2,    % +Options, -HaskellCode
+    compile_wam_runtime_to_haskell/3,    % +Options, +DetectedKernels, -HaskellCode
     write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
     wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
     wam_haskell_partition_predicates/4   % +Mode, +Predicates, -InterpretedList, -LoweredList
@@ -40,6 +40,7 @@
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2]).
+:- use_module('../core/template_system', [render_template/3]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -165,6 +166,92 @@ predicate_base_pc(P, Map, PC) :-
     (   P = _Mod:Pred/Arity -> true ; P = Pred/Arity ),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     (   member(Key-PC, Map) -> true ; PC = 1 ).
+
+%% generate_kernel_haskell(+DetectedKernels, -KernelFunctionsCode, -ExecuteForeignCode)
+%  Render Mustache templates for detected kernels into Haskell source.
+%  KernelFunctionsCode: native kernel function bodies (one per kernel).
+%  ExecuteForeignCode: the executeForeign dispatch function with entries
+%  for each detected kernel.
+generate_kernel_haskell([], KF, EF) :- !,
+    KF = "-- No kernels detected; no native functions generated.",
+    EF = "executeForeign :: WamContext -> String -> WamState -> Maybe WamState\nexecuteForeign _ _ _ = Nothing".
+generate_kernel_haskell(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode) :-
+    % For each detected kernel, find its template and render
+    maplist(render_kernel_function, DetectedKernels, KernelParts),
+    atomic_list_concat(KernelParts, '\n\n', KernelFunctionsCode),
+    % Generate executeForeign with entries for each kernel
+    generate_execute_foreign(DetectedKernels, ExecuteForeignCode).
+
+render_kernel_function(KernelKey, Code) :-
+    % Currently only category_ancestor has a Mustache template
+    (   KernelKey = 'category_ancestor/4'
+    ->  read_kernel_template('kernel_category_ancestor.hs.mustache', Template),
+        render_template(Template, [edge_pred='category_parent'], Code0),
+        atom_string(Code0, Code)
+    ;   format(atom(Code), '-- Kernel ~w: no template available', [KernelKey])
+    ).
+
+read_kernel_template(FileName, Template) :-
+    atom_concat('templates/targets/haskell_wam/', FileName, RelPath),
+    (   source_file(wam_haskell_target, SrcFile)
+    ->  file_directory_name(SrcFile, SrcDir),
+        file_directory_name(SrcDir, TargetsDir),
+        file_directory_name(TargetsDir, UnifyWeaverDir),
+        file_directory_name(UnifyWeaverDir, ProjectDir),
+        atom_concat(ProjectDir, '/', P1),
+        atom_concat(P1, RelPath, AbsPath)
+    ;   AbsPath = RelPath
+    ),
+    (   exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Template, [])
+    ;   format(atom(Template), '-- Template not found: ~w', [AbsPath])
+    ).
+
+generate_execute_foreign(DetectedKernels, Code) :-
+    with_output_to(string(Code), (
+        format("executeForeign :: WamContext -> String -> WamState -> Maybe WamState~n"),
+        forall(member(K, DetectedKernels), emit_execute_foreign_entry(K)),
+        format("executeForeign _ _ _ = Nothing~n")
+    )).
+
+emit_execute_foreign_entry('category_ancestor/4') :-
+    format('executeForeign !ctx "category_ancestor/4" s =~n'),
+    format('  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))~n'),
+    format('      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))~n'),
+    format('      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))~n'),
+    format('      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wcForeignConfig ctx)~n'),
+    format('      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wcForeignFacts ctx)~n'),
+    format('  in case (cat, root, visited) of~n'),
+    format('    (Atom catS, Atom rootS, VList visitedVals) ->~n'),
+    format('      let visitedStrs = [v | Atom v <- visitedVals]~n'),
+    format('          hops = nativeKernel_category_ancestor parents catS rootS maxD (length visitedStrs) visitedStrs~n'),
+    format('          retPC = wsCP s~n'),
+    format('          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))~n'),
+    format('          bindHop hopVal =~n'),
+    format('            case hopsReg of~n'),
+    format('              Unbound vid ->~n'),
+    format('                s { wsPC = retPC~n'),
+    format('                  , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)~n'),
+    format('                  , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)~n'),
+    format('                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s~n'),
+    format('                  , wsTrailLen = wsTrailLen s + 1 }~n'),
+    format('              _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }~n'),
+    format('      in case hops of~n'),
+    format('        [] -> Nothing~n'),
+    format('        [h] -> Just (bindHop h)~n'),
+    format('        (h:restHops) ->~n'),
+    format('          let s1 = bindHop h~n'),
+    format('              hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }~n'),
+    format('              cp = ChoicePoint~n'),
+    format('                { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s~n'),
+    format('                , cpCP = wsCP s, cpTrailLen = wsTrailLen s~n'),
+    format('                , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n'),
+    format('                , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n'),
+    format('                , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)~n'),
+    format('                }~n'),
+    format('          in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n'),
+    format('    _ -> Nothing~n').
+emit_execute_foreign_entry(_).  % Unknown kernels: skip
 
 %% detect_kernels(+Predicates, -DetectedKernels)
 %  Run shared kernel detection on each predicate. Returns a list of
@@ -559,38 +646,10 @@ applyAggregation _ vals = VList vals
 
 -- ============================================================================
 -- Foreign Function Interface: native Haskell implementations of expensive
--- recursive predicates. Avoids ~100x WAM interpretation overhead.
+-- recursive predicates. Auto-generated from kernel detection.
 -- ============================================================================
 
--- | Native category_ancestor: depth-bounded DFS over indexed parent facts.
--- Returns all (Hops) values for paths from Cat to Root within maxDepth.
---
--- Hops semantics matches the source Prolog (examples/benchmark/effective_distance.pl):
---   category_ancestor(Cat, Parent, 1, Visited) :- category_parent(Cat, Parent), \\+ member(Parent, Visited).
---   category_ancestor(Cat, Ancestor, Hops, Visited) :- ..., category_ancestor(Mid, Ancestor, H1, [Mid|Visited]), Hops is H1 + 1.
--- A DIRECT parent contributes Hops=1 (not 0!). Grandparent contributes Hops=2.
--- The recursive case adds 1 per level.
---
--- Uses a plain list for visited because depth is bounded (typically <= 10),
--- so O(depth) elem checks are faster than O(log n) Set operations + the
--- per-call Set construction overhead.
-nativeCategoryAncestor :: Map.Map String [String] -> String -> String -> Int -> Int -> [String] -> [Int]
-nativeCategoryAncestor parents cat root maxDepth depth visited =
-  let directParents = fromMaybe [] (Map.lookup cat parents)
-      -- Base case (Prolog clause 1): any direct parent that IS the root
-      -- contributes Hops=1. The Prolog also requires \\+ member(Parent, Visited)
-      -- but since Visited starts as [Cat] and grows with intermediate categories,
-      -- the root cannot normally appear in Visited unless cat == root, in which
-      -- case the cycle check below covers it.
-      baseHits = [1 | p <- directParents, p == root]
-      -- Recursive case (Prolog clause 2): for each direct parent that is not
-      -- yet visited, recurse and add 1 to every returned Hops.
-      recHits = if depth >= maxDepth then [] else
-        concatMap (\\mid ->
-          if mid `elem` visited then []
-          else map (+1) $ nativeCategoryAncestor parents mid root maxDepth (depth+1) (mid : visited)
-        ) directParents
-  in baseHits ++ recHits
+{{kernel_functions}}
 
 -- | Execute a foreign predicate call. Computes all results natively,
 -- returns first result with CPs for the rest.
@@ -634,45 +693,7 @@ callIndexedFact2 !ctx pred s =
           _ -> Nothing
         _ -> Nothing
 
-executeForeign :: WamContext -> String -> WamState -> Maybe WamState
-executeForeign !ctx "category_ancestor/4" s =
-  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
-      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))
-      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))
-      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wcForeignConfig ctx)
-      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wcForeignFacts ctx)
-  in case (cat, root, visited) of
-    (Atom catS, Atom rootS, VList visitedVals) ->
-      let visitedStrs = [v | Atom v <- visitedVals]
-          hops = nativeCategoryAncestor parents catS rootS maxD (length visitedStrs) visitedStrs
-          retPC = wsCP s
-          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))
-          bindHop hopVal =
-            case hopsReg of
-              Unbound vid ->
-                s { wsPC = retPC
-                  , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)
-                  , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)
-                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-                  , wsTrailLen = wsTrailLen s + 1 }
-              _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }
-      in case hops of
-        [] -> Nothing
-        [h] -> Just (bindHop h)   -- single result, no CPs
-        (h:restHops) ->
-          let s1 = bindHop h
-              -- Single HopsRetry CP for all remaining matches (self-popping)
-              hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }
-              cp = ChoicePoint
-                { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
-                , cpCP = wsCP s, cpTrailLen = wsTrailLen s
-                , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
-                , cpCutBar = wsCutBar s, cpAggFrame = Nothing
-                , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)
-                }
-          in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
-    _ -> Nothing
-executeForeign _ _ _ = Nothing
+{{execute_foreign}}
 
 -- | Bind an output register to a value WITHOUT advancing PC.
 -- Used by term-inspection builtins that need to bind multiple
@@ -1197,7 +1218,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     write_hs_file(TypesPath, TypesCode),
 
     % Generate WamRuntime.hs
-    compile_wam_runtime_to_haskell(Options, RuntimeCode0),
+    compile_wam_runtime_to_haskell(Options, DetectedKernels, RuntimeCode0),
     apply_hashmap_rewrite(UseHM, runtime, RuntimeCode0, RuntimeCode),
     directory_file_path(SrcDir, 'WamRuntime.hs', RuntimePath),
     write_hs_file(RuntimePath, RuntimeCode),
@@ -1607,11 +1628,18 @@ build_predicate_loads(Predicates, Code) :-
 '    let allCode = ~w
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
-%% compile_wam_runtime_to_haskell(+Options, -Code)
-compile_wam_runtime_to_haskell(_Options, Code) :-
+%% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
+compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
     step_function_haskell(StepCode),
-    backtrack_haskell(BacktrackCode),
+    backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
+    % Render kernel-specific Haskell from Mustache templates
+    generate_kernel_haskell(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode),
+    % Inject into the backtrack_haskell template via {{placeholder}} substitution
+    render_template(BacktrackCodeTemplate,
+                    [kernel_functions=KernelFunctionsCode,
+                     execute_foreign=ExecuteForeignCode],
+                    BacktrackCode),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
