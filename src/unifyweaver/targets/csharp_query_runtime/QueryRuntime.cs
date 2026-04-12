@@ -11280,6 +11280,29 @@ namespace UnifyWeaver.QueryRuntime
             trace?.AddMetric(node, "scc_output_rows", outputRows);
         }
 
+        private static void RecordPathAwareMinFrontierMetrics(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareMinFrontierMetrics metrics)
+        {
+            trace?.AddMetric(node, "min_frontier_candidate_count", metrics.CandidateCount);
+            trace?.AddMetric(node, "min_frontier_dominance_check_count", metrics.DominanceCheckCount);
+            trace?.AddMetric(node, "min_frontier_dominance_candidate_check_count", metrics.DominanceCandidateCheckCount);
+            trace?.AddMetric(node, "min_frontier_subset_check_count", metrics.SubsetCheckCount);
+            trace?.AddMetric(node, "min_frontier_dominated_state_count", metrics.DominatedStateCount);
+            trace?.AddMetric(node, "min_frontier_recorded_state_count", metrics.RecordedStateCount);
+            trace?.AddMetric(node, "min_frontier_removed_state_count", metrics.RemovedStateCount);
+            trace?.AddMetric(node, "min_frontier_bucket_count", metrics.BucketCount);
+            trace?.AddMetric(node, "min_frontier_bucket_state_count", metrics.BucketStateCount);
+            trace?.RecordMetric(node, "min_frontier_bucket_max_size", metrics.MaxBucketSize);
+            trace?.RecordMetric(
+                node,
+                "min_frontier_bucket_avg_size",
+                metrics.BucketCount == 0
+                    ? 0d
+                    : metrics.BucketStateCount / (double)metrics.BucketCount);
+        }
+
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
             SeedGroupedPathAwareDepthMinNode closure,
             IReadOnlyList<object?> orderedUniqueSeeds,
@@ -12497,6 +12520,9 @@ namespace UnifyWeaver.QueryRuntime
                 long localStates = 0;
                 long outerDagStates = 0;
                 long queuePops = 0;
+                var frontierMetrics = useAdditiveMinFastPath
+                    ? null
+                    : new PathAwareMinFrontierMetrics();
                 void BuildAccumulationRows()
                 {
                     foreach (var seed in edgeState.Seeds)
@@ -12514,7 +12540,7 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         else
                         {
-                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
                         }
                     }
                 }
@@ -12539,6 +12565,10 @@ namespace UnifyWeaver.QueryRuntime
                         closure,
                         new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
                         totalRows.Count);
+                }
+                else if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && frontierMetrics is not null)
+                {
+                    RecordPathAwareMinFrontierMetrics(trace, closure, frontierMetrics);
                 }
 
                 return totalRows;
@@ -12662,6 +12692,9 @@ namespace UnifyWeaver.QueryRuntime
                 long localStates = 0;
                 long outerDagStates = 0;
                 long queuePops = 0;
+                var frontierMetrics = useAdditiveMinFastPath
+                    ? null
+                    : new PathAwareMinFrontierMetrics();
                 void BuildAccumulationRows()
                 {
                     foreach (var seed in seeds)
@@ -12679,7 +12712,7 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         else
                         {
-                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
                         }
                     }
                 }
@@ -12704,6 +12737,10 @@ namespace UnifyWeaver.QueryRuntime
                         closure,
                         new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
                         totalRows.Count);
+                }
+                else if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && frontierMetrics is not null)
+                {
+                    RecordPathAwareMinFrontierMetrics(trace, closure, frontierMetrics);
                 }
 
                 return totalRows;
@@ -12982,7 +13019,8 @@ namespace UnifyWeaver.QueryRuntime
             ArithmeticExpression recursiveExpression,
             ICollection<object[]> output,
             TableMode accumulatorMode,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            PathAwareMinFrontierMetrics? frontierMetrics = null)
         {
             var useMinPruning = accumulatorMode == TableMode.Min;
             var preserveAllPaths = !useMinPruning;
@@ -13016,8 +13054,9 @@ namespace UnifyWeaver.QueryRuntime
             while (stack.Count > 0)
             {
                 var (current, state, depth) = stack.Pop();
-                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, state))
+                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, state, frontierMetrics))
                 {
+                    frontierMetrics?.RecordDominatedState();
                     continue;
                 }
 
@@ -13066,12 +13105,14 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         else
                         {
-                            if (IsDominatedMinState(frontier!, next, nextState))
+                            frontierMetrics?.RecordCandidate();
+                            if (IsDominatedMinState(frontier!, next, nextState, frontierMetrics))
                             {
+                                frontierMetrics?.RecordDominatedState();
                                 continue;
                             }
 
-                            RecordMinState(frontier!, next, nextState);
+                            RecordMinState(frontier!, next, nextState, frontierMetrics);
                             if (!bestKnown!.TryGetValue(next, out var bestAccumulator) ||
                                 CompareValues(nextAccumulator, bestAccumulator) < 0)
                             {
@@ -13086,6 +13127,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (!preserveAllPaths && bestKnown is not null)
             {
+                frontierMetrics?.RecordBucketSnapshot(frontier!);
                 var bestRows = bestKnown
                     .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
                     .ToList();
@@ -13100,8 +13142,10 @@ namespace UnifyWeaver.QueryRuntime
         private static bool IsDominatedMinState(
             IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier,
             object? node,
-            VisitedAccumulatorState state)
+            VisitedAccumulatorState state,
+            PathAwareMinFrontierMetrics? metrics = null)
         {
+            metrics?.RecordDominanceCheck();
             if (!frontier.TryGetValue(node, out var states))
             {
                 return false;
@@ -13109,6 +13153,7 @@ namespace UnifyWeaver.QueryRuntime
 
             foreach (var candidate in states)
             {
+                metrics?.RecordDominanceCandidateCheck();
                 var sameState = ReferenceEquals(candidate.Path, state.Path) && Equals(candidate.Accumulator, state.Accumulator);
                 if (sameState)
                 {
@@ -13126,6 +13171,7 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
+                    (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
                     candidate.Path.IsSubsetOf(state.Path))
                 {
                     return true;
@@ -13138,7 +13184,8 @@ namespace UnifyWeaver.QueryRuntime
         private static void RecordMinState(
             IDictionary<object?, List<VisitedAccumulatorState>> frontier,
             object? node,
-            VisitedAccumulatorState state)
+            VisitedAccumulatorState state,
+            PathAwareMinFrontierMetrics? metrics = null)
         {
             if (!frontier.TryGetValue(node, out var states))
             {
@@ -13160,13 +13207,71 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
+                    (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
                     state.Path.IsSubsetOf(existing.Path))
                 {
                     states.RemoveAt(i);
+                    metrics?.RecordRemovedState();
                 }
             }
 
             states.Add(state);
+            metrics?.RecordRecordedState();
+        }
+
+        private sealed class PathAwareMinFrontierMetrics
+        {
+            public long CandidateCount { get; private set; }
+
+            public long DominanceCheckCount { get; private set; }
+
+            public long DominanceCandidateCheckCount { get; private set; }
+
+            public long SubsetCheckCount { get; private set; }
+
+            public long DominatedStateCount { get; private set; }
+
+            public long RecordedStateCount { get; private set; }
+
+            public long RemovedStateCount { get; private set; }
+
+            public long BucketCount { get; private set; }
+
+            public long BucketStateCount { get; private set; }
+
+            public long MaxBucketSize { get; private set; }
+
+            public void RecordCandidate() => CandidateCount++;
+
+            public void RecordDominanceCheck() => DominanceCheckCount++;
+
+            public void RecordDominanceCandidateCheck() => DominanceCandidateCheckCount++;
+
+            public bool RecordSubsetCheckAndReturnTrue()
+            {
+                SubsetCheckCount++;
+                return true;
+            }
+
+            public void RecordDominatedState() => DominatedStateCount++;
+
+            public void RecordRecordedState() => RecordedStateCount++;
+
+            public void RecordRemovedState() => RemovedStateCount++;
+
+            public void RecordBucketSnapshot(IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier)
+            {
+                BucketCount += frontier.Count;
+                foreach (var states in frontier.Values)
+                {
+                    var count = states.Count;
+                    BucketStateCount += count;
+                    if (count > MaxBucketSize)
+                    {
+                        MaxBucketSize = count;
+                    }
+                }
+            }
         }
 
         private sealed record VisitedAccumulatorState(

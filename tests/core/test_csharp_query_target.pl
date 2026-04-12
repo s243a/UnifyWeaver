@@ -3966,16 +3966,24 @@ verify_path_aware_accumulation_negative_min_frontier_fallback_runtime :-
     sub_string(Source, _, _, _, 'TableMode.Min'),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a]],
-    harness_source_with_strategy_flag_no_reuse(
+    weighted_min_frontier_metric_names(MetricNames),
+    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
+    harness_source_with_strategy_and_metric_flags_no_reuse(
         ModuleClass,
         Params,
         'PathAwareAccumulationSeededMinFrontierFallback',
+        MetricNames,
+        PositiveMetricNames,
         HarnessSource),
+    weighted_min_frontier_metric_expectations(MetricRows),
+    append(['a,b,-1',
+            'a,c,-1',
+            'a,d,2',
+            'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+           MetricRows,
+           ExpectedRows),
     maybe_run_query_runtime_with_harness(Plan,
-        ['a,b,-1',
-         'a,c,-1',
-         'a,d,2',
-         'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+        ExpectedRows,
         Params,
         HarnessSource).
 
@@ -3995,18 +4003,64 @@ verify_path_aware_accumulation_product_min_frontier_fallback_runtime :-
     sub_string(Source, _, _, _, 'TableMode.Min'),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a]],
-    harness_source_with_strategy_flag_no_reuse(
+    weighted_min_frontier_metric_names(MetricNames),
+    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
+    harness_source_with_strategy_and_metric_flags_no_reuse(
         ModuleClass,
         Params,
         'PathAwareAccumulationSeededMinFrontierFallback',
+        MetricNames,
+        PositiveMetricNames,
         HarnessSource),
+    weighted_min_frontier_metric_expectations(MetricRows),
+    append(['a,b,2',
+            'a,c,2',
+            'a,d,6',
+            'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+           MetricRows,
+           ExpectedRows),
     maybe_run_query_runtime_with_harness(Plan,
-        ['a,b,2',
-         'a,c,2',
-         'a,d,6',
-         'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+        ExpectedRows,
         Params,
         HarnessSource).
+
+weighted_min_frontier_metric_names([
+    'min_frontier_candidate_count',
+    'min_frontier_dominance_check_count',
+    'min_frontier_dominance_candidate_check_count',
+    'min_frontier_subset_check_count',
+    'min_frontier_dominated_state_count',
+    'min_frontier_recorded_state_count',
+    'min_frontier_removed_state_count',
+    'min_frontier_bucket_count',
+    'min_frontier_bucket_state_count',
+    'min_frontier_bucket_max_size',
+    'min_frontier_bucket_avg_size'
+]).
+
+weighted_min_frontier_positive_metric_names([
+    'min_frontier_candidate_count',
+    'min_frontier_dominance_check_count',
+    'min_frontier_dominance_candidate_check_count',
+    'min_frontier_recorded_state_count',
+    'min_frontier_bucket_count',
+    'min_frontier_bucket_state_count',
+    'min_frontier_bucket_max_size',
+    'min_frontier_bucket_avg_size'
+]).
+
+weighted_min_frontier_metric_expectations(Rows) :-
+    weighted_min_frontier_metric_names(MetricNames),
+    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
+    findall(Row,
+            (member(Metric, MetricNames),
+             format(atom(Row), 'METRIC_RECORDED:~w=true', [Metric])),
+            RecordedRows),
+    findall(Row,
+            (member(Metric, PositiveMetricNames),
+             format(atom(Row), 'METRIC_POSITIVE:~w=true', [Metric])),
+            PositiveRows),
+    append(RecordedRows, PositiveRows, Rows).
 
 verify_grouped_transitive_closure_plan :-
     csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
@@ -7203,7 +7257,7 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
 
      Console.WriteLine(string.Join(\",\", projected));
    }
- 
+
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
@@ -7317,10 +7371,68 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
 
      Console.WriteLine(string.Join(\",\", projected));
    }
- 
+
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_strategy_and_metric_flags_no_reuse(ModuleClass, Params, Strategy, MetricNames, PositiveMetricNames, Source) :-
+    csharp_string_array_literal(MetricNames, MetricNamesLiteral),
+    csharp_string_array_literal(PositiveMetricNames, PositiveMetricNamesLiteral),
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: false));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   var metrics = trace.SnapshotMetrics().ToDictionary(m => m.Metric, m => m.Value, StringComparer.Ordinal);
+   foreach (var metricName in ~w)
+   {
+       var recorded = metrics.TryGetValue(metricName, out var metricValue);
+       Console.WriteLine(\"METRIC_RECORDED:\" + metricName + \"=\" + (recorded ? \"true\" : \"false\"));
+   }
+   foreach (var metricName in ~w)
+   {
+       metrics.TryGetValue(metricName, out var metricValue);
+       Console.WriteLine(\"METRIC_POSITIVE:\" + metricName + \"=\" + (metricValue > 0 ? \"true\" : \"false\"));
+   }
+   ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy, MetricNamesLiteral, PositiveMetricNamesLiteral]).
 
 cache_query_executor_options(_Cache, BaseOptions, OptionsLiteral) :-
     format(atom(OptionsLiteral),
