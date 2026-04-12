@@ -12488,6 +12488,10 @@ namespace UnifyWeaver.QueryRuntime
                         ? "PathAwareAccumulationMinSccCondensed"
                         : GetAdditiveMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
                 }
+                else if (closure.AccumulatorMode == TableMode.Min)
+                {
+                    trace?.RecordStrategy(closure, "PathAwareAccumulationMinFrontierFallback");
+                }
 
                 var totalRows = new List<object[]>();
                 long localStates = 0;
@@ -12648,6 +12652,10 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordStrategy(closure, useSccCondensedMinFastPath
                         ? "PathAwareAccumulationSeededMinSccCondensed"
                         : GetAdditiveMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
+                }
+                else if (closure.AccumulatorMode == TableMode.Min)
+                {
+                    trace?.RecordStrategy(closure, "PathAwareAccumulationSeededMinFrontierFallback");
                 }
 
                 var totalRows = new List<object[]>();
