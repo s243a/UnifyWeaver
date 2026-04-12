@@ -963,6 +963,18 @@ fn test_generated_predicates() {
         other => panic!("expected filtered_adjusted_min_semantic_dist(s, Target, Min) to bind float cost, got {:?}", other),
     }
 
+    let mut vm_filtered_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok36b = filtered_adjusted_min_semantic_dist(&mut vm_filtered_reverse_any,
+        Value::Unbound("FilteredAnyStart".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Unbound("FilteredReverseGlobalMin".to_string()));
+    assert!(ok36b, "filtered_adjusted_min_semantic_dist(Start, d, Min) should succeed");
+    assert!(vm_filtered_reverse_any.bindings.get("FilteredAnyStart").is_none(), "filtered aggregate wrapper should not bind existential Start");
+    match vm_filtered_reverse_any.bindings.get("FilteredReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected filtered_adjusted_min_semantic_dist(Start, d, Min) to bind float cost, got {:?}", other),
+    }
+
     let mut vm_filtered_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok37 = filtered_adjusted_min_semantic_dist(&mut vm_filtered_exact,
         Value::Atom("s".to_string()),
@@ -1001,6 +1013,19 @@ fn test_generated_predicates() {
     match vm_filtered_astar_any.bindings.get("FilteredAStarGlobalMin").cloned() {
         Some(Value::Float(cost)) => assert_close(cost, 4.0),
         other => panic!("expected filtered_adjusted_min_semantic_dist_astar(s, Target, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_filtered_astar_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok40b = filtered_adjusted_min_semantic_dist_astar(&mut vm_filtered_astar_reverse_any,
+        Value::Unbound("FilteredAStarAnyStart".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Unbound("FilteredAStarReverseGlobalMin".to_string()));
+    assert!(ok40b, "filtered_adjusted_min_semantic_dist_astar(Start, d, 5, Min) should succeed");
+    assert!(vm_filtered_astar_reverse_any.bindings.get("FilteredAStarAnyStart").is_none(), "filtered A* aggregate wrapper should not bind existential Start");
+    match vm_filtered_astar_reverse_any.bindings.get("FilteredAStarReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected filtered_adjusted_min_semantic_dist_astar(Start, d, 5, Min) to bind float cost, got {:?}", other),
     }
 
     let mut vm_filtered_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
@@ -1314,6 +1339,18 @@ fn test_generated_predicates() {
         other => panic!("expected bucketed_min_semantic_dist(s, Bucket, Min) to bind float cost, got {:?}", other),
     }
 
+    let mut vm_bucketed_min_weighted_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok62b = bucketed_min_semantic_dist(&mut vm_bucketed_min_weighted_reverse_any,
+        Value::Unbound("AnyBucketedStart".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Unbound("BucketedReverseGlobalMin".to_string()));
+    assert!(ok62b, "bucketed_min_semantic_dist(Start, goal_bucket, Min) should succeed");
+    assert!(vm_bucketed_min_weighted_reverse_any.bindings.get("AnyBucketedStart").is_none(), "scalar aggregate wrapper should not bind existential Start");
+    match vm_bucketed_min_weighted_reverse_any.bindings.get("BucketedReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected bucketed_min_semantic_dist(Start, goal_bucket, Min) to bind float cost, got {:?}", other),
+    }
+
     let mut vm_bucketed_min_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
     let ok63 = bucketed_min_semantic_dist(&mut vm_bucketed_min_weighted_fail,
         Value::Atom("s".to_string()),
@@ -1345,6 +1382,19 @@ fn test_generated_predicates() {
     match vm_bucketed_min_astar_any.bindings.get("BucketedAStarGlobalMin").cloned() {
         Some(Value::Float(cost)) => assert_close(cost, 4.0),
         other => panic!("expected bucketed_min_semantic_dist_astar(s, Bucket, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_bucketed_min_astar_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok65b = bucketed_min_semantic_dist_astar(&mut vm_bucketed_min_astar_reverse_any,
+        Value::Unbound("AnyAStarBucketedStart".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("BucketedAStarReverseGlobalMin".to_string()));
+    assert!(ok65b, "bucketed_min_semantic_dist_astar(Start, goal_bucket, 5, Min) should succeed");
+    assert!(vm_bucketed_min_astar_reverse_any.bindings.get("AnyAStarBucketedStart").is_none(), "scalar A* aggregate wrapper should not bind existential Start");
+    match vm_bucketed_min_astar_reverse_any.bindings.get("BucketedAStarReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected bucketed_min_semantic_dist_astar(Start, goal_bucket, 5, Min) to bind float cost, got {:?}", other),
     }
 
     let mut vm_bucketed_min_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
