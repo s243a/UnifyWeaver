@@ -107,11 +107,14 @@ test_mixed_non_list_rejected :-
 %% Lowerability stub
 %% ---------------------------------------------------------------------
 
-test_lowerable_stub_always_fails :-
-    Test = 'WAM-Haskell-Lowered Phase 1: wam_haskell_lowerable/3 stub fails',
-    (   \+ wam_haskell_lowerable(foo/1, [], _Reason)
+test_lowerable_rejects_unsupported :-
+    Test = 'WAM-Haskell-Lowered Phase 1: wam_haskell_lowerable/3 rejects unsupported instructions',
+    % Phase 3 whitelist only covers get_constant+proceed. A WAM text
+    % containing a Call instruction must fail lowerability.
+    WamText = "foo/1:\n    call bar/0, 0\n    proceed\n",
+    (   \+ wam_haskell_lowerable(foo/1, WamText, _Reason)
     ->  pass(Test)
-    ;   fail_test(Test, 'stub unexpectedly succeeded')
+    ;   fail_test(Test, 'unsupported Call instruction was accepted')
     ).
 
 %% ---------------------------------------------------------------------
@@ -175,7 +178,7 @@ run_tests :-
     test_mixed_mode_accepted,
     test_unknown_mode_throws,
     test_mixed_non_list_rejected,
-    test_lowerable_stub_always_fails,
+    test_lowerable_rejects_unsupported,
     test_partition_interpreter_mode,
     test_partition_functions_mode,
     test_partition_mixed_mode_hot_and_cold,

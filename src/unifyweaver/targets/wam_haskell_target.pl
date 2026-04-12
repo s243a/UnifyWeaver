@@ -31,7 +31,6 @@
     compile_wam_runtime_to_haskell/2,    % +Options, -HaskellCode
     write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
     wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
-    wam_haskell_lowerable/3,             % +PredIndicator, +WamCode, -Reason
     wam_haskell_partition_predicates/4   % +Mode, +Predicates, -InterpretedList, -LoweredList
 ]).
 
@@ -39,6 +38,12 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+
+% Phase 3: the real lowerability check and emission helpers live in the
+% wam_haskell_lowered_emitter module. We reexport so existing callers can
+% still see wam_haskell_lowerable/3 through this module.
+:- reexport('wam_haskell_lowered_emitter',
+            [wam_haskell_lowerable/3, lower_predicate_to_haskell/4]).
 
 %% ============================================================================
 %% emit_mode selector (Phase 1 of WAM-lowered Haskell path)
@@ -87,20 +92,10 @@ wam_haskell_validate_emit_mode(Other, _) :-
     throw(error(domain_error(wam_haskell_emit_mode, Other),
                 wam_haskell_resolve_emit_mode/2)).
 
-%% wam_haskell_lowerable(+PredIndicator, +WamCode, -Reason)
-%  Phase 1 stub. True if PredIndicator can be lowered to a standalone
-%  Haskell function given its WamCode. Always fails in Phase 1 with
-%  Reason bound to "lowering emitter not yet implemented" — callers
-%  that want to know *why* a predicate could not be lowered should
-%  pre-bind Reason to a variable and inspect it on failure via
-%  catch/wrapper logic. In practice Phase 1 callers only check
-%  success/failure and log a partition summary.
-%
-%  Real lowerability check lands in Phase 3 of the implementation plan,
-%  at which point this stub is replaced with a per-instruction whitelist
-%  check against the WAM IR.
-wam_haskell_lowerable(_PredIndicator, _WamCode, "lowering emitter not yet implemented") :-
-    fail.
+%% wam_haskell_lowerable/3 lives in wam_haskell_lowered_emitter.pl and is
+%% re-exported above. Phase 1 shipped a stub that always failed; Phase 3
+%% replaces it with a real whitelist check against the WAM instruction
+%% sequence.
 
 %% wam_haskell_partition_predicates(+Mode, +Predicates, -InterpretedList, -LoweredList)
 %  Partition Predicates into the two sublists based on Mode and the
@@ -146,15 +141,22 @@ wam_haskell_indicator_in_list(P, HotPreds) :-
 wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
     member(Pred/Arity, HotPreds), !.
 
-% Compile WAM code on demand for the lowerability check. In Phase 1 the
-% stub always fails, so this is unused in practice — but making it
-% available here means Phase 3 can reuse the same plumbing without
-% touching the partition predicates.
+% Compile WAM code on demand for the lowerability check and emission.
 wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+%% lower_all(+LoweredList, -LoweredEntries)
+%  Run the Phase 3+ emitter over each predicate in LoweredList (which
+%  is assumed to contain only predicates the whitelist already accepted).
+%  Each output entry is a term lowered(PredName, FuncName, HaskellCode).
+lower_all([], []).
+lower_all([P|Rest], [Entry|RestEntries]) :-
+    wam_haskell_predicate_wamcode(P, WamCode),
+    lower_predicate_to_haskell(P, WamCode, [], Entry),
+    lower_all(Rest, RestEntries).
 
 % ============================================================================
 % Haskell WAM Runtime Data Types
@@ -1123,11 +1125,13 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
 
-    % Emit Lowered.hs — Phase 2 ships the empty skeleton regardless of
-    % whether LoweredList has entries (it never does in Phase 2, since
-    % the lowerability stub still always fails). This lets Main.hs
-    % unconditionally import qualified Lowered.
-    generate_lowered_hs(LoweredList, LoweredCode0),
+    % Lower each predicate in LoweredList via the Phase 3+ emitter.
+    % Phase 1 stub returned an empty list here; Phase 3 produces one
+    % lowered/3 entry per predicate. The emitter's whitelist check
+    % runs inside the partition helper, so everything in LoweredList
+    % is guaranteed to be lowerable.
+    lower_all(LoweredList, LoweredEntries),
+    generate_lowered_hs(LoweredEntries, LoweredCode0),
     apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
     directory_file_path(SrcDir, 'Lowered.hs', LoweredPath),
     write_hs_file(LoweredPath, LoweredCode),
@@ -1195,39 +1199,63 @@ re_split_replace(S, From, To, Result) :-
     ;   Result = S
     ).
 
-%% generate_lowered_hs(+LoweredList, -Code)
+%% generate_lowered_hs(+LoweredEntries, -Code)
 %  Emit the Lowered.hs module containing one function per predicate in
-%  LoweredList and a loweredPredicates dispatch Map. Phase 2 always
-%  receives an empty LoweredList (Phase 1 stub fails for every predicate),
-%  so this generator emits the skeleton module with Map.empty. Phase 3+
-%  will walk LoweredList and emit a function per predicate via
-%  lower_predicate_to_haskell/4.
+%  LoweredEntries and a loweredPredicates dispatch Map. Each entry is a
+%  term lowered(PredName, FuncName, HaskellCode) produced by the
+%  wam_haskell_lowered_emitter:lower_predicate_to_haskell/4 helper.
 %
-%  The module is emitted regardless of the partition being empty so that
-%  Main.hs can unconditionally `import qualified Lowered` — it is simpler
-%  than making the import conditional on the emit_mode.
-generate_lowered_hs(LoweredList, Code) :-
-    LoweredList = [],   % Phase 2: always empty (enforced by caller's expectation)
-    Code = '{-# LANGUAGE BangPatterns #-}
--- WAM-lowered Haskell predicates.
---
--- Phase 2: empty skeleton. Phase 3+ will emit one function per predicate
--- in the lowered partition and register them in loweredPredicates.
---
--- See docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md §2.1.
-module Lowered where
+%  When the list is empty, emits a skeleton module with
+%  loweredPredicates = Map.empty (Phase 2 shape). The Lowered.hs module
+%  is emitted unconditionally so Main.hs can unconditionally
+%  `import qualified Lowered`.
+%
+%  See docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md §2.1.
+generate_lowered_hs([], Code) :- !,
+    with_output_to(string(Code), (
+        format("{-# LANGUAGE BangPatterns #-}~n"),
+        format("-- WAM-lowered Haskell predicates (empty — no preds lowered).~n"),
+        format("module Lowered where~n~n"),
+        format("import qualified Data.Map.Strict as Map~n"),
+        format("import qualified Data.IntMap.Strict as IM~n"),
+        format("import WamTypes~n"),
+        format("import WamRuntime (derefVar)~n~n"),
+        format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
+        format("loweredPredicates = Map.empty~n")
+    )).
+generate_lowered_hs(LoweredEntries, Code) :-
+    LoweredEntries = [_|_],  % non-empty
+    with_output_to(string(Code), (
+        format("{-# LANGUAGE BangPatterns #-}~n"),
+        format("-- WAM-lowered Haskell predicates.~n"),
+        format("--~n"),
+        format("-- One function per predicate in the lowered partition, plus a~n"),
+        format("-- dispatch map wired into WamContext.wcLoweredPredicates by Main.hs.~n"),
+        format("module Lowered where~n~n"),
+        format("import qualified Data.Map.Strict as Map~n"),
+        format("import qualified Data.IntMap.Strict as IM~n"),
+        format("import WamTypes~n"),
+        format("import WamRuntime (derefVar)~n~n"),
+        % Function definitions
+        forall(member(lowered(_, _, HsCode), LoweredEntries),
+               format("~w~n", [HsCode])),
+        % Dispatch map
+        format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
+        format("loweredPredicates = Map.fromList~n"),
+        format("    [ "),
+        emit_lowered_entries(LoweredEntries),
+        format("    ]~n")
+    )).
 
-import qualified Data.Map.Strict as Map
-import WamTypes
-
--- | Dispatch map from predicate indicator (e.g. "category_ancestor/4") to
--- a Haskell function mirroring the WAM semantics of that predicate.
--- Populated by Main.hs into WamContext.wcLoweredPredicates. Phase 2
--- ships this as Map.empty so the runtime dispatch chain falls through
--- to the interpreter unchanged.
-loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)
-loweredPredicates = Map.empty
-'.
+% Emit the Map.fromList entries, one per line with a leading comma on
+% all but the first.
+emit_lowered_entries([lowered(PredName, FuncName, _)|Rest]) :-
+    format("(\"~w\", ~w)~n", [PredName, FuncName]),
+    emit_lowered_entries_rest(Rest).
+emit_lowered_entries_rest([]).
+emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
+    format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
+    emit_lowered_entries_rest(Rest).
 
 %% generate_main_hs(+Predicates, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
