@@ -1073,6 +1073,42 @@ fn test_generated_predicates() {
         ("d".to_string(), 8.0),
     ]);
 
+    let mut vm_weighted_stream_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok43b = filtered_adjusted_weighted_path(&mut vm_weighted_stream_any_start,
+        Value::Unbound("WeightedStreamStart".to_string()),
+        Value::Unbound("WeightedStreamAnyTarget".to_string()),
+        Value::Unbound("WeightedStreamAnyAdjusted".to_string()));
+    assert!(ok43b, "filtered_adjusted_weighted_path(Start, Target, Adjusted) first solution should succeed");
+    let mut weighted_stream_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_weighted_stream_any_start.bindings.get("WeightedStreamStart").cloned(),
+         vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyTarget").cloned(),
+         vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyAdjusted").cloned()) {
+        weighted_stream_any_start_results.push((start, target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_weighted_path(Start, Target, Adjusted) result");
+    }
+    while vm_weighted_stream_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_weighted_stream_any_start.bindings.get("WeightedStreamStart").cloned(),
+             vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyTarget").cloned(),
+             vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyAdjusted").cloned()) {
+            weighted_stream_any_start_results.push((start, target, cost));
+        } else {
+            panic!("expected filtered_adjusted_weighted_path(Start, Target, Adjusted) backtrack result");
+        }
+    }
+    weighted_stream_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(weighted_stream_any_start_results, vec![
+        ("a".to_string(), "c".to_string(), 4.0),
+        ("a".to_string(), "d".to_string(), 7.0),
+        ("b".to_string(), "d".to_string(), 5.0),
+        ("c".to_string(), "d".to_string(), 4.0),
+        ("s".to_string(), "b".to_string(), 4.0),
+        ("s".to_string(), "c".to_string(), 5.0),
+        ("s".to_string(), "d".to_string(), 8.0),
+    ]);
+
     let mut vm_weighted_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok44 = filtered_adjusted_weighted_path(&mut vm_weighted_stream_exact,
         Value::Atom("s".to_string()),
@@ -1116,6 +1152,35 @@ fn test_generated_predicates() {
         ("c".to_string(), 5.0),
         ("d".to_string(), 8.0),
     ]);
+
+    let mut vm_astar_stream_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok46b = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_any_start,
+        Value::Unbound("AStarStreamStart".to_string()),
+        Value::Unbound("AStarStreamAnyTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarStreamAnyAdjusted".to_string()));
+    assert!(ok46b, "filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) first solution should succeed");
+    let mut astar_stream_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_astar_stream_any_start.bindings.get("AStarStreamStart").cloned(),
+         vm_astar_stream_any_start.bindings.get("AStarStreamAnyTarget").cloned(),
+         vm_astar_stream_any_start.bindings.get("AStarStreamAnyAdjusted").cloned()) {
+        astar_stream_any_start_results.push((start, target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) result");
+    }
+    while vm_astar_stream_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_astar_stream_any_start.bindings.get("AStarStreamStart").cloned(),
+             vm_astar_stream_any_start.bindings.get("AStarStreamAnyTarget").cloned(),
+             vm_astar_stream_any_start.bindings.get("AStarStreamAnyAdjusted").cloned()) {
+            astar_stream_any_start_results.push((start, target, cost));
+        } else {
+            panic!("expected filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) backtrack result");
+        }
+    }
+    astar_stream_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(astar_stream_any_start_results, weighted_stream_any_start_results);
 
     let mut vm_astar_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok47 = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_exact,
@@ -1254,6 +1319,46 @@ fn test_generated_predicates() {
         ("goal_bucket".to_string(), 8.0),
     ]);
 
+    let mut vm_bucketed_weighted_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok55b = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_any_start,
+        Value::Unbound("WeightedBucketStart".to_string()),
+        Value::Unbound("WeightedAnyBucket".to_string()),
+        Value::Unbound("WeightedAnyBucketAdjusted".to_string()));
+    assert!(ok55b, "bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) first solution should succeed");
+    let mut bucketed_weighted_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_weighted_any_start.bindings.get("WeightedBucketStart").cloned(),
+         vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucket").cloned(),
+         vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucketAdjusted").cloned()) {
+        bucketed_weighted_any_start_results.push((start, bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) result");
+    }
+    while vm_bucketed_weighted_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_weighted_any_start.bindings.get("WeightedBucketStart").cloned(),
+             vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucket").cloned(),
+             vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucketAdjusted").cloned()) {
+            bucketed_weighted_any_start_results.push((start, bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) backtrack result");
+        }
+    }
+    bucketed_weighted_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(bucketed_weighted_any_start_results, vec![
+        ("a".to_string(), "branch_bucket".to_string(), 4.0),
+        ("a".to_string(), "goal_bucket".to_string(), 7.0),
+        ("a".to_string(), "goal_bucket".to_string(), 7.0),
+        ("b".to_string(), "goal_bucket".to_string(), 5.0),
+        ("b".to_string(), "goal_bucket".to_string(), 5.0),
+        ("c".to_string(), "goal_bucket".to_string(), 4.0),
+        ("c".to_string(), "goal_bucket".to_string(), 4.0),
+        ("s".to_string(), "branch_bucket".to_string(), 4.0),
+        ("s".to_string(), "branch_bucket".to_string(), 5.0),
+        ("s".to_string(), "goal_bucket".to_string(), 8.0),
+        ("s".to_string(), "goal_bucket".to_string(), 8.0),
+    ]);
+
     let mut vm_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok56 = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_exact,
         Value::Atom("s".to_string()),
@@ -1298,6 +1403,35 @@ fn test_generated_predicates() {
         ("goal_bucket".to_string(), 8.0),
         ("goal_bucket".to_string(), 8.0),
     ]);
+
+    let mut vm_bucketed_astar_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok58b = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_any_start,
+        Value::Unbound("AStarBucketStart".to_string()),
+        Value::Unbound("AStarAnyBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarAnyBucketAdjusted".to_string()));
+    assert!(ok58b, "bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) first solution should succeed");
+    let mut bucketed_astar_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_astar_any_start.bindings.get("AStarBucketStart").cloned(),
+         vm_bucketed_astar_any_start.bindings.get("AStarAnyBucket").cloned(),
+         vm_bucketed_astar_any_start.bindings.get("AStarAnyBucketAdjusted").cloned()) {
+        bucketed_astar_any_start_results.push((start, bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) result");
+    }
+    while vm_bucketed_astar_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_astar_any_start.bindings.get("AStarBucketStart").cloned(),
+             vm_bucketed_astar_any_start.bindings.get("AStarAnyBucket").cloned(),
+             vm_bucketed_astar_any_start.bindings.get("AStarAnyBucketAdjusted").cloned()) {
+            bucketed_astar_any_start_results.push((start, bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) backtrack result");
+        }
+    }
+    bucketed_astar_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(bucketed_astar_any_start_results, bucketed_weighted_any_start_results);
 
     let mut vm_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok59 = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_exact,

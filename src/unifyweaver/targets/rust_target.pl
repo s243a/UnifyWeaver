@@ -4326,6 +4326,56 @@ rust_foreign_stream_terminal_code(Indent, FilterVar, OutputVar, SetupCode, Value
       Indent,
       Indent]).
 
+rust_foreign_stream_with_start_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
+    format(string(Code),
+'~w~wlet output_value = ~w;
+~wif (~w)
+~w    && (~w)
+~w    && (result_filter.as_ref().map(|want| (output_value - *want).abs() < 1e-9).unwrap_or(true)) {
+~w    packed_results.push(Value::Str("__tuple__".to_string(), vec![
+~w        Value::Atom(start.clone()),
+~w        Value::Atom(~w.clone()),
+~w        Value::Float(output_value),
+~w    ]));
+~w}
+', [SetupCode, Indent, ValueExpr,
+      Indent, FilterExpr,
+      Indent, FilterCond,
+      Indent,
+      Indent,
+      Indent,
+      Indent, OutputVar,
+      Indent,
+      Indent,
+      Indent]).
+
+rust_foreign_stream_with_start_dim_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
+    format(string(Code),
+'~w~wlet output_value = ~w;
+~wif (~w)
+~w    && (~w)
+~w    && (result_filter.as_ref().map(|want| (output_value - *want).abs() < 1e-9).unwrap_or(true)) {
+~w    packed_results.push(Value::Str("__tuple__".to_string(), vec![
+~w        Value::Atom(start.clone()),
+~w        Value::Atom(~w.clone()),
+~w        a3.clone(),
+~w        Value::Float(output_value),
+~w    ]));
+~w}
+', [SetupCode, Indent, ValueExpr,
+      Indent, FilterExpr,
+      Indent, FilterCond,
+      Indent,
+      Indent,
+      Indent,
+      Indent, OutputVar,
+      Indent,
+      Indent,
+      Indent,
+      Indent]).
+
 rust_foreign_scalar_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
     rust_foreign_wrapper_filter_expr(FilterVar, OutputVar, FilterExpr),
     format(string(Code),
@@ -4368,6 +4418,10 @@ rust_foreign_grouped_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, 
 
 rust_foreign_terminal_code(stream, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
     rust_foreign_stream_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
+rust_foreign_terminal_code(stream_with_start, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_stream_with_start_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
+rust_foreign_terminal_code(stream_with_start_dim, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
+    rust_foreign_stream_with_start_dim_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
 rust_foreign_terminal_code(scalar_min, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
     rust_foreign_scalar_min_terminal_code(Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code).
 rust_foreign_terminal_code(grouped_min, Indent, FilterVar, OutputVar, SetupCode, ValueExpr, FilterCond, Code) :-
@@ -4427,7 +4481,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
             _ => break,
         };',
        rust_foreign_wrapper_stage_traversal_code([], "target_filter", "target", "&target", "        ",
-           stream, StagePlan, TraversalCode)
+           stream_with_start, StagePlan, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
 '    let join_filter = match &a2 {
@@ -4447,7 +4501,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
        rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
-           stream, StagePlan, TraversalCode)
+           stream_with_start, StagePlan, TraversalCode)
     ; fail
     ),
     atom_string(Pred, PredStr),
@@ -4465,7 +4519,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
     vm.code = Vec::new();
     vm.labels = HashMap::new();
     vm.pc = 1;
-    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_layout("~w", "tuple:3");
     vm.register_foreign_result_mode("~w", "stream");
     vm.register_foreign_native_kind("~w/3", "weighted_shortest_path3");
     vm.register_foreign_result_layout("~w/3", "tuple:2");
@@ -4474,6 +4528,20 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
     vm.register_indexed_weighted_edge_triples("~w", &~w);
 ~w
 ~w
+
+    let start_candidates: Vec<String> = match &a1 {
+        Value::Atom(start) => vec![start.clone()],
+        Value::Unbound(_) => {
+            let mut starts: Vec<String> = Vec::new();
+            for (source, _, _) in &~w {
+                if !starts.iter().any(|item| item.as_str() == *source) {
+                    starts.push((*source).to_string());
+                }
+            }
+            starts
+        }
+        _ => return false,
+    };
 
     let result_filter = match &a3 {
         Value::Float(value) => Some(*value),
@@ -4484,33 +4552,36 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 3,
     let temp_target = "__wrapper_target".to_string();
     let temp_cost = "__wrapper_cost".to_string();
 
-~w
-
-    if !vm.execute_foreign_predicate("~w", 3) {
+    let mut packed_results: Vec<Value> = Vec::new();
+    for start in start_candidates {
         vm.bindings.remove(&temp_target);
         vm.bindings.remove(&temp_cost);
-        return false;
-    }
+~w
+        vm.set_reg("A1", Value::Atom(start.clone()));
 
-    let mut packed_results: Vec<Value> = Vec::new();
-    loop {
+        if !vm.execute_foreign_predicate("~w", 3) {
+            continue;
+        }
+
+        loop {
 ~w
-        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Float(cost)) => cost,
-            _ => break,
-        };
+            let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Float(cost)) => cost,
+                _ => break,
+            };
 ~w
-        if !vm.backtrack() {
-            break;
+            if !vm.backtrack() {
+                break;
+            }
         }
     }
 
     vm.bindings.remove(&temp_target);
     vm.bindings.remove(&temp_cost);
-    vm.finish_foreign_results("~w", vec![a2.clone(), a3.clone()], packed_results)
+    vm.finish_foreign_results("~w", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, TriplesLiteral,
-      JoinRegistrationCode, TargetFilterCode, A2RegCode, InnerPredStr, TargetReadCode,
+      JoinRegistrationCode, TargetFilterCode, TriplesLiteral, A2RegCode, InnerPredStr, TargetReadCode,
       TraversalCode, PredKey]).
 
 compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
@@ -4550,7 +4621,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
             _ => break,
         };',
        rust_foreign_wrapper_stage_traversal_code([], "target_filter", "target", "&target", "        ",
-           stream, StagePlan, TraversalCode)
+           stream_with_start_dim, StagePlan, TraversalCode)
     ; JoinPreds \= [],
        TargetFilterCode =
 '    let join_filter = match &a2 {
@@ -4571,7 +4642,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
        rust_render_join_specs(JoinPreds, JoinSpecs),
        rust_foreign_join_registration_code(JoinSpecs, JoinRegistrationCode),
        rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
-           stream, StagePlan, TraversalCode)
+           stream_with_start_dim, StagePlan, TraversalCode)
     ; fail
     ),
     rust_render_astar_kernel(
@@ -4589,7 +4660,7 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
     vm.code = Vec::new();
     vm.labels = HashMap::new();
     vm.pc = 1;
-    vm.register_foreign_result_layout("~w", "tuple:2");
+    vm.register_foreign_result_layout("~w", "tuple:4");
     vm.register_foreign_result_mode("~w", "stream");
     vm.register_foreign_native_kind("~w/4", "astar_shortest_path4");
     vm.register_foreign_result_layout("~w/4", "tuple:2");
@@ -4602,6 +4673,20 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
 ~w
 ~w
 
+    let start_candidates: Vec<String> = match &a1 {
+        Value::Atom(start) => vec![start.clone()],
+        Value::Unbound(_) => {
+            let mut starts: Vec<String> = Vec::new();
+            for (source, _, _) in &~w {
+                if !starts.iter().any(|item| item.as_str() == *source) {
+                    starts.push((*source).to_string());
+                }
+            }
+            starts
+        }
+        _ => return false,
+    };
+
     let result_filter = match &a4 {
         Value::Float(value) => Some(*value),
         Value::Integer(value) => Some(*value as f64),
@@ -4611,41 +4696,44 @@ compile_rust_foreign_stream_wrapper_from_plan(Pred, 4,
     let temp_target = "__wrapper_target".to_string();
     let temp_cost = "__wrapper_cost".to_string();
 
-~w
-
     let dim_value = match &a3 {
         Value::Integer(d) => *d as f64,
         Value::Float(d) => *d,
         _ => ~w_f64,
     };
 
-    if !vm.execute_foreign_predicate("~w", 4) {
+    let mut packed_results: Vec<Value> = Vec::new();
+    for start in start_candidates {
         vm.bindings.remove(&temp_target);
         vm.bindings.remove(&temp_cost);
-        return false;
-    }
+~w
+        vm.set_reg("A1", Value::Atom(start.clone()));
 
-    let mut packed_results: Vec<Value> = Vec::new();
-    loop {
+        if !vm.execute_foreign_predicate("~w", 4) {
+            continue;
+        }
+
+        loop {
 ~w
-        let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
-            Some(Value::Float(cost)) => cost,
-            _ => break,
-        };
+            let cost = match vm.bindings.get(&temp_cost).cloned().map(|v| vm.deref_var(&v)) {
+                Some(Value::Float(cost)) => cost,
+                _ => break,
+            };
 ~w
-        if !vm.backtrack() {
-            break;
+            if !vm.backtrack() {
+                break;
+            }
         }
     }
 
     vm.bindings.remove(&temp_target);
     vm.bindings.remove(&temp_cost);
-    vm.finish_foreign_results("~w", vec![a2.clone(), a4.clone()], packed_results)
+    vm.finish_foreign_results("~w", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)
 }', [PredStr, PredKey, PredKey, InnerPredStr, InnerPredStr, InnerPredStr,
       InnerPredStr, WeightPredKey, WeightPredKey, WeightTriplesLiteral,
       InnerPredStr, DirectPredKey, DirectPredKey, DirectTriplesLiteral,
-      InnerPredStr, DefaultDim, JoinRegistrationCode, TargetFilterCode, A2RegCode,
-      DefaultDim, InnerPredStr, TargetReadCode, TraversalCode, PredKey]).
+      InnerPredStr, DefaultDim, JoinRegistrationCode, TargetFilterCode, WeightTriplesLiteral,
+      DefaultDim, A2RegCode, InnerPredStr, TargetReadCode, TraversalCode, PredKey]).
 
 compile_rust_foreign_multistage_join_stream_wrapper(Pred, 3, Head, Body, _IncludeMain, RustCode) :-
     rust_foreign_stream_wrapper_plan(Pred, 3, Head, Body, Plan),
