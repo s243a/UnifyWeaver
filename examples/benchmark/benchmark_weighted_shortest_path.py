@@ -52,6 +52,35 @@ class Program
     const string ROOT_CATEGORY = "Physics";
     const int MAX_DEPTH = 10;
 
+    static void PrintRuntimeTrace(QueryExecutionTrace? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"strategy_{strategy.Strategy}={strategy.Count}");
+        }
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"phase_{phase.Phase}_ms={phase.Elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)}");
+        }
+
+        foreach (var metric in trace.SnapshotMetrics()
+            .Where(m => m.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(m => m.Metric, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"metric_{metric.Metric}={metric.Value.ToString("G17", CultureInfo.InvariantCulture)}");
+        }
+    }
+
     static void Main(string[] args)
     {
         if (args.Length < 3)
@@ -181,7 +210,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var trace = new QueryExecutionTrace();
+        var rows = executor.Execute(plan, seedParams, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -262,6 +292,7 @@ class Program
         Console.Error.WriteLine($"largest_scc={sccStats.LargestScc}");
         Console.Error.WriteLine($"largest_cyclic_scc={sccStats.LargestCyclicScc}");
         Console.Error.WriteLine($"condensed_edges={sccStats.CondensedEdgeCount}");
+        PrintRuntimeTrace(trace);
     }
 
     static SccStats ComputeSccStats(Dictionary<string, List<string>> adjacency)

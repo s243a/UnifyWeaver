@@ -130,6 +130,8 @@ The runtime fast path should only activate when:
 - `AccumulatorMode == TableMode.Min`
 - the accumulation expression is monotone additive in practice
 - graph condensation is available
+- the bounded SCC-condensed probe beats the existing layered positive-min
+  path by a margin
 
 The runtime should fall back to the current exact frontier algorithm
 when:
@@ -137,6 +139,7 @@ when:
 - applicability cannot be proven
 - SCC preprocessing fails
 - internal transfer summarization would be lossy
+- measured SCC overhead dominates the existing positive-min path
 
 ## Instrumentation Requirements
 
@@ -150,6 +153,7 @@ At minimum:
 - condensation DAG edge count
 - number of exact local states explored
 - number of outer DAG states explored
+- SCC condensation, SCC probe, and SCC solve phase timings
 - final output row count
 - total runtime
 

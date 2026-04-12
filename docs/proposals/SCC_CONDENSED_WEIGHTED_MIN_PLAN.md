@@ -11,11 +11,16 @@ Current status:
 - positive-additive weighted `min` now has a fast runtime path and
   clearly beats `All`
 - SCC instrumentation is in place in the weighted benchmark harness
-- the remaining work is to broaden fast weighted `min` beyond the
-  positive-additive case
+- an internal SCC-condensed weighted-min candidate now exists for
+  positive-additive `PathAwareAccumulationNode` workloads, with bounded
+  measured selection against the existing layered dynamic-programming path
+- on the current positive-additive benchmark shape, the measured selector
+  rejects SCC condensation because the layered path is still cheaper after
+  SCC build/probe overhead
 
-So the next step remains algorithmic, but for a narrower class of
-workloads than when this plan was first drafted.
+So the next step remains algorithmic, but should focus on cases where the
+frontier fallback still appears instead of replacing the already-fast
+positive-additive layered path unconditionally.
 
 ## Phase 0: Baseline Preservation
 
@@ -58,6 +63,9 @@ Reason:
 
 ## Phase 2: Internal Runtime Prototype
 
+Status: implemented as a measured candidate for the current
+positive-additive runtime shape.
+
 Prototype a new internal runtime strategy for the remaining weighted
 `min` cases not already handled by the positive-additive fast path:
 
@@ -77,24 +85,30 @@ Deliverable:
 
 - an internal C# runtime path behind the existing node
 - no planner change required yet
+- current implementation records SCC graph metrics, SCC probe phases, and
+  probe local/outer state counts through `QueryExecutionTrace`
 
 ## Phase 3: Strategy Selection
 
+Status: implemented for the positive-additive candidate path with bounded
+measured probes.
+
 Add a runtime applicability check:
 
-- use SCC-condensed strategy when safe
+- use SCC-condensed strategy when safe and the bounded probe beats the
+  layered positive-min path by a margin
 - otherwise fall back to current exact frontier
 
 Current selection boundary:
 
 - use the layered dynamic-programming fast path for strictly positive
-  additive `min`
+  additive `min` unless the SCC-condensed measured probe wins
 - use the exact frontier fallback otherwise
 
 Next selection work:
 
-- determine where SCC-condensed evaluation can replace the frontier
-  fallback safely
+- determine where SCC-condensed evaluation can replace the non-positive
+  frontier fallback safely
 
 Deliverable:
 
@@ -119,15 +133,16 @@ Track:
 - total runtime
 - query time
 - SCC metrics
-- local state counts
+- SCC probe/solve phases
+- local state counts and outer condensation-DAG state counts
 
 Current positive-additive benchmark results already satisfy the intended
 performance goal:
 
-- `300`: `3.41x`
-- `1k`: `3.17x`
-- `5k`: `5.03x`
-- `10k`: `6.98x`
+- `300`: `2.93x`
+- `1k`: `2.62x`
+- `5k`: `4.56x`
+- `10k`: `6.84x`
 
 So for the SCC work, success criteria should be read as applying to the
 broader remaining weighted `min` cases that still fall back to the exact

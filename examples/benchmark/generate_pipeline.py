@@ -3123,6 +3123,21 @@ class Program
         }}
     }}
 
+    static void PrintPathMinMetrics(QueryExecutionTrace? trace)
+    {{
+        if (trace is null)
+        {{
+            return;
+        }}
+
+        foreach (var metric in trace.SnapshotMetrics()
+            .Where(m => m.NodeType == nameof(SeedGroupedPathAwareAccumulationMinNode))
+            .OrderBy(m => m.Metric, StringComparer.Ordinal))
+        {{
+            Console.Error.WriteLine($"metric_{{metric.Metric}}={{metric.Value.ToString(\"G17\", CultureInfo.InvariantCulture)}}");
+        }}
+    }}
+
     static void Main(string[] args)
     {{
         if (args.Length < 2)
@@ -3237,6 +3252,7 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintPathMinPhases(trace);
+        PrintPathMinMetrics(trace);
     }}
 }}
 '''
