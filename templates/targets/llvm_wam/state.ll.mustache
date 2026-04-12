@@ -1345,6 +1345,84 @@ wsp_bail:
   ret i1 false
 }
 
+; === M5.12: tc2 common runner helper ===
+; Boolean reachability: is there any path from start to target in the
+; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
+; distance — we only care about the success/failure return. No result
+; register is written (tc2 is arity 2: A1=start, A2=target).
+define i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %tc_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %tc_s_is_atom = icmp eq i32 %tc_s_tag, 0
+  br i1 %tc_s_is_atom, label %tc_check_t, label %tc_bail
+
+tc_check_t:
+  %tc_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %tc_t_is_atom = icmp eq i32 %tc_t_tag, 0
+  br i1 %tc_t_is_atom, label %tc_run_bfs, label %tc_bail
+
+tc_run_bfs:
+  %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %tc_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %tc_dist_slot = alloca i64
+  %tc_ok = call i1 @wam_bfs_atom_distance(
+      i64 %tc_start_id, i64 %tc_target_id,
+      %AtomFactPair* %table, i64 %len,
+      i64 %max_atom_id,
+      i64* %tc_dist_slot)
+  ret i1 %tc_ok
+
+tc_bail:
+  ret i1 false
+}
+
+; === M5.12: Runtime heuristic builder ===
+; Scans a %WeightedFact direct-distance table and builds a per-node
+; heuristic array for a specific target. For each entry where
+; to == %target, writes weight into heuristic[from]. Entries for
+; nodes not in the direct-distance table default to 0.0 (admissible).
+;
+; Returns a malloc'd double* that the caller must free.
+define double* @wam_build_heuristic_from_table(
+    %WeightedFact* %dtable, i64 %dlen,
+    i64 %target, i64 %max_atom_id) {
+entry:
+  %n = add i64 %max_atom_id, 1
+  %bytes = shl i64 %n, 3
+  %mem = call i8* @malloc(i64 %bytes)
+  call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
+  %h = bitcast i8* %mem to double*
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %entry], [%si_next, %scan_next]
+  %si_cmp = icmp ult i64 %si, %dlen
+  br i1 %si_cmp, label %scan_body, label %done
+
+scan_body:
+  %fp = getelementptr %WeightedFact, %WeightedFact* %dtable, i64 %si
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 2
+  %from_id = load i64, i64* %fp_from
+  %to_id   = load i64, i64* %fp_to
+  %w       = load double, double* %fp_w
+  %is_target = icmp eq i64 %to_id, %target
+  br i1 %is_target, label %write_h, label %scan_next
+
+write_h:
+  %h_slot = getelementptr double, double* %h, i64 %from_id
+  store double %w, double* %h_slot
+  br label %scan_next
+
+scan_next:
+  %si_next = add i64 %si, 1
+  br label %scan
+
+done:
+  ret double* %h
+}
+
 ; === M5.10: astar4 common runner helper ===
 ; Parallels @wam_wsp3_run but wraps @wam_astar_weighted_distance
 ; (the M5.4 A* helper). Uses a zeroed heuristic array — the caller
@@ -1405,6 +1483,10 @@ as_bail:
 ; LLVM 21 disallows two definitions of the same function in one
 ; module, so the compile path picks one or the other (weak default
 ; or concrete substituted body) at template-rendering time.
+define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
 define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
   ret i1 false
 }
@@ -1442,8 +1524,8 @@ stub_list_suffix2:
   ret i1 false
 
 stub_transitive_closure2:
-  ; M5: transitive_closure(From, To) via indexed_atom_fact2
-  ret i1 false
+  %tc_r = call i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %tc_r
 
 stub_transitive_distance3:
   ; Delegate to the user-provided impl, passing the instance_id so

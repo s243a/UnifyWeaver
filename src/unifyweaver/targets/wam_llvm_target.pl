@@ -147,6 +147,8 @@ foreign_kernel(PredArity, Kind, Config) :-
 %  DetectorPredicate(+Pred, +Arity, +Clauses, -RecKernel) should bind
 %  RecKernel to a `recursive_kernel(Kind, Pred/Arity, Config)` term
 %  on success.
+llvm_recursive_kernel_detector(transitive_closure2,
+    llvm_recursive_kernel_transitive_closure).
 llvm_recursive_kernel_detector(transitive_distance3,
     llvm_recursive_kernel_transitive_distance).
 llvm_recursive_kernel_detector(weighted_shortest_path3,
@@ -168,6 +170,30 @@ llvm_recursive_kernel_transitive_distance(Pred, Arity, Clauses,
         recursive_kernel(transitive_distance3, Pred/Arity,
             [edge_pred(EdgePred/2)])) :-
     llvm_foreign_lowerable_transitive_distance(Pred, Arity, Clauses, EdgePred).
+
+%% llvm_recursive_kernel_transitive_closure(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the transitive_closure2 clause shape:
+%    pred(Start, Target) :- edge(Start, Target).
+%    pred(Start, Target) :- edge(Start, Mid), pred(Mid, Target).
+llvm_recursive_kernel_transitive_closure(Pred, Arity, Clauses,
+        recursive_kernel(transitive_closure2, Pred/Arity,
+            [edge_pred(EdgePred/2)])) :-
+    llvm_foreign_lowerable_transitive_closure(Pred, Arity, Clauses, EdgePred).
+
+%% llvm_foreign_lowerable_transitive_closure(+Pred, +Arity, +Clauses, -EdgePred).
+%
+%  Ported from rust_target.pl:3933. Simple two-clause transitive
+%  closure pattern.
+llvm_foreign_lowerable_transitive_closure(Pred, 2, Clauses, EdgePred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseStart, BaseTarget],
+    BaseBody =.. [EdgePred, BaseStart, BaseTarget],
+    RecHead =.. [Pred, RecStart, RecTarget],
+    RecBody = (EdgeGoal, RecGoal),
+    EdgeGoal =.. [EdgePred, RecStart, RecMid],
+    RecGoal =.. [Pred, RecMid, RecTarget].
 
 %% llvm_foreign_lowerable_transitive_distance(+Pred, +Arity, +Clauses, -EdgePred).
 %
@@ -307,14 +333,23 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
     ;  build_td3_instance_switch(Td3Entries, Td3ImplBody, Td3Tables),
        replace_td3_weak_default(StateFuncsRaw, Td3ImplBody, StateFuncs0)
     ),
+    % tc2 pass — transitive_closure2 (boolean reachability).
+    findall(TcPredArity-TcConfig,
+        llvm_foreign_kernel_spec(TcPredArity, transitive_closure2, TcConfig),
+        Tc2Entries),
+    ( Tc2Entries == []
+    -> StateFuncsTc = StateFuncs0, Tc2Tables = ''
+    ;  build_tc2_instance_switch(Tc2Entries, Tc2ImplBody, Tc2Tables),
+       replace_tc2_weak_default(StateFuncs0, Tc2ImplBody, StateFuncsTc)
+    ),
     % wsp3 pass — mirror of the td3 pass but for weighted_shortest_path3.
     findall(WspPredArity-WspConfig,
         llvm_foreign_kernel_spec(WspPredArity, weighted_shortest_path3, WspConfig),
         Wsp3Entries),
     ( Wsp3Entries == []
-    -> StateFuncs1 = StateFuncs0, Wsp3Tables = ''
+    -> StateFuncs1 = StateFuncsTc, Wsp3Tables = ''
     ;  build_wsp3_instance_switch(Wsp3Entries, Wsp3ImplBody, Wsp3Tables),
-       replace_wsp3_weak_default(StateFuncs0, Wsp3ImplBody, StateFuncs1)
+       replace_wsp3_weak_default(StateFuncsTc, Wsp3ImplBody, StateFuncs1)
     ),
     % astar4 pass
     findall(AsPredArity-AsConfig,
@@ -326,11 +361,11 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
        replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
     ),
     % Concatenate the per-kind global tables into one Globals blob.
-    ( Td3Tables == '', Wsp3Tables == '', Astar4Tables == ''
+    ( Td3Tables == '', Tc2Tables == '', Wsp3Tables == '', Astar4Tables == ''
     -> Globals = ''
     ;  atomic_list_concat([
            '; === foreign kernel support globals ===\n',
-           Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
+           Tc2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
        ], Globals)
     ).
 
@@ -419,6 +454,58 @@ build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) 
     llvm_emit_atom_fact2_table(TableName, Pairs, TableIR),
     length(Pairs, Len),
     ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
+
+%% build_tc2_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  Emits @wam_tc2_kernel_impl with a switch dispatching each instance
+%  to its own %AtomFactPair edge table and a call to @wam_tc2_run.
+%  Reuses build_td3_instance_table for the table emission since tc2
+%  and td3 both use edge_pred/2 → %AtomFactPair.
+build_tc2_instance_switch(Entries, ImplBody, TablesIR) :-
+    build_tc2_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    atomic_list_concat(Tables, '\n\n', TablesIR),
+    format(atom(ImplBody),
+'define i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %tc_bail [
+~w
+  ]
+
+~w
+
+tc_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_tc2_instance_parts([], _, [], [], []).
+build_tc2_instance_parts([PredArity-Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
+    PredArity = Pred/_,
+    sanitize_atom_for_llvm(Pred, SanePred),
+    format(atom(TableName), 'tc2_inst_~w_~w_edges', [SanePred, Index]),
+    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
+    format(atom(SwitchCase), '    i32 ~w, label %tc_inst_~w', [Index, Index]),
+    format(atom(Body),
+'tc_inst_~w:
+  %tc_tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
+  %tc_r_~w = call i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %tc_tbl_~w, i64 ~w, i64 ~w)
+  ret i1 %tc_r_~w',
+        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
+    NextIndex is Index + 1,
+    build_tc2_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% replace_tc2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_tc2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: could not find tc2 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
 
 %% build_wsp3_instance_switch(+Entries, -ImplBody, -TablesIR).
 %
@@ -549,21 +636,53 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
     format(atom(EdgeTableName), 'astar4_inst_~w_~w_edges', [SanePred, Index]),
     format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
     build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
-    build_astar4_heuristic_array(Config, MaxAtomId, HeuristicName,
-        HeuristicIR, HeuristicArrSize),
-    format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, HeuristicIR]),
-    format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
-    format(atom(Body),
+    % Check if direct_dist_pred is configured for runtime heuristic.
+    ( member(direct_dist_pred(DDPred), Config)
+    -> % Runtime heuristic: emit a %WeightedFact table for direct distances
+       % and build the heuristic dynamically at query time.
+       format(atom(DDTableName), 'astar4_inst_~w_~w_direct', [SanePred, Index]),
+       build_wsp3_instance_table(
+           [weight_pred(DDPred)], DDTableName, DDTableIR, DDGepLen, DDEffLen, DDMaxAtomId),
+       MaxAtomIdAll is max(MaxAtomId, DDMaxAtomId),
+       format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, DDTableIR]),
+       format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
+       format(atom(Body),
+'as_inst_~w:
+  %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
+  %as_dtbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
+  %as_target_~w = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_h_~w = call double* @wam_build_heuristic_from_table(
+      %WeightedFact* %as_dtbl_~w, i64 ~w,
+      i64 %as_target_~w, i64 ~w)
+  %as_r_~w = call i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %as_tbl_~w, i64 ~w, double* %as_h_~w, i64 ~w)
+  %as_h_raw_~w = bitcast double* %as_h_~w to i8*
+  call void @free(i8* %as_h_raw_~w)
+  ret i1 %as_r_~w',
+           [Index,
+            Index, GepLen, GepLen, EdgeTableName,
+            Index, DDGepLen, DDGepLen, DDTableName,
+            Index,
+            Index, Index, DDEffLen,
+            Index, MaxAtomIdAll,
+            Index, Index, EffLen, Index, MaxAtomIdAll,
+            Index, Index, Index, Index])
+    ;  % Static heuristic (compile-time, possibly zero).
+       build_astar4_heuristic_array(Config, MaxAtomId, HeuristicName,
+           HeuristicIR, HeuristicArrSize),
+       format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, HeuristicIR]),
+       format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
+       format(atom(Body),
 'as_inst_~w:
   %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
   %as_h_~w = getelementptr [~w x double], [~w x double]* @~w, i64 0, i64 0
   %as_r_~w = call i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %as_tbl_~w, i64 ~w, double* %as_h_~w, i64 ~w)
   ret i1 %as_r_~w',
-        [Index,
-         Index, GepLen, GepLen, EdgeTableName,
-         Index, HeuristicArrSize, HeuristicArrSize, HeuristicName,
-         Index, Index, EffLen, Index, MaxAtomId,
-         Index]),
+           [Index,
+            Index, GepLen, GepLen, EdgeTableName,
+            Index, HeuristicArrSize, HeuristicArrSize, HeuristicName,
+            Index, Index, EffLen, Index, MaxAtomId,
+            Index])
+    ),
     NextIndex is Index + 1,
     build_astar4_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
 
