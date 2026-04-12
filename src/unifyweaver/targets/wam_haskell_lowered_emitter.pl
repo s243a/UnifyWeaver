@@ -2,207 +2,306 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% wam_haskell_lowered_emitter.pl - WAM-lowered Haskell emission (Phase 3+)
+% wam_haskell_lowered_emitter.pl — WAM-lowered Haskell emission (Phase 4+)
 %
-% Emits one Haskell function per Prolog predicate, mirroring the WAM
-% interpreter's step-function semantics inline. The resulting function
-% has the shape:
+% Emits one Haskell function per predicate using Maybe-monad do-notation.
+% Simple register operations are inlined as `let` bindings; complex
+% instructions (Call, BuiltinCall, GetConstant, PutStructure sequences)
+% delegate to `step` or `dispatchCall` from WamRuntime. This gives us:
+%   - No per-instruction array-fetch for the hot path
+%   - GHC can specialize step calls for known instruction constructors
+%   - Correctness for free via step's existing semantics
 %
-%     lowered_<name>_<arity> :: WamContext -> WamState -> Maybe WamState
-%
-% and is invoked by WamRuntime.step's Call dispatch chain via the
-% wcLoweredPredicates lookup (see Phase 2).
-%
-% Phase 3 ships only the smallest useful whitelist — `get_constant` and
-% `proceed` — which covers single-clause facts with integer/atom
-% arguments. Phase 4+ expands the whitelist.
-%
-% See docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md §2 for the
-% per-instruction → Haskell mapping contract, and
-% docs/design/WAM_HASKELL_LOWERED_IMPLEMENTATION_PLAN.md §"Phase 3" for
-% the ordering.
+% For multi-clause predicates, only clause 1 is lowered. Clause 2+ stays
+% in the interpreter's instruction array for backtrack fallback.
 
 :- module(wam_haskell_lowered_emitter, [
-    wam_haskell_lowerable/3,       % +PredIndicator, +WamCode, -Reason
-    lower_predicate_to_haskell/4   % +PredIndicator, +WamCode, +Options, -Lowered
+    wam_haskell_lowerable/3,
+    lower_predicate_to_haskell/4
 ]).
 
 :- use_module(library(lists)).
 
-%% ---------------------------------------------------------------------
+%% =====================================================================
 %% Parsing
-%% ---------------------------------------------------------------------
-%
-% The WAM target (wam_target.pl) emits WAM as text. Each predicate's
-% WamCode argument is a multi-line atom/string with one line per
-% instruction. The first line is always the predicate label
-% (`<name>/<arity>:`), followed by indented instruction lines. An
-% instruction line splits into a mnemonic (e.g. `get_constant`) and
-% argument tokens, possibly with trailing commas.
+%% =====================================================================
 
-%% parse_wam_text(+WamText, -Instructions)
-%  Parse a WAM text atom/string into a list of instruction terms.
-%  Returns a list of compound terms whose functor is the mnemonic and
-%  whose arguments are the token strings in order (commas stripped).
-%  Skips blank lines and the predicate-label line.
-parse_wam_text(WamText, Instructions) :-
+parse_wam_text(WamText, PCInstrs, LabelMap) :-
     atom_string(WamText, S),
     split_string(S, "\n", "", Lines),
-    parse_wam_lines(Lines, Instructions).
+    parse_lines(Lines, 1, PCInstrs, LabelMap).
 
-parse_wam_lines([], []).
-parse_wam_lines([Line|Rest], Instructions) :-
-    string_trim(Line, Trimmed),
+parse_lines([], _, [], []).
+parse_lines([Line|Rest], PC, Instrs, Labels) :-
+    split_string(Line, "", " \t", [Trimmed]),
     (   Trimmed == ""
-    ->  parse_wam_lines(Rest, Instructions)
-    ;   sub_string(Trimmed, _, 1, 0, ":")   % label line like "foo/1:"
-    ->  parse_wam_lines(Rest, Instructions)
-    ;   tokenize_instruction(Trimmed, Instr),
-        Instructions = [Instr|InstructionsRest],
-        parse_wam_lines(Rest, InstructionsRest)
+    ->  parse_lines(Rest, PC, Instrs, Labels)
+    ;   sub_string(Trimmed, _, 1, 0, ":")
+    ->  sub_string(Trimmed, 0, _, 1, LStr),
+        atom_string(LAtom, LStr),
+        Labels = [LAtom-PC|LabelsRest],
+        parse_lines(Rest, PC, Instrs, LabelsRest)
+    ;   tokenize(Trimmed, Instr),
+        PC1 is PC + 1,
+        Instrs = [pc(PC, Instr)|InstrsRest],
+        parse_lines(Rest, PC1, InstrsRest, Labels)
     ).
 
-string_trim(S, T) :-
-    split_string(S, "", " \t", [T0]),
-    T = T0.
-
-tokenize_instruction(Line, Term) :-
+tokenize(Line, Term) :-
     split_string(Line, " \t", " \t,", Tokens),
-    exclude(=(""), Tokens, NonEmpty),
-    NonEmpty = [MnemonicStr|Args],
-    atom_string(Mnemonic, MnemonicStr),
-    Term =.. [Mnemonic|Args].
+    exclude(=(""), Tokens, [MStr|Args]),
+    atom_string(M, MStr),
+    Term =.. [M|Args].
 
-%% ---------------------------------------------------------------------
+%% =====================================================================
 %% Lowerability
-%% ---------------------------------------------------------------------
+%% =====================================================================
 
-%% wam_haskell_lowerable(+PredIndicator, +WamCode, -Reason)
-%  True iff PredIndicator's WamCode consists entirely of instructions
-%  in the Phase 3 whitelist. On failure, Reason is left unbound — the
-%  caller that cares why a predicate could not be lowered should log
-%  the Reason via a separate helper.
-wam_haskell_lowerable(_PredIndicator, WamCode, _Reason) :-
-    parse_wam_text(WamCode, Instructions),
-    % Phase 3 whitelist + structural constraint: all instructions must
-    % be supported, the sequence must end with proceed, and there must
-    % be exactly one proceed (no branching within the predicate body).
-    forall(member(I, Instructions), phase3_supported(I)),
-    last(Instructions, proceed),
-    include(=(proceed), Instructions, Proceeds),
-    length(Proceeds, 1).
+wam_haskell_lowerable(_PI, WamCode, _Reason) :-
+    parse_wam_text(WamCode, PCInstrs, _),
+    clause1_instrs(PCInstrs, C1),
+    forall(member(I, C1), supported(I)).
 
-phase3_supported(get_constant(_, _)).
-phase3_supported(proceed).
+clause1_instrs([], []).
+clause1_instrs([pc(_, try_me_else(_))|Rest], C1) :- !,
+    take_to_proceed(Rest, C1).
+clause1_instrs(PCInstrs, Instrs) :-
+    maplist([pc(_, I), I]>>true, PCInstrs, Instrs).
 
-%% ---------------------------------------------------------------------
+take_to_proceed([], []).
+take_to_proceed([pc(_, proceed)|_], [proceed]) :- !.
+take_to_proceed([pc(_, I)|Rest], [I|More]) :- take_to_proceed(Rest, More).
+
+supported(try_me_else(_)).
+supported(allocate).
+supported(deallocate).
+supported(get_constant(_, _)).
+supported(get_variable(_, _)).
+supported(get_value(_, _)).
+supported(put_constant(_, _)).
+supported(put_variable(_, _)).
+supported(put_value(_, _)).
+supported(put_structure(_, _)).
+supported(put_list(_)).
+supported(set_value(_)).
+supported(set_constant(_)).
+supported(call(_, _)).
+supported(builtin_call(_, _)).
+supported(proceed).
+
+%% =====================================================================
 %% Emission
-%% ---------------------------------------------------------------------
+%% =====================================================================
 
-%% lower_predicate_to_haskell(+PredIndicator, +WamCode, +Options, -Lowered)
-%  Lower PredIndicator to a Haskell function. Lowered is a term
-%      lowered(PredName, FuncName, HaskellCode)
-%  where PredName is the Prolog-style "<name>/<arity>" key used by
-%  wcLoweredPredicates dispatch, FuncName is the Haskell identifier of
-%  the generated function, and HaskellCode is the full source text of
-%  that function (ready to splice into Lowered.hs).
-lower_predicate_to_haskell(PredIndicator, WamCode, _Options,
-                           lowered(PredName, FuncName, HaskellCode)) :-
-    (   PredIndicator = _Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity
-    ),
+lower_predicate_to_haskell(PI, WamCode, Opts, lowered(PredName, FuncName, Code)) :-
+    ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     format(atom(FuncName), 'lowered_~w_~w', [Pred, Arity]),
-    parse_wam_text(WamCode, Instructions),
-    emit_function(FuncName, Instructions, HaskellCode).
+    % base_pc(N) offsets local PCs to match the global merged instruction array.
+    ( member(base_pc(BasePC), Opts) -> true ; BasePC = 1 ),
+    parse_wam_text(WamCode, PCInstrs, LabelMap),
+    % Offset all PCs: local PC 1 maps to global BasePC.
+    Offset is BasePC - 1,
+    offset_pcs(PCInstrs, Offset, GlobalPCInstrs),
+    offset_labels(LabelMap, Offset, GlobalLabelMap),
+    with_output_to(string(Code), emit_func(FuncName, GlobalPCInstrs, GlobalLabelMap)).
 
-%% emit_function(+FuncName, +Instructions, -HaskellCode)
-%  Emit a complete Haskell function definition for the whitelisted
-%  instruction sequence. Phase 3 only supports a run of GetConstants
-%  followed by a single Proceed.
-emit_function(FuncName, Instructions, HaskellCode) :-
-    append(GetConstants, [proceed], Instructions),
-    forall(member(GC, GetConstants), GC = get_constant(_, _)),
-    with_output_to(string(HaskellCode), (
-        format("-- | Lowered form (Phase 3: get_constant+proceed)~n"),
-        format("~w :: WamContext -> WamState -> Maybe WamState~n", [FuncName]),
-        format("~w !_ctx s0 =~n", [FuncName]),
-        emit_chain(GetConstants, 0)
-    )).
+offset_pcs([], _, []).
+offset_pcs([pc(PC, I)|Rest], Off, [pc(GPC, I)|Rest2]) :-
+    GPC is PC + Off,
+    offset_pcs(Rest, Off, Rest2).
 
-%% emit_chain(+GetConstantList, +Depth)
-%  Print the body chain directly to current output. Each recursive step
-%  handles one GetConstant at state variable s<Depth>, threading into
-%  s<Depth+1>. When the list is empty, prints the inlined Proceed tail
-%  at the current state variable.
-emit_chain([], Depth) :-
-    format(atom(SV), 's~w', [Depth]),
-    emit_proceed_tail(SV).
-emit_chain([get_constant(CStr, RegStr)|Rest], Depth) :-
-    value_to_haskell(CStr, HsConst),
-    reg_to_int(RegStr, RegId),
-    NextDepth is Depth + 1,
-    format(atom(SV),   's~w',   [Depth]),
-    format(atom(SVn),  's~w',   [NextDepth]),
-    format(atom(VIDn), 'vid~w', [Depth]),
-    indent_for(Depth, Pad),
-    format("~w  case fmap (derefVar (wsBindings ~w)) (IM.lookup ~w (wsRegs ~w)) of~n",
-           [Pad, SV, RegId, SV]),
-    format("~w    Just v | v == (~w) ->~n", [Pad, HsConst]),
-    format("~w      let ~w = ~w in~n",      [Pad, SVn, SV]),
-    emit_chain(Rest, NextDepth),
-    format("~w    Just (Unbound ~w) ->~n",  [Pad, VIDn]),
-    format("~w      let ~w = ~w { wsRegs = IM.insert ~w (~w) (wsRegs ~w)~n",
-           [Pad, SVn, SV, RegId, HsConst, SV]),
-    format("~w                  , wsBindings = IM.insert ~w (~w) (wsBindings ~w)~n",
-           [Pad, VIDn, HsConst, SV]),
-    format("~w                  , wsTrail = TrailEntry ~w (IM.lookup ~w (wsBindings ~w)) : wsTrail ~w~n",
-           [Pad, VIDn, VIDn, SV, SV]),
-    format("~w                  , wsTrailLen = wsTrailLen ~w + 1~n", [Pad, SV]),
-    format("~w                  }~n", [Pad]),
-    format("~w      in~n", [Pad]),
-    emit_chain(Rest, NextDepth),
-    format("~w    _ -> Nothing~n", [Pad]).
+offset_labels([], _, []).
+offset_labels([L-PC|Rest], Off, [L-GPC|Rest2]) :-
+    GPC is PC + Off,
+    offset_labels(Rest, Off, Rest2).
 
-%% emit_proceed_tail(+StateVar)
-%  Emit the inline Proceed logic as the innermost continuation of a
-%  lowered predicate at the given state variable.
-emit_proceed_tail(StateVar) :-
-    format("      let retAddr = wsCP ~w~n", [StateVar]),
-    format("      in if retAddr == 0~n"),
-    format("         then Just (~w { wsPC = 0 })~n", [StateVar]),
-    format("         else Just (~w { wsPC = retAddr, wsCP = 0 })~n", [StateVar]).
+emit_func(FN, PCInstrs, LabelMap) :-
+    format("-- | Lowered: ~w~n", [FN]),
+    format("~w :: WamContext -> WamState -> Maybe WamState~n", [FN]),
+    % Multi-clause: push CP, try clause 1, if it fails backtrack into
+    % the interpreter for clause 2+. This ensures the CP is visible
+    % to the backtrack machinery even when clause 1 returns Nothing.
+    (   PCInstrs = [pc(_, try_me_else(LStr))|BodyPCs]
+    ->  atom_string(LAtom, LStr),
+        (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
+        format("~w !ctx s_init =~n", [FN]),
+        format("  let s_cp = s_init { wsCPs = ChoicePoint~n"),
+        format("        { cpNextPC = ~w, cpRegs = wsRegs s_init, cpStack = wsStack s_init~n", [AltPC]),
+        format("        , cpCP = wsCP s_init, cpTrailLen = wsTrailLen s_init~n"),
+        format("        , cpHeapLen = wsHeapLen s_init, cpBindings = wsBindings s_init~n"),
+        format("        , cpCutBar = wsCutBar s_init, cpAggFrame = Nothing, cpBuiltin = Nothing~n"),
+        format("        } : wsCPs s_init~n"),
+        format("        , wsCPsLen = wsCPsLen s_init + 1 }~n"),
+        format("  in case clause1 s_cp of~n"),
+        format("       Just result -> Just result~n"),
+        format("       Nothing -> backtrack s_cp >>= \\s_bt -> run ctx s_bt~n"),
+        format("  where~n"),
+        format("    clause1 s_c1 = do~n"),
+        take_to_proceed_pc(BodyPCs, Clause1PCs),
+        emit_instrs(Clause1PCs, "s_c1", "      ")
+    ;   % Single-clause: simple do-notation
+        format("~w !ctx s_init = do~n", [FN]),
+        emit_instrs(PCInstrs, "s_init", "  ")
+    ).
 
-%% indent_for(+Depth, -Indent)
-%  Produce an indentation string for a given nesting depth.
-indent_for(0, '').
-indent_for(N, Indent) :-
-    N > 0,
-    N1 is N - 1,
-    indent_for(N1, Prev),
-    atom_concat(Prev, '      ', Indent).
+take_to_proceed_pc([], []).
+take_to_proceed_pc([pc(PC, proceed)|_], [pc(PC, proceed)]) :- !.
+take_to_proceed_pc([H|T], [H|R]) :- take_to_proceed_pc(T, R).
 
-%% ---------------------------------------------------------------------
-%% Value and register translation (local to the emitter; intentionally
-%% duplicates the equivalent helpers in wam_haskell_target.pl so the
-%% emitter module has no circular import into its caller).
-%% ---------------------------------------------------------------------
+%% emit_instrs(+PCInstrs, +CurrentStateVar, +IndentPrefix)
+%  Emit one line of do-notation per instruction, threading state vars.
+emit_instrs([], _, _).
+emit_instrs([pc(PC, Instr)|Rest], SV, Ind) :-
+    emit_one(Instr, PC, SV, SVout, Ind),
+    emit_instrs(Rest, SVout, Ind).
 
-value_to_haskell(Str, Hs) :-
+%% emit_one(+Instr, +PC, +StateVarIn, -StateVarOut, +IndentPrefix)
+%  Emit do-notation for a single instruction.
+
+% Terminal: proceed
+emit_one(proceed, _, SV, SV, I) :-
+    format("~wlet ret_ = wsCP ~w~n", [I, SV]),
+    format("~wif ret_ == 0 then Just (~w { wsPC = 0 }) else Just (~w { wsPC = ret_, wsCP = 0 })~n",
+           [I, SV, SV]).
+
+% Allocate — always succeeds, use let
+emit_one(allocate, _, SV, SVout, I) :-
+    fresh_sv(SV, SVout),
+    format("~wlet ~w = ~w { wsStack = EnvFrame (wsCP ~w) IM.empty : wsStack ~w, wsCutBar = wsCPsLen ~w }~n",
+           [I, SVout, SV, SV, SV, SV]).
+
+% Deallocate — use step
+emit_one(deallocate, PC, SV, SVout, I) :-
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) Deallocate~n", [I, SVout, SV, PC]).
+
+% GetVariable Xn Ai — always succeeds, inline register copy
+emit_one(get_variable(XnStr, AiStr), _, SV, SVout, I) :-
+    reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (derefVar (wsBindings ~w) (fromMaybe (Atom \"\") (IM.lookup ~w (wsRegs ~w)))) (wsRegs ~w) }~n",
+           [I, SVout, SV, Xn, SV, Ai, SV, SV]).
+
+% GetConstant C Ai — can fail, use step
+emit_one(get_constant(CStr, AiStr), PC, SV, SVout, I) :-
+    val_hs(CStr, HC), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetConstant (~w) ~w)~n",
+           [I, SVout, SV, PC, HC, Ai]).
+
+% GetValue — can fail (unification), use step
+emit_one(get_value(XnStr, AiStr), PC, SV, SVout, I) :-
+    reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (GetValue ~w ~w)~n",
+           [I, SVout, SV, PC, Xn, Ai]).
+
+% PutValue Xn Ai — always succeeds, inline
+emit_one(put_value(XnStr, AiStr), _, SV, SVout, I) :-
+    reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (fromMaybe (Atom \"\") (getReg ~w ~w)) (wsRegs ~w) }~n",
+           [I, SVout, SV, Ai, Xn, SV, SV]).
+
+% PutVariable Xn Ai — always succeeds, inline (creates fresh Unbound)
+emit_one(put_variable(XnStr, AiStr), _, SV, SVout, I) :-
+    reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~wlet v_~w = Unbound (wsVarCounter ~w)~n", [I, SVout, SV]),
+    format("~w    ~w = (putReg ~w v_~w ~w) { wsRegs = IM.insert ~w v_~w (wsRegs (putReg ~w v_~w ~w)), wsVarCounter = wsVarCounter ~w + 1 }~n",
+           [I, SVout, Xn, SVout, SV, Ai, SVout, Xn, SVout, SV, SV]).
+
+% PutConstant C Ai — always succeeds, inline
+emit_one(put_constant(CStr, AiStr), _, SV, SVout, I) :-
+    val_hs(CStr, HC), reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (~w) (wsRegs ~w) }~n",
+           [I, SVout, SV, Ai, HC, SV]).
+
+% PutStructure, PutList, SetValue, SetConstant — delegate to step
+emit_one(put_structure(FnStr, AiStr), PC, SV, SVout, I) :-
+    reg_to_int(AiStr, Ai),
+    parse_functor(FnStr, FuncName, Arity),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (PutStructure \"~w\" ~w ~w)~n",
+           [I, SVout, SV, PC, FuncName, Ai, Arity]).
+
+emit_one(put_list(AiStr), PC, SV, SVout, I) :-
+    reg_to_int(AiStr, Ai),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (PutList ~w)~n",
+           [I, SVout, SV, PC, Ai]).
+
+emit_one(set_value(XnStr), PC, SV, SVout, I) :-
+    reg_to_int(XnStr, Xn),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (SetValue ~w)~n",
+           [I, SVout, SV, PC, Xn]).
+
+emit_one(set_constant(CStr), PC, SV, SVout, I) :-
+    val_hs(CStr, HC),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (SetConstant (~w))~n",
+           [I, SVout, SV, PC, HC]).
+
+% Call — use dispatchCall helper
+emit_one(call(PredStr, _NStr), PC, SV, SVout, I) :-
+    RetPC is PC + 1,
+    fresh_sv(SV, SVout),
+    format("~w~w <- dispatchCall ctx \"~w\" (~w { wsCP = ~w })~n",
+           [I, SVout, PredStr, SV, RetPC]).
+
+% BuiltinCall — delegate to step
+emit_one(builtin_call(OpStr, NStr), PC, SV, SVout, I) :-
+    escape_bs(OpStr, EOp),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (BuiltinCall \"~w\" ~w)~n",
+           [I, SVout, SV, PC, EOp, NStr]).
+
+%% =====================================================================
+%% Helpers
+%% =====================================================================
+
+%% fresh_sv(+Current, -Next) — generate next state variable name
+fresh_sv(Cur, Next) :-
+    atom_string(Cur, CStr),
+    (   sub_string(CStr, 0, _, _, "s_")
+    ->  sub_string(CStr, 2, _, 0, NumPart),
+        (   number_string(N, NumPart) -> N1 is N + 1
+        ;   N1 = 0
+        ),
+        format(atom(Next), 's_~w', [N1])
+    ;   Next = 's_0'
+    ).
+
+val_hs(Str, Hs) :-
     (   number_string(N, Str), integer(N)
-    ->  format(string(Hs), 'Integer ~w', [N])
+    ->  format(atom(Hs), 'Integer ~w', [N])
     ;   number_string(F, Str), float(F)
-    ->  format(string(Hs), 'Float ~w', [F])
-    ;   format(string(Hs), 'Atom "~w"', [Str])
+    ->  format(atom(Hs), 'Float ~w', [F])
+    ;   format(atom(Hs), 'Atom "~w"', [Str])
     ).
 
 reg_to_int(Reg, Int) :-
     atom_string(RegA, Reg),
-    sub_atom(RegA, 0, 1, _, Bank),
-    sub_atom(RegA, 1, _, 0, NumA),
-    atom_number(NumA, Num),
-    (   Bank == 'A' -> Int = Num
-    ;   Bank == 'X' -> Int is Num + 100
-    ;   Bank == 'Y' -> Int is Num + 200
-    ;   Int = 0
+    sub_atom(RegA, 0, 1, _, B),
+    sub_atom(RegA, 1, _, 0, NA),
+    atom_number(NA, Num),
+    ( B == 'A' -> Int = Num ; B == 'X' -> Int is Num + 100
+    ; B == 'Y' -> Int is Num + 200 ; Int = 0 ).
+
+parse_functor(FnStr, Name, Arity) :-
+    atom_string(FA, FnStr),
+    (   sub_atom(FA, B, 1, _, '/')
+    ->  sub_atom(FA, 0, B, _, Name),
+        B1 is B + 1,
+        sub_atom(FA, B1, _, 0, AS),
+        atom_number(AS, Arity)
+    ;   Name = FA, Arity = 0
     ).
+
+escape_bs(Str, Esc) :-
+    split_string(Str, "\\", "", Parts),
+    atomic_list_concat(Parts, "\\\\", E0),
+    atom_string(E0, Esc).

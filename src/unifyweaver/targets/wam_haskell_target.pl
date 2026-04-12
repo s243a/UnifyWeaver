@@ -148,15 +148,48 @@ wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
     ),
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
 
-%% lower_all(+LoweredList, -LoweredEntries)
-%  Run the Phase 3+ emitter over each predicate in LoweredList (which
-%  is assumed to contain only predicates the whitelist already accepted).
-%  Each output entry is a term lowered(PredName, FuncName, HaskellCode).
-lower_all([], []).
-lower_all([P|Rest], [Entry|RestEntries]) :-
+%% lower_all(+LoweredList, +BasePCMap, -LoweredEntries)
+%  Run the Phase 3+ emitter over each predicate in LoweredList, using
+%  BasePCMap (a list of PredIndicator-StartPC pairs computed from the
+%  merged instruction array) to offset local PCs to global PCs.
+lower_all([], _, []).
+lower_all([P|Rest], BasePCMap, [Entry|RestEntries]) :-
     wam_haskell_predicate_wamcode(P, WamCode),
-    lower_predicate_to_haskell(P, WamCode, [], Entry),
-    lower_all(Rest, RestEntries).
+    predicate_base_pc(P, BasePCMap, BasePC),
+    lower_predicate_to_haskell(P, WamCode, [base_pc(BasePC)], Entry),
+    lower_all(Rest, BasePCMap, RestEntries).
+
+predicate_base_pc(P, Map, PC) :-
+    (   P = _Mod:Pred/Arity -> true ; P = Pred/Arity ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    (   member(Key-PC, Map) -> true ; PC = 1 ).
+
+%% compute_base_pcs(+Predicates, -BasePCMap)
+%  Compute global start PCs for each predicate, matching the PC
+%  assignment in compile_predicates_merged/4. Returns a list of
+%  "pred/arity"-StartPC pairs.
+compute_base_pcs(Predicates, Map) :-
+    compute_base_pcs_(Predicates, 1, Map).
+
+compute_base_pcs_([], _, []).
+compute_base_pcs_([PI|Rest], StartPC, [Key-StartPC|RestMap]) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_haskell_predicate_wamcode(PI, WamCode),
+    count_wam_instructions(WamCode, Count),
+    NextPC is StartPC + Count,
+    compute_base_pcs_(Rest, NextPC, RestMap).
+
+count_wam_instructions(WamCode, Count) :-
+    atom_string(WamCode, S),
+    split_string(S, "\n", "", Lines),
+    include(is_wam_instruction_line, Lines, InstrLines),
+    length(InstrLines, Count).
+
+is_wam_instruction_line(Line) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    Trimmed \== "",
+    \+ sub_string(Trimmed, _, 1, 0, ":").
 
 % ============================================================================
 % Haskell WAM Runtime Data Types
@@ -1075,7 +1108,24 @@ run !ctx !s
            Just s'' -> run ctx s''
            Nothing -> case backtrack s of
              Just s'' -> run ctx s''
-             Nothing -> Nothing'.
+             Nothing -> Nothing
+
+-- | Dispatch a Call to another predicate, trying all resolution paths.
+-- Used by lowered predicate functions for inter-predicate calls.
+-- Mirrors the step (Call pred _arity) dispatch chain but as a callable
+-- helper: lowered → foreign → indexed-facts → label-lookup+run.
+{-# NOINLINE dispatchCall #-}
+dispatchCall :: WamContext -> String -> WamState -> Maybe WamState
+dispatchCall !ctx pred !sc =
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case executeForeign ctx pred sc of
+      Just sr -> Just sr
+      Nothing -> case callIndexedFact2 ctx pred sc of
+        Just sr -> Just sr
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> run ctx (sc { wsPC = pc })
+          Nothing -> Nothing'.
 
 % ============================================================================
 % PHASE 4: Project Generation
@@ -1118,19 +1168,21 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'WamRuntime.hs', RuntimePath),
     write_hs_file(RuntimePath, RuntimeCode),
 
-    % Compile the interpreted partition (Phase 1: this is always the full
-    % Predicates list, because LoweredList is always empty).
-    compile_predicates_to_haskell(InterpretedList, Options, PredsCode0),
+    % ALL predicates go into the interpreter's instruction array — even
+    % lowered ones — so backtrack can land on alternate clauses that the
+    % lowered function doesn't handle. Phase 4+ lowered functions only
+    % inline clause 1; clause 2+ runs through the interpreter on backtrack.
+    compile_predicates_to_haskell(Predicates, Options, PredsCode0),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
 
     % Lower each predicate in LoweredList via the Phase 3+ emitter.
-    % Phase 1 stub returned an empty list here; Phase 3 produces one
-    % lowered/3 entry per predicate. The emitter's whitelist check
-    % runs inside the partition helper, so everything in LoweredList
-    % is guaranteed to be lowerable.
-    lower_all(LoweredList, LoweredEntries),
+    % We first compute global base PCs matching the merged instruction
+    % array so the lowered functions' PC references (wsCP for Call return
+    % addresses, wsPC for step calls) are correct.
+    compute_base_pcs(Predicates, BasePCMap),
+    lower_all(LoweredList, BasePCMap, LoweredEntries),
     generate_lowered_hs(LoweredEntries, LoweredCode0),
     apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
     directory_file_path(SrcDir, 'Lowered.hs', LoweredPath),
@@ -1219,7 +1271,8 @@ generate_lowered_hs([], Code) :- !,
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import WamRuntime (derefVar)~n~n"),
+        format("import Data.Maybe (fromMaybe)~n"),
+        format("import WamRuntime~n~n"),
         format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
         format("loweredPredicates = Map.empty~n")
     )).
@@ -1235,7 +1288,8 @@ generate_lowered_hs(LoweredEntries, Code) :-
         format("import qualified Data.Map.Strict as Map~n"),
         format("import qualified Data.IntMap.Strict as IM~n"),
         format("import WamTypes~n"),
-        format("import WamRuntime (derefVar)~n~n"),
+        format("import Data.Maybe (fromMaybe)~n"),
+        format("import WamRuntime~n~n"),
         % Function definitions
         forall(member(lowered(_, _, HsCode), LoweredEntries),
                format("~w~n", [HsCode])),
