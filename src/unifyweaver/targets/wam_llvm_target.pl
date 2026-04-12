@@ -312,16 +312,25 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
         llvm_foreign_kernel_spec(WspPredArity, weighted_shortest_path3, WspConfig),
         Wsp3Entries),
     ( Wsp3Entries == []
-    -> StateFuncs = StateFuncs0, Wsp3Tables = ''
+    -> StateFuncs1 = StateFuncs0, Wsp3Tables = ''
     ;  build_wsp3_instance_switch(Wsp3Entries, Wsp3ImplBody, Wsp3Tables),
-       replace_wsp3_weak_default(StateFuncs0, Wsp3ImplBody, StateFuncs)
+       replace_wsp3_weak_default(StateFuncs0, Wsp3ImplBody, StateFuncs1)
+    ),
+    % astar4 pass
+    findall(AsPredArity-AsConfig,
+        llvm_foreign_kernel_spec(AsPredArity, astar_shortest_path4, AsConfig),
+        Astar4Entries),
+    ( Astar4Entries == []
+    -> StateFuncs = StateFuncs1, Astar4Tables = ''
+    ;  build_astar4_instance_switch(Astar4Entries, Astar4ImplBody, Astar4Tables),
+       replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
     ),
     % Concatenate the per-kind global tables into one Globals blob.
-    ( Td3Tables == '', Wsp3Tables == ''
+    ( Td3Tables == '', Wsp3Tables == '', Astar4Tables == ''
     -> Globals = ''
     ;  atomic_list_concat([
-           '; === M5.6 + M5.8 + M5.9 foreign kernel support globals ===\n',
-           Td3Tables, '\n', Wsp3Tables, '\n'
+           '; === foreign kernel support globals ===\n',
+           Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
        ], Globals)
     ).
 
@@ -503,6 +512,74 @@ replace_wsp3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
     -> StateFuncs = StateFuncs0
     ;  format(user_error,
         'WARNING: M5.9 could not find wsp3 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
+
+%% build_astar4_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  M5.10 counterpart for astar_shortest_path4. Each per-instance case
+%  emits a %WeightedFact edge table (same as wsp3) PLUS a zeroed
+%  heuristic double[] array. The zero heuristic makes A* degenerate
+%  to Dijkstra, validating the full A* pipeline without requiring a
+%  target-dependent heuristic mechanism.
+build_astar4_instance_switch(Entries, ImplBody, TablesIR) :-
+    build_astar4_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    atomic_list_concat(Tables, '\n\n', TablesIR),
+    format(atom(ImplBody),
+'define i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %as_bail [
+~w
+  ]
+
+~w
+
+as_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_astar4_instance_parts([], _, [], [], []).
+build_astar4_instance_parts([PredArity-Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies], [AllTablesIR|RestTables]) :-
+    PredArity = Pred/_,
+    sanitize_atom_for_llvm(Pred, SanePred),
+    format(atom(EdgeTableName), 'astar4_inst_~w_~w_edges', [SanePred, Index]),
+    format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
+    build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
+    % Emit a zeroed heuristic array of size (MaxAtomId+1). The zero
+    % heuristic makes A* degenerate to Dijkstra — a future refinement
+    % can compute per-node estimates from direct_dist_pred/3 facts.
+    HeuristicSize is MaxAtomId + 1,
+    ( HeuristicSize =< 0 -> HeuristicArrSize = 1 ; HeuristicArrSize = HeuristicSize ),
+    format(atom(HeuristicIR),
+        '@~w = private constant [~w x double] zeroinitializer',
+        [HeuristicName, HeuristicArrSize]),
+    format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, HeuristicIR]),
+    format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
+    format(atom(Body),
+'as_inst_~w:
+  %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
+  %as_h_~w = getelementptr [~w x double], [~w x double]* @~w, i64 0, i64 0
+  %as_r_~w = call i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %as_tbl_~w, i64 ~w, double* %as_h_~w, i64 ~w)
+  ret i1 %as_r_~w',
+        [Index,
+         Index, GepLen, GepLen, EdgeTableName,
+         Index, HeuristicArrSize, HeuristicArrSize, HeuristicName,
+         Index, Index, EffLen, Index, MaxAtomId,
+         Index]),
+    NextIndex is Index + 1,
+    build_astar4_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% replace_astar4_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_astar4_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: M5.10 could not find astar4 weak-default in state template; leaving unchanged~n', []),
        StateFuncs = StateFuncsRaw
     ).
 
