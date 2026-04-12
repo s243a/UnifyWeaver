@@ -246,9 +246,45 @@ The frontier metric step now records:
 
 The next coding step should be:
 
-1. run the frontier metrics on cyclic benchmark-scale weighted `Min`
-   fallback cases
-2. compare whether the hot path is dominated by candidate growth, bucket
-   fanout, or exact subset checks
-3. decide whether the next optimization should be exact state hashing or a
-   narrower multiplicative-to-additive transform
+1. implement exact frontier-state hashing / bucket partitioning for weighted
+   `Min` fallback states
+2. keep the multiplicative-to-additive transform as a narrower later
+   optimization, not the next broad fix
+3. validate that dominance-candidate scans and retained bucket sizes drop on
+   the benchmark fallback cases below
+
+## Frontier Fallback Metric Survey
+
+Measured with:
+
+```bash
+python examples/benchmark/benchmark_weighted_shortest_path.py \
+  --scales 300,1k --repetitions 1 --weight-mode negative \
+  --recurrence-mode additive
+
+python examples/benchmark/benchmark_weighted_shortest_path.py \
+  --scales 300,1k --repetitions 1 --weight-mode positive \
+  --recurrence-mode multiplicative
+```
+
+Both fallback cases preserve output agreement between `All` and `Min`, but the
+exact `Min` fallback is slower than `All` on these benchmark-scale cyclic
+cases.
+
+| Shape | Scale | All | Min | Speedup | Dominance Candidates | Dominance Checks | Subset Checks | Avg Bucket | Max Bucket |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| negative additive | 300 | 0.984s | 1.885s | 0.52x | 104,874,704 | 1,163,485 | 93,771 | 18.66 | 2,651 |
+| negative additive | 1k | 0.783s | 1.882s | 0.42x | 112,962,813 | 682,397 | 74,865 | 32.76 | 3,281 |
+| multiplicative | 300 | 0.991s | 1.132s | 0.88x | 36,195,447 | 863,266 | 148,532 | 12.81 | 1,227 |
+| multiplicative | 1k | 0.688s | 1.184s | 0.58x | 39,638,003 | 505,982 | 106,165 | 22.36 | 1,168 |
+
+Interpretation:
+
+- dominance-candidate scans dominate the measured counters by one to two
+  orders of magnitude
+- subset checks are not the primary cost by count; the runtime spends most of
+  its work reaching candidate states in broad target buckets
+- `min_frontier_removed_state_count` stayed at `0` for these runs, so the
+  current retained buckets grow but rarely compact themselves
+- the next optimization should partition/index exact frontier states before
+  adding a multiplicative-specific transform

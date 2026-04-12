@@ -87,14 +87,18 @@ Make the runtime selection explicit:
 - hashed non-DAG path-state strategy when simple-path cyclic semantics
   are required
 
-## Immediate Follow-Up After This Proposal
+## Immediate Follow-Up After Weighted-Min Frontier Metrics
 
-Do **not** implement this before finishing the current DAG benchmark
-follow-up work.
+The weighted `Min` frontier fallback metric survey now points back to this
+plan. On benchmark-scale cyclic fallback cases, dominance-candidate scans
+dominate the counters, retained buckets grow, and exact subset checks are not
+the main count driver.
 
-The next concrete coding step after these docs should still be DAG-side:
+The next concrete coding step should start here:
 
-- improve the dependency reach / depth story on acyclic graphs
+- normalize weighted `Min` frontier states around stable integer node ids
+- carry deterministic fingerprints with exact visited paths
+- partition candidate buckets before exact subset/dominance verification
 
-This proposal exists so the non-DAG direction is not lost while that DAG
-work proceeds.
+The optimization must remain exact: fingerprints and bucket keys should reduce
+candidate scans, not replace the final simple-path dominance check.
