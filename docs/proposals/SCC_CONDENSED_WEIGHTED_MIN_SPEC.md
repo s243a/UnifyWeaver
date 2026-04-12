@@ -158,7 +158,8 @@ At minimum:
 - number of outer DAG states explored
 - SCC condensation, SCC probe, and SCC solve phase timings
 - exact frontier fallback candidate count
-- exact frontier fallback dominance and subset-check counts
+- exact frontier fallback dominance, same-fingerprint, lower-count,
+  lower-count index-probe, and subset-check counts
 - exact frontier fallback target-bucket count plus path-state partition count,
   total retained states, maximum partition size, and average partition size
 - final output row count

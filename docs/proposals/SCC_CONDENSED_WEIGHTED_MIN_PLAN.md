@@ -235,17 +235,20 @@ The frontier metric step now records:
 1. `min_frontier_candidate_count`
 2. `min_frontier_dominance_check_count`
 3. `min_frontier_dominance_candidate_check_count`
-4. `min_frontier_subset_check_count`
-5. `min_frontier_dominated_state_count`
-6. `min_frontier_recorded_state_count`
-7. `min_frontier_removed_state_count`
-8. `min_frontier_target_bucket_count`
-9. `min_frontier_bucket_count`
-10. `min_frontier_bucket_state_count`
-11. `min_frontier_bucket_max_size`
-12. `min_frontier_bucket_avg_size`
+4. `min_frontier_same_fingerprint_candidate_check_count`
+5. `min_frontier_lower_count_candidate_check_count`
+6. `min_frontier_lower_count_index_probe_count`
+7. `min_frontier_subset_check_count`
+8. `min_frontier_dominated_state_count`
+9. `min_frontier_recorded_state_count`
+10. `min_frontier_removed_state_count`
+11. `min_frontier_target_bucket_count`
+12. `min_frontier_bucket_count`
+13. `min_frontier_bucket_state_count`
+14. `min_frontier_bucket_max_size`
+15. `min_frontier_bucket_avg_size`
 
-That coding step is now complete:
+The path-state partitioning step is now complete:
 
 1. weighted `Min` fallback states carry deterministic path fingerprints
 2. target-local frontiers partition retained states by path length and
@@ -253,9 +256,19 @@ That coding step is now complete:
 3. `min_frontier_target_bucket_count` preserves the old target-bucket view,
    while `min_frontier_bucket_*` now describes exact path-state partitions
 
+The lower-cardinality prefilter step is also now implemented:
+
+1. same-cardinality checks use direct fingerprint indexes
+2. lower-cardinality checks use lazy representative-node indexes only after a
+   path-count bucket is large enough for the index to pay for itself
+3. small buckets direct-scan to avoid dictionary overhead
+4. eager dominated-state removal is no longer scanned during insert, because
+   retained dominated states are correctness-safe and the measured removals
+   stayed at `0`
+
 The next coding step should keep the multiplicative-to-additive transform as a
-narrower later optimization and focus first on whether the remaining lower-cardinality
-candidate scans need additional exact prefilters.
+narrower later optimization unless a broader exact fallback workload shows that
+the remaining lower-count scans need another generic prefilter.
 
 ## Frontier Fallback Metric Survey
 
@@ -272,27 +285,28 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
 ```
 
 Both fallback cases preserve output agreement between `All` and `Min`. After
-path-state partitioning, the exact `Min` fallback is still slower than `All` on
-these benchmark-scale cyclic cases, but dominance-candidate scans are much lower
-than the previous broad target-bucket frontier.
+lazy lower-count representative prefiltering, the exact `Min` fallback is still
+slower than `All` on these benchmark-scale cyclic cases, but it is faster than
+the previous path-state partitioning-only fallback.
 
-| Shape | Scale | All | Min | Speedup | Dominance Candidates | Dominance Checks | Subset Checks | Avg Bucket | Max Bucket |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| negative additive | 300 | 0.938s | 1.590s | 0.59x | 34,704,185 | 1,163,485 | 15,431 | 1.00 | 1 |
-| negative additive | 1k | 0.636s | 1.332s | 0.48x | 35,271,278 | 682,397 | 13,775 | 1.00 | 1 |
-| multiplicative | 300 | 0.911s | 1.101s | 0.83x | 10,906,078 | 863,266 | 104,355 | 1.00 | 1 |
-| multiplicative | 1k | 0.692s | 0.993s | 0.70x | 11,043,000 | 505,982 | 69,064 | 1.00 | 1 |
+| Shape | Scale | All | Min | Speedup | Dominance Candidates | Lower Candidates | Index Probes | Subset Checks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| negative additive | 300 | 0.871s | 1.478s | 0.59x | 20,404,270 | 19,826,544 | 912,133 | 12,621 |
+| negative additive | 1k | 0.563s | 1.217s | 0.46x | 16,522,183 | 16,183,799 | 1,138,494 | 11,157 |
+| multiplicative | 300 | 0.819s | 1.064s | 0.77x | 8,013,834 | 7,617,196 | 209,002 | 92,019 |
+| multiplicative | 1k | 0.563s | 0.856s | 0.66x | 7,601,868 | 7,370,947 | 302,487 | 59,735 |
 
 Interpretation:
 
-- dominance-candidate scans are still the dominant counter, but exact
-  path-state partitioning cuts them by roughly `3x` to `3.6x` on these runs
-- subset checks drop substantially for negative additive fallback because
-  same-cardinality non-matching path states no longer reach exact subset
-  verification
+- dominance-candidate scans are still the dominant counter, but lazy
+  representative-node prefiltering cuts the path-state-partitioning-only
+  counts by roughly `1.35x` to `2.1x` on these runs
+- same-cardinality checks are now visible separately from lower-count scans,
+  which confirms that the remaining work is almost entirely lower-count
+  dominance probing
 - `min_frontier_removed_state_count` stayed at `0` for these runs, so the
-  current retained buckets grow but rarely compact themselves
-- the remaining candidate scans come from lower-cardinality states that still
-  must be considered for exact subset dominance, so any next frontier
-  optimization should add exact prefilters there rather than rely only on
-  same-cardinality fingerprints
+  runtime avoids eager removal scans and keeps dominated retained states as a
+  correctness-safe tradeoff
+- the remaining candidate scans are low enough that the next broad optimization
+  should probably move to a different fallback class or the narrower
+  multiplicative transform before adding more generic frontier indexes
