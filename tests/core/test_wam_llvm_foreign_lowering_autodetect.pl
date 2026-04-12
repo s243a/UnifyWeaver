@@ -52,16 +52,17 @@ test_autodetect_populates_spec :-
        throw(no_autodetect_match)
     ),
     read_file_to_string(LLPath, Src, []),
-    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 3 }')
-    -> format('  PASS: call_foreign emitted for auto-detected predicate~n')
+    % First registered td3 spec (reach/3) gets instance_id=0.
+    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 0 }')
+    -> format('  PASS: call_foreign tag=30 kind=4 instance=0 emitted~n')
     ;  format('  FAIL: no call_foreign instruction~n')
     ),
-    ( sub_string(Src, _, _, _, 'M5.6 concrete td3 impl')
+    ( sub_string(Src, _, _, _, 'define i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)')
     -> format('  PASS: concrete td3 impl spliced in~n')
     ;  format('  FAIL: concrete impl missing~n')
     ),
-    ( sub_string(Src, _, _, _, '@foreign_td3_edge_2')
-    -> format('  PASS: fact table global present~n')
+    ( sub_string(Src, _, _, _, '@td3_inst_reach_0_edges')
+    -> format('  PASS: instance edge table global present~n')
     ;  format('  FAIL: fact table missing~n')
     ),
     ( process_which('llvm-as')
@@ -105,7 +106,7 @@ test_autodetect_off_by_default :-
     ;  format('  PASS: no spec registered when flag is off~n')
     ),
     read_file_to_string(LLPath, Src, []),
-    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 3 }')
+    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4,')
     -> format('  FAIL: call_foreign emitted despite flag off~n'),
        throw(call_foreign_leaked)
     ;  format('  PASS: no call_foreign emitted (normal WAM path taken)~n')
