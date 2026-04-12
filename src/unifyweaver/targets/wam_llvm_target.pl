@@ -1381,13 +1381,24 @@ wam_llvm_case('end_aggregate',
 % op1 = foreign kind ID (see wam_llvm_foreign_kind_id/2)
 % op2 = arity (for handler selection — different kernels have different
 %              register conventions)
-% Returns the result of @wam_execute_foreign_predicate. If false, the
-% run loop backtracks.
+% On success, advance PC then return true so the run loop continues
+% to the next instruction. On failure, return false without advancing
+% so the run loop backtracks from the current PC. The missing
+% @wam_inc_pc call was a latent bug from M3 — it wasn't visible until
+% M5.6 made the kernels actually return true (prior M3 stubs all
+% returned false, which hid the infinite-loop).
 wam_llvm_case('call_foreign',
 '  %cf.kind = trunc i64 %op1 to i32
   %cf.arity = trunc i64 %op2 to i32
   %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.arity)
-  ret i1 %cf.result').
+  br i1 %cf.result, label %cf.success, label %cf.fail
+
+cf.success:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true
+
+cf.fail:
+  ret i1 false').
 
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
