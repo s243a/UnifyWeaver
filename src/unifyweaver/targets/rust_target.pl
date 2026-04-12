@@ -9061,11 +9061,14 @@ dep_to_toml(candle, "candle-core = \"0.9\"\ncandle-nn = \"0.9\"\ncandle-transfor
 %    pipeline_name(Name) - Name for the pipeline function (default: 'pipeline')
 %    pipeline_mode(Mode) - 'sequential' (default) or 'generator' (fixpoint)
 %    output_format(Format) - 'jsonl' (default) or 'json'
+%    panic_fallback(input) - have main call a safe wrapper that returns the
+%      original input if generated stage execution panics
 %
 compile_rust_pipeline(Predicates, Options, RustCode) :-
     option(pipeline_name(PipelineName), Options, pipeline),
     option(pipeline_mode(PipelineMode), Options, sequential),
     option(output_format(OutputFormat), Options, jsonl),
+    option(panic_fallback(PanicFallback), Options, none),
 
     % Generate header based on mode
     rust_pipeline_header(PipelineMode, Header),
@@ -9082,8 +9085,11 @@ compile_rust_pipeline(Predicates, Options, RustCode) :-
     % Generate the pipeline connector (mode-aware)
     generate_rust_pipeline_connector(StageNames, PipelineName, PipelineMode, ConnectorCode),
 
+    % Optionally generate a panic-catching entrypoint for outer fallback use.
+    generate_rust_pipeline_panic_fallback(PipelineName, PanicFallback, FallbackCode, MainPipelineName),
+
     % Generate main execution block
-    generate_rust_main_block(PipelineName, OutputFormat, MainBlock),
+    generate_rust_main_block(MainPipelineName, OutputFormat, MainBlock),
 
     % Combine all parts
     format(string(RustCode),
@@ -9093,9 +9099,10 @@ compile_rust_pipeline(Predicates, Options, RustCode) :-
 
 ~w
 ~w
+~w
 
 ~w
-", [Header, Helpers, StageFunctions, ConnectorCode, MainBlock]).
+", [Header, Helpers, StageFunctions, ConnectorCode, FallbackCode, MainBlock]).
 
 %% rust_pipeline_header(+Mode, -Header)
 %  Generate mode-aware header with use statements
@@ -9878,6 +9885,26 @@ generate_rust_fixpoint_stages(Names, Code) :-
     format(string(Code),
 "        let mut new_records: Vec<HashMap<String, Value>> = Vec::new();
 ~w", [StageCallsCode]).
+
+%% generate_rust_pipeline_panic_fallback(+PipelineName, +FallbackMode, -Code, -MainPipelineName)
+%  Generate an optional safe entrypoint around a standard Rust pipeline.
+generate_rust_pipeline_panic_fallback(PipelineName, input, Code, SafePipelineName) :-
+    !,
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(SafePipelineNameStr), 'safe_~w', [PipelineNameStr]),
+    atom_string(SafePipelineName, SafePipelineNameStr),
+    format(string(Code),
+"
+/// Panic-catching entrypoint for outer fallback.
+fn ~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
+    let fallback = input.clone();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ~w(input))) {
+        Ok(output) => output,
+        Err(_) => fallback,
+    }
+}
+", [SafePipelineNameStr, PipelineNameStr]).
+generate_rust_pipeline_panic_fallback(PipelineName, _FallbackMode, "", PipelineName).
 
 %% generate_rust_main_block(+PipelineName, +Format, -Code)
 %  Generate main execution block
