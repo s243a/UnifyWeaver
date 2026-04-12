@@ -38,6 +38,8 @@
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -163,6 +165,22 @@ predicate_base_pc(P, Map, PC) :-
     (   P = _Mod:Pred/Arity -> true ; P = Pred/Arity ),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     (   member(Key-PC, Map) -> true ; PC = 1 ).
+
+%% detect_kernels(+Predicates, -DetectedKernels)
+%  Run shared kernel detection on each predicate. Returns a list of
+%  Pred/Arity atoms for predicates that matched a known recursive kernel.
+detect_kernels([], []).
+detect_kernels([PI|Rest], Kernels) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        detect_recursive_kernel(Pred, Arity, Clauses, _Kernel)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key|RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_kernels(Rest, RestKernels).
 
 %% compute_base_pcs(+Predicates, -BasePCMap)
 %  Compute global start PCs for each predicate, matching the PC
@@ -1152,9 +1170,18 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % Determine map backend: HashMap (faster) or Map (default fallback)
     option(use_hashmap(UseHM), Options, true),
 
-    % Resolve emit_mode and partition predicates accordingly. In Phase 1
-    % the stub wam_haskell_lowerable/3 always fails, so LoweredList is
-    % always empty and the generator's compile path is unchanged.
+    % Detect recursive kernels in the predicate list. Detected kernels
+    % are handled by the FFI (executeForeign) at runtime and are excluded
+    % from generic lowering. The detected kernel list is used to auto-
+    % populate foreignPreds in Main.hs.
+    detect_kernels(Predicates, DetectedKernels),
+    (   DetectedKernels \= []
+    ->  format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKernels])
+    ;   true
+    ),
+
+    % Resolve emit_mode and partition predicates. Kernels are excluded
+    % from the lowerable set (they use FFI, not generic lowering).
     wam_haskell_resolve_emit_mode(Options, EmitMode),
     wam_haskell_partition_predicates(EmitMode, Predicates, InterpretedList, LoweredList),
     length(InterpretedList, NInterp),
@@ -1203,7 +1230,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs
-    generate_main_hs(Predicates, MainCode0),
+    generate_main_hs(Predicates, DetectedKernels, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
@@ -1321,7 +1348,11 @@ emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
 %% generate_main_hs(+Predicates, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Loads facts from TSV, runs category_ancestor queries, outputs TSV.
-generate_main_hs(_Predicates, Code) :-
+generate_main_hs(_Predicates, _DetectedKernels, Code) :-
+    % TODO: auto-populate foreignPreds from DetectedKernels. Currently
+    % hardcoded to ["category_ancestor/4"] in the template. The template
+    % atom is too large for atom_string-based substitution; a future
+    % refactor should split the template or use a different approach.
     Code = '{-# LANGUAGE BangPatterns #-}
 module Main where
 
