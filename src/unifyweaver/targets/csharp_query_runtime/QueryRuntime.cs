@@ -638,7 +638,9 @@ namespace UnifyWeaver.QueryRuntime
         /// Default 0 = unlimited (standard Datalog convergence assumed).
         /// Recommended: 50 for graphs with cycles and arithmetic counters.
         /// </summary>
-        int MaxFixpointIterations = 0);
+        int MaxFixpointIterations = 0,
+        bool EnableMeasuredClosurePairStrategy = true,
+        bool UseSeededClosureCachesForPairBatches = false);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -1715,6 +1717,8 @@ namespace UnifyWeaver.QueryRuntime
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
         private readonly ClosureRelationRetentionStrategy _closureRelationRetentionStrategy;
         private readonly ClosurePairStrategy _closurePairStrategy;
+        private readonly bool _enableMeasuredClosurePairStrategy;
+        private readonly bool _useSeededClosureCachesForPairBatches;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareSupportRelationRetentionStrategy _pathAwareSupportRelationRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
@@ -1736,6 +1740,8 @@ namespace UnifyWeaver.QueryRuntime
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
             _closureRelationRetentionStrategy = options.ClosureRelationRetentionStrategy;
             _closurePairStrategy = options.ClosurePairStrategy;
+            _enableMeasuredClosurePairStrategy = options.EnableMeasuredClosurePairStrategy;
+            _useSeededClosureCachesForPairBatches = options.UseSeededClosureCachesForPairBatches;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
@@ -9931,7 +9937,8 @@ namespace UnifyWeaver.QueryRuntime
             bool canMemoizeForwardBatch,
             bool canMemoizeBackwardBatch,
             bool canMemoizePairs,
-            bool preferForwardFallback)
+            bool preferForwardFallback,
+            bool preferSeededClosureCachesForPairBatches)
         {
             if (singleConcretePairRequest)
             {
@@ -9942,11 +9949,18 @@ namespace UnifyWeaver.QueryRuntime
 
             if (sourceRequestCount == 1 && targetRequestCount > 1 && canMemoizePairs)
             {
-                return ClosurePairPlanStrategy.Forward;
+                return preferSeededClosureCachesForPairBatches
+                    ? ClosurePairPlanStrategy.MemoizedBySource
+                    : ClosurePairPlanStrategy.Forward;
             }
 
             if (targetRequestCount == 1 && sourceRequestCount > 1 && canMemoizePairs)
             {
+                if (preferSeededClosureCachesForPairBatches)
+                {
+                    return ClosurePairPlanStrategy.MemoizedByTarget;
+                }
+
                 return hasBackwardBatch
                     ? ClosurePairPlanStrategy.Backward
                     : ClosurePairPlanStrategy.MemoizedByTarget;
@@ -10203,6 +10217,7 @@ namespace UnifyWeaver.QueryRuntime
             bool canMemoizeBackwardBatch,
             bool canMemoizePairs,
             bool preferForwardFallback,
+            bool preferSeededClosureCachesForPairBatches,
             IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measureProbes = null)
         {
             return MeasurePhase(trace, node, "closure_pair_strategy_select", () =>
@@ -10227,7 +10242,8 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    preferSeededClosureCachesForPairBatches);
 
                 if (configuredStrategy != ClosurePairStrategy.Auto)
                 {
@@ -15321,7 +15337,10 @@ namespace UnifyWeaver.QueryRuntime
                 var preferForwardFallback = targetsBySource.Count <= sourcesByTarget.Count;
                 var pairRequestCount = CountClosurePairRequests(targetsBySource.Values);
                 IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
-                if (!singleConcretePairRequest && pairRequestCount > 1 && pairRequestCount <= 16)
+                if (_enableMeasuredClosurePairStrategy &&
+                    !singleConcretePairRequest &&
+                    pairRequestCount > 1 &&
+                    pairRequestCount <= 16)
                 {
                     var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
                     {
@@ -15419,6 +15438,7 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
                     preferForwardFallback,
+                    _useSeededClosureCachesForPairBatches && _cacheContext is not null,
                     measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "GroupedTransitiveClosurePairs", pairStrategySelection);
 
@@ -15573,6 +15593,21 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
             EvaluationContext context)
         {
+            if (_useSeededClosureCachesForPairBatches && _cacheContext is not null)
+            {
+                foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(closure, inputPositions, forwardTargetsBySource, context))
+                {
+                    yield return row;
+                }
+
+                foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(closure, inputPositions, backwardSourcesByTarget, context))
+                {
+                    yield return row;
+                }
+
+                yield break;
+            }
+
             foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context))
             {
                 yield return row;
@@ -18750,7 +18785,10 @@ namespace UnifyWeaver.QueryRuntime
                 var preferForwardFallback = bySource.Count <= byTarget.Count;
                 var pairRequestCount = CountClosurePairRequests(bySource.Values);
                 IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
-                if (!singleConcretePairRequest && pairRequestCount > 1 && pairRequestCount <= 16)
+                if (_enableMeasuredClosurePairStrategy &&
+                    !singleConcretePairRequest &&
+                    pairRequestCount > 1 &&
+                    pairRequestCount <= 16)
                 {
                     var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
                     {
@@ -18842,6 +18880,7 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
                     preferForwardFallback,
+                    _useSeededClosureCachesForPairBatches && _cacheContext is not null,
                     measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "TransitiveClosurePairs", pairStrategySelection);
 
@@ -18979,6 +19018,21 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
             EvaluationContext context)
         {
+            if (_useSeededClosureCachesForPairBatches && _cacheContext is not null)
+            {
+                foreach (var row in ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context))
+                {
+                    yield return row;
+                }
+
+                foreach (var row in ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context))
+                {
+                    yield return row;
+                }
+
+                yield break;
+            }
+
             foreach (var row in ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context))
             {
                 yield return row;
