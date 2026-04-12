@@ -1605,6 +1605,12 @@ namespace UnifyWeaver.QueryRuntime
         TimeSpan Elapsed,
         SccCondensedWeightedMinStats Stats);
 
+    internal enum AdditiveMinStepSafety
+    {
+        StrictlyPositive,
+        NonNegative
+    }
+
     public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
     {
         private readonly Dictionary<PredicateId, List<object[]>> _store = new();
@@ -11180,7 +11186,7 @@ namespace UnifyWeaver.QueryRuntime
                 condensedEdges.Count);
         }
 
-        private static bool ShouldUseSccCondensedPositiveMin(PathAwareSccGraph graph, int maxDepth)
+        private static bool ShouldUseSccCondensedAdditiveMin(PathAwareSccGraph graph, int maxDepth)
         {
             const int MaxCyclicComponentSize = 128;
             return maxDepth > 0 &&
@@ -11190,17 +11196,18 @@ namespace UnifyWeaver.QueryRuntime
 
         private const double SccCondensedProbeWinMargin = 0.50d;
 
-        private static bool ResolveMeasuredSccCondensedPositiveMinStrategy(
+        private static bool ResolveMeasuredSccCondensedAdditiveMinStrategy(
             QueryExecutionTrace? trace,
             PlanNode node,
             string strategyPrefix,
             PathAwareSccGraph graph,
             int maxDepth,
+            string layeredProbePhase,
             IReadOnlyList<object?> orderedSeeds,
             Func<IReadOnlyList<object?>, TimeSpan> measureLayeredProbe,
             Func<IReadOnlyList<object?>, SccCondensedWeightedMinProbe> measureSccProbe)
         {
-            if (!ShouldUseSccCondensedPositiveMin(graph, maxDepth))
+            if (!ShouldUseSccCondensedAdditiveMin(graph, maxDepth))
             {
                 trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedStructural");
                 return false;
@@ -11215,7 +11222,7 @@ namespace UnifyWeaver.QueryRuntime
             var sampleSeedCount = Math.Min(orderedSeeds.Count, 16);
             var sampleSeeds = orderedSeeds.Take(sampleSeedCount).ToList();
             var layeredProbe = measureLayeredProbe(sampleSeeds);
-            trace?.RecordPhase(node, "scc_probe_positive_layered", layeredProbe);
+            trace?.RecordPhase(node, layeredProbePhase, layeredProbe);
             var sccProbe = measureSccProbe(sampleSeeds);
             trace?.RecordPhase(node, "scc_probe_condensed", sccProbe.Elapsed);
             trace?.RecordMetric(node, "scc_probe_local_states_explored", sccProbe.Stats.LocalStatesExplored);
@@ -11234,6 +11241,21 @@ namespace UnifyWeaver.QueryRuntime
                 : $"{strategyPrefix}SccCondensedRejectedMeasured");
             return useScc;
         }
+
+        private static string GetAdditiveMinLayeredStrategy(string strategyPrefix, AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? $"{strategyPrefix}PositiveAdditiveLayered"
+                : $"{strategyPrefix}NonNegativeAdditiveLayered";
+
+        private static string GetAdditiveMinLayeredProbePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "scc_probe_positive_layered"
+                : "scc_probe_nonnegative_layered";
+
+        private static string GetAdditiveMinLayeredSolvePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "positive_min_layered_solve"
+                : "nonnegative_min_layered_solve";
 
         private static void RecordPathAwareSccGraphMetrics(QueryExecutionTrace? trace, PlanNode node, PathAwareSccGraph graph)
         {
@@ -11683,34 +11705,43 @@ namespace UnifyWeaver.QueryRuntime
 
                 Dictionary<object, List<object[]>>? auxIndex = null;
                 PositiveStepEvaluator? stepEvaluator = null;
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
                 PathAwareSccGraph? sccGraph = null;
                 var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
-                var positiveFastPathPrepared = false;
-                var usePositiveMinFastPath = false;
+                var additiveFastPathPrepared = false;
+                var useAdditiveMinFastPath = false;
                 var useSccCondensedMinFastPath = false;
 
-                void EnsurePositiveMinFastPathPrepared()
+                void EnsureAdditiveMinFastPathPrepared()
                 {
-                    if (positiveFastPathPrepared)
+                    if (additiveFastPathPrepared)
                     {
                         return;
                     }
 
-                    positiveFastPathPrepared = true;
+                    additiveFastPathPrepared = true;
                     var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure));
                     auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
-                    usePositiveMinFastPath = closure.MaxDepth > 0 &&
-                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
-                    if (usePositiveMinFastPath)
+                    useAdditiveMinFastPath = closure.MaxDepth > 0 &&
+                        TryCreateNonNegativeAdditiveStepEvaluator(
+                            closure.BaseExpression,
+                            closure.RecursiveExpression,
+                            succIndex,
+                            auxIndex,
+                            closure.PositiveStepProven,
+                            out stepEvaluator,
+                            out additiveMinStepSafety);
+                    if (useAdditiveMinFastPath)
                     {
                         sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
                         RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
-                        useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                        useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
                             trace,
                             closure,
                             "SeedGroupedPathAwareAccumulationMin",
                             sccGraph,
                             closure.MaxDepth,
+                            GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
                             orderedUniqueSeeds,
                             sampleSeeds => MeasureElapsed(() =>
                             {
@@ -11759,8 +11790,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds, bool recordMetrics)
                 {
-                    EnsurePositiveMinFastPathPrepared();
-                    if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                    EnsureAdditiveMinFastPathPrepared();
+                    if (!useAdditiveMinFastPath || auxIndex is null || stepEvaluator is null)
                     {
                         return new Dictionary<object, Dictionary<object, object>>();
                     }
@@ -11819,7 +11850,9 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (recordMetrics)
                     {
-                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinPositiveAdditiveLayered");
+                        trace?.RecordStrategy(closure, GetAdditiveMinLayeredStrategy(
+                            "SeedGroupedPathAwareAccumulationMin",
+                            additiveMinStepSafety));
                     }
 
                     var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
@@ -11837,7 +11870,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (recordMetrics)
                     {
-                        MeasurePhase(trace, closure, "positive_min_layered_solve", BuildLayeredMinima);
+                        MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildLayeredMinima);
                     }
                     else
                     {
@@ -11850,8 +11883,8 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() =>
                     {
-                        EnsurePositiveMinFastPathPrepared();
-                        if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                        EnsureAdditiveMinFastPathPrepared();
+                        if (!useAdditiveMinFastPath || auxIndex is null || stepEvaluator is null)
                         {
                             return;
                         }
@@ -11890,16 +11923,16 @@ namespace UnifyWeaver.QueryRuntime
                 }
                 else
                 {
-                    EnsurePositiveMinFastPathPrepared();
-                    if (usePositiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
+                    EnsureAdditiveMinFastPathPrepared();
+                    if (useAdditiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
                     {
                         seedMinima = MeasurePhase(trace, closure, "build_compact_grouped", () =>
                             (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds, recordMetrics: true));
                     }
                     else
                     {
-                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
-                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoPositiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoAdditiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoAdditiveFastPath");
                         seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                             (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                     }
@@ -12075,6 +12108,11 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         var next = edgeBucket.Targets[edgeIndex];
                         var nextKey = next ?? NullFactIndexKey;
+                        if (Equals(nextKey, seedKey))
+                        {
+                            continue;
+                        }
+
                         for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                         {
                             var auxRow = auxBucket[auxIndexPos];
@@ -12161,6 +12199,11 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     var next = edgeBucket.Targets[edgeIndex];
                     var nextKey = next ?? NullFactIndexKey;
+                    if (Equals(nextKey, seedKey))
+                    {
+                        continue;
+                    }
+
                     sccGraph.ComponentByNode.TryGetValue(nextKey, out var nextComponent);
                     for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                     {
@@ -12388,20 +12431,30 @@ namespace UnifyWeaver.QueryRuntime
                 var auxRows = GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 PositiveStepEvaluator? stepEvaluator = null;
-                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
+                var useAdditiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    closure.MaxDepth > 0 &&
+                    TryCreateNonNegativeAdditiveStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        closure.PositiveStepProven,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
                 PathAwareSccGraph? sccGraph = null;
                 var useSccCondensedMinFastPath = false;
-                if (usePositiveMinFastPath)
+                if (useAdditiveMinFastPath)
                 {
                     sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
                     RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
-                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
                         trace,
                         closure,
                         "PathAwareAccumulationMin",
                         sccGraph,
                         closure.MaxDepth,
+                        GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
                         edgeState.Seeds,
                         sampleSeeds => MeasureElapsed(() =>
                         {
@@ -12433,7 +12486,7 @@ namespace UnifyWeaver.QueryRuntime
                         });
                     trace?.RecordStrategy(closure, useSccCondensedMinFastPath
                         ? "PathAwareAccumulationMinSccCondensed"
-                        : "PathAwareAccumulationMinPositiveAdditiveLayered");
+                        : GetAdditiveMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
                 }
 
                 var totalRows = new List<object[]>();
@@ -12451,7 +12504,7 @@ namespace UnifyWeaver.QueryRuntime
                             outerDagStates += stats.OuterDagStatesExplored;
                             queuePops += stats.QueuePops;
                         }
-                        else if (usePositiveMinFastPath)
+                        else if (useAdditiveMinFastPath)
                         {
                             AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
                         }
@@ -12466,9 +12519,9 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
                 }
-                else if (usePositiveMinFastPath)
+                else if (useAdditiveMinFastPath)
                 {
-                    MeasurePhase(trace, closure, "positive_min_layered_solve", BuildAccumulationRows);
+                    MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
                 }
                 else
                 {
@@ -12516,11 +12569,20 @@ namespace UnifyWeaver.QueryRuntime
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
                 PositiveStepEvaluator? stepEvaluator = null;
-                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
+                var useAdditiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    closure.MaxDepth > 0 &&
+                    TryCreateNonNegativeAdditiveStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        closure.PositiveStepProven,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
                 PathAwareSccGraph? sccGraph = null;
                 var useSccCondensedMinFastPath = false;
-                if (usePositiveMinFastPath)
+                if (useAdditiveMinFastPath)
                 {
                     sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
                     RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
@@ -12545,14 +12607,15 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 seeds.Sort(CompareCacheSeedValues);
-                if (usePositiveMinFastPath && sccGraph is not null)
+                if (useAdditiveMinFastPath && sccGraph is not null)
                 {
-                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
                         trace,
                         closure,
                         "PathAwareAccumulationSeededMin",
                         sccGraph,
                         closure.MaxDepth,
+                        GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
                         seeds,
                         sampleSeeds => MeasureElapsed(() =>
                         {
@@ -12584,7 +12647,7 @@ namespace UnifyWeaver.QueryRuntime
                         });
                     trace?.RecordStrategy(closure, useSccCondensedMinFastPath
                         ? "PathAwareAccumulationSeededMinSccCondensed"
-                        : "PathAwareAccumulationSeededMinPositiveAdditiveLayered");
+                        : GetAdditiveMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
                 }
 
                 var totalRows = new List<object[]>();
@@ -12602,7 +12665,7 @@ namespace UnifyWeaver.QueryRuntime
                             outerDagStates += stats.OuterDagStatesExplored;
                             queuePops += stats.QueuePops;
                         }
-                        else if (usePositiveMinFastPath)
+                        else if (useAdditiveMinFastPath)
                         {
                             AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
                         }
@@ -12617,9 +12680,9 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
                 }
-                else if (usePositiveMinFastPath)
+                else if (useAdditiveMinFastPath)
                 {
-                    MeasurePhase(trace, closure, "positive_min_layered_solve", BuildAccumulationRows);
+                    MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
                 }
                 else
                 {
@@ -12645,9 +12708,10 @@ namespace UnifyWeaver.QueryRuntime
 
         private delegate double PositiveStepEvaluator(object current, object next, object auxValue);
 
-        // For strictly positive additive steps, the minimum-cost walk within a hop
-        // budget is simple automatically. That lets us replace the expensive
-        // visited-state frontier with dynamic programming over (node, depth).
+        // For non-negative additive steps, any repeated-node walk can have its
+        // cycle removed without increasing cost. That lets us replace the
+        // expensive visited-state frontier with dynamic programming over
+        // (node, depth) for bounded Min queries.
         private void AppendPositiveMinAccumulationRowsForSeed(
             object? seed,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
@@ -12657,6 +12721,7 @@ namespace UnifyWeaver.QueryRuntime
             int maxDepth = 0)
         {
             var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
+            var seedKey = seed ?? NullFactIndexKey;
             var depthCosts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
             {
                 new Dictionary<object?, double> { [seed] = 0d }
@@ -12694,6 +12759,11 @@ namespace UnifyWeaver.QueryRuntime
                     for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
                     {
                         var next = edgeBucket.Targets[edgeIndex];
+                        if (Equals(next ?? NullFactIndexKey, seedKey))
+                        {
+                            continue;
+                        }
+
                         for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                         {
                             var auxRow = auxBucket[auxIndexPos];
@@ -12759,15 +12829,17 @@ namespace UnifyWeaver.QueryRuntime
             return stats;
         }
 
-        private bool TryCreatePositiveAdditiveStepEvaluator(
+        private bool TryCreateNonNegativeAdditiveStepEvaluator(
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             bool positiveStepProven,
-            out PositiveStepEvaluator? evaluator)
+            out PositiveStepEvaluator? evaluator,
+            out AdditiveMinStepSafety stepSafety)
         {
             evaluator = null;
+            stepSafety = AdditiveMinStepSafety.StrictlyPositive;
             if (!TryExtractMinStepExpression(baseExpression, recursiveExpression, out var stepExpression))
             {
                 return false;
@@ -12784,6 +12856,7 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
+            var strictlyPositive = true;
             foreach (var (currentKey, edgeBucket) in succIndex)
             {
                 if (!auxIndex.TryGetValue(currentKey, out var auxBucket))
@@ -12812,14 +12885,22 @@ namespace UnifyWeaver.QueryRuntime
                             return false;
                         }
 
-                        if (!(step > 0d))
+                        if (!(step >= 0d))
                         {
                             return false;
+                        }
+
+                        if (!(step > 0d))
+                        {
+                            strictlyPositive = false;
                         }
                     }
                 }
             }
 
+            stepSafety = strictlyPositive
+                ? AdditiveMinStepSafety.StrictlyPositive
+                : AdditiveMinStepSafety.NonNegative;
             evaluator = (current, next, auxValue) =>
             {
                 var evalTuple = new object[] { current, next, 0, auxValue };

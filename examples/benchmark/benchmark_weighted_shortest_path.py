@@ -6,8 +6,10 @@ PathAwareAccumulationNode runtime modes:
   - all : preserve all simple weighted paths
   - min : mode-directed pruning on the accumulator
 
-The harness derives a positive source weight from category out-degree so the
-recursive increment remains monotone and min-pruning is sound.
+By default the harness derives a positive source weight from category out-degree
+so the recursive increment remains monotone and min-pruning is sound. The
+`--weight-mode nonnegative-zero` variant leaves degree-one sources at zero cost
+to exercise the broader non-negative additive `Min` fast path.
 """
 
 from __future__ import annotations
@@ -83,13 +85,14 @@ class Program
 
     static void Main(string[] args)
     {
-        if (args.Length < 3)
+        if (args.Length < 4)
         {
-            Console.Error.WriteLine("Usage: program <all|min> <category_parent.tsv> <article_category.tsv>");
+            Console.Error.WriteLine("Usage: program <all|min> <positive|nonnegative-zero> <category_parent.tsv> <article_category.tsv>");
             Environment.Exit(1);
         }
 
         var modeName = args[0];
+        var weightMode = args[1];
         var mode = modeName switch
         {
             "all" => TableMode.All,
@@ -111,7 +114,7 @@ class Program
         var allNodes = new HashSet<string>(StringComparer.Ordinal);
         var edgeCount = 0;
 
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        foreach (var (line, i) in File.ReadLines(args[2]).Select((l, i) => (l, i)))
         {
             if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
             {
@@ -148,11 +151,16 @@ class Program
         foreach (var source in sourceNodes)
         {
             outDegree.TryGetValue(source, out var degree);
-            var weight = 1.0 + Math.Log(Math.Max(1, degree), 5.0);
+            var weight = weightMode switch
+            {
+                "positive" => 1.0 + Math.Log(Math.Max(1, degree), 5.0),
+                "nonnegative-zero" => degree <= 1 ? 0.0 : Math.Log(degree, 5.0),
+                _ => throw new ArgumentException($"Unknown weight mode: {weightMode}")
+            };
             provider.AddFact(weightId, source, weight);
         }
 
-        foreach (var (line, i) in File.ReadLines(args[2]).Select((l, i) => (l, i)))
+        foreach (var (line, i) in File.ReadLines(args[3]).Select((l, i) => (l, i)))
         {
             if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
             {
@@ -278,6 +286,7 @@ class Program
         }
 
         Console.Error.WriteLine($"mode={modeName}");
+        Console.Error.WriteLine($"weight_mode={weightMode}");
         Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
         Console.Error.WriteLine($"query_ms={swQuery.ElapsedMilliseconds}");
         Console.Error.WriteLine($"aggregation_ms={swAgg.ElapsedMilliseconds}");
@@ -428,6 +437,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,1k,5k,10k")
     parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument(
+        "--weight-mode",
+        choices=["positive", "nonnegative-zero"],
+        default="positive",
+        help="Use strictly positive source weights or include zero-cost source weights for non-negative Min coverage.",
+    )
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -460,7 +475,7 @@ def build_harness(root: Path) -> list[str]:
     return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_weighted_shortest_path.dll")]
 
 
-def benchmark_mode(command: list[str], scale: str, mode: str, repetitions: int) -> RunResult:
+def benchmark_mode(command: list[str], scale: str, mode: str, weight_mode: str, repetitions: int) -> RunResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
     article_path = scale_dir / "article_category.tsv"
@@ -470,7 +485,7 @@ def benchmark_mode(command: list[str], scale: str, mode: str, repetitions: int) 
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run(command + [mode, str(edge_path), str(article_path)])
+        result = run(command + [mode, weight_mode, str(edge_path), str(article_path)])
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         stdout = result.stdout
@@ -496,8 +511,8 @@ def main() -> int:
         command = build_harness(temp_root)
         results: list[RunResult] = []
         for scale in scales:
-            results.append(benchmark_mode(command, scale, "all", args.repetitions))
-            results.append(benchmark_mode(command, scale, "min", args.repetitions))
+            results.append(benchmark_mode(command, scale, "all", args.weight_mode, args.repetitions))
+            results.append(benchmark_mode(command, scale, "min", args.weight_mode, args.repetitions))
 
         print("scale\tmode\tmedian_s\tmin_s\tmax_s\trows")
         grouped: dict[str, dict[str, RunResult]] = {}

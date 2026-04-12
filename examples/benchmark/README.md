@@ -933,6 +933,10 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k --repetitions 1
 ```
 
+Use `--weight-mode nonnegative-zero` to keep degree-one source weights at zero
+and exercise the broader non-negative additive `Min` path that would otherwise
+fall back to the exact visited-state frontier.
+
 Latest local results:
 
 | Scale | All | Min | Speedup | Output Match |
@@ -956,10 +960,13 @@ small and localized, which is favorable for future SCC-condensed
 strategies on broader weighted `Min` workloads.
 
 The runtime now also exposes SCC-condensed weighted-min planning through
-trace metrics. For positive-additive `Min`, SCC condensation is a measured
-candidate rather than an unconditional replacement for the layered dynamic
-programming path. Current trace output includes `phase_scc_condense_graph_ms`,
-`phase_scc_probe_condensed_ms`, `phase_scc_probe_positive_layered_ms`,
+trace metrics. For additive `Min`, SCC condensation is a measured candidate
+rather than an unconditional replacement for the layered dynamic programming
+path. Strictly positive steps keep the `phase_scc_probe_positive_layered_ms`
+trace label, while zero-cost non-negative steps report
+`phase_scc_probe_nonnegative_layered_ms` and
+`phase_nonnegative_min_layered_solve_ms`. Current trace output also includes
+`phase_scc_condense_graph_ms`, `phase_scc_probe_condensed_ms`,
 `metric_scc_count`, `metric_scc_condensed_edge_count`,
 `metric_scc_probe_local_states_explored`, and
 `metric_scc_probe_outer_dag_states_explored`; on the current benchmark

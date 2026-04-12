@@ -169,6 +169,9 @@
 :- dynamic user:test_weighted_min_metadata_edge/2.
 :- dynamic user:test_weighted_min_metadata_cost/2.
 :- dynamic user:test_weighted_min_metadata_path/3.
+:- dynamic user:test_weighted_zero_min_edge/2.
+:- dynamic user:test_weighted_zero_min_cost/2.
+:- dynamic user:test_weighted_zero_min_path/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -327,6 +330,7 @@ test_csharp_query_target :-
         verify_path_aware_accumulation_min_mode_plan,
         verify_path_aware_accumulation_positive_guard_plan,
         verify_path_aware_accumulation_positive_metadata_plan,
+        verify_path_aware_accumulation_nonnegative_min_strategy_runtime,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -1266,6 +1270,26 @@ setup_test_data :-
     )),
     assertz(user:'table'(test_weighted_min_metadata_path(_, _, min))),
     declare_constraint(test_weighted_min_metadata_path/3, [positive_step(3)]),
+    assertz(user:test_weighted_zero_min_edge(a, b)),
+    assertz(user:test_weighted_zero_min_edge(a, c)),
+    assertz(user:test_weighted_zero_min_edge(b, a)),
+    assertz(user:test_weighted_zero_min_edge(b, d)),
+    assertz(user:test_weighted_zero_min_edge(c, d)),
+    assertz(user:test_weighted_zero_min_cost(a, 0)),
+    assertz(user:test_weighted_zero_min_cost(b, 2)),
+    assertz(user:test_weighted_zero_min_cost(c, 4)),
+    assertz(user:(test_weighted_zero_min_path(X, Y, Acc) :-
+        test_weighted_zero_min_edge(X, Y),
+        test_weighted_zero_min_cost(X, Cost),
+        Acc is Cost
+    )),
+    assertz(user:(test_weighted_zero_min_path(X, Z, Acc) :-
+        test_weighted_zero_min_edge(X, Y),
+        test_weighted_zero_min_cost(X, Cost),
+        test_weighted_zero_min_path(Y, Z, Acc1),
+        Acc is Acc1 + Cost
+    )),
+    assertz(user:'table'(test_weighted_zero_min_path(_, _, min))),
     assert_binary_recursive_fixture(
         test_probe_dir_forward_edge,
         test_probe_dir_forward_reach,
@@ -1498,6 +1522,9 @@ cleanup_test_data :-
     retractall(user:test_weighted_min_metadata_cost(_, _)),
     retractall(user:test_weighted_min_metadata_path(_, _, _)),
     clear_constraints(test_weighted_min_metadata_path/3),
+    retractall(user:test_weighted_zero_min_edge(_, _)),
+    retractall(user:test_weighted_zero_min_cost(_, _)),
+    retractall(user:test_weighted_zero_min_path(_, _, _)),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3839,6 +3866,35 @@ verify_path_aware_accumulation_positive_metadata_plan :-
          'a,c,1',
          'a,d,3'],
         [[a]]).
+
+verify_path_aware_accumulation_nonnegative_min_strategy_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_zero_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_zero_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    harness_source_with_strategy_flag_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinNonNegativeAdditiveLayered',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,0',
+         'a,c,0',
+         'a,d,2',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinNonNegativeAdditiveLayered=true'],
+        Params,
+        HarnessSource).
 
 verify_grouped_transitive_closure_plan :-
     csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
