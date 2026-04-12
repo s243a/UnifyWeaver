@@ -111,6 +111,7 @@ builtin_id('functor/3',   18).
 builtin_id('arg/3',       19).
 builtin_id('=../2',       20).
 builtin_id('copy_term/2', 21).
+builtin_id('=/2',         22).
 
 % ============================================================================
 % Register name -> index mapping
@@ -153,9 +154,14 @@ hash_codes([C|Cs], Acc, Hash) :-
 
 wam_instruction_to_wat_bytes(get_constant(C, Ai), _Labels, Hex) :-
     instr_tag(get_constant, Tag),
-    encode_constant(C, Op1),
+    encode_constant_with_tag(C, ConstTag, Op1),
     reg_name_to_index(Ai, RegIdx),
-    encode_instr_hex(Tag, Op1, RegIdx, Hex).
+    %% op2 layout: high 32 bits = value-cell tag hint, low 32 bits = reg idx.
+    %% Runtime extracts RegIdx via i32.wrap_i64 and ConstTag via
+    %% i64.shr_u 32 + i32.wrap_i64. See wam_wat_case(put_constant, ...)
+    %% and friends for the decode side.
+    Op2 is (ConstTag << 32) \/ RegIdx,
+    encode_instr_hex(Tag, Op1, Op2, Hex).
 
 wam_instruction_to_wat_bytes(get_variable(Xn, Ai), _Labels, Hex) :-
     instr_tag(get_variable, Tag),
@@ -192,14 +198,17 @@ wam_instruction_to_wat_bytes(unify_value(Xn), _Labels, Hex) :-
 
 wam_instruction_to_wat_bytes(unify_constant(C), _Labels, Hex) :-
     instr_tag(unify_constant, Tag),
-    encode_constant(C, Op1),
-    encode_instr_hex(Tag, Op1, 0, Hex).
+    encode_constant_with_tag(C, ConstTag, Op1),
+    %% op2 = value-cell tag hint (atom=0, integer=1, float=2).
+    encode_instr_hex(Tag, Op1, ConstTag, Hex).
 
 wam_instruction_to_wat_bytes(put_constant(C, Ai), _Labels, Hex) :-
     instr_tag(put_constant, Tag),
-    encode_constant(C, Op1),
+    encode_constant_with_tag(C, ConstTag, Op1),
     reg_name_to_index(Ai, RegIdx),
-    encode_instr_hex(Tag, Op1, RegIdx, Hex).
+    %% op2: high 32 = tag hint, low 32 = reg idx. See note on get_constant.
+    Op2 is (ConstTag << 32) \/ RegIdx,
+    encode_instr_hex(Tag, Op1, Op2, Hex).
 
 wam_instruction_to_wat_bytes(put_variable(Xn, Ai), _Labels, Hex) :-
     instr_tag(put_variable, Tag),
@@ -236,8 +245,9 @@ wam_instruction_to_wat_bytes(set_value(Xn), _Labels, Hex) :-
 
 wam_instruction_to_wat_bytes(set_constant(C), _Labels, Hex) :-
     instr_tag(set_constant, Tag),
-    encode_constant(C, Op1),
-    encode_instr_hex(Tag, Op1, 0, Hex).
+    encode_constant_with_tag(C, ConstTag, Op1),
+    %% op2 = value-cell tag hint.
+    encode_instr_hex(Tag, Op1, ConstTag, Hex).
 
 wam_instruction_to_wat_bytes(allocate, _Labels, Hex) :-
     instr_tag(allocate, Tag),
@@ -285,12 +295,35 @@ wam_instruction_to_wat_bytes(trust_me, _Labels, Hex) :-
 %% encode_constant(+C, -I64Val)
 %  Encodes a Prolog constant as an i64 value.
 %  For atoms: the hash. For integers: the raw value.
-encode_constant(atom(A), Hash) :- !, atom_hash_i64(A, Hash).
-encode_constant(integer(I), I) :- !.
-encode_constant(N, N) :- integer(N), !.
-encode_constant(N, Bits) :- float(N), !, Bits is float_integer_part(N).
-encode_constant(A, Hash) :- atom(A), !, atom_hash_i64(A, Hash).
-encode_constant(_, 0).
+encode_constant(C, Val) :- encode_constant_with_tag(C, _Tag, Val).
+
+%% encode_constant_with_tag(+C, -Tag, -I64Val)
+%  Encodes a Prolog constant as (Tag, Value) where Tag is the runtime
+%  value-cell tag (0 = atom, 1 = integer, 2 = float) and I64Val is the
+%  payload stored in the instruction's op1 field.
+%
+%  The canonical WAM layer hands constants down as strings parsed
+%  from WAM assembly text, not as typed Prolog terms — so "42" arrives
+%  as the string "42", not the integer 42. We parse strings back into
+%  their original types here so the type/1 family of builtins
+%  (integer/1, atom/1, etc.) can dispatch on a meaningful runtime
+%  tag at the A_i register. Prior to this change, all constants
+%  unconditionally stored tag=0 (atom), which made integer/1 always
+%  fail and atom/1 always "succeed" — including on integer constants.
+encode_constant_with_tag(atom(A), 0, Hash) :- !, atom_hash_i64(A, Hash).
+encode_constant_with_tag(integer(I), 1, I) :- !.
+encode_constant_with_tag(I, 1, I) :- integer(I), !.
+encode_constant_with_tag(F, 2, Bits) :- float(F), !, Bits is float_integer_part(F).
+encode_constant_with_tag(A, 0, Hash) :- atom(A), !, atom_hash_i64(A, Hash).
+encode_constant_with_tag(S, Tag, Val) :-
+    string(S), !,
+    (   number_string(I, S), integer(I)
+    ->  Tag = 1, Val = I
+    ;   atom_string(A, S),
+        atom_hash_i64(A, Hash),
+        Tag = 0, Val = Hash
+    ).
+encode_constant_with_tag(_, 0, 0).
 
 %% encode_structure_op1(+FSlashArity, -I64)
 %  Encodes a functor/arity descriptor (e.g. 'f/2') as an i64 payload.
@@ -578,17 +611,19 @@ close_and_call(Tag-_, Code) :-
 % --- Head unification ---
 
 wam_wat_case(get_constant,
-'  (local $reg_idx i32)
+'  ;; op2 layout: high 32 = value-cell tag hint, low 32 = reg idx.
+  (local $reg_idx i32) (local $c_tag i32)
   (local.set $reg_idx (i32.wrap_i64 (local.get $op2)))
+  (local.set $c_tag (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
   (if (result i32) (call $val_is_unbound (call $reg_offset (local.get $reg_idx)))
     (then
       (call $trail_binding (local.get $reg_idx))
-      (call $set_reg (local.get $reg_idx) (i32.const 0) (local.get $op1))
+      (call $set_reg (local.get $reg_idx) (local.get $c_tag) (local.get $op1))
       (call $inc_pc)
       (i32.const 1))
     (else
       (if (result i32) (i32.and
-            (i32.eq (call $get_reg_tag (local.get $reg_idx)) (i32.const 0))
+            (i32.eq (call $get_reg_tag (local.get $reg_idx)) (local.get $c_tag))
             (i64.eq (call $get_reg_payload (local.get $reg_idx)) (local.get $op1)))
         (then (call $inc_pc) (i32.const 1))
         (else (i32.const 0)))))').
@@ -684,9 +719,12 @@ wam_wat_case(unify_value,
       (i32.const 1)))').
 
 wam_wat_case(unify_constant,
-'  (if (result i32) (call $get_mode) ;; write mode
+'  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
+  (local $c_tag i32)
+  (local.set $c_tag (i32.wrap_i64 (local.get $op2)))
+  (if (result i32) (call $get_mode) ;; write mode
     (then
-      (drop (call $heap_push_val (i32.const 0) (local.get $op1)))
+      (drop (call $heap_push_val (local.get $c_tag) (local.get $op1)))
       (call $inc_pc)
       (i32.const 1))
     (else
@@ -697,11 +735,13 @@ wam_wat_case(unify_constant,
 % --- Body construction ---
 
 wam_wat_case(put_constant,
-'  (local $ai i32)
+'  ;; op2 layout: high 32 = value-cell tag hint (0 atom, 1 integer,
+  ;; 2 float), low 32 = target reg index. Encoder packs this in
+  ;; wam_instruction_to_wat_bytes/3 via encode_constant_with_tag/3.
+  (local $ai i32) (local $c_tag i32)
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
-  ;; Determine tag from constant type (op1 encodes either atom hash or integer)
-  ;; For now, use atom tag=0 for hashed values, integer tag=1 for raw integers
-  (call $set_reg (local.get $ai) (i32.const 0) (local.get $op1))
+  (local.set $c_tag (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
+  (call $set_reg (local.get $ai) (local.get $c_tag) (local.get $op1))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -760,7 +800,10 @@ wam_wat_case(set_value,
   (i32.const 1)').
 
 wam_wat_case(set_constant,
-'  (drop (call $heap_push_val (i32.const 0) (local.get $op1)))
+'  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
+  (local $c_tag i32)
+  (local.set $c_tag (i32.wrap_i64 (local.get $op2)))
+  (drop (call $heap_push_val (local.get $c_tag) (local.get $op1)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1021,25 +1064,32 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (i64.eq (local.get $p1) (local.get $p2))))
 
 ;; --- Builtin dispatch ---
-;; O(1) br_table dispatch for ALL builtins including term inspection
-;; (functor/3, arg/3, =../2, copy_term/2 at IDs 18-21). Earlier
-;; versions routed 18-21 through a linear if-chain AFTER the br_table
-;; default — correct but O(k) in the number of term builtins, and
-;; on the hot path for any predicate that uses them. Folding them
-;; into the br_table makes every builtin call one compare (the
-;; br_table bounds check) and one indirect branch regardless of
-;; which builtin is selected.
+;; O(1) br_table dispatch for ALL builtins. Earlier versions routed
+;; term inspection (18-21) through a linear if-chain and left IDs
+;; 9-14 (type checks) + ID 22 (=/2) unimplemented — IDs 9-14 mapped
+;; to $default (returning 0), and =/2 was never even in the id table
+;; so the canonical WAM layer emitted `execute =/2` which resolved
+;; to PC=0 and corrupted execution. This version:
+;;   * maps IDs 9-14 to real type-check handlers ($var, $nonvar,
+;;     $atom, $integer, $float, $number)
+;;   * adds ID 22 $eq for =/2 calling $unify_regs A1 A2
+;; All builtins still dispatch in O(1) via one bounds check + one
+;; indirect branch.
 (func $execute_builtin (param $id i32) (param $arity i32) (result i32)
   (block $default
+    (block $eq
     (block $copy_term (block $univ (block $arg (block $functor
     (block $cut (block $fail (block $true_b
+    (block $number (block $float (block $integer
+    (block $atom (block $nonvar (block $var
     (block $arith_ge (block $arith_le (block $arith_gt (block $arith_lt
     (block $arith_ne (block $arith_eq (block $is
     (block $nl (block $write
       (br_table $write $nl $is $arith_eq $arith_ne $arith_lt $arith_gt $arith_le $arith_ge
-                $default $default $default $default $default $default
+                $var $nonvar $atom $integer $float $number
                 $true_b $fail $cut
                 $functor $arg $univ $copy_term
+                $eq
                 $default (local.get $id))
     ) ;; write
     (call $print_i64 (call $get_reg_payload (i32.const 0)))
@@ -1061,11 +1111,25 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (call $builtin_arith_cmp (i32.const 4)))
     ) ;; >=
     (return (call $builtin_arith_cmp (i32.const 5)))
-    ) ;; true
+    ) ;; var/1 (ID 9): A1 tag == 6 (unbound)
+    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 6)))
+    ) ;; nonvar/1 (ID 10): A1 tag != 6
+    (return (i32.ne (call $get_reg_tag (i32.const 0)) (i32.const 6)))
+    ) ;; atom/1 (ID 11): A1 tag == 0
+    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 0)))
+    ) ;; integer/1 (ID 12): A1 tag == 1
+    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 1)))
+    ) ;; float/1 (ID 13): A1 tag == 2
+    (return (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 2)))
+    ) ;; number/1 (ID 14): A1 tag == 1 (integer) or 2 (float)
+    (return (i32.or
+              (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 1))
+              (i32.eq (call $get_reg_tag (i32.const 0)) (i32.const 2))))
+    ) ;; true (ID 15)
     (return (i32.const 1))
-    ) ;; fail
+    ) ;; fail (ID 16)
     (return (i32.const 0))
-    ) ;; cut
+    ) ;; cut (ID 17)
     (call $set_cp_count (i32.const 0))
     (return (i32.const 1))
     ) ;; functor/3 (ID 18)
@@ -1076,6 +1140,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (call $builtin_univ))
     ) ;; copy_term/2 (ID 21)
     (return (call $builtin_copy_term))
+    ) ;; =/2 (ID 22): unify A1 and A2 via the shared $unify_regs helper
+    (return (call $unify_regs (i32.const 0) (i32.const 1)))
   )
   ;; $default fall-through: unknown builtin ID
   (i32.const 0)

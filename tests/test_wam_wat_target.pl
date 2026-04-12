@@ -398,6 +398,103 @@ run_wam_wat_module_export(WatFile, ExportName, Result) :-
     ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
     ).
 
+test(eq_builtin_id_registered) :-
+    %% =/2 is recognized by the canonical WAM layer and assigned
+    %% builtin ID 22 in WAM-WAT''s builtin_id table. Prior to this
+    %% branch, X = Y body goals compiled to `execute =/2`, which
+    %% (since =/2 was never registered) resolved to PC=0 and
+    %% corrupted execution at runtime.
+    assertion(wam_target:is_builtin_pred('=', 2)),
+    assertion(wam_wat_target:builtin_id('=/2', 22)).
+
+test(eq_dispatch_in_br_table) :-
+    %% =/2 is wired into the br_table via the new $eq block, so
+    %% dispatch is O(1) and calls $unify_regs A1 A2 directly.
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$eq")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $eq")),
+    assertion(sub_string(HelpersCode, _, _, _,
+        "(call $unify_regs (i32.const 0) (i32.const 1))")).
+
+test(constant_tag_encoded_in_op2) :-
+    %% put_constant encodes the value-cell tag hint (0=atom, 1=int,
+    %% 2=float) in op2''s high 32 bits alongside the target reg idx
+    %% in the low 32 bits. Before this fix, put_constant always
+    %% assumed tag=0 (atom), so integer constants were stored with
+    %% the wrong runtime tag and integer/1 always failed on them.
+    %%
+    %% Test: put_constant with integer 42 targeting A1 (reg idx 0).
+    %% 20-byte instruction layout:
+    %%   tag (4 bytes): \08 \00 \00 \00  (put_constant = 8)
+    %%   op1 (8 bytes): \2a \00 \00 \00 \00 \00 \00 \00  (LE i64 = 42)
+    %%   op2 (8 bytes): \00 \00 \00 \00 \01 \00 \00 \00
+    %%                  low 32 bits = 0 (reg A1)
+    %;                  high 32 bits = 0x00000001 (integer tag)
+    %% Each byte is encoded as "\xx" (3 chars). Byte 16 (op2 byte 4,
+    %% which carries the low byte of the high 32 bits) is at string
+    %% position 48 and should be "\\01".
+    wam_instruction_to_wat_bytes(put_constant(integer(42), 'A1'), [], Hex),
+    assertion(atom(Hex)),
+    sub_atom(Hex, 48, 3, _, Op2Byte4),
+    assertion(Op2Byte4 == '\\01').
+
+test(functional_integer_type_check, [condition(tool_available(wat2wasm)),
+                                       condition(tool_available(node))]) :-
+    %% integer/1 as a guard: `integer(42)` should succeed, returning 1.
+    %% Before this PR, integer/1 at ID 12 fell through the br_table to
+    %% $default which returned 0 (fail) unconditionally. After the fix,
+    %% the br_table routes ID 12 to a real handler that checks
+    %% A1.tag == 1 (integer).
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_int_~w.wat', [T]),
+    assertz(user:test_int_check :- integer(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_int_check/0],
+                                  [module_name(func_int_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_int_check_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(int_check_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_int_check),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_atom_type_check_fail, [condition(tool_available(wat2wasm)),
+                                         condition(tool_available(node))]) :-
+    %% atom/1 as a guard: `atom(42)` should FAIL (42 is integer, not
+    %% atom). Return value 0 proves the dispatch distinguishes tags
+    %% correctly rather than unconditionally returning 1. Pairs with
+    %% functional_integer_type_check as a negative test.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_atomfail_~w.wat', [T]),
+    assertz(user:test_atom_fail :- atom(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_atom_fail/0],
+                                  [module_name(func_atomfail_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_atom_fail_0, Result),
+            (   Result =:= 0
+            ->  true
+            ;   throw(wam_wat_runtime_error(atom_fail_wrong(Result)))
+            )
+        ),
+        (   retractall(user:test_atom_fail),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
 test(functional_cross_predicate_call, [condition(tool_available(wat2wasm)),
                                          condition(tool_available(node))]) :-
     %% Cross-predicate label resolution end-to-end:
