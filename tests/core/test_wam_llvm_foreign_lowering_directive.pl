@@ -49,18 +49,19 @@ test_directive_path_generates_module :-
         LLPath),
     read_file_to_string(LLPath, Src, []),
 
-    ( sub_string(Src, _, _, _, 'M5.6 concrete td3 impl')
+    ( sub_string(Src, _, _, _, 'define i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)')
     -> format('  PASS: concrete td3 impl spliced in~n')
     ;  format('  FAIL: concrete td3 impl missing~n'),
        throw(no_concrete_impl)
     ),
-    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 3 }')
-    -> format('  PASS: call_foreign tag=30 kind=4 arity=3 emitted~n')
+    % First registered td3 spec gets instance_id=0.
+    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 0 }')
+    -> format('  PASS: call_foreign tag=30 kind=4 instance=0 emitted~n')
     ;  format('  FAIL: call_foreign instruction not emitted~n'),
        throw(no_call_foreign)
     ),
-    ( sub_string(Src, _, _, _, '@foreign_td3_edge_2')
-    -> format('  PASS: fact table global present~n')
+    ( sub_string(Src, _, _, _, '@td3_inst_trav_0_edges')
+    -> format('  PASS: instance edge table global present~n')
     ;  format('  FAIL: fact table global missing~n')
     ),
 

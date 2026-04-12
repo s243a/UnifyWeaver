@@ -77,8 +77,10 @@ test_options_path_generates_module :-
         LLPath),
     read_file_to_string(LLPath, Src, []),
 
-    % 1. Concrete impl present (NOT the weak default).
-    ( sub_string(Src, _, _, _, 'M5.6 concrete td3 impl')
+    % 1. Concrete impl present (NOT the weak default). M5.8 emits a
+    % `switch i32 %instance` with one case per registered spec that
+    % calls @wam_td3_run with that case's edge table.
+    ( sub_string(Src, _, _, _, 'define i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)')
     -> format('  PASS: concrete td3 impl spliced into state template~n')
     ;  format('  FAIL: concrete td3 impl missing~n'),
        throw(no_concrete_impl)
@@ -88,11 +90,15 @@ test_options_path_generates_module :-
        throw(weak_default_not_replaced)
     ;  format('  PASS: weak default replaced~n')
     ),
+    ( sub_string(Src, _, _, _, 'call i1 @wam_td3_run(%WamState* %vm,')
+    -> format('  PASS: concrete impl delegates to @wam_td3_run helper~n')
+    ;  format('  FAIL: @wam_td3_run delegation missing~n')
+    ),
 
-    % 2. Fact table global emitted.
-    ( sub_string(Src, _, _, _, '@foreign_td3_edge_2')
-    -> format('  PASS: foreign_td3_edge_2 fact table global present~n')
-    ;  format('  FAIL: fact table global missing~n'),
+    % 2. Fact table global emitted with instance-qualified name.
+    ( sub_string(Src, _, _, _, '@td3_inst_my_distance_0_edges')
+    -> format('  PASS: instance-0 edge table global present~n')
+    ;  format('  FAIL: instance-0 edge table global missing~n'),
        throw(no_fact_table)
     ),
     ( sub_string(Src, _, _, _, 'private constant [4 x %AtomFactPair]')
@@ -101,9 +107,10 @@ test_options_path_generates_module :-
     ),
 
     % 3. call_foreign instruction for the predicate.
-    % tag 30 = call_foreign, kind id 4 = transitive_distance3.
-    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 3 }')
-    -> format('  PASS: call_foreign tag=30 kind=4 arity=3 emitted~n')
+    % tag 30 = call_foreign, kind id 4 = transitive_distance3,
+    % instance_id = 0 (first registered spec of kind td3).
+    ( sub_string(Src, _, _, _, '%Instruction { i32 30, i64 4, i64 0 }')
+    -> format('  PASS: call_foreign tag=30 kind=4 instance=0 emitted~n')
     ;  format('  FAIL: call_foreign instruction not emitted~n'),
        throw(no_call_foreign)
     ),

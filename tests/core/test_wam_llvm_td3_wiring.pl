@@ -30,8 +30,11 @@ test_impl_weak_default :-
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     write_wam_llvm_project([user:color/1], [module_name('td3w_test')], LLPath),
     read_file_to_string(LLPath, Src, []),
-    ( sub_string(Src, _, _, _, 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm)')
-    -> format('  PASS: weak default present~n')
+    % M5.8: the weak default now takes an i32 %instance parameter
+    % that the dispatcher passes through from the call_foreign
+    % instruction's op2.
+    ( sub_string(Src, _, _, _, 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)')
+    -> format('  PASS: weak default present with instance parameter~n')
     ;  format('  FAIL: weak default missing~n'),
        throw(weak_default_missing)
     ),
@@ -42,8 +45,11 @@ test_stub_calls_impl :-
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     write_wam_llvm_project([user:color/1], [module_name('td3w_test')], LLPath),
     read_file_to_string(LLPath, Src, []),
-    ( sub_string(Src, _, _, _, 'call i1 @wam_td3_kernel_impl(%WamState* %vm)')
-    -> format('  PASS: stub calls @wam_td3_kernel_impl~n')
+    % M5.8: the stub passes the instance discriminator through so
+    % the concrete impl can dispatch to the right per-predicate
+    % edge table.
+    ( sub_string(Src, _, _, _, 'call i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)')
+    -> format('  PASS: stub calls @wam_td3_kernel_impl with instance~n')
     ;  format('  FAIL: stub does not delegate to impl~n'),
        throw(stub_not_wired)
     ),

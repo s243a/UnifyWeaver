@@ -252,45 +252,95 @@ lookup_foreign_kernel_spec(Pred, Arity, Kind, Config) :-
 %  When no foreign specs are registered this is a pass-through:
 %    StateFuncs = StateFuncsRaw, Globals = ''.
 %
-%  For each registered td3 spec, the weak default
-%    define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {
-%      ret i1 false
-%    }
-%  is replaced with a concrete body that reads A1/A2 atoms, calls
-%  @wam_bfs_atom_distance over a module-local %AtomFactPair table, and
-%  writes A3 via @wam_set_reg_int. The fact table is emitted as a
-%  private constant and returned via Globals.
+%  When one or more td3 specs are registered, M5.8 emits a single
+%  concrete @wam_td3_kernel_impl that `switch`es on %instance with
+%  one case per registered predicate. Each case GEPs its own
+%  module-local %AtomFactPair table and calls the @wam_td3_run
+%  helper. This lets multiple td3 predicates with *different*
+%  edge_preds coexist in one module — each gets its own instance_id
+%  and its own edge table.
 substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
-    findall(td3(PredArity, Config),
+    findall(PredArity-Config,
         llvm_foreign_kernel_spec(PredArity, transitive_distance3, Config),
-        Td3Specs),
-    ( Td3Specs == []
+        Td3Entries),
+    ( Td3Entries == []
     -> StateFuncs = StateFuncsRaw,
        Globals = ''
-    ;  % Current design: one concrete impl regardless of how many td3
-       % predicates are foreign-lowered. They all go through the same
-       % @wam_td3_kernel_impl entry point and read the same fact table.
-       % If multiple predicates use *different* edge_preds this needs
-       % refinement — currently the first wins.
-       Td3Specs = [td3(_FirstPred, FirstConfig)|_],
-       build_td3_concrete_impl(FirstConfig, ImplBody, FactTableIR, TableName, TableLen, MaxAtomId),
+    ;  build_td3_instance_switch(Td3Entries, ImplBody, TablesIR),
        replace_td3_weak_default(StateFuncsRaw, ImplBody, StateFuncs),
        format(atom(Globals),
-'; === M5.6 foreign kernel support globals ===
+'; === M5.6 + M5.8 foreign kernel support globals ===
 ~w
-
-; max_atom_id upper bound baked into the concrete kernel at compile time:
-;   table=~w  len=~w  max_atom_id=~w
-', [FactTableIR, TableName, TableLen, MaxAtomId])
+', [TablesIR])
     ).
 
-%% build_td3_concrete_impl(+Config, -ImplBody, -FactTableIR, -TableName, -TableLen, -MaxAtomId).
+%% build_td3_instance_switch(+Entries, -ImplBody, -TablesIR).
 %
-%  Reads the edge predicate facts from Config, emits an %AtomFactPair
-%  global constant for them, computes max_atom_id from the interned
-%  atom IDs, and builds the LLVM IR for a concrete @wam_td3_kernel_impl
-%  that calls @wam_bfs_atom_distance against that table.
-build_td3_concrete_impl(Config, ImplBody, FactTableIR, TableName, TableLen, MaxAtomId) :-
+%  Entries is a list of PredArity-Config pairs (the order matches the
+%  instance_id assignment — first entry is instance 0). Produces:
+%
+%    - ImplBody: the full `define i1 @wam_td3_kernel_impl(%WamState*,
+%      i32 %instance)` body with one switch case per entry, each
+%      loading its own edge table pointer/len/max and calling
+%      @wam_td3_run.
+%    - TablesIR: the concatenated %AtomFactPair global constant
+%      definitions for each entry's edge table. These are dropped
+%      into the module's native_predicates section so they are at
+%      module scope before any use.
+build_td3_instance_switch(Entries, ImplBody, TablesIR) :-
+    build_td3_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    atomic_list_concat(Tables, '\n\n', TablesIR),
+    format(atom(ImplBody),
+'define i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %bail [
+~w
+  ]
+
+~w
+
+bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+%% build_td3_instance_parts(+Entries, +StartIndex, -SwitchCases, -Bodies, -Tables).
+%
+%  Walks Entries assigning sequential instance IDs starting at
+%  StartIndex. For each entry produces three pieces:
+%
+%    - SwitchCase: `    i32 N, label %inst_N`
+%    - Body:       `inst_N:\n  %tblN = getelementptr ...\n
+%                   %rN = call i1 @wam_td3_run(...)\n  ret i1 %rN`
+%    - Table:      the private-constant %AtomFactPair definition
+%                  for this instance's edge table.
+build_td3_instance_parts([], _, [], [], []).
+build_td3_instance_parts([PredArity-Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
+    PredArity = Pred/_,
+    sanitize_atom_for_llvm(Pred, SanePred),
+    format(atom(TableName), 'td3_inst_~w_~w_edges', [SanePred, Index]),
+    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
+    format(atom(SwitchCase), '    i32 ~w, label %inst_~w', [Index, Index]),
+    format(atom(Body),
+'inst_~w:
+  %tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
+  %r_~w = call i1 @wam_td3_run(%WamState* %vm, %AtomFactPair* %tbl_~w, i64 ~w, i64 ~w)
+  ret i1 %r_~w',
+        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
+    NextIndex is Index + 1,
+    build_td3_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% build_td3_instance_table(+Config, +TableName, -TableIR, -GepLen, -EffLen, -MaxAtomId).
+%
+%  Reads the edge predicate facts from Config, emits a %AtomFactPair
+%  private constant under TableName, and returns the sizing info the
+%  caller needs for the GEP and the @wam_td3_run call. GepLen is the
+%  declared LLVM array size (always ≥ 1 so the type matches the
+%  initializer); EffLen is the logical number of edges (may be 0).
+build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
     ( member(edge_pred(EdgePred), Config) -> true
     ; EdgePred = edge/2  % sensible default for smoke tests
     ),
@@ -298,8 +348,6 @@ build_td3_concrete_impl(Config, ImplBody, FactTableIR, TableName, TableLen, MaxA
     ( EPArity =:= 2 -> true
     ; throw(foreign_lowering_edge_pred_arity(EPName/EPArity))
     ),
-    % Gather facts from the user module. Wrap in findall/catch so a
-    % missing predicate produces an empty table rather than crashing.
     catch(
         findall(fact(From, To),
             ( Goal =.. [EPName, From, To],
@@ -307,50 +355,25 @@ build_td3_concrete_impl(Config, ImplBody, FactTableIR, TableName, TableLen, MaxA
             ),
             Pairs),
         _, Pairs = []),
-    % Intern all atoms to get a tight max_atom_id bound.
     compute_max_atom_id(Pairs, MaxAtomId),
-    format(atom(TableName), 'foreign_td3_~w_~w', [EPName, EPArity]),
-    llvm_emit_atom_fact2_table(TableName, Pairs, FactTableIR),
-    length(Pairs, TableLen),
-    % When len == 0, llvm_emit_atom_fact2_table produces a 1-entry
-    % placeholder. The kernel still needs to be told len=0 so it
-    % doesn't scan the placeholder as a real row.
-    ( TableLen == 0 -> EffectiveLen = 0 ; EffectiveLen = TableLen ),
-    ( TableLen == 0 -> GepLen = 1 ; GepLen = TableLen ),
-    format(atom(ImplBody),
-'define i1 @wam_td3_kernel_impl(%WamState* %vm) {
-entry:
-  ; M5.6 concrete td3 impl — generated from edge_pred(~w).
-  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
-  %s_is_atom = icmp eq i32 %s_tag, 0
-  br i1 %s_is_atom, label %check_t, label %bail
+    llvm_emit_atom_fact2_table(TableName, Pairs, TableIR),
+    length(Pairs, Len),
+    ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
 
-check_t:
-  %t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
-  %t_is_atom = icmp eq i32 %t_tag, 0
-  br i1 %t_is_atom, label %run, label %bail
+%% sanitize_atom_for_llvm(+Atom, -Sanitized).
+%  Replace any characters that would be awkward in an LLVM global
+%  identifier with underscores. Most atoms used as predicate names
+%  are alphanumeric + underscore already, so this is a belt-and-braces
+%  measure for edge cases.
+sanitize_atom_for_llvm(Atom, Sanitized) :-
+    atom_codes(Atom, Codes),
+    maplist(sanitize_code, Codes, SaneCodes),
+    atom_codes(Sanitized, SaneCodes).
 
-run:
-  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
-  %target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
-  %table_ptr = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
-  %dist_slot = alloca i64
-  %ok = call i1 @wam_bfs_atom_distance(
-      i64 %start_id, i64 %target_id,
-      %AtomFactPair* %table_ptr, i64 ~w,
-      i64 ~w,
-      i64* %dist_slot)
-  br i1 %ok, label %hit, label %bail
-
-hit:
-  %dist = load i64, i64* %dist_slot
-  call void @wam_set_reg_int(%WamState* %vm, i32 2, i64 %dist)
-  ret i1 true
-
-bail:
-  ret i1 false
-}',
-        [EPName, GepLen, GepLen, TableName, EffectiveLen, MaxAtomId]).
+sanitize_code(C, C) :-
+    ( (C >= 0'a, C =< 0'z) ; (C >= 0'A, C =< 0'Z)
+    ; (C >= 0'0, C =< 0'9) ; C =:= 0'_ ), !.
+sanitize_code(_, 0'_).
 
 %% compute_max_atom_id(+Pairs, -MaxAtomId).
 %
@@ -377,8 +400,13 @@ compute_max_atom_id(Pairs, MaxAtomId) :-
 %  isn't found (template drift, etc.) the original text is returned
 %  unchanged and an error is logged — the M5.5 delegation test would
 %  have caught any drift in the weak-default fragment itself.
+%
+%  M5.8: the weak default now takes an i32 %instance parameter so
+%  that pure-WAM modules and foreign-lowered modules share the same
+%  dispatcher signature. The string matched here must stay in sync
+%  with the state.ll.mustache definition.
 replace_td3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
-    Old = 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm) {\n  ret i1 false\n}',
+    Old = 'define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
     ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
     -> StateFuncs = StateFuncs0
     ;  format(user_error,
@@ -673,18 +701,33 @@ compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts)
 %% compile_foreign_kernel_predicate(+PredArity, +Kind, +Arity, +Options, -PredCode).
 %
 %  Generate an LLVM predicate body consisting of a single
-%  `call_foreign Kind, Arity` instruction followed by `proceed`. Takes
-%  the WAM-fallback compile path (not native) so the result plugs into
-%  the same %Instruction array / step dispatch machinery as any
-%  WAM-compiled predicate.
+%  `call_foreign Kind, InstanceId` instruction followed by `proceed`.
+%  Takes the WAM-fallback compile path (not native) so the result
+%  plugs into the same %Instruction array / step dispatch machinery
+%  as any WAM-compiled predicate.
 %
-%  compile_wam_predicate_to_llvm/4 expects WamCode as a newline-joined
-%  atom/string (it splits internally), so we format the two lines into
-%  a single blob here.
-compile_foreign_kernel_predicate(Pred/Arity, Kind, Arity, Options, PredCode) :-
+%  M5.8: op2 of call_foreign is now the instance_id (not arity). The
+%  instance_id is the predicate's zero-based position among the
+%  registered specs for its kind, matching the switch case layout
+%  emitted by build_td3_instance_switch/3.
+compile_foreign_kernel_predicate(Pred/Arity, Kind, _Arity, Options, PredCode) :-
     wam_llvm_foreign_kind_id(Kind, _KindId),  % fail fast if kind unknown
-    format(atom(WamCode), 'call_foreign ~w, ~w\nproceed', [Kind, Arity]),
+    allocate_foreign_instance_id(Pred/Arity, Kind, InstanceId),
+    format(atom(WamCode), 'call_foreign ~w, ~w\nproceed', [Kind, InstanceId]),
     compile_wam_predicate_to_llvm(Pred/Arity, WamCode, Options, PredCode).
+
+%% allocate_foreign_instance_id(+PredArity, +Kind, -InstanceId).
+%
+%  Looks up PredArity's position among the registered specs for Kind.
+%  The position is stable within a compile because llvm_foreign_kernel_spec/3
+%  is a dynamic fact table and findall/3 preserves assertion order.
+%  If PredArity isn't in the table this fails — it should have been
+%  added via one of the M5.6 entry paths before compile.
+allocate_foreign_instance_id(PredArity, Kind, InstanceId) :-
+    findall(P,
+        llvm_foreign_kernel_spec(P, Kind, _),
+        AllPreds),
+    nth0(InstanceId, AllPreds, PredArity), !.
 
 % ============================================================================
 % PHASE 2: step_wam/3 → LLVM switch dispatch
@@ -1379,18 +1422,17 @@ wam_llvm_case('end_aggregate',
 
 % call_foreign: dispatch to a native foreign kernel.
 % op1 = foreign kind ID (see wam_llvm_foreign_kind_id/2)
-% op2 = arity (for handler selection — different kernels have different
-%              register conventions)
+% op2 = instance_id (M5.8 — selects which of possibly several
+%   foreign-lowered predicates of the same kind should run). Arity is
+%   implicit per kernel kind (td3=3, wsp3=3, astar=4) so it doesn't
+%   need to live in the instruction.
 % On success, advance PC then return true so the run loop continues
 % to the next instruction. On failure, return false without advancing
-% so the run loop backtracks from the current PC. The missing
-% @wam_inc_pc call was a latent bug from M3 — it wasn't visible until
-% M5.6 made the kernels actually return true (prior M3 stubs all
-% returned false, which hid the infinite-loop).
+% so the run loop backtracks from the current PC.
 wam_llvm_case('call_foreign',
 '  %cf.kind = trunc i64 %op1 to i32
-  %cf.arity = trunc i64 %op2 to i32
-  %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.arity)
+  %cf.instance = trunc i64 %op2 to i32
+  %cf.result = call i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %cf.kind, i32 %cf.instance)
   br i1 %cf.result, label %cf.success, label %cf.fail
 
 cf.success:
@@ -2372,19 +2414,24 @@ agg_type_id(collect, 4).
 agg_type_id(bag, 5).
 agg_type_id(_, 4).  % fallback: collect
 
-% call_foreign KindName, Arity
+% call_foreign KindName, InstanceId
 % Dispatches to a registered native foreign kernel. The kind name is
 % resolved via wam_llvm_foreign_kind_id/2 to a stable integer ID that
-% matches the switch cases in @wam_execute_foreign_predicate.
-wam_line_to_llvm_literal(["call_foreign", KindStr, ArityStr], Lit) :- !,
-    clean_comma(KindStr, CK), clean_comma(ArityStr, CA),
+% matches the first-level switch in @wam_execute_foreign_predicate.
+% InstanceId is a compile-time-unique discriminator within a kind —
+% the second-level switch inside the per-kind impl (e.g.
+% @wam_td3_kernel_impl) uses it to pick the right per-predicate
+% edge table. Arity is implicit per kind and is not in the
+% instruction (M5.8 change — op2 used to carry arity).
+wam_line_to_llvm_literal(["call_foreign", KindStr, InstanceStr], Lit) :- !,
+    clean_comma(KindStr, CK), clean_comma(InstanceStr, CI),
     atom_string(KAtom, CK),
     ( wam_llvm_foreign_kind_id(KAtom, KindId)
     -> true
     ;  KindId = 999  % sentinel for unknown — dispatch returns false
     ),
-    ( number_string(Arity, CA) -> true ; Arity = 0 ),
-    format(atom(Lit), '%Instruction { i32 30, i64 ~w, i64 ~w }', [KindId, Arity]).
+    ( number_string(Instance, CI) -> true ; Instance = 0 ),
+    format(atom(Lit), '%Instruction { i32 30, i64 ~w, i64 ~w }', [KindId, Instance]).
 
 %% wam_llvm_foreign_kind_id(+Kind, -Id)
 %  Map a foreign kernel kind name (atom) to its integer dispatch ID.
