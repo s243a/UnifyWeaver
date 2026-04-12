@@ -29,7 +29,7 @@ fail_test(Test, Reason) :-
 
 test_haskell_helper_functions_present :-
     Test = 'WAM-Haskell: term-builtin helpers generated',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         %% bindOutput: non-PC-advancing register-binding helper used
         %% by functor/3, arg/3, =../2 for output positions.
@@ -44,7 +44,7 @@ test_haskell_helper_functions_present :-
 
 test_haskell_functor_builtin_present :-
     Test = 'WAM-Haskell: functor/3 step case generated',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"functor/3\""),
         %% Construct mode: allocates fresh Unbound cells.
@@ -57,7 +57,7 @@ test_haskell_functor_builtin_present :-
 
 test_haskell_arg_builtin_present :-
     Test = 'WAM-Haskell: arg/3 step case generated',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"arg/3\""),
         %% 1-based indexing into Str args list.
@@ -68,7 +68,7 @@ test_haskell_arg_builtin_present :-
 
 test_haskell_univ_builtin_present :-
     Test = 'WAM-Haskell: =../2 step case generated',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"=../2\""),
         %% Decompose mode: prepends functor atom to arg list.
@@ -81,7 +81,7 @@ test_haskell_univ_builtin_present :-
 
 test_haskell_copy_term_builtin_present :-
     Test = 'WAM-Haskell: copy_term/2 step case generated',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"copy_term/2\""),
         %% Drives copyTermWalk with the current var counter and an
@@ -98,7 +98,7 @@ test_haskell_no_regressions :-
     %% Smoke-test that adding Phase 5 has not broken pre-existing
     %% generated helpers (unifyVal, is/2, length/2 dispatch).
     Test = 'WAM-Haskell: pre-existing builtins still present',
-    (   compile_wam_runtime_to_haskell([], Code),
+    (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "unifyVal :: Value -> Value -> WamState"),
         sub_string(S, _, _, _, "BuiltinCall \"is/2\""),
