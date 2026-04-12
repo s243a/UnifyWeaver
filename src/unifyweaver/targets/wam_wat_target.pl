@@ -45,8 +45,9 @@ wam_heap_base(131072).    % page 2
 % Register and choice point geometry (derived from register count)
 wam_num_regs(64).
 wam_val_size(12).         % bytes per tagged value
-%% wam_cp_size = 12 (metadata: next_pc + trail_mark + saved_cp) + num_regs * val_size
-wam_cp_size(Size) :- wam_num_regs(N), wam_val_size(V), Size is 12 + N * V.
+%% wam_cp_size = 16 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top)
+%%             + num_regs * val_size
+wam_cp_size(Size) :- wam_num_regs(N), wam_val_size(V), Size is 16 + N * V.
 
 % Tag constants
 tag_atom(0).
@@ -950,8 +951,12 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $next_pc (call $cp_get_next_pc))
   (local.set $trail_mark (call $cp_get_trail_mark))
   (local.set $saved_cp (call $cp_get_saved_cp))
-  ;; Unwind trail
+  ;; Unwind trail (restores bound heap cells to their old values)
   (call $unwind_trail (local.get $trail_mark))
+  ;; Restore heap top (reclaim heap cells allocated since the CP was
+  ;; pushed — standard WAM behavior that prevents stale Ref cells in
+  ;; restored registers from pointing to garbage on the heap).
+  (call $set_heap_top (call $cp_get_saved_heap_top))
   ;; Restore registers from choice point
   (call $cp_restore_regs)
   ;; Restore state
@@ -991,7 +996,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 
 ;; --- Choice point management ---
 ;; Choice points stored in a dedicated area starting at offset 98304 (page 1.5)
-;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][~w regs: ~w bytes +12] = ~w bytes
+;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][~w regs: ~w bytes +16] = ~w bytes
 
 (func $cp_base_offset (result i32) (i32.const 98304))
 
@@ -1002,17 +1007,18 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $n i32) (local $off i32) (local $i i32)
   (local.set $n (call $get_cp_count))
   (local.set $off (call $cp_offset (local.get $n)))
-  ;; Save next_pc, trail mark, CP
+  ;; Save next_pc, trail mark, CP, heap_top
   (i32.store (local.get $off) (local.get $next_pc))
   (i32.store (i32.add (local.get $off) (i32.const 4)) (call $get_trail_top))
   (i32.store (i32.add (local.get $off) (i32.const 8)) (call $get_cp))
-  ;; Save all 64 registers (64 x 12 = 768 bytes)
+  (i32.store (i32.add (local.get $off) (i32.const 12)) (call $get_heap_top))
+  ;; Save all 64 registers (64 x 12 = 768 bytes) starting at +16
   (local.set $i (i32.const 0))
   (block $done
     (loop $save
       (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_from_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 12))
+        (i32.add (i32.add (local.get $off) (i32.const 16))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $save)))
@@ -1042,6 +1048,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
   (i32.load (i32.add (local.get $off) (i32.const 8))))
 
+(func $cp_get_saved_heap_top (result i32)
+  (local $off i32)
+  (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
+  (i32.load (i32.add (local.get $off) (i32.const 12))))
+
 (func $cp_restore_regs
   (local $off i32) (local $i i32)
   (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
@@ -1050,7 +1061,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (loop $restore
       (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_to_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 12))
+        (i32.add (i32.add (local.get $off) (i32.const 16))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $restore)))
