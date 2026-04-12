@@ -17,6 +17,9 @@ Current status:
 - the additive fast-path boundary now includes non-negative steps, so
   zero-cost source weights no longer force the exact visited-state frontier
   fallback when the additive form is otherwise safe and depth-bounded
+- negative additive steps and non-additive recurrence expressions are now
+  covered by explicit fallback-shape survey tests and runtime strategy
+  labeling
 - on the current positive-additive benchmark shape, the measured selector
   rejects SCC condensation because the layered path is still cheaper after
   SCC build/probe overhead
@@ -112,9 +115,13 @@ Current selection boundary:
 
 Next selection work:
 
-- determine whether any remaining non-additive or negative-step frontier
-  fallback shapes can be summarized safely without losing exact simple-path
-  semantics
+- use the explicit frontier-fallback labels to measure the remaining
+  unsupported shapes before adding more shortcuts
+- determine whether a restricted non-additive class, such as positive
+  multiplicative weights, can be transformed safely without losing exact
+  simple-path semantics
+- keep negative-step additive recurrences on the exact frontier path until
+  there is a proof that pruning and condensation remain sound
 
 Deliverable:
 
@@ -124,6 +131,7 @@ Examples:
 
 - `PathAwareAccumulation-Min-Frontier`
 - `PathAwareAccumulation-Min-SccCondensed`
+- `PathAwareAccumulationSeededMinFrontierFallback`
 
 ## Phase 4: Benchmark Loop
 
@@ -211,9 +219,19 @@ The original first code step after this document set was:
 
 That step is now complete.
 
+The fallback survey step now covers two representative cases:
+
+1. negative additive weighted `Min`, which matches the additive expression
+   shape but is rejected by the non-negative proof
+2. positive multiplicative weighted `Min`, which is monotone for the test
+   data but is not additive and therefore still requires exact path-state
+   evaluation
+
 The next coding step should be:
 
-1. identify weighted `Min` recurrence shapes still not covered by the current
-   non-negative additive fast path
-2. prototype a safe summarized evaluation for one of those broader cases
-3. benchmark it against the exact frontier fallback
+1. add lightweight frontier-fallback instrumentation for candidate count,
+   dominance checks, subset checks, and frontier bucket sizes
+2. run it on the negative-additive and multiplicative survey fixtures plus
+   cyclic benchmark data
+3. decide whether the next optimization should be exact state hashing or a
+   narrower multiplicative-to-additive transform
