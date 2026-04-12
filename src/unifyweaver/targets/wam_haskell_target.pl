@@ -29,13 +29,167 @@
 :- module(wam_haskell_target, [
     compile_wam_predicate_to_haskell/4,  % +Pred/Arity, +WamCode, +Options, -HaskellCode
     compile_wam_runtime_to_haskell/2,    % +Options, -HaskellCode
-    write_wam_haskell_project/3          % +Predicates, +Options, +ProjectDir
+    write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
+    wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
+    wam_haskell_partition_predicates/4   % +Mode, +Predicates, -InterpretedList, -LoweredList
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+
+% Phase 3: the real lowerability check and emission helpers live in the
+% wam_haskell_lowered_emitter module. We reexport so existing callers can
+% still see wam_haskell_lowerable/3 through this module.
+:- reexport('wam_haskell_lowered_emitter',
+            [wam_haskell_lowerable/3, lower_predicate_to_haskell/4]).
+
+%% ============================================================================
+%% emit_mode selector (Phase 1 of WAM-lowered Haskell path)
+%% ============================================================================
+%%
+%% See docs/design/WAM_HASKELL_LOWERED_{PHILOSOPHY,SPECIFICATION,IMPLEMENTATION_PLAN}.md
+%%
+%% Three modes are recognised:
+%%   - interpreter          : every predicate compiles via the existing
+%%                            instruction-array interpreter path (default).
+%%   - functions            : every predicate attempts lowering to a
+%%                            standalone Haskell function. Any predicate
+%%                            that fails wam_haskell_lowerable/3 falls back
+%%                            to the interpreter automatically.
+%%   - mixed(HotPreds)      : the predicates named in HotPreds attempt
+%%                            lowering; the rest go to the interpreter.
+%%
+%% Selector hierarchy, checked in order:
+%%   1. emit_mode(Mode) option on the write_wam_haskell_project/3 call
+%%   2. user:wam_haskell_emit_mode(Mode) dynamic fact (if defined)
+%%   3. default: interpreter
+%%
+%% Phase 1 ships the plumbing only. wam_haskell_lowerable/3 is a stub that
+%% always fails, so all three modes route every predicate to the interpreter.
+%% Output is byte-identical to the pre-Phase-1 state. Real lowering starts
+%% in Phase 3 of the implementation plan.
+
+:- multifile user:wam_haskell_emit_mode/1.
+
+%% wam_haskell_resolve_emit_mode(+Options, -Mode)
+%  Resolve the emit_mode selector using the hierarchy above. Throws a
+%  domain_error on an unknown value.
+wam_haskell_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M0), Options)
+    ->  wam_haskell_validate_emit_mode(M0, Mode)
+    ;   catch(user:wam_haskell_emit_mode(M1), _, fail)
+    ->  wam_haskell_validate_emit_mode(M1, Mode)
+    ;   Mode = interpreter
+    ).
+
+wam_haskell_validate_emit_mode(interpreter, interpreter) :- !.
+wam_haskell_validate_emit_mode(functions, functions)     :- !.
+wam_haskell_validate_emit_mode(mixed(L), mixed(L)) :-
+    is_list(L), !.
+wam_haskell_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_haskell_emit_mode, Other),
+                wam_haskell_resolve_emit_mode/2)).
+
+%% wam_haskell_lowerable/3 lives in wam_haskell_lowered_emitter.pl and is
+%% re-exported above. Phase 1 shipped a stub that always failed; Phase 3
+%% replaces it with a real whitelist check against the WAM instruction
+%% sequence.
+
+%% wam_haskell_partition_predicates(+Mode, +Predicates, -InterpretedList, -LoweredList)
+%  Partition Predicates into the two sublists based on Mode and the
+%  lowerability check. In Phase 1, LoweredList is always empty because
+%  the stub always fails — but the partition machinery runs anyway so
+%  Phase 3+ can plug in without changing the call site in
+%  write_wam_haskell_project/3.
+wam_haskell_partition_predicates(interpreter, Predicates, Predicates, []) :- !.
+wam_haskell_partition_predicates(functions, Predicates, Interpreted, Lowered) :- !,
+    wam_haskell_partition_try_lower(Predicates, Interpreted, Lowered).
+wam_haskell_partition_predicates(mixed(HotPreds), Predicates, Interpreted, Lowered) :- !,
+    wam_haskell_partition_mixed(Predicates, HotPreds, Interpreted, Lowered).
+
+% functions mode: every predicate attempts lowering.
+wam_haskell_partition_try_lower([], [], []).
+wam_haskell_partition_try_lower([P|Rest], Interpreted, Lowered) :-
+    wam_haskell_predicate_wamcode(P, WamCode),
+    (   wam_haskell_lowerable(P, WamCode, _Reason)
+    ->  Lowered = [P|LR],
+        wam_haskell_partition_try_lower(Rest, Interpreted, LR)
+    ;   Interpreted = [P|IR],
+        wam_haskell_partition_try_lower(Rest, IR, Lowered)
+    ).
+
+% mixed(HotPreds) mode: predicates in HotPreds attempt lowering; rest are interpreted.
+wam_haskell_partition_mixed([], _, [], []).
+wam_haskell_partition_mixed([P|Rest], HotPreds, Interpreted, Lowered) :-
+    (   wam_haskell_indicator_in_list(P, HotPreds)
+    ->  wam_haskell_predicate_wamcode(P, WamCode),
+        (   wam_haskell_lowerable(P, WamCode, _Reason)
+        ->  Lowered = [P|LR],
+            wam_haskell_partition_mixed(Rest, HotPreds, Interpreted, LR)
+        ;   Interpreted = [P|IR],
+            wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+        )
+    ;   Interpreted = [P|IR],
+        wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+    ).
+
+% Handle both Module:Pred/Arity and Pred/Arity comparisons against HotPreds.
+wam_haskell_indicator_in_list(P, HotPreds) :-
+    member(P, HotPreds), !.
+wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
+    member(Pred/Arity, HotPreds), !.
+
+% Compile WAM code on demand for the lowerability check and emission.
+wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+%% lower_all(+LoweredList, +BasePCMap, -LoweredEntries)
+%  Run the Phase 3+ emitter over each predicate in LoweredList, using
+%  BasePCMap (a list of PredIndicator-StartPC pairs computed from the
+%  merged instruction array) to offset local PCs to global PCs.
+lower_all([], _, []).
+lower_all([P|Rest], BasePCMap, [Entry|RestEntries]) :-
+    wam_haskell_predicate_wamcode(P, WamCode),
+    predicate_base_pc(P, BasePCMap, BasePC),
+    lower_predicate_to_haskell(P, WamCode, [base_pc(BasePC)], Entry),
+    lower_all(Rest, BasePCMap, RestEntries).
+
+predicate_base_pc(P, Map, PC) :-
+    (   P = _Mod:Pred/Arity -> true ; P = Pred/Arity ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    (   member(Key-PC, Map) -> true ; PC = 1 ).
+
+%% compute_base_pcs(+Predicates, -BasePCMap)
+%  Compute global start PCs for each predicate, matching the PC
+%  assignment in compile_predicates_merged/4. Returns a list of
+%  "pred/arity"-StartPC pairs.
+compute_base_pcs(Predicates, Map) :-
+    compute_base_pcs_(Predicates, 1, Map).
+
+compute_base_pcs_([], _, []).
+compute_base_pcs_([PI|Rest], StartPC, [Key-StartPC|RestMap]) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_haskell_predicate_wamcode(PI, WamCode),
+    count_wam_instructions(WamCode, Count),
+    NextPC is StartPC + Count,
+    compute_base_pcs_(Rest, NextPC, RestMap).
+
+count_wam_instructions(WamCode, Count) :-
+    atom_string(WamCode, S),
+    split_string(S, "\n", "", Lines),
+    include(is_wam_instruction_line, Lines, InstrLines),
+    length(InstrLines, Count).
+
+is_wam_instruction_line(Line) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    Trimmed \== "",
+    \+ sub_string(Trimmed, _, 1, 0, ":").
 
 % ============================================================================
 % Haskell WAM Runtime Data Types
@@ -643,13 +797,15 @@ step !ctx s (CallResolved pc _arity) =
 
 step !ctx s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
-  in case executeForeign ctx pred sc of
-    Just sr -> Just sr
-    Nothing -> case callIndexedFact2 ctx pred sc of
+  in case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case executeForeign ctx pred sc of
       Just sr -> Just sr
-      Nothing -> case Map.lookup pred (wcLabels ctx) of
-        Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
-        Nothing -> Nothing
+      Nothing -> case callIndexedFact2 ctx pred sc of
+        Just sr -> Just sr
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+          Nothing -> Nothing
 
 step !ctx s Proceed =
   let ret = wsCP s
@@ -952,7 +1108,24 @@ run !ctx !s
            Just s'' -> run ctx s''
            Nothing -> case backtrack s of
              Just s'' -> run ctx s''
-             Nothing -> Nothing'.
+             Nothing -> Nothing
+
+-- | Dispatch a Call to another predicate, trying all resolution paths.
+-- Used by lowered predicate functions for inter-predicate calls.
+-- Mirrors the step (Call pred _arity) dispatch chain but as a callable
+-- helper: lowered → foreign → indexed-facts → label-lookup+run.
+{-# NOINLINE dispatchCall #-}
+dispatchCall :: WamContext -> String -> WamState -> Maybe WamState
+dispatchCall !ctx pred !sc =
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case executeForeign ctx pred sc of
+      Just sr -> Just sr
+      Nothing -> case callIndexedFact2 ctx pred sc of
+        Just sr -> Just sr
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> run ctx (sc { wsPC = pc })
+          Nothing -> Nothing'.
 
 % ============================================================================
 % PHASE 4: Project Generation
@@ -972,6 +1145,17 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % Determine map backend: HashMap (faster) or Map (default fallback)
     option(use_hashmap(UseHM), Options, true),
 
+    % Resolve emit_mode and partition predicates accordingly. In Phase 1
+    % the stub wam_haskell_lowerable/3 always fails, so LoweredList is
+    % always empty and the generator's compile path is unchanged.
+    wam_haskell_resolve_emit_mode(Options, EmitMode),
+    wam_haskell_partition_predicates(EmitMode, Predicates, InterpretedList, LoweredList),
+    length(InterpretedList, NInterp),
+    length(LoweredList, NLower),
+    format(user_error,
+           '[WAM-Haskell] emit_mode=~w  interpreted=~w  lowered=~w~n',
+           [EmitMode, NInterp, NLower]),
+
     % Generate WamTypes.hs
     generate_wam_types_hs(TypesCode0),
     apply_hashmap_rewrite(UseHM, types, TypesCode0, TypesCode),
@@ -984,11 +1168,25 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'WamRuntime.hs', RuntimePath),
     write_hs_file(RuntimePath, RuntimeCode),
 
-    % Compile predicates
+    % ALL predicates go into the interpreter's instruction array — even
+    % lowered ones — so backtrack can land on alternate clauses that the
+    % lowered function doesn't handle. Phase 4+ lowered functions only
+    % inline clause 1; clause 2+ runs through the interpreter on backtrack.
     compile_predicates_to_haskell(Predicates, Options, PredsCode0),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
+
+    % Lower each predicate in LoweredList via the Phase 3+ emitter.
+    % We first compute global base PCs matching the merged instruction
+    % array so the lowered functions' PC references (wsCP for Call return
+    % addresses, wsPC for step calls) are correct.
+    compute_base_pcs(Predicates, BasePCMap),
+    lower_all(LoweredList, BasePCMap, LoweredEntries),
+    generate_lowered_hs(LoweredEntries, LoweredCode0),
+    apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
+    directory_file_path(SrcDir, 'Lowered.hs', LoweredPath),
+    write_hs_file(LoweredPath, LoweredCode),
 
     % Generate cabal file
     option(module_name(ModName), Options, 'wam-haskell-bench'),
@@ -1053,6 +1251,66 @@ re_split_replace(S, From, To, Result) :-
     ;   Result = S
     ).
 
+%% generate_lowered_hs(+LoweredEntries, -Code)
+%  Emit the Lowered.hs module containing one function per predicate in
+%  LoweredEntries and a loweredPredicates dispatch Map. Each entry is a
+%  term lowered(PredName, FuncName, HaskellCode) produced by the
+%  wam_haskell_lowered_emitter:lower_predicate_to_haskell/4 helper.
+%
+%  When the list is empty, emits a skeleton module with
+%  loweredPredicates = Map.empty (Phase 2 shape). The Lowered.hs module
+%  is emitted unconditionally so Main.hs can unconditionally
+%  `import qualified Lowered`.
+%
+%  See docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md §2.1.
+generate_lowered_hs([], Code) :- !,
+    with_output_to(string(Code), (
+        format("{-# LANGUAGE BangPatterns #-}~n"),
+        format("-- WAM-lowered Haskell predicates (empty — no preds lowered).~n"),
+        format("module Lowered where~n~n"),
+        format("import qualified Data.Map.Strict as Map~n"),
+        format("import qualified Data.IntMap.Strict as IM~n"),
+        format("import WamTypes~n"),
+        format("import Data.Maybe (fromMaybe)~n"),
+        format("import WamRuntime~n~n"),
+        format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
+        format("loweredPredicates = Map.empty~n")
+    )).
+generate_lowered_hs(LoweredEntries, Code) :-
+    LoweredEntries = [_|_],  % non-empty
+    with_output_to(string(Code), (
+        format("{-# LANGUAGE BangPatterns #-}~n"),
+        format("-- WAM-lowered Haskell predicates.~n"),
+        format("--~n"),
+        format("-- One function per predicate in the lowered partition, plus a~n"),
+        format("-- dispatch map wired into WamContext.wcLoweredPredicates by Main.hs.~n"),
+        format("module Lowered where~n~n"),
+        format("import qualified Data.Map.Strict as Map~n"),
+        format("import qualified Data.IntMap.Strict as IM~n"),
+        format("import WamTypes~n"),
+        format("import Data.Maybe (fromMaybe)~n"),
+        format("import WamRuntime~n~n"),
+        % Function definitions
+        forall(member(lowered(_, _, HsCode), LoweredEntries),
+               format("~w~n", [HsCode])),
+        % Dispatch map
+        format("loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)~n"),
+        format("loweredPredicates = Map.fromList~n"),
+        format("    [ "),
+        emit_lowered_entries(LoweredEntries),
+        format("    ]~n")
+    )).
+
+% Emit the Map.fromList entries, one per line with a leading comma on
+% all but the first.
+emit_lowered_entries([lowered(PredName, FuncName, _)|Rest]) :-
+    format("(\"~w\", ~w)~n", [PredName, FuncName]),
+    emit_lowered_entries_rest(Rest).
+emit_lowered_entries_rest([]).
+emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
+    format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
+    emit_lowered_entries_rest(Rest).
+
 %% generate_main_hs(+Predicates, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Loads facts from TSV, runs category_ancestor queries, outputs TSV.
@@ -1071,6 +1329,7 @@ import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import WamTypes
 import WamRuntime
 import Predicates
+import qualified Lowered
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -1184,9 +1443,13 @@ main = do
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- Populate wcForeignFacts/wcForeignConfig so executeForeign can fire.
+    -- Populate wcLoweredPredicates from Lowered.loweredPredicates — Phase 2
+    -- ships this as Map.empty, Phase 3+ replaces it with real lowered
+    -- predicate functions.
     let !ctx = (mkContext mergedCode mergedLabels)
             { wcForeignFacts  = Map.singleton "category_parent" parentsIndex
             , wcForeignConfig = Map.singleton "max_depth" 10
+            , wcLoweredPredicates = Lowered.loweredPredicates
             }
 
     t2 <- getCurrentTime
@@ -1533,7 +1796,10 @@ data WamContext = WamContext
   , wcLabels        :: !(Map.Map String Int)
   , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
   , wcForeignConfig :: !(Map.Map String Int)
-  } deriving (Show)
+  , wcLoweredPredicates :: !(Map.Map String (WamContext -> WamState -> Maybe WamState))
+  }
+-- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
+-- and functions have no Show instance. Add a manual instance if needed.
 
 -- | Mutable state. Updated on every WAM step. Held separate from WamContext
 -- so each step transition only allocates a record with the fields that
@@ -1602,6 +1868,7 @@ mkContext codeList labels =
     , wcLabels        = labels
     , wcForeignFacts  = Map.empty
     , wcForeignConfig = Map.empty
+    , wcLoweredPredicates = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
@@ -1641,7 +1908,7 @@ build-type:    Simple
 executable ~w
   main-is:          Main.hs
   hs-source-dirs:   src
-  other-modules:    WamTypes, WamRuntime, Predicates
+  other-modules:    WamTypes, WamRuntime, Predicates, Lowered
   build-depends:    ~w
   default-language: Haskell2010
   ghc-options:      -O2
