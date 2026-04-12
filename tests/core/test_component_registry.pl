@@ -50,8 +50,17 @@ assert_equal(Got, Expected, TestName) :-
 test_category_definition :-
     format('Test: Category definition~n'),
 
-    % Runtime category should already exist (from module init)
+    % Core categories should already exist (from module init)
     assert_true(category(runtime, _, _), 'runtime category exists'),
+    assert_true(category(source, _, _), 'source category exists'),
+    assert_true(category(binding, _, _), 'binding category exists'),
+
+    category(runtime, _, RuntimeOptions),
+    category(source, _, SourceOptions),
+    category(binding, _, BindingOptions),
+    assert_true(member(requires_compilation(false), RuntimeOptions), 'runtime does not require compilation'),
+    assert_true(member(requires_compilation(true), SourceOptions), 'source requires compilation'),
+    assert_true(member(requires_compilation(false), BindingOptions), 'binding does not require compilation'),
 
     % Define a new test category
     define_category(test_cat, "Test category", [requires_compilation(false)]),
@@ -60,6 +69,8 @@ test_category_definition :-
     % List categories
     list_categories(Cats),
     assert_true(member(runtime, Cats), 'runtime in category list'),
+    assert_true(member(source, Cats), 'source in category list'),
+    assert_true(member(binding, Cats), 'binding in category list'),
     assert_true(member(test_cat, Cats), 'test_cat in category list'),
 
     % Cleanup
