@@ -35,6 +35,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(pairs)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
@@ -169,6 +170,7 @@ predicate_base_pc(P, Map, PC) :-
 
 %% generate_kernel_haskell(+DetectedKernels, -KernelFunctionsCode, -ExecuteForeignCode)
 %  Render Mustache templates for detected kernels into Haskell source.
+%  DetectedKernels is a list of Key-Kernel pairs from detect_kernels/2.
 %  KernelFunctionsCode: native kernel function bodies (one per kernel).
 %  ExecuteForeignCode: the executeForeign dispatch function with entries
 %  for each detected kernel.
@@ -182,14 +184,26 @@ generate_kernel_haskell(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode
     % Generate executeForeign with entries for each kernel
     generate_execute_foreign(DetectedKernels, ExecuteForeignCode).
 
-render_kernel_function(KernelKey, Code) :-
-    % Currently only category_ancestor has a Mustache template
-    (   KernelKey = 'category_ancestor/4'
-    ->  read_kernel_template('kernel_category_ancestor.hs.mustache', Template),
-        render_template(Template, [edge_pred='category_parent'], Code0),
+render_kernel_function(Key-Kernel, Code) :-
+    Kernel = recursive_kernel(Kind, _, ConfigOps),
+    (   kernel_template_file(Kind, TemplateFile)
+    ->  read_kernel_template(TemplateFile, Template),
+        % Build template vars from config ops
+        config_ops_to_template_vars(ConfigOps, TemplateVars),
+        render_template(Template, TemplateVars, Code0),
         atom_string(Code0, Code)
-    ;   format(atom(Code), '-- Kernel ~w: no template available', [KernelKey])
+    ;   format(atom(Code), '-- Kernel ~w: no template available', [Key])
     ).
+
+%% config_ops_to_template_vars(+ConfigOps, -TemplateVars)
+%  Convert kernel config ops to Mustache template key=value pairs.
+config_ops_to_template_vars([], []).
+config_ops_to_template_vars([Op|Rest], [Key=Value|RestVars]) :-
+    Op =.. [Key, RawValue],
+    (   RawValue = Pred/_ -> Value = Pred  % edge_pred(foo/2) -> foo
+    ;   Value = RawValue
+    ),
+    config_ops_to_template_vars(Rest, RestVars).
 
 read_kernel_template(FileName, Template) :-
     atom_concat('templates/targets/haskell_wam/', FileName, RelPath),
@@ -210,61 +224,222 @@ read_kernel_template(FileName, Template) :-
 generate_execute_foreign(DetectedKernels, Code) :-
     with_output_to(string(Code), (
         format("executeForeign :: WamContext -> String -> WamState -> Maybe WamState~n"),
-        forall(member(K, DetectedKernels), emit_execute_foreign_entry(K)),
+        forall(member(KV, DetectedKernels), emit_execute_foreign_entry(KV)),
         format("executeForeign _ _ _ = Nothing~n")
     )).
 
-emit_execute_foreign_entry('category_ancestor/4') :-
-    format('executeForeign !ctx "category_ancestor/4" s =~n'),
-    format('  let cat = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))~n'),
-    format('      root = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 2 (wsRegs s))~n'),
-    format('      visited = derefVar (wsBindings s) $ fromMaybe (VList []) (IM.lookup 4 (wsRegs s))~n'),
-    format('      maxD = fromMaybe 10 $ Map.lookup "max_depth" (wcForeignConfig ctx)~n'),
-    format('      parents = fromMaybe Map.empty $ Map.lookup "category_parent" (wcForeignFacts ctx)~n'),
-    format('  in case (cat, root, visited) of~n'),
-    format('    (Atom catS, Atom rootS, VList visitedVals) ->~n'),
-    format('      let visitedStrs = [v | Atom v <- visitedVals]~n'),
-    format('          hops = nativeKernel_category_ancestor parents catS rootS maxD (length visitedStrs) visitedStrs~n'),
-    format('          retPC = wsCP s~n'),
-    format('          hopsReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 3 (wsRegs s))~n'),
-    format('          bindHop hopVal =~n'),
-    format('            case hopsReg of~n'),
-    format('              Unbound vid ->~n'),
-    format('                s { wsPC = retPC~n'),
-    format('                  , wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s)~n'),
-    format('                  , wsBindings = IM.insert vid (Integer (fromIntegral hopVal)) (wsBindings s)~n'),
-    format('                  , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s~n'),
-    format('                  , wsTrailLen = wsTrailLen s + 1 }~n'),
-    format('              _ -> s { wsPC = retPC, wsRegs = IM.insert 3 (Integer (fromIntegral hopVal)) (wsRegs s) }~n'),
-    format('      in case hops of~n'),
-    format('        [] -> Nothing~n'),
-    format('        [h] -> Just (bindHop h)~n'),
-    format('        (h:restHops) ->~n'),
-    format('          let s1 = bindHop h~n'),
-    format('              hopsVar = case hopsReg of { Unbound v -> v; _ -> -1 }~n'),
-    format('              cp = ChoicePoint~n'),
-    format('                { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s~n'),
-    format('                , cpCP = wsCP s, cpTrailLen = wsTrailLen s~n'),
-    format('                , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n'),
-    format('                , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n'),
-    format('                , cpBuiltin = Just (HopsRetry hopsVar (map fromIntegral restHops) retPC)~n'),
-    format('                }~n'),
-    format('          in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n'),
+%% emit_execute_foreign_entry(+Key-Kernel)
+%  Generate a single executeForeign clause from kernel metadata.
+%  Reads kernel_register_layout and kernel_native_call to produce the
+%  register reading, native call, result binding, and choice point code.
+emit_execute_foreign_entry(Key-Kernel) :-
+    Kernel = recursive_kernel(Kind, _, ConfigOps),
+    (   kernel_register_layout(Kind, RegSpecs),
+        kernel_native_call(Kind, CallSpec)
+    ->  % Resolve config_facts_from references using the kernel's config ops
+        resolve_call_spec(CallSpec, ConfigOps, ResolvedCallSpec),
+        emit_ef_clause(Key, RegSpecs, ResolvedCallSpec)
+    ;   format('-- executeForeign: no metadata for ~w~n', [Key])
+    ).
+
+%% resolve_call_spec(+CallSpec, +ConfigOps, -ResolvedCallSpec)
+%  Replace config_facts_from(ConfigKey) with config_facts(ActualName)
+%  by looking up the ConfigKey in the kernel's config ops.
+resolve_call_spec(call(Func, Args), ConfigOps, call(Func, ResolvedArgs)) :-
+    maplist(resolve_arg_spec(ConfigOps), Args, ResolvedArgs).
+
+resolve_arg_spec(ConfigOps, config_facts_from(ConfigKey), config_facts(FactName)) :- !,
+    % Look up ConfigKey in config ops: e.g., edge_pred(foo/2) → foo
+    Op =.. [ConfigKey, RawValue],
+    member(Op, ConfigOps),
+    (   RawValue = Pred/_ -> FactName = Pred ; FactName = RawValue ).
+resolve_arg_spec(_, Arg, Arg).
+
+emit_ef_clause(Key, RegSpecs, call(FuncName, ArgSpecs)) :-
+    % Function header
+    format('executeForeign !ctx "~w" s =~n', [Key]),
+    % Emit let-bindings for input registers (deref from WAM regs)
+    include(is_input_reg, RegSpecs, InputRegs),
+    format('  let '),
+    emit_input_let_bindings(InputRegs, first),
+    % Emit config bindings from ArgSpecs
+    emit_config_let_bindings(ArgSpecs),
+    % Find output register(s)
+    include(is_output_reg, RegSpecs, OutputRegs),
+    OutputRegs = [output(OutRegN, OutType)|_],
+    % Emit case expression over input regs, then native call + binding inside
+    emit_case_and_call(InputRegs, OutRegN, OutType, FuncName, ArgSpecs),
+    format('~n').
+
+is_input_reg(input(_, _)).
+is_output_reg(output(_, _)).
+
+%% emit_input_let_bindings(+InputRegs, +Position)
+%  Emit let-bindings that read and deref each input register.
+emit_input_let_bindings([], _).
+emit_input_let_bindings([input(RegN, Type)|Rest], Pos) :-
+    reg_var_name(RegN, VarName),
+    reg_default_value(Type, Default),
+    (   Pos = first -> true ; format('      ') ),
+    format('~w = derefVar (wsBindings s) $ fromMaybe (~w) (IM.lookup ~w (wsRegs s))~n',
+           [VarName, Default, RegN]),
+    emit_input_let_bindings(Rest, rest).
+
+reg_var_name(N, Name) :-
+    format(atom(Name), 'r~w', [N]).
+
+reg_default_value(atom, 'Atom ""').
+reg_default_value(integer, 'Integer 0').
+reg_default_value(vlist_atoms, 'VList []').
+
+%% emit_config_let_bindings(+ArgSpecs)
+%  Emit let-bindings for config_facts and config_int arguments.
+emit_config_let_bindings([]).
+emit_config_let_bindings([config_facts(FactKey)|Rest]) :-
+    format('      ~w_facts = fromMaybe Map.empty $ Map.lookup "~w" (wcForeignFacts ctx)~n',
+           [FactKey, FactKey]),
+    emit_config_let_bindings(Rest).
+emit_config_let_bindings([config_int(ConfigKey, Default)|Rest]) :-
+    format('      ~w_cfg = fromMaybe ~w $ Map.lookup "~w" (wcForeignConfig ctx)~n',
+           [ConfigKey, Default, ConfigKey]),
+    emit_config_let_bindings(Rest).
+emit_config_let_bindings([_|Rest]) :-
+    emit_config_let_bindings(Rest).
+
+%% emit_call_args(+ArgSpecs, +InputRegs)
+%  Emit the argument list for the native kernel function call.
+emit_call_args([], _).
+emit_call_args([Spec|Rest], InputRegs) :-
+    format(' '),
+    emit_one_call_arg(Spec, InputRegs),
+    emit_call_args(Rest, InputRegs).
+
+emit_one_call_arg(config_facts(FactKey), _) :-
+    format('~w_facts', [FactKey]).
+emit_one_call_arg(config_int(ConfigKey, _), _) :-
+    format('~w_cfg', [ConfigKey]).
+emit_one_call_arg(reg(RegN), InputRegs) :-
+    member(input(RegN, Type), InputRegs),
+    reg_var_name(RegN, VarName),
+    emit_reg_extraction(VarName, Type).
+emit_one_call_arg(derived(length, RegN), InputRegs) :-
+    member(input(RegN, _Type), InputRegs),
+    reg_var_name(RegN, VarName),
+    format('(length [v | Atom v <- ~wL])', [VarName]).
+
+emit_reg_extraction(VarName, atom) :-
+    format('~wS', [VarName]).
+emit_reg_extraction(VarName, vlist_atoms) :-
+    format('[v | Atom v <- ~wL]', [VarName]).
+emit_reg_extraction(VarName, integer) :-
+    format('~wI', [VarName]).
+
+%% emit_case_and_call(+InputRegs, +OutRegN, +OutType, +FuncName, +ArgSpecs)
+%  Emit the case expression that pattern-matches inputs, then the native
+%  call and stream binding INSIDE the case branch (so extracted string
+%  variables are in scope for the call).
+emit_case_and_call(InputRegs, OutRegN, OutType, FuncName, ArgSpecs) :-
+    length(InputRegs, NInputs),
+    (   NInputs =:= 1
+    ->  InputRegs = [input(RegN1, _)],
+        reg_var_name(RegN1, ScrutName),
+        format('  in case ~w of~n', [ScrutName]),
+        emit_single_case_branch(InputRegs, OutRegN, OutType, FuncName, ArgSpecs)
+    ;   format('  in case ('),
+        emit_scrutinee_tuple(InputRegs, first),
+        format(') of~n'),
+        format('    ('),
+        emit_pattern_tuple(InputRegs, first),
+        format(') ->~n'),
+        emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, InputRegs, "      ")
+    ),
     format('    _ -> Nothing~n').
-emit_execute_foreign_entry(_).  % Unknown kernels: skip
+
+emit_single_case_branch([input(RegN, Type)|_], OutRegN, OutType, FuncName, ArgSpecs) :-
+    reg_var_name(RegN, VarName),
+    type_pattern(Type, VarName, Pattern),
+    format('    ~w ->~n', [Pattern]),
+    emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, [input(RegN, Type)], "      ").
+
+emit_scrutinee_tuple([], _).
+emit_scrutinee_tuple([input(RegN, _)|Rest], Pos) :-
+    reg_var_name(RegN, VarName),
+    (   Pos = first -> true ; format(', ') ),
+    format('~w', [VarName]),
+    emit_scrutinee_tuple(Rest, rest).
+
+emit_pattern_tuple([], _).
+emit_pattern_tuple([input(RegN, Type)|Rest], Pos) :-
+    reg_var_name(RegN, VarName),
+    type_pattern(Type, VarName, Pattern),
+    (   Pos = first -> true ; format(', ') ),
+    format('~w', [Pattern]),
+    emit_pattern_tuple(Rest, rest).
+
+type_pattern(atom, VarName, Pattern) :-
+    format(atom(Pattern), 'Atom ~wS', [VarName]).
+type_pattern(integer, VarName, Pattern) :-
+    format(atom(Pattern), 'Integer ~wI', [VarName]).
+type_pattern(vlist_atoms, VarName, Pattern) :-
+    format(atom(Pattern), 'VList ~wL', [VarName]).
+
+%% emit_native_call_and_binding(+OutRegN, +OutType, +FuncName, +ArgSpecs, +InputRegs, +Indent)
+%  Emit the native function call followed by stream binding, all inside
+%  a case branch at the given indentation level.
+emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, InputRegs, Indent) :-
+    format('~wlet results = ~w', [Indent, FuncName]),
+    emit_call_args(ArgSpecs, InputRegs),
+    format('~n'),
+    emit_stream_binding(OutRegN, OutType, Indent).
+
+%% emit_stream_binding(+OutRegN, +OutType, +Indent)
+%  Emit the stream-mode result binding: first result bound, rest as CPs.
+emit_stream_binding(OutRegN, OutType, Indent) :-
+    result_wrap_expr(OutType, WrapExpr),
+    format('~w    retPC = wsCP s~n', [Indent]),
+    format('~w    outReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup ~w (wsRegs s))~n', [Indent, OutRegN]),
+    format('~w    bindResult rv =~n', [Indent]),
+    format('~w      case outReg of~n', [Indent]),
+    format('~w        Unbound vid ->~n', [Indent]),
+    format('~w          s { wsPC = retPC~n', [Indent]),
+    format('~w            , wsRegs = IM.insert ~w (~w) (wsRegs s)~n', [Indent, OutRegN, WrapExpr]),
+    format('~w            , wsBindings = IM.insert vid (~w) (wsBindings s)~n', [Indent, WrapExpr]),
+    format('~w            , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s~n', [Indent]),
+    format('~w            , wsTrailLen = wsTrailLen s + 1 }~n', [Indent]),
+    format('~w        _ -> s { wsPC = retPC, wsRegs = IM.insert ~w (~w) (wsRegs s) }~n', [Indent, OutRegN, WrapExpr]),
+    format('~win case results of~n', [Indent]),
+    format('~w  [] -> Nothing~n', [Indent]),
+    format('~w  [h] -> Just (bindResult h)~n', [Indent]),
+    format('~w  (h:restResults) ->~n', [Indent]),
+    format('~w    let s1 = bindResult h~n', [Indent]),
+    format('~w        outVar = case outReg of { Unbound v -> v; _ -> -1 }~n', [Indent]),
+    format('~w        cp = ChoicePoint~n', [Indent]),
+    format('~w          { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s~n', [Indent]),
+    format('~w          , cpCP = wsCP s, cpTrailLen = wsTrailLen s~n', [Indent]),
+    format('~w          , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n', [Indent]),
+    format('~w          , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n', [Indent]),
+    format('~w          , cpBuiltin = Just (HopsRetry outVar (map fromIntegral restResults) retPC)~n', [Indent]),
+    format('~w          }~n', [Indent]),
+    format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
+
+%% result_wrap_expr(+Type, -HaskellExpr)
+%  Haskell expression wrapping `rv` into a Value constructor.
+result_wrap_expr(integer, 'Integer (fromIntegral rv)').
+result_wrap_expr(atom, 'Atom rv').
 
 %% detect_kernels(+Predicates, -DetectedKernels)
 %  Run shared kernel detection on each predicate. Returns a list of
-%  Pred/Arity atoms for predicates that matched a known recursive kernel.
+%  Key-Kernel pairs where Key is 'pred/arity' atom and Kernel is the
+%  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
 detect_kernels([], []).
 detect_kernels([PI|Rest], Kernels) :-
     (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
     (   Clauses \= [],
-        detect_recursive_kernel(Pred, Arity, Clauses, _Kernel)
+        detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
-        Kernels = [Key|RestKernels]
+        Kernels = [Key-Kernel|RestKernels]
     ;   Kernels = RestKernels
     ),
     detect_kernels(Rest, RestKernels).
@@ -1197,7 +1372,8 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % populate foreignPreds in Main.hs.
     detect_kernels(Predicates, DetectedKernels),
     (   DetectedKernels \= []
-    ->  format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKernels])
+    ->  pairs_keys(DetectedKernels, DetectedKeys),
+        format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
     ;   true
     ),
 

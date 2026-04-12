@@ -108,9 +108,64 @@ test_haskell_no_regressions :-
     ;   fail_test(Test, 'Pre-existing builtin dispatch cases missing')
     ).
 
+%% Phase 6: Parameterized executeForeign codegen
+%% ------------------------------------------------
+
+:- use_module('../src/unifyweaver/core/recursive_kernel_detection').
+
+test_parameterized_execute_foreign_category_ancestor :-
+    Test = 'WAM-Haskell: parameterized executeForeign for category_ancestor/4',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4, [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:generate_execute_foreign(
+            ['category_ancestor/4'-Kernel], Code),
+        %% Type signature
+        sub_string(Code, _, _, _, "executeForeign :: WamContext -> String -> WamState -> Maybe WamState"),
+        %% Dispatch on predicate indicator
+        sub_string(Code, _, _, _, "executeForeign !ctx \"category_ancestor/4\" s ="),
+        %% Input register reads
+        sub_string(Code, _, _, _, "IM.lookup 1 (wsRegs s)"),
+        sub_string(Code, _, _, _, "IM.lookup 2 (wsRegs s)"),
+        sub_string(Code, _, _, _, "IM.lookup 4 (wsRegs s)"),
+        %% Config bindings derived from metadata
+        sub_string(Code, _, _, _, "category_parent_facts"),
+        sub_string(Code, _, _, _, "max_depth_cfg"),
+        %% Native call
+        sub_string(Code, _, _, _, "nativeKernel_category_ancestor"),
+        %% Output register binding
+        sub_string(Code, _, _, _, "IM.lookup 3 (wsRegs s)"),
+        sub_string(Code, _, _, _, "Integer (fromIntegral rv)"),
+        %% Choice point creation for stream results
+        sub_string(Code, _, _, _, "HopsRetry"),
+        %% Fallback
+        sub_string(Code, _, _, _, "executeForeign _ _ _ = Nothing")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Parameterized executeForeign missing expected patterns')
+    ).
+
+test_parameterized_execute_foreign_empty :-
+    Test = 'WAM-Haskell: executeForeign with no kernels is a no-op',
+    (   wam_haskell_target:generate_kernel_haskell([], _KF, EF),
+        sub_string(EF, _, _, _, "executeForeign _ _ _ = Nothing"),
+        \+ sub_string(EF, _, _, _, "executeForeign !ctx")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Empty kernel list should produce trivial executeForeign')
+    ).
+
+test_parameterized_render_kernel_function :-
+    Test = 'WAM-Haskell: render_kernel_function uses metadata',
+    Kernel = recursive_kernel(category_ancestor, 'category_ancestor'/4, [max_depth(10), edge_pred(category_parent/2)]),
+    (   wam_haskell_target:render_kernel_function('category_ancestor/4'-Kernel, Code),
+        %% Should contain the kernel function from the Mustache template
+        sub_string(Code, _, _, _, "nativeKernel_category_ancestor"),
+        %% Should have resolved the edge_pred placeholder
+        sub_string(Code, _, _, _, "category_parent")
+    ->  pass(Test)
+    ;   fail_test(Test, 'render_kernel_function failed for category_ancestor')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -118,6 +173,9 @@ run_tests :-
     test_haskell_univ_builtin_present,
     test_haskell_copy_term_builtin_present,
     test_haskell_no_regressions,
+    test_parameterized_execute_foreign_category_ancestor,
+    test_parameterized_execute_foreign_empty,
+    test_parameterized_render_kernel_function,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
