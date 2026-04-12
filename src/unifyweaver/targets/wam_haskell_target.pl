@@ -795,12 +795,18 @@ step !ctx s (SetConstant c) =
 step !ctx s (CallResolved pc _arity) =
   Just (s { wsPC = pc, wsCP = wsPC s + 1 })
 
+-- Call dispatch priority: hand-written FFI (executeForeign) takes precedence
+-- over automated lowering (wcLoweredPredicates). This is critical because
+-- FFI handlers like nativeCategoryAncestor do the full depth-bounded search
+-- natively, while the lowered function only handles clause 1 and relies on
+-- the interpreter for clause 2+ recursion (which is exponentially slower
+-- for deep search trees).
 step !ctx s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
-  in case Map.lookup pred (wcLoweredPredicates ctx) of
-    Just fn -> fn ctx sc
-    Nothing -> case executeForeign ctx pred sc of
-      Just sr -> Just sr
+  in case executeForeign ctx pred sc of
+    Just sr -> Just sr
+    Nothing -> case Map.lookup pred (wcLoweredPredicates ctx) of
+      Just fn -> fn ctx sc
       Nothing -> case callIndexedFact2 ctx pred sc of
         Just sr -> Just sr
         Nothing -> case Map.lookup pred (wcLabels ctx) of
@@ -1112,15 +1118,16 @@ run !ctx !s
 
 -- | Dispatch a Call to another predicate, trying all resolution paths.
 -- Used by lowered predicate functions for inter-predicate calls.
--- Mirrors the step (Call pred _arity) dispatch chain but as a callable
--- helper: lowered → foreign → indexed-facts → label-lookup+run.
+-- Priority: FFI (executeForeign) > lowered > indexed-facts > labels.
+-- FFI takes precedence because hand-written native handlers (e.g.
+-- nativeCategoryAncestor) handle full recursive search natively.
 {-# NOINLINE dispatchCall #-}
 dispatchCall :: WamContext -> String -> WamState -> Maybe WamState
 dispatchCall !ctx pred !sc =
-  case Map.lookup pred (wcLoweredPredicates ctx) of
-    Just fn -> fn ctx sc
-    Nothing -> case executeForeign ctx pred sc of
-      Just sr -> Just sr
+  case executeForeign ctx pred sc of
+    Just sr -> Just sr
+    Nothing -> case Map.lookup pred (wcLoweredPredicates ctx) of
+      Just fn -> fn ctx sc
       Nothing -> case callIndexedFact2 ctx pred sc of
         Just sr -> Just sr
         Nothing -> case Map.lookup pred (wcLabels ctx) of

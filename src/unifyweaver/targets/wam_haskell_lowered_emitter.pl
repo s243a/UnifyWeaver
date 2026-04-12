@@ -59,6 +59,13 @@ tokenize(Line, Term) :-
 
 wam_haskell_lowerable(_PI, WamCode, _Reason) :-
     parse_wam_text(WamCode, PCInstrs, _),
+    % Phase 4 restriction: only single-clause predicates (no try_me_else)
+    % are lowerable. Multi-clause lowering requires resolving the dispatch
+    % conflict between executeForeign (which returns Nothing for "no
+    % solutions") and the lowered function (which would fruitlessly explore
+    % the graph via WAM dispatch). See fix/wam-haskell-lowered-backtrack.
+    PCInstrs = [pc(_, FirstInstr)|_],
+    FirstInstr \= try_me_else(_),
     clause1_instrs(PCInstrs, C1),
     forall(member(I, C1), supported(I)).
 
@@ -135,7 +142,8 @@ emit_func(FN, PCInstrs, LabelMap) :-
         format("        , wsCPsLen = wsCPsLen s_init + 1 }~n"),
         format("  in case clause1 s_cp of~n"),
         format("       Just result -> Just result~n"),
-        format("       Nothing -> backtrack s_cp >>= \\s_bt -> run ctx s_bt~n"),
+        format("       Nothing -> backtrack s_cp >>= \\s_bt -> run ctx (s_bt { wsPC = wsPC s_bt + 1 })~n"),
+        format("       -- ^ skip TrustMe at cpNextPC: backtrack already popped the CP~n"),
         format("  where~n"),
         format("    clause1 s_c1 = do~n"),
         take_to_proceed_pc(BodyPCs, Clause1PCs),

@@ -109,12 +109,11 @@ test_mixed_non_list_rejected :-
 
 test_lowerable_rejects_unsupported :-
     Test = 'WAM-Haskell-Lowered Phase 1: wam_haskell_lowerable/3 rejects unsupported instructions',
-    % Phase 3 whitelist only covers get_constant+proceed. A WAM text
-    % containing a Call instruction must fail lowerability.
-    WamText = "foo/1:\n    call bar/0, 0\n    proceed\n",
+    % begin_aggregate is explicitly deferred — not in the Phase 4 whitelist.
+    WamText = "foo/1:\n    begin_aggregate sum, A1, A2\n    proceed\n",
     (   \+ wam_haskell_lowerable(foo/1, WamText, _Reason)
     ->  pass(Test)
-    ;   fail_test(Test, 'unsupported Call instruction was accepted')
+    ;   fail_test(Test, 'unsupported begin_aggregate was accepted')
     ).
 
 %% ---------------------------------------------------------------------
