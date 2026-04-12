@@ -1345,7 +1345,50 @@ wsp_bail:
   ret i1 false
 }
 
-; === M5.5 + M5.8 + M5.9: Foreign kernel impl default stubs ===
+; === M5.10: astar4 common runner helper ===
+; Parallels @wam_wsp3_run but wraps @wam_astar_weighted_distance
+; (the M5.4 A* helper). Uses a zeroed heuristic array — the caller
+; allocates and passes it. This means A* degenerates to Dijkstra
+; (same results, same complexity). A future refinement can supply a
+; non-zero heuristic via a separate global or a query-time callback.
+;
+; For M5.10, the zero-heuristic path validates the full A* pipeline
+; end-to-end without requiring a target-dependent heuristic mechanism
+; (the heuristic depends on which target is being queried, which is a
+; runtime value).
+define i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %table, i64 %len, double* %heuristic, i64 %max_atom_id) {
+entry:
+  %as_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %as_s_is_atom = icmp eq i32 %as_s_tag, 0
+  br i1 %as_s_is_atom, label %as_check_t, label %as_bail
+
+as_check_t:
+  %as_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %as_t_is_atom = icmp eq i32 %as_t_tag, 0
+  br i1 %as_t_is_atom, label %as_run, label %as_bail
+
+as_run:
+  %as_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %as_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_dist_slot = alloca double
+  %as_ok = call i1 @wam_astar_weighted_distance(
+      i64 %as_start_id, i64 %as_target_id,
+      %WeightedFact* %table, i64 %len,
+      double* %heuristic,
+      i64 %max_atom_id,
+      double* %as_dist_slot)
+  br i1 %as_ok, label %as_hit, label %as_bail
+
+as_hit:
+  %as_dist = load double, double* %as_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %as_dist)
+  ret i1 true
+
+as_bail:
+  ret i1 false
+}
+
+; === M5.5 + M5.8 + M5.9 + M5.10: Foreign kernel impl default stubs ===
 ; The dispatcher's stub_{transitive_distance3, weighted_shortest_path3}
 ; cases delegate to @wam_td3_kernel_impl and @wam_wsp3_kernel_impl
 ; respectively, passing the instance_id encoded in the call_foreign
@@ -1367,6 +1410,10 @@ define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
 }
 
 define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {
   ret i1 false
 }
 
@@ -1414,8 +1461,8 @@ stub_weighted_shortest_path3:
   ret i1 %wsp_r
 
 stub_astar_shortest_path4:
-  ; M5: astar_shortest_path(Start, End, Dim, Dist) via L_D norm A*
-  ret i1 false
+  %as_r = call i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %as_r
 
 not_registered:
   ret i1 false
