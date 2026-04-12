@@ -12,11 +12,15 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   store i32 0, i32* %pc_ptr
 
-  ; Initialize registers to zero
+  ; Initialize registers to zero. Prior code used llvm.memcpy with a
+  ; zeroinitializer source pointer — a pre-existing bug that evaluates
+  ; to null and segfaults at runtime. It went unnoticed until M5.7
+  ; execution testing because llvm-as and opt -passes=verify both
+  ; accept the bogus IR without complaint.
   %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %regs_raw = bitcast %Value* %regs_ptr to i8*
   %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %regs_raw, i8* zeroinitializer, i64 %regs_size, i1 false)
+  call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
   ; Allocate stack (initial capacity 256)
   %stack_mem = call i8* @malloc(i64 6144)  ; 256 * sizeof(StackEntry)
