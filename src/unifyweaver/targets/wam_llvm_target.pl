@@ -549,14 +549,8 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
     format(atom(EdgeTableName), 'astar4_inst_~w_~w_edges', [SanePred, Index]),
     format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
     build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
-    % Emit a zeroed heuristic array of size (MaxAtomId+1). The zero
-    % heuristic makes A* degenerate to Dijkstra — a future refinement
-    % can compute per-node estimates from direct_dist_pred/3 facts.
-    HeuristicSize is MaxAtomId + 1,
-    ( HeuristicSize =< 0 -> HeuristicArrSize = 1 ; HeuristicArrSize = HeuristicSize ),
-    format(atom(HeuristicIR),
-        '@~w = private constant [~w x double] zeroinitializer',
-        [HeuristicName, HeuristicArrSize]),
+    build_astar4_heuristic_array(Config, MaxAtomId, HeuristicName,
+        HeuristicIR, HeuristicArrSize),
     format(atom(AllTablesIR), '~w\n~w', [EdgeTableIR, HeuristicIR]),
     format(atom(SwitchCase), '    i32 ~w, label %as_inst_~w', [Index, Index]),
     format(atom(Body),
@@ -572,6 +566,61 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
          Index]),
     NextIndex is Index + 1,
     build_astar4_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% build_astar4_heuristic_array(+Config, +MaxAtomId, +Name, -IR, -Size).
+%
+%  When the config contains `heuristic_pred(HPred/3)` and
+%  `heuristic_target(TargetAtom)`, reads facts of the form
+%  `HPred(Node, TargetAtom, HValue)` from the user module, interns
+%  each Node to get its atom ID, and emits a `[Size x double]` global
+%  constant where entry `i` = h(atom_id_i). Entries for IDs that
+%  don't appear in the heuristic facts default to 0.0 (admissible
+%  since h=0 never overestimates).
+%
+%  When the config does NOT contain heuristic_pred/heuristic_target,
+%  emits a zeroinitializer (all zeros — A* degenerates to Dijkstra).
+build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
+    Size0 is MaxAtomId + 1,
+    ( Size0 =< 0 -> Size = 1 ; Size = Size0 ),
+    (   member(heuristic_pred(HPred), Config),
+        member(heuristic_target(Target), Config)
+    ->  % Read heuristic facts for the fixed target.
+        HPred = HPName/HPArity,
+        ( HPArity =:= 3 -> true
+        ; throw(heuristic_pred_arity(HPName/HPArity))
+        ),
+        catch(
+            findall(AtomId-HVal,
+                ( Goal =.. [HPName, Node, Target, HVal],
+                  user:Goal,
+                  atom(Node),
+                  number(HVal),
+                  intern_atom(Node, AtomId)
+                ),
+                HEntries),
+            _, HEntries = []),
+        % Build the array: Size entries, default 0.0, overridden by HEntries.
+        numlist(0, MaxAtomId, Indices),
+        maplist(heuristic_entry_value(HEntries), Indices, Values),
+        maplist(format_double_entry, Values, ValueStrs),
+        atomic_list_concat(ValueStrs, ', ', ValuesStr),
+        format(atom(IR),
+            '@~w = private constant [~w x double] [~w]',
+            [Name, Size, ValuesStr])
+    ;   % No heuristic config — zero array.
+        format(atom(IR),
+            '@~w = private constant [~w x double] zeroinitializer',
+            [Name, Size])
+    ).
+
+heuristic_entry_value(HEntries, AtomId, Value) :-
+    ( memberchk(AtomId-V, HEntries) -> Value = V ; Value = 0.0 ).
+
+format_double_entry(V, Str) :-
+    ( integer(V)
+    -> format(atom(Str), 'double ~w.0', [V])
+    ;  format(atom(Str), 'double ~w', [V])
+    ).
 
 %% replace_astar4_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
 replace_astar4_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
