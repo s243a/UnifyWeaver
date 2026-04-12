@@ -149,6 +149,8 @@ foreign_kernel(PredArity, Kind, Config) :-
 %  on success.
 llvm_recursive_kernel_detector(transitive_distance3,
     llvm_recursive_kernel_transitive_distance).
+llvm_recursive_kernel_detector(weighted_shortest_path3,
+    llvm_recursive_kernel_weighted_shortest_path).
 
 %% llvm_recursive_kernel_transitive_distance(+Pred, +Arity, +Clauses, -RecKernel).
 %
@@ -185,6 +187,42 @@ llvm_foreign_lowerable_transitive_distance(Pred, 3, Clauses, EdgePred) :-
     RecGoal =.. [Pred, RecMid, RecTarget, PrevDepth],
     IsGoal =.. [is, RecDepth, Expr],
     Expr =.. [+, PrevDepth, 1].
+
+%% llvm_recursive_kernel_weighted_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the weighted_shortest_path3 clause shape:
+%    pred(X, Y, W) :- weight_pred(X, Y, W).
+%    pred(X, Y, Cost) :-
+%        weight_pred(X, Z, W),
+%        pred(Z, Y, RestCost),
+%        Cost is W + RestCost.
+%
+%  On success binds RecKernel to
+%    recursive_kernel(weighted_shortest_path3, Pred/Arity,
+%                     [weight_pred(WeightPred/3)]).
+llvm_recursive_kernel_weighted_shortest_path(Pred, Arity, Clauses,
+        recursive_kernel(weighted_shortest_path3, Pred/Arity,
+            [weight_pred(WeightPred/3)])) :-
+    llvm_foreign_lowerable_weighted_shortest_path(Pred, Arity, Clauses, WeightPred).
+
+%% llvm_foreign_lowerable_weighted_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
+%
+%  Ported from rust_target.pl:4045. Accepts the simple-form recursive
+%  body; the Rust target also accepts a visited-list form, which
+%  M5.9 does not yet mirror because Dijkstra doesn't need cycle
+%  checks (it tracks visited internally via best[]).
+llvm_foreign_lowerable_weighted_shortest_path(Pred, 3, Clauses, WeightPred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseWeight],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
+    RecHead =.. [Pred, RecStart, RecTarget, RecCost],
+    RecBody = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, RecStart, RecMid, W],
+    RecGoal =.. [Pred, RecMid, RecTarget, RestCost],
+    IsGoal =.. [is, RecCost, PlusExpr],
+    PlusExpr =.. [+, W, RestCost].
 
 %% llvm_auto_detect_foreign_kernels(+Predicates) is det.
 %
@@ -260,18 +298,31 @@ lookup_foreign_kernel_spec(Pred, Arity, Kind, Config) :-
 %  edge_preds coexist in one module — each gets its own instance_id
 %  and its own edge table.
 substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
+    % td3 pass
     findall(PredArity-Config,
         llvm_foreign_kernel_spec(PredArity, transitive_distance3, Config),
         Td3Entries),
     ( Td3Entries == []
-    -> StateFuncs = StateFuncsRaw,
-       Globals = ''
-    ;  build_td3_instance_switch(Td3Entries, ImplBody, TablesIR),
-       replace_td3_weak_default(StateFuncsRaw, ImplBody, StateFuncs),
-       format(atom(Globals),
-'; === M5.6 + M5.8 foreign kernel support globals ===
-~w
-', [TablesIR])
+    -> StateFuncs0 = StateFuncsRaw, Td3Tables = ''
+    ;  build_td3_instance_switch(Td3Entries, Td3ImplBody, Td3Tables),
+       replace_td3_weak_default(StateFuncsRaw, Td3ImplBody, StateFuncs0)
+    ),
+    % wsp3 pass — mirror of the td3 pass but for weighted_shortest_path3.
+    findall(WspPredArity-WspConfig,
+        llvm_foreign_kernel_spec(WspPredArity, weighted_shortest_path3, WspConfig),
+        Wsp3Entries),
+    ( Wsp3Entries == []
+    -> StateFuncs = StateFuncs0, Wsp3Tables = ''
+    ;  build_wsp3_instance_switch(Wsp3Entries, Wsp3ImplBody, Wsp3Tables),
+       replace_wsp3_weak_default(StateFuncs0, Wsp3ImplBody, StateFuncs)
+    ),
+    % Concatenate the per-kind global tables into one Globals blob.
+    ( Td3Tables == '', Wsp3Tables == ''
+    -> Globals = ''
+    ;  atomic_list_concat([
+           '; === M5.6 + M5.8 + M5.9 foreign kernel support globals ===\n',
+           Td3Tables, '\n', Wsp3Tables, '\n'
+       ], Globals)
     ).
 
 %% build_td3_instance_switch(+Entries, -ImplBody, -TablesIR).
@@ -359,6 +410,101 @@ build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) 
     llvm_emit_atom_fact2_table(TableName, Pairs, TableIR),
     length(Pairs, Len),
     ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
+
+%% build_wsp3_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  M5.9 counterpart of build_td3_instance_switch. Emits one
+%  `define i1 @wam_wsp3_kernel_impl(...)` with a switch dispatching
+%  each instance to its own %WeightedFact edge table and a call to
+%  @wam_wsp3_run.
+build_wsp3_instance_switch(Entries, ImplBody, TablesIR) :-
+    build_wsp3_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    atomic_list_concat(Tables, '\n\n', TablesIR),
+    format(atom(ImplBody),
+'define i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %wsp_bail [
+~w
+  ]
+
+~w
+
+wsp_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_wsp3_instance_parts([], _, [], [], []).
+build_wsp3_instance_parts([PredArity-Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
+    PredArity = Pred/_,
+    sanitize_atom_for_llvm(Pred, SanePred),
+    format(atom(TableName), 'wsp3_inst_~w_~w_edges', [SanePred, Index]),
+    build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
+    format(atom(SwitchCase), '    i32 ~w, label %wsp_inst_~w', [Index, Index]),
+    format(atom(Body),
+'wsp_inst_~w:
+  %wsp_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
+  %wsp_r_~w = call i1 @wam_wsp3_run(%WamState* %vm, %WeightedFact* %wsp_tbl_~w, i64 ~w, i64 ~w)
+  ret i1 %wsp_r_~w',
+        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, Index]),
+    NextIndex is Index + 1,
+    build_wsp3_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% build_wsp3_instance_table(+Config, +TableName, -TableIR, -GepLen, -EffLen, -MaxAtomId).
+%
+%  Reads the weight predicate clauses from Config, emits a
+%  %WeightedFact private constant under TableName, and returns the
+%  sizing info the caller needs for the GEP and the @wam_wsp3_run
+%  call. The weight predicate has arity 3: weight_pred(From, To, Weight).
+build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
+    ( member(weight_pred(WeightPred), Config) -> true
+    ; WeightPred = weight/3  % default for smoke tests
+    ),
+    WeightPred = WPName/WPArity,
+    ( WPArity =:= 3 -> true
+    ; throw(foreign_lowering_weight_pred_arity(WPName/WPArity))
+    ),
+    catch(
+        findall(edge(From, To, Weight),
+            ( Goal =.. [WPName, From, To, Weight],
+              user:Goal
+            ),
+            Triples),
+        _, Triples = []),
+    compute_max_atom_id_weighted(Triples, MaxAtomId),
+    llvm_emit_weighted_edge_table(TableName, Triples, TableIR),
+    length(Triples, Len),
+    ( Len == 0 -> EffLen = 0, GepLen = 1 ; EffLen = Len, GepLen = Len ).
+
+%% compute_max_atom_id_weighted(+Triples, -MaxAtomId).
+%  Like compute_max_atom_id/2 but for edge(From, To, Weight) terms.
+%  Weight is ignored for the max-id bound.
+compute_max_atom_id_weighted([], 0).
+compute_max_atom_id_weighted(Triples, MaxAtomId) :-
+    findall(Id,
+        ( member(edge(From, To, _), Triples),
+          ( intern_atom(From, Id)
+          ; intern_atom(To, Id)
+          )
+        ),
+        Ids),
+    ( Ids == []
+    -> MaxAtomId = 0
+    ;  max_list(Ids, MaxAtomId)
+    ).
+
+%% replace_wsp3_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_wsp3_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: M5.9 could not find wsp3 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
 
 %% sanitize_atom_for_llvm(+Atom, -Sanitized).
 %  Replace any characters that would be awkward in an LLVM global
