@@ -142,4 +142,15 @@ test_builtin_test :-
 %% Main
 %% ============================================
 
-:- initialization(run_tests, main).
+main :-
+    current_prolog_flag(os_argv, Args),
+    explicit_run_tests_goal(Args),
+    !.
+main :-
+    run_tests.
+
+explicit_run_tests_goal(['-g', run_tests|_]) :- !.
+explicit_run_tests_goal([_|Rest]) :-
+    explicit_run_tests_goal(Rest).
+
+:- initialization(main, main).
