@@ -443,8 +443,16 @@ test_component_registry :-
 % ============================================================================
 
 :- initialization((
-    % Define the runtime category by default
+    % Define core categories by default.
     define_category(runtime, "Execution-time components", [
+        requires_compilation(false),
+        singleton(false)
+    ]),
+    define_category(source, "Compile-time source components", [
+        requires_compilation(true),
+        singleton(false)
+    ]),
+    define_category(binding, "External binding components", [
         requires_compilation(false),
         singleton(false)
     ])
