@@ -239,19 +239,23 @@ The frontier metric step now records:
 5. `min_frontier_dominated_state_count`
 6. `min_frontier_recorded_state_count`
 7. `min_frontier_removed_state_count`
-8. `min_frontier_bucket_count`
-9. `min_frontier_bucket_state_count`
-10. `min_frontier_bucket_max_size`
-11. `min_frontier_bucket_avg_size`
+8. `min_frontier_target_bucket_count`
+9. `min_frontier_bucket_count`
+10. `min_frontier_bucket_state_count`
+11. `min_frontier_bucket_max_size`
+12. `min_frontier_bucket_avg_size`
 
-The next coding step should be:
+That coding step is now complete:
 
-1. implement exact frontier-state hashing / bucket partitioning for weighted
-   `Min` fallback states
-2. keep the multiplicative-to-additive transform as a narrower later
-   optimization, not the next broad fix
-3. validate that dominance-candidate scans and retained bucket sizes drop on
-   the benchmark fallback cases below
+1. weighted `Min` fallback states carry deterministic path fingerprints
+2. target-local frontiers partition retained states by path length and
+   fingerprint before exact subset/dominance verification
+3. `min_frontier_target_bucket_count` preserves the old target-bucket view,
+   while `min_frontier_bucket_*` now describes exact path-state partitions
+
+The next coding step should keep the multiplicative-to-additive transform as a
+narrower later optimization and focus first on whether the remaining lower-cardinality
+candidate scans need additional exact prefilters.
 
 ## Frontier Fallback Metric Survey
 
@@ -267,24 +271,28 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
   --recurrence-mode multiplicative
 ```
 
-Both fallback cases preserve output agreement between `All` and `Min`, but the
-exact `Min` fallback is slower than `All` on these benchmark-scale cyclic
-cases.
+Both fallback cases preserve output agreement between `All` and `Min`. After
+path-state partitioning, the exact `Min` fallback is still slower than `All` on
+these benchmark-scale cyclic cases, but dominance-candidate scans are much lower
+than the previous broad target-bucket frontier.
 
 | Shape | Scale | All | Min | Speedup | Dominance Candidates | Dominance Checks | Subset Checks | Avg Bucket | Max Bucket |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| negative additive | 300 | 0.984s | 1.885s | 0.52x | 104,874,704 | 1,163,485 | 93,771 | 18.66 | 2,651 |
-| negative additive | 1k | 0.783s | 1.882s | 0.42x | 112,962,813 | 682,397 | 74,865 | 32.76 | 3,281 |
-| multiplicative | 300 | 0.991s | 1.132s | 0.88x | 36,195,447 | 863,266 | 148,532 | 12.81 | 1,227 |
-| multiplicative | 1k | 0.688s | 1.184s | 0.58x | 39,638,003 | 505,982 | 106,165 | 22.36 | 1,168 |
+| negative additive | 300 | 0.938s | 1.590s | 0.59x | 34,704,185 | 1,163,485 | 15,431 | 1.00 | 1 |
+| negative additive | 1k | 0.636s | 1.332s | 0.48x | 35,271,278 | 682,397 | 13,775 | 1.00 | 1 |
+| multiplicative | 300 | 0.911s | 1.101s | 0.83x | 10,906,078 | 863,266 | 104,355 | 1.00 | 1 |
+| multiplicative | 1k | 0.692s | 0.993s | 0.70x | 11,043,000 | 505,982 | 69,064 | 1.00 | 1 |
 
 Interpretation:
 
-- dominance-candidate scans dominate the measured counters by one to two
-  orders of magnitude
-- subset checks are not the primary cost by count; the runtime spends most of
-  its work reaching candidate states in broad target buckets
+- dominance-candidate scans are still the dominant counter, but exact
+  path-state partitioning cuts them by roughly `3x` to `3.6x` on these runs
+- subset checks drop substantially for negative additive fallback because
+  same-cardinality non-matching path states no longer reach exact subset
+  verification
 - `min_frontier_removed_state_count` stayed at `0` for these runs, so the
   current retained buckets grow but rarely compact themselves
-- the next optimization should partition/index exact frontier states before
-  adding a multiplicative-specific transform
+- the remaining candidate scans come from lower-cardinality states that still
+  must be considered for exact subset dominance, so any next frontier
+  optimization should add exact prefilters there rather than rely only on
+  same-cardinality fingerprints

@@ -11292,6 +11292,7 @@ namespace UnifyWeaver.QueryRuntime
             trace?.AddMetric(node, "min_frontier_dominated_state_count", metrics.DominatedStateCount);
             trace?.AddMetric(node, "min_frontier_recorded_state_count", metrics.RecordedStateCount);
             trace?.AddMetric(node, "min_frontier_removed_state_count", metrics.RemovedStateCount);
+            trace?.AddMetric(node, "min_frontier_target_bucket_count", metrics.TargetBucketCount);
             trace?.AddMetric(node, "min_frontier_bucket_count", metrics.BucketCount);
             trace?.AddMetric(node, "min_frontier_bucket_state_count", metrics.BucketStateCount);
             trace?.RecordMetric(node, "min_frontier_bucket_max_size", metrics.MaxBucketSize);
@@ -13028,7 +13029,7 @@ namespace UnifyWeaver.QueryRuntime
                 ? new Dictionary<object?, object>()
                 : null;
             var frontier = useMinPruning
-                ? new Dictionary<object?, List<VisitedAccumulatorState>>()
+                ? new Dictionary<object?, PathAwareMinFrontierBucket>()
                 : null;
             var nodeIds = new Dictionary<object, int>();
             var nextNodeId = 0;
@@ -13140,83 +13141,228 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static bool IsDominatedMinState(
-            IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier,
+            IReadOnlyDictionary<object?, PathAwareMinFrontierBucket> frontier,
             object? node,
             VisitedAccumulatorState state,
             PathAwareMinFrontierMetrics? metrics = null)
         {
             metrics?.RecordDominanceCheck();
-            if (!frontier.TryGetValue(node, out var states))
-            {
-                return false;
-            }
-
-            foreach (var candidate in states)
-            {
-                metrics?.RecordDominanceCandidateCheck();
-                var sameState = ReferenceEquals(candidate.Path, state.Path) && Equals(candidate.Accumulator, state.Accumulator);
-                if (sameState)
-                {
-                    continue;
-                }
-
-                if (candidate.Path.Count > state.Path.Count)
-                {
-                    continue;
-                }
-
-                if ((candidate.Path.MaskA & ~state.Path.MaskA) != 0 || (candidate.Path.MaskB & ~state.Path.MaskB) != 0)
-                {
-                    continue;
-                }
-
-                if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
-                    (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
-                    candidate.Path.IsSubsetOf(state.Path))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return frontier.TryGetValue(node, out var bucket) &&
+                bucket.IsDominatedByExisting(state, metrics);
         }
 
         private static void RecordMinState(
-            IDictionary<object?, List<VisitedAccumulatorState>> frontier,
+            IDictionary<object?, PathAwareMinFrontierBucket> frontier,
             object? node,
             VisitedAccumulatorState state,
             PathAwareMinFrontierMetrics? metrics = null)
         {
-            if (!frontier.TryGetValue(node, out var states))
+            if (!frontier.TryGetValue(node, out var bucket))
             {
-                states = new List<VisitedAccumulatorState>();
-                frontier[node] = states;
+                bucket = new PathAwareMinFrontierBucket();
+                frontier[node] = bucket;
             }
 
-            for (var i = states.Count - 1; i >= 0; i--)
-            {
-                var existing = states[i];
-                if (state.Path.Count > existing.Path.Count)
-                {
-                    continue;
-                }
-
-                if ((state.Path.MaskA & ~existing.Path.MaskA) != 0 || (state.Path.MaskB & ~existing.Path.MaskB) != 0)
-                {
-                    continue;
-                }
-
-                if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
-                    (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
-                    state.Path.IsSubsetOf(existing.Path))
-                {
-                    states.RemoveAt(i);
-                    metrics?.RecordRemovedState();
-                }
-            }
-
-            states.Add(state);
+            bucket.AddStateAndRemoveDominated(state, metrics);
             metrics?.RecordRecordedState();
+        }
+
+        private sealed class PathAwareMinFrontierBucket
+        {
+            private readonly Dictionary<int, PathAwareMinFrontierCountBucket> _statesByCount = new();
+
+            public bool IsDominatedByExisting(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                for (var pathCount = 1; pathCount <= state.Path.Count; pathCount++)
+                {
+                    if (!_statesByCount.TryGetValue(pathCount, out var countBucket))
+                    {
+                        continue;
+                    }
+
+                    if (pathCount == state.Path.Count)
+                    {
+                        return countBucket.IsDominatedBySameFingerprint(state, metrics);
+                    }
+
+                    if (countBucket.IsDominatedByAny(state, metrics))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public void AddStateAndRemoveDominated(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                var pathCounts = _statesByCount.Keys.ToList();
+                foreach (var pathCount in pathCounts)
+                {
+                    if (pathCount < state.Path.Count ||
+                        !_statesByCount.TryGetValue(pathCount, out var countBucket))
+                    {
+                        continue;
+                    }
+
+                    if (pathCount == state.Path.Count)
+                    {
+                        countBucket.RemoveDominatedBySameFingerprint(state, metrics);
+                    }
+                    else
+                    {
+                        countBucket.RemoveDominatedByAny(state, metrics);
+                    }
+
+                    if (countBucket.IsEmpty)
+                    {
+                        _statesByCount.Remove(pathCount);
+                    }
+                }
+
+                if (!_statesByCount.TryGetValue(state.Path.Count, out var bucketByCount))
+                {
+                    bucketByCount = new PathAwareMinFrontierCountBucket();
+                    _statesByCount[state.Path.Count] = bucketByCount;
+                }
+
+                bucketByCount.Add(state);
+            }
+
+            public void RecordSnapshot(PathAwareMinFrontierMetrics metrics)
+            {
+                foreach (var countBucket in _statesByCount.Values)
+                {
+                    countBucket.RecordSnapshot(metrics);
+                }
+            }
+        }
+
+        private sealed class PathAwareMinFrontierCountBucket
+        {
+            private readonly List<VisitedAccumulatorState> _states = new();
+            private readonly Dictionary<ulong, int> _fingerprintCounts = new();
+
+            public bool IsEmpty => _states.Count == 0;
+
+            public void Add(VisitedAccumulatorState state)
+            {
+                _states.Add(state);
+                var fingerprint = state.Path.Fingerprint;
+                _fingerprintCounts.TryGetValue(fingerprint, out var count);
+                _fingerprintCounts[fingerprint] = count + 1;
+            }
+
+            public bool IsDominatedBySameFingerprint(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                return _fingerprintCounts.ContainsKey(state.Path.Fingerprint) &&
+                    IsDominatedByAny(state, metrics, requireSameFingerprint: true);
+            }
+
+            public bool IsDominatedByAny(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                return IsDominatedByAny(state, metrics, requireSameFingerprint: false);
+            }
+
+            public void RemoveDominatedBySameFingerprint(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                if (_fingerprintCounts.ContainsKey(state.Path.Fingerprint))
+                {
+                    RemoveDominated(state, metrics, requireSameFingerprint: true);
+                }
+            }
+
+            public void RemoveDominatedByAny(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                RemoveDominated(state, metrics, requireSameFingerprint: false);
+            }
+
+            public void RecordSnapshot(PathAwareMinFrontierMetrics metrics)
+            {
+                foreach (var count in _fingerprintCounts.Values)
+                {
+                    metrics.RecordPartitionBucket(count);
+                }
+            }
+
+            private bool IsDominatedByAny(
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                bool requireSameFingerprint)
+            {
+                foreach (var candidate in _states)
+                {
+                    if (requireSameFingerprint && candidate.Path.Fingerprint != state.Path.Fingerprint)
+                    {
+                        continue;
+                    }
+
+                    metrics?.RecordDominanceCandidateCheck();
+                    var sameState = ReferenceEquals(candidate.Path, state.Path) && Equals(candidate.Accumulator, state.Accumulator);
+                    if (sameState)
+                    {
+                        continue;
+                    }
+
+                    if ((candidate.Path.MaskA & ~state.Path.MaskA) != 0 || (candidate.Path.MaskB & ~state.Path.MaskB) != 0)
+                    {
+                        continue;
+                    }
+
+                    if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
+                        (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
+                        candidate.Path.IsSubsetOf(state.Path))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private void RemoveDominated(
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                bool requireSameFingerprint)
+            {
+                for (var i = _states.Count - 1; i >= 0; i--)
+                {
+                    var existing = _states[i];
+                    if (requireSameFingerprint && existing.Path.Fingerprint != state.Path.Fingerprint)
+                    {
+                        continue;
+                    }
+
+                    if ((state.Path.MaskA & ~existing.Path.MaskA) != 0 || (state.Path.MaskB & ~existing.Path.MaskB) != 0)
+                    {
+                        continue;
+                    }
+
+                    if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
+                        (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
+                        state.Path.IsSubsetOf(existing.Path))
+                    {
+                        RemoveAt(i);
+                        metrics?.RecordRemovedState();
+                    }
+                }
+            }
+
+            private void RemoveAt(int index)
+            {
+                var fingerprint = _states[index].Path.Fingerprint;
+                _states.RemoveAt(index);
+
+                var count = _fingerprintCounts[fingerprint];
+                if (count <= 1)
+                {
+                    _fingerprintCounts.Remove(fingerprint);
+                }
+                else
+                {
+                    _fingerprintCounts[fingerprint] = count - 1;
+                }
+            }
         }
 
         private sealed class PathAwareMinFrontierMetrics
@@ -13234,6 +13380,8 @@ namespace UnifyWeaver.QueryRuntime
             public long RecordedStateCount { get; private set; }
 
             public long RemovedStateCount { get; private set; }
+
+            public long TargetBucketCount { get; private set; }
 
             public long BucketCount { get; private set; }
 
@@ -13259,17 +13407,22 @@ namespace UnifyWeaver.QueryRuntime
 
             public void RecordRemovedState() => RemovedStateCount++;
 
-            public void RecordBucketSnapshot(IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier)
+            public void RecordBucketSnapshot(IReadOnlyDictionary<object?, PathAwareMinFrontierBucket> frontier)
             {
-                BucketCount += frontier.Count;
-                foreach (var states in frontier.Values)
+                TargetBucketCount += frontier.Count;
+                foreach (var bucket in frontier.Values)
                 {
-                    var count = states.Count;
-                    BucketStateCount += count;
-                    if (count > MaxBucketSize)
-                    {
-                        MaxBucketSize = count;
-                    }
+                    bucket.RecordSnapshot(this);
+                }
+            }
+
+            public void RecordPartitionBucket(int count)
+            {
+                BucketCount++;
+                BucketStateCount += count;
+                if (count > MaxBucketSize)
+                {
+                    MaxBucketSize = count;
                 }
             }
         }
@@ -13282,12 +13435,13 @@ namespace UnifyWeaver.QueryRuntime
         {
             private readonly int[] _nodeIds;
 
-            private CompactVisitedPath(int[] nodeIds, int count, ulong maskA, ulong maskB)
+            private CompactVisitedPath(int[] nodeIds, int count, ulong maskA, ulong maskB, ulong fingerprint)
             {
                 _nodeIds = nodeIds;
                 Count = count;
                 MaskA = maskA;
                 MaskB = maskB;
+                Fingerprint = fingerprint;
             }
 
             public int Count { get; }
@@ -13296,9 +13450,16 @@ namespace UnifyWeaver.QueryRuntime
 
             public ulong MaskB { get; }
 
+            public ulong Fingerprint { get; }
+
             public static CompactVisitedPath Create(int nodeId)
             {
-                return new CompactVisitedPath(new[] { nodeId }, 1, ComputeVisitedMaskA(nodeId), ComputeVisitedMaskB(nodeId));
+                return new CompactVisitedPath(
+                    new[] { nodeId },
+                    1,
+                    ComputeVisitedMaskA(nodeId),
+                    ComputeVisitedMaskB(nodeId),
+                    ComputeVisitedFingerprint(nodeId));
             }
 
             public bool Contains(int nodeId)
@@ -13331,7 +13492,12 @@ namespace UnifyWeaver.QueryRuntime
                 var nodeIds = new int[Count + 1];
                 Array.Copy(_nodeIds, nodeIds, Count);
                 nodeIds[Count] = nodeId;
-                return new CompactVisitedPath(nodeIds, Count + 1, MaskA | ComputeVisitedMaskA(nodeId), MaskB | ComputeVisitedMaskB(nodeId));
+                return new CompactVisitedPath(
+                    nodeIds,
+                    Count + 1,
+                    MaskA | ComputeVisitedMaskA(nodeId),
+                    MaskB | ComputeVisitedMaskB(nodeId),
+                    Fingerprint ^ ComputeVisitedFingerprint(nodeId));
             }
 
             public bool IsSubsetOf(CompactVisitedPath other)
@@ -13377,6 +13543,14 @@ namespace UnifyWeaver.QueryRuntime
         private static ulong ComputeVisitedMaskB(int value)
         {
             return 1UL << ((value >> 6) & 63);
+        }
+
+        private static ulong ComputeVisitedFingerprint(int value)
+        {
+            var z = unchecked((ulong)(uint)value + 0x9E3779B97F4A7C15UL);
+            z = unchecked((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL);
+            z = unchecked((z ^ (z >> 27)) * 0x94D049BB133111EBUL);
+            return z ^ (z >> 31);
         }
 
         private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)

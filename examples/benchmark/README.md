@@ -942,7 +942,7 @@ frontier fallback for negative additive steps. Use
 `--weight-mode positive --recurrence-mode multiplicative` to force the exact
 frontier fallback for positive multiplicative recurrence. These variants emit
 the `min_frontier_*` trace metrics used to profile candidate growth, dominance
-checks, subset checks, and retained frontier bucket sizes.
+checks, subset checks, target buckets, and retained path-state partition sizes.
 
 Latest local results:
 
@@ -979,13 +979,14 @@ trace label, while zero-cost non-negative steps report
 `metric_scc_probe_outer_dag_states_explored`; on the current benchmark
 shape the selector keeps the layered path when the SCC probe is slower.
 
-Fallback metric runs on `300` and `1k` show that broad dominance-candidate
-scans, not the raw number of exact subset checks, dominate the measured
-frontier counters. The negative-additive fallback reached
-`104,874,704` dominance-candidate checks at `300` and `112,962,813` at `1k`.
-The multiplicative fallback reached `36,195,447` at `300` and `39,638,003` at
-`1k`. That points the next optimization toward exact frontier-state hashing or
-bucket partitioning before a narrow multiplicative-specific transform.
+Fallback metric runs on `300` and `1k` now use exact path-state partitioning for
+weighted `Min` frontier states. The negative-additive fallback reached
+`34,704,185` dominance-candidate checks at `300` and `35,271,278` at `1k`,
+down from the previous broad-bucket counts of `104,874,704` and `112,962,813`.
+The multiplicative fallback reached `10,906,078` at `300` and `11,043,000` at
+`1k`, down from `36,195,447` and `39,638,003`. Output agreement still reports
+`match`; the remaining optimization surface is lower-cardinality dominance
+prefiltering rather than same-cardinality path-state lookup.
 
 ### Available Targets
 
