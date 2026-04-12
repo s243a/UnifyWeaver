@@ -42,6 +42,13 @@ Extend the relevant recursive state structures to carry:
 At this phase, correctness should remain unchanged. The fingerprint is
 added first as metadata, not yet as the sole lookup route.
 
+Status:
+
+- implemented for weighted `Min` frontier fallback states in the C# query
+  runtime
+- compact visited paths now carry deterministic set fingerprints alongside
+  exact node-id arrays and summary masks
+
 ## Phase 4: Bucketed Lookup
 
 Introduce fingerprint-indexed buckets for:
@@ -54,6 +61,13 @@ Workflow:
 - derive candidate bucket from the fingerprint key
 - run exact verification inside the bucket
 - keep fallback correctness behavior intact
+
+Status:
+
+- implemented for same-cardinality weighted `Min` frontier dominance checks
+  and dominated-state removal
+- target-local frontiers now keep path-count buckets and fingerprint counts,
+  using fingerprints only to prune candidates before exact subset checks
 
 ## Phase 5: Dominance Prefilters
 
@@ -96,9 +110,12 @@ the main count driver.
 
 The next concrete coding step should start here:
 
-- normalize weighted `Min` frontier states around stable integer node ids
-- carry deterministic fingerprints with exact visited paths
-- partition candidate buckets before exact subset/dominance verification
+- measure whether remaining lower-cardinality dominance scans need stronger
+  exact prefilters
+- consider mask/fingerprint summaries that can reject lower-cardinality
+  candidates without replacing the final exact subset check
+- keep multiplicative-specific transforms separate from the broad exact
+  non-DAG path-state indexing work
 
 The optimization must remain exact: fingerprints and bucket keys should reduce
 candidate scans, not replace the final simple-path dominance check.

@@ -159,8 +159,8 @@ At minimum:
 - SCC condensation, SCC probe, and SCC solve phase timings
 - exact frontier fallback candidate count
 - exact frontier fallback dominance and subset-check counts
-- exact frontier fallback bucket count, total retained states, maximum
-  bucket size, and average bucket size
+- exact frontier fallback target-bucket count plus path-state partition count,
+  total retained states, maximum partition size, and average partition size
 - final output row count
 - total runtime
 
