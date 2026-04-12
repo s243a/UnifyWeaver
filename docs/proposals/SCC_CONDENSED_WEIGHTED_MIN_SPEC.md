@@ -157,6 +157,10 @@ At minimum:
 - number of exact local states explored
 - number of outer DAG states explored
 - SCC condensation, SCC probe, and SCC solve phase timings
+- exact frontier fallback candidate count
+- exact frontier fallback dominance and subset-check counts
+- exact frontier fallback bucket count, total retained states, maximum
+  bucket size, and average bucket size
 - final output row count
 - total runtime
 

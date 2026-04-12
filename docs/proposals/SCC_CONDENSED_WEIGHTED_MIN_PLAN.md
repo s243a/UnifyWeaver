@@ -20,6 +20,9 @@ Current status:
 - negative additive steps and non-additive recurrence expressions are now
   covered by explicit fallback-shape survey tests and runtime strategy
   labeling
+- the exact weighted `Min` frontier fallback now records lightweight
+  frontier metrics for candidate counts, dominance checks, subset checks,
+  and retained frontier bucket sizes
 - on the current positive-additive benchmark shape, the measured selector
   rejects SCC condensation because the layered path is still cheaper after
   SCC build/probe overhead
@@ -227,11 +230,25 @@ The fallback survey step now covers two representative cases:
    data but is not additive and therefore still requires exact path-state
    evaluation
 
+The frontier metric step now records:
+
+1. `min_frontier_candidate_count`
+2. `min_frontier_dominance_check_count`
+3. `min_frontier_dominance_candidate_check_count`
+4. `min_frontier_subset_check_count`
+5. `min_frontier_dominated_state_count`
+6. `min_frontier_recorded_state_count`
+7. `min_frontier_removed_state_count`
+8. `min_frontier_bucket_count`
+9. `min_frontier_bucket_state_count`
+10. `min_frontier_bucket_max_size`
+11. `min_frontier_bucket_avg_size`
+
 The next coding step should be:
 
-1. add lightweight frontier-fallback instrumentation for candidate count,
-   dominance checks, subset checks, and frontier bucket sizes
-2. run it on the negative-additive and multiplicative survey fixtures plus
-   cyclic benchmark data
+1. run the frontier metrics on cyclic benchmark-scale weighted `Min`
+   fallback cases
+2. compare whether the hot path is dominated by candidate growth, bucket
+   fanout, or exact subset checks
 3. decide whether the next optimization should be exact state hashing or a
    narrower multiplicative-to-additive transform
