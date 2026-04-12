@@ -762,13 +762,15 @@ step !ctx s (CallResolved pc _arity) =
 
 step !ctx s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
-  in case executeForeign ctx pred sc of
-    Just sr -> Just sr
-    Nothing -> case callIndexedFact2 ctx pred sc of
+  in case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case executeForeign ctx pred sc of
       Just sr -> Just sr
-      Nothing -> case Map.lookup pred (wcLabels ctx) of
-        Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
-        Nothing -> Nothing
+      Nothing -> case callIndexedFact2 ctx pred sc of
+        Just sr -> Just sr
+        Nothing -> case Map.lookup pred (wcLabels ctx) of
+          Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+          Nothing -> Nothing
 
 step !ctx s Proceed =
   let ret = wsCP s
@@ -1115,12 +1117,20 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     write_hs_file(RuntimePath, RuntimeCode),
 
     % Compile the interpreted partition (Phase 1: this is always the full
-    % Predicates list, because LoweredList is always empty). Phase 2 emits
-    % Lowered.hs for the non-empty case.
+    % Predicates list, because LoweredList is always empty).
     compile_predicates_to_haskell(InterpretedList, Options, PredsCode0),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
+
+    % Emit Lowered.hs — Phase 2 ships the empty skeleton regardless of
+    % whether LoweredList has entries (it never does in Phase 2, since
+    % the lowerability stub still always fails). This lets Main.hs
+    % unconditionally import qualified Lowered.
+    generate_lowered_hs(LoweredList, LoweredCode0),
+    apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
+    directory_file_path(SrcDir, 'Lowered.hs', LoweredPath),
+    write_hs_file(LoweredPath, LoweredCode),
 
     % Generate cabal file
     option(module_name(ModName), Options, 'wam-haskell-bench'),
@@ -1185,6 +1195,40 @@ re_split_replace(S, From, To, Result) :-
     ;   Result = S
     ).
 
+%% generate_lowered_hs(+LoweredList, -Code)
+%  Emit the Lowered.hs module containing one function per predicate in
+%  LoweredList and a loweredPredicates dispatch Map. Phase 2 always
+%  receives an empty LoweredList (Phase 1 stub fails for every predicate),
+%  so this generator emits the skeleton module with Map.empty. Phase 3+
+%  will walk LoweredList and emit a function per predicate via
+%  lower_predicate_to_haskell/4.
+%
+%  The module is emitted regardless of the partition being empty so that
+%  Main.hs can unconditionally `import qualified Lowered` — it is simpler
+%  than making the import conditional on the emit_mode.
+generate_lowered_hs(LoweredList, Code) :-
+    LoweredList = [],   % Phase 2: always empty (enforced by caller's expectation)
+    Code = '{-# LANGUAGE BangPatterns #-}
+-- WAM-lowered Haskell predicates.
+--
+-- Phase 2: empty skeleton. Phase 3+ will emit one function per predicate
+-- in the lowered partition and register them in loweredPredicates.
+--
+-- See docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md §2.1.
+module Lowered where
+
+import qualified Data.Map.Strict as Map
+import WamTypes
+
+-- | Dispatch map from predicate indicator (e.g. "category_ancestor/4") to
+-- a Haskell function mirroring the WAM semantics of that predicate.
+-- Populated by Main.hs into WamContext.wcLoweredPredicates. Phase 2
+-- ships this as Map.empty so the runtime dispatch chain falls through
+-- to the interpreter unchanged.
+loweredPredicates :: Map.Map String (WamContext -> WamState -> Maybe WamState)
+loweredPredicates = Map.empty
+'.
+
 %% generate_main_hs(+Predicates, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Loads facts from TSV, runs category_ancestor queries, outputs TSV.
@@ -1203,6 +1247,7 @@ import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import WamTypes
 import WamRuntime
 import Predicates
+import qualified Lowered
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -1316,9 +1361,13 @@ main = do
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- Populate wcForeignFacts/wcForeignConfig so executeForeign can fire.
+    -- Populate wcLoweredPredicates from Lowered.loweredPredicates — Phase 2
+    -- ships this as Map.empty, Phase 3+ replaces it with real lowered
+    -- predicate functions.
     let !ctx = (mkContext mergedCode mergedLabels)
             { wcForeignFacts  = Map.singleton "category_parent" parentsIndex
             , wcForeignConfig = Map.singleton "max_depth" 10
+            , wcLoweredPredicates = Lowered.loweredPredicates
             }
 
     t2 <- getCurrentTime
@@ -1665,7 +1714,10 @@ data WamContext = WamContext
   , wcLabels        :: !(Map.Map String Int)
   , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
   , wcForeignConfig :: !(Map.Map String Int)
-  } deriving (Show)
+  , wcLoweredPredicates :: !(Map.Map String (WamContext -> WamState -> Maybe WamState))
+  }
+-- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
+-- and functions have no Show instance. Add a manual instance if needed.
 
 -- | Mutable state. Updated on every WAM step. Held separate from WamContext
 -- so each step transition only allocates a record with the fields that
@@ -1734,6 +1786,7 @@ mkContext codeList labels =
     , wcLabels        = labels
     , wcForeignFacts  = Map.empty
     , wcForeignConfig = Map.empty
+    , wcLoweredPredicates = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
@@ -1773,7 +1826,7 @@ build-type:    Simple
 executable ~w
   main-is:          Main.hs
   hs-source-dirs:   src
-  other-modules:    WamTypes, WamRuntime, Predicates
+  other-modules:    WamTypes, WamRuntime, Predicates, Lowered
   build-depends:    ~w
   default-language: Haskell2010
   ghc-options:      -O2
