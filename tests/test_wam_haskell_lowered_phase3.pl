@@ -75,7 +75,7 @@ test_lower_predicate_produces_function :-
     (   PredName == 'phase3_constant/1',
         FuncName == lowered_phase3_constant_1,
         sub_string(HsCode, _, _, _, "lowered_phase3_constant_1 :: WamContext -> WamState -> Maybe WamState"),
-        sub_string(HsCode, _, _, _, "v == (Integer 42)")
+        sub_string(HsCode, _, _, _, "GetConstant (Integer 42)")
     ->  pass(Test)
     ;   fail_test(Test, ['unexpected emitter output; PredName=', PredName, ' FuncName=', FuncName])
     ).
@@ -135,7 +135,7 @@ test_lowered_hs_has_function_definition :-
     atom_concat(Dir, '/src/Lowered.hs', Path),
     read_file_to_string(Path, S),
     (   sub_string(S, _, _, _, "lowered_phase3_constant_1 :: WamContext -> WamState -> Maybe WamState"),
-        sub_string(S, _, _, _, "v == (Integer 42)")
+        sub_string(S, _, _, _, "GetConstant (Integer 42)")
     ->  pass(Test)
     ;   fail_test(Test, 'Lowered.hs missing expected function body')
     ).
