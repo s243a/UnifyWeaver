@@ -1345,6 +1345,33 @@ wsp_bail:
   ret i1 false
 }
 
+; === M5.13: countdown_sum2 common runner helper ===
+; Pure arithmetic: reads A1 as an integer N, computes S = N*(N+1)/2,
+; writes A2 as integer S. No tables needed — the same computation
+; works for every instance.
+define i1 @wam_cds2_run(%WamState* %vm) {
+entry:
+  %n_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %n_is_int = icmp eq i32 %n_tag, 1
+  br i1 %n_is_int, label %compute, label %cds_bail
+
+compute:
+  %n = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n_neg = icmp slt i64 %n, 0
+  br i1 %n_neg, label %cds_bail, label %do_sum
+
+do_sum:
+  ; S = N * (N + 1) / 2
+  %n_plus_1 = add i64 %n, 1
+  %n_times = mul i64 %n, %n_plus_1
+  %s = sdiv i64 %n_times, 2
+  call void @wam_set_reg_int(%WamState* %vm, i32 1, i64 %s)
+  ret i1 true
+
+cds_bail:
+  ret i1 false
+}
+
 ; === M5.12: tc2 common runner helper ===
 ; Boolean reachability: is there any path from start to target in the
 ; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
@@ -1483,6 +1510,10 @@ as_bail:
 ; LLVM 21 disallows two definitions of the same function in one
 ; module, so the compile path picks one or the other (weak default
 ; or concrete substituted body) at template-rendering time.
+define weak i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
 define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
   ret i1 false
 }
@@ -1516,8 +1547,8 @@ stub_category_ancestor:
   ret i1 false
 
 stub_countdown_sum2:
-  ; M5: countdown_sum(N, Sum)
-  ret i1 false
+  %cds_r = call i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %cds_r
 
 stub_list_suffix2:
   ; M5: list_suffix(List, Suffix)
