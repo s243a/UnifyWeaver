@@ -29,13 +29,132 @@
 :- module(wam_haskell_target, [
     compile_wam_predicate_to_haskell/4,  % +Pred/Arity, +WamCode, +Options, -HaskellCode
     compile_wam_runtime_to_haskell/2,    % +Options, -HaskellCode
-    write_wam_haskell_project/3          % +Predicates, +Options, +ProjectDir
+    write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
+    wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
+    wam_haskell_lowerable/3,             % +PredIndicator, +WamCode, -Reason
+    wam_haskell_partition_predicates/4   % +Mode, +Predicates, -InterpretedList, -LoweredList
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+
+%% ============================================================================
+%% emit_mode selector (Phase 1 of WAM-lowered Haskell path)
+%% ============================================================================
+%%
+%% See docs/design/WAM_HASKELL_LOWERED_{PHILOSOPHY,SPECIFICATION,IMPLEMENTATION_PLAN}.md
+%%
+%% Three modes are recognised:
+%%   - interpreter          : every predicate compiles via the existing
+%%                            instruction-array interpreter path (default).
+%%   - functions            : every predicate attempts lowering to a
+%%                            standalone Haskell function. Any predicate
+%%                            that fails wam_haskell_lowerable/3 falls back
+%%                            to the interpreter automatically.
+%%   - mixed(HotPreds)      : the predicates named in HotPreds attempt
+%%                            lowering; the rest go to the interpreter.
+%%
+%% Selector hierarchy, checked in order:
+%%   1. emit_mode(Mode) option on the write_wam_haskell_project/3 call
+%%   2. user:wam_haskell_emit_mode(Mode) dynamic fact (if defined)
+%%   3. default: interpreter
+%%
+%% Phase 1 ships the plumbing only. wam_haskell_lowerable/3 is a stub that
+%% always fails, so all three modes route every predicate to the interpreter.
+%% Output is byte-identical to the pre-Phase-1 state. Real lowering starts
+%% in Phase 3 of the implementation plan.
+
+:- multifile user:wam_haskell_emit_mode/1.
+
+%% wam_haskell_resolve_emit_mode(+Options, -Mode)
+%  Resolve the emit_mode selector using the hierarchy above. Throws a
+%  domain_error on an unknown value.
+wam_haskell_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M0), Options)
+    ->  wam_haskell_validate_emit_mode(M0, Mode)
+    ;   catch(user:wam_haskell_emit_mode(M1), _, fail)
+    ->  wam_haskell_validate_emit_mode(M1, Mode)
+    ;   Mode = interpreter
+    ).
+
+wam_haskell_validate_emit_mode(interpreter, interpreter) :- !.
+wam_haskell_validate_emit_mode(functions, functions)     :- !.
+wam_haskell_validate_emit_mode(mixed(L), mixed(L)) :-
+    is_list(L), !.
+wam_haskell_validate_emit_mode(Other, _) :-
+    throw(error(domain_error(wam_haskell_emit_mode, Other),
+                wam_haskell_resolve_emit_mode/2)).
+
+%% wam_haskell_lowerable(+PredIndicator, +WamCode, -Reason)
+%  Phase 1 stub. True if PredIndicator can be lowered to a standalone
+%  Haskell function given its WamCode. Always fails in Phase 1 with
+%  Reason bound to "lowering emitter not yet implemented" — callers
+%  that want to know *why* a predicate could not be lowered should
+%  pre-bind Reason to a variable and inspect it on failure via
+%  catch/wrapper logic. In practice Phase 1 callers only check
+%  success/failure and log a partition summary.
+%
+%  Real lowerability check lands in Phase 3 of the implementation plan,
+%  at which point this stub is replaced with a per-instruction whitelist
+%  check against the WAM IR.
+wam_haskell_lowerable(_PredIndicator, _WamCode, "lowering emitter not yet implemented") :-
+    fail.
+
+%% wam_haskell_partition_predicates(+Mode, +Predicates, -InterpretedList, -LoweredList)
+%  Partition Predicates into the two sublists based on Mode and the
+%  lowerability check. In Phase 1, LoweredList is always empty because
+%  the stub always fails — but the partition machinery runs anyway so
+%  Phase 3+ can plug in without changing the call site in
+%  write_wam_haskell_project/3.
+wam_haskell_partition_predicates(interpreter, Predicates, Predicates, []) :- !.
+wam_haskell_partition_predicates(functions, Predicates, Interpreted, Lowered) :- !,
+    wam_haskell_partition_try_lower(Predicates, Interpreted, Lowered).
+wam_haskell_partition_predicates(mixed(HotPreds), Predicates, Interpreted, Lowered) :- !,
+    wam_haskell_partition_mixed(Predicates, HotPreds, Interpreted, Lowered).
+
+% functions mode: every predicate attempts lowering.
+wam_haskell_partition_try_lower([], [], []).
+wam_haskell_partition_try_lower([P|Rest], Interpreted, Lowered) :-
+    wam_haskell_predicate_wamcode(P, WamCode),
+    (   wam_haskell_lowerable(P, WamCode, _Reason)
+    ->  Lowered = [P|LR],
+        wam_haskell_partition_try_lower(Rest, Interpreted, LR)
+    ;   Interpreted = [P|IR],
+        wam_haskell_partition_try_lower(Rest, IR, Lowered)
+    ).
+
+% mixed(HotPreds) mode: predicates in HotPreds attempt lowering; rest are interpreted.
+wam_haskell_partition_mixed([], _, [], []).
+wam_haskell_partition_mixed([P|Rest], HotPreds, Interpreted, Lowered) :-
+    (   wam_haskell_indicator_in_list(P, HotPreds)
+    ->  wam_haskell_predicate_wamcode(P, WamCode),
+        (   wam_haskell_lowerable(P, WamCode, _Reason)
+        ->  Lowered = [P|LR],
+            wam_haskell_partition_mixed(Rest, HotPreds, Interpreted, LR)
+        ;   Interpreted = [P|IR],
+            wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+        )
+    ;   Interpreted = [P|IR],
+        wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+    ).
+
+% Handle both Module:Pred/Arity and Pred/Arity comparisons against HotPreds.
+wam_haskell_indicator_in_list(P, HotPreds) :-
+    member(P, HotPreds), !.
+wam_haskell_indicator_in_list(_Mod:Pred/Arity, HotPreds) :-
+    member(Pred/Arity, HotPreds), !.
+
+% Compile WAM code on demand for the lowerability check. In Phase 1 the
+% stub always fails, so this is unused in practice — but making it
+% available here means Phase 3 can reuse the same plumbing without
+% touching the partition predicates.
+wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
 
 % ============================================================================
 % Haskell WAM Runtime Data Types
@@ -972,6 +1091,17 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % Determine map backend: HashMap (faster) or Map (default fallback)
     option(use_hashmap(UseHM), Options, true),
 
+    % Resolve emit_mode and partition predicates accordingly. In Phase 1
+    % the stub wam_haskell_lowerable/3 always fails, so LoweredList is
+    % always empty and the generator's compile path is unchanged.
+    wam_haskell_resolve_emit_mode(Options, EmitMode),
+    wam_haskell_partition_predicates(EmitMode, Predicates, InterpretedList, LoweredList),
+    length(InterpretedList, NInterp),
+    length(LoweredList, NLower),
+    format(user_error,
+           '[WAM-Haskell] emit_mode=~w  interpreted=~w  lowered=~w~n',
+           [EmitMode, NInterp, NLower]),
+
     % Generate WamTypes.hs
     generate_wam_types_hs(TypesCode0),
     apply_hashmap_rewrite(UseHM, types, TypesCode0, TypesCode),
@@ -984,8 +1114,10 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'WamRuntime.hs', RuntimePath),
     write_hs_file(RuntimePath, RuntimeCode),
 
-    % Compile predicates
-    compile_predicates_to_haskell(Predicates, Options, PredsCode0),
+    % Compile the interpreted partition (Phase 1: this is always the full
+    % Predicates list, because LoweredList is always empty). Phase 2 emits
+    % Lowered.hs for the non-empty case.
+    compile_predicates_to_haskell(InterpretedList, Options, PredsCode0),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
