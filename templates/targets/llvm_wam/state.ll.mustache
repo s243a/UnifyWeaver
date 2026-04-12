@@ -1304,25 +1304,69 @@ bail:
   ret i1 false
 }
 
-; === M5.5 + M5.8: Foreign kernel impl default stub ===
-; The dispatcher's stub_transitive_distance3 case delegates to
-; @wam_td3_kernel_impl, passing the instance_id that was encoded in
-; the call_foreign instruction's op2. The default implementation
-; below returns false for any instance, so pure WAM modules behave
-; as if foreign dispatch is disabled.
+; === M5.9: wsp3 common runner helper ===
+; Parallels @wam_td3_run but wraps @wam_dijkstra_weighted_distance
+; (the M5.3 helper) instead of BFS. The concrete M5.9
+; @wam_wsp3_kernel_impl substituted body calls this with per-instance
+; (table, len, max_atom_id).
+;
+; Signature differences from @wam_td3_run:
+;   - %table is a %WeightedFact*, not %AtomFactPair*
+;   - the result slot is double*, not i64*
+;   - success writes A3 via @wam_set_reg_double, not @wam_set_reg_int
+define i1 @wam_wsp3_run(%WamState* %vm, %WeightedFact* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %wsp_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %wsp_s_is_atom = icmp eq i32 %wsp_s_tag, 0
+  br i1 %wsp_s_is_atom, label %wsp_check_t, label %wsp_bail
+
+wsp_check_t:
+  %wsp_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %wsp_t_is_atom = icmp eq i32 %wsp_t_tag, 0
+  br i1 %wsp_t_is_atom, label %wsp_run_dijkstra, label %wsp_bail
+
+wsp_run_dijkstra:
+  %wsp_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %wsp_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %wsp_dist_slot = alloca double
+  %wsp_ok = call i1 @wam_dijkstra_weighted_distance(
+      i64 %wsp_start_id, i64 %wsp_target_id,
+      %WeightedFact* %table, i64 %len,
+      i64 %max_atom_id,
+      double* %wsp_dist_slot)
+  br i1 %wsp_ok, label %wsp_hit, label %wsp_bail
+
+wsp_hit:
+  %wsp_dist = load double, double* %wsp_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %wsp_dist)
+  ret i1 true
+
+wsp_bail:
+  ret i1 false
+}
+
+; === M5.5 + M5.8 + M5.9: Foreign kernel impl default stubs ===
+; The dispatcher's stub_{transitive_distance3, weighted_shortest_path3}
+; cases delegate to @wam_td3_kernel_impl and @wam_wsp3_kernel_impl
+; respectively, passing the instance_id encoded in the call_foreign
+; instruction's op2. The default implementations below return false
+; for any instance, so pure WAM modules behave as if foreign dispatch
+; is disabled.
 ;
 ; When foreign_lowering is enabled, the compile pipeline emits a
-; non-default definition of this function in place of the default.
-; The substituted version contains a `switch i32 %instance` with one
-; case per registered foreign-lowered predicate, each with its own
-; baked-in edge table as a module-local private constant. This lets
-; multiple td3 predicates with *different* edge_preds coexist in one
-; module — each gets its own instance_id and its own edge table.
+; non-default definition of each relevant function in place of the
+; default. The substituted version contains a `switch i32 %instance`
+; with one case per registered foreign-lowered predicate, each with
+; its own baked-in table as a module-local private constant.
 ;
 ; LLVM 21 disallows two definitions of the same function in one
 ; module, so the compile path picks one or the other (weak default
 ; or concrete substituted body) at template-rendering time.
 define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
   ret i1 false
 }
 
@@ -1363,8 +1407,11 @@ stub_transitive_distance3:
   ret i1 %td3_r
 
 stub_weighted_shortest_path3:
-  ; M5: weighted_shortest_path(Start, End, Dist) via Dijkstra
-  ret i1 false
+  ; Delegate to the user-provided impl, passing the instance_id so
+  ; the concrete substituted body can dispatch to the right
+  ; per-predicate weighted-edge table.
+  %wsp_r = call i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %wsp_r
 
 stub_astar_shortest_path4:
   ; M5: astar_shortest_path(Start, End, Dim, Dist) via L_D norm A*
