@@ -23,6 +23,9 @@
     detect_recursive_kernel/4,       % +Pred, +Arity, +Clauses, -Kernel
     kernel_metadata/4,               % +Kernel, -NativeKind, -ResultLayout, -ResultMode
     kernel_config/2,                 % +Kernel, -ConfigOps
+    kernel_register_layout/2,        % +KernelKind, -RegisterSpecs
+    kernel_native_call/2,            % +KernelKind, -CallSpec
+    kernel_template_file/2,          % +KernelKind, -FileName
     registered_kernel/2              % -KernelKind, -Arity
 ]).
 
@@ -95,6 +98,64 @@ kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
 
 %% =====================================================================
+%% Register layout — describes input/output registers for each kernel
+%%
+%% Each register spec is one of:
+%%   input(RegN, atom)       — read register N, expect Atom, extract string
+%%   input(RegN, vlist_atoms) — read register N, expect VList, extract [String]
+%%   output(RegN, integer)   — bind result to register N as Integer
+%%   output(RegN, atom)      — bind result to register N as Atom
+%% =====================================================================
+
+kernel_register_layout(category_ancestor, [
+    input(1, atom),          % cat
+    input(2, atom),          % root
+    output(3, integer),      % hops (result)
+    input(4, vlist_atoms)    % visited
+]).
+
+kernel_register_layout(transitive_closure2, [
+    input(1, atom),          % source node
+    output(2, atom)          % target node (result)
+]).
+
+%% =====================================================================
+%% Native function call spec — how to assemble arguments for the kernel
+%%
+%% CallSpec = call(FuncName, ArgSpecs)
+%% ArgSpecs is an ordered list of:
+%%   config_facts(KeyAtom)        — Map.lookup KeyAtom (wcForeignFacts ctx)
+%%   config_facts_from(ConfigKey) — like config_facts but KeyAtom is read
+%%                                  from the kernel's config at generation time
+%%   reg(RegN)                    — the extracted value from register N
+%%   config_int(KeyAtom, Default) — integer from wcForeignConfig
+%%   derived(length, RegN)        — length of extracted list from register N
+%% =====================================================================
+
+kernel_native_call(category_ancestor,
+    call(nativeKernel_category_ancestor, [
+        config_facts_from(edge_pred),     % parents map (edge pred name from detection)
+        reg(1),                           % catS
+        reg(2),                           % rootS
+        config_int(max_depth, 10),        % maxD
+        derived(length, 4),               % length visitedStrs
+        reg(4)                            % visitedStrs
+    ])).
+
+kernel_native_call(transitive_closure2,
+    call(nativeKernel_transitive_closure, [
+        config_facts(edge_pred),          % edges map
+        reg(1)                            % source node
+    ])).
+
+%% =====================================================================
+%% Template file mapping — Mustache template for each kernel kind
+%% =====================================================================
+
+kernel_template_file(category_ancestor, 'kernel_category_ancestor.hs.mustache').
+kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache').
+
+%% =====================================================================
 %% Detector: category_ancestor
 %%
 %% Matches the shape:
@@ -114,10 +175,14 @@ kernel_expected_arity(transitive_closure2, 2).
 detect_category_ancestor(category_ancestor, 4, Clauses, Kernel) :-
     % Must have at least two clauses
     Clauses = [_|[_|_]],
-    % Find a base clause with \+ member and Hops=1
-    member(_-BaseBody, Clauses),
+    % Find a base clause with \+ member and a binary call (the edge pred)
+    member(BaseHead-BaseBody, Clauses),
     BaseBody \= true,
     sub_term(\+ member(_, _), BaseBody),
+    % Extract the edge predicate: the first binary call in the base clause
+    % that isn't member/2 and shares the first arg with the head.
+    BaseHead =.. [_, BaseCat|_],
+    find_edge_pred(BaseBody, BaseCat, EdgePred),
     % Find a recursive clause with \+ member and Hops is _ + 1
     member(_-RecBody, Clauses),
     RecBody \= true,
@@ -130,7 +195,21 @@ detect_category_ancestor(category_ancestor, 4, Clauses, Kernel) :-
     integer(MaxDepth),
     MaxDepth > 0,
     Kernel = recursive_kernel(category_ancestor, category_ancestor/4,
-                              [max_depth(MaxDepth)]).
+                              [max_depth(MaxDepth), edge_pred(EdgePred/2)]).
+
+%% find_edge_pred(+Body, +HeadArg1, -EdgePredName)
+%  Find the binary predicate call in Body whose first arg unifies with
+%  HeadArg1 (the "category" argument). This is the edge predicate.
+find_edge_pred((A, _), HeadArg, EdgePred) :-
+    find_edge_pred(A, HeadArg, EdgePred), !.
+find_edge_pred((_, B), HeadArg, EdgePred) :-
+    find_edge_pred(B, HeadArg, EdgePred), !.
+find_edge_pred(Goal, HeadArg, EdgePred) :-
+    Goal \= (_ , _),
+    Goal \= (\+ _),
+    Goal =.. [EdgePred, Arg1, _],
+    EdgePred \= member,
+    Arg1 == HeadArg.
 
 %% =====================================================================
 %% Detector: transitive_closure (binary edge relation)
