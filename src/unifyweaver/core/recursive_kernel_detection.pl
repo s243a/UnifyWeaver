@@ -144,7 +144,7 @@ kernel_native_call(category_ancestor,
 
 kernel_native_call(transitive_closure2,
     call(nativeKernel_transitive_closure, [
-        config_facts(edge_pred),          % edges map
+        config_facts_from(edge_pred),     % edges map (edge pred name from detection)
         reg(1)                            % source node
     ])).
 

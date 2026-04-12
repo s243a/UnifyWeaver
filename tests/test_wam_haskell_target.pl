@@ -163,9 +163,60 @@ test_parameterized_render_kernel_function :-
     ;   fail_test(Test, 'render_kernel_function failed for category_ancestor')
     ).
 
+test_transitive_closure_kernel_function :-
+    Test = 'WAM-Haskell: transitive_closure2 kernel template renders',
+    Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
+    (   wam_haskell_target:render_kernel_function('closure/2'-Kernel, Code),
+        sub_string(Code, _, _, _, "nativeKernel_transitive_closure"),
+        sub_string(Code, _, _, _, "Map.Map String [String] -> String -> [String]"),
+        %% edge_pred placeholder resolved
+        sub_string(Code, _, _, _, "Edge predicate: edge")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_closure2 template rendering failed')
+    ).
+
+test_transitive_closure_execute_foreign :-
+    Test = 'WAM-Haskell: transitive_closure2 executeForeign generated',
+    Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
+    (   wam_haskell_target:generate_execute_foreign(['closure/2'-Kernel], Code),
+        %% Dispatch on predicate indicator
+        sub_string(Code, _, _, _, "executeForeign !ctx \"closure/2\" s ="),
+        %% Single input register (reg 1)
+        sub_string(Code, _, _, _, "IM.lookup 1 (wsRegs s)"),
+        %% config_facts_from resolved to edge pred name
+        sub_string(Code, _, _, _, "edge_facts"),
+        %% Native call with correct args
+        sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts r1S"),
+        %% Output is atom (not integer)
+        sub_string(Code, _, _, _, "Atom rv"),
+        %% Single-input case pattern (not tuple)
+        sub_string(Code, _, _, _, "case r1 of"),
+        sub_string(Code, _, _, _, "Atom r1S ->")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_closure2 executeForeign generation failed')
+    ).
+
+test_multi_kernel_execute_foreign :-
+    Test = 'WAM-Haskell: executeForeign with multiple kernels',
+    K1 = recursive_kernel(category_ancestor, 'category_ancestor'/4, [max_depth(10), edge_pred(category_parent/2)]),
+    K2 = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
+    (   wam_haskell_target:generate_execute_foreign(
+            ['category_ancestor/4'-K1, 'closure/2'-K2], Code),
+        %% Both dispatch entries present
+        sub_string(Code, _, _, _, "executeForeign !ctx \"category_ancestor/4\""),
+        sub_string(Code, _, _, _, "executeForeign !ctx \"closure/2\""),
+        %% Both native calls present
+        sub_string(Code, _, _, _, "nativeKernel_category_ancestor"),
+        sub_string(Code, _, _, _, "nativeKernel_transitive_closure"),
+        %% Fallback
+        sub_string(Code, _, _, _, "executeForeign _ _ _ = Nothing")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Multi-kernel executeForeign generation failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -176,6 +227,9 @@ run_tests :-
     test_parameterized_execute_foreign_category_ancestor,
     test_parameterized_execute_foreign_empty,
     test_parameterized_render_kernel_function,
+    test_transitive_closure_kernel_function,
+    test_transitive_closure_execute_foreign,
+    test_multi_kernel_execute_foreign,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
