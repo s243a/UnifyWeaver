@@ -9210,7 +9210,8 @@ extract_rust_pred_name(Name/_Arity, NameStr) :-
 
 %% generate_rust_stage_functions(+Predicates, -Code)
 %  Generate pipeline stage implementations when a predicate matches a
-%  supported lowering shape, otherwise fall back to a placeholder.
+%  supported lowering shape, otherwise emit an explicit unsupported-stage
+%  failure so generated pipelines do not silently pass data through.
 generate_rust_stage_functions([], "").
 generate_rust_stage_functions([PredIndicator|Rest], Code) :-
     generate_rust_stage_function(PredIndicator, StageCode),
@@ -9224,11 +9225,11 @@ generate_rust_stage_function(PredIndicator, StageCode) :-
     ;   format(string(StageCode),
 "/// Stage: ~w
 fn stage_~w(input: Vec<HashMap<String, Value>>) -> Vec<HashMap<String, Value>> {
-    // TODO: Implement stage logic
-    input
+    let _ = input;
+    panic!(\"unsupported Rust pipeline stage: ~w\");
 }
 
-", [Name, Name])
+", [Name, Name, Name])
     ).
 
 rust_pipeline_stage_code(PredIndicator, Name, StageCode) :-
@@ -11534,11 +11535,11 @@ generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     format(string(Code),
 "/// Pipeline stage: ~w/~w
 fn ~w(input: &[Record]) -> Vec<Record> {
-    // TODO: Implement based on predicate bindings
-    input.to_vec()
+    let _ = input;
+    panic!(\"unsupported Rust enhanced pipeline stage: ~w/~w\");
 }
 
-", [Pred, Arity, Pred]).
+", [Pred, Arity, Pred, Pred, Arity]).
 generate_rust_single_enhanced_stage(_, "").
 
 %% generate_rust_enhanced_connector(+Stages, +PipelineName, -Code)
