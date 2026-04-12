@@ -14,6 +14,9 @@ Current status:
 - an internal SCC-condensed weighted-min candidate now exists for
   positive-additive `PathAwareAccumulationNode` workloads, with bounded
   measured selection against the existing layered dynamic-programming path
+- the additive fast-path boundary now includes non-negative steps, so
+  zero-cost source weights no longer force the exact visited-state frontier
+  fallback when the additive form is otherwise safe and depth-bounded
 - on the current positive-additive benchmark shape, the measured selector
   rejects SCC condensation because the layered path is still cheaper after
   SCC build/probe overhead
@@ -90,25 +93,28 @@ Deliverable:
 
 ## Phase 3: Strategy Selection
 
-Status: implemented for the positive-additive candidate path with bounded
+Status: implemented for additive non-negative candidate paths with bounded
 measured probes.
 
 Add a runtime applicability check:
 
 - use SCC-condensed strategy when safe and the bounded probe beats the
-  layered positive-min path by a margin
+  layered additive-min path by a margin
 - otherwise fall back to current exact frontier
 
 Current selection boundary:
 
-- use the layered dynamic-programming fast path for strictly positive
-  additive `min` unless the SCC-condensed measured probe wins
+- strictly positive additive `Min` keeps the existing positive layered/SCC
+  measured path
+- non-negative additive `Min` now uses the same depth-bounded layered/SCC
+  measured candidate and reports separate non-negative trace labels
 - use the exact frontier fallback otherwise
 
 Next selection work:
 
-- determine where SCC-condensed evaluation can replace the non-positive
-  frontier fallback safely
+- determine whether any remaining non-additive or negative-step frontier
+  fallback shapes can be summarized safely without losing exact simple-path
+  semantics
 
 Deliverable:
 
@@ -207,7 +213,7 @@ That step is now complete.
 
 The next coding step should be:
 
-1. identify weighted `Min` recurrence shapes not covered by the current
-   positive-additive fast path
-2. prototype SCC-condensed evaluation for one of those broader cases
+1. identify weighted `Min` recurrence shapes still not covered by the current
+   non-negative additive fast path
+2. prototype a safe summarized evaluation for one of those broader cases
 3. benchmark it against the exact frontier fallback
