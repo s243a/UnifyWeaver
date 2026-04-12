@@ -1433,6 +1433,35 @@ fn test_generated_predicates() {
         ("goal_bucket".to_string(), 8.0),
     ]);
 
+    let mut vm_grouped_bucketed_weighted_reverse = WamState::new(vec![], std::collections::HashMap::new());
+    let ok67b = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted_reverse,
+        Value::Unbound("GroupedAnyStart".to_string()),
+        Value::Unbound("GroupedAnyStartBucket".to_string()),
+        Value::Unbound("GroupedAnyStartMin".to_string()));
+    assert!(ok67b, "grouped_bucketed_min_semantic_dist(Start, Bucket, Min) first grouped result should succeed");
+    assert!(vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStart").is_none(), "grouped aggregate wrapper should not bind existential Start");
+    let mut grouped_bucketed_weighted_reverse_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartBucket").cloned(), vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartMin").cloned()) {
+        grouped_bucketed_weighted_reverse_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist(Start, Bucket, Min) result");
+    }
+    while vm_grouped_bucketed_weighted_reverse.backtrack() {
+        assert!(vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStart").is_none(), "grouped aggregate wrapper should not bind existential Start on backtracking");
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartBucket").cloned(), vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartMin").cloned()) {
+            grouped_bucketed_weighted_reverse_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist(Start, Bucket, Min) backtrack result");
+        }
+    }
+    grouped_bucketed_weighted_reverse_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_weighted_reverse_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 4.0),
+    ]);
+
     let mut vm_grouped_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok68 = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted_exact,
         Value::Atom("s".to_string()),
@@ -1478,6 +1507,36 @@ fn test_generated_predicates() {
     assert_eq!(grouped_bucketed_astar_results, vec![
         ("branch_bucket".to_string(), 4.0),
         ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_grouped_bucketed_astar_reverse = WamState::new(vec![], std::collections::HashMap::new());
+    let ok70b = grouped_bucketed_min_semantic_dist_astar(&mut vm_grouped_bucketed_astar_reverse,
+        Value::Unbound("GroupedAStarAnyStart".to_string()),
+        Value::Unbound("GroupedAStarAnyStartBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarAnyStartMin".to_string()));
+    assert!(ok70b, "grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) first grouped result should succeed");
+    assert!(vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStart").is_none(), "grouped A* aggregate wrapper should not bind existential Start");
+    let mut grouped_bucketed_astar_reverse_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartBucket").cloned(), vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartMin").cloned()) {
+        grouped_bucketed_astar_reverse_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) result");
+    }
+    while vm_grouped_bucketed_astar_reverse.backtrack() {
+        assert!(vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStart").is_none(), "grouped A* aggregate wrapper should not bind existential Start on backtracking");
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartBucket").cloned(), vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartMin").cloned()) {
+            grouped_bucketed_astar_reverse_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) backtrack result");
+        }
+    }
+    grouped_bucketed_astar_reverse_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_astar_reverse_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 4.0),
     ]);
 
     let mut vm_grouped_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
