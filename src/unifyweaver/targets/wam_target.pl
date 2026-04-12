@@ -621,6 +621,13 @@ is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
 is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
+is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
+                             % Without this entry, X = Y in a body goal
+                             % would compile to `execute =/2`, which looks
+                             % up "=/2" as a user predicate, misses, and
+                             % resolves to PC=0 at runtime — silently
+                             % re-entering the project's first predicate
+                             % and corrupting execution state.
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-

@@ -202,8 +202,103 @@ the previous cross-predicate blocker had been masking:
   implementations do.
 
 Both are orthogonal to Group A, orthogonal to cross-predicate
-labels, and orthogonal to each other. They are new tracked items in
-§8.
+labels, and orthogonal to each other.
+
+### 4.5a Post-commit update: =/2 + type checks + constant tag encoding landed
+
+Branch `feat/wam-unify-and-type-checks` fixes both blockers from
+§4.5 plus a third one surfaced during investigation:
+
+  **(1) `=/2` routed through the canonical builtin pipeline.**
+  `is_builtin_pred(=, 2)` is added to `wam_target.pl`, so the
+  canonical WAM compiler now emits `builtin_call =/2, 2` for body
+  goals of the form `X = Y`. A new WAM-WAT builtin ID 22 (`=/2`)
+  is wired into the `br_table` at its own `$eq` block and
+  dispatches to the existing `$unify_regs A1 A2` helper — which
+  handles both unbound-on-either-side and shallow bound-bound
+  equality.
+
+  **(2) Type checks 9–14 implemented in the br_table.** The six
+  `$default` slots for IDs 9–14 in `$execute_builtin` are
+  replaced by real handlers (`$var`, `$nonvar`, `$atom`,
+  `$integer`, `$float`, `$number`) that inspect A1's runtime tag.
+  Integer/1 returns `tag == 1`, atom/1 returns `tag == 0`, and so
+  on. Direct tag compare, no deref through refs.
+
+  **(3) Constant tag encoding for put_constant / get_constant /
+  set_constant / unify_constant.** Before this fix, all four
+  constant-using instructions encoded the value unconditionally
+  with runtime tag=0 (atom), regardless of whether the source
+  constant was an atom, integer, or float. `put_constant 42, A1`
+  stored A1 as `atom(42)` not `integer(42)`, so `integer(42)`
+  would legitimately return 0 even with the type-check dispatch
+  in place — the real bug was in encoding, not dispatch. The fix
+  adds `encode_constant_with_tag/3` which returns both a
+  value-cell tag hint (0/1/2 for atom/integer/float) and the
+  payload; the four instruction encoders pack this tag into
+  `op2`'s high 32 bits (or directly in op2 for set/unify_constant
+  which don't need a reg idx), and the runtime handlers extract
+  it via `i64.shr_u`. `encode_constant_with_tag/3` also properly
+  handles the case where the canonical WAM layer hands constants
+  down as strings (`"42"`) rather than typed Prolog terms —
+  previously these hit the catch-all clause and encoded as 0,
+  meaning every string constant was stored as `atom("")`.
+
+Validation: five new assertions in `test_wam_wat_target.pl`:
+
+  - `eq_builtin_id_registered` — codegen: `=/2` is in the builtin
+    table at ID 22 and the canonical WAM recognizes `=` as builtin
+  - `eq_dispatch_in_br_table` — codegen: `$eq` block is present in
+    the emitted helpers and dispatches to `$unify_regs A1 A2`
+  - `constant_tag_encoded_in_op2` — codegen: verifies
+    `put_constant(integer(42), A1)` emits byte 16 = 0x01 (tag=1 =
+    integer in op2's high 32 bits' low byte)
+  - `functional_integer_type_check` — runtime: `integer(42)`
+    returns 1 via wat2wasm + node
+  - `functional_atom_type_check_fail` — runtime (negative):
+    `atom(42)` returns 0, proving dispatch distinguishes tags
+    rather than unconditionally returning 1
+
+All five pass. All 57 WAM-WAT tests pass.
+
+### 4.5b Still blocked: Y/A register variable aliasing
+
+Attempting to run `sum_ints` end-to-end after landing §4.5a
+reveals a **deeper pre-existing WAM-WAT runtime bug** that was
+masked by the earlier blockers. `put_variable Xn, Ai` creates two
+independent `Unbound` cells in registers `Xn` and `Ai`, each with
+`payload = xn_idx`, rather than aliasing both registers to a
+single heap reference cell as a standard WAM implementation would.
+
+Consequences observed:
+
+  - When a callee binds `Ai` via `set_reg`, the caller's `Xn`
+    stays unbound — the binding does not propagate back.
+  - `X = Y` within a single clause appears to succeed for any
+    pair of values: the first `=/2` binds A1 (from a temporarily
+    unbound Xn copy), the next `put_value Xn, A1` copies the
+    stale unbound Xn back into A1, and the next `=/2` binds A1
+    again to whatever RHS it sees. Test probe:
+    `unify_ok :- X = 42, X = 42` and
+    `unify_fail :- X = 42, X = 99` both return 1 (both "succeed")
+    — clear evidence that X does not retain its binding across
+    the two body goals.
+  - `sum_ints(f(1, g(2, 3), 4), 0, Sum)` returns "success" but
+    `Sum = 10` and `Sum = 999` BOTH unify successfully against
+    the output, proving Sum was never actually computed. The
+    predicate short-circuits via the buggy path rather than
+    walking the term.
+
+Proper fix: implement heap-allocated variable cells + binding
+through refs. Each `put_variable Xn, Ai` should allocate one heap
+cell (tag=6, unbound) at address H, and both Xn and Ai should
+hold `Ref(H)`. When a binding occurs, `val_store` updates the
+heap cell at H; deref from either register reaches the shared
+cell. Trail bindings record the heap address, not the register
+index.
+
+This is a substantially larger refactor and is out of scope for
+`feat/wam-unify-and-type-checks`. Tracked as a new follow-up in §8.
 
 ### 4.6 WAM-Rust port status
 
@@ -361,16 +456,24 @@ future refactor breaks the shared `HashMap` threading.
 - **Cross-predicate label resolution in WAM-Rust** — still pending
   (§4.6). Larger refactor than the WAT case due to the per-predicate
   `pub fn` architecture; needs a module-level shared CODE/LABELS.
-- **Type-check builtin handlers** for IDs 9–14 (`var/1`, `nonvar/1`,
-  `atom/1`, `integer/1`, `float/1`, `number/1`) in WAM-WAT's
-  `$execute_builtin` br_table. Currently all fall through to
-  `$default` which returns 0. Blocks any benchmark with a type
-  guard on its happy path — including the `sum_ints` walker.
-- **`=/2` lowering** in the canonical WAM compiler — currently
-  emits `execute =/2` which is not a recognized builtin and
-  resolves to PC=0 at runtime, corrupting execution. Should lower
-  to `get_value` / `unify_value` instructions directly, as
-  standard WAM implementations do.
+- **~~Type-check builtin handlers~~** for IDs 9–14 (`var/1`,
+  `nonvar/1`, `atom/1`, `integer/1`, `float/1`, `number/1`) —
+  **landed in `feat/wam-unify-and-type-checks`**. See §4.5a.
+- **~~`=/2` lowering~~** in the canonical WAM compiler — **landed
+  in `feat/wam-unify-and-type-checks`**. `is_builtin_pred(=, 2)`
+  is now in `wam_target.pl`; WAM-WAT builtin ID 22 dispatches to
+  `$unify_regs A1 A2`. See §4.5a.
+- **Y/A register variable aliasing** in WAM-WAT — new blocker
+  surfaced by §4.5b. Put_variable creates two independent unbound
+  cells instead of aliasing both registers to one heap cell, so
+  bindings don't propagate from A_i back to Y_n. Proper fix:
+  heap-allocated variable cells with binding through refs.
+  Blocks real sum_ints execution.
+- **Real `is/2` arithmetic evaluation** in WAM-WAT — currently a
+  stub that only copies A2 to A1 if A2 is already an integer, so
+  `N1 is N - 1` (compound RHS) always fails. Needs a recursive
+  evaluator over the arithmetic AST built from `put_structure +/2`
+  + `set_value`/`set_constant` cells on the heap.
 - **If-then-else lowering hang** in the canonical WAM compiler on
   hybrid backends — would remove the need for cut-style rewrites of
   benchmark predicates.
