@@ -82,7 +82,7 @@
 % Native clause body lowering (shared analysis infrastructure)
 :- use_module('../core/clause_body_analysis', except([translate_expr/3])).
 
-:- use_module('../core/semantic_compiler').
+:- use_module('../core/semantic_compiler', except([is_semantic_predicate/1])).
 
 %% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 %  Target-specific implementation for semantic search.
@@ -1055,8 +1055,6 @@ compile_unix_socket_service_rust(service(Name, Options, HandlerSpec), RustCode) 
         StructName = [First|Rest]
     ),
     atom_codes(StructNameAtom, StructName),
-    % Generate upper case name for static
-    atom_codes(UpperName, StructName),
     upcase_atom(Name, UpperAtom),
     % Generate the Unix socket service
     ( Stateful = true ->
@@ -2789,9 +2787,8 @@ generate_cluster_nodes_rust(Nodes, Code) :-
     maplist(generate_node_init_rust, Nodes, NodeCodes),
     atomic_list_concat(NodeCodes, '\n', Code).
 
-generate_node_init_rust(node(Id, Host, Port), Code) :-
+generate_node_init_rust(node(Id, _Host, _Port), Code) :-
     atom_string(Id, IdStr),
-    atom_string(Host, HostStr),
     format(string(Code), "// Node ~w initialization would happen here", [IdStr]).
 generate_node_init_rust(_, "// Unknown node format").
 
@@ -4087,7 +4084,7 @@ extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
     IsGoal =.. [is, Cost, PlusExpr],
     PlusExpr =.. [+, W, RestCost],
     !.
-extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
+extract_weighted_rec_body(Pred, WeightPred, Start, _Target, _Cost, Body) :-
     % 4-arity visited form: Pred(X, Y, Visited, Cost) recursion
     Body = (WeightGoal, Rest),
     WeightGoal =.. [WeightPred, Start, _Mid, _W],
@@ -5599,7 +5596,7 @@ compile_rust_recursive_aggregate(Pred, Goal, InnerPred, InnerArity, GoalArgs, Op
     ->  compile_rust_recursive_tc_aggregate(Pred, InnerPred, InnerArity, Op, ValueIndex, Clauses, IncludeMain, RustCode)
     ).
 
-compile_rust_grouped_recursive_aggregate(Pred, Goal, InnerPred, InnerArity, GoalArgs, GroupTerm, Op, ValueIndex, IncludeMain, RustCode) :-
+compile_rust_grouped_recursive_aggregate(Pred, _Goal, InnerPred, InnerArity, GoalArgs, GroupTerm, Op, ValueIndex, IncludeMain, RustCode) :-
     functor(InnerHead, InnerPred, InnerArity),
     findall(InnerHead-InnerBody, user:clause(InnerHead, InnerBody), Clauses),
     Clauses \= [],
@@ -7381,7 +7378,7 @@ compile_db_read_mode_rust(Pred, Arity, DbFile, DbTree, KeyStrategy, KeyDelim, Un
     ),
 
     % Determine optimization type
-    (   Clauses = [SingleHead-SingleBody], SingleBody \= true,
+    (   Clauses = [_SingleHead-SingleBody], SingleBody \= true,
         extract_db_constraints_rust(SingleBody, Constraints),
         Constraints \= [],
         can_use_rust_optimization(KeyStrategy, Constraints, IndexedFields, OptType, OptDetails)
@@ -7927,6 +7924,8 @@ step_op_to_rust(add_element, "result += item").
 step_op_to_rust(add_1, "result += 1").
 step_op_to_rust(mult_element, "result *= item").
 step_op_to_rust(sub_element, "result -= item").
+step_op_to_rust(arithmetic(Expr), RustExpr) :- tail_expr_to_rust(Expr, RustExpr).
+step_op_to_rust(unknown, 'acc + 1').
 
 %% can_compile_tail_recursion_rust(+Pred/Arity)
 can_compile_tail_recursion_rust(Pred/Arity) :-
@@ -9207,6 +9206,11 @@ fn write_jsonl_stream(records: &[HashMap<String, Value>]) {
 extract_rust_stage_names([], []).
 extract_rust_stage_names([Pred|Rest], [Name|RestNames]) :-
     extract_rust_pred_name(Pred, Name),
+    extract_rust_stage_names(Rest, RestNames).
+extract_rust_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
+    !,
+    extract_rust_stage_names(Rest, RestNames).
+extract_rust_stage_names([_|Rest], RestNames) :-
     extract_rust_stage_names(Rest, RestNames).
 
 extract_rust_pred_name(_Target:Name/_Arity, NameStr) :-
@@ -12186,15 +12190,6 @@ format_rust_option_field(Opt, Field) :-
     % Fallback for unknown options
     format(string(Field), "/* Unknown option: ~w */", [Opt]).
 
-%% extract_rust_stage_names(+Stages, -Names)
-%  Extract function names from stage specifications.
-extract_rust_stage_names([], []).
-extract_rust_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
-    !,
-    extract_rust_stage_names(Rest, RestNames).
-extract_rust_stage_names([_|Rest], RestNames) :-
-    extract_rust_stage_names(Rest, RestNames).
-
 %% extract_rust_stage_name(+Stage, -Name)
 %  Extract function name from a single stage specification.
 extract_rust_stage_name(Pred/_, Pred) :- atom(Pred), !.
@@ -13548,9 +13543,6 @@ fn main() {
 ', [PredStr, Arity, PredStr, PredStr])
     ;   fail
     ).
-
-step_op_to_rust(arithmetic(Expr), RustExpr) :- tail_expr_to_rust(Expr, RustExpr).
-step_op_to_rust(unknown, 'acc + 1').
 
 tail_expr_to_rust(_ + Const, RustExpr) :- integer(Const), !, format(atom(RustExpr), 'acc + ~w', [Const]).
 tail_expr_to_rust(_ + _, 'acc + item') :- !.
