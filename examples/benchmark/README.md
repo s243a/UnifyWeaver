@@ -937,10 +937,10 @@ Latest local results:
 
 | Scale | All | Min | Speedup | Output Match |
 |-------|-----|-----|---------|--------------|
-| 300 | 0.627s | 0.184s | 3.41x | match |
-| 1k | 0.440s | 0.139s | 3.17x | match |
-| 5k | 1.188s | 0.236s | 5.03x | match |
-| 10k | 2.930s | 0.419s | 6.98x | match |
+| 300 | 0.797s | 0.272s | 2.93x | match |
+| 1k | 0.603s | 0.230s | 2.62x | match |
+| 5k | 1.623s | 0.356s | 4.56x | match |
+| 10k | 3.881s | 0.568s | 6.84x | match |
 
 The same run also reports SCC metrics for the category graph. At `10k`
 the graph has:
@@ -954,6 +954,16 @@ the graph has:
 That matters because it suggests the remaining hard cyclic structure is
 small and localized, which is favorable for future SCC-condensed
 strategies on broader weighted `Min` workloads.
+
+The runtime now also exposes SCC-condensed weighted-min planning through
+trace metrics. For positive-additive `Min`, SCC condensation is a measured
+candidate rather than an unconditional replacement for the layered dynamic
+programming path. Current trace output includes `phase_scc_condense_graph_ms`,
+`phase_scc_probe_condensed_ms`, `phase_scc_probe_positive_layered_ms`,
+`metric_scc_count`, `metric_scc_condensed_edge_count`,
+`metric_scc_probe_local_states_explored`, and
+`metric_scc_probe_outer_dag_states_explored`; on the current benchmark
+shape the selector keeps the layered path when the SCC probe is slower.
 
 ### Available Targets
 

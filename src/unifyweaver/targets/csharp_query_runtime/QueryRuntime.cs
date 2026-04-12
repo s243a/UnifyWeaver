@@ -683,6 +683,13 @@ namespace UnifyWeaver.QueryRuntime
         TimeSpan Elapsed
     );
 
+    public sealed record QueryMetricTrace(
+        int NodeId,
+        string NodeType,
+        string Metric,
+        double Value
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -736,6 +743,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
         private readonly List<QueryFixpointIterationTrace> _fixpointIterations = new();
         private readonly Dictionary<(PlanNode Node, string Phase), TimeSpan> _phases = new(new PlanNodeStrategyComparer());
+        private readonly Dictionary<(PlanNode Node, string Metric), double> _metrics = new(new PlanNodeStrategyComparer());
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -875,6 +883,32 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        internal void RecordMetric(PlanNode node, string metric, double value)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (metric is null) throw new ArgumentNullException(nameof(metric));
+
+            _ = GetOrAdd(node);
+            _metrics[(node, metric)] = value;
+        }
+
+        internal void AddMetric(PlanNode node, string metric, double value)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (metric is null) throw new ArgumentNullException(nameof(metric));
+
+            _ = GetOrAdd(node);
+            var key = (node, metric);
+            if (_metrics.TryGetValue(key, out var existing))
+            {
+                _metrics[key] = existing + value;
+            }
+            else
+            {
+                _metrics.Add(key, value);
+            }
+        }
+
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
@@ -985,6 +1019,23 @@ namespace UnifyWeaver.QueryRuntime
                 })
                 .OrderBy(s => s.NodeId)
                 .ThenBy(s => s.Phase, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryMetricTrace> SnapshotMetrics()
+        {
+            return _metrics
+                .Select(kvp =>
+                {
+                    var node = kvp.Key.Node;
+                    return new QueryMetricTrace(
+                        GetOrAdd(node).Id,
+                        node.GetType().Name,
+                        kvp.Key.Metric,
+                        kvp.Value);
+                })
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Metric, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -1503,6 +1554,54 @@ namespace UnifyWeaver.QueryRuntime
 
         public IReadOnlyList<object?> Seeds { get; }
     }
+
+    internal sealed class PathAwareSccGraph
+    {
+        public PathAwareSccGraph(
+            IReadOnlyDictionary<object, int> componentByNode,
+            int nodeCount,
+            int edgeCount,
+            int componentCount,
+            int cyclicComponentCount,
+            int largestComponentSize,
+            int largestCyclicComponentSize,
+            int condensedEdgeCount)
+        {
+            ComponentByNode = componentByNode;
+            NodeCount = nodeCount;
+            EdgeCount = edgeCount;
+            ComponentCount = componentCount;
+            CyclicComponentCount = cyclicComponentCount;
+            LargestComponentSize = largestComponentSize;
+            LargestCyclicComponentSize = largestCyclicComponentSize;
+            CondensedEdgeCount = condensedEdgeCount;
+        }
+
+        public IReadOnlyDictionary<object, int> ComponentByNode { get; }
+
+        public int NodeCount { get; }
+
+        public int EdgeCount { get; }
+
+        public int ComponentCount { get; }
+
+        public int CyclicComponentCount { get; }
+
+        public int LargestComponentSize { get; }
+
+        public int LargestCyclicComponentSize { get; }
+
+        public int CondensedEdgeCount { get; }
+    }
+
+    internal readonly record struct SccCondensedWeightedMinStats(
+        long LocalStatesExplored,
+        long OuterDagStatesExplored,
+        long QueuePops);
+
+    internal readonly record struct SccCondensedWeightedMinProbe(
+        TimeSpan Elapsed,
+        SccCondensedWeightedMinStats Stats);
 
     public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
     {
@@ -10927,6 +11026,222 @@ namespace UnifyWeaver.QueryRuntime
             return nodes.Count;
         }
 
+        private static PathAwareSccGraph BuildPathAwareSccGraph(IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            var adjacency = new Dictionary<object, List<object>>();
+            var edgeCount = 0;
+
+            void EnsureNode(object key)
+            {
+                if (!adjacency.ContainsKey(key))
+                {
+                    adjacency[key] = new List<object>();
+                }
+            }
+
+            foreach (var (sourceKey, bucket) in succIndex)
+            {
+                EnsureNode(sourceKey);
+                foreach (var target in bucket.Targets)
+                {
+                    var targetKey = target ?? NullFactIndexKey;
+                    EnsureNode(targetKey);
+                    adjacency[sourceKey].Add(targetKey);
+                    edgeCount++;
+                }
+            }
+
+            var index = 0;
+            var indexByNode = new Dictionary<object, int>();
+            var lowLink = new Dictionary<object, int>();
+            var onStack = new HashSet<object>();
+            var stack = new Stack<object>();
+            var componentByNode = new Dictionary<object, int>();
+            var componentSizes = new List<int>();
+            var componentHasSelfLoop = new List<bool>();
+
+            void StrongConnect(object node)
+            {
+                indexByNode[node] = index;
+                lowLink[node] = index;
+                index++;
+                stack.Push(node);
+                onStack.Add(node);
+
+                foreach (var next in adjacency[node])
+                {
+                    if (!indexByNode.ContainsKey(next))
+                    {
+                        StrongConnect(next);
+                        lowLink[node] = Math.Min(lowLink[node], lowLink[next]);
+                    }
+                    else if (onStack.Contains(next))
+                    {
+                        lowLink[node] = Math.Min(lowLink[node], indexByNode[next]);
+                    }
+                }
+
+                if (lowLink[node] != indexByNode[node])
+                {
+                    return;
+                }
+
+                var componentId = componentSizes.Count;
+                var size = 0;
+                var hasSelfLoop = false;
+                while (true)
+                {
+                    var member = stack.Pop();
+                    onStack.Remove(member);
+                    componentByNode[member] = componentId;
+                    size++;
+                    foreach (var next in adjacency[member])
+                    {
+                        if (Equals(next, member))
+                        {
+                            hasSelfLoop = true;
+                            break;
+                        }
+                    }
+
+                    if (Equals(member, node))
+                    {
+                        break;
+                    }
+                }
+
+                componentSizes.Add(size);
+                componentHasSelfLoop.Add(hasSelfLoop);
+            }
+
+            foreach (var node in adjacency.Keys.OrderBy(key => key, Comparer<object>.Create(CompareCacheSeedValues)))
+            {
+                if (!indexByNode.ContainsKey(node))
+                {
+                    StrongConnect(node);
+                }
+            }
+
+            var condensedEdges = new HashSet<(int From, int To)>();
+            foreach (var (sourceKey, targets) in adjacency)
+            {
+                var sourceComponent = componentByNode[sourceKey];
+                foreach (var targetKey in targets)
+                {
+                    var targetComponent = componentByNode[targetKey];
+                    if (sourceComponent != targetComponent)
+                    {
+                        condensedEdges.Add((sourceComponent, targetComponent));
+                    }
+                }
+            }
+
+            var cyclicComponentCount = 0;
+            var largestComponentSize = 0;
+            var largestCyclicComponentSize = 0;
+            for (var componentId = 0; componentId < componentSizes.Count; componentId++)
+            {
+                var size = componentSizes[componentId];
+                largestComponentSize = Math.Max(largestComponentSize, size);
+                var cyclic = size > 1 || componentHasSelfLoop[componentId];
+                if (!cyclic)
+                {
+                    continue;
+                }
+
+                cyclicComponentCount++;
+                largestCyclicComponentSize = Math.Max(largestCyclicComponentSize, size);
+            }
+
+            return new PathAwareSccGraph(
+                componentByNode,
+                adjacency.Count,
+                edgeCount,
+                componentSizes.Count,
+                cyclicComponentCount,
+                largestComponentSize,
+                largestCyclicComponentSize,
+                condensedEdges.Count);
+        }
+
+        private static bool ShouldUseSccCondensedPositiveMin(PathAwareSccGraph graph, int maxDepth)
+        {
+            const int MaxCyclicComponentSize = 128;
+            return maxDepth > 0 &&
+                graph.CyclicComponentCount > 0 &&
+                graph.LargestCyclicComponentSize <= MaxCyclicComponentSize;
+        }
+
+        private const double SccCondensedProbeWinMargin = 0.50d;
+
+        private static bool ResolveMeasuredSccCondensedPositiveMinStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string strategyPrefix,
+            PathAwareSccGraph graph,
+            int maxDepth,
+            IReadOnlyList<object?> orderedSeeds,
+            Func<IReadOnlyList<object?>, TimeSpan> measureLayeredProbe,
+            Func<IReadOnlyList<object?>, SccCondensedWeightedMinProbe> measureSccProbe)
+        {
+            if (!ShouldUseSccCondensedPositiveMin(graph, maxDepth))
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedStructural");
+                return false;
+            }
+
+            if (orderedSeeds.Count == 0)
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedNoSeeds");
+                return false;
+            }
+
+            var sampleSeedCount = Math.Min(orderedSeeds.Count, 16);
+            var sampleSeeds = orderedSeeds.Take(sampleSeedCount).ToList();
+            var layeredProbe = measureLayeredProbe(sampleSeeds);
+            trace?.RecordPhase(node, "scc_probe_positive_layered", layeredProbe);
+            var sccProbe = measureSccProbe(sampleSeeds);
+            trace?.RecordPhase(node, "scc_probe_condensed", sccProbe.Elapsed);
+            trace?.RecordMetric(node, "scc_probe_local_states_explored", sccProbe.Stats.LocalStatesExplored);
+            trace?.RecordMetric(node, "scc_probe_outer_dag_states_explored", sccProbe.Stats.OuterDagStatesExplored);
+            trace?.RecordMetric(node, "scc_probe_queue_pops", sccProbe.Stats.QueuePops);
+
+            if (layeredProbe <= TimeSpan.Zero || sccProbe.Elapsed <= TimeSpan.Zero)
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedInvalidProbe");
+                return false;
+            }
+
+            var useScc = sccProbe.Elapsed.Ticks < layeredProbe.Ticks * SccCondensedProbeWinMargin;
+            trace?.RecordStrategy(node, useScc
+                ? $"{strategyPrefix}SccCondensedSelectedMeasured"
+                : $"{strategyPrefix}SccCondensedRejectedMeasured");
+            return useScc;
+        }
+
+        private static void RecordPathAwareSccGraphMetrics(QueryExecutionTrace? trace, PlanNode node, PathAwareSccGraph graph)
+        {
+            trace?.RecordMetric(node, "scc_node_count", graph.NodeCount);
+            trace?.RecordMetric(node, "scc_edge_count", graph.EdgeCount);
+            trace?.RecordMetric(node, "scc_count", graph.ComponentCount);
+            trace?.RecordMetric(node, "scc_cyclic_count", graph.CyclicComponentCount);
+            trace?.RecordMetric(node, "scc_largest_size", graph.LargestComponentSize);
+            trace?.RecordMetric(node, "scc_largest_cyclic_size", graph.LargestCyclicComponentSize);
+            trace?.RecordMetric(node, "scc_condensed_edge_count", graph.CondensedEdgeCount);
+        }
+
+        private static void RecordSccCondensedWeightedMinStats(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            SccCondensedWeightedMinStats stats,
+            int outputRows)
+        {
+            trace?.AddMetric(node, "scc_local_states_explored", stats.LocalStatesExplored);
+            trace?.AddMetric(node, "scc_outer_dag_states_explored", stats.OuterDagStatesExplored);
+            trace?.AddMetric(node, "scc_queue_pops", stats.QueuePops);
+            trace?.AddMetric(node, "scc_output_rows", outputRows);
+        }
+
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
             SeedGroupedPathAwareDepthMinNode closure,
             IReadOnlyList<object?> orderedUniqueSeeds,
@@ -11352,9 +11667,11 @@ namespace UnifyWeaver.QueryRuntime
 
                 Dictionary<object, List<object[]>>? auxIndex = null;
                 PositiveStepEvaluator? stepEvaluator = null;
+                PathAwareSccGraph? sccGraph = null;
                 var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
                 var positiveFastPathPrepared = false;
                 var usePositiveMinFastPath = false;
+                var useSccCondensedMinFastPath = false;
 
                 void EnsurePositiveMinFastPathPrepared()
                 {
@@ -11368,9 +11685,63 @@ namespace UnifyWeaver.QueryRuntime
                     auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
                     usePositiveMinFastPath = closure.MaxDepth > 0 &&
                         TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                    if (usePositiveMinFastPath)
+                    {
+                        sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                        RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                        useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                            trace,
+                            closure,
+                            "SeedGroupedPathAwareAccumulationMin",
+                            sccGraph,
+                            closure.MaxDepth,
+                            orderedUniqueSeeds,
+                            sampleSeeds => MeasureElapsed(() =>
+                            {
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    _ = ComputePositiveMinRootAccumulationsForSeed(
+                                        seed,
+                                        succIndex,
+                                        auxIndex,
+                                        rootKeys,
+                                        stepEvaluator!,
+                                        directSeedValue,
+                                        closure.MaxDepth);
+                                }
+                            }),
+                            sampleSeeds =>
+                            {
+                                long localStates = 0;
+                                long outerDagStates = 0;
+                                long queuePops = 0;
+                                var elapsed = MeasureElapsed(() =>
+                                {
+                                    foreach (var seed in sampleSeeds)
+                                    {
+                                        _ = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                                            seed,
+                                            succIndex,
+                                            auxIndex,
+                                            rootKeys,
+                                            sccGraph,
+                                            stepEvaluator!,
+                                            closure.MaxDepth,
+                                            directSeedValue,
+                                            out var stats);
+                                        localStates += stats.LocalStatesExplored;
+                                        outerDagStates += stats.OuterDagStatesExplored;
+                                        queuePops += stats.QueuePops;
+                                    }
+                                });
+                                return new SccCondensedWeightedMinProbe(
+                                    elapsed,
+                                    new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                            });
+                    }
                 }
 
-                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds)
+                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds, bool recordMetrics)
                 {
                     EnsurePositiveMinFastPathPrepared();
                     if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
@@ -11378,14 +11749,83 @@ namespace UnifyWeaver.QueryRuntime
                         return new Dictionary<object, Dictionary<object, object>>();
                     }
 
-                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
-                    foreach (var seed in seeds)
+                    if (useSccCondensedMinFastPath && sccGraph is not null)
                     {
-                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
-                        if (mins.Count > 0)
+                        if (recordMetrics)
                         {
-                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                            trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinSccCondensed");
                         }
+
+                        long localStates = 0;
+                        long outerDagStates = 0;
+                        long queuePops = 0;
+                        var sccSeedMinima = recordMetrics
+                            ? MeasurePhase(trace, closure, "scc_condensed_solve", BuildSccMinima)
+                            : BuildSccMinima();
+                        if (recordMetrics)
+                        {
+                            RecordSccCondensedWeightedMinStats(
+                                trace,
+                                closure,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                                sccSeedMinima.Sum(kvp => kvp.Value.Count));
+                        }
+
+                        return sccSeedMinima;
+
+                        Dictionary<object, Dictionary<object, object>> BuildSccMinima()
+                        {
+                            var minima = new Dictionary<object, Dictionary<object, object>>();
+                            foreach (var seed in seeds)
+                            {
+                                var mins = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                                    seed,
+                                    succIndex,
+                                    auxIndex,
+                                    rootKeys,
+                                    sccGraph,
+                                    stepEvaluator,
+                                    closure.MaxDepth,
+                                    directSeedValue,
+                                    out var stats);
+                                localStates += stats.LocalStatesExplored;
+                                outerDagStates += stats.OuterDagStatesExplored;
+                                queuePops += stats.QueuePops;
+                                if (mins.Count > 0)
+                                {
+                                    minima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                                }
+                            }
+
+                            return minima;
+                        }
+                    }
+
+                    if (recordMetrics)
+                    {
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinPositiveAdditiveLayered");
+                    }
+
+                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                    void BuildLayeredMinima()
+                    {
+                        foreach (var seed in seeds)
+                        {
+                            var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
+                            if (mins.Count > 0)
+                            {
+                                fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                            }
+                        }
+                    }
+
+                    if (recordMetrics)
+                    {
+                        MeasurePhase(trace, closure, "positive_min_layered_solve", BuildLayeredMinima);
+                    }
+                    else
+                    {
+                        BuildLayeredMinima();
                     }
 
                     return fastSeedMinima;
@@ -11400,7 +11840,7 @@ namespace UnifyWeaver.QueryRuntime
                             return;
                         }
 
-                        _ = BuildCompactSeedMinima(sampleSeeds);
+                        _ = BuildCompactSeedMinima(sampleSeeds, recordMetrics: false);
                     });
 
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
@@ -11438,7 +11878,7 @@ namespace UnifyWeaver.QueryRuntime
                     if (usePositiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
                     {
                         seedMinima = MeasurePhase(trace, closure, "build_compact_grouped", () =>
-                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds));
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds, recordMetrics: true));
                     }
                     else
                     {
@@ -11651,6 +12091,105 @@ namespace UnifyWeaver.QueryRuntime
             return mins;
         }
 
+        private static Dictionary<object, double> ComputeSccCondensedPositiveMinAccumulationsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            ISet<object>? rootKeys,
+            PathAwareSccGraph sccGraph,
+            PositiveStepEvaluator stepEvaluator,
+            int maxDepth,
+            double? directSeedValue,
+            out SccCondensedWeightedMinStats stats)
+        {
+            var mins = new Dictionary<object, double>();
+            var seedKey = seed ?? NullFactIndexKey;
+            if (directSeedValue is { } directValue && rootKeys is not null && rootKeys.Contains(seedKey))
+            {
+                mins[seedKey] = directValue;
+            }
+
+            var bestByDepth = new Dictionary<(object Key, int Depth), double>
+            {
+                [(seedKey, 0)] = 0d
+            };
+            var queue = new PriorityQueue<(object? Node, object Key, int Depth, double Cost), double>();
+            queue.Enqueue((seed, seedKey, 0, 0d), 0d);
+
+            long localStates = 0;
+            long outerDagStates = 0;
+            long queuePops = 0;
+
+            while (queue.Count > 0)
+            {
+                var (current, currentKey, depth, currentCost) = queue.Dequeue();
+                queuePops++;
+                if (!bestByDepth.TryGetValue((currentKey, depth), out var recordedCost) || currentCost > recordedCost)
+                {
+                    continue;
+                }
+
+                if (depth >= maxDepth)
+                {
+                    continue;
+                }
+
+                if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                sccGraph.ComponentByNode.TryGetValue(currentKey, out var currentComponent);
+                var nextDepth = depth + 1;
+                for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                {
+                    var next = edgeBucket.Targets[edgeIndex];
+                    var nextKey = next ?? NullFactIndexKey;
+                    sccGraph.ComponentByNode.TryGetValue(nextKey, out var nextComponent);
+                    for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                    {
+                        var auxRow = auxBucket[auxIndexPos];
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var step = stepEvaluator(current!, next!, auxRow[1]!);
+                        var nextCost = currentCost + step;
+                        var stateKey = (nextKey, nextDepth);
+                        if (bestByDepth.TryGetValue(stateKey, out var existingCost) && existingCost <= nextCost)
+                        {
+                            continue;
+                        }
+
+                        bestByDepth[stateKey] = nextCost;
+                        queue.Enqueue((next, nextKey, nextDepth, nextCost), nextCost);
+                        if (currentComponent == nextComponent)
+                        {
+                            localStates++;
+                        }
+                        else
+                        {
+                            outerDagStates++;
+                        }
+
+                        if (rootKeys is not null && !rootKeys.Contains(nextKey))
+                        {
+                            continue;
+                        }
+
+                        if (!mins.TryGetValue(nextKey, out var currentMin) || nextCost < currentMin)
+                        {
+                            mins[nextKey] = nextCost;
+                        }
+                    }
+                }
+            }
+
+            stats = new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops);
+            return mins;
+        }
+
         private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
         {
             if (closure is null) throw new ArgumentNullException(nameof(closure));
@@ -11835,18 +12374,98 @@ namespace UnifyWeaver.QueryRuntime
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
                     TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                PathAwareSccGraph? sccGraph = null;
+                var useSccCondensedMinFastPath = false;
+                if (usePositiveMinFastPath)
+                {
+                    sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                    RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                        trace,
+                        closure,
+                        "PathAwareAccumulationMin",
+                        sccGraph,
+                        closure.MaxDepth,
+                        edgeState.Seeds,
+                        sampleSeeds => MeasureElapsed(() =>
+                        {
+                            var probeRows = new List<object[]>();
+                            foreach (var seed in sampleSeeds)
+                            {
+                                AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, probeRows, closure.MaxDepth);
+                            }
+                        }),
+                        sampleSeeds =>
+                        {
+                            long localStates = 0;
+                            long outerDagStates = 0;
+                            long queuePops = 0;
+                            var elapsed = MeasureElapsed(() =>
+                            {
+                                var probeRows = new List<object[]>();
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, probeRows, closure.MaxDepth);
+                                    localStates += stats.LocalStatesExplored;
+                                    outerDagStates += stats.OuterDagStatesExplored;
+                                    queuePops += stats.QueuePops;
+                                }
+                            });
+                            return new SccCondensedWeightedMinProbe(
+                                elapsed,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                        });
+                    trace?.RecordStrategy(closure, useSccCondensedMinFastPath
+                        ? "PathAwareAccumulationMinSccCondensed"
+                        : "PathAwareAccumulationMinPositiveAdditiveLayered");
+                }
 
                 var totalRows = new List<object[]>();
-                foreach (var seed in edgeState.Seeds)
+                long localStates = 0;
+                long outerDagStates = 0;
+                long queuePops = 0;
+                void BuildAccumulationRows()
                 {
-                    if (usePositiveMinFastPath)
+                    foreach (var seed in edgeState.Seeds)
                     {
-                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        if (useSccCondensedMinFastPath && sccGraph is not null)
+                        {
+                            var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, totalRows, closure.MaxDepth);
+                            localStates += stats.LocalStatesExplored;
+                            outerDagStates += stats.OuterDagStatesExplored;
+                            queuePops += stats.QueuePops;
+                        }
+                        else if (usePositiveMinFastPath)
+                        {
+                            AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else
+                        {
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                        }
                     }
-                    else
-                    {
-                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
-                    }
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
+                }
+                else if (usePositiveMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "positive_min_layered_solve", BuildAccumulationRows);
+                }
+                else
+                {
+                    BuildAccumulationRows();
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    RecordSccCondensedWeightedMinStats(
+                        trace,
+                        closure,
+                        new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                        totalRows.Count);
                 }
 
                 return totalRows;
@@ -11883,6 +12502,13 @@ namespace UnifyWeaver.QueryRuntime
                 PositiveStepEvaluator? stepEvaluator = null;
                 var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
                     TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                PathAwareSccGraph? sccGraph = null;
+                var useSccCondensedMinFastPath = false;
+                if (usePositiveMinFastPath)
+                {
+                    sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                    RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                }
 
                 foreach (var paramTuple in parameters)
                 {
@@ -11903,17 +12529,94 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 seeds.Sort(CompareCacheSeedValues);
-                var totalRows = new List<object[]>();
-                foreach (var seed in seeds)
+                if (usePositiveMinFastPath && sccGraph is not null)
                 {
-                    if (usePositiveMinFastPath)
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedPositiveMinStrategy(
+                        trace,
+                        closure,
+                        "PathAwareAccumulationSeededMin",
+                        sccGraph,
+                        closure.MaxDepth,
+                        seeds,
+                        sampleSeeds => MeasureElapsed(() =>
+                        {
+                            var probeRows = new List<object[]>();
+                            foreach (var seed in sampleSeeds)
+                            {
+                                AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, probeRows, closure.MaxDepth);
+                            }
+                        }),
+                        sampleSeeds =>
+                        {
+                            long localStates = 0;
+                            long outerDagStates = 0;
+                            long queuePops = 0;
+                            var elapsed = MeasureElapsed(() =>
+                            {
+                                var probeRows = new List<object[]>();
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, probeRows, closure.MaxDepth);
+                                    localStates += stats.LocalStatesExplored;
+                                    outerDagStates += stats.OuterDagStatesExplored;
+                                    queuePops += stats.QueuePops;
+                                }
+                            });
+                            return new SccCondensedWeightedMinProbe(
+                                elapsed,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                        });
+                    trace?.RecordStrategy(closure, useSccCondensedMinFastPath
+                        ? "PathAwareAccumulationSeededMinSccCondensed"
+                        : "PathAwareAccumulationSeededMinPositiveAdditiveLayered");
+                }
+
+                var totalRows = new List<object[]>();
+                long localStates = 0;
+                long outerDagStates = 0;
+                long queuePops = 0;
+                void BuildAccumulationRows()
+                {
+                    foreach (var seed in seeds)
                     {
-                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        if (useSccCondensedMinFastPath && sccGraph is not null)
+                        {
+                            var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, totalRows, closure.MaxDepth);
+                            localStates += stats.LocalStatesExplored;
+                            outerDagStates += stats.OuterDagStatesExplored;
+                            queuePops += stats.QueuePops;
+                        }
+                        else if (usePositiveMinFastPath)
+                        {
+                            AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else
+                        {
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                        }
                     }
-                    else
-                    {
-                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
-                    }
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
+                }
+                else if (usePositiveMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "positive_min_layered_solve", BuildAccumulationRows);
+                }
+                else
+                {
+                    BuildAccumulationRows();
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    RecordSccCondensedWeightedMinStats(
+                        trace,
+                        closure,
+                        new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                        totalRows.Count);
                 }
 
                 return totalRows;
@@ -12007,6 +12710,37 @@ namespace UnifyWeaver.QueryRuntime
             {
                 output.Add(new object[] { seed!, target!, cost });
             }
+        }
+
+        private static SccCondensedWeightedMinStats AppendSccCondensedPositiveMinAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            PathAwareSccGraph sccGraph,
+            PositiveStepEvaluator stepEvaluator,
+            ICollection<object[]> output,
+            int maxDepth)
+        {
+            var minima = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                seed,
+                succIndex,
+                auxIndex,
+                rootKeys: null,
+                sccGraph,
+                stepEvaluator,
+                maxDepth,
+                directSeedValue: null,
+                out var stats);
+
+            var bestRows = minima
+                .OrderBy(kvp => kvp.Key, Comparer<object>.Create(CompareCacheSeedValues))
+                .ToList();
+            foreach (var (target, cost) in bestRows)
+            {
+                output.Add(new object[] { seed!, ReferenceEquals(target, NullFactIndexKey) ? null! : target, cost });
+            }
+
+            return stats;
         }
 
         private bool TryCreatePositiveAdditiveStepEvaluator(
