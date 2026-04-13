@@ -1970,21 +1970,21 @@ data Value = Atom String
            | Ref Int
            deriving (Eq, Ord, Show)
 
-data EnvFrame = EnvFrame !Int !(IM.IntMap Value)   -- saved CP + Y-regs (IntMap)
+data EnvFrame = EnvFrame {-# UNPACK #-} !Int !(IM.IntMap Value)
               deriving (Show)
 
-data TrailEntry = TrailEntry !Int !(Maybe Value)   -- variable ID, old value
+data TrailEntry = TrailEntry {-# UNPACK #-} !Int !(Maybe Value)
                 deriving (Show)
 
 data ChoicePoint = ChoicePoint
-  { cpNextPC   :: !Int
-  , cpRegs     :: !(IM.IntMap Value)    -- IntMap (registers)
+  { cpNextPC   :: {-# UNPACK #-} !Int
+  , cpRegs     :: !(IM.IntMap Value)
   , cpStack    :: ![EnvFrame]
-  , cpCP       :: !Int
-  , cpTrailLen :: !Int
-  , cpHeapLen  :: !Int
-  , cpBindings :: !(IM.IntMap Value)    -- IntMap (variable bindings)
-  , cpCutBar   :: !Int
+  , cpCP       :: {-# UNPACK #-} !Int
+  , cpTrailLen :: {-# UNPACK #-} !Int
+  , cpHeapLen  :: {-# UNPACK #-} !Int
+  , cpBindings :: !(IM.IntMap Value)
+  , cpCutBar   :: {-# UNPACK #-} !Int
   , cpAggFrame :: !(Maybe AggFrame)
   , cpBuiltin  :: !(Maybe BuiltinState)
   } deriving (Show)
@@ -2026,20 +2026,20 @@ data WamContext = WamContext
 -- so each step transition only allocates a record with the fields that
 -- actually change.
 data WamState = WamState
-  { wsPC       :: !Int
+  { wsPC       :: {-# UNPACK #-} !Int
   , wsRegs     :: !(IM.IntMap Value)
   , wsStack    :: ![EnvFrame]
   , wsHeap     :: ![Value]
-  , wsHeapLen  :: !Int                          -- cached length(wsHeap), avoids O(n) length calls
+  , wsHeapLen  :: {-# UNPACK #-} !Int
   , wsTrail    :: ![TrailEntry]
-  , wsTrailLen :: !Int                          -- cached length(wsTrail)
-  , wsCP       :: !Int
+  , wsTrailLen :: {-# UNPACK #-} !Int
+  , wsCP       :: {-# UNPACK #-} !Int
   , wsCPs      :: ![ChoicePoint]
-  , wsCPsLen   :: !Int                          -- cached length(wsCPs) for cut barrier
+  , wsCPsLen   :: {-# UNPACK #-} !Int
   , wsBindings :: !(IM.IntMap Value)
-  , wsCutBar   :: !Int
+  , wsCutBar   :: {-# UNPACK #-} !Int
   , wsBuilder  :: !Builder
-  , wsVarCounter :: !Int
+  , wsVarCounter :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
   } deriving (Show)
 
