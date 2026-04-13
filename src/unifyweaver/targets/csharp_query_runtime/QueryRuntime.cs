@@ -1532,29 +1532,38 @@ namespace UnifyWeaver.QueryRuntime
 
     internal sealed class PathAwareSuccessorBucket
     {
-        public PathAwareSuccessorBucket(object? source)
+        public PathAwareSuccessorBucket(object? source, int sourceNodeId)
         {
             Source = source;
+            SourceNodeId = sourceNodeId;
         }
 
         public object? Source { get; }
 
+        public int SourceNodeId { get; }
+
         public List<object?> Targets { get; } = new();
+
+        public List<int> TargetNodeIds { get; } = new();
     }
 
     internal sealed class PathAwareEdgeState
     {
         public PathAwareEdgeState(
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
-            IReadOnlyList<object?> seeds)
+            IReadOnlyList<object?> seeds,
+            IReadOnlyList<int> seedNodeIds)
         {
             Successors = successors;
             Seeds = seeds;
+            SeedNodeIds = seedNodeIds;
         }
 
         public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
 
         public IReadOnlyList<object?> Seeds { get; }
+
+        public IReadOnlyList<int> SeedNodeIds { get; }
     }
 
     internal sealed class PathAwareSccGraph
@@ -6154,17 +6163,22 @@ namespace UnifyWeaver.QueryRuntime
             Dictionary<object, PathAwareSuccessorBucket> successors,
             List<object?> seeds,
             HashSet<object?> seenSeeds,
+            Dictionary<object, int> nodeIds,
+            ref int nextNodeId,
             object? source,
             object? target)
         {
             var lookupKey = source ?? NullFactIndexKey;
+            var sourceNodeId = GetOrAddPathAwareNodeId(nodeIds, ref nextNodeId, source);
+            var targetNodeId = GetOrAddPathAwareNodeId(nodeIds, ref nextNodeId, target);
             if (!successors.TryGetValue(lookupKey, out var bucket))
             {
-                bucket = new PathAwareSuccessorBucket(source);
+                bucket = new PathAwareSuccessorBucket(source, sourceNodeId);
                 successors[lookupKey] = bucket;
             }
 
             bucket.Targets.Add(target);
+            bucket.TargetNodeIds.Add(targetNodeId);
             if (seenSeeds.Add(source))
             {
                 seeds.Add(source);
@@ -6173,10 +6187,33 @@ namespace UnifyWeaver.QueryRuntime
 
         private static PathAwareEdgeState FinalizePathAwareEdgeState(
             Dictionary<object, PathAwareSuccessorBucket> successors,
-            List<object?> seeds)
+            List<object?> seeds,
+            IReadOnlyDictionary<object, int> nodeIds)
         {
             seeds.Sort(CompareCacheSeedValues);
-            return new PathAwareEdgeState(successors, seeds);
+            var seedNodeIds = new List<int>(seeds.Count);
+            for (var i = 0; i < seeds.Count; i++)
+            {
+                seedNodeIds.Add(nodeIds[seeds[i] ?? NullFactIndexKey]);
+            }
+
+            return new PathAwareEdgeState(successors, seeds, seedNodeIds);
+        }
+
+        private static int GetOrAddPathAwareNodeId(
+            Dictionary<object, int> nodeIds,
+            ref int nextNodeId,
+            object? value)
+        {
+            var key = value ?? NullFactIndexKey;
+            if (nodeIds.TryGetValue(key, out var existing))
+            {
+                return existing;
+            }
+
+            var id = nextNodeId++;
+            nodeIds[key] = id;
+            return id;
         }
 
         private static PathAwareEdgeState BuildPathAwareEdgeStateFromRows(IEnumerable<object[]> edges)
@@ -6184,6 +6221,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
 
             foreach (var edge in edges)
             {
@@ -6192,10 +6231,10 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, edge[0], edge[1]);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, edge[0], edge[1]);
             }
 
-            return FinalizePathAwareEdgeState(successors, seeds);
+            return FinalizePathAwareEdgeState(successors, seeds, nodeIds);
         }
 
         private static PathAwareEdgeState BuildPathAwareEdgeStateFromDelimited(DelimitedRelationSource delimitedSource)
@@ -6203,6 +6242,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
 
             using var reader = DelimitedRelationReader.OpenSequentialReader(delimitedSource.InputPath);
             for (var i = 0; i < delimitedSource.SkipRows; i++)
@@ -6221,10 +6262,10 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, left, right);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, left, right);
             }
 
-            return FinalizePathAwareEdgeState(successors, seeds);
+            return FinalizePathAwareEdgeState(successors, seeds, nodeIds);
         }
 
         private static void ProbePathAwareEdgeRows(IEnumerable<object[]> edges, int maxRows)
@@ -6232,6 +6273,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
             var consumed = 0;
 
             foreach (var edge in edges)
@@ -6241,7 +6284,7 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, edge[0], edge[1]);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, edge[0], edge[1]);
                 consumed++;
                 if (consumed >= maxRows)
                 {
@@ -6257,6 +6300,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
             var consumed = 0;
 
             using var reader = DelimitedRelationReader.OpenSequentialReader(delimitedSource.InputPath);
@@ -6276,7 +6321,7 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, left, right);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, left, right);
                 consumed++;
                 if (consumed >= maxRows)
                 {
@@ -12327,9 +12372,9 @@ namespace UnifyWeaver.QueryRuntime
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var totalRows = new List<object[]>();
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
-                foreach (var seed in edgeState.Seeds)
+                for (var i = 0; i < edgeState.Seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12364,7 +12409,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var seeds = new List<object?>();
-                var seenSeeds = new HashSet<object?>();
+                var seedNodeIds = new List<int>();
+                var seenSeeds = new Dictionary<object, int>();
 
                 foreach (var paramTuple in parameters)
                 {
@@ -12378,18 +12424,28 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    if (seenSeeds.Add(seed))
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (!seenSeeds.ContainsKey(lookupKey))
                     {
                         seeds.Add(seed);
+                        seenSeeds[lookupKey] = edgeState.Successors.TryGetValue(lookupKey, out var bucket)
+                            ? bucket.SourceNodeId
+                            : -1;
                     }
                 }
 
                 seeds.Sort(CompareCacheSeedValues);
+                seedNodeIds.EnsureCapacity(seeds.Count);
+                for (var i = 0; i < seeds.Count; i++)
+                {
+                    seedNodeIds.Add(seenSeeds[seeds[i] ?? NullFactIndexKey]);
+                }
+
                 var totalRows = new List<object[]>();
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
-                foreach (var seed in seeds)
+                for (var i = 0; i < seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12407,6 +12463,7 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void AppendPathAwareRowsForSeed(
             object? seed,
+            int seedNodeId,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             int baseDepth,
             int depthIncrement,
@@ -12419,23 +12476,8 @@ namespace UnifyWeaver.QueryRuntime
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
             var bufferedRows = preserveAllPaths ? new List<PathAwareDepthRow>() : null;
-            var nodeIds = new Dictionary<object, int>();
-            var nextNodeId = 0;
 
-            int GetNodeId(object? value)
-            {
-                var key = value ?? NullFactIndexKey;
-                if (nodeIds.TryGetValue(key, out var existing))
-                {
-                    return existing;
-                }
-
-                var id = nextNodeId++;
-                nodeIds[key] = id;
-                return id;
-            }
-
-            var initialPath = CompactVisitedPath.Create(GetNodeId(seed));
+            var initialPath = CompactVisitedPath.Create(seedNodeId);
             var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Visited)>();
             stack.Push((seed, 0, initialPath));
             metrics?.RecordEnqueuedState(1);
@@ -12457,7 +12499,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     var next = bucket.Targets[i];
                     metrics?.RecordSuccessorCandidate();
-                    var nextId = GetNodeId(next);
+                    var nextId = bucket.TargetNodeIds[i];
                     if (visited.Contains(nextId))
                     {
                         metrics?.RecordCycleSkip();

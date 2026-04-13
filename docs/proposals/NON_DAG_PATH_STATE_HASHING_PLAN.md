@@ -154,15 +154,15 @@ Local survey:
 | negative additive weighted `Min` | 300 | 0.871s | 1.478s | yes | `20,404,270` dominance candidates |
 | negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
 
-Counted-closure phase split after typed row buffering and pre-sized
-materialization:
+Counted-closure phase split after typed row buffering, pre-sized
+materialization, and edge-state node-id preindexing:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 333.907ms | 27.422ms | 61.770ms | n/a |
-| 300 | Min | 57.014ms | n/a | 11.225ms | 12.363ms |
-| 1k | All | 144.563ms | 21.595ms | 62.842ms | n/a |
-| 1k | Min | 25.167ms | n/a | 1.693ms | 5.753ms |
+| 300 | All | 201.268ms | 27.712ms | 96.200ms | n/a |
+| 300 | Min | 68.297ms | n/a | 7.207ms | 17.291ms |
+| 1k | All | 119.368ms | 23.988ms | 60.008ms | n/a |
+| 1k | Min | 19.815ms | n/a | 1.808ms | 5.863ms |
 
 Interpretation:
 
@@ -172,6 +172,9 @@ Interpretation:
   preserving the same traversal counters and exact output
 - result materialization is significant enough to justify typed row buffering
   and pre-sizing, but traversal remains the largest counted-closure phase
+- edge-state node-id preindexing removes the per-successor candidate node-id
+  dictionary lookup from traversal while preserving output hashes and
+  `path_state_*` counters
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
