@@ -799,26 +799,29 @@ finalizeAggregate returnPC s = go (wsCPs s)
       Just (AggFrame typ _valReg resReg _) ->
         let accum = reverse (wsAggAccum s)
             result = applyAggregation typ accum
-            bindings0 = cpBindings cp
-            regs0 = cpRegs cp
-            resVal = derefVar bindings0 <$> IM.lookup resReg regs0
-            -- Restore trail to the CP''s snapshot (drop entries added since)
+            -- Restore the CP snapshot state so we can read Y-registers
+            -- from the stack (cpRegs only has A/X registers).
+            cpState = s { wsRegs = cpRegs cp, wsStack = cpStack cp
+                        , wsBindings = cpBindings cp }
+            resVal = derefVar (cpBindings cp) <$> getReg resReg cpState
+            -- Restore trail to the CP snapshot (drop entries added since)
             diff = wsTrailLen s - cpTrailLen cp
             restoredTrail = drop diff (wsTrail s)
-            (regs1, bindings1, trail1, trail1Len) = case resVal of
+            (finalRegs, finalBindings, finalStack, finalTrail, finalTrailLen) = case resVal of
               Just (Unbound vid) ->
-                ( IM.insert resReg result regs0
-                , IM.insert vid result bindings0
-                , TrailEntry vid (IM.lookup vid bindings0) : restoredTrail
+                ( IM.insert resReg result (cpRegs cp)
+                , IM.insert vid result (cpBindings cp)
+                , putRegStack resReg result (cpStack cp)
+                , TrailEntry vid (IM.lookup vid (cpBindings cp)) : restoredTrail
                 , cpTrailLen cp + 1
                 )
-              _ -> (regs0, bindings0, restoredTrail, cpTrailLen cp)
+              _ -> (cpRegs cp, cpBindings cp, cpStack cp, restoredTrail, cpTrailLen cp)
         in Just s { wsPC = returnPC
-                  , wsRegs = regs1
-                  , wsStack = cpStack cp
-                  , wsBindings = bindings1
-                  , wsTrail = trail1
-                  , wsTrailLen = trail1Len
+                  , wsRegs = finalRegs
+                  , wsStack = finalStack
+                  , wsBindings = finalBindings
+                  , wsTrail = finalTrail
+                  , wsTrailLen = finalTrailLen
                   , wsHeap = take (cpHeapLen cp) (wsHeap s)
                   , wsHeapLen = cpHeapLen cp
                   , wsCP = cpCP cp
@@ -827,6 +830,10 @@ finalizeAggregate returnPC s = go (wsCPs s)
                   , wsAggAccum = []
                   }
       Nothing -> go rest  -- skip non-aggregate CPs
+    putRegStack rid val [] = []
+    putRegStack rid val (EnvFrame ecp yregs : rest) =
+      EnvFrame ecp (IM.insert rid val yregs) : rest
+    putRegStack rid val (x : rest) = x : putRegStack rid val rest
 
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
@@ -1048,6 +1055,16 @@ step !ctx s (Call pred _arity) =
         Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
         Nothing -> Nothing
 
+-- Execute: tail call, like Call but without setting wsCP
+step !ctx s (Execute pred) =
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx s
+    Nothing -> case callIndexedFact2 ctx pred s of
+      Just sr -> Just sr
+      Nothing -> case Map.lookup pred (wcLabels ctx) of
+        Just pc -> Just (s { wsPC = pc })
+        Nothing -> Nothing
+
 step !ctx s Proceed =
   let ret = wsCP s
   in if ret == 0 then Just (s { wsPC = 0 })
@@ -1095,6 +1112,34 @@ step !ctx s (RetryMeElse label) =
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
+
+-- Type-checking builtins
+step !ctx s (BuiltinCall "nonvar/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Unbound _) -> Nothing
+    Just _           -> Just (s { wsPC = wsPC s + 1 })
+    Nothing          -> Nothing
+
+step !ctx s (BuiltinCall "var/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
+
+step !ctx s (BuiltinCall "atom/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Atom _) -> Just (s { wsPC = wsPC s + 1 })
+    _             -> Nothing
+
+step !ctx s (BuiltinCall "integer/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Integer _) -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
+
+step !ctx s (BuiltinCall "number/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Integer _) -> Just (s { wsPC = wsPC s + 1 })
+    Just (Float _)   -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
 
 step !ctx s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))

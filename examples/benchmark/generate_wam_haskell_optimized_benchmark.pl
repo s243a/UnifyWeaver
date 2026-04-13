@@ -97,10 +97,12 @@ parse_variant(accumulated, [
 %  For accumulated, the query calls the WAM-compiled aggregation predicate
 %  directly — no collectSolutions loop needed.
 query_pred_for_variant(seeded, []).
-% TODO: Once the begin_aggregate/end_aggregate bug is fixed, switch to:
-%   query_pred('category_ancestor$effective_distance_sum_bound/3')
-% For now, use default collectSolutions which works correctly.
-query_pred_for_variant(accumulated, []).
+% Use WAM-compiled aggregation predicate directly — the aggregate
+% machinery (begin_aggregate/end_aggregate) collects all solutions
+% and returns the accumulated weight sum in one WAM call per seed.
+query_pred_for_variant(accumulated, [
+    query_pred('category_ancestor$effective_distance_sum_bound/3')
+]).
 
 %% collect_wam_predicates(+Variant, -Predicates)
 %  Collect the predicate list to compile through WAM, including
@@ -116,10 +118,6 @@ collect_wam_predicates(accumulated, [
     user:max_depth/1,
     user:category_ancestor/4,
     user:'category_ancestor$power_sum_bound'/3,
-    % Skip power_sum_selected (if-then-else causes stack overflow in WAM
-    % clause_body_analysis). Use power_sum_bound directly since Root is
-    % always bound in the benchmark.
-    user:'category_ancestor$effective_distance_sum'/3,
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).
 
