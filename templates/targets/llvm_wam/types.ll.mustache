@@ -39,17 +39,21 @@
 %TrailEntry = type { i32, %Value }        ; register index, old value
 
 ; === Choice Point ===
-; agg_type field: -1 = normal CP (not an aggregate frame)
+; agg_type field: -2 = foreign-result iterator (multi-result dispatch)
+;                 -1 = normal CP (not an aggregate frame)
 ;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
 %ChoicePoint = type {
     i32,                                   ; 0: next_pc
     [32 x %Value],                         ; 1: saved registers
     i32,                                   ; 2: trail mark
     i32,                                   ; 3: saved cp
-    i32,                                   ; 4: agg_type (-1 = not aggregate)
+    i32,                                   ; 4: agg_type (-1=normal, -2=foreign iter)
     i32,                                   ; 5: agg_value_reg
     i32,                                   ; 6: agg_result_reg
-    i32                                    ; 7: agg_return_pc
+    i32,                                   ; 7: agg_return_pc
+    i8*,                                   ; 8: foreign_results (ptr to %Value array)
+    i32,                                   ; 9: foreign_count (total results)
+    i32                                    ; 10: foreign_cursor (next to yield)
 }
 
 ; === WAM State ===

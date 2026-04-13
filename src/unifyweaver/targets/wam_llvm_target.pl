@@ -1948,11 +1948,21 @@ check_agg:
   %ca_at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ca_top, i32 0, i32 4
   %ca_at = load i32, i32* %ca_at_ptr
   %is_agg = icmp sge i32 %ca_at, 0
-  br i1 %is_agg, label %do_finalize, label %restore
+  br i1 %is_agg, label %do_finalize, label %check_foreign
 
 do_finalize:
   %fin_ok = call i1 @wam_finalize_aggregate(%WamState* %vm)
   ret i1 %fin_ok
+
+check_foreign:
+  ; If the top CP is a foreign-result iterator (agg_type == -2),
+  ; advance the cursor and yield the next result.
+  %is_foreign = icmp eq i32 %ca_at, -2
+  br i1 %is_foreign, label %do_foreign_yield, label %restore
+
+do_foreign_yield:
+  %fy_ok = call i1 @wam_foreign_iter_next(%WamState* %vm)
+  ret i1 %fy_ok
 
 restore:
   %top_idx = sub i32 %cpn, 1
