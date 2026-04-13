@@ -40,7 +40,8 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/recursive_kernel_detection',
-             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2]).
+             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
+              kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
 :- use_module('../core/template_system', [render_template/3]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
