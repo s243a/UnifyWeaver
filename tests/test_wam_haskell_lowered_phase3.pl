@@ -9,7 +9,7 @@
 %     partition is non-empty, plus a non-empty loweredPredicates map
 %
 % These are codegen-only assertions. The build+run verification is done
-% manually via /tmp/wam_hs_lowered_phase3 with the effective_distance
+% manually via a temporary project directory with the effective_distance
 % 10k benchmark, output byte-identical to the Prolog reference (verified
 % to match Phase 2 output via diff, Temperature=2.840088).
 %
@@ -18,7 +18,7 @@
 :- use_module('../src/unifyweaver/targets/wam_haskell_target').
 :- use_module('../src/unifyweaver/targets/wam_haskell_lowered_emitter').
 :- use_module('../src/unifyweaver/targets/wam_target').
-:- use_module(library(filesex), [make_directory_path/1]).
+:- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 
 :- dynamic test_failed/0.
 
@@ -40,7 +40,25 @@ user:phase3_constant(42).
 user:phase3_multi(a).
 user:phase3_multi(b).
 
-project_dir('/tmp/uw_wam_hs_lowered_phase3_test').
+tmp_root_candidate(Root) :-
+    member(Env, ['TMPDIR', 'TMP', 'TEMP']),
+    getenv(Env, Root),
+    Root \== ''.
+tmp_root_candidate(Root) :-
+    getenv('PREFIX', Prefix),
+    Prefix \== '',
+    directory_file_path(Prefix, tmp, Root).
+tmp_root_candidate('output').
+
+writable_tmp_root(Root) :-
+    tmp_root_candidate(Root),
+    catch(make_directory_path(Root), _, fail),
+    access_file(Root, write),
+    !.
+
+project_dir(Dir) :-
+    writable_tmp_root(Root),
+    directory_file_path(Root, 'uw_wam_hs_lowered_phase3_test', Dir).
 
 read_file_to_string(Path, Str) :-
     open(Path, read, S),
