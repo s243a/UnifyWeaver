@@ -320,8 +320,18 @@ raw path-state traversal:
 
 | Shape | Scale | All | Min | Speedup | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| counted shortest path | 300 | 0.766s | 0.234s | 3.27x | 602,808 | 30,968 | 982,581 | 101,371 |
-| counted shortest path | 1k | 0.502s | 0.176s | 2.86x | 352,522 | 10,328 | 592,698 | 38,196 |
+| counted shortest path | 300 | 0.634s | 0.214s | 2.97x | 602,808 | 30,968 | 982,581 | 101,371 |
+| counted shortest path | 1k | 0.450s | 0.180s | 2.50x | 352,522 | 10,328 | 592,698 | 38,196 |
+
+Counted-closure phase split after typed row buffering and pre-sized
+materialization:
+
+| Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 300 | All | 333.907ms | 27.422ms | 61.770ms | n/a |
+| 300 | Min | 57.014ms | n/a | 11.225ms | 12.363ms |
+| 1k | All | 144.563ms | 21.595ms | 62.842ms | n/a |
+| 1k | Min | 25.167ms | n/a | 1.693ms | 5.753ms |
 
 Interpretation:
 
@@ -341,6 +351,9 @@ Interpretation:
   pruning, not subset-dominance lookup
 - compact visited paths reduce counted-closure allocation overhead while
   leaving the measured traversal counters unchanged
+- typed row buffering and pre-sized final materialization reduce avoidable
+  row-output overhead, but traversal is still the largest counted-closure
+  phase
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
   remaining work should target expansion/materialization overhead

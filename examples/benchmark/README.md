@@ -940,12 +940,22 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
     --scales 300,1k --repetitions 3
 ```
 
-Latest local results after switching counted closure to compact visited paths:
+Latest local results after compact visited paths, typed row buffering, and
+pre-sized result materialization:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.766s | 0.234s | 3.27x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.502s | 0.176s | 2.86x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.634s | 0.214s | 2.97x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.450s | 0.180s | 2.50x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+
+The same run reports the counted-closure phase split:
+
+| Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
+|-------|------|----------:|-------------:|-----------------------:|----------------------:|
+| 300 | All | 333.907ms | 27.422ms | 61.770ms | n/a |
+| 300 | Min | 57.014ms | n/a | 11.225ms | 12.363ms |
+| 1k | All | 144.563ms | 21.595ms | 62.842ms | n/a |
+| 1k | Min | 25.167ms | n/a | 1.693ms | 5.753ms |
 
 Additional path-state observations:
 
@@ -957,6 +967,9 @@ Additional path-state observations:
   `1k` without changing final shortest-path answers.
 - compact visited paths reduce the allocation-heavy `All` traversal while
   preserving the same path-state counters and output digests.
+- typed row buffering plus pre-sized final materialization reduces avoidable
+  `object[]` allocation/list-growth pressure, but traversal remains the
+  largest phase.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization

@@ -11322,6 +11322,16 @@ namespace UnifyWeaver.QueryRuntime
             PlanNode node,
             PathAwareTraversalMetrics metrics)
         {
+            var traversalElapsed = metrics.TraversalElapsed - metrics.RowCreationElapsed;
+            if (traversalElapsed < TimeSpan.Zero)
+            {
+                traversalElapsed = TimeSpan.Zero;
+            }
+
+            trace?.RecordPhase(node, "path_state_traversal", traversalElapsed);
+            trace?.RecordPhase(node, "path_state_row_creation", metrics.RowCreationElapsed);
+            trace?.RecordPhase(node, "path_state_best_known_flush_sort", metrics.BestKnownFlushSortElapsed);
+            trace?.RecordPhase(node, "path_state_result_materialization", metrics.ResultMaterializationElapsed);
             trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
             trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
             trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
@@ -12408,6 +12418,7 @@ namespace UnifyWeaver.QueryRuntime
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
+            var bufferedRows = preserveAllPaths ? new List<PathAwareDepthRow>() : null;
             var nodeIds = new Dictionary<object, int>();
             var nextNodeId = 0;
 
@@ -12430,6 +12441,7 @@ namespace UnifyWeaver.QueryRuntime
             metrics?.RecordEnqueuedState(1);
             metrics?.RecordStackSize(stack.Count);
 
+            var traversalStarted = Stopwatch.GetTimestamp();
             while (stack.Count > 0)
             {
                 var (current, depth, visited) = stack.Pop();
@@ -12492,8 +12504,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                     else
                     {
-                        output.Add(new object[] { seed!, next!, nextDepth });
-                        metrics?.RecordOutputRow();
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, seed, next, nextDepth, metrics);
                     }
 
                     var nextVisited = visited.Extend(nextId);
@@ -12502,17 +12513,71 @@ namespace UnifyWeaver.QueryRuntime
                     metrics?.RecordStackSize(stack.Count);
                 }
             }
+            metrics?.AddTraversalElapsed(Stopwatch.GetElapsedTime(traversalStarted));
+
+            if (bufferedRows is not null)
+            {
+                MaterializePathAwareDepthRows(bufferedRows, output, metrics);
+            }
 
             if (bestKnown is not null)
             {
+                var flushStarted = Stopwatch.GetTimestamp();
                 var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
                 bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
+                metrics?.AddBestKnownFlushSortElapsed(Stopwatch.GetElapsedTime(flushStarted));
+
+                var materializationStarted = Stopwatch.GetTimestamp();
+                if (output is List<object[]> outputList)
+                {
+                    outputList.EnsureCapacity(outputList.Count + bestRows.Count);
+                }
+
                 foreach (var (target, depth) in bestRows)
                 {
                     output.Add(new object[] { seed!, target!, depth });
                     metrics?.RecordOutputRow();
                 }
+                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(materializationStarted));
             }
+        }
+
+        private static void RecordBufferedPathAwareDepthRow(
+            List<PathAwareDepthRow> rows,
+            object? seed,
+            object? target,
+            int depth,
+            PathAwareTraversalMetrics? metrics)
+        {
+            if (metrics is null)
+            {
+                rows.Add(new PathAwareDepthRow(seed, target, depth));
+                return;
+            }
+
+            var started = Stopwatch.GetTimestamp();
+            rows.Add(new PathAwareDepthRow(seed, target, depth));
+            metrics.AddRowCreationElapsed(Stopwatch.GetElapsedTime(started));
+        }
+
+        private static void MaterializePathAwareDepthRows(
+            List<PathAwareDepthRow> rows,
+            ICollection<object[]> output,
+            PathAwareTraversalMetrics? metrics)
+        {
+            var started = Stopwatch.GetTimestamp();
+            if (output is List<object[]> outputList)
+            {
+                outputList.EnsureCapacity(outputList.Count + rows.Count);
+            }
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var row = rows[i];
+                output.Add(new object[] { row.Seed!, row.Target!, row.Depth });
+                metrics?.RecordOutputRow();
+            }
+            metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
 
         private IEnumerable<object[]> ExecutePathAwareAccumulation(PathAwareAccumulationNode closure, EvaluationContext? parentContext)
@@ -13832,6 +13897,14 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class PathAwareTraversalMetrics
         {
+            public TimeSpan TraversalElapsed { get; private set; }
+
+            public TimeSpan RowCreationElapsed { get; private set; }
+
+            public TimeSpan BestKnownFlushSortElapsed { get; private set; }
+
+            public TimeSpan ResultMaterializationElapsed { get; private set; }
+
             public long SeedCount { get; private set; }
 
             public long StackPopCount { get; private set; }
@@ -13851,6 +13924,14 @@ namespace UnifyWeaver.QueryRuntime
             public int MaxStackSize { get; private set; }
 
             public int MaxPathLength { get; private set; }
+
+            public void AddTraversalElapsed(TimeSpan elapsed) => TraversalElapsed += elapsed;
+
+            public void AddRowCreationElapsed(TimeSpan elapsed) => RowCreationElapsed += elapsed;
+
+            public void AddBestKnownFlushSortElapsed(TimeSpan elapsed) => BestKnownFlushSortElapsed += elapsed;
+
+            public void AddResultMaterializationElapsed(TimeSpan elapsed) => ResultMaterializationElapsed += elapsed;
 
             public void RecordSeed() => SeedCount++;
 
@@ -13888,6 +13969,11 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
         }
+
+        private readonly record struct PathAwareDepthRow(
+            object? Seed,
+            object? Target,
+            int Depth);
 
         private sealed record VisitedAccumulatorState(
             object Accumulator,

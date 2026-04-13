@@ -153,6 +153,10 @@ Runtime instrumentation should keep the main exact workload classes separate:
 - counted simple-path traversal reports `path_state_*` counters for stack
   pops, successor candidates, cycle skips, depth-limit skips, best-known
   pruning, enqueued states, output rows, and maximum path/stack size
+- counted simple-path traversal also reports phase timings for
+  `path_state_traversal`, `path_state_row_creation`,
+  `path_state_result_materialization`, and
+  `path_state_best_known_flush_sort`
 - weighted `Min` frontier fallback reports `min_frontier_*` counters for
   dominance candidates, subset checks, target buckets, and retained
   path-state partition sizes

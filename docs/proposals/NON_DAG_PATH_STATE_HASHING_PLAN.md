@@ -149,10 +149,20 @@ Local survey:
 
 | Workload | Scale | All | Min | Match | Main Counter |
 | --- | ---: | ---: | ---: | --- | --- |
-| counted shortest path | 300 | 0.766s | 0.234s | yes | `982,581` all-mode successor candidates |
-| counted shortest path | 1k | 0.502s | 0.176s | yes | `592,698` all-mode successor candidates |
+| counted shortest path | 300 | 0.634s | 0.214s | yes | `982,581` all-mode successor candidates |
+| counted shortest path | 1k | 0.450s | 0.180s | yes | `592,698` all-mode successor candidates |
 | negative additive weighted `Min` | 300 | 0.871s | 1.478s | yes | `20,404,270` dominance candidates |
 | negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
+
+Counted-closure phase split after typed row buffering and pre-sized
+materialization:
+
+| Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 300 | All | 333.907ms | 27.422ms | 61.770ms | n/a |
+| 300 | Min | 57.014ms | n/a | 11.225ms | 12.363ms |
+| 1k | All | 144.563ms | 21.595ms | 62.842ms | n/a |
+| 1k | Min | 25.167ms | n/a | 1.693ms | 5.753ms |
 
 Interpretation:
 
@@ -160,6 +170,8 @@ Interpretation:
   skips, not exact subset dominance
 - compact visited state reduces counted-closure allocation overhead while
   preserving the same traversal counters and exact output
+- result materialization is significant enough to justify typed row buffering
+  and pre-sizing, but traversal remains the largest counted-closure phase
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
