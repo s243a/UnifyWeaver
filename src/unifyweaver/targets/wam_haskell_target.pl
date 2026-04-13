@@ -152,16 +152,20 @@ wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
     ),
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
 
-%% lower_all(+LoweredList, +BasePCMap, -LoweredEntries)
+%% lower_all(+LoweredList, +BasePCMap, +DetectedKernels, -LoweredEntries)
 %  Run the Phase 3+ emitter over each predicate in LoweredList, using
 %  BasePCMap (a list of PredIndicator-StartPC pairs computed from the
 %  merged instruction array) to offset local PCs to global PCs.
-lower_all([], _, []).
-lower_all([P|Rest], BasePCMap, [Entry|RestEntries]) :-
+%  DetectedKernels (Key-Kernel pairs) is passed through so the emitter
+%  can emit callForeign for known foreign predicates.
+lower_all([], _, _, []).
+lower_all([P|Rest], BasePCMap, DetectedKernels, [Entry|RestEntries]) :-
     wam_haskell_predicate_wamcode(P, WamCode),
     predicate_base_pc(P, BasePCMap, BasePC),
-    lower_predicate_to_haskell(P, WamCode, [base_pc(BasePC)], Entry),
-    lower_all(Rest, BasePCMap, RestEntries).
+    pairs_keys(DetectedKernels, ForeignKeys),
+    lower_predicate_to_haskell(P, WamCode,
+        [base_pc(BasePC), foreign_preds(ForeignKeys)], Entry),
+    lower_all(Rest, BasePCMap, DetectedKernels, RestEntries).
 
 predicate_base_pc(P, Map, PC) :-
     (   P = _Mod:Pred/Arity -> true ; P = Pred/Arity ),
@@ -1009,23 +1013,23 @@ step !ctx s (SetConstant c) =
 step !ctx s (CallResolved pc _arity) =
   Just (s { wsPC = pc, wsCP = wsPC s + 1 })
 
--- Call dispatch priority: hand-written FFI (executeForeign) takes precedence
--- over automated lowering (wcLoweredPredicates). This is critical because
--- FFI handlers like nativeCategoryAncestor do the full depth-bounded search
--- natively, while the lowered function only handles clause 1 and relies on
--- the interpreter for clause 2+ recursion (which is exponentially slower
--- for deep search trees).
+-- Foreign call: compile-time resolved. executeForeign is the sole dispatch
+-- path — Nothing means no solutions (backtrack), never fallthrough.
+step !ctx s (CallForeign pred _arity) =
+  executeForeign ctx pred (s { wsCP = wsPC s + 1 })
+
+-- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
+-- are handled by CallForeign (resolved at compile time), so executeForeign
+-- is NOT checked here — no ambiguity between "unhandled" and "no solutions".
 step !ctx s (Call pred _arity) =
   let sc = s { wsCP = wsPC s + 1 }
-  in case executeForeign ctx pred sc of
-    Just sr -> Just sr
-    Nothing -> case Map.lookup pred (wcLoweredPredicates ctx) of
-      Just fn -> fn ctx sc
-      Nothing -> case callIndexedFact2 ctx pred sc of
-        Just sr -> Just sr
-        Nothing -> case Map.lookup pred (wcLabels ctx) of
-          Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
-          Nothing -> Nothing
+  in case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case callIndexedFact2 ctx pred sc of
+      Just sr -> Just sr
+      Nothing -> case Map.lookup pred (wcLabels ctx) of
+        Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
+        Nothing -> Nothing
 
 step !ctx s Proceed =
   let ret = wsCP s
@@ -1332,21 +1336,25 @@ run !ctx !s
 
 -- | Dispatch a Call to another predicate, trying all resolution paths.
 -- Used by lowered predicate functions for inter-predicate calls.
--- Priority: FFI (executeForeign) > lowered > indexed-facts > labels.
--- FFI takes precedence because hand-written native handlers (e.g.
--- nativeCategoryAncestor) handle full recursive search natively.
+-- Non-foreign call dispatch for lowered functions. Foreign predicates
+-- are dispatched via callForeign (compile-time resolved), so
+-- executeForeign is NOT checked here.
 {-# NOINLINE dispatchCall #-}
 dispatchCall :: WamContext -> String -> WamState -> Maybe WamState
 dispatchCall !ctx pred !sc =
-  case executeForeign ctx pred sc of
-    Just sr -> Just sr
-    Nothing -> case Map.lookup pred (wcLoweredPredicates ctx) of
-      Just fn -> fn ctx sc
-      Nothing -> case callIndexedFact2 ctx pred sc of
-        Just sr -> Just sr
-        Nothing -> case Map.lookup pred (wcLabels ctx) of
-          Just pc -> run ctx (sc { wsPC = pc })
-          Nothing -> Nothing'.
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case callIndexedFact2 ctx pred sc of
+      Just sr -> Just sr
+      Nothing -> case Map.lookup pred (wcLabels ctx) of
+        Just pc -> run ctx (sc { wsPC = pc })
+        Nothing -> Nothing
+
+-- Foreign call for lowered functions. Calls executeForeign directly;
+-- Nothing means no solutions (backtrack). No fallthrough.
+{-# INLINE callForeign #-}
+callForeign :: WamContext -> String -> WamState -> Maybe WamState
+callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 
 % ============================================================================
 % PHASE 4: Project Generation
@@ -1413,7 +1421,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % array so the lowered functions' PC references (wsCP for Call return
     % addresses, wsPC for step calls) are correct.
     compute_base_pcs(Predicates, BasePCMap),
-    lower_all(LoweredList, BasePCMap, LoweredEntries),
+    lower_all(LoweredList, BasePCMap, DetectedKernels, LoweredEntries),
     generate_lowered_hs(LoweredEntries, LoweredCode0),
     apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
     directory_file_path(SrcDir, 'Lowered.hs', LoweredPath),
@@ -1745,17 +1753,15 @@ fetchInstr pc code
 unsafeFetchInstr :: Int -> Array Int Instruction -> Instruction
 unsafeFetchInstr pc code = code ! pc
 
--- | Resolve Call instructions to CallResolved by looking up labels once at
--- project load time. Calls to predicates that have foreign/indexed handlers
--- (e.g., category_ancestor/4 via FFI, category_parent/2 via indexed facts)
--- are LEFT as Call so the runtime dispatch chain still applies. Only Call
--- targets that have a matching label and no foreign/indexed override are
--- pre-resolved to a direct PC jump.
+-- | Resolve Call instructions at project load time:
+--   - Foreign predicates (detected kernels) → CallForeign (direct FFI, Nothing = fail)
+--   - Known labels → CallResolved (direct PC jump, no dispatch)
+--   - Everything else → left as Call (runtime dispatch chain)
 resolveCallInstrs :: Map.Map String Int -> [String] -> [Instruction] -> [Instruction]
 resolveCallInstrs labels foreignPreds = map resolve
   where
     resolve (Call pred arity)
-      | pred `elem` foreignPreds = Call pred arity   -- keep dispatch
+      | pred `elem` foreignPreds = CallForeign pred arity
       | otherwise = case Map.lookup pred labels of
           Just pc -> CallResolved pc arity
           Nothing -> Call pred arity   -- unresolvable, leave as-is
@@ -1875,6 +1881,7 @@ data Instruction
   | Deallocate
   | Call String !Int                  -- pre-resolution form (string-keyed)
   | CallResolved !Int !Int            -- post-resolution: target PC + arity
+  | CallForeign String !Int           -- compile-time resolved foreign pred (Nothing = fail)
   | Execute String
   | Proceed
   | BuiltinCall String !Int
