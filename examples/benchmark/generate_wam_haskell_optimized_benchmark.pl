@@ -76,7 +76,7 @@ generate(VariantAtom, OutputDir) :-
 
     % Step 5: Generate Haskell WAM project
     query_pred_for_variant(VariantAtom, QueryPredOpts),
-    append([module_name('wam-haskell-bench'), emit_mode(functions)], QueryPredOpts, Options),
+    append([module_name('wam-haskell-bench'), emit_mode(functions), no_kernels(true)], QueryPredOpts, Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-Haskell-Optimized] Generated project at ~w~n', [OutputDir]).
 
@@ -97,9 +97,10 @@ parse_variant(accumulated, [
 %  For accumulated, the query calls the WAM-compiled aggregation predicate
 %  directly — no collectSolutions loop needed.
 query_pred_for_variant(seeded, []).
-query_pred_for_variant(accumulated, [
-    query_pred('category_ancestor$effective_distance_sum_bound/3')
-]).
+% TODO: Once the begin_aggregate/end_aggregate bug is fixed, switch to:
+%   query_pred('category_ancestor$effective_distance_sum_bound/3')
+% For now, use default collectSolutions which works correctly.
+query_pred_for_variant(accumulated, []).
 
 %% collect_wam_predicates(+Variant, -Predicates)
 %  Collect the predicate list to compile through WAM, including

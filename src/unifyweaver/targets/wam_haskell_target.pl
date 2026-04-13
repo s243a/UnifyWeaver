@@ -1395,11 +1395,17 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % are handled by the FFI (executeForeign) at runtime and are excluded
     % from generic lowering. The detected kernel list is used to auto-
     % populate foreignPreds in Main.hs.
-    detect_kernels(Predicates, DetectedKernels),
-    (   DetectedKernels \= []
-    ->  pairs_keys(DetectedKernels, DetectedKeys),
-        format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
-    ;   true
+    % no_kernels(true) suppresses kernel detection — all predicates go
+    % through the WAM interpreter (no FFI). Useful for benchmarking.
+    (   option(no_kernels(true), Options)
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-Haskell] kernel detection suppressed~n', [])
+    ;   detect_kernels(Predicates, DetectedKernels),
+        (   DetectedKernels \= []
+        ->  pairs_keys(DetectedKernels, DetectedKeys),
+            format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
+        ;   true
+        )
     ),
 
     % Resolve emit_mode and partition predicates. Detected kernels are
