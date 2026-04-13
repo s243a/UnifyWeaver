@@ -99,6 +99,10 @@ supported(set_value(_)).
 supported(set_constant(_)).
 supported(call(_, _)).
 supported(builtin_call(_, _)).
+supported(begin_aggregate(_, _, _)).
+supported(end_aggregate(_)).
+supported(cut_ite).
+supported(jump(_)).
 supported(proceed).
 
 %% =====================================================================
@@ -108,7 +112,11 @@ supported(proceed).
 lower_predicate_to_haskell(PI, WamCode, Opts, lowered(PredName, FuncName, Code)) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
-    format(atom(FuncName), 'lowered_~w_~w', [Pred, Arity]),
+    % Sanitize predicate name for Haskell: replace $ with _
+    atom_string(Pred, PredStr),
+    split_string(PredStr, "$", "", Parts),
+    atomic_list_concat(Parts, '_', SanitizedPred),
+    format(atom(FuncName), 'lowered_~w_~w', [SanitizedPred, Arity]),
     % base_pc(N) offsets local PCs to match the global merged instruction array.
     ( member(base_pc(BasePC), Opts) -> true ; BasePC = 1 ),
     % foreign_preds(List) — predicate keys with CallForeign dispatch.
@@ -285,6 +293,33 @@ emit_one(builtin_call(OpStr, NStr), PC, SV, SVout, I, _FP) :-
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (BuiltinCall \"~w\" ~w)~n",
            [I, SVout, SV, PC, EOp, NStr]).
+
+% BeginAggregate — delegate to step (pushes aggregate frame CP)
+emit_one(begin_aggregate(TypeStr, ValRegStr, ResRegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(ValRegStr, ValReg),
+    reg_to_int(ResRegStr, ResReg),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (BeginAggregate \"~w\" ~w ~w)~n",
+           [I, SVout, SV, PC, TypeStr, ValReg, ResReg]).
+
+% EndAggregate — delegate to step (collects value, backtracks or finalizes)
+emit_one(end_aggregate(ValRegStr), PC, SV, SVout, I, _FP) :-
+    reg_to_int(ValRegStr, ValReg),
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (EndAggregate ~w)~n",
+           [I, SVout, SV, PC, ValReg]).
+
+% CutIte — delegate to step (soft cut: pop one CP)
+emit_one(cut_ite, PC, SV, SVout, I, _FP) :-
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) CutIte~n",
+           [I, SVout, SV, PC]).
+
+% Jump — delegate to step (unconditional label jump)
+emit_one(jump(LabelStr), PC, SV, SVout, I, _FP) :-
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (Jump \"~w\")~n",
+           [I, SVout, SV, PC, LabelStr]).
 
 %% =====================================================================
 %% Helpers
