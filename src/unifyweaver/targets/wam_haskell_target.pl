@@ -2131,6 +2131,31 @@ compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     [ ~w
     ]', [Pred, Arity, FuncName, FuncName, InstrCode, FuncName, FuncName, LabelCode]).
 
+compile_wam_predicate_to_haskell(PredIndicator, WamCode, _Options, Code) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    (   string(WamCode)
+    ->  WamStr = WamCode
+    ;   atom_string(WamCode, WamStr)
+    ),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_haskell(Lines, 1, InstrExprs, LabelExprs),
+    atomic_list_concat(InstrExprs, '\n    , ', InstrCode),
+    atomic_list_concat(LabelExprs, '\n    , ', LabelCode),
+    format(atom(FuncName), '~w_~w', [Pred, Arity]),
+    format(string(Code),
+'-- WAM-compiled predicate: ~w/~w
+~w_code :: [Instruction]
+~w_code =
+    [ ~w
+    ]
+
+~w_labels :: Map.Map String Int
+~w_labels = Map.fromList
+    [ ~w
+    ]', [Pred, Arity, FuncName, FuncName, InstrCode, FuncName, FuncName, LabelCode]).
+
 %% wam_lines_to_haskell(+Lines, +PC, -InstrExprs, -LabelExprs, -NextPC)
 %  Parses WAM assembly lines into Haskell Instruction constructor expressions
 %  and label (String, Int) pairs. Returns NextPC for merging multiple predicates.

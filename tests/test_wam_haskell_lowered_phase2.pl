@@ -13,13 +13,13 @@
 %
 % These are codegen-only assertions — they inspect the text of generated
 % files, not GHC compilation. The build+run verification was done manually
-% via /tmp/wam_hs_lowered_phase2 with the effective_distance 10k benchmark,
+% via a temporary project directory with the effective_distance 10k benchmark,
 % output byte-identical to the Prolog reference.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_lowered_phase2.pl
 
 :- use_module('../src/unifyweaver/targets/wam_haskell_target').
-:- use_module(library(filesex), [make_directory_path/1]).
+:- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 
 :- dynamic test_failed/0.
 
@@ -35,7 +35,25 @@ fail_test(Test, Reason) :-
 :- dynamic user:phase2_probe/1.
 user:phase2_probe(42).
 
-project_dir('/tmp/uw_wam_hs_lowered_phase2_test').
+tmp_root_candidate(Root) :-
+    member(Env, ['TMPDIR', 'TMP', 'TEMP']),
+    getenv(Env, Root),
+    Root \== ''.
+tmp_root_candidate(Root) :-
+    getenv('PREFIX', Prefix),
+    Prefix \== '',
+    directory_file_path(Prefix, tmp, Root).
+tmp_root_candidate('output').
+
+writable_tmp_root(Root) :-
+    tmp_root_candidate(Root),
+    catch(make_directory_path(Root), _, fail),
+    access_file(Root, write),
+    !.
+
+project_dir(Dir) :-
+    writable_tmp_root(Root),
+    directory_file_path(Root, 'uw_wam_hs_lowered_phase2_test', Dir).
 
 generate_phase2_project :-
     project_dir(Dir),
@@ -108,7 +126,7 @@ test_mkcontext_initializes_wcLoweredPredicates :-
 
 test_step_call_dispatch_checks_lowered_first :-
     Test = 'WAM-Haskell-Lowered Phase 2: step Call dispatch checks wcLoweredPredicates before executeForeign',
-    compile_wam_runtime_to_haskell([], Code),
+    compile_wam_runtime_to_haskell([], [], Code),
     atom_string(Code, S),
     (   sub_string(S, _, _, _, "case Map.lookup pred (wcLoweredPredicates ctx) of"),
         sub_string(S, _, _, _, "Just fn -> fn ctx sc")
