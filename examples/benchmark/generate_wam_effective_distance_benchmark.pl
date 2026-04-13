@@ -124,7 +124,7 @@ wam_lines_to_merged_rust([Line|Rest], PC, Instrs, Labels, FinalPC) :-
                 '    all_labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
             wam_lines_to_merged_rust(Rest, PC, Instrs, RestLabels, FinalPC)
-        ;   wam_rust_target:wam_line_to_rust_instr(CleanParts, RustInstr),
+        ;   wam_rust_target:wam_line_to_rust_instr(CleanParts, unknown/0, [], RustInstr),
             format(string(InstrEntry), '        ~w,', [RustInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
@@ -695,7 +695,12 @@ fn main() {
 
     let root = roots[0].clone();
     let max_depth_limit = 10usize;
-    vm.register_foreign_category_ancestor(max_depth_limit);
+    vm.register_foreign_predicate("category_ancestor/4");
+    vm.register_foreign_native_kind("category_ancestor/4", "category_ancestor");
+    vm.register_foreign_usize_config("category_ancestor/4", "max_depth", max_depth_limit);
+    vm.register_foreign_string_config("category_ancestor/4", "edge_pred", "category_parent");
+    vm.register_foreign_result_layout("category_ancestor/4", "tuple(1)");
+    vm.register_foreign_result_mode("category_ancestor/4", "stream");
     let reverse_category_parents = build_reverse_fact2(&category_parents);
     let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;

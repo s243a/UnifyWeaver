@@ -799,26 +799,29 @@ finalizeAggregate returnPC s = go (wsCPs s)
       Just (AggFrame typ _valReg resReg _) ->
         let accum = reverse (wsAggAccum s)
             result = applyAggregation typ accum
-            bindings0 = cpBindings cp
-            regs0 = cpRegs cp
-            resVal = derefVar bindings0 <$> IM.lookup resReg regs0
-            -- Restore trail to the CP''s snapshot (drop entries added since)
+            -- Restore the CP snapshot state so we can read Y-registers
+            -- from the stack (cpRegs only has A/X registers).
+            cpState = s { wsRegs = cpRegs cp, wsStack = cpStack cp
+                        , wsBindings = cpBindings cp }
+            resVal = derefVar (cpBindings cp) <$> getReg resReg cpState
+            -- Restore trail to the CP snapshot (drop entries added since)
             diff = wsTrailLen s - cpTrailLen cp
             restoredTrail = drop diff (wsTrail s)
-            (regs1, bindings1, trail1, trail1Len) = case resVal of
+            (finalRegs, finalBindings, finalStack, finalTrail, finalTrailLen) = case resVal of
               Just (Unbound vid) ->
-                ( IM.insert resReg result regs0
-                , IM.insert vid result bindings0
-                , TrailEntry vid (IM.lookup vid bindings0) : restoredTrail
+                ( IM.insert resReg result (cpRegs cp)
+                , IM.insert vid result (cpBindings cp)
+                , putRegStack resReg result (cpStack cp)
+                , TrailEntry vid (IM.lookup vid (cpBindings cp)) : restoredTrail
                 , cpTrailLen cp + 1
                 )
-              _ -> (regs0, bindings0, restoredTrail, cpTrailLen cp)
+              _ -> (cpRegs cp, cpBindings cp, cpStack cp, restoredTrail, cpTrailLen cp)
         in Just s { wsPC = returnPC
-                  , wsRegs = regs1
-                  , wsStack = cpStack cp
-                  , wsBindings = bindings1
-                  , wsTrail = trail1
-                  , wsTrailLen = trail1Len
+                  , wsRegs = finalRegs
+                  , wsStack = finalStack
+                  , wsBindings = finalBindings
+                  , wsTrail = finalTrail
+                  , wsTrailLen = finalTrailLen
                   , wsHeap = take (cpHeapLen cp) (wsHeap s)
                   , wsHeapLen = cpHeapLen cp
                   , wsCP = cpCP cp
@@ -827,6 +830,10 @@ finalizeAggregate returnPC s = go (wsCPs s)
                   , wsAggAccum = []
                   }
       Nothing -> go rest  -- skip non-aggregate CPs
+    putRegStack rid val [] = []
+    putRegStack rid val (EnvFrame ecp yregs : rest) =
+      EnvFrame ecp (IM.insert rid val yregs) : rest
+    putRegStack rid val (x : rest) = x : putRegStack rid val rest
 
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
@@ -1048,6 +1055,16 @@ step !ctx s (Call pred _arity) =
         Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
         Nothing -> Nothing
 
+-- Execute: tail call, like Call but without setting wsCP
+step !ctx s (Execute pred) =
+  case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx s
+    Nothing -> case callIndexedFact2 ctx pred s of
+      Just sr -> Just sr
+      Nothing -> case Map.lookup pred (wcLabels ctx) of
+        Just pc -> Just (s { wsPC = pc })
+        Nothing -> Nothing
+
 step !ctx s Proceed =
   let ret = wsCP s
   in if ret == 0 then Just (s { wsPC = 0 })
@@ -1095,6 +1112,34 @@ step !ctx s (RetryMeElse label) =
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
+
+-- Type-checking builtins
+step !ctx s (BuiltinCall "nonvar/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Unbound _) -> Nothing
+    Just _           -> Just (s { wsPC = wsPC s + 1 })
+    Nothing          -> Nothing
+
+step !ctx s (BuiltinCall "var/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
+
+step !ctx s (BuiltinCall "atom/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Atom _) -> Just (s { wsPC = wsPC s + 1 })
+    _             -> Nothing
+
+step !ctx s (BuiltinCall "integer/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Integer _) -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
+
+step !ctx s (BuiltinCall "number/1" _) =
+  case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
+    Just (Integer _) -> Just (s { wsPC = wsPC s + 1 })
+    Just (Float _)   -> Just (s { wsPC = wsPC s + 1 })
+    _                -> Nothing
 
 step !ctx s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
@@ -1395,11 +1440,17 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % are handled by the FFI (executeForeign) at runtime and are excluded
     % from generic lowering. The detected kernel list is used to auto-
     % populate foreignPreds in Main.hs.
-    detect_kernels(Predicates, DetectedKernels),
-    (   DetectedKernels \= []
-    ->  pairs_keys(DetectedKernels, DetectedKeys),
-        format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
-    ;   true
+    % no_kernels(true) suppresses kernel detection — all predicates go
+    % through the WAM interpreter (no FFI). Useful for benchmarking.
+    (   option(no_kernels(true), Options)
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-Haskell] kernel detection suppressed~n', [])
+    ;   detect_kernels(Predicates, DetectedKernels),
+        (   DetectedKernels \= []
+        ->  pairs_keys(DetectedKernels, DetectedKeys),
+            format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
+        ;   true
+        )
     ),
 
     % Resolve emit_mode and partition predicates. Detected kernels are
@@ -1452,7 +1503,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs
-    generate_main_hs(Predicates, DetectedKernels, MainCode0),
+    generate_main_hs(Predicates, DetectedKernels, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
@@ -1567,15 +1618,62 @@ emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
     format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
     emit_lowered_entries_rest(Rest).
 
-%% generate_main_hs(+Predicates, +DetectedKernels, -Code)
+%% generate_main_hs(+Predicates, +DetectedKernels, +Options, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
-%  Reads main.hs.mustache and populates {{foreign_preds}} from DetectedKernels.
-generate_main_hs(_Predicates, DetectedKernels, Code) :-
+%  Reads main.hs.mustache and populates template variables.
+%  Options:
+%    query_pred(Pred/Arity) — use a WAM-compiled aggregation predicate
+%      instead of the default collectSolutions loop. The predicate should
+%      accept (Cat, Root, WeightSum) and return the accumulated weight sum.
+generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
-    % Build foreignPreds list: ["category_ancestor/4", "closure/2", ...]
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
-    render_template(Template, [foreign_preds=ForeignPredsStr], Code).
+    generate_query_body(Options, QueryBody),
+    render_template(Template,
+        [foreign_preds=ForeignPredsStr, query_body=QueryBody], Code).
+
+generate_query_body(Options, QueryBody) :-
+    (   member(query_pred(QueryPred), Options)
+    ->  % Optimized: call WAM-compiled aggregation predicate per seed.
+        % The predicate does begin_aggregate/end_aggregate internally.
+        format(atom(QueryPred1), '~w', [QueryPred]),
+        format(atom(QueryBody),
+'let wsVarId = 1000000
+            s0 = emptyState
+                { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels
+                , wsRegs = IM.fromList
+                    [ (1, Atom cat)
+                    , (2, Atom root)
+                    , (3, Unbound wsVarId)
+                    ]
+                , wsCP = 0
+                }
+            !result = case run ctx s0 of
+              Just s1 -> case IM.lookup wsVarId (wsBindings s1) of
+                Just v -> case extractDouble (derefVar (wsBindings s1) v) of
+                  Just ws -> ws
+                  Nothing -> 0.0
+                Nothing -> 0.0
+              Nothing -> 0.0
+        return (cat, result)', [QueryPred1])
+    ;   % Default: collectSolutions loop for category_ancestor/4
+        QueryBody =
+'let hopsVarId = 1000000
+            s0 = emptyState
+                { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
+                , wsRegs = IM.fromList
+                    [ (1, Atom cat)
+                    , (2, Atom root)
+                    , (3, Unbound hopsVarId)
+                    , (4, VList [Atom cat])
+                    ]
+                , wsCP = 0
+                }
+            !solutions = collectSolutions ctx s0 hopsVarId
+            !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
+        return (cat, weightSum)'
+    ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
 %  Extract the string keys from Key-Kernel pairs.

@@ -338,3 +338,50 @@ this branch") applies here too. Notably:
 - No `unsafePerformIO`.
 - No new instruction set.
 - No changes to native lowering or to the Rust target.
+
+## 8. Current benchmark results (2026-04-13)
+
+The WAM Haskell target now **beats SWI-Prolog** on a fair comparison
+using the same optimized Prolog workload. The Rust WAM target also
+beats SWI-Prolog on unoptimized Prolog.
+
+### 8.1 Effective-distance benchmark (300 scale, median of 5 runs)
+
+| Target | Prolog variant | query_ms | vs SWI |
+|---|---|---|---|
+| SWI-Prolog | Optimized (accumulated) | 311ms | baseline |
+| **WAM Haskell + FFI** | **Optimized (accumulated)** | **200ms** | **1.56x faster** |
+| **WAM Rust + FFI** | **Unoptimized** | **126ms** | **2.47x faster** |
+| WAM Haskell (no FFI) | Optimized (accumulated) | 4739ms | 15x slower |
+
+### 8.2 Key changes since initial benchmarks
+
+1. **Optimized Prolog pipeline** (#1359): Bridged `prolog_target`
+   optimization passes with the WAM Haskell pipeline. The WAM targets
+   were previously benchmarked against unoptimized Prolog while SWI
+   used optimized variants with seeded accumulation.
+
+2. **CallForeign instruction** (#1355): Compile-time dispatch resolution
+   eliminates the no-handler/no-solutions ambiguity. Foreign predicates
+   use `CallForeign` (Nothing = fail), non-foreign use `Call` (runtime
+   dispatch chain).
+
+3. **Multi-clause lowering** (#1358): Multi-clause predicates are now
+   lowerable (clause 1 inlined, clause 2+ interpreter fallback).
+
+4. **Bug fixes**: `nonvar/1` + type-checking builtins, `Execute`
+   instruction, `finalizeAggregate` Y-register binding, parameterized
+   `executeForeign` via kernel metadata.
+
+### 8.3 Performance breakdown
+
+The ~37x gap from section 0 has been closed:
+- Started at ~11.7s (37x slower than SWI)
+- After HashMap + IntMap + FFI: ~280ms (close to SWI)
+- After optimized Prolog pipeline: ~200ms (1.56x faster than SWI)
+
+The FFI provides ~15x speedup for `category_ancestor/4` by replacing
+the WAM interpreter loop with a native Haskell depth-bounded DFS.
+The optimized Prolog aggregate query adds another ~20% by moving the
+power-sum accumulation from Haskell's `collectSolutions` loop into
+WAM's `begin_aggregate`/`end_aggregate` machinery.

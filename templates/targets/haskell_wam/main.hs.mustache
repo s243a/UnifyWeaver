@@ -137,25 +137,13 @@ main = do
 
     t2 <- getCurrentTime
 
-    -- For each seed, run category_ancestor(Cat, Root, Hops, [Cat])
+    -- Per-seed query. The query predicate and register layout are
+    -- parameterized via {{query_pred}}, {{query_regs}}, {{query_extract}}.
     -- IMPORTANT: use mapM in IO with strict bang patterns to force actual
     -- computation BEFORE timing endpoint, otherwise lazy evaluation will
     -- defer the work until output and the timing will be artificially low.
     seedResultsForced <- mapM (\cat -> do
-        let hopsVarId = 1000000  -- reserved query var ID, won't collide with wsVarCounter
-            s0 = emptyState
-                { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
-                , wsRegs = IM.fromList
-                    [ (1, Atom cat)
-                    , (2, Atom root)
-                    , (3, Unbound hopsVarId)
-                    , (4, VList [Atom cat])
-                    ]
-                , wsCP = 0
-                }
-            !solutions = collectSolutions ctx s0 hopsVarId
-            !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
-        return (cat, weightSum)
+        {{query_body}}
         ) seedCats
 
     let !seedWeightSums = Map.fromList [(cat, ws) | (cat, ws) <- seedResultsForced, ws > 0]
