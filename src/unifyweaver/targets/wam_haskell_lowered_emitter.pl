@@ -59,22 +59,22 @@ tokenize(Line, Term) :-
 
 wam_haskell_lowerable(_PI, WamCode, _Reason) :-
     parse_wam_text(WamCode, PCInstrs, _),
-    PCInstrs = [pc(_, FirstInstr)|_],
-    % Multi-clause predicates (try_me_else) are not lowerable yet:
-    %   - Detected kernels (e.g. category_ancestor) use the FFI path
-    %     (executeForeign takes dispatch priority) — lowering them would
-    %     produce dead code that never runs.
-    %   - Non-kernel multi-clause predicates cause exponential blowup
-    %     because clause-1-only lowering + interpreter clause-2 recursion
-    %     bypasses the FFI's authoritative "no solutions" signal.
-    % Multi-clause lowering requires either auto-generated kernel FFI
-    % (see docs/proposals/WAM_FOREIGN_DISPATCH_RETURN_TYPE.md) or the
-    % full all-clauses-inline approach from the spec §2.4.
-    FirstInstr \= try_me_else(_),
+    % Multi-clause predicates (try_me_else) are now lowerable:
+    %   - Clause 1 is lowered into a Haskell function
+    %   - Clause 2+ stays in the interpreter, reached via backtrack
+    %   - CallForeign resolves the no-handler/no-solutions ambiguity
+    %     at compile time, so foreign calls from lowered functions are safe.
+    %   - Detected kernels are excluded from lowering by the partition
+    %     logic (they use FFI via CallForeign, lowering would be dead code).
     clause1_instrs(PCInstrs, C1),
     forall(member(I, C1), supported(I)).
 
 clause1_instrs([], []).
+% Skip switch_on_constant at the head (multi-clause indexing prefix).
+% The parsed term may have variable arity depending on the dispatch table.
+clause1_instrs([pc(_, Instr)|Rest], C1) :-
+    functor(Instr, switch_on_constant, _), !,
+    clause1_instrs(Rest, C1).
 clause1_instrs([pc(_, try_me_else(_))|Rest], C1) :- !,
     take_to_proceed(Rest, C1).
 clause1_instrs(PCInstrs, Instrs) :-
@@ -137,7 +137,13 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds) :-
     % Multi-clause: push CP, try clause 1, if it fails backtrack into
     % the interpreter for clause 2+. This ensures the CP is visible
     % to the backtrack machinery even when clause 1 returns Nothing.
-    (   PCInstrs = [pc(_, try_me_else(LStr))|BodyPCs]
+    % Skip switch_on_constant prefix if present (variable arity)
+    (   PCInstrs = [pc(_, SOC)|PCInstrs1],
+        functor(SOC, switch_on_constant, _)
+    ->  true
+    ;   PCInstrs1 = PCInstrs
+    ),
+    (   PCInstrs1 = [pc(_, try_me_else(LStr))|BodyPCs]
     ->  atom_string(LAtom, LStr),
         (   member(LAtom-AltPC, LabelMap) -> true ; AltPC = 0 ),
         format("~w !ctx s_init =~n", [FN]),
