@@ -103,7 +103,7 @@ query_pred_for_variant(seeded, []).
 % Uses the selector (if-then-else dispatch) which routes to
 % power_sum_bound when Root is bound.
 query_pred_for_variant(accumulated, [
-    query_pred('category_ancestor$effective_distance_sum_bound/3')
+    query_pred('category_ancestor$effective_distance_sum_selected/3')
 ]).
 
 %% collect_wam_predicates(+Variant, -Predicates)

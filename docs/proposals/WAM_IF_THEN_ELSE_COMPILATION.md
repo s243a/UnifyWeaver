@@ -2,11 +2,11 @@
 
 ## Status
 
-**Partially implemented** — WAM compiler now emits try/cut/trust + Jump
-for if-then-else. `power_sum_selected/3` compiles successfully. The cut
-semantics need refinement: `!/0` may cut too aggressively when nested
-inside aggregate frames, causing incorrect results when the if-then-else
-is called from within `begin_aggregate`/`end_aggregate`.
+**Implemented** — WAM compiler emits try/cut_ite/trust + Jump for
+if-then-else. Uses `CutIte` (soft cut: pop one CP) instead of `!/0`
+(clause-level cut) to preserve aggregate frames and outer CPs.
+`power_sum_selected/3` compiles and runs correctly through the full
+optimized benchmark pipeline.
 
 ## Problem
 

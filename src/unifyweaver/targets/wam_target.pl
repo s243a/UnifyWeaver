@@ -626,9 +626,12 @@ compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, HasEnv, Code) :-
     ),
     % Emit: try_me_else ElseLabel / Cond / !/0 / Then / jump ContLabel
     %        ElseLabel: trust_me / Else / ContLabel:
+    % Use cut_ite (soft cut) instead of !/0 — pops only the if-then-else
+    % CP, preserving aggregate frames and outer choice points.
+    % ContLabel marks the continuation after both branches.
     format(string(Code),
-        "    try_me_else ~w~n~w~n    builtin_call !/0, 0~n~w~n    jump ~w~n~w:~n    trust_me~n~w",
-        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode]).
+        "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
 
 %% compile_disjunction(+Left, +Right, +V0, -Vf, +HasEnv, -Code)
 %  Compile (A ; B) to WAM try/trust + jump pattern (no cut).
@@ -640,8 +643,8 @@ compile_disjunction(LeftGoal, RightGoal, V0, Vf, _HasEnv, Code) :-
     compile_inner_call_goals(RightGoals, V0, V2, RightCode),
     (   V1 = V2 -> Vf = V1 ; Vf = V1 ),
     format(string(Code),
-        "    try_me_else ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w",
-        [RightLabel, LeftCode, ContLabel, RightLabel, RightCode]).
+        "    try_me_else ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+        [RightLabel, LeftCode, ContLabel, RightLabel, RightCode, ContLabel]).
 
 %% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
 %  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.

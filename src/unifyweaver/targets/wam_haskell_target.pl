@@ -1119,6 +1119,15 @@ step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
 
+-- CutIte: soft cut for if-then-else — pops exactly the top choice point
+-- (the one pushed by try_me_else for the Else branch). Unlike !/0 which
+-- truncates to wsCutBar (clause-level), this only removes the immediately
+-- enclosing if-then-else CP, preserving aggregate frames and outer CPs.
+step !ctx s CutIte =
+  case wsCPs s of
+    (_cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+    [] -> Just (s { wsPC = wsPC s + 1 })  -- no CP to pop (shouldn''t happen)
+
 -- Type-checking builtins
 step !ctx s (BuiltinCall "nonvar/1" _) =
   case derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s) of
@@ -2004,6 +2013,7 @@ data Instruction
   | CallForeign String !Int           -- compile-time resolved foreign pred (Nothing = fail)
   | Execute String
   | Jump String                         -- unconditional jump to label
+  | CutIte                              -- soft cut: pop one CP (if-then-else)
   | Proceed
   | BuiltinCall String !Int
   | TryMeElse String
@@ -2251,6 +2261,7 @@ wam_instr_to_haskell(["execute", P], Hs) :-
 wam_instr_to_haskell(["proceed"], "Proceed").
 wam_instr_to_haskell(["jump", Label], Hs) :-
     format(string(Hs), 'Jump "~w"', [Label]).
+wam_instr_to_haskell(["cut_ite"], "CutIte").
 wam_instr_to_haskell(["builtin_call", Op, N], Hs) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
