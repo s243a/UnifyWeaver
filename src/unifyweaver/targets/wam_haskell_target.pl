@@ -1541,12 +1541,11 @@ replace_substr(Str, From, To, Result) :-
     atom_string(Str, S),
     atom_string(From, FS),
     atom_string(To, TS),
-    split_string(S, "", "", [_]),  % normalize
     re_split_replace(S, FS, TS, R),
     atom_string(Result, R).
 
 re_split_replace(S, From, To, Result) :-
-    (   sub_string(S, B, L, A, From)
+    (   sub_string(S, B, _Len, A, From)
     ->  sub_string(S, 0, B, _, Before),
         sub_string(S, _, A, 0, After),
         re_split_replace(After, From, To, AfterR),
@@ -2225,18 +2224,6 @@ wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutStructure "~w" ~w ~w', [CFN, AiI, Arity]).
-
-%% parse_functor_arity(+FunctorString, -Arity)
-%  Extract the arity from "name/N" format. Defaults to 0 if no slash.
-parse_functor_arity(FN, Arity) :-
-    atom_string(FNA, FN),
-    (   sub_atom(FNA, Before, 1, _, '/'),
-        After is Before + 1,
-        sub_atom(FNA, After, _, 0, ArityStr),
-        atom_number(ArityStr, Arity)
-    ->  true
-    ;   Arity = 0
-    ).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
@@ -2288,6 +2275,18 @@ wam_instr_to_haskell(["end_aggregate", ValReg], Hs) :-
 wam_instr_to_haskell(Parts, Hs) :-
     atomic_list_concat(Parts, ' ', Joined),
     format(string(Hs), '-- UNKNOWN: ~w\n    Proceed', [Joined]).
+
+%% parse_functor_arity(+FunctorString, -Arity)
+%  Extract the arity from "name/N" format. Defaults to 0 if no slash.
+parse_functor_arity(FN, Arity) :-
+    atom_string(FNA, FN),
+    (   sub_atom(FNA, Before, 1, _, '/'),
+        After is Before + 1,
+        sub_atom(FNA, After, _, 0, ArityStr),
+        atom_number(ArityStr, Arity)
+    ->  true
+    ;   Arity = 0
+    ).
 
 %% wam_value_to_haskell(+WamVal, -HaskellExpr)
 %  Converts a WAM constant to a Haskell Value constructor.
