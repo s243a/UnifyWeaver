@@ -99,11 +99,16 @@ supported(set_value(_)).
 supported(set_constant(_)).
 supported(call(_, _)).
 supported(builtin_call(_, _)).
-supported(begin_aggregate(_, _, _)).
-supported(end_aggregate(_)).
+% begin_aggregate/end_aggregate are NOT lowerable — they require the run
+% loop for backtrack-driven solution collection. Delegating individual
+% step calls breaks because EndAggregate needs to loop.
 supported(cut_ite).
 supported(jump(_)).
+supported(trust_me).  % consumed by if-then-else pattern detection in emit_instrs
 supported(proceed).
+
+% Execute — tail call to another predicate
+supported(execute(_)).
 
 %% =====================================================================
 %% Emission
@@ -181,10 +186,86 @@ take_to_proceed_pc([H|T], [H|R]) :- take_to_proceed_pc(T, R).
 
 %% emit_instrs(+PCInstrs, +CurrentStateVar, +IndentPrefix, +ForeignPreds)
 %  Emit one line of do-notation per instruction, threading state vars.
+%  Detects if-then-else patterns (try_me_else/cut_ite/jump/trust_me)
+%  and emits native Haskell case branching instead of WAM choice points.
 emit_instrs([], _, _, _).
+emit_instrs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP) :-
+    % Detect if-then-else: try_me_else ... cut_ite ... jump ... trust_me
+    atom_string(ElseLabel, ElseLabelStr),
+    split_ite_blocks(Rest, ElseLabel, CondInstrs, ThenInstrs, ElseInstrs, _ContInstrs),
+    !,
+    % Emit: run condition in a nested do-block, case-split on result.
+    % The case expression is the last statement — it returns directly.
+    format("~wcase (do~n", [Ind]),
+    atom_concat(Ind, "      ", CondInd),
+    % Emit condition instructions, ending with return of final state
+    emit_ite_block(CondInstrs, SV, CondInd, FP),
+    format("~w  ) of~n", [Ind]),
+    % Then branch: condition succeeded
+    fresh_sv(SV, SVthen),
+    format("~w    Just ~w -> do~n", [Ind, SVthen]),
+    atom_concat(Ind, "      ", ThenInd),
+    emit_ite_block(ThenInstrs, SVthen, ThenInd, FP),
+    % Else branch: condition failed, restore original state
+    format("~w    Nothing -> do~n", [Ind]),
+    atom_concat(Ind, "      ", ElseInd),
+    emit_ite_block(ElseInstrs, SV, ElseInd, FP).
 emit_instrs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     emit_one(Instr, PC, SV, SVout, Ind, FP),
     emit_instrs(Rest, SVout, Ind, FP).
+
+%% emit_ite_block(+PCInstrs, +SV, +Ind, +FP)
+%  Emit instructions for an if-then-else branch block.
+%  Emits do-notation and returns the final state via the last instruction.
+%  If the block ends with proceed, it emits the proceed normally.
+%  Otherwise it adds a `return` of the final state.
+emit_ite_block([], SV, Ind, _FP) :-
+    format("~wreturn ~w~n", [Ind, SV]).
+emit_ite_block([pc(PC, Instr)], SV, Ind, FP) :-
+    % Last instruction — emit it, then return if it's not a terminal
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    (   is_terminal_instr(Instr) -> true
+    ;   format("~wreturn ~w~n", [Ind, SVout])
+    ).
+emit_ite_block([pc(PC, Instr)|Rest], SV, Ind, FP) :-
+    Rest \= [],
+    emit_one(Instr, PC, SV, SVout, Ind, FP),
+    emit_ite_block(Rest, SVout, Ind, FP).
+
+is_terminal_instr(proceed).
+
+%% split_ite_blocks(+PCInstrs, +ElseLabel, -CondInstrs, -ThenInstrs, -ElseInstrs, -ContInstrs)
+%  Split the instruction stream at the if-then-else boundaries.
+%  Pattern in the instruction stream (labels consumed by parser):
+%    <cond> cut_ite <then> jump(L_cont) trust_me <else> <cont>
+%  where <cont> starts at the PC that L_cont maps to.
+split_ite_blocks(Instrs, _ElseLabel, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
+    % Split at cut_ite: everything before is condition
+    split_at_instr(Instrs, cut_ite, CondInstrs, AfterCut),
+    % Split at jump: everything between cut_ite and jump is Then
+    split_at_jump(AfterCut, ThenInstrs, ContLabelStr, AfterJump),
+    % Next should be trust_me (start of Else block)
+    AfterJump = [pc(_, trust_me)|ElseAndCont],
+    % Split Else from continuation: find the PC that ContLabel maps to
+    atom_string(ContLabel, ContLabelStr),
+    split_else_cont(ElseAndCont, ContLabel, ElseInstrs, ContInstrs).
+
+split_at_instr([], _, _, _) :- !, fail.
+split_at_instr([pc(_, Instr)|Rest], Instr, [], Rest) :- !.
+split_at_instr([H|T], Instr, [H|Before], After) :-
+    split_at_instr(T, Instr, Before, After).
+
+split_at_jump([], [], "", []) :- !, fail.
+split_at_jump([pc(_, jump(Label))|Rest], [], Label, Rest) :- !.
+split_at_jump([H|T], [H|Then], Label, Rest) :-
+    split_at_jump(T, Then, Label, Rest).
+
+%% split_else_cont(+Instrs, +ContLabel, -ElseInstrs, -ContInstrs)
+%  The continuation label was consumed by the parser. We need to find
+%  the PC boundary. For now, since if-then-else is typically the last
+%  construct before proceed, treat everything as Else and ContInstrs=[].
+%  A more precise split would use the LabelMap to find the cont PC.
+split_else_cont(Instrs, _ContLabel, Instrs, []).
 
 %% emit_one(+Instr, +PC, +StateVarIn, -StateVarOut, +IndentPrefix, +ForeignPreds)
 %  Emit do-notation for a single instruction.
@@ -320,6 +401,20 @@ emit_one(jump(LabelStr), PC, SV, SVout, I, _FP) :-
     fresh_sv(SV, SVout),
     format("~w~w <- step ctx (~w { wsPC = ~w }) (Jump \"~w\")~n",
            [I, SVout, SV, PC, LabelStr]).
+
+% TrustMe — delegate to step (fallback for non-pattern-matched if-then-else)
+emit_one(trust_me, PC, SV, SVout, I, _FP) :-
+    fresh_sv(SV, SVout),
+    format("~w~w <- step ctx (~w { wsPC = ~w }) TrustMe~n",
+           [I, SVout, SV, PC]).
+
+% Execute — tail call, returns directly (no wsCP change, no bind needed)
+emit_one(execute(PredStr), _PC, SV, SV, I, FP) :-
+    atom_string(PredAtom, PredStr),
+    (   member(PredAtom, FP)
+    ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, PredStr, SV])
+    ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, PredStr, SV])
+    ).
 
 %% =====================================================================
 %% Helpers
