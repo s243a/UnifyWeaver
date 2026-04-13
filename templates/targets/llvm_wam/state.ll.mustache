@@ -1607,9 +1607,15 @@ entry:
   br i1 %tc_s_is_atom, label %tc_check_t, label %tc_bail
 
 tc_check_t:
+  ; If A2 is unbound (tag=6), use stream mode (enumerate all reachable).
+  ; If A2 is an atom (tag=0), use deterministic mode (boolean check).
   %tc_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
   %tc_t_is_atom = icmp eq i32 %tc_t_tag, 0
-  br i1 %tc_t_is_atom, label %tc_run_bfs, label %tc_bail
+  br i1 %tc_t_is_atom, label %tc_run_bfs, label %tc_check_unbound
+
+tc_check_unbound:
+  %tc_t_is_unbound = icmp eq i32 %tc_t_tag, 6
+  br i1 %tc_t_is_unbound, label %tc_stream, label %tc_bail
 
 tc_run_bfs:
   %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
@@ -1622,7 +1628,154 @@ tc_run_bfs:
       i64* %tc_dist_slot)
   ret i1 %tc_ok
 
+tc_stream:
+  ; Stream mode: collect all reachable nodes via BFS, push as foreign
+  ; choice point, yield first result to A2.
+  %st_ok = call i1 @wam_tc2_stream_run(
+      %WamState* %vm,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %st_ok
+
 tc_bail:
+  ret i1 false
+}
+
+; === M5.14: Stream-mode tc2 (enumerate all reachable nodes) ===
+; Runs BFS from A1, collects all reachable nodes (excluding start) into
+; a %Value array, pushes a foreign choice point, and yields the first
+; result. On backtrack, the iterator yields subsequent reachable nodes.
+;
+; Returns false if no reachable nodes exist (start is isolated).
+; The result array is malloc'd (not arena) because it must outlive this
+; call — the choice point holds a pointer to it across backtracks.
+define i1 @wam_tc2_stream_run(
+    %WamState* %vm,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; Allocate scratch buffers for BFS (visited, queue) via arena.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+
+  ; Also allocate a result collector array (max n entries, %Value each).
+  ; This is malloc'd because it must persist in the choice point.
+  %res_bytes = shl i64 %n, 4   ; n * sizeof(%Value) = n * 16
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  ; Zero-init visited[].
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  ; Seed BFS with start.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  br label %bfs_loop
+
+bfs_loop:
+  %head = phi i64 [0, %entry], [%head_next, %bfs_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %bfs_scan_done]
+  %rcount = phi i64 [0, %entry], [%rcount_after, %bfs_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %bfs_pop, label %bfs_done
+
+bfs_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %head_next = add i64 %head, 1
+  br label %bfs_scan
+
+bfs_scan:
+  %si = phi i64 [0, %bfs_pop], [%si_next, %bfs_scan_cont]
+  %tail_cur = phi i64 [%tail, %bfs_pop], [%tail_kept, %bfs_scan_cont]
+  %rc_cur = phi i64 [%rcount, %bfs_pop], [%rc_kept, %bfs_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %bfs_scan_body, label %bfs_scan_done
+
+bfs_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %bfs_check_to, label %bfs_scan_cont
+
+bfs_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %bfs_check_vis, label %bfs_scan_cont
+
+bfs_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %bfs_scan_cont, label %bfs_enqueue
+
+bfs_enqueue:
+  ; Mark visited, enqueue, and add to results.
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %tail_inc = add i64 %tail_cur, 1
+  ; Append to results as Atom value (tag=0, payload=atom_id).
+  %res_slot = getelementptr %Value, %Value* %results, i64 %rc_cur
+  %res_tag = getelementptr %Value, %Value* %res_slot, i32 0, i32 0
+  store i32 0, i32* %res_tag
+  %res_pay = getelementptr %Value, %Value* %res_slot, i32 0, i32 1
+  store i64 %to_id, i64* %res_pay
+  %rc_inc = add i64 %rc_cur, 1
+  br label %bfs_scan_cont
+
+bfs_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %bfs_scan_body], [%tail_cur, %bfs_check_to], [%tail_cur, %bfs_check_vis], [%tail_inc, %bfs_enqueue]
+  %rc_kept = phi i64 [%rc_cur, %bfs_scan_body], [%rc_cur, %bfs_check_to], [%rc_cur, %bfs_check_vis], [%rc_inc, %bfs_enqueue]
+  %si_next = add i64 %si, 1
+  br label %bfs_scan
+
+bfs_scan_done:
+  %tail_after = phi i64 [%tail_cur, %bfs_scan]
+  %rcount_after = phi i64 [%rc_cur, %bfs_scan]
+  br label %bfs_loop
+
+bfs_done:
+  ; Free BFS scratch.
+  call void @wam_arena_rewind(i64 %arena_save)
+
+  ; If no reachable nodes, fail.
+  %no_results = icmp eq i64 %rcount, 0
+  br i1 %no_results, label %stream_fail, label %stream_yield
+
+stream_yield:
+  ; Yield first result (index 0) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Get current PC for return_pc (where to resume after each yield).
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+
+  ; Push foreign choice point for remaining results.
+  %rcount32 = trunc i64 %rcount to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %rcount32,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+stream_fail:
+  call void @free(i8* %res_mem)
   ret i1 false
 }
 
