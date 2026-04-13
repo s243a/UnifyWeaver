@@ -102,6 +102,15 @@ Measure:
 - candidate bucket sizes
 - exact verification counts
 
+Status:
+
+- weighted `Min` fallback now reports `min_frontier_*` counters for
+  dominance candidates, exact subset checks, and retained frontier buckets
+- counted simple-path closure now reports `path_state_*` counters for raw
+  traversal work: seeds, stack pops, successor candidates, cycle skips,
+  depth-limit skips, best-known pruning, enqueued states, output rows, max
+  stack size, and max path length
+
 ## Phase 7: Planner Integration
 
 Make the runtime selection explicit:
@@ -117,14 +126,34 @@ plan. On benchmark-scale cyclic fallback cases, dominance-candidate scans
 dominate the counters, retained buckets grow, and exact subset checks are not
 the main count driver.
 
-The next concrete coding step should start here:
+The requested comparison is now in place:
 
-- compare this weighted `Min` fallback against another non-DAG path-state
-  workload before adding more generic indexes
 - positive multiplicative weighted `Min` is now handled separately when every
   factor is finite and at least `1`
+- counted simple-path shortest-path runs expose `path_state_*` metrics from
+  `PathAwareTransitiveClosureNode`
 - preserve the current rule that fingerprints, masks, and representatives are
   only candidate filters; exact subset verification remains authoritative
+
+Local survey:
+
+| Workload | Scale | All | Min | Match | Main Counter |
+| --- | ---: | ---: | ---: | --- | --- |
+| counted shortest path | 300 | 0.920s | 0.246s | yes | `982,581` all-mode successor candidates |
+| counted shortest path | 1k | 0.679s | 0.162s | yes | `592,698` all-mode successor candidates |
+| negative additive weighted `Min` | 300 | 0.871s | 1.478s | yes | `20,404,270` dominance candidates |
+| negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
+
+Interpretation:
+
+- counted closure is dominated by raw successor expansion and depth-limit
+  skips, not exact subset dominance
+- weighted `Min` fallback remains the only measured shape where generic
+  frontier candidate indexing is directly relevant
+- the next optimization should not add another generic frontier index by
+  default; if counted closure becomes the target, the more appropriate next
+  step is compact visited-state storage for `PathAwareTransitiveClosureNode`
+  rather than more dominance-frontier machinery
 
 The optimization must remain exact: fingerprints and bucket keys should reduce
 candidate scans, not replace the final simple-path dominance check.

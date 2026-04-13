@@ -11317,6 +11317,23 @@ namespace UnifyWeaver.QueryRuntime
                     : metrics.BucketStateCount / (double)metrics.BucketCount);
         }
 
+        private static void RecordPathAwareTraversalMetrics(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareTraversalMetrics metrics)
+        {
+            trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
+            trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
+            trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
+            trace?.AddMetric(node, "path_state_cycle_skip_count", metrics.CycleSkipCount);
+            trace?.AddMetric(node, "path_state_depth_skip_count", metrics.DepthSkipCount);
+            trace?.AddMetric(node, "path_state_best_known_prune_count", metrics.BestKnownPruneCount);
+            trace?.AddMetric(node, "path_state_enqueued_state_count", metrics.EnqueuedStateCount);
+            trace?.AddMetric(node, "path_state_output_row_count", metrics.OutputRowCount);
+            trace?.RecordMetric(node, "path_state_max_stack_size", metrics.MaxStackSize);
+            trace?.RecordMetric(node, "path_state_max_path_length", metrics.MaxPathLength);
+        }
+
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
             SeedGroupedPathAwareDepthMinNode closure,
             IReadOnlyList<object?> orderedUniqueSeeds,
@@ -12299,9 +12316,15 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var totalRows = new List<object[]>();
+                var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 foreach (var seed in edgeState.Seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                }
+
+                if (traversalMetrics is not null)
+                {
+                    RecordPathAwareTraversalMetrics(trace, closure, traversalMetrics);
                 }
 
                 return totalRows;
@@ -12353,9 +12376,15 @@ namespace UnifyWeaver.QueryRuntime
 
                 seeds.Sort(CompareCacheSeedValues);
                 var totalRows = new List<object[]>();
+                var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 foreach (var seed in seeds)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                }
+
+                if (traversalMetrics is not null)
+                {
+                    RecordPathAwareTraversalMetrics(trace, closure, traversalMetrics);
                 }
 
                 return totalRows;
@@ -12373,16 +12402,22 @@ namespace UnifyWeaver.QueryRuntime
             int depthIncrement,
             ICollection<object[]> output,
             TableMode accumulatorMode,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            PathAwareTraversalMetrics? metrics = null)
         {
+            metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
             var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
             stack.Push((seed, 0, new HashSet<object?> { seed }));
+            metrics?.RecordEnqueuedState(1);
+            metrics?.RecordStackSize(stack.Count);
 
             while (stack.Count > 0)
             {
                 var (current, depth, visited) = stack.Pop();
+                metrics?.RecordStackPop();
+                metrics?.RecordPathLength(visited.Count);
                 var lookupKey = current ?? NullFactIndexKey;
                 if (!succIndex.TryGetValue(lookupKey, out var bucket))
                 {
@@ -12392,8 +12427,10 @@ namespace UnifyWeaver.QueryRuntime
                 for (var i = bucket.Targets.Count - 1; i >= 0; i--)
                 {
                     var next = bucket.Targets[i];
+                    metrics?.RecordSuccessorCandidate();
                     if (visited.Contains(next))
                     {
+                        metrics?.RecordCycleSkip();
                         continue;
                     }
 
@@ -12403,6 +12440,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (maxDepth > 0 && nextDepth > maxDepth)
                     {
+                        metrics?.RecordDepthSkip();
                         continue;
                     }
 
@@ -12415,16 +12453,19 @@ namespace UnifyWeaver.QueryRuntime
                                 case TableMode.Min:
                                     if (nextDepth >= bestDepth)
                                     {
+                                        metrics?.RecordBestKnownPrune();
                                         continue;
                                     }
                                     break;
                                 case TableMode.Max:
                                     if (nextDepth <= bestDepth)
                                     {
+                                        metrics?.RecordBestKnownPrune();
                                         continue;
                                     }
                                     break;
                                 case TableMode.First:
+                                    metrics?.RecordBestKnownPrune();
                                     continue;
                             }
                         }
@@ -12434,10 +12475,13 @@ namespace UnifyWeaver.QueryRuntime
                     else
                     {
                         output.Add(new object[] { seed!, next!, nextDepth });
+                        metrics?.RecordOutputRow();
                     }
 
                     var nextVisited = new HashSet<object?>(visited) { next };
                     stack.Push((next, nextDepth, nextVisited));
+                    metrics?.RecordEnqueuedState(nextVisited.Count);
+                    metrics?.RecordStackSize(stack.Count);
                 }
             }
 
@@ -12448,6 +12492,7 @@ namespace UnifyWeaver.QueryRuntime
                 foreach (var (target, depth) in bestRows)
                 {
                     output.Add(new object[] { seed!, target!, depth });
+                    metrics?.RecordOutputRow();
                 }
             }
         }
@@ -13763,6 +13808,65 @@ namespace UnifyWeaver.QueryRuntime
                 if (count > MaxBucketSize)
                 {
                     MaxBucketSize = count;
+                }
+            }
+        }
+
+        private sealed class PathAwareTraversalMetrics
+        {
+            public long SeedCount { get; private set; }
+
+            public long StackPopCount { get; private set; }
+
+            public long SuccessorCandidateCount { get; private set; }
+
+            public long CycleSkipCount { get; private set; }
+
+            public long DepthSkipCount { get; private set; }
+
+            public long BestKnownPruneCount { get; private set; }
+
+            public long EnqueuedStateCount { get; private set; }
+
+            public long OutputRowCount { get; private set; }
+
+            public int MaxStackSize { get; private set; }
+
+            public int MaxPathLength { get; private set; }
+
+            public void RecordSeed() => SeedCount++;
+
+            public void RecordStackPop() => StackPopCount++;
+
+            public void RecordSuccessorCandidate() => SuccessorCandidateCount++;
+
+            public void RecordCycleSkip() => CycleSkipCount++;
+
+            public void RecordDepthSkip() => DepthSkipCount++;
+
+            public void RecordBestKnownPrune() => BestKnownPruneCount++;
+
+            public void RecordOutputRow() => OutputRowCount++;
+
+            public void RecordEnqueuedState(int pathLength)
+            {
+                EnqueuedStateCount++;
+                RecordPathLength(pathLength);
+            }
+
+            public void RecordStackSize(int stackSize)
+            {
+                if (stackSize > MaxStackSize)
+                {
+                    MaxStackSize = stackSize;
+                }
+            }
+
+            public void RecordPathLength(int pathLength)
+            {
+                if (pathLength > MaxPathLength)
+                {
+                    MaxPathLength = pathLength;
                 }
             }
         }

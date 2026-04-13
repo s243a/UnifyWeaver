@@ -139,6 +139,21 @@ It should not replace:
 The planner/runtime should continue to select the cheapest correct model
 for the workload class.
 
+## Trace Metrics
+
+Runtime instrumentation should keep the main exact workload classes separate:
+
+- counted simple-path traversal reports `path_state_*` counters for stack
+  pops, successor candidates, cycle skips, depth-limit skips, best-known
+  pruning, enqueued states, output rows, and maximum path/stack size
+- weighted `Min` frontier fallback reports `min_frontier_*` counters for
+  dominance candidates, subset checks, target buckets, and retained
+  path-state partition sizes
+
+These metrics are intentionally not normalized into one generic counter set.
+The current measurements show different bottlenecks: counted closure is
+expansion-heavy, while weighted `Min` fallback is dominance-candidate-heavy.
+
 ## Success Criteria
 
 1. Exact output agreement with current exact non-DAG implementations

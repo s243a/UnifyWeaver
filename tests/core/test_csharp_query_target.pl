@@ -332,6 +332,7 @@ test_csharp_query_target :-
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
         verify_path_aware_transitive_closure_preserves_path_multiplicity,
+        verify_path_aware_transitive_closure_metrics_runtime,
         verify_path_aware_transitive_closure_min_mode_plan,
         verify_path_aware_accumulation_plan,
         verify_parameterized_path_aware_accumulation_plan,
@@ -3777,6 +3778,39 @@ verify_path_aware_transitive_closure_preserves_path_multiplicity :-
         [[a]],
         HarnessSource).
 
+verify_path_aware_transitive_closure_metrics_runtime :-
+    csharp_target:build_query_plan(
+        test_pathaware_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_transitive_closure),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    path_aware_traversal_metric_names(MetricNames),
+    path_aware_traversal_positive_metric_names(PositiveMetricNames),
+    harness_source_with_strategy_and_metric_flags_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareTransitiveClosureSeeded',
+        MetricNames,
+        PositiveMetricNames,
+        HarnessSource),
+    path_aware_traversal_metric_expectations(MetricRows),
+    append(['a,b,1',
+            'a,c,2',
+            'STRATEGY_USED:PathAwareTransitiveClosureSeeded=true'],
+           MetricRows,
+           ExpectedRows),
+    maybe_run_query_runtime_with_harness(Plan,
+        ExpectedRows,
+        Params,
+        HarnessSource).
+
 verify_path_aware_transitive_closure_min_mode_plan :-
     csharp_target:build_query_plan(
         test_pathaware_min_reach/3,
@@ -3802,6 +3836,43 @@ verify_path_aware_transitive_closure_min_mode_plan :-
          'a,d,2',
          'a,e,2'],
         [[a]]).
+
+path_aware_traversal_metric_names([
+    'path_state_seed_count',
+    'path_state_stack_pop_count',
+    'path_state_successor_candidate_count',
+    'path_state_cycle_skip_count',
+    'path_state_depth_skip_count',
+    'path_state_best_known_prune_count',
+    'path_state_enqueued_state_count',
+    'path_state_output_row_count',
+    'path_state_max_stack_size',
+    'path_state_max_path_length'
+]).
+
+path_aware_traversal_positive_metric_names([
+    'path_state_seed_count',
+    'path_state_stack_pop_count',
+    'path_state_successor_candidate_count',
+    'path_state_cycle_skip_count',
+    'path_state_enqueued_state_count',
+    'path_state_output_row_count',
+    'path_state_max_stack_size',
+    'path_state_max_path_length'
+]).
+
+path_aware_traversal_metric_expectations(Rows) :-
+    path_aware_traversal_metric_names(MetricNames),
+    path_aware_traversal_positive_metric_names(PositiveMetricNames),
+    findall(Row,
+            (member(Metric, MetricNames),
+             format(atom(Row), 'METRIC_RECORDED:~w=true', [Metric])),
+            RecordedRows),
+    findall(Row,
+            (member(Metric, PositiveMetricNames),
+             format(atom(Row), 'METRIC_POSITIVE:~w=true', [Metric])),
+            PositiveRows),
+    append(RecordedRows, PositiveRows, Rows).
 
 verify_path_aware_accumulation_plan :-
     csharp_query_target:build_query_plan(test_weighted_path/3, [target(csharp_query)], Plan),

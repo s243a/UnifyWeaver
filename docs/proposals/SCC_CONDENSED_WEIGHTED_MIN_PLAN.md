@@ -276,8 +276,10 @@ strategy rather than as a geometric-mean or log-output strategy:
    become negative steps under a log transform
 4. the runtime minimizes products directly, avoiding log/exp output drift
 
-The next coding step should compare another exact non-DAG fallback workload
-before adding more generic frontier indexes.
+The cross-workload comparison step is now complete. Counted simple-path
+shortest-path runs now emit `path_state_*` metrics from
+`PathAwareTransitiveClosureNode`, giving a non-weighted non-DAG comparison
+point before adding more generic frontier indexes.
 
 ## Frontier Fallback Metric Survey
 
@@ -311,6 +313,15 @@ benchmark shape:
 | multiplicative | 300 | 0.892s | 0.264s | 3.38x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
 | multiplicative | 1k | 0.587s | 0.212s | 2.76x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
 
+Counted simple-path closure provides the non-weighted comparison point. It does
+not use the weighted `min_frontier_*` dominance machinery; its measured cost is
+raw path-state traversal:
+
+| Shape | Scale | All | Min | Speedup | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| counted shortest path | 300 | 0.920s | 0.246s | 3.74x | 602,808 | 30,968 | 982,581 | 101,371 |
+| counted shortest path | 1k | 0.679s | 0.162s | 4.18x | 352,522 | 10,328 | 592,698 | 38,196 |
+
 Interpretation:
 
 - dominance-candidate scans are still the dominant counter, but lazy
@@ -324,6 +335,9 @@ Interpretation:
   correctness-safe tradeoff
 - positive multiplicative recurrence no longer contributes frontier counters on
   the benchmark shape because it does not enter the fallback
-- the remaining candidate scans are low enough that the next broad optimization
-  should probably move to a different fallback class before adding more generic
-  frontier indexes
+- counted closure confirms that not every non-DAG path-state workload has the
+  same bottleneck: its measured cost is successor expansion and depth-limit
+  pruning, not subset-dominance lookup
+- the next broad optimization should avoid adding more generic frontier indexes
+  until another dominance-heavy fallback shape appears; for counted closure,
+  compact visited-state storage is the more relevant follow-up

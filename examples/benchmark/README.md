@@ -229,6 +229,7 @@ Tables:
 | `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root and root-bound Prolog variants, and C#/Rust/Go DFS binaries |
+| `benchmark_shortest_path_to_root.py` | Compare counted simple-path `All` vs minimum-depth pruning inside the C# query runtime and emit path-state metrics |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -315,6 +316,10 @@ python examples/benchmark/benchmark_prolog_effective_distance.py \
 python examples/benchmark/benchmark_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min
+
+# Compare C# query counted simple-path All vs minimum-depth pruning
+python examples/benchmark/benchmark_shortest_path_to_root.py \
+    --scales 300,1k,5k,10k
 
 # Compare dependency reach count across query engine and DFS targets
 python examples/benchmark/benchmark_dependency_depth_cross_target.py \
@@ -919,6 +924,41 @@ Current interpretation:
 - the generic seeded accumulation helper remains the right fallback for
   workloads like effective distance where the grouped helper is not the
   better consumer fit
+
+### Counted Simple-Path State Survey
+
+The counted shortest-path benchmark now emits `path_state_*` metrics from
+`PathAwareTransitiveClosureNode`. This provides a non-weighted non-DAG
+comparison point for the weighted `Min` frontier survey: counted closure has
+no subset-dominance frontier, so its cost is mostly raw successor expansion,
+cycle checks, depth-limit skips, and retained simple-path rows.
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_shortest_path_to_root.py \
+    --scales 300,1k --repetitions 1
+```
+
+Latest local results:
+
+| Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
+|-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
+| 300 | 0.920s | 0.246s | 3.74x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.679s | 0.162s | 4.18x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+
+Additional path-state observations:
+
+- `All` mode at `300` recorded `603,194` enqueued states, `11,727`
+  cycle skips, and `368,046` depth-limit skips.
+- `All` mode at `1k` recorded `352,611` enqueued states, `4,870`
+  cycle skips, and `235,306` depth-limit skips.
+- `Min` mode cuts output rows by roughly `19x` at `300` and `34x` at
+  `1k` without changing final shortest-path answers.
+- This shape does not exercise the weighted `min_frontier_*` dominance
+  candidate problem; generic frontier indexes would not address its primary
+  cost. A compact visited representation for counted closure is the more
+  relevant follow-up if this shape becomes hot again.
 
 ### Weighted `Min` Results
 
