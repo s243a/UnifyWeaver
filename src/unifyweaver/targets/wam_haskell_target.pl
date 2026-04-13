@@ -1145,10 +1145,13 @@ step !ctx s (SwitchOnConstantPc table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
-    Just v -> case Map.lookup v table of
+    Just (Atom key) -> case Map.lookup key table of
       Just pc -> Just (s { wsPC = pc })
       Nothing -> Nothing
-    Nothing -> Nothing
+    Just (Integer n) -> case Map.lookup (show n) table of
+      Just pc -> Just (s { wsPC = pc })
+      Nothing -> Nothing
+    _ -> Nothing
 
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
@@ -1942,8 +1945,11 @@ resolveCallInstrs labels foreignPreds = map resolve
       Just pc -> RetryMeElsePc pc
       Nothing -> RetryMeElse label
     resolve (SwitchOnConstant table) =
-      SwitchOnConstantPc (Map.fromList [(v, pc) | (v, label) <- Map.toList table,
-                                                   Just pc <- [Map.lookup label labels]])
+      let extractKey (Atom s) = s
+          extractKey (Integer n) = show n
+          extractKey v = show v
+      in SwitchOnConstantPc (Map.fromList [(extractKey v, pc) | (v, label) <- Map.toList table,
+                                                                 Just pc <- [Map.lookup label labels]])
     resolve i = i
 ', [StepCode, BacktrackCode, RunCode]).
 
@@ -1956,8 +1962,8 @@ import qualified Data.IntMap.Strict as IM
 import Data.Array (Array, listArray, (!), bounds)
 
 data Value = Atom String
-           | Integer Int
-           | Float Double
+           | Integer !Int
+           | Float !Double
            | VList [Value]
            | Str String [Value]
            | Unbound !Int   -- variable ID (interned via wsVarCounter)
@@ -2069,7 +2075,7 @@ data Instruction
   | Proceed
   | TryMeElsePc !Int                   -- post-resolution: direct PC for else branch
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
-  | SwitchOnConstantPc (Map.Map Value Int)  -- post-resolution: value -> PC
+  | SwitchOnConstantPc !(Map.Map String Int) -- post-resolution: atom string -> PC
   | BuiltinCall String !Int
   | TryMeElse String
   | RetryMeElse String
