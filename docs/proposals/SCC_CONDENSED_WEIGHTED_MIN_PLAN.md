@@ -276,10 +276,11 @@ strategy rather than as a geometric-mean or log-output strategy:
    become negative steps under a log transform
 4. the runtime minimizes products directly, avoiding log/exp output drift
 
-The cross-workload comparison step is now complete. Counted simple-path
-shortest-path runs now emit `path_state_*` metrics from
-`PathAwareTransitiveClosureNode`, giving a non-weighted non-DAG comparison
-point before adding more generic frontier indexes.
+The cross-workload comparison step is now complete, and counted simple-path
+closure now uses compact visited paths for cycle checks.
+`PathAwareTransitiveClosureNode` emits `path_state_*` metrics, giving a
+non-weighted non-DAG comparison point before adding more generic frontier
+indexes.
 
 ## Frontier Fallback Metric Survey
 
@@ -319,8 +320,8 @@ raw path-state traversal:
 
 | Shape | Scale | All | Min | Speedup | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| counted shortest path | 300 | 0.920s | 0.246s | 3.74x | 602,808 | 30,968 | 982,581 | 101,371 |
-| counted shortest path | 1k | 0.679s | 0.162s | 4.18x | 352,522 | 10,328 | 592,698 | 38,196 |
+| counted shortest path | 300 | 0.766s | 0.234s | 3.27x | 602,808 | 30,968 | 982,581 | 101,371 |
+| counted shortest path | 1k | 0.502s | 0.176s | 2.86x | 352,522 | 10,328 | 592,698 | 38,196 |
 
 Interpretation:
 
@@ -338,6 +339,8 @@ Interpretation:
 - counted closure confirms that not every non-DAG path-state workload has the
   same bottleneck: its measured cost is successor expansion and depth-limit
   pruning, not subset-dominance lookup
+- compact visited paths reduce counted-closure allocation overhead while
+  leaving the measured traversal counters unchanged
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
-  compact visited-state storage is the more relevant follow-up
+  remaining work should target expansion/materialization overhead

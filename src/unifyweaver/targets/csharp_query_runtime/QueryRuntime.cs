@@ -12408,8 +12408,25 @@ namespace UnifyWeaver.QueryRuntime
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
-            var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
-            stack.Push((seed, 0, new HashSet<object?> { seed }));
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
+
+            int GetNodeId(object? value)
+            {
+                var key = value ?? NullFactIndexKey;
+                if (nodeIds.TryGetValue(key, out var existing))
+                {
+                    return existing;
+                }
+
+                var id = nextNodeId++;
+                nodeIds[key] = id;
+                return id;
+            }
+
+            var initialPath = CompactVisitedPath.Create(GetNodeId(seed));
+            var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Visited)>();
+            stack.Push((seed, 0, initialPath));
             metrics?.RecordEnqueuedState(1);
             metrics?.RecordStackSize(stack.Count);
 
@@ -12428,7 +12445,8 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     var next = bucket.Targets[i];
                     metrics?.RecordSuccessorCandidate();
-                    if (visited.Contains(next))
+                    var nextId = GetNodeId(next);
+                    if (visited.Contains(nextId))
                     {
                         metrics?.RecordCycleSkip();
                         continue;
@@ -12478,7 +12496,7 @@ namespace UnifyWeaver.QueryRuntime
                         metrics?.RecordOutputRow();
                     }
 
-                    var nextVisited = new HashSet<object?>(visited) { next };
+                    var nextVisited = visited.Extend(nextId);
                     stack.Push((next, nextDepth, nextVisited));
                     metrics?.RecordEnqueuedState(nextVisited.Count);
                     metrics?.RecordStackSize(stack.Count);
