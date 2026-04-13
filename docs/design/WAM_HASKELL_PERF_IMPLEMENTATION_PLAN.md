@@ -385,3 +385,33 @@ the WAM interpreter loop with a native Haskell depth-bounded DFS.
 The optimized Prolog aggregate query adds another ~20% by moving the
 power-sum accumulation from Haskell's `collectSolutions` loop into
 WAM's `begin_aggregate`/`end_aggregate` machinery.
+
+### 8.4 Interpreter profiling (2026-04-13)
+
+Profile-guided optimization of the pure WAM interpreter (no FFI).
+
+**Pre-resolve labels to PCs:** Extended `resolveCallInstrs` to resolve
+`Execute`, `Jump`, `TryMeElse`, `RetryMeElse`, and `SwitchOnConstant`
+labels to direct PC integers at load time. Adds `ExecutePc`, `JumpPc`,
+`TryMeElsePc`, `RetryMeElsePc`, `SwitchOnConstantPc` variants.
+
+Result: pure interpreter **4739ms → 2518ms (47% faster)**.
+
+**Profiling data (before → after):**
+
+| Cost Centre | Before | After | Notes |
+|---|---|---|---|
+| `step` | 47.3% | 55.7% | Core dispatch (proportionally larger after other wins) |
+| `hashWithSalt1` | **10.0%** | **3.2%** | Label hashing eliminated by pre-resolution |
+| `== (Value)` | 6.2% | 7.5% | String equality in atom comparison |
+| `step.nextPC` | 8.8% | — | Merged into step |
+| `run` | 7.0% | 7.7% | Run loop + instruction fetch |
+
+**Remaining opportunities:**
+- **Atom interning** (~10% combined from `==` + `hash`): Store atoms as
+  `Atom !Int` with a global intern table. Eliminates string comparison
+  and hashing in the hot loop. The Rust target already does this.
+- **Mutable registers**: The fundamental perf gap vs Rust is that
+  Haskell's persistent IntMap register file allocates on every write.
+  `IORef`/`STRef`-based mutable registers would close this but changes
+  the architecture significantly.
