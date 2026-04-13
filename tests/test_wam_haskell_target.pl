@@ -214,9 +214,55 @@ test_multi_kernel_execute_foreign :-
     ;   fail_test(Test, 'Multi-kernel executeForeign generation failed')
     ).
 
+%% Phase 8: CallForeign instruction codegen
+%% -------------------------------------------
+
+test_call_foreign_in_types :-
+    Test = 'WAM-Haskell: CallForeign in Instruction data type',
+    (   wam_haskell_target:generate_wam_types_hs(Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "CallForeign String !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallForeign not in Instruction data type')
+    ).
+
+test_call_foreign_step_case :-
+    Test = 'WAM-Haskell: CallForeign step case dispatches to executeForeign',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        %% CallForeign step calls executeForeign directly
+        sub_string(S, _, _, _, "step !ctx s (CallForeign pred _arity)"),
+        sub_string(S, _, _, _, "executeForeign ctx pred"),
+        %% Call step does NOT call executeForeign (removed from fallthrough)
+        %% The Call case should have wcLoweredPredicates but NOT executeForeign
+        sub_string(S, _, _, _, "step !ctx s (Call pred _arity)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallForeign step case missing or Call still has executeForeign')
+    ).
+
+test_call_foreign_resolve :-
+    Test = 'WAM-Haskell: resolveCallInstrs produces CallForeign',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        %% resolveCallInstrs should map foreign preds to CallForeign
+        sub_string(S, _, _, _, "CallForeign pred arity")
+    ->  pass(Test)
+    ;   fail_test(Test, 'resolveCallInstrs does not produce CallForeign')
+    ).
+
+test_call_foreign_helper :-
+    Test = 'WAM-Haskell: callForeign helper for lowered functions',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "callForeign :: WamContext -> String -> WamState -> Maybe WamState"),
+        sub_string(S, _, _, _, "callForeign !ctx pred !sc = executeForeign ctx pred sc")
+    ->  pass(Test)
+    ;   fail_test(Test, 'callForeign helper missing from WamRuntime')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -230,6 +276,10 @@ run_tests :-
     test_transitive_closure_kernel_function,
     test_transitive_closure_execute_foreign,
     test_multi_kernel_execute_foreign,
+    test_call_foreign_in_types,
+    test_call_foreign_step_case,
+    test_call_foreign_resolve,
+    test_call_foreign_helper,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
