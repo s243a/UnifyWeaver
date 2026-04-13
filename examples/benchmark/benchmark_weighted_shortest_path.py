@@ -10,8 +10,9 @@ By default the harness derives a positive source weight from category out-degree
 so the recursive increment remains monotone and min-pruning is sound. The
 `--weight-mode nonnegative-zero` variant leaves degree-one sources at zero cost
 to exercise the broader non-negative additive `Min` fast path. The
-`--weight-mode negative` and `--recurrence-mode multiplicative` variants force
-the exact frontier fallback and expose its trace metrics at benchmark scale.
+`--weight-mode negative` forces the exact frontier fallback and exposes its
+trace metrics at benchmark scale. `--recurrence-mode multiplicative` exercises
+the positive product `Min` strategy when all factors are at least one.
 """
 
 from __future__ import annotations
@@ -462,7 +463,7 @@ def parse_args() -> argparse.Namespace:
         "--recurrence-mode",
         choices=["additive", "multiplicative"],
         default="additive",
-        help="Use additive accumulation or multiplicative accumulation. Multiplicative Min uses the exact frontier fallback.",
+        help="Use additive accumulation or multiplicative accumulation. Multiplicative Min uses the product layered strategy when all factors are at least one.",
     )
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()

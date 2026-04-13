@@ -266,9 +266,18 @@ The lower-cardinality prefilter step is also now implemented:
    retained dominated states are correctness-safe and the measured removals
    stayed at `0`
 
-The next coding step should keep the multiplicative-to-additive transform as a
-narrower later optimization unless a broader exact fallback workload shows that
-the remaining lower-count scans need another generic prefilter.
+The positive multiplicative step is now implemented as a direct-product layered
+strategy rather than as a geometric-mean or log-output strategy:
+
+1. recurrence must be `Acc is Acc1 * Factor` with the base expression matching
+   `Factor`
+2. every reachable factor must be finite and at least `1`
+3. subunit factors stay on the exact frontier fallback because they would
+   become negative steps under a log transform
+4. the runtime minimizes products directly, avoiding log/exp output drift
+
+The next coding step should compare another exact non-DAG fallback workload
+before adding more generic frontier indexes.
 
 ## Frontier Fallback Metric Survey
 
@@ -284,17 +293,23 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
   --recurrence-mode multiplicative
 ```
 
-Both fallback cases preserve output agreement between `All` and `Min`. After
-lazy lower-count representative prefiltering, the exact `Min` fallback is still
-slower than `All` on these benchmark-scale cyclic cases, but it is faster than
-the previous path-state partitioning-only fallback.
+The negative-additive fallback preserves output agreement between `All` and
+`Min`. After lazy lower-count representative prefiltering, the exact `Min`
+fallback is still slower than `All` on these benchmark-scale cyclic cases, but
+it is faster than the previous path-state partitioning-only fallback.
 
 | Shape | Scale | All | Min | Speedup | Dominance Candidates | Lower Candidates | Index Probes | Subset Checks |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | negative additive | 300 | 0.871s | 1.478s | 0.59x | 20,404,270 | 19,826,544 | 912,133 | 12,621 |
 | negative additive | 1k | 0.563s | 1.217s | 0.46x | 16,522,183 | 16,183,799 | 1,138,494 | 11,157 |
-| multiplicative | 300 | 0.819s | 1.064s | 0.77x | 8,013,834 | 7,617,196 | 209,002 | 92,019 |
-| multiplicative | 1k | 0.563s | 0.856s | 0.66x | 7,601,868 | 7,370,947 | 302,487 | 59,735 |
+
+Positive multiplicative recurrence now uses the product layered strategy on the
+benchmark shape:
+
+| Shape | Scale | All | Min | Speedup | Strategy |
+| --- | ---: | ---: | ---: | ---: | --- |
+| multiplicative | 300 | 0.892s | 0.264s | 3.38x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
+| multiplicative | 1k | 0.587s | 0.212s | 2.76x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
 
 Interpretation:
 
@@ -307,6 +322,8 @@ Interpretation:
 - `min_frontier_removed_state_count` stayed at `0` for these runs, so the
   runtime avoids eager removal scans and keeps dominated retained states as a
   correctness-safe tradeoff
+- positive multiplicative recurrence no longer contributes frontier counters on
+  the benchmark shape because it does not enter the fallback
 - the remaining candidate scans are low enough that the next broad optimization
-  should probably move to a different fallback class or the narrower
-  multiplicative transform before adding more generic frontier indexes
+  should probably move to a different fallback class before adding more generic
+  frontier indexes
