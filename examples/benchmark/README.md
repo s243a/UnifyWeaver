@@ -980,13 +980,14 @@ trace label, while zero-cost non-negative steps report
 shape the selector keeps the layered path when the SCC probe is slower.
 
 Fallback metric runs on `300` and `1k` now use exact path-state partitioning for
-weighted `Min` frontier states. The negative-additive fallback reached
-`34,704,185` dominance-candidate checks at `300` and `35,271,278` at `1k`,
-down from the previous broad-bucket counts of `104,874,704` and `112,962,813`.
-The multiplicative fallback reached `10,906,078` at `300` and `11,043,000` at
-`1k`, down from `36,195,447` and `39,638,003`. Output agreement still reports
-`match`; the remaining optimization surface is lower-cardinality dominance
-prefiltering rather than same-cardinality path-state lookup.
+weighted `Min` frontier states plus lazy lower-count representative prefilters.
+The negative-additive fallback reached `20,404,270` dominance-candidate checks
+at `300` and `16,522,183` at `1k`, down from the previous path-partition-only
+counts of `34,704,185` and `35,271,278`. The multiplicative fallback reached
+`8,013,834` at `300` and `7,601,868` at `1k`, down from `10,906,078` and
+`11,043,000`. Output agreement still reports `match`; the remaining fallback
+work is mostly lower-count dominance probing, now measured separately from
+same-fingerprint checks.
 
 ### Available Targets
 

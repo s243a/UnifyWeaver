@@ -79,6 +79,15 @@ Add cheap prefilters before exact subset / equality checks, such as:
 
 Only after those pass should exact dominance verification run.
 
+Status:
+
+- implemented for weighted `Min` frontier fallback states
+- same-cardinality checks use fingerprint indexes
+- lower-cardinality checks use lazy representative-node indexes only for
+  larger path-count buckets
+- small buckets direct-scan because the index overhead is higher than the
+  candidate reduction on the current benchmark shape
+
 ## Phase 6: Benchmark Validation
 
 Use cyclic simple-path benchmarks to compare:
@@ -110,12 +119,12 @@ the main count driver.
 
 The next concrete coding step should start here:
 
-- measure whether remaining lower-cardinality dominance scans need stronger
-  exact prefilters
-- consider mask/fingerprint summaries that can reject lower-cardinality
-  candidates without replacing the final exact subset check
-- keep multiplicative-specific transforms separate from the broad exact
-  non-DAG path-state indexing work
+- compare this weighted `Min` fallback against another non-DAG path-state
+  workload before adding more generic indexes
+- keep multiplicative-specific transforms separate unless the next benchmark
+  still points specifically at non-additive weighted recurrence
+- preserve the current rule that fingerprints, masks, and representatives are
+  only candidate filters; exact subset verification remains authoritative
 
 The optimization must remain exact: fingerprints and bucket keys should reduce
 candidate scans, not replace the final simple-path dominance check.
