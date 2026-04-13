@@ -31,7 +31,7 @@
     compile_wam_runtime_to_haskell/3,    % +Options, +DetectedKernels, -HaskellCode
     write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
     wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
-    wam_haskell_partition_predicates/4   % +Mode, +Predicates, -InterpretedList, -LoweredList
+    wam_haskell_partition_predicates/5   % +Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList
 ]).
 
 :- use_module(library(lists)).
@@ -40,7 +40,8 @@
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../core/recursive_kernel_detection',
-             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2]).
+             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
+              kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
 :- use_module('../core/template_system', [render_template/3]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
@@ -101,43 +102,59 @@ wam_haskell_validate_emit_mode(Other, _) :-
 %% replaces it with a real whitelist check against the WAM instruction
 %% sequence.
 
-%% wam_haskell_partition_predicates(+Mode, +Predicates, -InterpretedList, -LoweredList)
+%% wam_haskell_partition_predicates(+Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList)
 %  Partition Predicates into the two sublists based on Mode and the
-%  lowerability check. In Phase 1, LoweredList is always empty because
-%  the stub always fails — but the partition machinery runs anyway so
-%  Phase 3+ can plug in without changing the call site in
-%  write_wam_haskell_project/3.
-wam_haskell_partition_predicates(interpreter, Predicates, Predicates, []) :- !.
-wam_haskell_partition_predicates(functions, Predicates, Interpreted, Lowered) :- !,
-    wam_haskell_partition_try_lower(Predicates, Interpreted, Lowered).
-wam_haskell_partition_predicates(mixed(HotPreds), Predicates, Interpreted, Lowered) :- !,
-    wam_haskell_partition_mixed(Predicates, HotPreds, Interpreted, Lowered).
+%  lowerability check. Detected kernels are always excluded from lowering
+%  (they use FFI via CallForeign — lowering them would be dead code).
+wam_haskell_partition_predicates(interpreter, Predicates, _, Predicates, []) :- !.
+wam_haskell_partition_predicates(functions, Predicates, DK, Interpreted, Lowered) :- !,
+    pairs_keys(DK, KernelKeys),
+    wam_haskell_partition_try_lower(Predicates, KernelKeys, Interpreted, Lowered).
+wam_haskell_partition_predicates(mixed(HotPreds), Predicates, DK, Interpreted, Lowered) :- !,
+    pairs_keys(DK, KernelKeys),
+    wam_haskell_partition_mixed(Predicates, HotPreds, KernelKeys, Interpreted, Lowered).
 
-% functions mode: every predicate attempts lowering.
-wam_haskell_partition_try_lower([], [], []).
-wam_haskell_partition_try_lower([P|Rest], Interpreted, Lowered) :-
-    wam_haskell_predicate_wamcode(P, WamCode),
-    (   wam_haskell_lowerable(P, WamCode, _Reason)
-    ->  Lowered = [P|LR],
-        wam_haskell_partition_try_lower(Rest, Interpreted, LR)
-    ;   Interpreted = [P|IR],
-        wam_haskell_partition_try_lower(Rest, IR, Lowered)
+% functions mode: every non-kernel predicate attempts lowering.
+wam_haskell_partition_try_lower([], _, [], []).
+wam_haskell_partition_try_lower([P|Rest], KK, Interpreted, Lowered) :-
+    pred_key(P, Key),
+    (   member(Key, KK)
+    ->  % Detected kernel — skip lowering, use FFI
+        Interpreted = [P|IR],
+        wam_haskell_partition_try_lower(Rest, KK, IR, Lowered)
+    ;   wam_haskell_predicate_wamcode(P, WamCode),
+        (   wam_haskell_lowerable(P, WamCode, _Reason)
+        ->  Lowered = [P|LR],
+            wam_haskell_partition_try_lower(Rest, KK, Interpreted, LR)
+        ;   Interpreted = [P|IR],
+            wam_haskell_partition_try_lower(Rest, KK, IR, Lowered)
+        )
     ).
 
 % mixed(HotPreds) mode: predicates in HotPreds attempt lowering; rest are interpreted.
-wam_haskell_partition_mixed([], _, [], []).
-wam_haskell_partition_mixed([P|Rest], HotPreds, Interpreted, Lowered) :-
-    (   wam_haskell_indicator_in_list(P, HotPreds)
+% Detected kernels are always excluded from lowering.
+wam_haskell_partition_mixed([], _, _, [], []).
+wam_haskell_partition_mixed([P|Rest], HotPreds, KK, Interpreted, Lowered) :-
+    pred_key(P, Key),
+    (   member(Key, KK)
+    ->  % Detected kernel — skip lowering
+        Interpreted = [P|IR],
+        wam_haskell_partition_mixed(Rest, HotPreds, KK, IR, Lowered)
+    ;   wam_haskell_indicator_in_list(P, HotPreds)
     ->  wam_haskell_predicate_wamcode(P, WamCode),
         (   wam_haskell_lowerable(P, WamCode, _Reason)
         ->  Lowered = [P|LR],
-            wam_haskell_partition_mixed(Rest, HotPreds, Interpreted, LR)
+            wam_haskell_partition_mixed(Rest, HotPreds, KK, Interpreted, LR)
         ;   Interpreted = [P|IR],
-            wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+            wam_haskell_partition_mixed(Rest, HotPreds, KK, IR, Lowered)
         )
     ;   Interpreted = [P|IR],
-        wam_haskell_partition_mixed(Rest, HotPreds, IR, Lowered)
+        wam_haskell_partition_mixed(Rest, HotPreds, KK, IR, Lowered)
     ).
+
+pred_key(P, Key) :-
+    (P = _Mod:Pred/Arity -> true ; P = Pred/Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]).
 
 % Handle both Module:Pred/Arity and Pred/Arity comparisons against HotPreds.
 wam_haskell_indicator_in_list(P, HotPreds) :-
@@ -1385,10 +1402,10 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     ;   true
     ),
 
-    % Resolve emit_mode and partition predicates. Kernels are excluded
-    % from the lowerable set (they use FFI, not generic lowering).
+    % Resolve emit_mode and partition predicates. Detected kernels are
+    % explicitly excluded from lowering (they use FFI via CallForeign).
     wam_haskell_resolve_emit_mode(Options, EmitMode),
-    wam_haskell_partition_predicates(EmitMode, Predicates, InterpretedList, LoweredList),
+    wam_haskell_partition_predicates(EmitMode, Predicates, DetectedKernels, InterpretedList, LoweredList),
     length(InterpretedList, NInterp),
     length(LoweredList, NLower),
     format(user_error,

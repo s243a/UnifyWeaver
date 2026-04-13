@@ -123,7 +123,7 @@ test_lowerable_rejects_unsupported :-
 test_partition_interpreter_mode :-
     Test = 'WAM-Haskell-Lowered Phase 1: partition in interpreter mode is identity',
     Preds = [a/1, b/2, c/3],
-    wam_haskell_partition_predicates(interpreter, Preds, Interp, Lower),
+    wam_haskell_partition_predicates(interpreter, Preds, [], Interp, Lower),
     (   Interp == Preds, Lower == []
     ->  pass(Test)
     ;   fail_test(Test, ['unexpected partition ', Interp, Lower])
@@ -140,9 +140,10 @@ user:phase1_probe(a).
 user:phase1_probe(b).
 
 test_partition_functions_mode :-
-    Test = 'WAM-Haskell-Lowered Phase 1: partition in functions mode routes all to interpreter',
-    wam_haskell_partition_predicates(functions, [user:phase1_probe/1], Interp, Lower),
-    (   Interp == [user:phase1_probe/1], Lower == []
+    Test = 'WAM-Haskell-Lowered Phase 1: partition in functions mode lowers multi-clause',
+    wam_haskell_partition_predicates(functions, [user:phase1_probe/1], [], Interp, Lower),
+    %% phase1_probe/1 is multi-clause (two clauses) — now lowerable
+    (   Interp == [], Lower == [user:phase1_probe/1]
     ->  pass(Test)
     ;   fail_test(Test, ['unexpected partition ', Interp, Lower])
     ).
@@ -156,9 +157,12 @@ test_partition_mixed_mode_hot_and_cold :-
     wam_haskell_partition_predicates(
         mixed([phase1_probe/1]),
         [user:phase1_probe/1, user:phase1_cold/1],
+        [],
         Interp,
         Lower),
-    (   Interp == [user:phase1_probe/1, user:phase1_cold/1], Lower == []
+    %% phase1_probe/1 is hot + lowerable → goes to Lower
+    %% phase1_cold/1 is cold → goes to Interp
+    (   Interp == [user:phase1_cold/1], Lower == [user:phase1_probe/1]
     ->  pass(Test)
     ;   fail_test(Test, ['unexpected partition ', Interp, Lower])
     ).

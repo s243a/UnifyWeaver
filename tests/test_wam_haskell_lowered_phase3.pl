@@ -59,12 +59,12 @@ test_lowerable_accepts_single_clause_fact :-
     ;   fail_test(Test, 'single-clause integer fact was rejected')
     ).
 
-test_lowerable_rejects_multi_clause :-
-    Test = 'Phase 3: wam_haskell_lowerable rejects multi-clause fact (try_me_else)',
+test_lowerable_accepts_multi_clause :-
+    Test = 'Phase 3: wam_haskell_lowerable accepts multi-clause fact (try_me_else)',
     wam_target:compile_predicate_to_wam(phase3_multi/1, [], WamCode),
-    (   \+ wam_haskell_lowerable(user:phase3_multi/1, WamCode, _)
+    (   wam_haskell_lowerable(user:phase3_multi/1, WamCode, _)
     ->  pass(Test)
-    ;   fail_test(Test, 'multi-clause fact was accepted despite try_me_else')
+    ;   fail_test(Test, 'multi-clause fact was rejected — should be lowerable now')
     ).
 
 test_lower_predicate_produces_function :-
@@ -89,8 +89,11 @@ test_partition_mixed_lowers_supported :-
     wam_haskell_partition_predicates(
         mixed([phase3_constant/1]),
         [user:phase3_constant/1, user:phase3_multi/1],
+        [],
         Interpreted,
         Lowered),
+    %% phase3_constant/1 is hot + lowerable → Lowered
+    %% phase3_multi/1 is cold → Interpreted (not in HotPreds)
     (   Lowered   == [user:phase3_constant/1],
         Interpreted == [user:phase3_multi/1]
     ->  pass(Test)
@@ -98,14 +101,16 @@ test_partition_mixed_lowers_supported :-
     ).
 
 test_partition_functions_lowers_all_supported :-
-    Test = 'Phase 3: partition in functions mode lowers every supported pred',
+    Test = 'Phase 3: partition in functions mode lowers all supported preds',
     wam_haskell_partition_predicates(
         functions,
         [user:phase3_constant/1, user:phase3_multi/1],
+        [],
         Interpreted,
         Lowered),
-    (   Lowered   == [user:phase3_constant/1],
-        Interpreted == [user:phase3_multi/1]
+    %% Both are lowerable now (multi-clause restriction removed)
+    (   Lowered   == [user:phase3_constant/1, user:phase3_multi/1],
+        Interpreted == []
     ->  pass(Test)
     ;   fail_test(Test, ['unexpected partition Interp=', Interpreted, ' Lower=', Lowered])
     ).
@@ -170,7 +175,7 @@ run_tests :-
     retractall(test_failed),
     format('~n=== WAM-Haskell-Lowered Phase 3 tests ===~n', []),
     test_lowerable_accepts_single_clause_fact,
-    test_lowerable_rejects_multi_clause,
+    test_lowerable_accepts_multi_clause,
     test_lower_predicate_produces_function,
     test_partition_mixed_lowers_supported,
     test_partition_functions_lowers_all_supported,
