@@ -2,7 +2,11 @@
 
 ## Status
 
-Open — discovered during optimized Prolog benchmarking (#1359).
+**Partially implemented** — WAM compiler now emits try/cut/trust + Jump
+for if-then-else. `power_sum_selected/3` compiles successfully. The cut
+semantics need refinement: `!/0` may cut too aggressively when nested
+inside aggregate frames, causing incorrect results when the if-then-else
+is called from within `begin_aggregate`/`end_aggregate`.
 
 ## Problem
 
