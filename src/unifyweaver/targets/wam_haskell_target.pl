@@ -1061,6 +1061,12 @@ step !ctx s (Jump label) =
     Just pc -> Just (s { wsPC = pc })
     Nothing -> Nothing
 
+-- JumpPc: pre-resolved jump (no label lookup)
+step !ctx s (JumpPc pc) = Just (s { wsPC = pc })
+
+-- ExecutePc: pre-resolved tail call (direct PC jump, no wsCP change)
+step !ctx s (ExecutePc pc) = Just (s { wsPC = pc })
+
 -- Execute: tail call, like Call but without setting wsCP
 step !ctx s (Execute pred) =
   case Map.lookup pred (wcLoweredPredicates ctx) of
@@ -1114,6 +1120,35 @@ step !ctx s (RetryMeElse label) =
       let nextPC = fromMaybe 0 $ Map.lookup label (wcLabels ctx)
       in Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
     [] -> Nothing
+
+-- Pre-resolved variants: direct PC, no label lookup
+step !ctx s (TryMeElsePc nextPC) =
+  let cp = ChoicePoint
+        { cpNextPC   = nextPC
+        , cpRegs     = wsRegs s
+        , cpStack    = wsStack s
+        , cpCP       = wsCP s
+        , cpTrailLen = wsTrailLen s
+        , cpHeapLen  = wsHeapLen s
+        , cpBindings = wsBindings s
+        , cpCutBar   = wsCutBar s
+        , cpAggFrame = Nothing, cpBuiltin = Nothing
+        }
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+
+step !ctx s (RetryMeElsePc nextPC) =
+  case wsCPs s of
+    (cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
+    [] -> Nothing
+
+step !ctx s (SwitchOnConstantPc table) =
+  let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
+  in case val of
+    Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
+    Just v -> case Map.lookup v table of
+      Just pc -> Just (s { wsPC = pc })
+      Nothing -> Nothing
+    Nothing -> Nothing
 
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
@@ -1404,11 +1439,11 @@ run :: WamContext -> WamState -> Maybe WamState
 run !ctx !s
   | wsPC s == 0 = Just s  -- halt
   | otherwise =
-      let instr = unsafeFetchInstr (wsPC s) (wcCode ctx)
+      let !instr = unsafeFetchInstr (wsPC s) (wcCode ctx)
       in case step ctx s instr of
-           Just s'' -> run ctx s''
+           Just !s'' -> run ctx s''
            Nothing -> case backtrack s of
-             Just s'' -> run ctx s''
+             Just !s'' -> run ctx s''
              Nothing -> Nothing
 
 -- | Dispatch a Call to another predicate, trying all resolution paths.
@@ -1893,7 +1928,22 @@ resolveCallInstrs labels foreignPreds = map resolve
       | pred `elem` foreignPreds = CallForeign pred arity
       | otherwise = case Map.lookup pred labels of
           Just pc -> CallResolved pc arity
-          Nothing -> Call pred arity   -- unresolvable, leave as-is
+          Nothing -> Call pred arity
+    resolve (Execute pred) = case Map.lookup pred labels of
+      Just pc -> ExecutePc pc
+      Nothing -> Execute pred
+    resolve (Jump label) = case Map.lookup label labels of
+      Just pc -> JumpPc pc
+      Nothing -> Jump label
+    resolve (TryMeElse label) = case Map.lookup label labels of
+      Just pc -> TryMeElsePc pc
+      Nothing -> TryMeElse label
+    resolve (RetryMeElse label) = case Map.lookup label labels of
+      Just pc -> RetryMeElsePc pc
+      Nothing -> RetryMeElse label
+    resolve (SwitchOnConstant table) =
+      SwitchOnConstantPc (Map.fromList [(v, pc) | (v, label) <- Map.toList table,
+                                                   Just pc <- [Map.lookup label labels]])
     resolve i = i
 ', [StepCode, BacktrackCode, RunCode]).
 
@@ -2012,9 +2062,14 @@ data Instruction
   | CallResolved !Int !Int            -- post-resolution: target PC + arity
   | CallForeign String !Int           -- compile-time resolved foreign pred (Nothing = fail)
   | Execute String
+  | ExecutePc !Int                      -- post-resolution: direct PC jump (tail call)
   | Jump String                         -- unconditional jump to label
+  | JumpPc !Int                         -- post-resolution: direct PC jump
   | CutIte                              -- soft cut: pop one CP (if-then-else)
   | Proceed
+  | TryMeElsePc !Int                   -- post-resolution: direct PC for else branch
+  | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
+  | SwitchOnConstantPc (Map.Map Value Int)  -- post-resolution: value -> PC
   | BuiltinCall String !Int
   | TryMeElse String
   | RetryMeElse String
