@@ -1595,6 +1595,126 @@ cds_bail:
   ret i1 false
 }
 
+; === M5.15: List suffix kernel ===
+; list_suffix2(List, Suffix): enumerates all suffixes of List via
+; backtracking. A list [a,b,c] has 4 suffixes: [a,b,c], [b,c], [c], [].
+;
+; List representation: tag=4, payload = pointer to %List = {i32 len, %Value* elems}.
+; Each suffix is a new %List struct pointing into the original elements
+; array at a different offset (zero-copy view).
+
+; Create a %Value with tag=4 (List) from a %List pointer.
+define %Value @wam_make_list_value(%List* %list_ptr) {
+  %ptr_i64 = ptrtoint %List* %list_ptr to i64
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; Create an empty list value (length=0, null elements).
+; Uses a module-level constant to avoid allocation.
+@wam_empty_list = internal constant %List { i32 0, %Value* null }
+
+define %Value @wam_make_empty_list_value() {
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %ptr_i64 = ptrtoint %List* @wam_empty_list to i64
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; list_suffix2 runner: reads A1 as a list, generates all suffixes,
+; pushes them as a foreign choice point, yields the first.
+;
+; If A1 is not a list (tag != 4), returns false.
+; If A2 is bound (tag=4, list), checks if A2 is a suffix of A1 (deterministic).
+; If A2 is unbound (tag=6), enumerates all suffixes (stream mode).
+define i1 @wam_ls2_run(%WamState* %vm) {
+entry:
+  %a1_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %a1_is_list = icmp eq i32 %a1_tag, 4
+  br i1 %a1_is_list, label %check_a2, label %bail
+
+check_a2:
+  %a2_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %a2_is_unbound = icmp eq i32 %a2_tag, 6
+  br i1 %a2_is_unbound, label %stream, label %bail
+
+stream:
+  ; Get A1 list pointer and length.
+  %a1_pay = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %list_ptr = inttoptr i64 %a1_pay to %List*
+  %len_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 0
+  %len = load i32, i32* %len_ptr
+  %elems_ptr_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 1
+  %elems = load %Value*, %Value** %elems_ptr_ptr
+
+  ; A list of length N has N+1 suffixes (including the list itself and []).
+  %len64 = zext i32 %len to i64
+  %nsuffixes64 = add i64 %len64, 1
+  %nsuffixes = add i32 %len, 1
+
+  ; Allocate result array: nsuffixes x %Value.
+  %res_bytes = shl i64 %nsuffixes64, 4   ; * 16 (sizeof %Value)
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  ; Allocate suffix %List structs: nsuffixes x %List.
+  ; sizeof(%List) = sizeof(i32) + sizeof(%Value*) = 4 + 8 = 12, but
+  ; aligned to 8 → 16 bytes on most targets. Use ptrtoint for safety.
+  %list_struct_size = ptrtoint %List* getelementptr (%List, %List* null, i32 1) to i64
+  %lists_bytes = mul i64 %nsuffixes64, %list_struct_size
+  %lists_mem = call i8* @malloc(i64 %lists_bytes)
+  %suffix_lists = bitcast i8* %lists_mem to %List*
+
+  ; Build suffixes: suffix[i] = {len-i, &elems[i]} for i=0..len.
+  br label %build_loop
+
+build_loop:
+  %bi = phi i64 [0, %stream], [%bi_next, %build_loop]
+  %bi32 = trunc i64 %bi to i32
+  %rem_len = sub i32 %len, %bi32
+  ; Create %List struct for this suffix.
+  %sl = getelementptr %List, %List* %suffix_lists, i64 %bi
+  %sl_len_ptr = getelementptr %List, %List* %sl, i32 0, i32 0
+  store i32 %rem_len, i32* %sl_len_ptr
+  %sl_elems_ptr = getelementptr %List, %List* %sl, i32 0, i32 1
+  %suffix_start = getelementptr %Value, %Value* %elems, i64 %bi
+  store %Value* %suffix_start, %Value** %sl_elems_ptr
+  ; Create %Value for this suffix (tag=4, payload=ptr to %List).
+  %sv = call %Value @wam_make_list_value(%List* %sl)
+  %res_slot = getelementptr %Value, %Value* %results, i64 %bi
+  store %Value %sv, %Value* %res_slot
+  %bi_next = add i64 %bi, 1
+  %bi_done = icmp uge i64 %bi_next, %nsuffixes64
+  br i1 %bi_done, label %yield_first, label %build_loop
+
+yield_first:
+  ; Yield result[0] (the full list itself) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Push foreign choice point for the remaining suffixes.
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %nsuffixes,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+bail:
+  ret i1 false
+}
+
+; Weak default for ls2 kernel impl (replaced by substitution pipeline
+; when list_suffix2 predicates are lowered).
+define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
 ; === M5.12: tc2 common runner helper ===
 ; Boolean reachability: is there any path from start to target in the
 ; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
@@ -1928,8 +2048,8 @@ stub_countdown_sum2:
   ret i1 %cds_r
 
 stub_list_suffix2:
-  ; M5: list_suffix(List, Suffix)
-  ret i1 false
+  %ls_r = call i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %ls_r
 
 stub_transitive_closure2:
   %tc_r = call i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance)

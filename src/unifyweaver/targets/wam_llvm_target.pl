@@ -149,6 +149,8 @@ foreign_kernel(PredArity, Kind, Config) :-
 %  on success.
 llvm_recursive_kernel_detector(countdown_sum2,
     llvm_recursive_kernel_countdown_sum).
+llvm_recursive_kernel_detector(list_suffix2,
+    llvm_recursive_kernel_list_suffix).
 llvm_recursive_kernel_detector(transitive_closure2,
     llvm_recursive_kernel_transitive_closure).
 llvm_recursive_kernel_detector(transitive_distance3,
@@ -197,6 +199,27 @@ llvm_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     RecGoal =.. [Pred, PrevN, PrevSum],
     SumGoal =.. [is, Sum, SumExpr],
     SumExpr =.. [+, PrevSum, N].
+
+%% llvm_recursive_kernel_list_suffix(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the list_suffix2 clause shape:
+%    pred(X, X).
+%    pred([_|Tail], Suffix) :- pred(Tail, Suffix).
+llvm_recursive_kernel_list_suffix(Pred, Arity, Clauses,
+        recursive_kernel(list_suffix2, Pred/Arity, [])) :-
+    llvm_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
+
+%% llvm_foreign_lowerable_list_suffix(+Pred, +Arity, +Clauses).
+%
+%  Ported from rust_target.pl:3917. Matches the list-suffix pattern.
+llvm_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseList, BaseList],
+    var(BaseList),
+    RecHead =.. [Pred, InputList, Suffix],
+    InputList = [_|Tail],
+    RecBody =.. [Pred, Tail, Suffix].
 
 %% llvm_recursive_kernel_transitive_closure(+Pred, +Arity, +Clauses, -RecKernel).
 %
@@ -378,14 +401,23 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
     ;  build_tc2_instance_switch(Tc2Entries, Tc2ImplBody, Tc2Tables),
        replace_tc2_weak_default(StateFuncsCds, Tc2ImplBody, StateFuncsTc)
     ),
+    % ls2 pass — list_suffix2 (enumerate suffixes via backtracking).
+    findall(LsPredArity-LsConfig,
+        llvm_foreign_kernel_spec(LsPredArity, list_suffix2, LsConfig),
+        Ls2Entries),
+    ( Ls2Entries == []
+    -> StateFuncsLs = StateFuncsTc, Ls2Tables = ''
+    ;  build_ls2_instance_switch(Ls2Entries, Ls2ImplBody, Ls2Tables),
+       replace_ls2_weak_default(StateFuncsTc, Ls2ImplBody, StateFuncsLs)
+    ),
     % wsp3 pass — mirror of the td3 pass but for weighted_shortest_path3.
     findall(WspPredArity-WspConfig,
         llvm_foreign_kernel_spec(WspPredArity, weighted_shortest_path3, WspConfig),
         Wsp3Entries),
     ( Wsp3Entries == []
-    -> StateFuncs1 = StateFuncsTc, Wsp3Tables = ''
+    -> StateFuncs1 = StateFuncsLs, Wsp3Tables = ''
     ;  build_wsp3_instance_switch(Wsp3Entries, Wsp3ImplBody, Wsp3Tables),
-       replace_wsp3_weak_default(StateFuncsTc, Wsp3ImplBody, StateFuncs1)
+       replace_wsp3_weak_default(StateFuncsLs, Wsp3ImplBody, StateFuncs1)
     ),
     % astar4 pass
     findall(AsPredArity-AsConfig,
@@ -397,11 +429,11 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
        replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
     ),
     % Concatenate the per-kind global tables into one Globals blob.
-    ( Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Wsp3Tables == '', Astar4Tables == ''
+    ( Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Ls2Tables == '', Wsp3Tables == '', Astar4Tables == ''
     -> Globals = ''
     ;  atomic_list_concat([
            '; === foreign kernel support globals ===\n',
-           Cds2Tables, '\n', Tc2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
+           Cds2Tables, '\n', Tc2Tables, '\n', Ls2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
        ], Globals)
     ).
 
@@ -532,6 +564,51 @@ replace_cds2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
     -> StateFuncs = StateFuncs0
     ;  format(user_error,
         'WARNING: could not find cds2 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
+
+%% build_ls2_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  list_suffix2 is stateless (no edge tables) — every instance calls
+%  the same @wam_ls2_run. The switch exists for multi-instance pattern
+%  consistency. TablesIR is always empty.
+build_ls2_instance_switch(Entries, ImplBody, '') :-
+    build_ls2_instance_parts(Entries, 0, SwitchCases, CaseBodies),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    format(atom(ImplBody),
+'define i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %ls_bail [
+~w
+  ]
+
+~w
+
+ls_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_ls2_instance_parts([], _, [], []).
+build_ls2_instance_parts([_PredArity-_Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies]) :-
+    format(atom(SwitchCase), '    i32 ~w, label %ls_inst_~w', [Index, Index]),
+    format(atom(Body),
+'ls_inst_~w:
+  %ls_r_~w = call i1 @wam_ls2_run(%WamState* %vm)
+  ret i1 %ls_r_~w',
+        [Index, Index, Index]),
+    NextIndex is Index + 1,
+    build_ls2_instance_parts(Rest, NextIndex, RestCases, RestBodies).
+
+%% replace_ls2_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_ls2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: could not find ls2 weak-default in state template; leaving unchanged~n', []),
        StateFuncs = StateFuncsRaw
     ).
 
