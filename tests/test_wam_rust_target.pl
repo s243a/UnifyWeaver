@@ -1094,13 +1094,14 @@ test_filtered_adjusted_weighted_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
-        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_weighted_path/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_weighted_path/3", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
         sub_string(S, _, _, _, 'let output_value = agg_value;'),
         sub_string(S, _, _, _, '(cost > 2_f64)'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal weighted stream wrapper did not lower correctly')
     ).
@@ -1111,13 +1112,14 @@ test_filtered_adjusted_astar_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
-        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_astar_weighted_path/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_astar_weighted_path/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
         sub_string(S, _, _, _, 'let output_value = agg_value;'),
         sub_string(S, _, _, _, '(cost > 2_f64)'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal A* stream wrapper did not lower correctly')
     ).
@@ -1129,10 +1131,12 @@ test_labeled_weighted_stream_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn labeled_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("labeled_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'for joined_value_1 in joined_values_1.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Relational weighted stream wrapper did not lower correctly')
     ).
@@ -1144,10 +1148,12 @@ test_labeled_astar_stream_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn labeled_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("labeled_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'for joined_value_1 in joined_values_1.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Relational A* stream wrapper did not lower correctly')
     ).
@@ -1158,12 +1164,14 @@ test_bucketed_weighted_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn bucketed_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("bucketed_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Multi-stage weighted wrapper did not lower correctly')
     ).
@@ -1174,12 +1182,14 @@ test_bucketed_astar_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn bucketed_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("bucketed_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Multi-stage A* wrapper did not lower correctly')
     ).
@@ -1232,6 +1242,8 @@ test_grouped_bucketed_weighted_min_wrapper :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist/3", "tuple:2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
@@ -1251,6 +1263,8 @@ test_grouped_bucketed_astar_min_wrapper :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist_astar/4", "tuple:2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
