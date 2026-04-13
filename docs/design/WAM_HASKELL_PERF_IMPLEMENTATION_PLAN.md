@@ -411,7 +411,26 @@ Result: pure interpreter **4739ms → 2518ms (47% faster)**.
 - **Atom interning** (~10% combined from `==` + `hash`): Store atoms as
   `Atom !Int` with a global intern table. Eliminates string comparison
   and hashing in the hot loop. The Rust target already does this.
+- **Hot/cold state splitting**: Separate `WamState` into frequently-
+  updated fields (PC, registers) and rarely-updated fields (stack,
+  bindings, trail). Reduces record copy size on every step. The Rust
+  target uses this approach.
 - **Mutable registers**: The fundamental perf gap vs Rust is that
   Haskell's persistent IntMap register file allocates on every write.
   `IORef`/`STRef`-based mutable registers would close this but changes
   the architecture significantly.
+
+### 8.5 Scale benchmarks (2026-04-13)
+
+Haskell WAM + FFI vs SWI-Prolog (optimized accumulated), single run:
+
+| Scale | Seeds | Articles | SWI (ms) | Haskell+FFI (ms) | Ratio |
+|---|---|---|---|---|---|
+| 300 | 386 | 271 | 331 | 285 | 1.16x faster |
+| 1k | 89 | 580 | 187 | 202 | 0.93x |
+| 5k | 284 | 3224 | 747 | 716 | 1.04x faster |
+
+The Haskell WAM with FFI is competitive with SWI-Prolog at all scales.
+The advantage is most pronounced at 300 scale (more seeds = more FFI
+DFS calls). At 1k scale (fewer seeds, more articles), SWI's optimized
+Prolog has a slight edge.
