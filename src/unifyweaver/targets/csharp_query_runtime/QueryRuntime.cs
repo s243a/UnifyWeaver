@@ -11257,6 +11257,16 @@ namespace UnifyWeaver.QueryRuntime
                 ? "positive_min_layered_solve"
                 : "nonnegative_min_layered_solve";
 
+        private static string GetMultiplicativeMinLayeredStrategy(string strategyPrefix, AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? $"{strategyPrefix}PositiveMultiplicativeLayered"
+                : $"{strategyPrefix}NonNegativeMultiplicativeLayered";
+
+        private static string GetMultiplicativeMinLayeredSolvePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "positive_multiplicative_min_layered_solve"
+                : "nonnegative_multiplicative_min_layered_solve";
+
         private static void RecordPathAwareSccGraphMetrics(QueryExecutionTrace? trace, PlanNode node, PathAwareSccGraph graph)
         {
             trace?.RecordMetric(node, "scc_node_count", graph.NodeCount);
@@ -12469,6 +12479,18 @@ namespace UnifyWeaver.QueryRuntime
                         closure.PositiveStepProven,
                         out stepEvaluator,
                         out additiveMinStepSafety);
+                var useMultiplicativeMinFastPath = false;
+                if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && closure.MaxDepth > 0)
+                {
+                    useMultiplicativeMinFastPath = TryCreateNonNegativeMultiplicativeStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                }
+
                 PathAwareSccGraph? sccGraph = null;
                 var useSccCondensedMinFastPath = false;
                 if (useAdditiveMinFastPath)
@@ -12515,6 +12537,10 @@ namespace UnifyWeaver.QueryRuntime
                         ? "PathAwareAccumulationMinSccCondensed"
                         : GetAdditiveMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
                 }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    trace?.RecordStrategy(closure, GetMultiplicativeMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
+                }
                 else if (closure.AccumulatorMode == TableMode.Min)
                 {
                     trace?.RecordStrategy(closure, "PathAwareAccumulationMinFrontierFallback");
@@ -12524,7 +12550,8 @@ namespace UnifyWeaver.QueryRuntime
                 long localStates = 0;
                 long outerDagStates = 0;
                 long queuePops = 0;
-                var frontierMetrics = useAdditiveMinFastPath
+                var useLayeredMinFastPath = useAdditiveMinFastPath || useMultiplicativeMinFastPath;
+                var frontierMetrics = useLayeredMinFastPath
                     ? null
                     : new PathAwareMinFrontierMetrics();
                 void BuildAccumulationRows()
@@ -12542,6 +12569,10 @@ namespace UnifyWeaver.QueryRuntime
                         {
                             AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
                         }
+                        else if (useMultiplicativeMinFastPath)
+                        {
+                            AppendPositiveProductMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
                         else
                         {
                             AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
@@ -12556,6 +12587,10 @@ namespace UnifyWeaver.QueryRuntime
                 else if (useAdditiveMinFastPath)
                 {
                     MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetMultiplicativeMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
                 }
                 else
                 {
@@ -12618,6 +12653,18 @@ namespace UnifyWeaver.QueryRuntime
                         closure.PositiveStepProven,
                         out stepEvaluator,
                         out additiveMinStepSafety);
+                var useMultiplicativeMinFastPath = false;
+                if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && closure.MaxDepth > 0)
+                {
+                    useMultiplicativeMinFastPath = TryCreateNonNegativeMultiplicativeStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                }
+
                 PathAwareSccGraph? sccGraph = null;
                 var useSccCondensedMinFastPath = false;
                 if (useAdditiveMinFastPath)
@@ -12687,6 +12734,10 @@ namespace UnifyWeaver.QueryRuntime
                         ? "PathAwareAccumulationSeededMinSccCondensed"
                         : GetAdditiveMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
                 }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    trace?.RecordStrategy(closure, GetMultiplicativeMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
+                }
                 else if (closure.AccumulatorMode == TableMode.Min)
                 {
                     trace?.RecordStrategy(closure, "PathAwareAccumulationSeededMinFrontierFallback");
@@ -12696,7 +12747,8 @@ namespace UnifyWeaver.QueryRuntime
                 long localStates = 0;
                 long outerDagStates = 0;
                 long queuePops = 0;
-                var frontierMetrics = useAdditiveMinFastPath
+                var useLayeredMinFastPath = useAdditiveMinFastPath || useMultiplicativeMinFastPath;
+                var frontierMetrics = useLayeredMinFastPath
                     ? null
                     : new PathAwareMinFrontierMetrics();
                 void BuildAccumulationRows()
@@ -12714,6 +12766,10 @@ namespace UnifyWeaver.QueryRuntime
                         {
                             AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
                         }
+                        else if (useMultiplicativeMinFastPath)
+                        {
+                            AppendPositiveProductMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
                         else
                         {
                             AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
@@ -12728,6 +12784,10 @@ namespace UnifyWeaver.QueryRuntime
                 else if (useAdditiveMinFastPath)
                 {
                     MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetMultiplicativeMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
                 }
                 else
                 {
@@ -12767,8 +12827,10 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             PositiveStepEvaluator stepEvaluator,
             ICollection<object[]> output,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            Func<double, object>? resultProjector = null)
         {
+            resultProjector ??= static cost => cost;
             var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
             var seedKey = seed ?? NullFactIndexKey;
             var depthCosts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
@@ -12843,7 +12905,93 @@ namespace UnifyWeaver.QueryRuntime
                 .ToList();
             foreach (var (target, cost) in bestRows)
             {
-                output.Add(new object[] { seed!, target!, cost });
+                output.Add(new object[] { seed!, target!, resultProjector(cost) });
+            }
+        }
+
+        private void AppendPositiveProductMinAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            PositiveStepEvaluator factorEvaluator,
+            ICollection<object[]> output,
+            int maxDepth = 0)
+        {
+            var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
+            var seedKey = seed ?? NullFactIndexKey;
+            var depthProducts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
+            {
+                new Dictionary<object?, double> { [seed] = 1d }
+            };
+            var bestKnown = new Dictionary<object?, double>();
+
+            for (var depth = 0; depth < effectiveMaxDepth && depth < depthProducts.Count; depth++)
+            {
+                var currentLayer = depthProducts[depth];
+                if (currentLayer.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var (current, currentProduct) in currentLayer)
+                {
+                    var currentKey = current ?? NullFactIndexKey;
+                    if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (nextDepth > effectiveMaxDepth)
+                    {
+                        continue;
+                    }
+
+                    while (depthProducts.Count <= nextDepth)
+                    {
+                        depthProducts.Add(new Dictionary<object?, double>());
+                    }
+
+                    var nextLayer = depthProducts[nextDepth];
+                    for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    {
+                        var next = edgeBucket.Targets[edgeIndex];
+                        if (Equals(next ?? NullFactIndexKey, seedKey))
+                        {
+                            continue;
+                        }
+
+                        for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                        {
+                            var auxRow = auxBucket[auxIndexPos];
+                            if (auxRow is null || auxRow.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var factor = factorEvaluator(current!, next!, auxRow[1]!);
+                            var nextProduct = currentProduct * factor;
+
+                            if (!nextLayer.TryGetValue(next, out var existingProduct) || nextProduct < existingProduct)
+                            {
+                                nextLayer[next] = nextProduct;
+                            }
+
+                            if (!bestKnown.TryGetValue(next, out var bestProduct) || nextProduct < bestProduct)
+                            {
+                                bestKnown[next] = nextProduct;
+                            }
+                        }
+                    }
+                }
+            }
+
+            var bestRows = bestKnown
+                .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
+                .ToList();
+            foreach (var (target, product) in bestRows)
+            {
+                output.Add(new object[] { seed!, target!, product });
             }
         }
 
@@ -12959,6 +13107,75 @@ namespace UnifyWeaver.QueryRuntime
             return true;
         }
 
+        private bool TryCreateNonNegativeMultiplicativeStepEvaluator(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            out PositiveStepEvaluator? evaluator,
+            out AdditiveMinStepSafety stepSafety)
+        {
+            evaluator = null;
+            stepSafety = AdditiveMinStepSafety.StrictlyPositive;
+            if (!TryExtractMinProductFactorExpression(baseExpression, recursiveExpression, out var factorExpression))
+            {
+                return false;
+            }
+
+            var strictlyGreaterThanOne = true;
+            foreach (var (currentKey, edgeBucket) in succIndex)
+            {
+                if (!auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                foreach (var next in edgeBucket.Targets)
+                {
+                    foreach (var auxRow in auxBucket)
+                    {
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var evalTuple = new object[] { edgeBucket.Source!, next!, 1, auxRow[1]! };
+                        var factorObject = EvaluateArithmeticExpression(factorExpression, evalTuple);
+                        double factor;
+                        try
+                        {
+                            factor = Convert.ToDouble(factorObject, CultureInfo.InvariantCulture);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+
+                        if (!double.IsFinite(factor) || !(factor >= 1d))
+                        {
+                            return false;
+                        }
+
+                        if (!(factor > 1d))
+                        {
+                            strictlyGreaterThanOne = false;
+                        }
+                    }
+                }
+            }
+
+            stepSafety = strictlyGreaterThanOne
+                ? AdditiveMinStepSafety.StrictlyPositive
+                : AdditiveMinStepSafety.NonNegative;
+            evaluator = (current, next, auxValue) =>
+            {
+                var evalTuple = new object[] { current, next, 1, auxValue };
+                var factorObject = EvaluateArithmeticExpression(factorExpression, evalTuple);
+                return Convert.ToDouble(factorObject, CultureInfo.InvariantCulture);
+            };
+            return true;
+        }
+
         private static bool TryExtractMinStepExpression(
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
@@ -12984,6 +13201,37 @@ namespace UnifyWeaver.QueryRuntime
             if (add.Right is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, add.Left))
             {
                 stepExpression = add.Left;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryExtractMinProductFactorExpression(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            out ArithmeticExpression factorExpression)
+        {
+            factorExpression = baseExpression;
+            if (ReferencesAccumulator(baseExpression))
+            {
+                return false;
+            }
+
+            if (recursiveExpression is not BinaryArithmeticExpression { Operator: ArithmeticBinaryOperator.Multiply } multiply)
+            {
+                return false;
+            }
+
+            if (multiply.Left is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, multiply.Right))
+            {
+                factorExpression = multiply.Right;
+                return true;
+            }
+
+            if (multiply.Right is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, multiply.Left))
+            {
+                factorExpression = multiply.Left;
                 return true;
             }
 

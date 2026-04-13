@@ -49,7 +49,8 @@ The fast path is only sound when all of the following hold:
 Still on the exact frontier fallback path:
 
 - negative increments
-- non-additive recurrence expressions such as `Acc is Acc1 * Factor`
+- multiplicative recurrence with any finite factor below `1`
+- non-additive recurrence expressions outside the direct positive-product form
 - `max`, `first`, `sum`, `count`
 - multi-auxiliary or non-linear accumulation beyond the current path-aware
   accumulation shape

@@ -939,10 +939,12 @@ fall back to the exact visited-state frontier.
 
 Use `--weight-mode negative --recurrence-mode additive` to force the exact
 frontier fallback for negative additive steps. Use
-`--weight-mode positive --recurrence-mode multiplicative` to force the exact
-frontier fallback for positive multiplicative recurrence. These variants emit
-the `min_frontier_*` trace metrics used to profile candidate growth, dominance
-checks, subset checks, target buckets, and retained path-state partition sizes.
+`--weight-mode positive --recurrence-mode multiplicative` to exercise the
+direct positive-product `Min` strategy when every factor is at least one.
+Subunit multiplicative factors remain on the exact frontier fallback. Fallback
+variants emit the `min_frontier_*` trace metrics used to profile candidate
+growth, dominance checks, subset checks, target buckets, and retained
+path-state partition sizes.
 
 Latest local results:
 
@@ -979,15 +981,21 @@ trace label, while zero-cost non-negative steps report
 `metric_scc_probe_outer_dag_states_explored`; on the current benchmark
 shape the selector keeps the layered path when the SCC probe is slower.
 
-Fallback metric runs on `300` and `1k` now use exact path-state partitioning for
-weighted `Min` frontier states plus lazy lower-count representative prefilters.
+Negative-additive fallback metric runs on `300` and `1k` now use exact
+path-state partitioning for weighted `Min` frontier states plus lazy
+lower-count representative prefilters.
 The negative-additive fallback reached `20,404,270` dominance-candidate checks
 at `300` and `16,522,183` at `1k`, down from the previous path-partition-only
-counts of `34,704,185` and `35,271,278`. The multiplicative fallback reached
-`8,013,834` at `300` and `7,601,868` at `1k`, down from `10,906,078` and
-`11,043,000`. Output agreement still reports `match`; the remaining fallback
-work is mostly lower-count dominance probing, now measured separately from
-same-fingerprint checks.
+counts of `34,704,185` and `35,271,278`. Output agreement still reports
+`match`; the remaining fallback work is mostly lower-count dominance probing,
+now measured separately from same-fingerprint checks.
+
+Positive multiplicative `Min` no longer uses the exact frontier fallback on the
+benchmark shape. The runtime minimizes direct products with a layered strategy
+when all factors are finite and at least `1`; it does not compute a geometric
+mean or normalize by path length. Current runs report `all_vs_min=match` with
+`300`: `0.264s` `Min` and `3.38x` speedup, and `1k`: `0.212s` `Min` and
+`2.76x` speedup.
 
 ### Available Targets
 

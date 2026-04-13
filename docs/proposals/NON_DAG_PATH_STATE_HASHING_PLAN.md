@@ -121,8 +121,8 @@ The next concrete coding step should start here:
 
 - compare this weighted `Min` fallback against another non-DAG path-state
   workload before adding more generic indexes
-- keep multiplicative-specific transforms separate unless the next benchmark
-  still points specifically at non-additive weighted recurrence
+- positive multiplicative weighted `Min` is now handled separately when every
+  factor is finite and at least `1`
 - preserve the current rule that fingerprints, masks, and representatives are
   only candidate filters; exact subset verification remains authoritative
 

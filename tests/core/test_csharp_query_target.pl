@@ -178,6 +178,9 @@
 :- dynamic user:test_weighted_product_min_edge/2.
 :- dynamic user:test_weighted_product_min_factor/2.
 :- dynamic user:test_weighted_product_min_path/3.
+:- dynamic user:test_weighted_discount_min_edge/2.
+:- dynamic user:test_weighted_discount_min_factor/2.
+:- dynamic user:test_weighted_discount_min_path/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -338,7 +341,8 @@ test_csharp_query_target :-
         verify_path_aware_accumulation_positive_metadata_plan,
         verify_path_aware_accumulation_nonnegative_min_strategy_runtime,
         verify_path_aware_accumulation_negative_min_frontier_fallback_runtime,
-        verify_path_aware_accumulation_product_min_frontier_fallback_runtime,
+        verify_path_aware_accumulation_product_min_multiplicative_strategy_runtime,
+        verify_path_aware_accumulation_product_min_subunit_factor_fallback_runtime,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -1338,6 +1342,26 @@ setup_test_data :-
         Acc is Acc1 * Factor
     )),
     assertz(user:'table'(test_weighted_product_min_path(_, _, min))),
+    assertz(user:test_weighted_discount_min_edge(a, b)),
+    assertz(user:test_weighted_discount_min_edge(a, c)),
+    assertz(user:test_weighted_discount_min_edge(b, a)),
+    assertz(user:test_weighted_discount_min_edge(b, d)),
+    assertz(user:test_weighted_discount_min_edge(c, d)),
+    assertz(user:test_weighted_discount_min_factor(a, 0.5)),
+    assertz(user:test_weighted_discount_min_factor(b, 3)),
+    assertz(user:test_weighted_discount_min_factor(c, 5)),
+    assertz(user:(test_weighted_discount_min_path(X, Y, Acc) :-
+        test_weighted_discount_min_edge(X, Y),
+        test_weighted_discount_min_factor(X, Factor),
+        Acc is Factor
+    )),
+    assertz(user:(test_weighted_discount_min_path(X, Z, Acc) :-
+        test_weighted_discount_min_edge(X, Y),
+        test_weighted_discount_min_factor(X, Factor),
+        test_weighted_discount_min_path(Y, Z, Acc1),
+        Acc is Acc1 * Factor
+    )),
+    assertz(user:'table'(test_weighted_discount_min_path(_, _, min))),
     assert_binary_recursive_fixture(
         test_probe_dir_forward_edge,
         test_probe_dir_forward_reach,
@@ -1579,6 +1603,9 @@ cleanup_test_data :-
     retractall(user:test_weighted_product_min_edge(_, _)),
     retractall(user:test_weighted_product_min_factor(_, _)),
     retractall(user:test_weighted_product_min_path(_, _, _)),
+    retractall(user:test_weighted_discount_min_edge(_, _)),
+    retractall(user:test_weighted_discount_min_factor(_, _)),
+    retractall(user:test_weighted_discount_min_path(_, _, _)),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3987,7 +4014,7 @@ verify_path_aware_accumulation_negative_min_frontier_fallback_runtime :-
         Params,
         HarnessSource).
 
-verify_path_aware_accumulation_product_min_frontier_fallback_runtime :-
+verify_path_aware_accumulation_product_min_multiplicative_strategy_runtime :-
     csharp_target:build_query_plan(
         test_weighted_product_min_path/3,
         [target(csharp_query)],
@@ -4003,24 +4030,45 @@ verify_path_aware_accumulation_product_min_frontier_fallback_runtime :-
     sub_string(Source, _, _, _, 'TableMode.Min'),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     Params = [[a]],
-    weighted_min_frontier_metric_names(MetricNames),
-    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
-    harness_source_with_strategy_and_metric_flags_no_reuse(
+    harness_source_with_strategy_flag_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinPositiveMultiplicativeLayered',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,2',
+         'a,c,2',
+         'a,d,6',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinPositiveMultiplicativeLayered=true'],
+        Params,
+        HarnessSource).
+
+verify_path_aware_accumulation_product_min_subunit_factor_fallback_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_discount_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_discount_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    harness_source_with_strategy_flag_no_reuse(
         ModuleClass,
         Params,
         'PathAwareAccumulationSeededMinFrontierFallback',
-        MetricNames,
-        PositiveMetricNames,
         HarnessSource),
-    weighted_min_frontier_metric_expectations(MetricRows),
-    append(['a,b,2',
-            'a,c,2',
-            'a,d,6',
-            'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
-           MetricRows,
-           ExpectedRows),
     maybe_run_query_runtime_with_harness(Plan,
-        ExpectedRows,
+        ['a,b,0.5',
+         'a,c,0.5',
+         'a,d,1.5',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
         Params,
         HarnessSource).
 
