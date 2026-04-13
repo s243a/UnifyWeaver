@@ -2,8 +2,8 @@
 
 ## Status
 
-Draft — written to capture the design gap discovered during the
-WAM-lowered Haskell work (#1344, #1346).
+**Resolved** — implemented via Option 4 (compile-time instruction
+resolution) in PR #1354. See "Implemented Solution" section below.
 
 ## Problem
 
@@ -135,20 +135,72 @@ can never handle predicates like `category_ancestor/4` even if it
 could generate correct code, because the dispatch can't tell when
 to skip the FFI.
 
-## Recommendation
+## Implemented Solution: Option 4 — Compile-time instruction resolution
 
-**Option 2** (predicate-set check) for the near term. It's the
-smallest change that unblocks multi-clause lowering:
+Instead of changing `executeForeign`'s return type (Option 1) or adding
+a runtime predicate-set check (Option 2), the ambiguity is resolved
+entirely at **compile time** by introducing a new WAM instruction:
 
-- One new field on `WamContext` (Haskell) / `VmState` (Rust) /
-  equivalent (WAT, LLVM).
-- One `if` check at the top of the `Call` dispatch.
-- The `foreignPreds` list already exists in `Main.hs` — just
-  thread it into `WamContext`.
+```haskell
+data Instruction
+  = ...
+  | Call String !Int         -- runtime dispatch (lowered → indexed → labels)
+  | CallResolved !Int !Int   -- compile-time resolved label (direct PC jump)
+  | CallForeign String !Int  -- compile-time resolved foreign pred (direct FFI)
+```
 
-Option 1 (three-valued return) is the long-term clean solution but
-should be tackled as a cross-target refactor after the lowered-Haskell
-path has proven its value. It's overkill for unblocking one feature.
+`resolveCallInstrs` (called once at project load time) now resolves
+each `Call` instruction to one of three forms:
+
+| Instruction | Resolved when | `Nothing` means |
+|---|---|---|
+| `CallResolved pc` | Known WAM label | *(never returns Nothing)* |
+| `CallForeign pred` | Detected kernel (foreign) | No solutions → backtrack |
+| `Call pred` | Runtime fallback | Full dispatch chain |
+
+The `step` function dispatches each form differently:
+
+```haskell
+-- Direct FFI: Nothing = no solutions, never falls through
+step !ctx s (CallForeign pred _arity) =
+  executeForeign ctx pred (s { wsCP = wsPC s + 1 })
+
+-- Non-foreign dispatch: executeForeign is NOT checked here
+step !ctx s (Call pred _arity) =
+  let sc = s { wsCP = wsPC s + 1 }
+  in case Map.lookup pred (wcLoweredPredicates ctx) of
+    Just fn -> fn ctx sc
+    Nothing -> case callIndexedFact2 ctx pred sc of
+      ...
+```
+
+For lowered functions, a `callForeign` helper provides the same
+semantics as `CallForeign` for inter-predicate calls:
+
+```haskell
+callForeign :: WamContext -> String -> WamState -> Maybe WamState
+callForeign !ctx pred !sc = executeForeign ctx pred sc
+```
+
+**Why this is better than Options 1–3:**
+
+- **No runtime overhead** — the dispatch decision is baked into the
+  instruction at compile time. No predicate-set lookup, no three-valued
+  return check on every call.
+- **No return type change** — `executeForeign` still returns
+  `Maybe WamState`. The ambiguity doesn't exist because `CallForeign`
+  is only emitted for predicates that ARE foreign.
+- **No sync risk** — the `foreignPreds` list that drives resolution is
+  derived from `DetectedKernels` (auto-detected), not manually maintained.
+- **Unblocks multi-clause lowering** — lowered functions can safely call
+  foreign predicates via `callForeign` knowing Nothing = failure.
+
+## Original Recommendation (superseded)
+
+**Option 2** (predicate-set check) was the original near-term
+recommendation. Option 4 was implemented instead because it avoids
+runtime overhead entirely and emerged from the observation that the
+`foreignPreds` list was already known at compile time.
 
 ## Scope
 
@@ -156,18 +208,17 @@ This proposal covers only the dispatch semantics. It does NOT cover:
 
 - Which predicates to lower (that's the kernel detection work).
 - How to lower multi-clause predicates (that's the emitter design).
-- Whether the Rust target should adopt `wcLoweredPredicates` too
-  (separate discussion).
+- Whether the Rust/LLVM targets should adopt `CallForeign` too
+  (separate discussion — the same pattern applies).
 
 ## References
 
 - #1344 — feat: WAM-lowered Haskell Phases 1–4
 - #1346 — fix: dispatch priority + single-clause restriction
+- #1354 — feat: CallForeign instruction (this resolution)
 - `docs/design/WAM_HASKELL_LOWERED_BACKGROUND.md` — taxonomy of
   Haskell code-gen paths
 - `docs/design/WAM_HASKELL_LOWERED_SPECIFICATION.md` §2.1 — the
   `wcLoweredPredicates` dispatch mechanism
-- `src/unifyweaver/targets/wam_rust_target.pl:1255` —
-  `execute_foreign_predicate` (Rust equivalent)
-- `src/unifyweaver/targets/wam_haskell_target.pl:608` —
-  `executeForeign` (Haskell)
+- `src/unifyweaver/targets/wam_haskell_target.pl` —
+  `resolveCallInstrs`, `step (CallForeign ...)`, `callForeign`
