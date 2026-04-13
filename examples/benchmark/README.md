@@ -937,15 +937,15 @@ Command:
 
 ```bash
 python examples/benchmark/benchmark_shortest_path_to_root.py \
-    --scales 300,1k --repetitions 1
+    --scales 300,1k --repetitions 3
 ```
 
-Latest local results:
+Latest local results after switching counted closure to compact visited paths:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.920s | 0.246s | 3.74x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.679s | 0.162s | 4.18x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.766s | 0.234s | 3.27x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.502s | 0.176s | 2.86x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 Additional path-state observations:
 
@@ -955,10 +955,12 @@ Additional path-state observations:
   cycle skips, and `235,306` depth-limit skips.
 - `Min` mode cuts output rows by roughly `19x` at `300` and `34x` at
   `1k` without changing final shortest-path answers.
+- compact visited paths reduce the allocation-heavy `All` traversal while
+  preserving the same path-state counters and output digests.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
-  cost. A compact visited representation for counted closure is the more
-  relevant follow-up if this shape becomes hot again.
+  cost. Further counted-closure work should target expansion/materialization
+  overhead rather than dominance-frontier machinery.
 
 ### Weighted `Min` Results
 

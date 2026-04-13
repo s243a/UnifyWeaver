@@ -118,6 +118,13 @@ Preferred direction:
 - compact exact visited encoding
 - path fingerprint derived from that encoding
 
+Current C# query-runtime status:
+
+- counted `PathAwareTransitiveClosureNode` traversal uses integer node ids and
+  compact exact visited paths for cycle checks
+- weighted `Min` fallback uses compact exact visited paths plus fingerprints,
+  masks, and exact subset verification for frontier dominance candidates
+
 Exact structure options include:
 
 1. sorted integer path vector

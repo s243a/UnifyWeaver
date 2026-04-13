@@ -31,6 +31,13 @@ Normalize relevant non-DAG recursive executors to use:
 This is a prerequisite for compact exact path-state representation and
 cheap hashing.
 
+Status:
+
+- counted `PathAwareTransitiveClosureNode` traversal now uses integer node ids
+  and `CompactVisitedPath` instead of cloning per-state `HashSet<object?>`
+  instances
+- weighted `Min` frontier fallback already uses compact integer path state
+
 ## Phase 3: Fingerprint-Carrying State
 
 Extend the relevant recursive state structures to carry:
@@ -48,6 +55,9 @@ Status:
   runtime
 - compact visited paths now carry deterministic set fingerprints alongside
   exact node-id arrays and summary masks
+- counted transitive closure uses the same compact exact path representation
+  for cycle checks, but does not use frontier fingerprint lookup because it
+  has no subset-dominance frontier
 
 ## Phase 4: Bucketed Lookup
 
@@ -139,8 +149,8 @@ Local survey:
 
 | Workload | Scale | All | Min | Match | Main Counter |
 | --- | ---: | ---: | ---: | --- | --- |
-| counted shortest path | 300 | 0.920s | 0.246s | yes | `982,581` all-mode successor candidates |
-| counted shortest path | 1k | 0.679s | 0.162s | yes | `592,698` all-mode successor candidates |
+| counted shortest path | 300 | 0.766s | 0.234s | yes | `982,581` all-mode successor candidates |
+| counted shortest path | 1k | 0.502s | 0.176s | yes | `592,698` all-mode successor candidates |
 | negative additive weighted `Min` | 300 | 0.871s | 1.478s | yes | `20,404,270` dominance candidates |
 | negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
 
@@ -148,12 +158,13 @@ Interpretation:
 
 - counted closure is dominated by raw successor expansion and depth-limit
   skips, not exact subset dominance
+- compact visited state reduces counted-closure allocation overhead while
+  preserving the same traversal counters and exact output
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
-  default; if counted closure becomes the target, the more appropriate next
-  step is compact visited-state storage for `PathAwareTransitiveClosureNode`
-  rather than more dominance-frontier machinery
+  default; if counted closure stays the target, the remaining work is in
+  expansion/materialization overhead rather than dominance-frontier machinery
 
 The optimization must remain exact: fingerprints and bucket keys should reduce
 candidate scans, not replace the final simple-path dominance check.
