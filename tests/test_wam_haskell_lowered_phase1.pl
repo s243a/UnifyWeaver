@@ -109,11 +109,11 @@ test_mixed_non_list_rejected :-
 
 test_lowerable_rejects_unsupported :-
     Test = 'WAM-Haskell-Lowered Phase 1: wam_haskell_lowerable/3 rejects unsupported instructions',
-    % begin_aggregate is explicitly deferred — not in the Phase 4 whitelist.
-    WamText = "foo/1:\n    begin_aggregate sum, A1, A2\n    proceed\n",
+    % get_structure is not in the lowered whitelist (requires unification mode).
+    WamText = "foo/1:\n    get_structure f/2, A1\n    proceed\n",
     (   \+ wam_haskell_lowerable(foo/1, WamText, _Reason)
     ->  pass(Test)
-    ;   fail_test(Test, 'unsupported begin_aggregate was accepted')
+    ;   fail_test(Test, 'unsupported get_structure was accepted')
     ).
 
 %% ---------------------------------------------------------------------
