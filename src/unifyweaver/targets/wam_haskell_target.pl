@@ -1452,7 +1452,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     write_hs_file(CabalPath, CabalCode),
 
     % Generate Main.hs
-    generate_main_hs(Predicates, DetectedKernels, MainCode0),
+    generate_main_hs(Predicates, DetectedKernels, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
@@ -1567,15 +1567,62 @@ emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
     format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
     emit_lowered_entries_rest(Rest).
 
-%% generate_main_hs(+Predicates, +DetectedKernels, -Code)
+%% generate_main_hs(+Predicates, +DetectedKernels, +Options, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
-%  Reads main.hs.mustache and populates {{foreign_preds}} from DetectedKernels.
-generate_main_hs(_Predicates, DetectedKernels, Code) :-
+%  Reads main.hs.mustache and populates template variables.
+%  Options:
+%    query_pred(Pred/Arity) — use a WAM-compiled aggregation predicate
+%      instead of the default collectSolutions loop. The predicate should
+%      accept (Cat, Root, WeightSum) and return the accumulated weight sum.
+generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
-    % Build foreignPreds list: ["category_ancestor/4", "closure/2", ...]
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
-    render_template(Template, [foreign_preds=ForeignPredsStr], Code).
+    generate_query_body(Options, QueryBody),
+    render_template(Template,
+        [foreign_preds=ForeignPredsStr, query_body=QueryBody], Code).
+
+generate_query_body(Options, QueryBody) :-
+    (   member(query_pred(QueryPred), Options)
+    ->  % Optimized: call WAM-compiled aggregation predicate per seed.
+        % The predicate does begin_aggregate/end_aggregate internally.
+        format(atom(QueryPred1), '~w', [QueryPred]),
+        format(atom(QueryBody),
+'let wsVarId = 1000000
+            s0 = emptyState
+                { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels
+                , wsRegs = IM.fromList
+                    [ (1, Atom cat)
+                    , (2, Atom root)
+                    , (3, Unbound wsVarId)
+                    ]
+                , wsCP = 0
+                }
+            !result = case run ctx s0 of
+              Just s1 -> case IM.lookup wsVarId (wsBindings s1) of
+                Just v -> case extractDouble (derefVar (wsBindings s1) v) of
+                  Just ws -> ws
+                  Nothing -> 0.0
+                Nothing -> 0.0
+              Nothing -> 0.0
+        return (cat, result)', [QueryPred1])
+    ;   % Default: collectSolutions loop for category_ancestor/4
+        QueryBody =
+'let hopsVarId = 1000000
+            s0 = emptyState
+                { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
+                , wsRegs = IM.fromList
+                    [ (1, Atom cat)
+                    , (2, Atom root)
+                    , (3, Unbound hopsVarId)
+                    , (4, VList [Atom cat])
+                    ]
+                , wsCP = 0
+                }
+            !solutions = collectSolutions ctx s0 hopsVarId
+            !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
+        return (cat, weightSum)'
+    ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
 %  Extract the string keys from Key-Kernel pairs.
