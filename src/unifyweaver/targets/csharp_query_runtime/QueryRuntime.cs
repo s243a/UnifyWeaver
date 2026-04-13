@@ -12546,7 +12546,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                     else
                     {
-                        RecordBufferedPathAwareDepthRow(bufferedRows!, seed, next, nextDepth, metrics);
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, seed, next, nextDepth);
                     }
 
                     var nextVisited = visited.Extend(nextId);
@@ -12588,18 +12588,9 @@ namespace UnifyWeaver.QueryRuntime
             List<PathAwareDepthRow> rows,
             object? seed,
             object? target,
-            int depth,
-            PathAwareTraversalMetrics? metrics)
+            int depth)
         {
-            if (metrics is null)
-            {
-                rows.Add(new PathAwareDepthRow(seed, target, depth));
-                return;
-            }
-
-            var started = Stopwatch.GetTimestamp();
             rows.Add(new PathAwareDepthRow(seed, target, depth));
-            metrics.AddRowCreationElapsed(Stopwatch.GetElapsedTime(started));
         }
 
         private static void MaterializePathAwareDepthRows(
@@ -12612,13 +12603,26 @@ namespace UnifyWeaver.QueryRuntime
             {
                 outputList.EnsureCapacity(outputList.Count + rows.Count);
             }
+            else
+            {
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    var row = rows[i];
+                    output.Add(new object[] { row.Seed!, row.Target!, row.Depth });
+                    metrics?.RecordOutputRow();
+                }
+
+                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
+                return;
+            }
 
             for (var i = 0; i < rows.Count; i++)
             {
                 var row = rows[i];
-                output.Add(new object[] { row.Seed!, row.Target!, row.Depth });
+                outputList.Add(new object[] { row.Seed!, row.Target!, row.Depth });
                 metrics?.RecordOutputRow();
             }
+
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
 

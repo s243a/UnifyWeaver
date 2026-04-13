@@ -941,21 +941,22 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 ```
 
 Latest local results after compact visited paths, typed row buffering,
-pre-sized result materialization, and edge-state node-id preindexing:
+pre-sized result materialization, edge-state node-id preindexing, and removing
+per-row buffer timing from the traversal hot path:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.549s | 0.225s | 2.45x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.415s | 0.168s | 2.46x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.558s | 0.219s | 2.55x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.395s | 0.167s | 2.37x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 201.268ms | 27.712ms | 96.200ms | n/a |
-| 300 | Min | 68.297ms | n/a | 7.207ms | 17.291ms |
-| 1k | All | 119.368ms | 23.988ms | 60.008ms | n/a |
-| 1k | Min | 19.815ms | n/a | 1.808ms | 5.863ms |
+| 300 | All | 217.951ms | 0.000ms | 99.800ms | n/a |
+| 300 | Min | 53.414ms | 0.000ms | 7.487ms | 13.907ms |
+| 1k | All | 122.026ms | 0.000ms | 63.798ms | n/a |
+| 1k | Min | 21.147ms | 0.000ms | 1.794ms | 5.640ms |
 
 Additional path-state observations:
 
@@ -973,6 +974,9 @@ Additional path-state observations:
 - edge-state node-id preindexing removes the per-successor candidate node-id
   dictionary lookup from traversal while preserving output hashes and
   `path_state_*` counters.
+- row-buffer recording no longer starts a stopwatch for every emitted path
+  row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
+  work is included in traversal timing.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
