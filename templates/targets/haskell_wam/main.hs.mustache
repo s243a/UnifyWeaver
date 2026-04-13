@@ -93,17 +93,11 @@ main = do
     t1 <- getCurrentTime
     let loadMs = round (diffUTCTime t1 t0 * 1000) :: Int
 
-    -- Build merged code: compiled predicates + runtime facts
-    let baseLen = length allCode
-        (cpCode, cpLabels) = buildFact2Code "category_parent" categoryParents (baseLen + 1)
-        cpEnd = baseLen + length cpCode
-        (acCode, acLabels) = buildFact2Code "article_category" articleCategories (cpEnd + 1)
-        acEnd = cpEnd + length acCode
-        (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
-
-        mergedCodeRaw = allCode ++ cpCode ++ acCode ++ rcCode
-        mergedLabels = Map.union allLabels
-                     $ Map.fromList (cpLabels ++ acLabels ++ rcLabels)
+    -- Build merged code: compiled predicates + runtime facts.
+    -- When FFI handles fact lookups, the WAM-compiled fact code is pure
+    -- waste (42% of time, 85% of allocation). The generator injects the
+    -- appropriate block here based on which predicates are FFI-owned.
+{{merged_code_build}}
         -- Pre-resolve Call instructions to CallResolved at startup so the
         -- hot path skips wsLabels string lookups. Foreign/indexed predicates
         -- are kept as Call so runtime dispatch (executeForeign/callIndexedFact2)

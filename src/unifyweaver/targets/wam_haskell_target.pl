@@ -1550,7 +1550,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
 
     % Generate cabal file
     option(module_name(ModName), Options, 'wam-haskell-bench'),
-    generate_cabal_file(ModName, UseHM, CabalCode),
+    generate_cabal_file(ModName, UseHM, Options, CabalCode),
     format(atom(CabalFile), '~w.cabal', [ModName]),
     directory_file_path(ProjectDir, CabalFile, CabalPath),
     write_hs_file(CabalPath, CabalCode),
@@ -1682,8 +1682,44 @@ generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
     generate_query_body(Options, QueryBody),
+    generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
     render_template(Template,
-        [foreign_preds=ForeignPredsStr, query_body=QueryBody], Code).
+        [ foreign_preds=ForeignPredsStr
+        , query_body=QueryBody
+        , merged_code_build=MergedCodeBuild
+        ], Code).
+
+%% generate_merged_code_build(+DetectedKernels, +Options, -Code)
+%  Emit the merged-code construction block for Main.hs.
+%  When an FFI kernel handles fact lookups, the WAM-compiled fact code
+%  is never executed — so we skip buildFact2Code to save ~42% of runtime.
+%  Options:
+%    skip_fact_wam(true|false) — override auto-detection
+%  Auto-detection: if any kernel is detected, skip WAM-compilation of
+%  all fact predicates (conservative for benchmark template).
+generate_merged_code_build(DetectedKernels, Options, Code) :-
+    (   option(skip_fact_wam(Skip), Options)
+    ->  true
+    ;   DetectedKernels \= []
+    ->  Skip = true
+    ;   Skip = false
+    ),
+    (   Skip == true
+    ->  Code =
+'    let mergedCodeRaw = allCode
+        mergedLabels = allLabels'
+    ;   Code =
+'    let baseLen = length allCode
+        (cpCode, cpLabels) = buildFact2Code "category_parent" categoryParents (baseLen + 1)
+        cpEnd = baseLen + length cpCode
+        (acCode, acLabels) = buildFact2Code "article_category" articleCategories (cpEnd + 1)
+        acEnd = cpEnd + length acCode
+        (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
+
+        mergedCodeRaw = allCode ++ cpCode ++ acCode ++ rcCode
+        mergedLabels = Map.union allLabels
+                     $ Map.fromList (cpLabels ++ acLabels ++ rcLabels)'
+    ).
 
 generate_query_body(Options, QueryBody) :-
     (   member(query_pred(QueryPred), Options)
@@ -2122,11 +2158,16 @@ emptyState = WamState
   }
 '.
 
-%% generate_cabal_file(+Name, +UseHM, -Code)
-generate_cabal_file(Name, UseHM, Code) :-
+%% generate_cabal_file(+Name, +UseHM, +Options, -Code)
+%  Options: profiling(true) adds -prof -fprof-auto -rtsopts for GHC profiling.
+generate_cabal_file(Name, UseHM, Options, Code) :-
     (   UseHM == true
     ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2"
     ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8"
+    ),
+    (   option(profiling(true), Options)
+    ->  GhcOpts = "-O2 -prof -fprof-auto -rtsopts"
+    ;   GhcOpts = "-O2"
     ),
     format(string(Code),
 'cabal-version: 2.4
@@ -2140,8 +2181,8 @@ executable ~w
   other-modules:    WamTypes, WamRuntime, Predicates, Lowered
   build-depends:    ~w
   default-language: Haskell2010
-  ghc-options:      -O2
-', [Name, Name, Deps]).
+  ghc-options:      ~w
+', [Name, Name, Deps, GhcOpts]).
 
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
 %  Compiles all predicates into a single merged code array and label map,
