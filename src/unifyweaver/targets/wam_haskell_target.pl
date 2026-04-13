@@ -1055,6 +1055,12 @@ step !ctx s (Call pred _arity) =
         Just pc -> Just (s { wsPC = pc, wsCP = wsPC s + 1 })
         Nothing -> Nothing
 
+-- Jump: unconditional jump to a label (used in if-then-else compilation)
+step !ctx s (Jump label) =
+  case Map.lookup label (wcLabels ctx) of
+    Just pc -> Just (s { wsPC = pc })
+    Nothing -> Nothing
+
 -- Execute: tail call, like Call but without setting wsCP
 step !ctx s (Execute pred) =
   case Map.lookup pred (wcLoweredPredicates ctx) of
@@ -1112,6 +1118,15 @@ step !ctx s (RetryMeElse label) =
 step !ctx s (BuiltinCall "!/0" _) =
   -- Cut: truncate wsCPs to the barrier depth saved at clause Allocate.
   Just (s { wsPC = wsPC s + 1, wsCPs = take (wsCutBar s) (wsCPs s), wsCPsLen = wsCutBar s })
+
+-- CutIte: soft cut for if-then-else — pops exactly the top choice point
+-- (the one pushed by try_me_else for the Else branch). Unlike !/0 which
+-- truncates to wsCutBar (clause-level), this only removes the immediately
+-- enclosing if-then-else CP, preserving aggregate frames and outer CPs.
+step !ctx s CutIte =
+  case wsCPs s of
+    (_cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+    [] -> Just (s { wsPC = wsPC s + 1 })  -- no CP to pop (shouldn''t happen)
 
 -- Type-checking builtins
 step !ctx s (BuiltinCall "nonvar/1" _) =
@@ -1997,6 +2012,8 @@ data Instruction
   | CallResolved !Int !Int            -- post-resolution: target PC + arity
   | CallForeign String !Int           -- compile-time resolved foreign pred (Nothing = fail)
   | Execute String
+  | Jump String                         -- unconditional jump to label
+  | CutIte                              -- soft cut: pop one CP (if-then-else)
   | Proceed
   | BuiltinCall String !Int
   | TryMeElse String
@@ -2242,6 +2259,9 @@ wam_instr_to_haskell(["call", P, N], Hs) :-
 wam_instr_to_haskell(["execute", P], Hs) :-
     format(string(Hs), 'Execute "~w"', [P]).
 wam_instr_to_haskell(["proceed"], "Proceed").
+wam_instr_to_haskell(["jump", Label], Hs) :-
+    format(string(Hs), 'Jump "~w"', [Label]).
+wam_instr_to_haskell(["cut_ite"], "CutIte").
 wam_instr_to_haskell(["builtin_call", Op, N], Hs) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
