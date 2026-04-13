@@ -76,7 +76,7 @@ generate(VariantAtom, OutputDir) :-
 
     % Step 5: Generate Haskell WAM project
     query_pred_for_variant(VariantAtom, QueryPredOpts),
-    append([module_name('wam-haskell-bench'), emit_mode(functions), no_kernels(true)], QueryPredOpts, Options),
+    append([module_name('wam-haskell-bench'), emit_mode(functions)], QueryPredOpts, Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-Haskell-Optimized] Generated project at ~w~n', [OutputDir]).
 
