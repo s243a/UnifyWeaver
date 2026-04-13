@@ -20,7 +20,7 @@ test(reg_x1_index) :-
 
 test(reg_y1_index) :-
     reg_name_to_index('Y1', Idx),
-    assertion(Idx == 32).
+    assertion(Idx == 64).  %% Y1 = 64 (env frame range), not 32 (X range)
 
 %% --- Atom hashing ---
 

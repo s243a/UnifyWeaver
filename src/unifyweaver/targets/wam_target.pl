@@ -386,11 +386,31 @@ compile_body_goals(Goals, V, _Options, Code) :-
 %  A variable is permanent if it is used in any non-first goal (i.e., it
 %  must survive across at least one call instruction). This includes
 %  head-bound variables referenced after the first call.
-pre_assign_permanent_vars(Goals, vmap(Bindings, X), vmap(NewBindings, X)) :-
+pre_assign_permanent_vars(Goals, vmap(Bindings, X), vmap(NewBindings, XOut)) :-
     collect_goal_vars(Goals, GoalVarSets),
     find_permanent_vars(GoalVarSets, PermVars),
     reassign_to_yi(Bindings, PermVars, 1, ReassignedBindings, NextY),
-    pre_bind_unbound_yi(PermVars, ReassignedBindings, NextY, NewBindings).
+    pre_bind_unbound_yi(PermVars, ReassignedBindings, NextY, NewBindings),
+    %% Bump the X register counter past all allocated Yi indices.
+    %% Yi and Xi share the same register-file range (both map to
+    %% N + 31 in reg_name_to_index), so a subsequent next_x_reg
+    %% must not hand out an Xi that collides with an allocated Yi.
+    max_yi_index(NewBindings, 0, MaxY),
+    XOut is max(X, MaxY + 1).
+
+%% max_yi_index(+Bindings, +Acc, -Max)
+%  Finds the highest Y-register number among b(_, Yi) and y_alloc(_, Yi)
+%  entries. Returns 0 if there are no Y registers.
+max_yi_index([], Max, Max).
+max_yi_index([Entry|Rest], Acc, Max) :-
+    (   ( Entry = b(_, Reg) ; Entry = y_alloc(_, Reg) ),
+        atom_string(Reg, S),
+        string_codes(S, [0'Y|Digits]),
+        number_codes(N, Digits)
+    ->  NewAcc is max(Acc, N)
+    ;   NewAcc = Acc
+    ),
+    max_yi_index(Rest, NewAcc, Max).
 
 collect_goal_vars([], []).
 collect_goal_vars([Goal|Rest], [Vars|RestVars]) :-
