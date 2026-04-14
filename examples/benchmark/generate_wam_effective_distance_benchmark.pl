@@ -12,8 +12,8 @@
 %%
 %% Pipeline:
 %%   1. Load the effective-distance Prolog workload
-%%   2. Generate optimized predicates via prolog_target (seeded accumulation)
-%%   3. Compile the optimized predicates to WAM instructions
+%%   2. Optionally generate optimized predicates via prolog_target
+%%   3. Compile the selected predicates to WAM instructions
 %%   4. Emit a Rust Cargo project with a MERGED code vector and benchmark driver
 %%
 %% The merged code vector is critical: all predicates (category_ancestor/4,
@@ -24,7 +24,12 @@
 %% are loaded at runtime from TSV files and injected into the code vector.
 %%
 %% Usage:
-%%   swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir>
+%%   swipl -q -s generate_wam_effective_distance_benchmark.pl -- \
+%%       <facts.pl> <output-dir> [seeded|accumulated]
+%%
+%% Variants:
+%%   seeded      — base category_ancestor + host-side Rust accumulation
+%%   accumulated — Prolog-generated effective_distance_sum helpers compiled into WAM
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -33,33 +38,35 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [FactsPath, OutputDir]
+    (   Argv = [FactsPath, OutputDir, VariantAtom]
     ->  true
+    ;   Argv = [FactsPath, OutputDir]
+    ->  VariantAtom = seeded
     ;   format(user_error,
-            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir>~n',
+            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir> [seeded|accumulated]~n',
             []),
         halt(1)
     ),
-    generate_wam_benchmark(FactsPath, OutputDir),
+    generate_wam_benchmark(FactsPath, OutputDir, VariantAtom),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate_wam_benchmark(_FactsPath, OutputDir) :-
+generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
+    parse_variant(VariantAtom, OptimizationOptions),
     % Load the benchmark workload to get predicate definitions
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
 
-    % Compile core predicates to WAM
-    WamPredicates = [
-        user:dimension_n/1,
-        user:max_depth/1,
-        user:category_ancestor/4
-    ],
+    maybe_load_optimized_predicates(VariantAtom, OptimizationOptions),
+    collect_wam_predicates(VariantAtom, WamPredicates),
+    format(user_error, '[WAM-Rust] variant=~w predicates=~w~n',
+           [VariantAtom, WamPredicates]),
+
     compile_predicates_to_merged_rust(WamPredicates, MergedInstrCode, MergedLabelCode),
 
     % Generate project
@@ -76,9 +83,54 @@ generate_wam_benchmark(_FactsPath, OutputDir) :-
 
     % Write main.rs with merged WAM instructions and benchmark driver
     directory_file_path(SrcDir, 'main.rs', MainPath),
-    write_main_rs(MainPath, MergedInstrCode, MergedLabelCode),
+    write_main_rs(MainPath, VariantAtom, MergedInstrCode, MergedLabelCode),
 
     format(user_error, '[WAM-Rust] Generated benchmark project at: ~w~n', [OutputDir]).
+
+parse_variant(seeded, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+parse_variant(accumulated, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false),
+    seeded_accumulation(auto)
+]).
+
+maybe_load_optimized_predicates(seeded, _) :- !.
+maybe_load_optimized_predicates(accumulated, OptimizationOptions) :-
+    BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
+    prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
+    tmp_file_stream(text, TmpPath, TmpStream),
+    write(TmpStream, ScriptCode),
+    close(TmpStream),
+    abolish(user:dimension_n/1),
+    abolish(user:max_depth/1),
+    abolish(user:category_ancestor/4),
+    abolish(user:main/0),
+    load_files(TmpPath, [silent(true), redefine_module(true)]),
+    delete_file(TmpPath).
+
+%% collect_wam_predicates(+Variant, -Predicates)
+%  Collect the predicate list to compile through WAM, including generated
+%  helper predicates for the optimized accumulated variant.
+collect_wam_predicates(seeded, [
+    user:dimension_n/1,
+    user:max_depth/1,
+    user:category_ancestor/4
+]).
+collect_wam_predicates(accumulated, [
+    user:dimension_n/1,
+    user:max_depth/1,
+    user:category_ancestor/4,
+    user:'category_ancestor$power_sum_bound'/3,
+    user:'category_ancestor$effective_distance_sum_bound'/3
+]).
+
+generate_wam_benchmark(FactsPath, OutputDir) :-
+    generate_wam_benchmark(FactsPath, OutputDir, seeded).
 
 %% compile_predicates_to_merged_rust(+PredIndicators, -InstrCode, -LabelCode)
 %  Compiles multiple predicates to WAM, then merges their instruction arrays
@@ -175,8 +227,8 @@ write_file(Path, Content) :-
         close(Stream)
     ).
 
-%% write_main_rs(+Path, +MergedInstrCode, +MergedLabelCode)
-write_main_rs(Path, MergedInstrCode, MergedLabelCode) :-
+%% write_main_rs(+Path, +Variant, +MergedInstrCode, +MergedLabelCode)
+write_main_rs(Path, Variant, MergedInstrCode, MergedLabelCode) :-
     format(string(Code),
 '// Generated WAM-Rust effective-distance benchmark driver
 // Compiled predicates: category_ancestor/4, dimension_n/1, max_depth/1
@@ -754,12 +806,11 @@ fn main() {
         vm.reset_query();
         vm.step_limit = step_limit; // cap exploration per seed category
 
-        vm.set_reg("A1", Value::Atom(cat.clone()));
-        vm.set_reg("A2", Value::Atom(root.clone()));
-        vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-        vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
-
         let solutions: u32 = if vm.foreign_predicates.contains("category_ancestor/4") {
+            vm.set_reg("A1", Value::Atom(cat.clone()));
+            vm.set_reg("A2", Value::Atom(root.clone()));
+            vm.set_reg("A3", Value::Unbound("Hops".to_string()));
+            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
             let visited = vec![Value::Atom(cat.clone())];
             let mut hops: Vec<i64> = Vec::new();
             vm.collect_native_category_ancestor_hops(cat, &root, &visited, max_depth_limit, &mut hops);
@@ -771,6 +822,10 @@ fn main() {
             }
             hops.len().min(10001) as u32
         } else {
+            vm.set_reg("A1", Value::Atom(cat.clone()));
+            vm.set_reg("A2", Value::Atom(root.clone()));
+            vm.set_reg("A3", Value::Unbound("Hops".to_string()));
+            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
             let mut solutions = 0u32;
             let mut first = true;
             loop {
@@ -883,7 +938,7 @@ fn main() {
     }
 
     let total_ms = start.elapsed().as_millis();
-    eprintln!("mode=wam_rust_accumulated");
+    eprintln!("mode=wam_rust_~w");
     eprintln!("load_ms={}", load_ms);
     eprintln!("query_ms={}", query_ms);
     eprintln!("aggregation_ms={}", agg_ms);
@@ -914,7 +969,7 @@ fn main() {
         }
     }
 }
-', [MergedInstrCode, MergedLabelCode]),
+', [MergedInstrCode, MergedLabelCode, Variant]),
     setup_call_cleanup(
         open(Path, write, Stream),
         format(Stream, '~w', [Code]),
