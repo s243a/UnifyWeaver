@@ -80,6 +80,7 @@ registered_kernel(KernelKind, Arity) :-
 
 kernel_detector(category_ancestor, detect_category_ancestor).
 kernel_detector(transitive_closure2, detect_transitive_closure).
+kernel_detector(transitive_distance3, detect_transitive_distance).
 
 %% =====================================================================
 %% Kernel metadata
@@ -87,15 +88,19 @@ kernel_detector(transitive_closure2, detect_transitive_closure).
 
 kernel_native_kind(category_ancestor, category_ancestor).
 kernel_native_kind(transitive_closure2, transitive_closure2).
+kernel_native_kind(transitive_distance3, transitive_distance3).
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
+kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
+kernel_result_mode(transitive_distance3, stream).
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
+kernel_expected_arity(transitive_distance3, 3).
 
 %% =====================================================================
 %% Register layout — describes input/output registers for each kernel
@@ -117,6 +122,12 @@ kernel_register_layout(category_ancestor, [
 kernel_register_layout(transitive_closure2, [
     input(1, atom),          % source node
     output(2, atom)          % target node (result)
+]).
+
+kernel_register_layout(transitive_distance3, [
+    input(1, atom),          % source node
+    output(2, atom),         % target node (result, part 1 of tuple)
+    output(3, integer)       % distance (result, part 2 of tuple)
 ]).
 
 %% =====================================================================
@@ -148,12 +159,19 @@ kernel_native_call(transitive_closure2,
         reg(1)                            % source node
     ])).
 
+kernel_native_call(transitive_distance3,
+    call(nativeKernel_transitive_distance, [
+        config_facts_from(edge_pred),     % edges map
+        reg(1)                            % source node
+    ])).
+
 %% =====================================================================
 %% Template file mapping — Mustache template for each kernel kind
 %% =====================================================================
 
 kernel_template_file(category_ancestor, 'kernel_category_ancestor.hs.mustache').
 kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache').
+kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustache').
 
 %% =====================================================================
 %% Detector: category_ancestor
@@ -239,6 +257,97 @@ detect_transitive_closure(Pred, 2, Clauses, Kernel) :-
     EdgeArg2 == RecMid,
     Kernel = recursive_kernel(transitive_closure2, Pred/2,
                               [edge_pred(EdgePred/2)]).
+
+%% =====================================================================
+%% Detector: transitive_distance (BFS with distance)
+%%
+%% Matches the shape:
+%%   tdist(X, Y, 1) :- edge(X, Y).
+%%   tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
+%%
+%% Or with the 1 spelled out as:
+%%   tdist(X, Y, D) :- D = 1, edge(X, Y).
+%%
+%% Extracted config: edge_pred(EdgePred/2).
+%% =====================================================================
+
+detect_transitive_distance(Pred, 3, Clauses, Kernel) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseBody \= RecBody,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseDist],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDist],
+    % Base clause: either `tdist(X,Y,1) :- edge(X,Y)` or with D=1 in body
+    find_edge_in_body(BaseBody, BaseStart, BaseTarget, EdgePred),
+    % Check base binds distance to 1 (either literally or in head)
+    (   BaseDist == 1
+    ;   find_unify_one(BaseBody, BaseDist)
+    ),
+    % Recursive clause: find edge(RecStart, Mid), recursive call, D is D1+1
+    find_edge_from(RecBody, RecStart, EdgePred, Mid),
+    find_recursive_call(RecBody, Pred, Mid, RecTarget, D1),
+    find_is_plus_one(RecBody, RecDist, D1),
+    Kernel = recursive_kernel(transitive_distance3, Pred/3,
+                              [edge_pred(EdgePred/2)]).
+
+%% find_edge_in_body(+Body, +Start, +Target, -EdgePred)
+%  Find `edge(Start, Target)` call somewhere in the body (base clause).
+find_edge_in_body((A, _), Start, Target, EdgePred) :-
+    find_edge_in_body(A, Start, Target, EdgePred), !.
+find_edge_in_body((_, B), Start, Target, EdgePred) :-
+    find_edge_in_body(B, Start, Target, EdgePred), !.
+find_edge_in_body(Goal, Start, Target, EdgePred) :-
+    Goal \= (_, _),
+    Goal \= (_ = _),
+    Goal \= (_ is _),
+    compound(Goal),
+    Goal =.. [EdgePred, Arg1, Arg2],
+    EdgePred \= member,
+    Arg1 == Start,
+    Arg2 == Target.
+
+%% find_edge_from(+Body, +Start, -EdgePred, -Mid)
+%  Find `EdgePred(Start, Mid)` call — EdgePred name bound from caller.
+find_edge_from((A, _), Start, EdgePred, Mid) :-
+    find_edge_from(A, Start, EdgePred, Mid), !.
+find_edge_from((_, B), Start, EdgePred, Mid) :-
+    find_edge_from(B, Start, EdgePred, Mid), !.
+find_edge_from(Goal, Start, EdgePred, Mid) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [EdgePred, Arg1, Arg2],
+    Arg1 == Start,
+    Mid = Arg2.
+
+%% find_recursive_call(+Body, +Pred, +Start, +Target, -Dist)
+%  Find `Pred(Start, Target, Dist)` call.
+find_recursive_call((A, _), Pred, Start, Target, Dist) :-
+    find_recursive_call(A, Pred, Start, Target, Dist), !.
+find_recursive_call((_, B), Pred, Start, Target, Dist) :-
+    find_recursive_call(B, Pred, Start, Target, Dist), !.
+find_recursive_call(Goal, Pred, Start, Target, Dist) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [Pred, A1, A2, A3],
+    A1 == Start,
+    A2 == Target,
+    Dist = A3.
+
+%% find_is_plus_one(+Body, +Target, +Source)
+%  Find `Target is Source + 1`.
+find_is_plus_one((A, _), T, S) :- find_is_plus_one(A, T, S), !.
+find_is_plus_one((_, B), T, S) :- find_is_plus_one(B, T, S), !.
+find_is_plus_one((T is Expr), T0, S) :-
+    T == T0,
+    Expr = S0 + 1,
+    S0 == S.
+
+%% find_unify_one(+Body, +Var)
+%  Find `Var = 1` or `Var is 1`.
+find_unify_one((A, _), V) :- find_unify_one(A, V), !.
+find_unify_one((_, B), V) :- find_unify_one(B, V), !.
+find_unify_one((V1 = 1), V) :- V1 == V.
+find_unify_one((V1 is 1), V) :- V1 == V.
 
 %% =====================================================================
 %% Helper: sub_term/2 — check if a term appears anywhere in a body
