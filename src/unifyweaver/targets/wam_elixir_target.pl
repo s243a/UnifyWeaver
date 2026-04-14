@@ -18,7 +18,8 @@
     compile_wam_runtime_to_elixir/2,     % +Options, -Code
     compile_wam_predicate_to_elixir/4,   % +Pred/Arity, +WamCode, +Options, -Code
     write_wam_elixir_project/3,          % +Predicates, +Options, +ProjectDir
-    wam_elixir_case/2                    % +InstrName, -ElixirCode
+    wam_elixir_case/2,                   % +InstrName, -ElixirCode
+    wam_elixir_resolve_emit_mode/2       % +Options, -Mode
 ]).
 
 :- use_module(library(lists)).
@@ -27,8 +28,16 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/3]).
 
 :- discontiguous wam_elixir_case/2.
+
+%% wam_elixir_resolve_emit_mode(+Options, -Mode)
+wam_elixir_resolve_emit_mode(Options, Mode) :-
+    (   option(emit_mode(M), Options)
+    ->  Mode = M
+    ;   Mode = interpreter
+    ).
 
 % ============================================================================
 % PHASE 2: WAM Instructions → Elixir case arms
@@ -64,7 +73,7 @@ wam_elixir_case(get_constant,
           match?({:unbound, _}, val) ->
             state
             |> trail_binding(ai)
-            |> put_in([:regs, ai], c)
+            |> put_reg(ai, c)
             |> Map.put(:pc, state.pc + 1)
           true -> :fail
         end').
@@ -79,7 +88,7 @@ wam_elixir_case(get_variable,
 
 wam_elixir_case(get_value,
 '      {:get_value, xn, ai} ->
-        val_a = Map.get(state.regs, ai)
+        val_a = deref_var(state, Map.get(state.regs, ai))
         val_x = get_reg(state, xn)
         case unify(state, val_a, val_x) do
           {:ok, new_state} -> %{new_state | pc: new_state.pc + 1}
@@ -135,7 +144,7 @@ wam_elixir_case(put_constant,
 
 wam_elixir_case(put_variable,
 '      {:put_variable, xn, ai} ->
-        fresh = {:unbound, "_V#{state.pc}"}
+        fresh = {:unbound, state.pc}
         state
         |> trail_binding(xn)
         |> put_reg(xn, fresh)
@@ -175,7 +184,7 @@ wam_elixir_case(put_list,
 wam_elixir_case(set_variable,
 '      {:set_variable, xn} ->
         addr = length(state.heap)
-        fresh = {:unbound, "_H#{addr}"}
+        fresh = {:unbound, addr + 1000000}
         new_heap = state.heap ++ [fresh]
         state
         |> put_reg(xn, fresh)
@@ -339,7 +348,7 @@ compile_unwind_trail_to_elixir(Code) :-
       state
     else
       [{key, old_val} | rest_trail] = state.trail
-      new_regs = if old_val == :unbound do
+      new_regs = if old_val == {:unbound, -1} do
         Map.delete(state.regs, key)
       else
         Map.put(state.regs, key, old_val)
@@ -351,7 +360,7 @@ compile_unwind_trail_to_elixir(Code) :-
 compile_utility_helpers_to_elixir(Code) :-
     format(string(Code),
 '  defp trail_binding(state, key) do
-    old = Map.get(state.regs, key, :unbound)
+    old = Map.get(state.regs, key, {:unbound, -1})
     %{state | trail: [{key, old} | state.trail]}
   end
 
@@ -360,7 +369,8 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   defp get_reg(state, reg) do
-    Map.get(state.regs, reg, {:unbound, "_V_missing"})
+    val = Map.get(state.regs, reg, {:unbound, -1})
+    deref_var(state, val)
   end
 
   defp resolve_label(state, label) do
@@ -374,9 +384,13 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
-  defp put_in(state, keys, val) do
-    put_in(state, keys, val)
+  defp deref_var(state, {:unbound, id}) do
+    case Map.get(state.regs, id) do
+      nil -> {:unbound, id}
+      val -> deref_var(state, val)
+    end
   end
+  defp deref_var(_state, val), do: val
 
   defp step_get_structure_ref(state, fn_name, addr) do
     entry = Enum.at(state.heap, addr)
@@ -397,7 +411,7 @@ compile_utility_helpers_to_elixir(Code) :-
         |> Map.put(:stack, new_stack) |> Map.put(:pc, state.pc + 1)
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         addr = length(state.heap)
-        fresh = {:unbound, "_H#{addr}"}
+        fresh = {:unbound, addr + 1000000}
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         state |> put_reg(xn, fresh)
         |> Map.put(:heap, state.heap ++ [fresh])
@@ -440,7 +454,7 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   defp step_switch_on_constant(state, entries) do
-    val = Map.get(state.regs, "A1")
+    val = Map.get(state.regs, 1)
     case Enum.find(entries, fn {k, _} -> k == val end) do
       {_, label} -> %{state | pc: resolve_label(state, label)}
       nil -> %{state | pc: state.pc + 1}
@@ -452,12 +466,12 @@ compile_utility_helpers_to_elixir(Code) :-
     cond do
       v1 == v2 -> {:ok, state}
       match?({:unbound, _}, v1) ->
-        {:unbound, name} = v1
-        new_state = state |> trail_binding(name) |> put_reg(name, v2)
+        {:unbound, id} = v1
+        new_state = state |> trail_binding(id) |> put_reg(id, v2)
         {:ok, new_state}
       match?({:unbound, _}, v2) ->
-        {:unbound, name} = v2
-        new_state = state |> trail_binding(name) |> put_reg(name, v1)
+        {:unbound, id} = v2
+        new_state = state |> trail_binding(id) |> put_reg(id, v1)
         {:ok, new_state}
       true -> :fail
     end
@@ -467,13 +481,14 @@ compile_utility_helpers_to_elixir(Code) :-
   def execute_builtin(state, op, _arity) do
     case op do
       "is/2" ->
-        expr = Map.get(state.regs, "A2")
+        expr = get_reg(state, 2)
         result = eval_arith(state, expr)
-        lhs = Map.get(state.regs, "A1")
+        lhs = get_reg(state, 1)
         cond do
           match?({:unbound, _}, lhs) ->
-            state |> trail_binding("A1")
-            |> Map.put(:regs, Map.put(state.regs, "A1", result))
+            {:unbound, id} = lhs
+            state |> trail_binding(id)
+            |> Map.put(:regs, Map.put(state.regs, id, result))
             |> Map.put(:pc, state.pc + 1)
           lhs == result -> %{state | pc: state.pc + 1}
           true -> :fail
@@ -546,7 +561,7 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
     state = %%WamRuntime.WamState{code: code(), labels: labels(), pc: 1}
     state = Enum.with_index(args, 1)
     |> Enum.reduce(state, fn {arg, i}, s ->
-      %%{s | regs: Map.put(s.regs, "A#\\{i}", arg)}
+      %%{s | regs: Map.put(s.regs, i, arg)}
     end)
     WamRuntime.run(state)
   end
@@ -580,21 +595,55 @@ wam_lines_to_elixir([Line|Rest], PC, Instrs, Labels) :-
         )
     ).
 
+wam_line_to_elixir_instr(["try_me_else", L], Instr) :-
+    clean_comma(L, CL),
+    format(string(Instr), '{:try_me_else, "~w"}', [CL]).
+wam_line_to_elixir_instr(["retry_me_else", L], Instr) :-
+    clean_comma(L, CL),
+    format(string(Instr), '{:retry_me_else, "~w"}', [CL]).
+wam_line_to_elixir_instr(["trust_me"], ':trust_me').
+wam_line_to_elixir_instr(["put_structure", F, Ai], Instr) :-
+    clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
+    format(string(Instr), '{:put_structure, "~w", ~w}', [CF, AiId]).
+wam_line_to_elixir_instr(["get_structure", F, Ai], Instr) :-
+    clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
+    format(string(Instr), '{:get_structure, "~w", ~w}', [CF, AiId]).
+wam_line_to_elixir_instr(["unify_variable", Xn], Instr) :-
+    clean_comma(Xn, CXn), reg_id(CXn, XnId),
+    format(string(Instr), '{:unify_variable, ~w}', [XnId]).
+wam_line_to_elixir_instr(["unify_value", Xn], Instr) :-
+    clean_comma(Xn, CXn), reg_id(CXn, XnId),
+    format(string(Instr), '{:unify_value, ~w}', [XnId]).
+wam_line_to_elixir_instr(["unify_constant", C], Instr) :-
+    clean_comma(C, CC),
+    format(string(Instr), '{:unify_constant, "~w"}', [CC]).
+wam_line_to_elixir_instr(["set_variable", Xn], Instr) :-
+    clean_comma(Xn, CXn), reg_id(CXn, XnId),
+    format(string(Instr), '{:set_variable, ~w}', [XnId]).
+wam_line_to_elixir_instr(["set_value", Xn], Instr) :-
+    clean_comma(Xn, CXn), reg_id(CXn, XnId),
+    format(string(Instr), '{:set_value, ~w}', [XnId]).
+wam_line_to_elixir_instr(["set_constant", C], Instr) :-
+    clean_comma(C, CC),
+    format(string(Instr), '{:set_constant, "~w"}', [CC]).
 wam_line_to_elixir_instr(["get_constant", C, Ai], Instr) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi),
-    format(string(Instr), '{:get_constant, "~w", "~w"}', [CC, CAi]).
+    clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
+    format(string(Instr), '{:get_constant, "~w", ~w}', [CC, AiId]).
 wam_line_to_elixir_instr(["get_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Instr), '{:get_variable, "~w", "~w"}', [CXn, CAi]).
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    format(string(Instr), '{:get_variable, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["get_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Instr), '{:get_value, "~w", "~w"}', [CXn, CAi]).
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    format(string(Instr), '{:get_value, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["put_constant", C, Ai], Instr) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi),
-    format(string(Instr), '{:put_constant, "~w", "~w"}', [CC, CAi]).
+    clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
+    format(string(Instr), '{:put_constant, "~w", ~w}', [CC, AiId]).
 wam_line_to_elixir_instr(["put_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(string(Instr), '{:put_variable, "~w", "~w"}', [CXn, CAi]).
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    format(string(Instr), '{:put_variable, ~w, ~w}', [XnId, AiId]).
+wam_line_to_elixir_instr(["put_value", Xn, Ai], Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    format(string(Instr), '{:put_value, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["proceed"], ':proceed').
 wam_line_to_elixir_instr(["call", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
@@ -613,6 +662,13 @@ wam_line_to_elixir_instr(Parts, Instr) :-
     atomic_list_concat(Parts, ' ', Combined),
     format(string(Instr), '{:raw, "~w"}', [Combined]).
 
+reg_id(Reg, Id) :-
+    (   sub_atom(Reg, 0, 1, _, 'A') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
+    ;   sub_atom(Reg, 0, 1, _, 'X') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
+    ;   sub_atom(Reg, 0, 1, _, 'Y') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
+    ;   Id = Reg
+    ).
+
 clean_comma(S, Clean) :-
     (   sub_string(S, _, 1, 0, ",")
     ->  sub_string(S, 0, _, 1, Clean)
@@ -626,6 +682,7 @@ clean_comma(S, Clean) :-
 %% write_wam_elixir_project(+Predicates, +Options, +ProjectDir)
 write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
+    wam_elixir_resolve_emit_mode(Options, Mode),
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'lib', LibDir),
     make_directory_path(LibDir),
@@ -638,7 +695,10 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     % Generate predicate modules
     forall(
         member(Pred/Arity-WamCode, Predicates),
-        (   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode),
+        (   (   Mode == lowered
+            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, PredCode)
+            ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+            ),
             atom_string(Pred, PredStr),
             format(atom(PredFile), '~w.ex', [PredStr]),
             directory_file_path(LibDir, PredFile, PredPath),
@@ -656,7 +716,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     [
       app: :~w,
       version: "0.1.0",
-      elixir: "~> 1.14",
+      elixir: "~~> 1.14",
       deps: []
     ]
   end
