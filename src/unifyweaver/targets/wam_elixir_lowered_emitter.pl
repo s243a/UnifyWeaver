@@ -18,6 +18,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module('wam_elixir_target', [reg_id/2]).
 
 %% lower_predicate_to_elixir(+PredIndicator, +WamCode, -ElixirCode)
 lower_predicate_to_elixir(Pred/Arity, WamCode, Code) :-
@@ -80,47 +81,47 @@ instr_from_parts(Parts, raw(Combined)) :-
 
 %% wam_elixir_lower_instr(+Instr, +PC, -Code)
 wam_elixir_lower_instr(get_constant(C, AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = cond do
       val == "~w" -> state
       match?({:unbound, _}, val) ->
         {:unbound, id} = val
-        state |> trail_binding(id) |> put_reg(id, "~w")
+        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, "~w")
       true -> throw(:fail)
     end', [Ai, C, C]).
 
 wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn), reg_id_emitter(AiName, Ai),
+    reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
-    state = state |> trail_binding(~w) |> put_reg(~w, val)', [Ai, Xn, Xn]).
+    state = state |> WamRuntime.trail_binding(~w) |> WamRuntime.put_reg(~w, val)', [Ai, Xn, Xn]).
 
 wam_elixir_lower_instr(get_value(XnName, AiName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn), reg_id_emitter(AiName, Ai),
+    reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
-'    val_a = deref_var(state, Map.get(state.regs, ~w))
-    val_x = get_reg(state, ~w)
-    state = case unify(state, val_a, val_x) do
+'    val_a = WamRuntime.deref_var(state, Map.get(state.regs, ~w))
+    val_x = WamRuntime.get_reg(state, ~w)
+    state = case WamRuntime.unify(state, val_a, val_x) do
       {:ok, s} -> s
       :fail -> throw(:fail)
     end', [Ai, Xn]).
 
 wam_elixir_lower_instr(put_structure(F, AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: put_structure ~w, ~w"', [F, Ai]).
 
 wam_elixir_lower_instr(get_structure(F, AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: get_structure ~w, ~w"', [F, Ai]).
 
 wam_elixir_lower_instr(unify_variable(XnName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn),
+    reg_id(XnName, Xn),
     format(string(Code), '    raise "TODO: unify_variable ~w"', [Xn]).
 
 wam_elixir_lower_instr(unify_value(XnName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn),
+    reg_id(XnName, Xn),
     format(string(Code), '    raise "TODO: unify_value ~w"', [Xn]).
 
 wam_elixir_lower_instr(unify_constant(C), _PC, Code) :-
@@ -151,31 +152,31 @@ wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, Code) :-
     format(string(Code), '    raise "TODO: builtin_call ~w, ~w"', [Op, Ar]).
 
 wam_elixir_lower_instr(put_constant(C, AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: put_constant ~w, ~w"', [C, Ai]).
 
 wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn), reg_id_emitter(AiName, Ai),
+    reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: put_variable ~w, ~w"', [Xn, Ai]).
 
 wam_elixir_lower_instr(put_value(XnName, AiName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn), reg_id_emitter(AiName, Ai),
+    reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: put_value ~w, ~w"', [Xn, Ai]).
 
 wam_elixir_lower_instr(put_list(AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: put_list ~w"', [Ai]).
 
 wam_elixir_lower_instr(get_list(AiName), _PC, Code) :-
-    reg_id_emitter(AiName, Ai),
+    reg_id(AiName, Ai),
     format(string(Code), '    raise "TODO: get_list ~w"', [Ai]).
 
 wam_elixir_lower_instr(set_variable(XnName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn),
+    reg_id(XnName, Xn),
     format(string(Code), '    raise "TODO: set_variable ~w"', [Xn]).
 
 wam_elixir_lower_instr(set_value(XnName), _PC, Code) :-
-    reg_id_emitter(XnName, Xn),
+    reg_id(XnName, Xn),
     format(string(Code), '    raise "TODO: set_value ~w"', [Xn]).
 
 wam_elixir_lower_instr(set_constant(C), _PC, Code) :-
@@ -189,10 +190,3 @@ wam_elixir_lower_instr(proceed, _PC, Code) :-
 
 wam_elixir_lower_instr(raw(Combined), _PC, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
-
-reg_id_emitter(Reg, Id) :-
-    (   sub_atom(Reg, 0, 1, _, 'A') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(Reg, 0, 1, _, 'X') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(Reg, 0, 1, _, 'Y') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
-    ;   Id = Reg
-    ).
