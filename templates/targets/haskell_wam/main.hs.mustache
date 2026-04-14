@@ -3,7 +3,7 @@ module Main where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
-import Data.List (nub, sort, isPrefixOf, intercalate)
+import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Environment (getArgs)
@@ -111,22 +111,41 @@ main = do
         n = 5.0 :: Double
         negN = -n
 
-    -- Build a child -> [parents] index for the FFI fast path on
-    -- category_ancestor/4. Without this, executeForeign sees an empty
-    -- parents map and falls through to the WAM-compiled predicate.
-    let parentsIndex = Map.fromListWith (++)
-            [(child, [parent]) | (child, parent) <- categoryParents]
+    -- Build atom intern table. All atoms that may reach the FFI kernel
+    -- must have stable Int IDs: fact keys (children, parents), seed
+    -- categories, root atoms. Interning here happens once at startup;
+    -- the hot loop then uses IntMap + Int comparison instead of
+    -- HashMap + String hashing (~17% profiled savings).
+    --
+    -- Deduplication uses Map.insert-if-absent fold (O(n log n)) rather
+    -- than nub (O(n^2)) — on 300-scale, nub adds ~130ms of startup.
+    let atomStrings =
+            [child | (child, _) <- categoryParents] ++
+            [parent | (_, parent) <- categoryParents] ++
+            [cat | (_, cat) <- articleCategories] ++
+            roots
+        !internMap = foldl' (\m s -> if Map.member s m
+                                       then m
+                                       else Map.insert s (Map.size m) m)
+                            Map.empty atomStrings
+        !deinternMap = IM.fromList [(i, s) | (s, i) <- Map.toList internMap]
+        internAtom s = fromMaybe (-1) (Map.lookup s internMap)
+
+    -- Build child -> [parents] index in interned form for the FFI fast path.
+    let !parentsIndexInterned = IM.fromListWith (++)
+            [(internAtom child, [internAtom parent]) | (child, parent) <- categoryParents]
 
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
-    -- Populate wcForeignFacts/wcForeignConfig so executeForeign can fire.
-    -- Populate wcLoweredPredicates from Lowered.loweredPredicates — Phase 2
-    -- ships this as Map.empty, Phase 3+ replaces it with real lowered
-    -- predicate functions.
+    -- wcFfiFacts/wcAtomIntern/wcAtomDeintern feed the FFI kernel path.
+    -- wcForeignFacts stays empty — callIndexedFact2 is not used when FFI
+    -- handles the fact predicate.
     let !ctx = (mkContext mergedCode mergedLabels)
-            { wcForeignFacts  = Map.singleton "category_parent" parentsIndex
-            , wcForeignConfig = Map.singleton "max_depth" 10
+            { wcForeignConfig = Map.singleton "max_depth" 10
             , wcLoweredPredicates = Lowered.loweredPredicates
+            , wcAtomIntern    = internMap
+            , wcAtomDeintern  = deinternMap
+            , wcFfiFacts      = Map.singleton "category_parent" parentsIndexInterned
             }
 
     t2 <- getCurrentTime

@@ -1,15 +1,17 @@
 -- | Native transitive closure for binary edge relations.
 -- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
 -- Given a source node, returns all transitively reachable target nodes.
-nativeKernel_transitive_closure :: Map.Map String [String] -> String -> [String]
+-- Atoms are interned at the FFI boundary so the traversal uses IntMap
+-- and IntSet for O(log n) lookups without hashing.
+nativeKernel_transitive_closure :: IM.IntMap [Int] -> Int -> [Int]
 nativeKernel_transitive_closure edges source =
-  go [source] Set.empty []
+  go [source] IS.empty []
   where
     go [] _ acc = acc
     go (node:queue) visited acc
-      | Set.member node visited = go queue visited acc
+      | IS.member node visited = go queue visited acc
       | otherwise =
-          let visited' = Set.insert node visited
-              neighbors = fromMaybe [] (Map.lookup node edges)
-              newTargets = filter (\n -> not (Set.member n visited')) neighbors
+          let visited' = IS.insert node visited
+              neighbors = IM.findWithDefault [] node edges
+              newTargets = filter (\n -> not (IS.member n visited')) neighbors
           in go (queue ++ newTargets) visited' (if node == source then acc else acc ++ [node])

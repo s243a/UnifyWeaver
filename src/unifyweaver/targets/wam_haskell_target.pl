@@ -317,7 +317,8 @@ reg_default_value(vlist_atoms, 'VList []').
 %  Emit let-bindings for config_facts and config_int arguments.
 emit_config_let_bindings([]).
 emit_config_let_bindings([config_facts(FactKey)|Rest]) :-
-    format('      ~w_facts = fromMaybe Map.empty $ Map.lookup "~w" (wcForeignFacts ctx)~n',
+    % FFI facts are stored interned in wcFfiFacts (IntMap [Int])
+    format('      ~w_facts = fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx)~n',
            [FactKey, FactKey]),
     emit_config_let_bindings(Rest).
 emit_config_let_bindings([config_int(ConfigKey, Default)|Rest]) :-
@@ -348,10 +349,14 @@ emit_one_call_arg(derived(length, RegN), InputRegs) :-
     reg_var_name(RegN, VarName),
     format('(length [v | Atom v <- ~wL])', [VarName]).
 
+%% emit_reg_extraction(+VarName, +Type)
+%  Emit the extraction expression for a kernel call argument. Atoms and
+%  atom lists are interned via wcAtomIntern so the kernel operates on
+%  Int IDs instead of Strings (eliminates hashing in the hot loop).
 emit_reg_extraction(VarName, atom) :-
-    format('~wS', [VarName]).
+    format('(fromMaybe (-1) (Map.lookup ~wS (wcAtomIntern ctx)))', [VarName]).
 emit_reg_extraction(VarName, vlist_atoms) :-
-    format('[v | Atom v <- ~wL]', [VarName]).
+    format('[fromMaybe (-1) (Map.lookup v (wcAtomIntern ctx)) | Atom v <- ~wL]', [VarName]).
 emit_reg_extraction(VarName, integer) :-
     format('~wI', [VarName]).
 
@@ -444,9 +449,12 @@ emit_stream_binding(OutRegN, OutType, Indent) :-
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
 
 %% result_wrap_expr(+Type, -HaskellExpr)
-%  Haskell expression wrapping `rv` into a Value constructor.
+%  Haskell expression wrapping `rv` (kernel result) into a Value
+%  constructor. For `atom`, the kernel returns Int atom IDs that must
+%  be de-interned back to Strings before wrapping in the Atom constructor.
+%  For `integer`, no interning is involved.
 result_wrap_expr(integer, 'Integer (fromIntegral rv)').
-result_wrap_expr(atom, 'Atom rv').
+result_wrap_expr(atom, 'Atom (fromMaybe "" (IM.lookup rv (wcAtomDeintern ctx)))').
 
 %% detect_kernels(+Predicates, -DetectedKernels)
 %  Run shared kernel detection on each predicate. Returns a list of
@@ -1821,6 +1829,7 @@ module WamRuntime where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'')
@@ -2054,6 +2063,18 @@ data WamContext = WamContext
   , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
   , wcForeignConfig :: !(Map.Map String Int)
   , wcLoweredPredicates :: !(Map.Map String (WamContext -> WamState -> Maybe WamState))
+  -- | Atom interning table for the FFI boundary. Populated at startup
+  -- with String -> Int IDs. Used by executeForeign to convert WAM-side
+  -- String atoms to Int keys before calling native kernels.
+  , wcAtomIntern    :: !(Map.Map String Int)
+  -- | Reverse intern table (Int -> String) for de-interning kernel
+  -- results that return Ints but need to be wrapped as Atom String.
+  , wcAtomDeintern  :: !(IM.IntMap String)
+  -- | Fact indexes keyed by interned Int atoms. Used exclusively by the
+  -- FFI kernel path. Populated per-kernel from edge_pred config.
+  -- Separate from wcForeignFacts so callIndexedFact2 (WAM path) is
+  -- unaffected.
+  , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
   }
 -- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
 -- and functions have no Show instance. Add a manual instance if needed.
@@ -2134,6 +2155,9 @@ mkContext codeList labels =
     , wcForeignFacts  = Map.empty
     , wcForeignConfig = Map.empty
     , wcLoweredPredicates = Map.empty
+    , wcAtomIntern    = Map.empty
+    , wcAtomDeintern  = IM.empty
+    , wcFfiFacts      = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,

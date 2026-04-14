@@ -168,7 +168,8 @@ test_transitive_closure_kernel_function :-
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
     (   wam_haskell_target:render_kernel_function('closure/2'-Kernel, Code),
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure"),
-        sub_string(Code, _, _, _, "Map.Map String [String] -> String -> [String]"),
+        %% Signature uses IntMap after atom interning
+        sub_string(Code, _, _, _, "IM.IntMap [Int] -> Int -> [Int]"),
         %% edge_pred placeholder resolved
         sub_string(Code, _, _, _, "Edge predicate: edge")
     ->  pass(Test)
@@ -183,12 +184,14 @@ test_transitive_closure_execute_foreign :-
         sub_string(Code, _, _, _, "executeForeign !ctx \"closure/2\" s ="),
         %% Single input register (reg 1)
         sub_string(Code, _, _, _, "IM.lookup 1 (wsRegs s)"),
-        %% config_facts_from resolved to edge pred name
-        sub_string(Code, _, _, _, "edge_facts"),
-        %% Native call with correct args
-        sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts r1S"),
-        %% Output is atom (not integer)
-        sub_string(Code, _, _, _, "Atom rv"),
+        %% config_facts_from resolved to edge pred name, now using wcFfiFacts
+        sub_string(Code, _, _, _, "edge_facts = fromMaybe IM.empty"),
+        sub_string(Code, _, _, _, "wcFfiFacts ctx"),
+        %% Native call: first arg is facts, second is interned atom lookup
+        sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
+        sub_string(Code, _, _, _, "Map.lookup r1S (wcAtomIntern ctx)"),
+        %% Output is atom: de-intern via wcAtomDeintern
+        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv (wcAtomDeintern ctx)))"),
         %% Single-input case pattern (not tuple)
         sub_string(Code, _, _, _, "case r1 of"),
         sub_string(Code, _, _, _, "Atom r1S ->")
