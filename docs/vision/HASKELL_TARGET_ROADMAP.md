@@ -1,41 +1,92 @@
 # Haskell WAM Target: Roadmap
 
-## Current state (2026-04-13)
+## Current state (2026-04-13, post-parallelization)
 
-The Haskell WAM target beats SWI-Prolog by 1.16-1.56x on the effective-
-distance benchmark (300 scale) with FFI. The pure interpreter is ~8x
-slower than FFI but 47% faster than the pre-optimization baseline.
+The Haskell WAM target **outperforms the Rust WAM target** on the effective-
+distance benchmark (300 scale) thanks to seed-level parallelism that Rust's
+mutable-vector design can't trivially match. Median numbers over 10 runs:
 
-| Metric | Value |
-|---|---|
-| Haskell + FFI (300 scale) | 285ms |
-| SWI-Prolog optimized | 311ms |
-| Rust + FFI | 126ms |
-| Pure interpreter (no FFI) | 2518ms |
-| Lowered predicates | 5 of 7 |
-| Detected kernels | category_ancestor (auto-generated FFI) |
+| Metric | Value | vs Rust |
+|---|---|---|
+| Haskell + FFI + parallel (300 scale, 4 cores) | **75ms total, 32ms query** | 1.75x faster total |
+| Haskell + FFI single-core (300 scale) | 193ms total, 107ms query | — |
+| Rust + FFI (300 scale) | 126ms | baseline |
+| SWI-Prolog optimized | 311ms | — |
+| Pure interpreter (no FFI) | 2518ms | — |
+| Haskell at 5k scale (4 cores) | 213ms total, 86ms query | 3.5x parallel speedup |
+| Lowered predicates | 5 of 7 | — |
+| Detected kernels | category_ancestor (auto-generated FFI) | — |
 
-## Phase 1: Seed-Level Parallelism
+**Phases 1 and 2 are now complete** (seed parallelism, atom interning).
+Additional optimizations beyond the original roadmap: `skip_fact_wam`
+(eliminates redundant WAM-compilation of FFI-owned facts, -70% total at
+300 scale), O(n) intern-table construction. See
+`docs/design/WAM_PERF_OPTIMIZATION_LOG.md` for the complete history.
+
+## Phase 1: Seed-Level Parallelism — DONE
 
 **Goal:** Multi-core speedup with minimal code change.
 
-**Tasks:**
-1. Add `-threaded` to cabal GHC options
-2. Add `NFData` instances for `Value`, `WamState`
-3. Replace `mapM querySeed seedCats` with `parMap rdeepseq querySeed`
-   in Main.hs template
-4. Benchmark with `+RTS -N4` on the 300 and 5k scale datasets
-5. Verify output correctness (identical to sequential)
+**Delivered (PR #1377, commit 74d9e9b4):**
+1. `-threaded -rtsopts` added to cabal GHC options
+2. `deepseq` + `parallel` build-deps added
+3. Query body generator emits pure `let { ... } in (cat, result)` so
+   it can be used in a `parMap rdeepseq` lambda
+4. Main.hs template replaces `mapM` with `parMap rdeepseq`, forces
+   sparks via `seedResultsForced \`deepseq\` ()`
+5. No NFData instances needed — `(String, Double)` is already NFData
+   through base. WamState is ephemeral inside each seed's pure
+   computation and never crosses a spark boundary.
 
-**Expected outcome:** ~3-4x speedup for seed-dominated workloads.
-At 300 scale (386 seeds, 4 cores): ~70-90ms.
+**Actual outcome:** 3.3x speedup at 300 scale (query 107ms → 32ms with
+4 cores), 3.5x at 5k scale. 8-core regressed on this WSL2 host due to
+scheduling/GC contention; 4 cores is the sweet spot.
 
-**Risk:** Low. Immutable WamContext is shared read-only. Each seed
-gets independent WamState. No architectural change needed.
-
-## Phase 2: Atom Interning
+## Phase 2: Atom Interning — DONE (scoped)
 
 **Goal:** Eliminate string comparison and hashing from the hot loop.
+
+**Delivered (PRs #1376, #1377):**
+- Rather than changing the `Value` type (landmine: mixed atom/integer
+  dispatch in SwitchOnConstant, pervasive `Atom ""` defaults), interning
+  happens **at the FFI boundary** only. The WAM path still uses
+  `Atom String`.
+- `WamContext` gains `wcAtomIntern`/`wcAtomDeintern`/`wcFfiFacts` fields.
+- Kernel templates (`kernel_category_ancestor`, `kernel_transitive_closure`)
+  now take `IntMap [Int]` and `Int` args.
+- executeForeign emitter interns atom/vlist_atoms register reads,
+  de-interns atom results.
+- Main.hs builds the intern table once at startup via a single O(n)
+  foldl' (the initial O(n²) `Map.size`-per-insert version was fixed
+  in the parallel-seeds PR).
+
+**Actual outcome:** query_ms dropped from ~200ms to ~107ms (median)
+on a single core — beat Rust's 126ms on query time without needing
+parallelism.
+
+**Still-open Phase 2 work** (low priority, likely not needed):
+- Atom interning in the WAM interpreter path itself (would require
+  touching `Value`, `SwitchOnConstantPc`, `callIndexedFact2`). Only
+  useful if we start routing hot predicates through the interpreter
+  rather than FFI. Given that FFI already handles the hot path, this
+  is on hold.
+
+## Phase 2b (unplanned): Skip-Facts
+
+**Goal:** Don't WAM-compile fact predicates that FFI already handles.
+
+**Delivered (PR #1375, commit fcaa885c):**
+- When any FFI kernel is detected, the Main.hs template skips the
+  `buildFact2Code`/`buildFact1Code` calls for category_parent,
+  article_category, and root_category — they'd be allocated but never
+  executed.
+
+**Actual outcome:** 300-scale total_ms dropped from 740ms to 225ms
+(-70%), eliminating the largest single startup cost.
+
+## Phase 3: Expanded Lowering
+
+**Goal:** Bypass the interpreter for more predicates.
 
 **Tasks:**
 1. Add `AtomTable` type (bidirectional String ↔ Int mapping)
