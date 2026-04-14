@@ -149,6 +149,8 @@ foreign_kernel(PredArity, Kind, Config) :-
 %  on success.
 llvm_recursive_kernel_detector(countdown_sum2,
     llvm_recursive_kernel_countdown_sum).
+llvm_recursive_kernel_detector(category_ancestor,
+    llvm_recursive_kernel_category_ancestor).
 llvm_recursive_kernel_detector(list_suffix2,
     llvm_recursive_kernel_list_suffix).
 llvm_recursive_kernel_detector(transitive_closure2,
@@ -199,6 +201,48 @@ llvm_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     RecGoal =.. [Pred, PrevN, PrevSum],
     SumGoal =.. [is, Sum, SumExpr],
     SumExpr =.. [+, PrevSum, N].
+
+%% llvm_recursive_kernel_category_ancestor(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the category_ancestor clause shape (arity 4):
+%    pred(Cat, Target, 1, Visited) :-
+%        edge(Cat, Target), \+ member(Target, Visited).
+%    pred(Cat, Target, Hops, Visited) :-
+%        edge(Cat, Mid), \+ member(Mid, Visited),
+%        pred(Mid, Target, H1, [Mid|Visited]),
+%        Hops is H1 + 1.
+%
+%  Requires user:max_depth/1 to be defined.
+llvm_recursive_kernel_category_ancestor(Pred, Arity, Clauses,
+        recursive_kernel(category_ancestor, Pred/Arity,
+            [edge_pred(EdgePred/2), max_depth(MaxDepth)])) :-
+    llvm_foreign_lowerable_category_ancestor(Pred, Arity, Clauses, EdgePred),
+    ( user:max_depth(MaxDepth) -> true ; MaxDepth = 10 ).
+
+%% llvm_foreign_lowerable_category_ancestor(+Pred, +Arity, +Clauses, -EdgePred).
+%
+%  Ported from rust_target.pl:3889. Matches predicates with arity 4
+%  that have two clause bodies (neither is `true`), both containing
+%  negation-as-failure (\+ member/2), and the recursive body containing
+%  arithmetic (Hops is H1 + 1).
+llvm_foreign_lowerable_category_ancestor(Pred, 4, Clauses, EdgePred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseBody \== true,
+    RecBody \== true,
+    BaseHead =.. [Pred, _, _, _, _],
+    RecHead =.. [Pred, _, _, _, _],
+    % Base body must contain an edge call and a negation check.
+    term_string(BaseBody, BaseStr),
+    sub_string(BaseStr, _, _, _, "\\+"),
+    % Recursive body must contain edge call, negation, recursive call, and arithmetic.
+    term_string(RecBody, RecStr),
+    sub_string(RecStr, _, _, _, "\\+"),
+    sub_string(RecStr, _, _, _, " is "),
+    % Extract edge predicate from base body.
+    BaseBody = (EdgeGoal, _),
+    EdgeGoal =.. [EdgePred, _, _].
 
 %% llvm_recursive_kernel_list_suffix(+Pred, +Arity, +Clauses, -RecKernel).
 %
@@ -383,14 +427,23 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
     ;  build_td3_instance_switch(Td3Entries, Td3ImplBody, Td3Tables),
        replace_td3_weak_default(StateFuncsRaw, Td3ImplBody, StateFuncs0)
     ),
+    % ca pass — category_ancestor (depth-bounded BFS).
+    findall(CaPredArity-CaConfig,
+        llvm_foreign_kernel_spec(CaPredArity, category_ancestor, CaConfig),
+        CaEntries),
+    ( CaEntries == []
+    -> StateFuncsCa = StateFuncs0, CaTables = ''
+    ;  build_ca_instance_switch(CaEntries, CaImplBody, CaTables),
+       replace_ca_weak_default(StateFuncs0, CaImplBody, StateFuncsCa)
+    ),
     % cds2 pass — countdown_sum2 (deterministic arithmetic).
     findall(CdsPredArity-CdsConfig,
         llvm_foreign_kernel_spec(CdsPredArity, countdown_sum2, CdsConfig),
         Cds2Entries),
     ( Cds2Entries == []
-    -> StateFuncsCds = StateFuncs0, Cds2Tables = ''
+    -> StateFuncsCds = StateFuncsCa, Cds2Tables = ''
     ;  build_cds2_instance_switch(Cds2Entries, Cds2ImplBody, Cds2Tables),
-       replace_cds2_weak_default(StateFuncs0, Cds2ImplBody, StateFuncsCds)
+       replace_cds2_weak_default(StateFuncsCa, Cds2ImplBody, StateFuncsCds)
     ),
     % tc2 pass — transitive_closure2 (boolean reachability).
     findall(TcPredArity-TcConfig,
@@ -429,11 +482,11 @@ substitute_foreign_kernel_impls(StateFuncsRaw, StateFuncs, Globals) :-
        replace_astar4_weak_default(StateFuncs1, Astar4ImplBody, StateFuncs)
     ),
     % Concatenate the per-kind global tables into one Globals blob.
-    ( Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Ls2Tables == '', Wsp3Tables == '', Astar4Tables == ''
+    ( CaTables == '', Cds2Tables == '', Td3Tables == '', Tc2Tables == '', Ls2Tables == '', Wsp3Tables == '', Astar4Tables == ''
     -> Globals = ''
     ;  atomic_list_concat([
            '; === foreign kernel support globals ===\n',
-           Cds2Tables, '\n', Tc2Tables, '\n', Ls2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
+           CaTables, '\n', Cds2Tables, '\n', Tc2Tables, '\n', Ls2Tables, '\n', Td3Tables, '\n', Wsp3Tables, '\n', Astar4Tables, '\n'
        ], Globals)
     ).
 
@@ -564,6 +617,58 @@ replace_cds2_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
     -> StateFuncs = StateFuncs0
     ;  format(user_error,
         'WARNING: could not find cds2 weak-default in state template; leaving unchanged~n', []),
+       StateFuncs = StateFuncsRaw
+    ).
+
+%% build_ca_instance_switch(+Entries, -ImplBody, -TablesIR).
+%
+%  category_ancestor: depth-bounded BFS. Each instance has its own
+%  edge table and max_depth. Calls @wam_ca_run with per-instance params.
+build_ca_instance_switch(Entries, ImplBody, TablesIR) :-
+    build_ca_instance_parts(Entries, 0, SwitchCases, CaseBodies, Tables),
+    atomic_list_concat(SwitchCases, '\n', SwitchCasesStr),
+    atomic_list_concat(CaseBodies, '\n\n', CaseBodiesStr),
+    atomic_list_concat(Tables, '\n\n', TablesIR),
+    format(atom(ImplBody),
+'define i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {
+entry:
+  switch i32 %instance, label %ca_bail [
+~w
+  ]
+
+~w
+
+ca_bail:
+  ret i1 false
+}',
+        [SwitchCasesStr, CaseBodiesStr]).
+
+build_ca_instance_parts([], _, [], [], []).
+build_ca_instance_parts([PredArity-Config | Rest], Index,
+        [SwitchCase|RestCases], [Body|RestBodies], [TableIR|RestTables]) :-
+    PredArity = Pred/_,
+    sanitize_atom_for_llvm(Pred, SanePred),
+    format(atom(TableName), 'ca_inst_~w_~w_edges', [SanePred, Index]),
+    build_td3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId),
+    % Extract max_depth from config (default 10).
+    ( memberchk(max_depth(MaxDepth), Config) -> true ; MaxDepth = 10 ),
+    format(atom(SwitchCase), '    i32 ~w, label %ca_inst_~w', [Index, Index]),
+    format(atom(Body),
+'ca_inst_~w:
+  %ca_tbl_~w = getelementptr [~w x %AtomFactPair], [~w x %AtomFactPair]* @~w, i64 0, i64 0
+  %ca_r_~w = call i1 @wam_ca_run(%WamState* %vm, %AtomFactPair* %ca_tbl_~w, i64 ~w, i64 ~w, i32 ~w)
+  ret i1 %ca_r_~w',
+        [Index, Index, GepLen, GepLen, TableName, Index, Index, EffLen, MaxAtomId, MaxDepth, Index]),
+    NextIndex is Index + 1,
+    build_ca_instance_parts(Rest, NextIndex, RestCases, RestBodies, RestTables).
+
+%% replace_ca_weak_default(+StateFuncsRaw, +NewBody, -StateFuncs).
+replace_ca_weak_default(StateFuncsRaw, NewBody, StateFuncs) :-
+    Old = 'define weak i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {\n  ret i1 false\n}',
+    ( string_replace(StateFuncsRaw, Old, NewBody, StateFuncs0)
+    -> StateFuncs = StateFuncs0
+    ;  format(user_error,
+        'WARNING: could not find ca weak-default in state template; leaving unchanged~n', []),
        StateFuncs = StateFuncsRaw
     ).
 
