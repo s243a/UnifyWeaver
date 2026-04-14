@@ -2574,7 +2574,20 @@ entry:
 as_check_t:
   %as_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
   %as_t_is_atom = icmp eq i32 %as_t_tag, 0
-  br i1 %as_t_is_atom, label %as_run, label %as_bail
+  br i1 %as_t_is_atom, label %as_run, label %as_check_unbound
+
+as_check_unbound:
+  %as_t_unbound = icmp eq i32 %as_t_tag, 6
+  br i1 %as_t_unbound, label %as_stream, label %as_bail
+
+as_stream:
+  ; Stream mode: enumerate all reachable (target, distance) pairs.
+  ; Heuristic only affects exploration order for single-target queries;
+  ; for full enumeration the result set is identical to Dijkstra.
+  %as_st_ok = call i1 @wam_wsp3_stream_run(
+      %WamState* %vm,
+      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %as_st_ok
 
 as_run:
   %as_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)

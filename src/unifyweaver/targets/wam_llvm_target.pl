@@ -159,6 +159,8 @@ llvm_recursive_kernel_detector(transitive_distance3,
     llvm_recursive_kernel_transitive_distance).
 llvm_recursive_kernel_detector(weighted_shortest_path3,
     llvm_recursive_kernel_weighted_shortest_path).
+llvm_recursive_kernel_detector(astar_shortest_path4,
+    llvm_recursive_kernel_astar_shortest_path).
 
 %% llvm_recursive_kernel_transitive_distance(+Pred, +Arity, +Clauses, -RecKernel).
 %
@@ -343,6 +345,48 @@ llvm_foreign_lowerable_weighted_shortest_path(Pred, 3, Clauses, WeightPred) :-
     RecGoal =.. [Pred, RecMid, RecTarget, RestCost],
     IsGoal =.. [is, RecCost, PlusExpr],
     PlusExpr =.. [+, W, RestCost].
+
+%% llvm_recursive_kernel_astar_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
+%
+%  Detects the astar_shortest_path4 clause shape (arity 4):
+%    pred(X, Y, W, _Vis) :- weight_pred(X, Y, W).
+%    pred(X, Y, Cost, Vis) :-
+%        weight_pred(X, Z, W),
+%        pred(Z, Y, RC, [Z|Vis]),
+%        Cost is W + RC.
+%
+%  Extracts weight_pred. If user:direct_semantic_dist/3 is defined,
+%  includes it as direct_dist_pred for runtime heuristic support.
+llvm_recursive_kernel_astar_shortest_path(Pred, Arity, Clauses,
+        recursive_kernel(astar_shortest_path4, Pred/Arity, Config)) :-
+    llvm_foreign_lowerable_astar_shortest_path(Pred, Arity, Clauses, WeightPred),
+    ( predicate_property(user:direct_semantic_dist(_,_,_), defined)
+    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(direct_semantic_dist/3)]
+    ;  Config = [weight_pred(WeightPred/3)]
+    ).
+
+%% llvm_foreign_lowerable_astar_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
+%
+%  Matches arity-4 predicates with weighted shortest path + visited list.
+%  Base clause: pred(X, Y, W, _) :- weight(X, Y, W).
+%  Recursive clause: pred(X, Y, Cost, Vis) :- weight(X, Z, W), pred(Z, Y, RC, ...), Cost is W + RC.
+llvm_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses, WeightPred) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, _, _, _, _],
+    RecHead =.. [Pred, _, _, _, _],
+    % Base body is a single weight_pred call (ignoring visited arg).
+    BaseBody =.. [WeightPred, _, _, _],
+    WeightPred \== Pred,
+    % Recursive body contains weight call, recursive call, and arithmetic.
+    RecBody = (WeightGoal, RestBody),
+    WeightGoal =.. [WeightPred, _, _, _],
+    % Rest may have \+ member(...) interleaved; just check for the recursive call and is/2.
+    term_string(RestBody, RestStr),
+    atom_string(Pred, PredStr),
+    sub_string(RestStr, _, _, _, PredStr),
+    sub_string(RestStr, _, _, _, " is ").
 
 %% llvm_auto_detect_foreign_kernels(+Predicates) is det.
 %
@@ -1252,6 +1296,7 @@ entry:
     %Instruction* getelementptr ([0 x %Instruction], [0 x %Instruction]* null, i32 0, i32 0),
     i32 0, i32* null, i32 0)
   %result = call i1 @run_loop(%WamState* %vm)
+  call void @wam_cleanup()
   %ret = zext i1 %result to i32
   ret i32 %ret
 }', [PredStr, Arity, PredStr])
