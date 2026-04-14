@@ -1,0 +1,61 @@
+{
+  "engine": "wam-wat-v8",
+  "iterations": 50000,
+  "results": [
+    {
+      "workload": "bench_arg_read",
+      "ns_per_call": 323.43438,
+      "ok": true
+    },
+    {
+      "workload": "bench_copy_flat",
+      "ns_per_call": 225.12916,
+      "ok": true
+    },
+    {
+      "workload": "bench_copy_nested",
+      "ns_per_call": 252.58646,
+      "ok": true
+    },
+    {
+      "workload": "bench_functor_read",
+      "ns_per_call": 175.56978,
+      "ok": true
+    },
+    {
+      "workload": "bench_is_arith",
+      "ns_per_call": 217.9573,
+      "ok": true
+    },
+    {
+      "workload": "bench_sum_big",
+      "ns_per_call": 19732.68124,
+      "ok": true
+    },
+    {
+      "workload": "bench_sum_medium",
+      "ns_per_call": 10371.56146,
+      "ok": true
+    },
+    {
+      "workload": "bench_sum_small",
+      "ns_per_call": 3867.27396,
+      "ok": true
+    },
+    {
+      "workload": "bench_true",
+      "ns_per_call": 83.57604,
+      "ok": true
+    },
+    {
+      "workload": "bench_unify",
+      "ns_per_call": 197.18854,
+      "ok": true
+    },
+    {
+      "workload": "bench_univ_decomp",
+      "ns_per_call": 168.83646,
+      "ok": true
+    }
+  ]
+}

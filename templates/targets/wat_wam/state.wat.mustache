@@ -217,6 +217,7 @@
 ;; --- State initialization ---
 
 (func $wam_init (param $heap_base i32)
+  (local $i i32)
   (call $set_pc (i32.const 0))
   (call $set_cp (i32.const -1))
   (call $set_heap_top (local.get $heap_base))
@@ -224,4 +225,15 @@
   (call $set_stack_top (i32.const 73728))   ;; 65536 + 8192
   (call $set_cp_count (i32.const 0))
   (call $set_halted (i32.const 0))
-  (call $set_mode (i32.const 0)))
+  (call $set_mode (i32.const 0))
+  (global.set $env_base (i32.const 0))
+  ;; Zero all A/X registers (indices 0-63) to Unbound. This prevents
+  ;; stale Ref cells from previous invocations leading to corrupted
+  ;; heap addresses when put_structure uses bind_reg_deref.
+  (local.set $i (i32.const 0))
+  (block $done
+    (loop $clear
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 64)))
+      (call $set_reg (local.get $i) (i32.const 6) (i64.const 0))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $clear))))
