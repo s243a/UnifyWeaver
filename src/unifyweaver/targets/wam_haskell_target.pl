@@ -1730,45 +1730,19 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
     ).
 
 generate_query_body(Options, QueryBody) :-
+    % Emit a PURE expression so the seed loop can use `parMap rdeepseq`.
+    % We use explicit braces and semicolons on the `let` to avoid Haskell's
+    % column-alignment layout rules (the template renderer doesn't re-indent
+    % continuation lines to match the {{query_body}} insertion column).
     (   member(query_pred(QueryPred), Options)
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
-        % The predicate does begin_aggregate/end_aggregate internally.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let wsVarId = 1000000
-            s0 = emptyState
-                { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels
-                , wsRegs = IM.fromList
-                    [ (1, Atom cat)
-                    , (2, Atom root)
-                    , (3, Unbound wsVarId)
-                    ]
-                , wsCP = 0
-                }
-            !result = case run ctx s0 of
-              Just s1 -> case IM.lookup wsVarId (wsBindings s1) of
-                Just v -> case extractDouble (derefVar (wsBindings s1) v) of
-                  Just ws -> ws
-                  Nothing -> 0.0
-                Nothing -> 0.0
-              Nothing -> 0.0
-        return (cat, result)', [QueryPred1])
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+            [QueryPred1])
     ;   % Default: collectSolutions loop for category_ancestor/4
         QueryBody =
-'let hopsVarId = 1000000
-            s0 = emptyState
-                { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels
-                , wsRegs = IM.fromList
-                    [ (1, Atom cat)
-                    , (2, Atom root)
-                    , (3, Unbound hopsVarId)
-                    , (4, VList [Atom cat])
-                    ]
-                , wsCP = 0
-                }
-            !solutions = collectSolutions ctx s0 hopsVarId
-            !weightSum = sum [((hops + 1) ** negN) | hops <- solutions]
-        return (cat, weightSum)'
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
@@ -2185,13 +2159,16 @@ emptyState = WamState
 %% generate_cabal_file(+Name, +UseHM, +Options, -Code)
 %  Options: profiling(true) adds -prof -fprof-auto -rtsopts for GHC profiling.
 generate_cabal_file(Name, UseHM, Options, Code) :-
+    % deepseq + parallel for seed-level parMap rdeepseq
     (   UseHM == true
-    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2"
-    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8"
+    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2"
+    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2"
     ),
+    % -threaded enables multi-core runtime (+RTS -N to use cores).
+    % -rtsopts is needed so +RTS flags are accepted at runtime.
     (   option(profiling(true), Options)
-    ->  GhcOpts = "-O2 -prof -fprof-auto -rtsopts"
-    ;   GhcOpts = "-O2"
+    ->  GhcOpts = "-O2 -threaded -rtsopts -prof -fprof-auto"
+    ;   GhcOpts = "-O2 -threaded -rtsopts"
     ),
     format(string(Code),
 'cabal-version: 2.4

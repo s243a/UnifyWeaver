@@ -9,6 +9,8 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import System.Environment (getArgs)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
+import Control.Parallel.Strategies (parMap, rdeepseq)
+import Control.DeepSeq (NFData(..), deepseq)
 import WamTypes
 import WamRuntime
 import Predicates
@@ -117,17 +119,19 @@ main = do
     -- the hot loop then uses IntMap + Int comparison instead of
     -- HashMap + String hashing (~17% profiled savings).
     --
-    -- Deduplication uses Map.insert-if-absent fold (O(n log n)) rather
-    -- than nub (O(n^2)) — on 300-scale, nub adds ~130ms of startup.
+    -- Use a counter pair (map, next-id) in the fold so we don't call
+    -- Map.size on every insert — HashMap.size is O(n), which made the
+    -- original foldl' O(n^2) (~10% profiled time at 300 scale).
     let atomStrings =
             [child | (child, _) <- categoryParents] ++
             [parent | (_, parent) <- categoryParents] ++
             [cat | (_, cat) <- articleCategories] ++
             roots
-        !internMap = foldl' (\m s -> if Map.member s m
-                                       then m
-                                       else Map.insert s (Map.size m) m)
-                            Map.empty atomStrings
+        (!internMap, _) = foldl'
+            (\(!m, !i) s -> if Map.member s m
+                              then (m, i)
+                              else (Map.insert s i m, i + 1))
+            (Map.empty, 0 :: Int) atomStrings
         !deinternMap = IM.fromList [(i, s) | (s, i) <- Map.toList internMap]
         internAtom s = fromMaybe (-1) (Map.lookup s internMap)
 
@@ -150,14 +154,20 @@ main = do
 
     t2 <- getCurrentTime
 
-    -- Per-seed query. The query predicate and register layout are
-    -- parameterized via {{query_pred}}, {{query_regs}}, {{query_extract}}.
-    -- IMPORTANT: use mapM in IO with strict bang patterns to force actual
-    -- computation BEFORE timing endpoint, otherwise lazy evaluation will
-    -- defer the work until output and the timing will be artificially low.
-    seedResultsForced <- mapM (\cat -> do
-        {{query_body}}
-        ) seedCats
+    -- Per-seed query, parallelized with parMap rdeepseq.
+    -- Each seed gets an independent WamState (via the query body closure)
+    -- but they all share the immutable WamContext. No locking required.
+    -- Run with +RTS -N to use multiple cores.
+    --
+    -- rdeepseq forces each (cat, weightSum) fully in parallel. Without
+    -- deepseq, the tuple constructor would be WHNF but the Double inside
+    -- could remain a thunk, deferring the actual work to later.
+    let !seedResultsForced = parMap rdeepseq (\cat ->
+            {{query_body}}
+            ) seedCats
+        -- Force the spine so parMap sparks all run before the timing
+        -- endpoint. deepseq on the list forces every element too.
+        !_ = seedResultsForced `deepseq` ()
 
     let !seedWeightSums = Map.fromList [(cat, ws) | (cat, ws) <- seedResultsForced, ws > 0]
         !forcedSize = Map.size seedWeightSums  -- force the map
