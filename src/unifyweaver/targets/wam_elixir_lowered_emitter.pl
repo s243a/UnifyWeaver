@@ -6,6 +6,11 @@
 %
 % Compiles WAM instructions directly to Elixir function calls/expressions
 % instead of instruction-array interpretion.
+%
+% Note: Currently, only a few head unification instructions (e.g., get_constant,
+% get_variable, get_value) and `proceed` are fully lowered to establish the
+% architecture. The rest of the instructions are explicitly stubbed out with
+% `raise "TODO: ..."` to guide future progressive implementation.
 
 :- module(wam_elixir_lowered_emitter, [
     lower_predicate_to_elixir/3,  % +PredIndicator, +WamCode, -ElixirCode
@@ -33,15 +38,16 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Code) :-
 end', [PredStr, PredStr, Arity, Body]).
 
 lower_lines_to_elixir([], _, []).
-lower_lines_to_elixir([Line|Rest], PC, [Expr|Exprs]) :-
+lower_lines_to_elixir([Line|Rest], PC, OutExprs) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts = [First|_], \+ sub_string(First, _, 1, 0, ":")
     ->  instr_from_parts(CleanParts, Instr),
         wam_elixir_lower_instr(Instr, PC, Expr),
         NPC is PC + 1,
+        OutExprs = [Expr|Exprs],
         lower_lines_to_elixir(Rest, NPC, Exprs)
-    ;   lower_lines_to_elixir(Rest, PC, Exprs)
+    ;   lower_lines_to_elixir(Rest, PC, OutExprs)
     ).
 
 instr_from_parts(["get_constant", C, Ai], get_constant(C, Ai)).
@@ -147,10 +153,4 @@ reg_id_emitter(Reg, Id) :-
     ;   sub_atom(Reg, 0, 1, _, 'X') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
     ;   sub_atom(Reg, 0, 1, _, 'Y') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
     ;   Id = Reg
-    ).
-
-clean_comma(S, Clean) :-
-    (   sub_string(S, _, 1, 0, ",")
-    ->  sub_string(S, 0, _, 1, Clean)
-    ;   Clean = S
     ).
