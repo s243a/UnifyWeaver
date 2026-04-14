@@ -82,6 +82,7 @@ kernel_detector(category_ancestor, detect_category_ancestor).
 kernel_detector(transitive_closure2, detect_transitive_closure).
 kernel_detector(transitive_distance3, detect_transitive_distance).
 kernel_detector(weighted_shortest_path3, detect_weighted_shortest_path).
+kernel_detector(transitive_parent_distance4, detect_transitive_parent_distance).
 
 %% =====================================================================
 %% Kernel metadata
@@ -91,21 +92,25 @@ kernel_native_kind(category_ancestor, category_ancestor).
 kernel_native_kind(transitive_closure2, transitive_closure2).
 kernel_native_kind(transitive_distance3, transitive_distance3).
 kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
+kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
 kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
+kernel_result_layout(transitive_parent_distance4, tuple(3)).  % (target, parent, distance)
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
 kernel_result_mode(transitive_distance3, stream).
 kernel_result_mode(weighted_shortest_path3, stream).
+kernel_result_mode(transitive_parent_distance4, stream).
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
 kernel_expected_arity(transitive_distance3, 3).
 kernel_expected_arity(weighted_shortest_path3, 3).
+kernel_expected_arity(transitive_parent_distance4, 4).
 
 %% =====================================================================
 %% Register layout — describes input/output registers for each kernel
@@ -139,6 +144,13 @@ kernel_register_layout(weighted_shortest_path3, [
     input(1, atom),          % source node
     output(2, atom),         % target node (result)
     output(3, float)         % shortest-path weight (result)
+]).
+
+kernel_register_layout(transitive_parent_distance4, [
+    input(1, atom),          % source node
+    output(2, atom),         % target node
+    output(3, atom),         % parent on shortest path
+    output(4, integer)       % distance
 ]).
 
 %% =====================================================================
@@ -178,7 +190,13 @@ kernel_native_call(transitive_distance3,
 
 kernel_native_call(weighted_shortest_path3,
     call(nativeKernel_weighted_shortest_path, [
-        config_facts_from(edge_pred),     % weighted edges map
+        config_weighted_facts_from(edge_pred),  % weighted edges: IntMap [(Int, Double)]
+        reg(1)                                  % source node
+    ])).
+
+kernel_native_call(transitive_parent_distance4,
+    call(nativeKernel_transitive_parent_distance, [
+        config_facts_from(edge_pred),     % edges map
         reg(1)                            % source node
     ])).
 
@@ -190,6 +208,7 @@ kernel_template_file(category_ancestor, 'kernel_category_ancestor.hs.mustache').
 kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache').
 kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustache').
 kernel_template_file(weighted_shortest_path3, 'kernel_weighted_shortest_path.hs.mustache').
+kernel_template_file(transitive_parent_distance4, 'kernel_transitive_parent_distance.hs.mustache').
 
 %% =====================================================================
 %% Detector: category_ancestor
@@ -449,6 +468,54 @@ find_is_sum((T is Expr), T0, R, E) :-
     (   Expr = R0 + E0, R0 == R, E0 == E
     ;   Expr = E0 + R0, R0 == R, E0 == E
     ).
+
+%% =====================================================================
+%% Detector: transitive_parent_distance (BFS + parent + distance)
+%%
+%% Matches the shape:
+%%   pd(X, Y, X, 1) :- edge(X, Y).
+%%   pd(X, Y, P, D) :-
+%%       edge(X, Mid),
+%%       pd(Mid, Y, P, D1),
+%%       D is D1 + 1.
+%%
+%% Base case: parent is the source itself (distance 1 direct edge).
+%% Recursive: parent comes from the recursive subquery.
+%%
+%% Extracted config: edge_pred(EdgePred/2).
+%% =====================================================================
+
+detect_transitive_parent_distance(Pred, 4, Clauses, Kernel) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseBody \= RecBody,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseParent, BaseDist],
+    RecHead =.. [Pred, RecStart, RecTarget, RecParent, RecDist],
+    % Base: pd(X, Y, X, 1) :- edge(X, Y).  -- parent == source, dist == 1
+    BaseParent == BaseStart,
+    (   BaseDist == 1 ; find_unify_one(BaseBody, BaseDist) ),
+    find_edge_in_body(BaseBody, BaseStart, BaseTarget, EdgePred),
+    % Recursive: edge(X, Mid), pd(Mid, Y, P, D1), D is D1 + 1
+    find_edge_from(RecBody, RecStart, EdgePred, Mid),
+    find_pd_recursive_call(RecBody, Pred, Mid, RecTarget, RecParent, D1),
+    find_is_plus_one(RecBody, RecDist, D1),
+    Kernel = recursive_kernel(transitive_parent_distance4, Pred/4,
+                              [edge_pred(EdgePred/2)]).
+
+%% find_pd_recursive_call(+Body, +Pred, +Start, +Target, +Parent, -Dist)
+%  Find `Pred(Start, Target, Parent, Dist)` call.
+find_pd_recursive_call((A, _), Pred, Start, Target, Parent, Dist) :-
+    find_pd_recursive_call(A, Pred, Start, Target, Parent, Dist), !.
+find_pd_recursive_call((_, B), Pred, Start, Target, Parent, Dist) :-
+    find_pd_recursive_call(B, Pred, Start, Target, Parent, Dist), !.
+find_pd_recursive_call(Goal, Pred, Start, Target, Parent, Dist) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [Pred, A1, A2, A3, A4],
+    A1 == Start,
+    A2 == Target,
+    A3 == Parent,
+    Dist = A4.
 
 %% =====================================================================
 %% Helper: sub_term/2 — check if a term appears anywhere in a body

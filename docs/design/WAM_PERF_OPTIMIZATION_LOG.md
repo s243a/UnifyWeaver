@@ -61,6 +61,27 @@ The reachability computation is substantial — 199k pairs at 300 scale,
 to the effective-distance benchmark's scaling profile. FFIStreamRetry
 works correctly under load with hundreds of thousands of solutions.
 
+### Weighted kernel: `weighted_shortest_path3/3` (Dijkstra)
+
+Added the Dijkstra kernel with Double-valued output, validating Float
+wrapping in the multi-output FFI path. Synthetic weights
+(`1.0 + (childId mod 10) * 0.1`) give non-uniform edge costs.
+
+| Scale | Sources | Pairs | 1-core query | 4-core query | Speedup |
+|---|---|---|---|---|---|
+| 300   | 2165 | 199,029 | 212ms  | **90ms**  | 2.4x |
+| 10k   | 7811 | 877,029 | 1232ms | **441ms** | 2.8x |
+
+Slightly slower than `transitive_distance3` (Dijkstra priority queue
+overhead vs straight BFS). Deterministic output (`total_weight` byte-for-
+byte identical across runs) confirms Float accumulation is consistent
+and the priority-queue ordering is stable.
+
+`wcFfiWeightedFacts` field added to `WamContext` for `Map String (IntMap
+[(Int, Double)])` storage. New `config_weighted_facts_from(edge_pred)`
+ArgSpec resolves to `config_weighted_facts(pred_name)` which emits the
+appropriate lookup at codegen time.
+
 ---
 
 ## Haskell WAM — optimization timeline
