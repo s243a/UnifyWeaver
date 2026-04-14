@@ -1,0 +1,186 @@
+:- encoding(utf8).
+% test_wam_llvm_td3_stream_execution.pl
+% End-to-end execution test for stream-mode transitive_distance3.
+% When A2 is unbound (tag=6), td3 enumerates all reachable (target, distance)
+% pairs via BFS and yields them through the paired foreign iterator.
+%
+% Graph: p -> q -> r -> s, p -> t
+%
+% Tests:
+%   1. Stream from 'p': 4 reachable nodes (q,r,s,t) = 4 pairs.
+%   2. Stream from 'r': 1 reachable node (s) = 1 pair.
+%   3. Stream from 's': 0 reachable (sink) = 0 pairs.
+
+:- use_module('../../src/unifyweaver/targets/wam_llvm_target',
+    [write_wam_llvm_project/3,
+     clear_llvm_foreign_kernel_specs/0]).
+:- use_module(library(process)).
+:- use_module(library(readutil)).
+:- use_module(library(pcre)).
+
+:- dynamic link/2.
+link(p, q).
+link(q, r).
+link(r, s).
+link(p, t).
+
+:- dynamic reach/3.
+reach(_, _, _) :- fail.
+
+host_target_triple(Triple) :-
+    ( catch(
+        ( process_create(path(clang), ['-print-target-triple'],
+              [stdout(pipe(Out)), stderr(null), process(PID)]),
+          read_string(Out, _, Raw), close(Out),
+          process_wait(PID, exit(0))
+        ), _, fail)
+    -> split_string(Raw, "", "\n\r\t ", [S]), atom_string(Triple, S)
+    ;  Triple = 'x86_64-pc-linux-gnu'
+    ).
+
+extract_atom_id_for(Src, TablePattern, Labels, AtomIds) :-
+    format(atom(StartMarker), '@~w = private constant', [TablePattern]),
+    once(sub_string(Src, StartIdx, _, _, StartMarker)),
+    sub_string(Src, StartIdx, _, 0, FromStart),
+    once(sub_string(FromStart, AfterTypeIdx, 3, _, "] [")),
+    BodyStart is AfterTypeIdx + 3,
+    sub_string(FromStart, BodyStart, _, 0, FromBody),
+    once(sub_string(FromBody, CloseIdx, 2, _, "\n]")),
+    sub_string(FromBody, 0, CloseIdx, _, TableBody),
+    re_foldl([Match, Acc, [FromId - ToId | Acc]]>>(
+        get_dict(from, Match, FS), get_dict(to, Match, TS),
+        number_string(FromId, FS), number_string(ToId, TS)
+    ),
+    "AtomFactPair \\{ i64 (?<from>\\d+), i64 (?<to>\\d+) \\}",
+    TableBody, [], PairsRev, []),
+    reverse(PairsRev, Pairs),
+    zip_facts_to_ids(Labels, Pairs, Bindings),
+    dict_pairs(AtomIds, atom_ids, Bindings).
+
+zip_facts_to_ids(L, P, B) :- zip_loop(L, P, [], B).
+zip_loop([], _, A, S) :- sort(1, @<, A, S).
+zip_loop([F-T|LR], [FI-TI|PR], A, O) :- !,
+    add_b(F, FI, A, A1), add_b(T, TI, A1, A2), zip_loop(LR, PR, A2, O).
+zip_loop(_, _, A, S) :- sort(1, @<, A, S).
+add_b(L, _, A, A) :- memberchk(L-_, A), !.
+add_b(L, I, A, [L-I|A]).
+
+extract_instr_count(Src, P, C) :-
+    format(atom(Pat), "@~w_code = private constant \\[(?<n>\\d+) x %Instruction\\]", [P]),
+    re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
+extract_label_count(Src, P, C) :-
+    format(atom(Pat), "@~w_labels = private constant \\[(?<n>\\d+) x i32\\]", [P]),
+    re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
+
+run_stream_td3_case(Label, StartAtom, Expected) :-
+    format('  testing ~w: reach(~w, X, D) expected ~w results~n',
+        [Label, StartAtom, Expected]),
+    clear_llvm_foreign_kernel_specs,
+    tmp_file_stream(text, LLPath, Stream), close(Stream),
+    host_target_triple(Triple),
+    write_wam_llvm_project(
+        [user:reach/3],
+        [ module_name('td3_stream'),
+          target_triple(Triple),
+          target_datalayout(''),
+          foreign_predicates([
+              reach/3 - transitive_distance3 - [edge_pred(link/2)]
+          ])
+        ],
+        LLPath),
+    read_file_to_string(LLPath, Src, []),
+    extract_atom_id_for(Src, 'td3_inst_reach_0_edges',
+        [p-q, q-r, r-s, p-t], AtomIds),
+    get_dict(StartAtom, AtomIds, StartId),
+    extract_instr_count(Src, reach, IC),
+    extract_label_count(Src, reach, LC),
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 0, 0
+  %a1 = insertvalue %Value %a1_0, i64 ~w, 1
+  %a2_0 = insertvalue %Value undef, i32 6, 0
+  %a2 = insertvalue %Value %a2_0, i64 0, 1
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @reach_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @reach_labels, i32 0, i32 0),
+      i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a2)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %count_entry, label %no_results
+
+count_entry:
+  br label %count_loop
+
+count_loop:
+  %count = phi i32 [1, %count_entry], [%count_inc, %got_next]
+  %bt_ok = call i1 @backtrack(%WamState* %vm)
+  br i1 %bt_ok, label %got_next, label %done
+
+got_next:
+  %count_inc = add i32 %count, 1
+  br label %count_loop
+
+done:
+  ret i32 %count
+
+no_results:
+  ret i32 0
+}
+',
+        [StartId, IC, IC, IC, LC, LC]),
+    setup_call_cleanup(
+        open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ),
+        close(Out)),
+    atom_concat(LLPath, '.o', OPath),
+    atom_concat(LLPath, '.out', BinPath),
+    format(atom(LlcCmd),
+        'llc -filetype=obj -relocation-model=pic ~w -o ~w 2>~w.llc.err',
+        [LLPath, OPath, LLPath]),
+    shell(LlcCmd, LlcExit),
+    ( LlcExit =\= 0
+    -> format('    FAIL: llc exit=~w~n', [LlcExit]), ExitCode = -1
+    ;  format(atom(ClangCmd), 'clang ~w -o ~w 2>~w.clang.err',
+           [OPath, BinPath, LLPath]),
+       shell(ClangCmd, ClangExit),
+       ( ClangExit =\= 0
+       -> format('    FAIL: clang exit=~w~n', [ClangExit]), ExitCode = -1
+       ;  shell(BinPath, ExitCode)
+       )
+    ),
+    ( ExitCode =:= Expected
+    -> format('    PASS: ~w returned ~w~n', [Label, ExitCode])
+    ;  format('    FAIL: ~w returned ~w (expected ~w)~n', [Label, ExitCode, Expected])
+    ),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(OPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    clear_llvm_foreign_kernel_specs,
+    assertion(ExitCode =:= Expected).
+
+test_td3_stream :-
+    format('--- transitive_distance3 stream mode ---~n'),
+    ( process_which('clang'), process_which('llc')
+    -> run_stream_td3_case('4 from p', p, 4),
+       run_stream_td3_case('1 from r', r, 1),
+       run_stream_td3_case('0 from s', s, 0)
+    ;  format('  SKIP: clang or llc not found~n')
+    ).
+
+process_which(Tool) :-
+    catch(
+        ( process_create(path(which), [Tool],
+              [stdout(pipe(Out)), stderr(null), process(PID)]),
+          read_string(Out, _, _), close(Out),
+          process_wait(PID, exit(0))
+        ), _, fail).
+
+test_all :-
+    catch(test_td3_stream, E,
+        format('  ERROR: ~w~n', [E])).
+
+:- initialization(test_all, main).
