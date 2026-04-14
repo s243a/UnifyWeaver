@@ -274,6 +274,11 @@ resolve_arg_spec(ConfigOps, config_facts_from(ConfigKey), config_facts(FactName)
     Op =.. [ConfigKey, RawValue],
     member(Op, ConfigOps),
     (   RawValue = Pred/_ -> FactName = Pred ; FactName = RawValue ).
+resolve_arg_spec(ConfigOps, config_weighted_facts_from(ConfigKey), config_weighted_facts(FactName)) :- !,
+    % Weighted variant: resolves to wcFfiWeightedFacts lookup at codegen
+    Op =.. [ConfigKey, RawValue],
+    member(Op, ConfigOps),
+    (   RawValue = Pred/_ -> FactName = Pred ; FactName = RawValue ).
 resolve_arg_spec(_, Arg, Arg).
 
 emit_ef_clause(Key, RegSpecs, call(FuncName, ArgSpecs)) :-
@@ -323,6 +328,11 @@ emit_config_let_bindings([config_facts(FactKey)|Rest]) :-
     format('      ~w_facts = fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx)~n',
            [FactKey, FactKey]),
     emit_config_let_bindings(Rest).
+emit_config_let_bindings([config_weighted_facts(FactKey)|Rest]) :-
+    % Weighted FFI facts: IntMap [(Int, Double)] (target, weight pairs)
+    format('      ~w_facts = fromMaybe IM.empty $ Map.lookup "~w" (wcFfiWeightedFacts ctx)~n',
+           [FactKey, FactKey]),
+    emit_config_let_bindings(Rest).
 emit_config_let_bindings([config_int(ConfigKey, Default)|Rest]) :-
     format('      ~w_cfg = fromMaybe ~w $ Map.lookup "~w" (wcForeignConfig ctx)~n',
            [ConfigKey, Default, ConfigKey]),
@@ -339,6 +349,8 @@ emit_call_args([Spec|Rest], InputRegs) :-
     emit_call_args(Rest, InputRegs).
 
 emit_one_call_arg(config_facts(FactKey), _) :-
+    format('~w_facts', [FactKey]).
+emit_one_call_arg(config_weighted_facts(FactKey), _) :-
     format('~w_facts', [FactKey]).
 emit_one_call_arg(config_int(ConfigKey, _), _) :-
     format('~w_cfg', [ConfigKey]).
@@ -2256,6 +2268,12 @@ data WamContext = WamContext
   -- Separate from wcForeignFacts so callIndexedFact2 (WAM path) is
   -- unaffected.
   , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
+  -- | Weighted fact indexes for kernels that need (target, weight)
+  -- pairs per edge (e.g., weighted_shortest_path3 / Dijkstra). Used
+  -- exclusively by the FFI kernel path. Populated from 3-column fact
+  -- sources — not wired into the default Main.hs template yet, so
+  -- standalone benchmarks build this directly.
+  , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
   }
 -- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
 -- and functions have no Show instance. Add a manual instance if needed.
@@ -2339,6 +2357,7 @@ mkContext codeList labels =
     , wcAtomIntern    = Map.empty
     , wcAtomDeintern  = IM.empty
     , wcFfiFacts      = Map.empty
+    , wcFfiWeightedFacts = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
