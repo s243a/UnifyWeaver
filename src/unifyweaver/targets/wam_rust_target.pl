@@ -520,7 +520,10 @@ wam_instruction_arm('Instruction::CallPc(target_pc, _arity)', Body) :-
                 true'.
 
 wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
-    Body = '                self.execute_foreign_predicate(pred, *arity)'.
+    Body = '                if self.execute_foreign_predicate(pred, *arity) {
+                    self.pc += 1;
+                    true
+                } else { false }'.
 
 wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
     Body = '                let key = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {

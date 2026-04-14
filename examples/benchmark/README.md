@@ -89,6 +89,32 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
+### WAM-Rust Benchmark Variants
+
+The effective-distance harness also includes WAM-Rust benchmark targets:
+
+- `wam-rust-seeded` compiles the base WAM predicates and uses the generated
+  Rust benchmark driver to compute per-seed weight sums through the
+  `category_ancestor/4` foreign path.
+- `wam-rust-accumulated` additionally runs the same optimized Prolog
+  predicate-generation pipeline used by the Haskell benchmark work and
+  compiles the generated `effective_distance_sum` helper predicates into
+  the merged WAM code vector. The measured driver still uses the stable
+  Rust-side accumulation path until direct WAM aggregate-helper execution
+  has separate runtime coverage.
+
+Example focused run:
+
+```bash
+python examples/benchmark/benchmark_effective_distance.py \
+  --scales dev \
+  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated \
+  --repetitions 1
+```
+
+On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
+`TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
+
 ### Why Seeded Closures Win
 
 The main advantage comes from **seed deduplication**: many articles

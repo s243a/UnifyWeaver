@@ -18,6 +18,7 @@ benchmark scales, and reports median wall-clock times plus output agreement.
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
 import sys
 import tempfile
@@ -78,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-accumulated",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated",
     )
     parser.add_argument(
         "--repetitions",
@@ -92,6 +93,29 @@ def parse_args() -> argparse.Namespace:
         help="Keep the temporary build directory for inspection",
     )
     return parser.parse_args()
+
+
+def benchmark_temp_parent() -> Path:
+    """Pick a writable temp parent, including Termux's $PREFIX/tmp."""
+    candidates: list[Path] = []
+    for var in ("TMPDIR", "TMP", "TEMP"):
+        raw = os.environ.get(var)
+        if raw:
+            candidates.append(Path(raw))
+    prefix = os.environ.get("PREFIX")
+    if prefix:
+        candidates.append(Path(prefix) / "tmp")
+    candidates.append(ROOT / "output")
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".uw_tmp_probe"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return candidate
+        except OSError:
+            continue
+    raise RuntimeError("no writable temporary directory found")
 
 
 def build_csharp_query(root: Path) -> list[str]:
@@ -200,9 +224,9 @@ def build_prolog_effective_semantic(root: Path, scale: str) -> list[str]:
     return ["swipl", "-q", "-s", str(script_path)]
 
 
-def build_wam_rust_effective_distance(root: Path, scale: str) -> list[str]:
+def build_wam_rust_effective_distance(root: Path, scale: str, variant: str) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
-    project_dir = root / "wam_rust" / scale
+    project_dir = root / f"wam_rust_{variant}" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
     run_command(
         [
@@ -213,6 +237,7 @@ def build_wam_rust_effective_distance(root: Path, scale: str) -> list[str]:
             "--",
             str(facts_path),
             str(project_dir),
+            variant,
         ],
         cwd=ROOT,
     )
@@ -258,6 +283,7 @@ def print_summary(results: list[RunResult]) -> None:
         prolog_accumulated = find_result(entries, "prolog-accumulated")
         prolog_article_accumulated = find_result(entries, "prolog-article-accumulated")
         prolog_root_accumulated = find_result(entries, "prolog-root-accumulated")
+        wam_rust_seeded = find_result(entries, "wam-rust-seeded")
         wam_rust_accumulated = find_result(entries, "wam-rust-accumulated")
         prolog_semantic_min = find_result(entries, "prolog-semantic-min")
         prolog_eff_semantic = find_result(entries, "prolog-eff-semantic")
@@ -271,7 +297,9 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_prolog_accumulated", qe, prolog_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_article_accumulated", qe, prolog_article_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_root_accumulated", qe, prolog_root_accumulated)
+        print_pair_match_status(scale, "query_vs_wam_rust_seeded", qe, wam_rust_seeded)
         print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
+        print_pair_match_status(scale, "prolog_vs_wam_rust_seeded", prolog_accumulated, wam_rust_seeded)
         print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
         print_pair_match_status(scale, "query_vs_prolog_eff_semantic", qe, prolog_eff_semantic)
@@ -282,6 +310,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_prolog_accumulated", prolog_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_article_accumulated", prolog_article_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_root_accumulated", prolog_root_accumulated, qe)
+        print_speedup(scale, "speedup_vs_wam_rust_seeded", wam_rust_seeded, qe)
         print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_speedup(scale, "speedup_vs_prolog_eff_semantic", prolog_eff_semantic, qe)
@@ -291,6 +320,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "prolog-accumulated-metrics", prolog_accumulated)
         print_phase_metrics(scale, "prolog-article-accumulated-metrics", prolog_article_accumulated)
         print_phase_metrics(scale, "prolog-root-accumulated-metrics", prolog_root_accumulated)
+        print_phase_metrics(scale, "wam-rust-seeded-metrics", wam_rust_seeded)
         print_phase_metrics(scale, "wam-rust-accumulated-metrics", wam_rust_accumulated)
         print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
         print_phase_metrics(scale, "prolog-eff-semantic-metrics", prolog_eff_semantic)
@@ -318,10 +348,11 @@ def main() -> int:
         return 1
 
     temp_ctx = None
+    temp_parent = benchmark_temp_parent()
     if args.keep_temp:
-        temp_root = Path(tempfile.mkdtemp(prefix="uw-effective-distance-"))
+        temp_root = Path(tempfile.mkdtemp(prefix="uw-effective-distance-", dir=temp_parent))
     else:
-        temp_ctx = tempfile.TemporaryDirectory(prefix="uw-effective-distance-")
+        temp_ctx = tempfile.TemporaryDirectory(prefix="uw-effective-distance-", dir=temp_parent)
         temp_root = Path(temp_ctx.name)
     try:
         commands: dict[str, list[str]] = {}
@@ -343,6 +374,8 @@ def main() -> int:
             elif target == "prolog-article-accumulated":
                 continue
             elif target == "prolog-root-accumulated":
+                continue
+            elif target == "wam-rust-seeded":
                 continue
             elif target == "wam-rust-accumulated":
                 continue
@@ -366,8 +399,10 @@ def main() -> int:
                     command = build_prolog_effective_distance(temp_root, scale, "article_accumulated")
                 elif target == "prolog-root-accumulated":
                     command = build_prolog_effective_distance(temp_root, scale, "root_accumulated")
+                elif target == "wam-rust-seeded":
+                    command = build_wam_rust_effective_distance(temp_root, scale, "seeded")
                 elif target == "wam-rust-accumulated":
-                    command = build_wam_rust_effective_distance(temp_root, scale)
+                    command = build_wam_rust_effective_distance(temp_root, scale, "accumulated")
                 elif target == "prolog-semantic-min":
                     command = build_prolog_semantic_min(temp_root, scale)
                 elif target == "prolog-eff-semantic":
