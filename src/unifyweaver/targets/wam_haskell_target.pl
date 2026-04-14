@@ -285,11 +285,13 @@ emit_ef_clause(Key, RegSpecs, call(FuncName, ArgSpecs)) :-
     emit_input_let_bindings(InputRegs, first),
     % Emit config bindings from ArgSpecs
     emit_config_let_bindings(ArgSpecs),
-    % Find output register(s)
+    % Find output register(s). Single-output kernels (category_ancestor,
+    % transitive_closure2) keep the existing fast path; multi-output
+    % kernels (transitive_distance3, weighted_shortest_path3) use a
+    % tuple-based bindResult that binds multiple registers per solution.
     include(is_output_reg, RegSpecs, OutputRegs),
-    OutputRegs = [output(OutRegN, OutType)|_],
     % Emit case expression over input regs, then native call + binding inside
-    emit_case_and_call(InputRegs, OutRegN, OutType, FuncName, ArgSpecs),
+    emit_case_and_call(InputRegs, OutputRegs, FuncName, ArgSpecs),
     format('~n').
 
 is_input_reg(input(_, _)).
@@ -360,32 +362,32 @@ emit_reg_extraction(VarName, vlist_atoms) :-
 emit_reg_extraction(VarName, integer) :-
     format('~wI', [VarName]).
 
-%% emit_case_and_call(+InputRegs, +OutRegN, +OutType, +FuncName, +ArgSpecs)
+%% emit_case_and_call(+InputRegs, +OutputRegs, +FuncName, +ArgSpecs)
 %  Emit the case expression that pattern-matches inputs, then the native
 %  call and stream binding INSIDE the case branch (so extracted string
 %  variables are in scope for the call).
-emit_case_and_call(InputRegs, OutRegN, OutType, FuncName, ArgSpecs) :-
+emit_case_and_call(InputRegs, OutputRegs, FuncName, ArgSpecs) :-
     length(InputRegs, NInputs),
     (   NInputs =:= 1
     ->  InputRegs = [input(RegN1, _)],
         reg_var_name(RegN1, ScrutName),
         format('  in case ~w of~n', [ScrutName]),
-        emit_single_case_branch(InputRegs, OutRegN, OutType, FuncName, ArgSpecs)
+        emit_single_case_branch(InputRegs, OutputRegs, FuncName, ArgSpecs)
     ;   format('  in case ('),
         emit_scrutinee_tuple(InputRegs, first),
         format(') of~n'),
         format('    ('),
         emit_pattern_tuple(InputRegs, first),
         format(') ->~n'),
-        emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, InputRegs, "      ")
+        emit_native_call_and_binding(OutputRegs, FuncName, ArgSpecs, InputRegs, "      ")
     ),
     format('    _ -> Nothing~n').
 
-emit_single_case_branch([input(RegN, Type)|_], OutRegN, OutType, FuncName, ArgSpecs) :-
+emit_single_case_branch([input(RegN, Type)|_], OutputRegs, FuncName, ArgSpecs) :-
     reg_var_name(RegN, VarName),
     type_pattern(Type, VarName, Pattern),
     format('    ~w ->~n', [Pattern]),
-    emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, [input(RegN, Type)], "      ").
+    emit_native_call_and_binding(OutputRegs, FuncName, ArgSpecs, [input(RegN, Type)], "      ").
 
 emit_scrutinee_tuple([], _).
 emit_scrutinee_tuple([input(RegN, _)|Rest], Pos) :-
@@ -409,18 +411,27 @@ type_pattern(integer, VarName, Pattern) :-
 type_pattern(vlist_atoms, VarName, Pattern) :-
     format(atom(Pattern), 'VList ~wL', [VarName]).
 
-%% emit_native_call_and_binding(+OutRegN, +OutType, +FuncName, +ArgSpecs, +InputRegs, +Indent)
+%% emit_native_call_and_binding(+OutputRegs, +FuncName, +ArgSpecs, +InputRegs, +Indent)
 %  Emit the native function call followed by stream binding, all inside
 %  a case branch at the given indentation level.
-emit_native_call_and_binding(OutRegN, OutType, FuncName, ArgSpecs, InputRegs, Indent) :-
+%  Single-output kernels (length OutputRegs = 1) keep the original fast
+%  path using HopsRetry. Multi-output kernels use a generalized
+%  FFIStreamRetry variant.
+emit_native_call_and_binding(OutputRegs, FuncName, ArgSpecs, InputRegs, Indent) :-
     format('~wlet results = ~w', [Indent, FuncName]),
     emit_call_args(ArgSpecs, InputRegs),
     format('~n'),
-    emit_stream_binding(OutRegN, OutType, Indent).
+    length(OutputRegs, NOuts),
+    (   NOuts =:= 1
+    ->  OutputRegs = [output(OutRegN, OutType)],
+        emit_stream_binding_single(OutRegN, OutType, Indent)
+    ;   emit_stream_binding_multi(OutputRegs, Indent)
+    ).
 
-%% emit_stream_binding(+OutRegN, +OutType, +Indent)
-%  Emit the stream-mode result binding: first result bound, rest as CPs.
-emit_stream_binding(OutRegN, OutType, Indent) :-
+%% emit_stream_binding_single(+OutRegN, +OutType, +Indent)
+%  Single-output stream binding. Unchanged from the original for
+%  back-compat with category_ancestor and transitive_closure2.
+emit_stream_binding_single(OutRegN, OutType, Indent) :-
     result_wrap_expr(OutType, WrapExpr),
     format('~w    retPC = wsCP s~n', [Indent]),
     format('~w    outReg = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup ~w (wsRegs s))~n', [Indent, OutRegN]),
@@ -447,6 +458,168 @@ emit_stream_binding(OutRegN, OutType, Indent) :-
     format('~w          , cpBuiltin = Just (HopsRetry outVar (map fromIntegral restResults) retPC)~n', [Indent]),
     format('~w          }~n', [Indent]),
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
+
+%% emit_stream_binding_multi(+OutputRegs, +Indent)
+%  Multi-output stream binding. The kernel returns `[(T1, T2, ...)]` and
+%  bindResult takes a tuple, binding each output to its register.
+%  Uses FFIStreamRetry to store remaining tuples (as pre-wrapped Values)
+%  in the choice point.
+emit_stream_binding_multi(OutputRegs, Indent) :-
+    length(OutputRegs, NOuts),
+    format('~w    retPC = wsCP s~n', [Indent]),
+    % Deref each output register
+    emit_multi_out_derefs(OutputRegs, Indent),
+    % Emit bindResult: pattern matches a tuple, binds each output
+    format('~w    bindResult ', [Indent]),
+    emit_tuple_pattern(NOuts),
+    format(' =~n', []),
+    format('~w      let ', [Indent]),
+    emit_multi_wrap_bindings(OutputRegs, 1),
+    format('~w      in s { wsPC = retPC~n', [Indent]),
+    emit_multi_reg_updates(OutputRegs, Indent),
+    emit_multi_binding_updates(OutputRegs, Indent),
+    emit_multi_trail_updates(OutputRegs, Indent),
+    format('~w         , wsTrailLen = wsTrailLen s + ~w~n', [Indent, NOuts]),
+    format('~w         }~n', [Indent]),
+    % Dispatch over result stream
+    format('~win case results of~n', [Indent]),
+    format('~w  [] -> Nothing~n', [Indent]),
+    format('~w  [h] -> Just (bindResult h)~n', [Indent]),
+    format('~w  (h:restResults) ->~n', [Indent]),
+    format('~w    let s1 = bindResult h~n', [Indent]),
+    emit_multi_outvars(OutputRegs, Indent),
+    format('~w        restWrapped = map (\\', [Indent]),
+    emit_tuple_pattern(NOuts),
+    format(' -> [', []),
+    emit_multi_wrap_list(OutputRegs, 1),
+    format(']) restResults~n', []),
+    format('~w        cp = ChoicePoint~n', [Indent]),
+    format('~w          { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s~n', [Indent]),
+    format('~w          , cpCP = wsCP s, cpTrailLen = wsTrailLen s~n', [Indent]),
+    format('~w          , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n', [Indent]),
+    format('~w          , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n', [Indent]),
+    format('~w          , cpBuiltin = Just (FFIStreamRetry ', [Indent]),
+    emit_outregs_list(OutputRegs),
+    format(' outVars restWrapped retPC)~n', []),
+    format('~w          }~n', [Indent]),
+    format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
+
+%% Helpers for multi-output emission:
+
+% Emit `outReg_1 = ...`, `outReg_2 = ...`
+emit_multi_out_derefs([], _).
+emit_multi_out_derefs([output(RegN, _)|Rest], Indent) :-
+    format('~w    outReg_~w = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup ~w (wsRegs s))~n',
+           [Indent, RegN, RegN]),
+    emit_multi_out_derefs(Rest, Indent).
+
+% Emit tuple pattern like (rv_1, rv_2)
+emit_tuple_pattern(1) :- format('rv_1', []).
+emit_tuple_pattern(N) :-
+    N > 1,
+    format('(', []),
+    emit_tuple_pattern_args(1, N),
+    format(')', []).
+
+emit_tuple_pattern_args(I, N) :-
+    I < N, !,
+    format('rv_~w, ', [I]),
+    I1 is I + 1,
+    emit_tuple_pattern_args(I1, N).
+emit_tuple_pattern_args(N, N) :-
+    format('rv_~w', [N]).
+
+% Emit `w_1 = WrapExpr_1; w_2 = WrapExpr_2` for wrapped values
+emit_multi_wrap_bindings([], _) :- format('~n', []).
+emit_multi_wrap_bindings([output(_, Type)|Rest], I) :-
+    result_wrap_expr_for_rv(Type, I, WrapExpr),
+    (   I =:= 1
+    ->  format('w_~w = ~w', [I, WrapExpr])
+    ;   format('; w_~w = ~w', [I, WrapExpr])
+    ),
+    I1 is I + 1,
+    emit_multi_wrap_bindings(Rest, I1).
+
+% Emit `, wsRegs = IM.insert R1 w_1 $ IM.insert R2 w_2 $ wsRegs s`
+emit_multi_reg_updates(OutputRegs, Indent) :-
+    format('~w         , wsRegs = ', [Indent]),
+    emit_reg_insert_chain(OutputRegs, 1),
+    format('wsRegs s~n', []).
+
+emit_reg_insert_chain([], _).
+emit_reg_insert_chain([output(RegN, _)|Rest], I) :-
+    format('IM.insert ~w w_~w $ ', [RegN, I]),
+    I1 is I + 1,
+    emit_reg_insert_chain(Rest, I1).
+
+% Emit `, wsBindings = IM.insert vid_1 w_1 $ IM.insert vid_2 w_2 $ wsBindings s`
+% Only inserts for Unbound outputs; bound outputs are no-ops.
+emit_multi_binding_updates(OutputRegs, Indent) :-
+    format('~w         , wsBindings = ', [Indent]),
+    emit_binding_insert_chain(OutputRegs, 1),
+    format('wsBindings s~n', []).
+
+emit_binding_insert_chain([], _).
+emit_binding_insert_chain([output(RegN, _)|Rest], I) :-
+    format('(case outReg_~w of { Unbound v -> IM.insert v w_~w; _ -> id }) $ ',
+           [RegN, I]),
+    I1 is I + 1,
+    emit_binding_insert_chain(Rest, I1).
+
+% Emit `, wsTrail = TrailEntry vid_1 _ : TrailEntry vid_2 _ : wsTrail s`
+emit_multi_trail_updates(OutputRegs, Indent) :-
+    format('~w         , wsTrail = ', [Indent]),
+    emit_trail_entry_chain(OutputRegs, 1),
+    format('wsTrail s~n', []).
+
+emit_trail_entry_chain([], _).
+emit_trail_entry_chain([output(RegN, _)|Rest], I) :-
+    format('(case outReg_~w of { Unbound v -> (TrailEntry v (IM.lookup v (wsBindings s)) :); _ -> id }) $ ',
+           [RegN]),
+    I1 is I + 1,
+    emit_trail_entry_chain(Rest, I1).
+
+% outVars list: [case outReg_R1 of { Unbound v -> v; _ -> -1 }, ...]
+emit_multi_outvars(OutputRegs, Indent) :-
+    format('~w        outVars = [', [Indent]),
+    emit_outvars_list(OutputRegs, 1),
+    format(']~n', []).
+
+emit_outvars_list([], _).
+emit_outvars_list([output(RegN, _)|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('case outReg_~w of { Unbound v -> v; _ -> -1 }', [RegN]),
+    I1 is I + 1,
+    emit_outvars_list(Rest, I1).
+
+% Output register numbers list for FFIStreamRetry
+emit_outregs_list(OutputRegs) :-
+    format('[', []),
+    emit_outregs_list_items(OutputRegs, 1),
+    format(']', []).
+
+emit_outregs_list_items([], _).
+emit_outregs_list_items([output(RegN, _)|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('~w', [RegN]),
+    I1 is I + 1,
+    emit_outregs_list_items(Rest, I1).
+
+% restWrapped list wrapping each tuple value
+emit_multi_wrap_list([], _).
+emit_multi_wrap_list([output(_, Type)|Rest], I) :-
+    result_wrap_expr_for_rv(Type, I, WrapExpr),
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('~w', [WrapExpr]),
+    I1 is I + 1,
+    emit_multi_wrap_list(Rest, I1).
+
+%% result_wrap_expr_for_rv(+Type, +Index, -HaskellExpr)
+%  Like result_wrap_expr but using rv_<I> instead of rv.
+result_wrap_expr_for_rv(integer, I, Expr) :-
+    format(atom(Expr), 'Integer (fromIntegral rv_~w)', [I]).
+result_wrap_expr_for_rv(atom, I, Expr) :-
+    format(atom(Expr), 'Atom (fromMaybe "" (IM.lookup rv_~w (wcAtomDeintern ctx)))', [I]).
 
 %% result_wrap_expr(+Type, -HaskellExpr)
 %  Haskell expression wrapping `rv` (kernel result) into a Value
@@ -770,6 +943,32 @@ resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
       newCPs = case hs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (HopsRetry vid hs retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+            , wsCP = cpCP cp
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
+            , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
+-- Multi-output FFI retry: each remaining tuple is already a list of
+-- wrapped Values matching outRegs/outVars in order.
+resumeBuiltin (FFIStreamRetry _ _ [] _) _ rest s =
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest s =
+  let -- Insert each (reg, value) from the tuple into the registers.
+      newRegs = foldr (\\(rN, v) m -> IM.insert rN v m) (cpRegs cp)
+                      (zip outRegs tuple)
+      -- Insert each (varId, value) into bindings, skipping varId = -1
+      -- (meaning the output was originally bound, so no binding update).
+      newBindings = foldr (\\(vid, v) m ->
+                             if vid == -1 then m else IM.insert vid v m)
+                          (cpBindings cp)
+                          (zip outVars tuple)
+      newCPs = case rest_tuples of
+        [] -> rest
+        _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars rest_tuples retPC) } : rest
       diff = wsTrailLen s - cpTrailLen cp
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
@@ -2012,6 +2211,11 @@ data ChoicePoint = ChoicePoint
 data BuiltinState
   = FactRetry !Int ![String] !Int  -- variable ID, remaining values, returnPC
   | HopsRetry !Int ![Int] !Int     -- variable ID, remaining Hops values, returnPC
+    -- Multi-output FFI kernel retry. Each remaining tuple is already
+    -- wrapped as a list of Values (pre-interned / wrapped at call site).
+    -- outRegs and outVars are parallel lists (same length as each tuple).
+    -- outVars contains -1 for originally-bound outputs (no binding update).
+  | FFIStreamRetry ![Int] ![Int] ![[Value]] !Int  -- outRegs, outVars, remaining tuples, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
