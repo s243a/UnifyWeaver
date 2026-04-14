@@ -36,5 +36,3 @@ main :-
     ->  write('try_me_else stubbed successfully.'), nl
     ;   write('FAILED: try_me_else not stubbed!'), nl, halt(1)
     ).
-
-:- initialization(main).
