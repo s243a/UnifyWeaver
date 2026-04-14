@@ -81,6 +81,7 @@ registered_kernel(KernelKind, Arity) :-
 kernel_detector(category_ancestor, detect_category_ancestor).
 kernel_detector(transitive_closure2, detect_transitive_closure).
 kernel_detector(transitive_distance3, detect_transitive_distance).
+kernel_detector(weighted_shortest_path3, detect_weighted_shortest_path).
 
 %% =====================================================================
 %% Kernel metadata
@@ -89,18 +90,22 @@ kernel_detector(transitive_distance3, detect_transitive_distance).
 kernel_native_kind(category_ancestor, category_ancestor).
 kernel_native_kind(transitive_closure2, transitive_closure2).
 kernel_native_kind(transitive_distance3, transitive_distance3).
+kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
 kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
+kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
 kernel_result_mode(transitive_distance3, stream).
+kernel_result_mode(weighted_shortest_path3, stream).
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
 kernel_expected_arity(transitive_distance3, 3).
+kernel_expected_arity(weighted_shortest_path3, 3).
 
 %% =====================================================================
 %% Register layout — describes input/output registers for each kernel
@@ -128,6 +133,12 @@ kernel_register_layout(transitive_distance3, [
     input(1, atom),          % source node
     output(2, atom),         % target node (result, part 1 of tuple)
     output(3, integer)       % distance (result, part 2 of tuple)
+]).
+
+kernel_register_layout(weighted_shortest_path3, [
+    input(1, atom),          % source node
+    output(2, atom),         % target node (result)
+    output(3, float)         % shortest-path weight (result)
 ]).
 
 %% =====================================================================
@@ -165,6 +176,12 @@ kernel_native_call(transitive_distance3,
         reg(1)                            % source node
     ])).
 
+kernel_native_call(weighted_shortest_path3,
+    call(nativeKernel_weighted_shortest_path, [
+        config_facts_from(edge_pred),     % weighted edges map
+        reg(1)                            % source node
+    ])).
+
 %% =====================================================================
 %% Template file mapping — Mustache template for each kernel kind
 %% =====================================================================
@@ -172,6 +189,7 @@ kernel_native_call(transitive_distance3,
 kernel_template_file(category_ancestor, 'kernel_category_ancestor.hs.mustache').
 kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache').
 kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustache').
+kernel_template_file(weighted_shortest_path3, 'kernel_weighted_shortest_path.hs.mustache').
 
 %% =====================================================================
 %% Detector: category_ancestor
@@ -348,6 +366,89 @@ find_unify_one((A, _), V) :- find_unify_one(A, V), !.
 find_unify_one((_, B), V) :- find_unify_one(B, V), !.
 find_unify_one((V1 = 1), V) :- V1 == V.
 find_unify_one((V1 is 1), V) :- V1 == V.
+
+%% =====================================================================
+%% Detector: weighted_shortest_path (Dijkstra over weighted edges)
+%%
+%% Matches the shape:
+%%   wsp(X, Y, W) :- weighted_edge(X, Y, W).
+%%   wsp(X, Y, TotalW) :-
+%%       weighted_edge(X, Mid, W1),
+%%       wsp(Mid, Y, RestW),
+%%       TotalW is RestW + W1.
+%%
+%% The edge predicate is ternary: edge_pred(From, To, Weight).
+%%
+%% Extracted config: edge_pred(EdgePred/3).
+%% =====================================================================
+
+detect_weighted_shortest_path(Pred, 3, Clauses, Kernel) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseBody \= RecBody,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseW],
+    RecHead =.. [Pred, RecStart, RecTarget, RecTotalW],
+    % Base: wsp(X, Y, W) :- edge(X, Y, W)
+    find_weighted_edge(BaseBody, BaseStart, BaseTarget, BaseW, EdgePred),
+    % Recursive: edge(X, Mid, W1), wsp(Mid, Y, RestW), TotalW is RestW + W1
+    find_weighted_edge_from(RecBody, RecStart, EdgePred, Mid, W1),
+    find_wsp_recursive_call(RecBody, Pred, Mid, RecTarget, RestW),
+    find_is_sum(RecBody, RecTotalW, RestW, W1),
+    Kernel = recursive_kernel(weighted_shortest_path3, Pred/3,
+                              [edge_pred(EdgePred/3)]).
+
+%% find_weighted_edge(+Body, +Start, +Target, +Weight, -EdgePred)
+%  Find `edge(Start, Target, Weight)` call.
+find_weighted_edge((A, _), Start, Target, W, EdgePred) :-
+    find_weighted_edge(A, Start, Target, W, EdgePred), !.
+find_weighted_edge((_, B), Start, Target, W, EdgePred) :-
+    find_weighted_edge(B, Start, Target, W, EdgePred), !.
+find_weighted_edge(Goal, Start, Target, W, EdgePred) :-
+    Goal \= (_, _),
+    Goal \= (_ is _),
+    compound(Goal),
+    Goal =.. [EdgePred, Arg1, Arg2, Arg3],
+    EdgePred \= member,
+    Arg1 == Start,
+    Arg2 == Target,
+    Arg3 == W.
+
+%% find_weighted_edge_from(+Body, +Start, +EdgePred, -Mid, -Weight)
+%  Find `EdgePred(Start, Mid, Weight)` call with EdgePred name known.
+find_weighted_edge_from((A, _), Start, EdgePred, Mid, W) :-
+    find_weighted_edge_from(A, Start, EdgePred, Mid, W), !.
+find_weighted_edge_from((_, B), Start, EdgePred, Mid, W) :-
+    find_weighted_edge_from(B, Start, EdgePred, Mid, W), !.
+find_weighted_edge_from(Goal, Start, EdgePred, Mid, W) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [EdgePred, Arg1, Arg2, Arg3],
+    Arg1 == Start,
+    Mid = Arg2,
+    W = Arg3.
+
+%% find_wsp_recursive_call(+Body, +Pred, +Start, +Target, -RestWeight)
+find_wsp_recursive_call((A, _), Pred, Start, Target, RestW) :-
+    find_wsp_recursive_call(A, Pred, Start, Target, RestW), !.
+find_wsp_recursive_call((_, B), Pred, Start, Target, RestW) :-
+    find_wsp_recursive_call(B, Pred, Start, Target, RestW), !.
+find_wsp_recursive_call(Goal, Pred, Start, Target, RestW) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [Pred, A1, A2, A3],
+    A1 == Start,
+    A2 == Target,
+    RestW = A3.
+
+%% find_is_sum(+Body, +TotalW, +RestW, +EdgeW)
+%  Find `TotalW is RestW + EdgeW` or `TotalW is EdgeW + RestW`.
+find_is_sum((A, _), T, R, E) :- find_is_sum(A, T, R, E), !.
+find_is_sum((_, B), T, R, E) :- find_is_sum(B, T, R, E), !.
+find_is_sum((T is Expr), T0, R, E) :-
+    T == T0,
+    (   Expr = R0 + E0, R0 == R, E0 == E
+    ;   Expr = E0 + R0, R0 == R, E0 == E
+    ).
 
 %% =====================================================================
 %% Helper: sub_term/2 — check if a term appears anywhere in a body
