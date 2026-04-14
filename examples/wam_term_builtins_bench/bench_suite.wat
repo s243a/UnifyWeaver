@@ -1,631 +1,362 @@
-:- encoding(utf8).
-% SPDX-License-Identifier: MIT OR Apache-2.0
-% Copyright (c) 2025 John William Creighton (@s243a)
-%
-% wam_wat_target.pl - WAM-to-WAT (WebAssembly Text) Transpilation Target
-%
-% Transpiles WAM instructions to self-contained .wat modules.
-% Uses linear memory with tagged values (12 bytes each),
-% br_table for instruction dispatch, and bump allocation for the heap.
-%
-% Phase 0: Templates (value, state, runtime, module)
-% Phase 1: WAM instructions -> data segment bytes
-% Phase 2: step dispatch via br_table + runtime helpers
-% Phase 3: Project assembly (write_wam_wat_project/3)
-
-:- module(wam_wat_target, [
-    compile_step_wam_to_wat/2,          % +Options, -WatCode
-    compile_wam_helpers_to_wat/2,       % +Options, -WatCode
-    compile_wam_runtime_to_wat/2,       % +Options, -WatCode
-    compile_wam_predicate_to_wat/4,     % +Pred/Arity, +WamCode, +Options, -WatCode
-    wam_instruction_to_wat_bytes/3,     % +WamInstr, +LabelMap, -ByteHex
-    reg_name_to_index/2,                % +Name, -Index
-    atom_hash_i64/2,                    % +Atom, -Hash
-    write_wam_wat_project/3             % +Predicates, +Options, +OutputFile
-]).
-
-:- use_module(library(lists)).
-:- use_module(library(option)).
-:- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module('../core/template_system').
-:- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
-
-:- discontiguous wam_wat_case/2.
-
-% ============================================================================
-% Constants
-% ============================================================================
-
-wam_state_base(65536).
-wam_reg_base(65600).      % 65536 + 64
-wam_trail_base(66560).    % 65536 + 1024
-wam_stack_base(73728).    % 65536 + 8192
-wam_heap_base(131072).    % page 2
-
-% Register and choice point geometry (derived from register count)
-wam_num_regs(64).
-wam_val_size(12).         % bytes per tagged value
-%% wam_cp_size = 20 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top
-%%               + saved_env_base) + 32 A/X regs * val_size.
-%% Only A/X registers (indices 0-31) are saved in choice points. Y registers
-%% (indices 32-63) live in environment frames on the stack and are managed by
-%% allocate/deallocate, not by choice points.
-wam_cp_size(Size) :- wam_val_size(V), Size is 20 + 32 * V.
-
-% Tag constants
-tag_atom(0).
-tag_integer(1).
-tag_float(2).
-tag_compound(3).
-tag_list(4).
-tag_ref(5).
-tag_unbound(6).
-tag_bool(7).
-
-% Instruction tags
-instr_tag(get_constant,    0).
-instr_tag(get_variable,    1).
-instr_tag(get_value,       2).
-instr_tag(get_structure,   3).
-instr_tag(get_list,        4).
-instr_tag(unify_variable,  5).
-instr_tag(unify_value,     6).
-instr_tag(unify_constant,  7).
-instr_tag(put_constant,    8).
-instr_tag(put_variable,    9).
-instr_tag(put_value,       10).
-instr_tag(put_structure,   11).
-instr_tag(put_list,        12).
-instr_tag(set_variable,    13).
-instr_tag(set_value,       14).
-instr_tag(set_constant,    15).
-instr_tag(allocate,        16).
-instr_tag(deallocate,      17).
-instr_tag(call,            18).
-instr_tag(execute,         19).
-instr_tag(proceed,         20).
-instr_tag(builtin_call,    21).
-instr_tag(try_me_else,     22).
-instr_tag(retry_me_else,   23).
-instr_tag(trust_me,        24).
-
-% Builtin operation IDs
-builtin_id('write/1',  0).
-builtin_id('nl/0',     1).
-builtin_id('is/2',     2).
-builtin_id('=:=/2',    3).
-builtin_id('=\\=/2',   4).
-builtin_id('</2',      5).
-builtin_id('>/2',      6).
-builtin_id('=</2',     7).
-builtin_id('>=/2',     8).
-builtin_id('var/1',    9).
-builtin_id('nonvar/1', 10).
-builtin_id('atom/1',   11).
-builtin_id('integer/1', 12).
-builtin_id('float/1',  13).
-builtin_id('number/1', 14).
-builtin_id('true/0',   15).
-builtin_id('fail/0',   16).
-builtin_id('!/0',      17).
-%% Term inspection builtins (WAM_TERM_BUILTINS plan). IDs 18-21 are
-%% reserved here in one block; individual backends may implement them
-%% incrementally. An unimplemented ID returns fail from $execute_builtin.
-builtin_id('functor/3',   18).
-builtin_id('arg/3',       19).
-builtin_id('=../2',       20).
-builtin_id('copy_term/2', 21).
-builtin_id('=/2',         22).
-
-% ============================================================================
-% Register name -> index mapping
-% ============================================================================
-
-%% reg_name_to_index(+Name, -Index)
-%  A1-A32 -> 0-31, X1-X32 -> 32-63, Y1-Y32 -> 32-63 (share X space)
-%% Register index mapping:
-%%   A1-A32 → 0-31   (argument registers, in register file)
-%%   X1-X32 → 32-63  (temporaries, in register file)
-%%   Y1-Y32 → 64-95  (permanent variables, in environment frame on stack)
-%% Y indices are in a SEPARATE range (64+) from X (32+) so that
-%% $reg_offset can route them to different storage: register file for
-%% A/X, environment frame for Y. Prior to this fix, X and Y shared
-%% the same index range (both N+31), causing runtime collisions when
-%% a callee's Y registers stomped the caller's Y registers via the
-%% global register file.
-reg_name_to_index(Name, Index) :-
-    atom_string(Name, Str),
-    string_codes(Str, [Prefix|Rest]),
-    number_codes(N, Rest),
-    (   Prefix =:= 0'A -> Index is N - 1
-    ;   Prefix =:= 0'X -> Index is N + 31
-    ;   Prefix =:= 0'Y -> Index is N + 63
-    ;   Index = 0
-    ).
-
-% ============================================================================
-% Atom hashing (matches wat_target.pl hash)
-% ============================================================================
-
-%% atom_hash_i64(+Atom, -Hash)
-%  DJB2-like hash: acc * 31 + char mod 2^31-1
-atom_hash_i64(Atom, Hash) :-
-    atom_codes(Atom, Codes),
-    hash_codes(Codes, 0, Hash).
-
-hash_codes([], Acc, Acc).
-hash_codes([C|Cs], Acc, Hash) :-
-    Acc1 is (Acc * 31 + C) mod 2147483647,
-    hash_codes(Cs, Acc1, Hash).
-
-% ============================================================================
-% PHASE 1: WAM instruction encoding to data segment bytes
-% ============================================================================
-
-%% wam_instruction_to_wat_bytes(+WamInstr, +LabelMap, -HexString)
-%  Encodes a WAM instruction as a 20-byte hex string for a data segment.
-%  Format: [tag:i32-le][op1:i64-le][op2:i64-le]
-
-wam_instruction_to_wat_bytes(get_constant(C, Ai), _Labels, Hex) :-
-    instr_tag(get_constant, Tag),
-    encode_constant_with_tag(C, ConstTag, Op1),
-    reg_name_to_index(Ai, RegIdx),
-    %% op2 layout: high 32 bits = value-cell tag hint, low 32 bits = reg idx.
-    %% Runtime extracts RegIdx via i32.wrap_i64 and ConstTag via
-    %% i64.shr_u 32 + i32.wrap_i64. See wam_wat_case(put_constant, ...)
-    %% and friends for the decode side.
-    Op2 is (ConstTag << 32) \/ RegIdx,
-    encode_instr_hex(Tag, Op1, Op2, Hex).
-
-wam_instruction_to_wat_bytes(get_variable(Xn, Ai), _Labels, Hex) :-
-    instr_tag(get_variable, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, XnIdx, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(get_value(Xn, Ai), _Labels, Hex) :-
-    instr_tag(get_value, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, XnIdx, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(get_structure(F, Ai), _Labels, Hex) :-
-    instr_tag(get_structure, Tag),
-    encode_structure_op1(F, Op1),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, Op1, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(get_list(Ai), _Labels, Hex) :-
-    instr_tag(get_list, Tag),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, AiIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(unify_variable(Xn), _Labels, Hex) :-
-    instr_tag(unify_variable, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    encode_instr_hex(Tag, XnIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(unify_value(Xn), _Labels, Hex) :-
-    instr_tag(unify_value, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    encode_instr_hex(Tag, XnIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(unify_constant(C), _Labels, Hex) :-
-    instr_tag(unify_constant, Tag),
-    encode_constant_with_tag(C, ConstTag, Op1),
-    %% op2 = value-cell tag hint (atom=0, integer=1, float=2).
-    encode_instr_hex(Tag, Op1, ConstTag, Hex).
-
-wam_instruction_to_wat_bytes(put_constant(C, Ai), _Labels, Hex) :-
-    instr_tag(put_constant, Tag),
-    encode_constant_with_tag(C, ConstTag, Op1),
-    reg_name_to_index(Ai, RegIdx),
-    %% op2: high 32 = tag hint, low 32 = reg idx. See note on get_constant.
-    Op2 is (ConstTag << 32) \/ RegIdx,
-    encode_instr_hex(Tag, Op1, Op2, Hex).
-
-wam_instruction_to_wat_bytes(put_variable(Xn, Ai), _Labels, Hex) :-
-    instr_tag(put_variable, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, XnIdx, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(put_value(Xn, Ai), _Labels, Hex) :-
-    instr_tag(put_value, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, XnIdx, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(put_structure(F, Ai), _Labels, Hex) :-
-    instr_tag(put_structure, Tag),
-    encode_structure_op1(F, Op1),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, Op1, AiIdx, Hex).
-
-wam_instruction_to_wat_bytes(put_list(Ai), _Labels, Hex) :-
-    instr_tag(put_list, Tag),
-    reg_name_to_index(Ai, AiIdx),
-    encode_instr_hex(Tag, AiIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(set_variable(Xn), _Labels, Hex) :-
-    instr_tag(set_variable, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    encode_instr_hex(Tag, XnIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(set_value(Xn), _Labels, Hex) :-
-    instr_tag(set_value, Tag),
-    reg_name_to_index(Xn, XnIdx),
-    encode_instr_hex(Tag, XnIdx, 0, Hex).
-
-wam_instruction_to_wat_bytes(set_constant(C), _Labels, Hex) :-
-    instr_tag(set_constant, Tag),
-    encode_constant_with_tag(C, ConstTag, Op1),
-    %% op2 = value-cell tag hint.
-    encode_instr_hex(Tag, Op1, ConstTag, Hex).
-
-wam_instruction_to_wat_bytes(allocate, _Labels, Hex) :-
-    instr_tag(allocate, Tag),
-    encode_instr_hex(Tag, 0, 0, Hex).
-
-wam_instruction_to_wat_bytes(deallocate, _Labels, Hex) :-
-    instr_tag(deallocate, Tag),
-    encode_instr_hex(Tag, 0, 0, Hex).
-
-wam_instruction_to_wat_bytes(call(P, N), Labels, Hex) :-
-    instr_tag(call, Tag),
-    resolve_label(P, Labels, PC),
-    encode_instr_hex(Tag, PC, N, Hex).
-
-wam_instruction_to_wat_bytes(execute(P), Labels, Hex) :-
-    instr_tag(execute, Tag),
-    resolve_label(P, Labels, PC),
-    encode_instr_hex(Tag, PC, 0, Hex).
-
-wam_instruction_to_wat_bytes(proceed, _Labels, Hex) :-
-    instr_tag(proceed, Tag),
-    encode_instr_hex(Tag, 0, 0, Hex).
-
-wam_instruction_to_wat_bytes(builtin_call(Op, N), _Labels, Hex) :-
-    instr_tag(builtin_call, Tag),
-    (   builtin_id(Op, BId) -> true ; BId = 255 ),
-    encode_instr_hex(Tag, BId, N, Hex).
-
-wam_instruction_to_wat_bytes(try_me_else(Label), Labels, Hex) :-
-    instr_tag(try_me_else, Tag),
-    resolve_label(Label, Labels, PC),
-    encode_instr_hex(Tag, PC, 0, Hex).
-
-wam_instruction_to_wat_bytes(retry_me_else(Label), Labels, Hex) :-
-    instr_tag(retry_me_else, Tag),
-    resolve_label(Label, Labels, PC),
-    encode_instr_hex(Tag, PC, 0, Hex).
-
-wam_instruction_to_wat_bytes(trust_me, _Labels, Hex) :-
-    instr_tag(trust_me, Tag),
-    encode_instr_hex(Tag, 0, 0, Hex).
-
-% --- Encoding helpers ---
-
-%% encode_constant(+C, -I64Val)
-%  Encodes a Prolog constant as an i64 value.
-%  For atoms: the hash. For integers: the raw value.
-encode_constant(C, Val) :- encode_constant_with_tag(C, _Tag, Val).
-
-%% encode_constant_with_tag(+C, -Tag, -I64Val)
-%  Encodes a Prolog constant as (Tag, Value) where Tag is the runtime
-%  value-cell tag (0 = atom, 1 = integer, 2 = float) and I64Val is the
-%  payload stored in the instruction's op1 field.
-%
-%  The canonical WAM layer hands constants down as strings parsed
-%  from WAM assembly text, not as typed Prolog terms — so "42" arrives
-%  as the string "42", not the integer 42. We parse strings back into
-%  their original types here so the type/1 family of builtins
-%  (integer/1, atom/1, etc.) can dispatch on a meaningful runtime
-%  tag at the A_i register. Prior to this change, all constants
-%  unconditionally stored tag=0 (atom), which made integer/1 always
-%  fail and atom/1 always "succeed" — including on integer constants.
-encode_constant_with_tag(atom(A), 0, Hash) :- !, atom_hash_i64(A, Hash).
-encode_constant_with_tag(integer(I), 1, I) :- !.
-encode_constant_with_tag(I, 1, I) :- integer(I), !.
-encode_constant_with_tag(F, 2, Bits) :- float(F), !, Bits is float_integer_part(F).
-encode_constant_with_tag(A, 0, Hash) :- atom(A), !, atom_hash_i64(A, Hash).
-encode_constant_with_tag(S, Tag, Val) :-
-    string(S), !,
-    (   number_string(I, S), integer(I)
-    ->  Tag = 1, Val = I
-    ;   atom_string(A, S),
-        atom_hash_i64(A, Hash),
-        Tag = 0, Val = Hash
-    ).
-encode_constant_with_tag(_, 0, 0).
-
-%% encode_structure_op1(+FSlashArity, -I64)
-%  Encodes a functor/arity descriptor (e.g. 'f/2') as an i64 payload.
-%  Layout: high 32 bits = arity, low 32 bits = DJB2 hash of the full
-%  'Functor/Arity' atom form. The low 32 bits retain the existing hash
-%  behavior so backwards compatibility with earlier encoding is exact
-%  when arity fits in 31 bits (it always does here — atom_hash_i64
-%  already limits the hash to 2^31-1). The high 32 bits let the runtime
-%  recover arity for functor/3 and arg/3 without a separate table.
-encode_structure_op1(FSlashArity, Op1) :-
-    atom_hash_i64(FSlashArity, Hash),
-    functor_arity_of(FSlashArity, Arity),
-    Op1 is (Arity << 32) \/ (Hash /\ 0xFFFFFFFF).
-
-%% functor_arity_of(+FSlashArity, -Arity)
-%  Extracts the integer arity from an atom of the form 'Functor/Arity'.
-%  Falls back to 0 if the atom does not match this shape.
-functor_arity_of(FSlashArity, Arity) :-
-    atom_string(FSlashArity, Str),
-    (   split_string(Str, "/", "", Parts),
-        Parts = [_, AStr],
-        number_string(A, AStr)
-    ->  Arity = A
-    ;   Arity = 0
-    ).
-
-%% resolve_label(+Label, +LabelMap, -PC)
-resolve_label(Label, Labels, PC) :-
-    (   member(Label-PC, Labels) -> true
-    ;   atom_string(Label, LStr),
-        member(LStr-PC, Labels) -> true
-    ;   PC = 0
-    ).
-
-%% encode_instr_hex(+Tag, +Op1, +Op2, -HexString)
-%  Produces a 20-byte little-endian hex escape string for a WAT data segment.
-encode_instr_hex(Tag, Op1, Op2, Hex) :-
-    i32_to_le_hex(Tag, TagHex),
-    i64_to_le_hex(Op1, Op1Hex),
-    i64_to_le_hex(Op2, Op2Hex),
-    atomic_list_concat([TagHex, Op1Hex, Op2Hex], Hex).
-
-%% i32_to_le_hex(+Val, -Hex)
-%  Encodes a 32-bit integer as 4 little-endian hex escape bytes.
-i32_to_le_hex(Val, Hex) :-
-    V is Val /\ 0xFFFFFFFF,
-    B0 is V /\ 0xFF,
-    B1 is (V >> 8) /\ 0xFF,
-    B2 is (V >> 16) /\ 0xFF,
-    B3 is (V >> 24) /\ 0xFF,
-    format(atom(Hex), "\\~|~`0t~16r~2+\\~|~`0t~16r~2+\\~|~`0t~16r~2+\\~|~`0t~16r~2+",
-           [B0, B1, B2, B3]).
-
-%% i64_to_le_hex(+Val, -Hex)
-%  Encodes a 64-bit integer as 8 little-endian hex escape bytes.
-i64_to_le_hex(Val, Hex) :-
-    V is Val /\ 0xFFFFFFFFFFFFFFFF,
-    Lo is V /\ 0xFFFFFFFF,
-    Hi is (V >> 32) /\ 0xFFFFFFFF,
-    i32_to_le_hex(Lo, LoHex),
-    i32_to_le_hex(Hi, HiHex),
-    atom_concat(LoHex, HiHex, Hex).
-
-% ============================================================================
-% PHASE 2: WAM line parser (same pattern as wam_go_target.pl)
-% ============================================================================
-
-%% wam_lines_to_instrs(+Lines, +PC, -Instrs, -Labels)
-%  Parse WAM assembly text lines into instruction terms and label map.
-wam_lines_to_instrs([], _, [], []).
-wam_lines_to_instrs([Line|Rest], PC, Instrs, Labels) :-
-    normalize_space(string(Trimmed), Line),
-    (   Trimmed = ""
-    ->  wam_lines_to_instrs(Rest, PC, Instrs, Labels)
-    ;   sub_string(Trimmed, _, 1, 0, ":")
-    ->  sub_string(Trimmed, 0, _, 1, LabelName),
-        Labels = [LabelName-PC|RestLabels],
-        wam_lines_to_instrs(Rest, PC, Instrs, RestLabels)
-    ;   split_string(Trimmed, " \t", " \t", Parts),
-        Parts \== []
-    ->  wam_parts_to_instr(Parts, Instr),
-        PC1 is PC + 1,
-        Instrs = [Instr|RestInstrs],
-        wam_lines_to_instrs(Rest, PC1, RestInstrs, Labels)
-    ;   wam_lines_to_instrs(Rest, PC, Instrs, Labels)
-    ).
-
-%% wam_parts_to_instr(+Parts, -Instr)
-%  Convert parsed WAM line parts to an instruction term.
-wam_parts_to_instr(["get_constant", C, Ai], get_constant(CC, CAi)) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["get_variable", Xn, Ai], get_variable(CXn, CAi)) :-
-    clean_comma(Xn, CXn0), clean_comma(Ai, CAi0),
-    atom_string(CXn, CXn0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["get_value", Xn, Ai], get_value(CXn, CAi)) :-
-    clean_comma(Xn, CXn0), clean_comma(Ai, CAi0),
-    atom_string(CXn, CXn0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["get_structure", F, Ai], get_structure(CF, CAi)) :-
-    clean_comma(F, CF0), clean_comma(Ai, CAi0),
-    atom_string(CF, CF0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["get_list", Ai], get_list(CAi)) :-
-    clean_comma(Ai, CAi0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["unify_variable", Xn], unify_variable(CXn)) :-
-    clean_comma(Xn, CXn0), atom_string(CXn, CXn0).
-wam_parts_to_instr(["unify_value", Xn], unify_value(CXn)) :-
-    clean_comma(Xn, CXn0), atom_string(CXn, CXn0).
-wam_parts_to_instr(["unify_constant", C], unify_constant(CC)) :-
-    clean_comma(C, CC).
-wam_parts_to_instr(["put_constant", C, Ai], put_constant(CC, CAi)) :-
-    clean_comma(C, CC), clean_comma(Ai, CAi0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["put_variable", Xn, Ai], put_variable(CXn, CAi)) :-
-    clean_comma(Xn, CXn0), clean_comma(Ai, CAi0),
-    atom_string(CXn, CXn0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["put_value", Xn, Ai], put_value(CXn, CAi)) :-
-    clean_comma(Xn, CXn0), clean_comma(Ai, CAi0),
-    atom_string(CXn, CXn0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["put_structure", F, Ai], put_structure(CF, CAi)) :-
-    clean_comma(F, CF0), clean_comma(Ai, CAi0),
-    atom_string(CF, CF0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["put_list", Ai], put_list(CAi)) :-
-    clean_comma(Ai, CAi0), atom_string(CAi, CAi0).
-wam_parts_to_instr(["set_variable", Xn], set_variable(CXn)) :-
-    clean_comma(Xn, CXn0), atom_string(CXn, CXn0).
-wam_parts_to_instr(["set_value", Xn], set_value(CXn)) :-
-    clean_comma(Xn, CXn0), atom_string(CXn, CXn0).
-wam_parts_to_instr(["set_constant", C], set_constant(CC)) :-
-    clean_comma(C, CC).
-wam_parts_to_instr(["allocate"], allocate).
-wam_parts_to_instr(["deallocate"], deallocate).
-wam_parts_to_instr(["call", P, N], call(CP, CN)) :-
-    clean_comma(P, CP0), clean_comma(N, CN0),
-    atom_string(CP, CP0),
-    (number_string(CN, CN0) -> true ; CN = 0).
-wam_parts_to_instr(["execute", P], execute(CP)) :-
-    clean_comma(P, CP0), atom_string(CP, CP0).
-wam_parts_to_instr(["proceed"], proceed).
-wam_parts_to_instr(["builtin_call", Op, N], builtin_call(COp, CN)) :-
-    clean_comma(Op, COp0), clean_comma(N, CN0),
-    atom_string(COp, COp0),
-    (number_string(CN, CN0) -> true ; CN = 0).
-wam_parts_to_instr(["try_me_else", L], try_me_else(CL)) :-
-    clean_comma(L, CL0), atom_string(CL, CL0).
-wam_parts_to_instr(["retry_me_else", L], retry_me_else(CL)) :-
-    clean_comma(L, CL0), atom_string(CL, CL0).
-wam_parts_to_instr(["trust_me"], trust_me).
-% Fallback
-wam_parts_to_instr(Parts, allocate) :-
-    format(user_error, '  WAM-WAT: unrecognized instruction: ~w~n', [Parts]).
-
-clean_comma(S, Clean) :-
-    (   sub_string(S, Before, 1, 0, ",")
-    ->  sub_string(S, 0, Before, 1, Clean)
-    ;   Clean = S
-    ).
-
-% ============================================================================
-% PHASE 2: compile_wam_predicate_to_wat/4
-% ============================================================================
-
-%% compile_wam_predicate_to_wat(+Pred/Arity, +WamCode, +Options, -WatResult)
-%  WatResult = wat_pred(DataSeg, EntryFunc, CodeBase, NumInstrs)
-compile_wam_predicate_to_wat(Pred/Arity, WamCode, Options, WatResult) :-
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
-    %% First pass: collect labels and instructions
-    wam_lines_to_instrs(Lines, 0, Instrs, Labels),
-    length(Instrs, NumInstrs),
-    %% Get code base offset from options or compute it
-    option(code_base(CodeBase), Options, 131072),
-    %% Encode instructions to hex bytes
-    maplist(encode_instr_with_labels(Labels), Instrs, HexParts),
-    atomic_list_concat(HexParts, DataBytes),
-    %% Generate data segment
-    format(atom(DataSeg),
-        '(data (i32.const ~w) "~w")',
-        [CodeBase, DataBytes]),
-    %% Generate entry function
-    wat_pred_name(Pred, Arity, FuncName),
-    %% Heap must start AFTER the instruction data segment — otherwise
-    %% heap_push_val on the first allocation overwrites instruction 0
-    %% bytes, and any subsequent allocations walk forward through the
-    %% code. We observed this concretely with $builtin_univ decompose
-    %% of a compound: the decompose path builds (arity+1) cons cells
-    %% (36 bytes each) plus any prior compound writes, and the write
-    %% range crossed into proceed''s bytes, causing the next step to
-    %% misinterpret proceed as garbage and fail. Atomic-only tests
-    %% masked the bug because they allocate fewer cells and never
-    %% reached the proceed bytes. Put the heap on page 3 (offset
-    %% 196608) which is past any plausible code segment in the current
-    %% 4-page module layout.
-    option(wam_heap_start(HeapStart), Options, 196608),
-    format(atom(EntryFunc),
-'(func $~w (export "~w") (result i32)
-  (call $wam_init (i32.const ~w))
-  (call $run_loop (i32.const ~w) (i32.const ~w)))',
-        [FuncName, FuncName, HeapStart, CodeBase, NumInstrs]),
-    WatResult = wat_pred(DataSeg, EntryFunc, CodeBase, NumInstrs).
-
-encode_instr_with_labels(Labels, Instr, Hex) :-
-    wam_instruction_to_wat_bytes(Instr, Labels, Hex).
-
-wat_pred_name(Pred, Arity, Name) :-
-    format(atom(Name), '~w_~w', [Pred, Arity]).
-
-% ============================================================================
-% PHASE 2: Step dispatch (br_table)
-% ============================================================================
-
-%% compile_step_wam_to_wat(+Options, -WatCode)
-compile_step_wam_to_wat(_Options, WatCode) :-
-    %% Collect all instruction case bodies
-    findall(Tag-Body, (wam_wat_case(InstrName, Body), instr_tag(InstrName, Tag)), Cases),
-    sort(Cases, SortedCases),
-    %% Generate the do_* helper functions
-    maplist(gen_do_func, SortedCases, DoFuncs),
-    atomic_list_concat(DoFuncs, '\n\n', DoFuncsCode),
-    %% Generate the step function with if-else chain (simpler than br_table nesting)
-    gen_step_function(SortedCases, StepFunc),
-    format(atom(WatCode), '~w\n\n~w', [DoFuncsCode, StepFunc]).
-
-gen_do_func(Tag-Body, Code) :-
-    instr_tag(Name, Tag),
-    format(atom(Code),
-'(func $do_~w (param $op1 i64) (param $op2 i64) (result i32)
-~w)', [Name, Body]).
-
-gen_step_function(Cases, Code) :-
-    %% Generate br_table dispatch with nested blocks.
-    %%
-    %% Block nesting: $default is outermost, $b0 is innermost. br_table
-    %% dispatches tag N to $bN. Exiting $bN puts control just after
-    %% $bN's close, where the case body for tag N runs — a return that
-    %% exits the function with the $do_<instr> call result.
-    %%
-    %% There must be NO bare `)` between br_table and the first case
-    %% body: if present, that `)` would close $b0 before its case body,
-    %% making tag N run the body for tag N-1 (an off-by-one dispatch
-    %% bug). The original WAM-WAT target PR #1224 had this bug; it went
-    %% unnoticed because wat2wasm_validates used assertion/1 which
-    %% warns rather than failing the test, so runtime behavior was
-    %% never actually validated.
-    length(Cases, N),
-    MaxTag is N - 1,
-    %% br_table labels: $b0 $b1 ... $bN $default
-    numlist(0, MaxTag, TagNums),
-    maplist(br_label, TagNums, BrLabels),
-    atomic_list_concat(BrLabels, ' ', BrTableStr),
-    %% Opening nested blocks (innermost = highest tag)
-    maplist(open_block, TagNums, OpenBlocks),
-    reverse(OpenBlocks, RevOpenBlocks),
-    atomic_list_concat(RevOpenBlocks, '\n', OpenBlocksStr),
-    %% Closing blocks + dispatch calls (innermost first = tag 0)
-    maplist(close_and_call, Cases, CloseBlocks),
-    atomic_list_concat(CloseBlocks, '\n', CloseBlocksStr),
-    format(atom(Code),
-'(func $step (param $code_base i32) (param $pc i32) (result i32)
-  (local $tag i32)
-  (local $op1 i64)
-  (local $op2 i64)
-  (local.set $tag (call $fetch_instr_tag (local.get $code_base) (local.get $pc)))
-  (local.set $op1 (call $fetch_instr_op1 (local.get $code_base) (local.get $pc)))
-  (local.set $op2 (call $fetch_instr_op2 (local.get $code_base) (local.get $pc)))
-  (block $default
-~w
-    (br_table ~w $default (local.get $tag))
-~w
-  )
-  (i32.const 0)
-)', [OpenBlocksStr, BrTableStr, CloseBlocksStr]).
-
-br_label(N, Label) :- format(atom(Label), '$b~w', [N]).
-open_block(N, Block) :- format(atom(Block), '    (block $b~w', [N]).
-
-close_and_call(Tag-_, Code) :-
-    instr_tag(Name, Tag),
-    format(atom(Code),
-'  ) ;; $b~w (~w)
-  (return (call $do_~w (local.get $op1) (local.get $op2)))',
-        [Tag, Name, Name]).
-
-% ============================================================================
-% PHASE 2: Instruction case bodies (WAT S-expressions)
-% ============================================================================
-
-% --- Head unification ---
-
-wam_wat_case(get_constant,
-'  ;; op2 layout: high 32 = value-cell tag hint, low 32 = reg idx.
+;; WAM-WAT module generated by UnifyWeaver
+;; Date: 2026-04-14 12:50:54
+;; Module: bench_suite
+
+(module
+  ;; Host imports for I/O — must appear before any non-import definition
+  (import "env" "print_i64" (func $print_i64 (param i64)))
+  (import "env" "print_char" (func $print_char (param i32)))
+  (import "env" "print_newline" (func $print_newline))
+
+  ;; Memory: page 0 = native WAT, page 1 = WAM state, page 2+ = WAM heap
+  (memory (export "memory") 5)
+
+  ;; Arithmetic evaluation success flag for $eval_arith.
+  (global $arith_ok (mut i32) (i32.const 0))
+
+  ;; Current environment frame base (set by allocate, restored by
+  ;; deallocate). Y registers (indices 32+) are stored in the
+  ;; environment frame on the stack, not in the global register file.
+  (global $env_base (mut i32) (i32.const 0))
+
+  ;; === Data segments: instruction arrays ===
+  (data (i32.const 131072) "\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\20\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\4e\a7\00\00\02\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\22\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\8d\a3\00\00\02\00\00\00\22\00\00\00\00\00\00\00\0f\00\00\00\e8\03\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\07\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\02\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\40\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\2a\79\d1\05\03\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\63\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\15\00\00\00\16\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\40\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\2a\79\d1\05\03\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\63\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\15\00\00\00\16\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\2a\79\d1\05\03\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\63\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\21\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\09\00\00\00\22\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\15\00\00\00\12\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\08\00\00\00\02\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\0b\00\00\00\2a\79\d1\05\03\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\63\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\21\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\15\00\00\00\13\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\29\79\d1\05\02\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\21\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\14\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\29\79\d1\05\02\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\21\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\15\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\c9\84\01\00\02\00\00\00\00\00\00\00\00\00\00\00\0d\00\00\00\21\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\89\88\01\00\01\00\00\00\21\00\00\00\00\00\00\00\0f\00\00\00\61\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0d\00\00\00\22\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\4a\8c\01\00\01\00\00\00\22\00\00\00\00\00\00\00\0f\00\00\00\62\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\23\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\15\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\ca\84\01\00\03\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\08\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00\09\00\00\00\21\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\13\00\00\00\68\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\ca\84\01\00\03\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\21\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\8a\88\01\00\02\00\00\00\21\00\00\00\00\00\00\00\0f\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\04\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\08\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00\09\00\00\00\22\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\13\00\00\00\68\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\cb\84\01\00\04\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\21\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\8b\88\01\00\03\00\00\00\21\00\00\00\00\00\00\00\0f\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\22\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\4b\8c\01\00\02\00\00\00\22\00\00\00\00\00\00\00\0f\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\04\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\05\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\23\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\8e\97\01\00\02\00\00\00\23\00\00\00\00\00\00\00\0f\00\00\00\06\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\07\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\24\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\10\9f\01\00\02\00\00\00\24\00\00\00\00\00\00\00\0f\00\00\00\08\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0d\00\00\00\25\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\cd\93\01\00\02\00\00\00\25\00\00\00\00\00\00\00\0f\00\00\00\09\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0f\00\00\00\0a\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\08\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00\09\00\00\00\26\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\13\00\00\00\68\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\16\00\00\00\77\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\41\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\40\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\15\00\00\00\0c\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\40\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\4e\a7\00\00\02\00\00\00\01\00\00\00\00\00\00\00\0e\00\00\00\41\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0e\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\15\00\00\00\02\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\18\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\41\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\42\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\43\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\41\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\09\00\00\00\24\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\09\00\00\00\40\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\15\00\00\00\12\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\08\00\00\00\01\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\0a\00\00\00\40\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0a\00\00\00\41\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\42\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\0a\00\00\00\43\00\00\00\00\00\00\00\04\00\00\00\00\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\13\00\00\00\87\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\16\00\00\00\97\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\22\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\23\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\24\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\41\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\40\00\00\00\00\00\00\00\04\00\00\00\00\00\00\00\0a\00\00\00\22\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\23\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\06\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\15\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\40\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\41\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\15\00\00\00\16\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\14\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\18\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\44\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\45\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\41\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\01\00\00\00\47\00\00\00\00\00\00\00\04\00\00\00\00\00\00\00\0a\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\45\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\09\00\00\00\40\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\15\00\00\00\13\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\0a\00\00\00\40\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\41\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\09\00\00\00\46\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\12\00\00\00\68\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\09\00\00\00\43\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0b\00\00\00\4e\a7\00\00\02\00\00\00\01\00\00\00\00\00\00\00\0e\00\00\00\42\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0f\00\00\00\01\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\15\00\00\00\02\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\43\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\0a\00\00\00\44\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00\0a\00\00\00\45\00\00\00\00\00\00\00\02\00\00\00\00\00\00\00\0a\00\00\00\46\00\00\00\00\00\00\00\03\00\00\00\00\00\00\00\0a\00\00\00\47\00\00\00\00\00\00\00\04\00\00\00\00\00\00\00\11\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\13\00\00\00\87\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00")
+
+  ;; === Value helpers ===
+  ;; value.wat - WAM Value helpers for WAT target
+;; Generated by UnifyWeaver WAM-WAT transpiler
+;; Tags: 0=Atom, 1=Integer, 2=Float, 3=Compound, 4=List, 5=Ref, 6=Unbound, 7=Bool
+;; Each value is 12 bytes: [tag:i32 @ +0] [payload:i64 @ +4]
+
+;; --- Tag constants (used as i32) ---
+;; TAG_ATOM     = 0
+;; TAG_INTEGER  = 1
+;; TAG_FLOAT    = 2
+;; TAG_COMPOUND = 3
+;; TAG_LIST     = 4
+;; TAG_REF      = 5
+;; TAG_UNBOUND  = 6
+;; TAG_BOOL     = 7
+
+;; --- Value accessors ---
+
+(func $val_tag (param $off i32) (result i32)
+  (i32.load (local.get $off)))
+
+(func $val_payload (param $off i32) (result i64)
+  (i64.load (i32.add (local.get $off) (i32.const 4))))
+
+(func $val_store (param $off i32) (param $tag i32) (param $payload i64)
+  (i32.store (local.get $off) (local.get $tag))
+  (i64.store (i32.add (local.get $off) (i32.const 4)) (local.get $payload)))
+
+;; --- Value constructors (store at offset, return offset) ---
+
+(func $val_store_atom (param $off i32) (param $hash i64)
+  (call $val_store (local.get $off) (i32.const 0) (local.get $hash)))
+
+(func $val_store_integer (param $off i32) (param $val i64)
+  (call $val_store (local.get $off) (i32.const 1) (local.get $val)))
+
+(func $val_store_float (param $off i32) (param $bits i64)
+  (call $val_store (local.get $off) (i32.const 2) (local.get $bits)))
+
+(func $val_store_ref (param $off i32) (param $addr i64)
+  (call $val_store (local.get $off) (i32.const 5) (local.get $addr)))
+
+(func $val_store_unbound (param $off i32) (param $reg_idx i64)
+  (call $val_store (local.get $off) (i32.const 6) (local.get $reg_idx)))
+
+;; --- Type checks ---
+
+(func $val_is_unbound (param $off i32) (result i32)
+  (i32.eq (call $val_tag (local.get $off)) (i32.const 6)))
+
+(func $val_is_ref (param $off i32) (result i32)
+  (i32.eq (call $val_tag (local.get $off)) (i32.const 5)))
+
+(func $val_is_atom (param $off i32) (result i32)
+  (i32.eq (call $val_tag (local.get $off)) (i32.const 0)))
+
+(func $val_is_integer (param $off i32) (result i32)
+  (i32.eq (call $val_tag (local.get $off)) (i32.const 1)))
+
+(func $val_is_float (param $off i32) (result i32)
+  (i32.eq (call $val_tag (local.get $off)) (i32.const 2)))
+
+(func $val_is_number (param $off i32) (result i32)
+  (i32.or
+    (call $val_is_integer (local.get $off))
+    (call $val_is_float (local.get $off))))
+
+(func $val_is_compound (param $off i32) (result i32)
+  (i32.or
+    (i32.eq (call $val_tag (local.get $off)) (i32.const 3))
+    (i32.eq (call $val_tag (local.get $off)) (i32.const 4))))
+
+(func $val_is_atomic (param $off i32) (result i32)
+  (i32.or
+    (call $val_is_atom (local.get $off))
+    (call $val_is_number (local.get $off))))
+
+;; --- Value equality (shallow, same tag + same payload) ---
+
+(func $val_equals (param $a i32) (param $b i32) (result i32)
+  (i32.and
+    (i32.eq (call $val_tag (local.get $a)) (call $val_tag (local.get $b)))
+    (i64.eq (call $val_payload (local.get $a)) (call $val_payload (local.get $b)))))
+
+
+  ;; === State accessors ===
+  ;; state.wat - WAM State management for WAT target
+;; Memory layout (page 1, base offset 65536):
+;;   +0:  PC (i32)          +4:  CP (i32)
+;;   +8:  heap_top (i32)    +12: trail_top (i32)
+;;   +16: stack_top (i32)   +20: cp_count (i32)
+;;   +24: halted (i32)      +28: mode (i32) [0=read, 1=write]
+;;   +32: s_idx (i32) [structure write index]
+;;   +36: s_functor (i64) [current structure functor hash]
+;;   +48: s_arity (i32) [current structure arity]
+;;   +52: s_heap_off (i32) [current structure heap offset]
+;;   +56: (reserved to +63)
+;;   +64: Register file (64 regs x 12 bytes = 768 bytes, to +831)
+;;   +1024: Trail stack (entries: 16 bytes each)
+;;   +8192: Environment/Choice point stack
+
+;; Base offset for WAM state in linear memory
+;; Page 0 reserved for native WAT target, page 1 for WAM state
+
+;; --- PC accessors ---
+
+(func $get_pc (result i32)
+  (i32.load (i32.const 65536)))
+
+(func $set_pc (param $pc i32)
+  (i32.store (i32.const 65536) (local.get $pc)))
+
+(func $inc_pc
+  (i32.store (i32.const 65536)
+    (i32.add (i32.load (i32.const 65536)) (i32.const 1))))
+
+;; --- CP accessors ---
+
+(func $get_cp (result i32)
+  (i32.load (i32.const 65540)))
+
+(func $set_cp (param $cp i32)
+  (i32.store (i32.const 65540) (local.get $cp)))
+
+;; --- Heap top (bump allocator, base at page 2 = 131072) ---
+
+(func $get_heap_top (result i32)
+  (i32.load (i32.const 65544)))
+
+(func $set_heap_top (param $top i32)
+  (i32.store (i32.const 65544) (local.get $top)))
+
+(func $heap_alloc (param $nbytes i32) (result i32)
+  (local $ptr i32)
+  (local.set $ptr (call $get_heap_top))
+  (call $set_heap_top (i32.add (local.get $ptr) (local.get $nbytes)))
+  (local.get $ptr))
+
+;; Allocate one tagged value (12 bytes) on heap and return its offset
+(func $heap_push_val (param $tag i32) (param $payload i64) (result i32)
+  (local $off i32)
+  (local.set $off (call $heap_alloc (i32.const 12)))
+  (call $val_store (local.get $off) (local.get $tag) (local.get $payload))
+  (local.get $off))
+
+;; --- Trail stack (base at 65536 + 1024 = 66560) ---
+
+(func $get_trail_top (result i32)
+  (i32.load (i32.const 65548)))
+
+(func $set_trail_top (param $top i32)
+  (i32.store (i32.const 65548) (local.get $top)))
+
+;; --- Deref: follow Ref chains to the ultimate cell address ---
+;; Given a register index, follows any Ref(addr) chain until the
+;; pointed-to cell is non-Ref. Returns the MEMORY ADDRESS of the
+;; final cell (which may be a heap address if the register held a
+;; Ref, or the register's own address if it held a non-Ref value).
+;; This is the foundation for correct variable aliasing: after
+;; put_variable allocates a heap cell and stores Ref(H) in both
+;; Xn and Ai, deref_reg_addr on either register returns H so
+;; bindings reach the shared heap cell.
+(func $deref_reg_addr (param $idx i32) (result i32)
+  (local $off i32) (local $tag i32)
+  (local.set $off (call $reg_offset (local.get $idx)))
+  (block $done
+    (loop $deref
+      (local.set $tag (call $val_tag (local.get $off)))
+      (br_if $done (i32.ne (local.get $tag) (i32.const 5)))
+      (local.set $off (i32.wrap_i64 (call $val_payload (local.get $off))))
+      (br $deref)))
+  (local.get $off))
+
+;; Convenience: deref + read tag / payload.
+(func $deref_reg_tag (param $idx i32) (result i32)
+  (call $val_tag (call $deref_reg_addr (local.get $idx))))
+(func $deref_reg_payload (param $idx i32) (result i64)
+  (call $val_payload (call $deref_reg_addr (local.get $idx))))
+
+;; Trail entry: [mem_off:i32 +0] [old_tag:i32 +4] [old_payload:i64 +8] = 16 bytes
+;; mem_off is any linear-memory address (register offset OR heap address).
+;; Unwind restores via val_store so it works uniformly for both.
+(func $trail_binding_at (param $mem_off i32)
+  (local $toff i32)
+  (local.set $toff (call $get_trail_top))
+  (i32.store (local.get $toff) (local.get $mem_off))
+  (i32.store (i32.add (local.get $toff) (i32.const 4))
+    (call $val_tag (local.get $mem_off)))
+  (i64.store (i32.add (local.get $toff) (i32.const 8))
+    (call $val_payload (local.get $mem_off)))
+  (call $set_trail_top (i32.add (local.get $toff) (i32.const 16))))
+
+;; Convenience wrapper: trail a register by its index (delegates to
+;; trail_binding_at with the register's memory offset).
+(func $trail_binding (param $reg_idx i32)
+  (call $trail_binding_at (call $reg_offset (local.get $reg_idx))))
+
+;; Bind a register to (tag, payload) through its deref chain.
+;; Follows Ref(H) to the heap cell, trails it, writes the value.
+;; This is the correct binding mechanism for put_variable-aliased
+;; registers: both the register and any co-aliased register will
+;; see the binding because they share the same heap cell.
+(func $bind_reg_deref (param $idx i32) (param $tag i32) (param $payload i64)
+  (local $addr i32)
+  (local.set $addr (call $deref_reg_addr (local.get $idx)))
+  (call $trail_binding_at (local.get $addr))
+  (call $val_store (local.get $addr) (local.get $tag) (local.get $payload)))
+
+;; --- Environment/Choice point stack (base at 65536 + 8192 = 73728) ---
+
+(func $get_stack_top (result i32)
+  (i32.load (i32.const 65552)))
+
+(func $set_stack_top (param $top i32)
+  (i32.store (i32.const 65552) (local.get $top)))
+
+(func $get_cp_count (result i32)
+  (i32.load (i32.const 65556)))
+
+(func $set_cp_count (param $n i32)
+  (i32.store (i32.const 65556) (local.get $n)))
+
+;; --- Halted flag ---
+
+(func $is_halted (result i32)
+  (i32.load (i32.const 65560)))
+
+(func $set_halted (param $v i32)
+  (i32.store (i32.const 65560) (local.get $v)))
+
+;; --- Mode (0=read, 1=write) ---
+
+(func $get_mode (result i32)
+  (i32.load (i32.const 65564)))
+
+(func $set_mode (param $m i32)
+  (i32.store (i32.const 65564) (local.get $m)))
+
+;; --- Register file ---
+;; A1-A32 (indices 0-31) and X temporaries live in the fixed register
+;; file at 65600. Y registers (indices 32-63) live in the current
+;; environment frame on the stack, accessed via the $env_base global
+;; set by allocate. This ensures each predicate invocation has its
+;; own Y storage, so a callee's Y writes don't stomp the caller's
+;; permanent variables.
+;;
+;; Frame layout (set by allocate, popped by deallocate):
+;;   +0: prev_env_base (i32)
+;;   +4: saved CP (i32)
+;;   +8: Y1 slot (12 bytes), +20: Y2 slot, ..., +8+(N-1)*12: YN
+;; Total: 8 + 32*12 = 392 bytes per frame.
+
+(func $reg_offset (param $idx i32) (result i32)
+  (if (result i32) (i32.ge_u (local.get $idx) (i32.const 64))
+    (then
+      ;; Y register (index 64+): slot in current environment frame.
+      ;; Y_n has index n+63, so frame slot = (idx - 64) * 12 + 8.
+      (i32.add (i32.add (global.get $env_base) (i32.const 8))
+               (i32.mul (i32.sub (local.get $idx) (i32.const 64)) (i32.const 12))))
+    (else
+      ;; A/X register (index 0-63): slot in fixed register file.
+      (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))))
+
+(func $get_reg_tag (param $idx i32) (result i32)
+  (i32.load (call $reg_offset (local.get $idx))))
+
+(func $get_reg_payload (param $idx i32) (result i64)
+  (i64.load (i32.add (call $reg_offset (local.get $idx)) (i32.const 4))))
+
+(func $set_reg (param $idx i32) (param $tag i32) (param $payload i64)
+  (call $val_store (call $reg_offset (local.get $idx)) (local.get $tag) (local.get $payload)))
+
+;; Copy 12-byte value from memory offset to register
+(func $copy_to_reg (param $idx i32) (param $src_off i32)
+  (call $set_reg (local.get $idx)
+    (call $val_tag (local.get $src_off))
+    (call $val_payload (local.get $src_off))))
+
+;; Copy register value to memory offset
+(func $copy_from_reg (param $idx i32) (param $dst_off i32)
+  (call $val_store (local.get $dst_off)
+    (call $get_reg_tag (local.get $idx))
+    (call $get_reg_payload (local.get $idx))))
+
+;; --- Instruction fetch ---
+;; Instructions stored in data segments: 20 bytes each [tag:i32][op1:i64][op2:i64]
+;; Instruction base offset set per-predicate via global
+
+(func $fetch_instr_tag (param $code_base i32) (param $pc i32) (result i32)
+  (i32.load (i32.add (local.get $code_base)
+    (i32.mul (local.get $pc) (i32.const 20)))))
+
+(func $fetch_instr_op1 (param $code_base i32) (param $pc i32) (result i64)
+  (i64.load (i32.add
+    (i32.add (local.get $code_base) (i32.mul (local.get $pc) (i32.const 20)))
+    (i32.const 4))))
+
+(func $fetch_instr_op2 (param $code_base i32) (param $pc i32) (result i64)
+  (i64.load (i32.add
+    (i32.add (local.get $code_base) (i32.mul (local.get $pc) (i32.const 20)))
+    (i32.const 12))))
+
+;; --- State initialization ---
+
+(func $wam_init (param $heap_base i32)
+  (local $i i32)
+  (call $set_pc (i32.const 0))
+  (call $set_cp (i32.const -1))
+  (call $set_heap_top (local.get $heap_base))
+  (call $set_trail_top (i32.const 66560))   ;; 65536 + 1024
+  (call $set_stack_top (i32.const 73728))   ;; 65536 + 8192
+  (call $set_cp_count (i32.const 0))
+  (call $set_halted (i32.const 0))
+  (call $set_mode (i32.const 0))
+  (global.set $env_base (i32.const 0))
+  ;; Zero all A/X registers (indices 0-63) to Unbound. This prevents
+  ;; stale Ref cells from previous invocations leading to corrupted
+  ;; heap addresses when put_structure uses bind_reg_deref.
+  (local.set $i (i32.const 0))
+  (block $done
+    (loop $clear
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 64)))
+      (call $set_reg (local.get $i) (i32.const 6) (i64.const 0))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $clear))))
+
+
+  ;; === Runtime (step dispatch + helpers) ===
+  ;; runtime.wat - WAM runtime loop and helpers for WAT target
+
+;; --- Step function (instruction dispatch via br_table) ---
+;; Body generated by compile_step_wam_to_wat/2
+
+(func $do_get_constant (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op2 layout: high 32 = value-cell tag hint, low 32 = reg idx.
   ;; Deref through Ref chains so heap-aliased variables are handled.
   (local $reg_idx i32) (local $c_tag i32) (local $d_addr i32)
   (local.set $reg_idx (i32.wrap_i64 (local.get $op2)))
@@ -642,26 +373,26 @@ wam_wat_case(get_constant,
             (i32.eq (call $val_tag (local.get $d_addr)) (local.get $c_tag))
             (i64.eq (call $val_payload (local.get $d_addr)) (local.get $op1)))
         (then (call $inc_pc) (i32.const 1))
-        (else (i32.const 0)))))').
+        (else (i32.const 0))))))
 
-wam_wat_case(get_variable,
-'  (local $xn i32) (local $ai i32)
+(func $do_get_variable (param $op1 i64) (param $op2 i64) (result i32)
+  (local $xn i32) (local $ai i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
   (call $copy_to_reg (local.get $xn) (call $reg_offset (local.get $ai)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(get_value,
-'  (local $xn i32) (local $ai i32)
+(func $do_get_value (param $op1 i64) (param $op2 i64) (result i32)
+  (local $xn i32) (local $ai i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
   (if (result i32) (call $unify_regs (local.get $xn) (local.get $ai))
     (then (call $inc_pc) (i32.const 1))
-    (else (i32.const 0)))').
+    (else (i32.const 0))))
 
-wam_wat_case(get_structure,
-'  ;; op1 = functor hash, op2 = reg index. Deref through Ref chains.
+(func $do_get_structure (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = functor hash, op2 = reg index. Deref through Ref chains.
   (local $ai i32) (local $d_addr i32) (local $tag i32) (local $addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
   (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
@@ -684,10 +415,10 @@ wam_wat_case(get_structure,
           (call $set_mode (i32.const 0))
           (call $inc_pc)
           (i32.const 1))
-        (else (i32.const 0)))))').
+        (else (i32.const 0))))))
 
-wam_wat_case(get_list,
-'  ;; Deref through Ref chains.
+(func $do_get_list (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Deref through Ref chains.
   (local $ai i32) (local $d_addr i32) (local $tag i32) (local $addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op1)))
   (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
@@ -706,10 +437,10 @@ wam_wat_case(get_list,
           (call $set_mode (i32.const 0))
           (call $inc_pc)
           (i32.const 1))
-        (else (i32.const 0)))))').
+        (else (i32.const 0))))))
 
-wam_wat_case(unify_variable,
-'  (local $xn i32)
+(func $do_unify_variable (param $op1 i64) (param $op2 i64) (result i32)
+  (local $xn i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (if (call $get_mode) ;; write mode
     (then
@@ -719,10 +450,10 @@ wam_wat_case(unify_variable,
       ;; Read mode: nothing to do for basic unify_variable
       (nop)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(unify_value,
-'  (local $xn i32)
+(func $do_unify_value (param $op1 i64) (param $op2 i64) (result i32)
+  (local $xn i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (if (result i32) (call $get_mode) ;; write mode
     (then
@@ -736,10 +467,10 @@ wam_wat_case(unify_value,
     (else
       ;; Read mode: unify with next structure arg
       (call $inc_pc)
-      (i32.const 1)))').
+      (i32.const 1))))
 
-wam_wat_case(unify_constant,
-'  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
+(func $do_unify_constant (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
   (local $c_tag i32)
   (local.set $c_tag (i32.wrap_i64 (local.get $op2)))
   (if (result i32) (call $get_mode) ;; write mode
@@ -750,12 +481,10 @@ wam_wat_case(unify_constant,
     (else
       ;; Read mode: match constant
       (call $inc_pc)
-      (i32.const 1)))').
+      (i32.const 1))))
 
-% --- Body construction ---
-
-wam_wat_case(put_constant,
-'  ;; op2 layout: high 32 = value-cell tag hint (0 atom, 1 integer,
+(func $do_put_constant (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op2 layout: high 32 = value-cell tag hint (0 atom, 1 integer,
   ;; 2 float), low 32 = target reg index. Encoder packs this in
   ;; wam_instruction_to_wat_bytes/3 via encode_constant_with_tag/3.
   (local $ai i32) (local $c_tag i32)
@@ -763,10 +492,10 @@ wam_wat_case(put_constant,
   (local.set $c_tag (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
   (call $set_reg (local.get $ai) (local.get $c_tag) (local.get $op1))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(put_variable,
-'  ;; Allocate ONE unbound cell on the heap and point both Xn and Ai
+(func $do_put_variable (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Allocate ONE unbound cell on the heap and point both Xn and Ai
   ;; at it via Ref(H). This is the standard WAM variable aliasing
   ;; mechanism: any subsequent binding of Ai (e.g. by a callee) is
   ;; visible when Xn is later read, because both dereference to the
@@ -781,18 +510,18 @@ wam_wat_case(put_variable,
   (call $set_reg (local.get $xn) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
   (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(put_value,
-'  (local $xn i32) (local $ai i32)
+(func $do_put_value (param $op1 i64) (param $op2 i64) (result i32)
+  (local $xn i32) (local $ai i32)
   (local.set $xn (i32.wrap_i64 (local.get $op1)))
   (local.set $ai (i32.wrap_i64 (local.get $op2)))
   (call $copy_to_reg (local.get $ai) (call $reg_offset (local.get $xn)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(put_structure,
-'  ;; Allocate compound header on heap, then BIND (not just overwrite)
+(func $do_put_structure (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Allocate compound header on heap, then BIND (not just overwrite)
   ;; the target register to Ref(compound_addr). Binding through the
   ;; deref chain is essential: if Ai holds Ref(unbound_cell) from a
   ;; prior set_variable, the unbound cell must be updated to
@@ -815,10 +544,10 @@ wam_wat_case(put_structure,
       (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))))
   (call $set_mode (i32.const 1))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(put_list,
-'  (local $ai i32) (local $addr i32) (local $d_addr i32)
+(func $do_put_list (param $op1 i64) (param $op2 i64) (result i32)
+  (local $ai i32) (local $addr i32) (local $d_addr i32)
   (local.set $ai (i32.wrap_i64 (local.get $op1)))
   (local.set $addr (call $heap_push_val (i32.const 4) (i64.const 0)))
   (local.set $d_addr (call $deref_reg_addr (local.get $ai)))
@@ -830,10 +559,10 @@ wam_wat_case(put_list,
       (call $set_reg (local.get $ai) (i32.const 5) (i64.extend_i32_u (local.get $addr)))))
   (call $set_mode (i32.const 1))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(set_variable,
-'  ;; Allocate an unbound cell on the heap and set Xn to Ref(addr).
+(func $do_set_variable (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Allocate an unbound cell on the heap and set Xn to Ref(addr).
   ;; Used inside put_structure/put_list bodies to create a slot for
   ;; a variable argument.
   (local $xn i32) (local $addr i32)
@@ -841,10 +570,10 @@ wam_wat_case(set_variable,
   (local.set $addr (call $heap_push_val (i32.const 6) (i64.const 0)))
   (call $set_reg (local.get $xn) (i32.const 5) (i64.extend_i32_u (local.get $addr)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(set_value,
-'  ;; Push the RAW register cell onto the heap (no deref). When building
+(func $do_set_value (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Push the RAW register cell onto the heap (no deref). When building
   ;; compound arguments, a register holding Ref(inner_compound) must be
   ;; pushed as a Ref — if we deref, the compound header gets flattened
   ;; into the arg cell and nested compound evaluation breaks (e.g.
@@ -856,20 +585,18 @@ wam_wat_case(set_value,
     (call $get_reg_tag (local.get $xn))
     (call $get_reg_payload (local.get $xn))))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(set_constant,
-'  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
+(func $do_set_constant (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op2 = value-cell tag hint (0 atom, 1 integer, 2 float).
   (local $c_tag i32)
   (local.set $c_tag (i32.wrap_i64 (local.get $op2)))
   (drop (call $heap_push_val (local.get $c_tag) (local.get $op1)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-% --- Control flow ---
-
-wam_wat_case(allocate,
-'  ;; Push a new environment frame on the stack. Y registers live
+(func $do_allocate (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Push a new environment frame on the stack. Y registers live
   ;; inside this frame (accessed via $env_base in $reg_offset), so
   ;; each call level gets its own Y storage and there is no need to
   ;; save/restore Y explicitly — the frame IS the Y storage.
@@ -883,10 +610,10 @@ wam_wat_case(allocate,
   (global.set $env_base (local.get $soff))
   (call $set_stack_top (i32.add (local.get $soff) (i32.const 392)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(deallocate,
-'  ;; Pop the current environment frame. Restores $env_base to the
+(func $do_deallocate (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Pop the current environment frame. Restores $env_base to the
   ;; previous frame and CP from the frame header. The Y slots in the
   ;; popped frame become dead (stack_top moves back).
   (local $frame i32)
@@ -898,21 +625,21 @@ wam_wat_case(deallocate,
   ;; Pop the frame
   (call $set_stack_top (local.get $frame))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(call,
-'  ;; op1 = target PC, op2 = arity (unused here)
+(func $do_call (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = target PC, op2 = arity (unused here)
   (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
   (call $set_pc (i32.wrap_i64 (local.get $op1)))
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(execute,
-'  ;; op1 = target PC (tail call, no CP save)
+(func $do_execute (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = target PC (tail call, no CP save)
   (call $set_pc (i32.wrap_i64 (local.get $op1)))
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(proceed,
-'  ;; Return to continuation point
+(func $do_proceed (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Return to continuation point
   (if (result i32) (i32.ge_s (call $get_cp) (i32.const 0))
     (then
       (call $set_pc (call $get_cp))
@@ -920,50 +647,128 @@ wam_wat_case(proceed,
     (else
       ;; No CP means done
       (call $set_halted (i32.const 1))
-      (i32.const 1)))').
+      (i32.const 1))))
 
-wam_wat_case(builtin_call,
-'  ;; op1 = builtin ID, op2 = arity
+(func $do_builtin_call (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = builtin ID, op2 = arity
   (if (result i32) (call $execute_builtin
         (i32.wrap_i64 (local.get $op1))
         (i32.wrap_i64 (local.get $op2)))
     (then (call $inc_pc) (i32.const 1))
-    (else (i32.const 0)))').
+    (else (i32.const 0))))
 
-% --- Choice points ---
-
-wam_wat_case(try_me_else,
-'  ;; op1 = alternative label PC
+(func $do_try_me_else (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = alternative label PC
   ;; Save choice point: next_pc, CP, trail_mark, registers
   (call $push_choice_point (i32.wrap_i64 (local.get $op1)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(retry_me_else,
-'  ;; op1 = next alternative label PC
+(func $do_retry_me_else (param $op1 i64) (param $op2 i64) (result i32)
+  ;; op1 = next alternative label PC
   ;; Update choice point with new alternative
   (call $update_choice_point (i32.wrap_i64 (local.get $op1)))
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-wam_wat_case(trust_me,
-'  ;; Remove choice point (last alternative)
+(func $do_trust_me (param $op1 i64) (param $op2 i64) (result i32)
+  ;; Remove choice point (last alternative)
   (call $pop_choice_point_no_restore)
   (call $inc_pc)
-  (i32.const 1)').
+  (i32.const 1))
 
-% ============================================================================
-% PHASE 2b: Runtime helpers
-% ============================================================================
+(func $step (param $code_base i32) (param $pc i32) (result i32)
+  (local $tag i32)
+  (local $op1 i64)
+  (local $op2 i64)
+  (local.set $tag (call $fetch_instr_tag (local.get $code_base) (local.get $pc)))
+  (local.set $op1 (call $fetch_instr_op1 (local.get $code_base) (local.get $pc)))
+  (local.set $op2 (call $fetch_instr_op2 (local.get $code_base) (local.get $pc)))
+  (block $default
+    (block $b24
+    (block $b23
+    (block $b22
+    (block $b21
+    (block $b20
+    (block $b19
+    (block $b18
+    (block $b17
+    (block $b16
+    (block $b15
+    (block $b14
+    (block $b13
+    (block $b12
+    (block $b11
+    (block $b10
+    (block $b9
+    (block $b8
+    (block $b7
+    (block $b6
+    (block $b5
+    (block $b4
+    (block $b3
+    (block $b2
+    (block $b1
+    (block $b0
+    (br_table $b0 $b1 $b2 $b3 $b4 $b5 $b6 $b7 $b8 $b9 $b10 $b11 $b12 $b13 $b14 $b15 $b16 $b17 $b18 $b19 $b20 $b21 $b22 $b23 $b24 $default (local.get $tag))
+  ) ;; $b0 (get_constant)
+  (return (call $do_get_constant (local.get $op1) (local.get $op2)))
+  ) ;; $b1 (get_variable)
+  (return (call $do_get_variable (local.get $op1) (local.get $op2)))
+  ) ;; $b2 (get_value)
+  (return (call $do_get_value (local.get $op1) (local.get $op2)))
+  ) ;; $b3 (get_structure)
+  (return (call $do_get_structure (local.get $op1) (local.get $op2)))
+  ) ;; $b4 (get_list)
+  (return (call $do_get_list (local.get $op1) (local.get $op2)))
+  ) ;; $b5 (unify_variable)
+  (return (call $do_unify_variable (local.get $op1) (local.get $op2)))
+  ) ;; $b6 (unify_value)
+  (return (call $do_unify_value (local.get $op1) (local.get $op2)))
+  ) ;; $b7 (unify_constant)
+  (return (call $do_unify_constant (local.get $op1) (local.get $op2)))
+  ) ;; $b8 (put_constant)
+  (return (call $do_put_constant (local.get $op1) (local.get $op2)))
+  ) ;; $b9 (put_variable)
+  (return (call $do_put_variable (local.get $op1) (local.get $op2)))
+  ) ;; $b10 (put_value)
+  (return (call $do_put_value (local.get $op1) (local.get $op2)))
+  ) ;; $b11 (put_structure)
+  (return (call $do_put_structure (local.get $op1) (local.get $op2)))
+  ) ;; $b12 (put_list)
+  (return (call $do_put_list (local.get $op1) (local.get $op2)))
+  ) ;; $b13 (set_variable)
+  (return (call $do_set_variable (local.get $op1) (local.get $op2)))
+  ) ;; $b14 (set_value)
+  (return (call $do_set_value (local.get $op1) (local.get $op2)))
+  ) ;; $b15 (set_constant)
+  (return (call $do_set_constant (local.get $op1) (local.get $op2)))
+  ) ;; $b16 (allocate)
+  (return (call $do_allocate (local.get $op1) (local.get $op2)))
+  ) ;; $b17 (deallocate)
+  (return (call $do_deallocate (local.get $op1) (local.get $op2)))
+  ) ;; $b18 (call)
+  (return (call $do_call (local.get $op1) (local.get $op2)))
+  ) ;; $b19 (execute)
+  (return (call $do_execute (local.get $op1) (local.get $op2)))
+  ) ;; $b20 (proceed)
+  (return (call $do_proceed (local.get $op1) (local.get $op2)))
+  ) ;; $b21 (builtin_call)
+  (return (call $do_builtin_call (local.get $op1) (local.get $op2)))
+  ) ;; $b22 (try_me_else)
+  (return (call $do_try_me_else (local.get $op1) (local.get $op2)))
+  ) ;; $b23 (retry_me_else)
+  (return (call $do_retry_me_else (local.get $op1) (local.get $op2)))
+  ) ;; $b24 (trust_me)
+  (return (call $do_trust_me (local.get $op1) (local.get $op2)))
+  )
+  (i32.const 0)
+)
 
-%% compile_wam_helpers_to_wat(+Options, -WatCode)
-compile_wam_helpers_to_wat(_Options, WatCode) :-
-    wam_cp_size(CPSize),
-    wam_num_regs(NumRegs),
-    wam_val_size(ValSize),
-    RegBytes is NumRegs * ValSize,
-    format(atom(WatCode),
-';; --- Run loop ---
+;; --- Helper functions (run loop, backtrack, unify, deref, builtins) ---
+;; Body generated by compile_wam_helpers_to_wat/2
+
+;; --- Run loop ---
 (func $run_loop (param $code_base i32) (param $num_instrs i32) (result i32)
   (local $pc i32)
   (block $exit
@@ -1001,7 +806,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (if (i32.eqz (local.get $n))
     (then (return (i32.const 0))))
   ;; Choice point layout in stack: [next_pc:i32][trail_mark:i32][saved_cp:i32][64 regs x 12 bytes]
-  ;; Size = ~w bytes per choice point (12 metadata + ~w regs x 12)
+  ;; Size = 404 bytes per choice point (12 metadata + 32 regs x 12)
   ;; Pop the latest choice point (stored before env frames in stack)
   ;; For simplicity, choice points stored at fixed offsets from cp_count
   ;; TODO: implement full choice point stack
@@ -1057,12 +862,12 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 
 ;; --- Choice point management ---
 ;; Choice points stored in a dedicated area starting at offset 98304 (page 1.5)
-;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][env_base:i32 +16][32 A/X regs: 384 bytes +20] = ~w bytes
+;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][env_base:i32 +16][32 A/X regs: 384 bytes +20] = 404 bytes
 
 (func $cp_base_offset (result i32) (i32.const 98304))
 
 (func $cp_offset (param $idx i32) (result i32)
-  (i32.add (call $cp_base_offset) (i32.mul (local.get $idx) (i32.const ~w))))
+  (i32.add (call $cp_base_offset) (i32.mul (local.get $idx) (i32.const 404))))
 
 (func $push_choice_point (param $next_pc i32)
   (local $n i32) (local $off i32) (local $i i32)
@@ -1128,7 +933,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $i (i32.const 0))
   (block $done
     (loop $restore
-      (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 32)))
       (call $copy_to_reg (local.get $i)
         (i32.add (i32.add (local.get $off) (i32.const 20))
                  (i32.mul (local.get $i) (i32.const 12))))
@@ -1204,7 +1009,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (call $builtin_is))
     ) ;; =:=
     (return (call $builtin_arith_cmp (i32.const 0)))
-    ) ;; =\\=
+    ) ;; =\=
     (return (call $builtin_arith_cmp (i32.const 1)))
     ) ;; <
     (return (call $builtin_arith_cmp (i32.const 2)))
@@ -1424,7 +1229,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 )
 
 ;; --- functor/3: A1 = T, A2 = N, A3 = A ---
-;; Two modes determined by A1''s tag:
+;; Two modes determined by A1's tag:
 ;;   - Unbound A1: construct mode. Read N and A from A2/A3, allocate a
 ;;     fresh compound with $arity unbound args, bind A1 to the result.
 ;;   - Instantiated A1: read mode. Extract functor/arity and bind A2/A3.
@@ -1503,17 +1308,17 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 )
 
 ;; --- =../2 (univ): A1 = T, A2 = L ---
-;; Two modes determined by A1''s tag:
+;; Two modes determined by A1's tag:
 ;;   - Instantiated A1 (atomic or compound ref): decompose. Build a
 ;;     fresh cons list [functor | args] on the heap and bind A2 to it.
 ;;   - Unbound A1: compose. Walk the cons list in A2, take the head as
 ;;     the functor and the tail elements as args, build a fresh
 ;;     compound, bind A1.
-;; List representation: cons cells are tag=4 ''list'' cells with payload
+;; List representation: cons cells are tag=4 'list' cells with payload
 ;; zero, whose head is stored at offset +12 and tail at offset +24. This
-;; matches what the canonical WAM''s put_list + set_constant/set_value
+;; matches what the canonical WAM's put_list + set_constant/set_value
 ;; instructions produce at runtime (see wam_wat_case(put_list, ...)).
-;; The empty list is the atom ''[]'' — tag=0 with payload 2914 (DJB2-like
+;; The empty list is the atom '[]' — tag=0 with payload 2914 (DJB2-like
 ;; acc*31+char applied to chars 91, 93).
 ;;
 ;; Decompose mode writes freshly-allocated cells to an unbound A2 (v1
@@ -1583,7 +1388,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
               (drop (call $heap_push_val (i32.const 0)
                       (local.get $functor_hash))))
             (else
-              ;; element i (i>=1) = compound''s i-th arg cell
+              ;; element i (i>=1) = compound's i-th arg cell
               (local.set $arg_off
                 (i32.add (local.get $comp_addr)
                          (i32.mul (local.get $i) (i32.const 12))))
@@ -1692,7 +1497,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; Builds a structurally identical copy of T in which every unbound
 ;; variable has been replaced by a fresh unbound. Sharing is preserved
 ;; within the copy: two positions that share a source variable map to
-;; the SAME fresh variable in the copy (the spec''s critical property
+;; the SAME fresh variable in the copy (the spec's critical property
 ;; for copy_term/2).
 ;;
 ;; Scope (deep):
@@ -1700,7 +1505,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;;   - Unbound T: allocate a fresh unbound and bind Copy to a ref.
 ;;   - Ref to compound or list T: iterative deep copy via a work stack,
 ;;     recursing through nested compounds and lists at arbitrary depth
-;;     without using WAT''s call stack. Sharing is preserved across the
+;;     without using WAT's call stack. Sharing is preserved across the
 ;;     entire traversal, not just the top level.
 ;;
 ;; Algorithm (iterative, work-stack driven):
@@ -1708,7 +1513,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;;   Scratch region (page 4, fixed offset 262144):
 ;;     262144..262911 (768 B) — var map: 64 entries x 12 bytes
 ;;                              [src_payload:i64][dst_addr:i32]
-;;                              src_payload is the source unbound''s
+;;                              src_payload is the source unbound's
 ;;                              variable id; dst_addr is the heap address
 ;;                              of the fresh cell materialized the first
 ;;                              time we saw that source var.
@@ -1729,7 +1534,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;;                            miss: heap_push_val a fresh unbound cell;
 ;;                                  record (src_payload, new_addr) in map;
 ;;                                  val_store ref(new_addr) at dst
-;;     ref (tag = 5)      — repush (src''s target, dst) — follow once
+;;     ref (tag = 5)      — repush (src's target, dst) — follow once
 ;;     compound (tag = 3) — read arity-packed header; heap_push_val a new
 ;;                          header; heap_push_val arity placeholder cells
 ;;                          immediately after; val_store ref(new_comp) at
@@ -1742,7 +1547,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;;                          (head_src, new_list+12).
 ;;
 ;;   Each iteration ends with br $work. The loop exits via br_if $done
-;;   when the work stack empties. After exit, read the placeholder''s
+;;   when the work stack empties. After exit, read the placeholder's
 ;;   tag/payload and bind A2 to that exact pair.
 ;;
 ;; The scratch is FIXED-OFFSET in page 4, separate from the WAM heap.
@@ -1977,7 +1782,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
               (br $work)))
           ;; Unknown tag — fail.
           (return (i32.const 0))))
-      ;; Worklist done. Read the placeholder''s final tag/payload and
+      ;; Worklist done. Read the placeholder's final tag/payload and
       ;; bind A2 to that value.
       (local.set $result_tag (call $val_tag (local.get $top_placeholder)))
       (local.set $result_payload
@@ -1987,215 +1792,80 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
       (return (i32.const 1))))
   (i32.const 0)
 )
-', [CPSize, 32, CPSize, CPSize, 32]).
 
-%% compile_wam_runtime_to_wat(+Options, -WatCode)
-compile_wam_runtime_to_wat(Options, WatCode) :-
-    compile_step_wam_to_wat(Options, StepCode),
-    compile_wam_helpers_to_wat(Options, HelpersCode),
-    format(atom(WatCode), '~w\n\n~w', [StepCode, HelpersCode]).
 
-% ============================================================================
-% PHASE 3: Project assembly
-% ============================================================================
 
-%% write_wam_wat_project(+Predicates, +Options, +OutputFile)
-write_wam_wat_project(Predicates, Options, OutputFile) :-
-    option(module_name(ModuleName), Options, 'wam_generated'),
-    get_time(TimeStamp),
-    format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+  ;; === Native WAT predicates ===
+  
 
-    %% Read and render value template
-    read_template_file('templates/targets/wat_wam/value.wat.mustache', ValueTemplate),
-    render_template(ValueTemplate, [], ValueCode),
+  ;; === WAM-compiled predicate entry points ===
+  (func $bench_true_0 (export "bench_true_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 0))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_is_arith_0 (export "bench_is_arith_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 1))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_unify_0 (export "bench_unify_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 10))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_functor_read_0 (export "bench_functor_read_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 25))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_arg_read_0 (export "bench_arg_read_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 33))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_univ_decomp_0 (export "bench_univ_decomp_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 41))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_copy_flat_0 (export "bench_copy_flat_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 47))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_copy_nested_0 (export "bench_copy_nested_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 53))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_sum_small_0 (export "bench_sum_small_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 63))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_sum_medium_0 (export "bench_sum_medium_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 70))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $bench_sum_big_0 (export "bench_sum_big_0") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 80))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $sum_ints_3 (export "sum_ints_3") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 104))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
+(func $sum_ints_args_5 (export "sum_ints_args_5") (result i32)
+  (call $wam_init (i32.const 196608))
+  (call $set_pc (i32.const 135))
+  (call $run_loop (i32.const 131072) (i32.const 178)))
 
-    %% Read and render state template
-    read_template_file('templates/targets/wat_wam/state.wat.mustache', StateTemplate),
-    render_template(StateTemplate, [], StateCode),
 
-    %% Generate runtime (step + helpers)
-    compile_step_wam_to_wat(Options, StepBody),
-    compile_wam_helpers_to_wat(Options, HelpersCode),
-    read_template_file('templates/targets/wat_wam/runtime.wat.mustache', RuntimeTemplate),
-    render_template(RuntimeTemplate, [
-        step_body=StepBody,
-        helper_functions=HelpersCode
-    ], RuntimeCode),
+  ;; === Exports ===
+    ;; exported: bench_true_0
+  ;; exported: bench_is_arith_0
+  ;; exported: bench_unify_0
+  ;; exported: bench_functor_read_0
+  ;; exported: bench_arg_read_0
+  ;; exported: bench_univ_decomp_0
+  ;; exported: bench_copy_flat_0
+  ;; exported: bench_copy_nested_0
+  ;; exported: bench_sum_small_0
+  ;; exported: bench_sum_medium_0
+  ;; exported: bench_sum_big_0
+  ;; exported: sum_ints_3
+  ;; exported: sum_ints_args_5
 
-    %% Compile predicates
-    wam_heap_base(HeapBase),
-    compile_wat_predicates(Predicates, Options, HeapBase, DataSegs, PredFuncs, Exports),
-
-    %% Memory pages: 0=native WAT strings/memo; 1=WAM state (regs, trail,
-    %% env/choice stack); 2=code (instruction data segments); 3=WAM heap;
-    %% 4=copy_term scratch (var map + work stack, fixed offsets at 262144).
-    %% See $builtin_copy_term for the scratch layout. The scratch lives
-    %% outside the heap so deep copy_term calls don''t permanently bloat
-    %% heap_top with unreclaimable bookkeeping.
-    MemPages = 5,
-
-    %% Assemble module
-    read_template_file('templates/targets/wat_wam/module.wat.mustache', ModuleTemplate),
-    render_template(ModuleTemplate, [
-        date=Date,
-        module_name=ModuleName,
-        memory_pages=MemPages,
-        data_segments=DataSegs,
-        value_functions=ValueCode,
-        state_functions=StateCode,
-        runtime_functions=RuntimeCode,
-        native_predicates='',
-        wam_predicates=PredFuncs,
-        exports=Exports
-    ], FullModule),
-
-    %% Write output file
-    write_file(OutputFile, FullModule),
-    format('WAM-WAT module written to: ~w~n', [OutputFile]).
-
-%% compile_wat_predicates(+Preds, +Opts, +CodeBase, -DataSegs, -Funcs, -Exports)
-%
-%  Two-pass project-level compilation:
-%
-%    Pass 1: parse each predicate's WAM text into instructions + local
-%            labels, compute each predicate's cumulative start PC.
-%    Build:  global label table = union of every predicate's labels
-%            with their local PCs shifted by the predicate's start PC.
-%            Each predicate's entry label (e.g. 'sum_ints/3') lives at
-%            its start PC, so cross-predicate call/execute instructions
-%            resolve correctly.
-%    Pass 2: re-encode each predicate's instructions using the global
-%            label table so internal labels (try_me_else targets) and
-%            external references (call sibling/N) both resolve to
-%            absolute PCs within a single merged instruction array.
-%    Assemble: concatenate all encoded bytes into ONE data segment at
-%            CodeBase. Entry functions share the same CodeBase and
-%            total instruction count, but each sets PC to its own
-%            start offset before calling $run_loop.
-%
-%  Prior to this change, each predicate had its own per-predicate
-%  label table and emitted its own data segment at a distinct base.
-%  Cross-predicate Execute / Call instructions encoded the target
-%  with local-label resolution, which defaults to PC=0 on miss —
-%  the VM would then jump to PC=0 of the CALLING predicate's code,
-%  silently re-entering the caller and creating an infinite loop
-%  (or immediate failure if the re-entry path failed a guard). This
-%  fix unifies the label namespace across all predicates in a
-%  project, making multi-predicate WAM programs runnable end-to-end.
-compile_wat_predicates(Predicates, Options, CodeBase, DataSegs, Funcs, Exports) :-
-    %% Pass 1: parse + collect per-predicate data with cumulative PCs.
-    pass1_parse_predicates(Predicates, Options, 0, PredData, TotalInstrs),
-    %% Build global label table (shift each predicate's local labels).
-    build_global_labels(PredData, [], GlobalLabels),
-    %% Pass 2: re-encode each predicate's instructions against global
-    %% labels and concatenate the byte sequences.
-    encode_all_predicates(PredData, GlobalLabels, AllHex),
-    (   AllHex == ''
-    ->  DataSegs = ''
-    ;   format(atom(DataSegs),
-            '(data (i32.const ~w) "~w")', [CodeBase, AllHex])
-    ),
-    %% Entry functions: one per predicate, each setting its own
-    %% start PC before invoking the shared run loop.
-    option(wam_heap_start(HeapStart), Options, 196608),
-    gen_all_entry_funcs(PredData, HeapStart, CodeBase, TotalInstrs,
-                        Funcs, Exports).
-
-%% pass1_parse_predicates(+Preds, +Opts, +StartPC, -PredData, -TotalInstrs)
-%
-%  PredData is a list of pred_data(Pred/Arity, Instrs, LocalLabels,
-%  StartPC, NumInstrs) entries in input order, where StartPC is the
-%  cumulative instruction index at which this predicate's first
-%  instruction lives in the merged instruction array.
-pass1_parse_predicates([], _, _, [], 0).
-pass1_parse_predicates([PredInd|Rest], Options, StartPC,
-                       [pred_data(Pred/Arity, Instrs, LocalLabels,
-                                  StartPC, NumInstrs) | RestData],
-                       TotalInstrs) :-
-    (   PredInd = _Module:Pred/Arity -> true
-    ;   PredInd = Pred/Arity
-    ),
-    (   catch(
-            wam_target:compile_predicate_to_wam(PredInd, Options, WamCode),
-            _, fail)
-    ->  atom_string(WamCode, WamStr),
-        split_string(WamStr, "\n", "", Lines),
-        wam_lines_to_instrs(Lines, 0, Instrs, LocalLabels),
-        length(Instrs, NumInstrs),
-        format(user_error,
-               '  ~w/~w: WAM compilation (~w instructions, start PC ~w)~n',
-               [Pred, Arity, NumInstrs, StartPC])
-    ;   Instrs = [], LocalLabels = [], NumInstrs = 0,
-        format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity])
-    ),
-    NextPC is StartPC + NumInstrs,
-    pass1_parse_predicates(Rest, Options, NextPC, RestData, RestTotal),
-    TotalInstrs is NumInstrs + RestTotal.
-
-%% build_global_labels(+PredData, +Acc, -GlobalLabels)
-%  For each predicate, shift its local labels by its start PC and
-%  accumulate into a single project-wide LabelName-PC list. Labels
-%  are expected to be globally unique (internal WAM labels already
-%  encode the predicate name; entry labels are the Pred/Arity form).
-build_global_labels([], Acc, Acc).
-build_global_labels([pred_data(_, _, LocalLabels, StartPC, _)|Rest],
-                    Acc, GlobalLabels) :-
-    shift_labels(LocalLabels, StartPC, Shifted),
-    append(Shifted, Acc, NewAcc),
-    build_global_labels(Rest, NewAcc, GlobalLabels).
-
-shift_labels([], _, []).
-shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
-    GlobalPC is LocalPC + Shift,
-    shift_labels(Rest, Shift, RestShifted).
-
-%% encode_all_predicates(+PredData, +GlobalLabels, -AllHex)
-%  Re-encode every predicate's instructions against the merged label
-%  table, concatenating the resulting hex byte strings in predicate
-%  order. The order matches pass1 so instruction indices remain
-%  consistent with start PCs.
-encode_all_predicates([], _, '').
-encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
-                      GlobalLabels, AllHex) :-
-    maplist(encode_instr_with_labels(GlobalLabels), Instrs, HexParts),
-    atomic_list_concat(HexParts, PredHex),
-    encode_all_predicates(Rest, GlobalLabels, RestHex),
-    atomic_list_concat([PredHex, RestHex], AllHex).
-
-%% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
-%%                     -Funcs, -Exports)
-%  Emit one exported entry function per predicate. All entry functions
-%  share the same CodeBase and TotalInstrs; they differ only in their
-%  StartPC, which each function writes into the VM's PC register
-%  immediately after $wam_init (before invoking the run loop).
-gen_all_entry_funcs([], _, _, _, '', '').
-gen_all_entry_funcs([pred_data(Pred/Arity, _, _, StartPC, _)|Rest],
-                    HeapStart, CodeBase, TotalInstrs,
-                    EntryFuncs, Exports) :-
-    wat_pred_name(Pred, Arity, FName),
-    format(atom(EF),
-'(func $~w (export "~w") (result i32)
-  (call $wam_init (i32.const ~w))
-  (call $set_pc (i32.const ~w))
-  (call $run_loop (i32.const ~w) (i32.const ~w)))',
-        [FName, FName, HeapStart, StartPC, CodeBase, TotalInstrs]),
-    format(atom(Export), '  ;; exported: ~w', [FName]),
-    gen_all_entry_funcs(Rest, HeapStart, CodeBase, TotalInstrs,
-                        RestEF, RestExports),
-    atomic_list_concat([EF, '\n', RestEF], EntryFuncs),
-    atomic_list_concat([Export, '\n', RestExports], Exports).
-
-%% read_template_file(+Path, -Content)
-read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
-    ;   format(atom(Content), ";; Template not found: ~w", [Path])
-    ).
-
-%% write_file(+Path, +Content)
-write_file(Path, Content) :-
-    setup_call_cleanup(
-        open(Path, write, Stream),
-        format(Stream, "~w", [Content]),
-        close(Stream)
-    ).
+)
