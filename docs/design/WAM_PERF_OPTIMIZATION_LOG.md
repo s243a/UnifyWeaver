@@ -7,8 +7,10 @@ next), see `docs/vision/HASKELL_TARGET_ROADMAP.md`.
 
 ## Executive summary — where we ended up
 
-All numbers are medians of 10 runs on the 300-scale effective-distance
-benchmark, non-profiled, 4-core WSL2 host:
+All numbers are medians of 10 runs on the effective-distance benchmark,
+non-profiled, 4-core WSL2 host:
+
+### 300 scale (386 seeds, ~6k category_parent facts)
 
 | Target | total_ms | query_ms | Notes |
 |---|---|---|---|
@@ -19,8 +21,28 @@ benchmark, non-profiled, 4-core WSL2 host:
 | Haskell pure interpreter | 2518 | — | no FFI, no kernels |
 | Haskell initial (pre-optimization) | ~4700 | — | naive `Map String Value` |
 
-**Haskell net speedup from baseline: ~63x.** The target now outperforms
-the single-threaded Rust implementation by 1.75x on total time.
+**Haskell net speedup from baseline: ~63x.** The target outperforms the
+single-threaded Rust implementation by 1.75x on total time at 300 scale.
+
+### Scaling across dataset sizes
+
+| Scale | 1-core query | 4-core query | Speedup | 4-core total | Notes |
+|---|---|---|---|---|---|
+| 300 (6k facts) | 107ms | 32ms | **3.3x** | 75ms | ideal case |
+| 5k (18k facts) | 297ms | 86ms | **3.5x** | 213ms | best scaling |
+| 10k (35k facts) | 836ms | 284ms | **2.9x** | 604ms | GC pressure starts to show |
+
+**Scaling observations:**
+- 5k gives the best parallel scaling (3.5x on 4 cores) — setup overhead
+  amortizes well over the per-seed work.
+- 10k scaling drops to 2.9x. Hypothesis: GC pressure from larger intern
+  tables and recursion depth allocations. Could be investigated if 10k
+  becomes the primary benchmark workload.
+- 8 cores regressed on this WSL2 host at all tested scales due to
+  scheduling/GC contention. Native Linux or different hardware may
+  differ — worth re-testing on real multi-socket systems.
+- **All scales remain faster than the single-threaded Rust target on
+  total time at 4 cores.**
 
 ---
 
