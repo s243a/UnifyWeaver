@@ -620,14 +620,17 @@ result_wrap_expr_for_rv(integer, I, Expr) :-
     format(atom(Expr), 'Integer (fromIntegral rv_~w)', [I]).
 result_wrap_expr_for_rv(atom, I, Expr) :-
     format(atom(Expr), 'Atom (fromMaybe "" (IM.lookup rv_~w (wcAtomDeintern ctx)))', [I]).
+result_wrap_expr_for_rv(float, I, Expr) :-
+    format(atom(Expr), 'Float rv_~w', [I]).
 
 %% result_wrap_expr(+Type, -HaskellExpr)
 %  Haskell expression wrapping `rv` (kernel result) into a Value
 %  constructor. For `atom`, the kernel returns Int atom IDs that must
 %  be de-interned back to Strings before wrapping in the Atom constructor.
-%  For `integer`, no interning is involved.
+%  For `integer` and `float`, no interning is involved.
 result_wrap_expr(integer, 'Integer (fromIntegral rv)').
 result_wrap_expr(atom, 'Atom (fromMaybe "" (IM.lookup rv (wcAtomDeintern ctx)))').
+result_wrap_expr(float, 'Float rv').
 
 %% detect_kernels(+Predicates, -DetectedKernels)
 %  Run shared kernel detection on each predicate. Returns a list of

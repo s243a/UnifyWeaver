@@ -1,0 +1,39 @@
+-- | Native Dijkstra's algorithm for weighted shortest paths.
+-- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+-- Given a source node and a weighted adjacency map, returns a stream of
+-- (target, distance) pairs where distance is the shortest weighted path
+-- length from source to target.
+--
+-- Atoms are interned at the FFI boundary (Int IDs in the IntMap key).
+-- Weights are Double-valued and carried through as-is (not interned).
+-- The returned target Int is de-interned by the executeForeign wrapper.
+nativeKernel_weighted_shortest_path
+  :: IM.IntMap [(Int, Double)] -> Int -> [(Int, Double)]
+nativeKernel_weighted_shortest_path edges source =
+  -- Priority queue as a Map keyed by (cost, node) pair for min-ordering.
+  -- Set gives us O(log n) extract-min via Set.minView.
+  let initQueue = Set.singleton (0.0 :: Double, source)
+      initDist  = IM.singleton source (0.0 :: Double)
+  in go initQueue initDist []
+  where
+    go queue dist acc =
+      case Set.minView queue of
+        Nothing -> acc  -- queue empty, done
+        Just ((cost, node), queue') ->
+          -- Skip stale entries (we may have a better cost for this node)
+          let bestSoFar = IM.findWithDefault (1/0) node dist
+          in if cost > bestSoFar
+               then go queue' dist acc
+               else
+                 -- Relax outgoing edges
+                 let neighbors = IM.findWithDefault [] node edges
+                     (queue'', dist') = foldl' (\(q, d) (nxt, w) ->
+                         let newCost = cost + w
+                             prev = IM.findWithDefault (1/0) nxt d
+                         in if newCost < prev
+                              then (Set.insert (newCost, nxt) q, IM.insert nxt newCost d)
+                              else (q, d)
+                       ) (queue', dist) neighbors
+                     -- Emit this (node, cost) except the source itself
+                     acc' = if node == source then acc else acc ++ [(node, cost)]
+                 in go queue'' dist' acc'

@@ -44,6 +44,23 @@ single-threaded Rust implementation by 1.75x on total time at 300 scale.
 - **All scales remain faster than the single-threaded Rust target on
   total time at 4 cores.**
 
+### Multi-output kernel: `transitive_distance3/3`
+
+After adding multi-output kernel support (FFIStreamRetry), we ran a
+dedicated `transitive_distance3/3` benchmark on the same category_parent
+graph. This kernel does BFS from each source and returns `(target, distance)`
+pairs — 2-output stream, exercising the new infrastructure under load.
+
+| Scale | Sources | Pairs | 1-core query | 4-core query | Speedup |
+|---|---|---|---|---|---|
+| 300 (6k edges)  | 2165 | 199,029 | 185ms | **70ms** | 2.6x |
+| 10k (25k edges) | 7811 | 877,029 | 1183ms | **420ms** | 2.8x |
+
+The reachability computation is substantial — 199k pairs at 300 scale,
+877k at 10k scale. Parallel scaling holds at 2.6-2.8x on 4 cores, similar
+to the effective-distance benchmark's scaling profile. FFIStreamRetry
+works correctly under load with hundreds of thousands of solutions.
+
 ---
 
 ## Haskell WAM — optimization timeline
