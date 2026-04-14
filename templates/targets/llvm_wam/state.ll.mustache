@@ -2261,18 +2261,17 @@ stream:
   %nsuffixes64 = add i64 %len64, 1
   %nsuffixes = add i32 %len, 1
 
-  ; Allocate result array: nsuffixes x %Value.
+  ; Allocate result array + suffix structs in one block so a single
+  ; free() in the iterator pop path releases both.
+  ; Layout: [nsuffixes x %Value] [nsuffixes x %List]
   %res_bytes = shl i64 %nsuffixes64, 4   ; * 16 (sizeof %Value)
-  %res_mem = call i8* @malloc(i64 %res_bytes)
-  %results = bitcast i8* %res_mem to %Value*
-
-  ; Allocate suffix %List structs: nsuffixes x %List.
-  ; sizeof(%List) = sizeof(i32) + sizeof(%Value*) = 4 + 8 = 12, but
-  ; aligned to 8 → 16 bytes on most targets. Use ptrtoint for safety.
   %list_struct_size = ptrtoint %List* getelementptr (%List, %List* null, i32 1) to i64
   %lists_bytes = mul i64 %nsuffixes64, %list_struct_size
-  %lists_mem = call i8* @malloc(i64 %lists_bytes)
-  %suffix_lists = bitcast i8* %lists_mem to %List*
+  %total_bytes = add i64 %res_bytes, %lists_bytes
+  %res_mem = call i8* @malloc(i64 %total_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+  %lists_offset = getelementptr i8, i8* %res_mem, i64 %res_bytes
+  %suffix_lists = bitcast i8* %lists_offset to %List*
 
   ; Build suffixes: suffix[i] = {len-i, &elems[i]} for i=0..len.
   br label %build_loop
