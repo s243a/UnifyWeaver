@@ -846,6 +846,15 @@ done:
   ret void
 }
 
+; Module-level cleanup: frees the arena buffer. Callers should invoke
+; this after all WAM execution is complete. For native targets, the OS
+; reclaims memory on exit, so this is optional but good practice. For
+; WASM targets (where there is no OS cleanup), this is required.
+define void @wam_cleanup() {
+  call void @wam_arena_destroy()
+  ret void
+}
+
 ; === M5.2: BFS over an %AtomFactPair table ===
 ; Computes the shortest path length (in edges) from %start to %target in
 ; the directed graph described by an array of (from, to) atom ID pairs.
@@ -2912,6 +2921,17 @@ pop_cp:
   ; Iterator exhausted — pop the choice point.
   store i32 %top_idx, i32* %cpn_ptr
 
+  ; Free the malloc'd result array before popping.
+  %pop_fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %pop_fr = load i8*, i8** %pop_fr_ptr
+  %pop_fr_null = icmp eq i8* %pop_fr, null
+  br i1 %pop_fr_null, label %pop_restore, label %pop_free_results
+
+pop_free_results:
+  call void @free(i8* %pop_fr)
+  br label %pop_restore
+
+pop_restore:
   ; Restore registers and trail one last time.
   %pop_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %pop_src = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
