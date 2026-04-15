@@ -56,7 +56,12 @@
     registered_producers/1,           % -ProducerSpecs (sorted by priority desc)
 
     % Built-in impurity catalogue — exposed so other modules can extend
-    impurity_class/2                  % ?Goal, ?ReasonAtom
+    impurity_class/2,                 % ?Goal, ?ReasonAtom
+
+    % Strict whitelist (for tail-recursion transformation and other
+    % consumers that refuse to trust the permissive blacklist).
+    pure_builtin/1,                   % ?Functor/Arity
+    is_whitelist_pure_goal/1          % +Goal
 ]).
 
 :- use_module(library(lists)).
@@ -246,8 +251,12 @@ collect_reasons(Certs, Reasons) :-
 %  Consults clause_body_analysis:order_independent/1 and
 %  parallel_safe/1 dynamic facts (and their user:-prefixed variants).
 user_annotation_analyzer(Pred/Arity, predicate, Cert) :-
+    nonvar(Pred), integer(Arity),
+    !,
     user_annotation_analyzer(user:Pred/Arity, predicate, Cert).
 user_annotation_analyzer(Module:Pred/Arity, predicate, Cert) :-
+    nonvar(Module),
+    !,
     ( has_annotation(Module:Pred/Arity, parallel)
     -> Cert = purity_cert(pure, declared, 1.0,
                           [declared_by_user, parallel])
@@ -258,6 +267,7 @@ user_annotation_analyzer(Module:Pred/Arity, predicate, Cert) :-
     ).
 user_annotation_analyzer(Goal, goal, Cert) :-
     callable(Goal),
+    !,
     functor(Goal, F, A),
     ( has_parallel_safe(F/A)
     -> Cert = purity_cert(pure, declared, 1.0,
@@ -287,14 +297,19 @@ has_parallel_safe(F/A) :-
 %  existing clause_body_analysis:is_impure_builtin/1 catalogue.
 blacklist_analyzer(Goal, goal, Cert) :-
     callable(Goal),
+    !,
     ( impurity_class(Goal, ReasonAtom)
     -> Cert = purity_cert(impure([ReasonAtom]), analyzed(blacklist), 0.95,
                           [ReasonAtom])
     ; Cert = purity_cert(pure, analyzed(blacklist), 0.9, [blacklist_clean])
     ).
 blacklist_analyzer(Pred/Arity, predicate, Cert) :-
+    nonvar(Pred), integer(Arity),
+    !,
     blacklist_analyzer(user:Pred/Arity, predicate, Cert).
 blacklist_analyzer(Module:Pred/Arity, predicate, Cert) :-
+    nonvar(Module),
+    !,
     functor(Head, Pred, Arity),
     findall(Head-Body,
             catch(clause(Module:Head, Body), _, fail),
@@ -334,6 +349,102 @@ impurity_class(b_setval(_,_), global_state).
 % Target-specific / Domain-specific
 impurity_class(send_message(_,_), domain_specific).
 impurity_class(succ_or_zero(_,_), domain_specific).
+
+% ============================================================================
+% PRODUCER 3: STRICT BUILTIN WHITELIST
+% ============================================================================
+
+%% whitelist_analyzer(+Subject, +Kind, -Cert)
+%  Strictly whitelist-based — a goal is pure only if its functor
+%  appears in the pure_builtin/1 catalogue below. Returns `pure` with
+%  Proof = analyzed(whitelist) when the match succeeds, else `unknown`.
+%
+%  Rationale: this is the analyzer tail-recursion transformation
+%  wants to consult, because it refuses to transform anything it
+%  can't PROVE is pure. The blacklist is permissive (absence of
+%  evidence); the whitelist is strict (positive evidence only).
+%
+%  Registered at priority 40 — lower than the blacklist's 50, so in
+%  the default first-match chain the blacklist wins for goals it can
+%  decide. Consumers that specifically want whitelist semantics
+%  should use is_whitelist_pure_goal/1 or call whitelist_analyzer/3
+%  directly rather than relying on the chained analyze_goal_purity/2.
+whitelist_analyzer(Goal, goal, Cert) :-
+    callable(Goal),
+    !,
+    ( is_whitelist_pure_goal(Goal)
+    -> Cert = purity_cert(pure, analyzed(whitelist), 0.9,
+                          [whitelist_only])
+    ; Cert = purity_cert(unknown, analyzed(whitelist), 0.3,
+                         [not_in_whitelist])
+    ).
+whitelist_analyzer(_, _, purity_cert(unknown, inferred, 0.0,
+                                     [whitelist_unsupported_subject])).
+
+%% is_whitelist_pure_goal(+Goal)
+%  True iff Goal's functor is in the strict whitelist. Exported for
+%  consumers (advanced/purity_analysis.pl) that want a direct boolean
+%  check without threading through the certificate producer chain.
+is_whitelist_pure_goal(true) :- !.
+is_whitelist_pure_goal(Goal) :-
+    callable(Goal),
+    functor(Goal, F, A),
+    pure_builtin(F/A).
+
+%% pure_builtin(?Functor/Arity)
+%  Strict whitelist of pure built-in predicates. Absorbed from
+%  src/unifyweaver/core/advanced/purity_analysis.pl so both the
+%  tail-recursion transformation and the certificate module consult
+%  a single source of truth.
+
+% Arithmetic
+pure_builtin(is/2).
+pure_builtin(succ/2).
+pure_builtin(plus/3).
+
+% Comparison
+pure_builtin((>)/2).
+pure_builtin((<)/2).
+pure_builtin((>=)/2).
+pure_builtin((=<)/2).
+pure_builtin((=:=)/2).
+pure_builtin((=\=)/2).
+
+% Unification
+pure_builtin((=)/2).
+pure_builtin((\=)/2).
+
+% Type checks
+pure_builtin(number/1).
+pure_builtin(integer/1).
+pure_builtin(float/1).
+pure_builtin(atom/1).
+pure_builtin(compound/1).
+pure_builtin(is_list/1).
+pure_builtin(var/1).
+pure_builtin(nonvar/1).
+pure_builtin(ground/1).
+
+% Term manipulation
+pure_builtin(functor/3).
+pure_builtin(arg/3).
+pure_builtin((=..)/2).
+pure_builtin(copy_term/2).
+
+% List operations (pure, though member/2 is nondeterministic)
+pure_builtin(length/2).
+pure_builtin(append/3).
+pure_builtin(msort/2).
+pure_builtin(sort/2).
+pure_builtin(nth0/3).
+pure_builtin(nth1/3).
+pure_builtin(last/2).
+pure_builtin(member/2).
+pure_builtin(between/3).
+pure_builtin(reverse/2).
+
+% Control (pure forms)
+pure_builtin(true/0).
 
 % ============================================================================
 % HELPERS
@@ -389,3 +500,8 @@ collect_unknown_reasons(Certs, Reasons) :-
                        purity_certificate:blacklist_analyzer,
                        [goal, clause, predicate]),
        50).
+:- register_purity_producer(
+       purity_producer(whitelist,
+                       purity_certificate:whitelist_analyzer,
+                       [goal]),
+       40).
