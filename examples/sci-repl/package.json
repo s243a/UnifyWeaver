@@ -1,0 +1,29 @@
+{
+    "name": "scirepl-mcp-server",
+    "version": "1.0.0",
+    "description": "MCP server for sciREPL automation - Python/R/Prolog notebook integration",
+    "main": "scirepl-mcp-server.js",
+    "type": "commonjs",
+    "scripts": {
+        "start": "node scirepl-mcp-server.js",
+        "test": "node --test"
+    },
+    "keywords": [
+        "mcp",
+        "scirepl",
+        "python",
+        "pyodide",
+        "repl",
+        "playwright",
+        "automation"
+    ],
+    "author": "UnifyWeaver",
+    "license": "MIT",
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "playwright": "^1.40.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

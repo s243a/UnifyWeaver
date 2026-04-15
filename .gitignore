@@ -70,6 +70,10 @@ config/model_registry.yaml
 
 # Claude Code (entire directory - user-specific)
 .claude/
+# MCP server configuration (user-specific paths/env)
+.mcp.json
+# Cline project rules (user/project local)
+.clinerules
 # Codex local state
 .codex
 coro.json
