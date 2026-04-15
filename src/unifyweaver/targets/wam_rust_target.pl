@@ -2820,36 +2820,139 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     format('  Predicates compiled: ~w~n', [Predicates]).
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
-%  Compiles each predicate, trying native lowering first, then WAM fallback.
-compile_predicates_for_project([], _, "").
-compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
+%  Two-pass compilation: collects all WAM-fallback predicates into a shared
+%  code+labels table so cross-predicate WAM calls (Execute/Call) work.
+%  Native-lowered predicates are compiled independently as before.
+compile_predicates_for_project(Predicates, Options, Code) :-
+    % Pass 1: classify each predicate as native, wam, or failed
+    classify_predicates(Predicates, Options, Classified),
+    % Pass 2: collect WAM entries with cumulative PCs, build shared table
+    collect_wam_entries(Classified, 1, WamEntries, AllInstrParts, AllLabelParts),
+    % Generate shared WAM table if any WAM predicates exist
+    (   WamEntries \== []
+    ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
+        atomic_list_concat(AllLabelParts, '\n', AllLabels),
+        format(string(SharedCode),
+'use std::sync::OnceLock;
+
+static SHARED_WAM: OnceLock<(Vec<Instruction>, HashMap<String, usize>)> = OnceLock::new();
+
+fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
+    SHARED_WAM.get_or_init(|| {
+        let mut labels: HashMap<String, usize> = HashMap::new();
+~w
+        let code: Vec<Instruction> = vec![
+~w
+        ];
+        (code, labels)
+    })
+}', [AllLabels, AllInstrs])
+    ;   SharedCode = ""
+    ),
+    % Pass 3: generate code for each predicate
+    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    % Combine shared table + predicate code
+    (   SharedCode == ""
+    ->  atomic_list_concat(PredCodes, '\n\n', Code)
+    ;   atomic_list_concat(PredCodes, '\n\n', PredCodesStr),
+        format(string(Code), "~w\n\n~w", [SharedCode, PredCodesStr])
+    ).
+
+%% classify_predicates(+Predicates, +Options, -Classified)
+%  Returns list of classify(Module, Pred, Arity, Strategy, ExtraData) terms.
+classify_predicates([], _, []).
+classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    (   % Try native Rust lowering first
+    (   % Try native Rust lowering first (disable WAM fallback inside rust_target
+        % so we can distinguish truly-native from WAM-needing predicates)
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
-                [include_main(false)|Options], PredCode),
+                [include_main(false), wam_fallback(false)|Options], PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        Strategy = native
+        Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   % Fall back to WAM compilation
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
-        compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode)
-    ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        Strategy = wam
+        (   option(foreign_lowering(ForeignSpec), Options),
+            rust_foreign_spec(Pred/Arity, ForeignSpec, _, _)
+        ->  % Foreign-lowered: compile individually (not shared WAM)
+            compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode),
+            format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   % Standard WAM fallback: will use shared table
+            format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, wam, WamCode)
+        )
     ;   % Neither worked — emit a stub
         format(string(PredCode),
             '// ~w/~w: compilation failed (neither native nor WAM)', [Pred, Arity]),
-        Strategy = failed
+        Entry = classified(Module, Pred, Arity, failed, PredCode)
     ),
-    compile_predicates_for_project(Rest, Options, RestCode),
-    (   RestCode == ""
-    ->  format(string(Code), "// Strategy: ~w\n~w", [Strategy, PredCode])
-    ;   format(string(Code), "// Strategy: ~w\n~w\n\n~w", [Strategy, PredCode, RestCode])
-    ).
+    classify_predicates(Rest, Options, RestEntries).
+
+%% collect_wam_entries(+Classified, +StartPC, -WamEntries, -AllInstrParts, -AllLabelParts)
+%  Iterates over classified predicates, collecting WAM code with cumulative PCs.
+%  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms.
+collect_wam_entries([], _, [], [], []).
+collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
+    % Count instructions to compute next PC
+    length(InstrParts, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrParts, RestInstrs, AllInstrs),
+    append(LabelParts, RestLabels, AllLabels).
+collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
+
+%% generate_predicate_codes(+Classified, +WamEntries, -PredCodes)
+%  Generates Rust code for each classified predicate.
+generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: native\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: wam\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    % Look up this predicate's start PC in the shared table
+    member(wam_entry(Pred, Arity, StartPC), WamEntries),
+    compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, Code),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: failed\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+
+%% compile_wam_predicate_to_rust_shared(+Pred/Arity, +StartPC, -RustCode)
+%  Generates a thin WAM predicate wrapper that references the shared code table.
+compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
+    atom_string(Pred, PredStr),
+    build_rust_wam_arg_list(Arity, ArgList),
+    build_rust_wam_arg_setup(Arity, ArgSetup),
+    format(string(RustCode),
+'// Strategy: wam
+/// WAM-compiled predicate: ~w/~w (shared table, pc=~w)
+/// Compiled via WAM for predicates that resist native lowering.
+pub fn ~w(~w) -> bool {
+    let (code, labels) = get_shared_wam();
+    vm.code = code.clone();
+    vm.labels = labels.clone();
+    vm.pc = ~w;
+~w
+    vm.run()
+}', [PredStr, Arity, StartPC, PredStr, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-
