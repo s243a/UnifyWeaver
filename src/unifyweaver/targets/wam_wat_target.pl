@@ -93,6 +93,7 @@ instr_tag(builtin_call,    21).
 instr_tag(try_me_else,     22).
 instr_tag(retry_me_else,   23).
 instr_tag(trust_me,        24).
+instr_tag(neck_cut_test,   25).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -309,6 +310,14 @@ wam_instruction_to_wat_bytes(trust_me, _Labels, Hex) :-
     instr_tag(trust_me, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
 
+wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labels, Hex) :-
+    instr_tag(neck_cut_test, Tag),
+    resolve_label(ElseLabel, Labels, ElsePC),
+    (   builtin_id(GuardOp, GuardId) -> true ; GuardId = 255 ),
+    %% op1 = else PC, op2 = (guard_builtin_id << 32) | guard_arity
+    Op2 is (GuardId << 32) \/ GuardArity,
+    encode_instr_hex(Tag, ElsePC, Op2, Hex).
+
 % --- Encoding helpers ---
 
 %% encode_constant(+C, -I64Val)
@@ -429,6 +438,40 @@ wam_lines_to_instrs([Line|Rest], PC, Instrs, Labels) :-
         wam_lines_to_instrs(Rest, PC1, RestInstrs, Labels)
     ;   wam_lines_to_instrs(Rest, PC, Instrs, Labels)
     ).
+
+%% wam_lines_to_instrs_with_labels(+Lines, +Counter, -InstrsWithLabels)
+%  Like wam_lines_to_instrs but keeps label markers as label(Name)
+%  pseudo-instructions in the list. This allows peephole passes to
+%  transform the instruction list (adding/removing instructions)
+%  without breaking label-to-PC mappings.
+wam_lines_to_instrs_with_labels([], _, []).
+wam_lines_to_instrs_with_labels([Line|Rest], C, Result) :-
+    normalize_space(string(Trimmed), Line),
+    (   Trimmed = ""
+    ->  wam_lines_to_instrs_with_labels(Rest, C, Result)
+    ;   sub_string(Trimmed, _, 1, 0, ":")
+    ->  sub_string(Trimmed, 0, _, 1, LabelName),
+        Result = [label(LabelName)|RestResult],
+        wam_lines_to_instrs_with_labels(Rest, C, RestResult)
+    ;   split_string(Trimmed, " \t", " \t", Parts),
+        Parts \== []
+    ->  wam_parts_to_instr(Parts, Instr),
+        C1 is C + 1,
+        Result = [Instr|RestResult],
+        wam_lines_to_instrs_with_labels(Rest, C1, RestResult)
+    ;   wam_lines_to_instrs_with_labels(Rest, C, Result)
+    ).
+
+%% extract_instrs_and_labels(+WithLabels, +PC, -Instrs, -Labels)
+%  Strips label(Name) markers from the list, recording each label's
+%  PC (the index of the next real instruction after the marker).
+extract_instrs_and_labels([], _, [], []).
+extract_instrs_and_labels([label(Name)|Rest], PC, Instrs, [Name-PC|Labels]) :-
+    !,
+    extract_instrs_and_labels(Rest, PC, Instrs, Labels).
+extract_instrs_and_labels([Instr|Rest], PC, [Instr|Instrs], Labels) :-
+    PC1 is PC + 1,
+    extract_instrs_and_labels(Rest, PC1, Instrs, Labels).
 
 %% wam_parts_to_instr(+Parts, -Instr)
 %  Convert parsed WAM line parts to an instruction term.
@@ -950,6 +993,30 @@ wam_wat_case(retry_me_else,
   (call $update_choice_point (i32.wrap_i64 (local.get $op1)))
   (call $inc_pc)
   (i32.const 1)').
+
+wam_wat_case(neck_cut_test,
+'  ;; Combined guard test + conditional jump for cut-deterministic
+  ;; 2-clause predicates. Emitted by the peephole optimizer when it
+  ;; detects try_me_else + guard + cut. No choice point is created.
+  ;; op1 = else clause PC, op2 = (guard_builtin_id << 32) | arity.
+  ;; If guard succeeds: advance PC (continue with clause 1 body).
+  ;; If guard fails: undo the current allocate frame and jump to
+  ;; the else clause — no CP push/pop, no register save/restore.
+  (local $else_pc i32) (local $guard_id i32) (local $guard_arity i32)
+  (local.set $else_pc (i32.wrap_i64 (local.get $op1)))
+  (local.set $guard_id (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
+  (local.set $guard_arity (i32.wrap_i64 (local.get $op2)))
+  (if (result i32) (call $execute_builtin (local.get $guard_id) (local.get $guard_arity))
+    (then
+      (call $inc_pc)
+      (i32.const 1))
+    (else
+      ;; Guard failed: pop the env frame that allocate pushed for
+      ;; clause 1 (the else clause will do its own allocate).
+      (call $set_stack_top (global.get $env_base))
+      (global.set $env_base (i32.load (global.get $env_base)))
+      (call $set_pc (local.get $else_pc))
+      (i32.const 1)))').
 
 wam_wat_case(trust_me,
 '  ;; Remove choice point (last alternative)
@@ -2128,7 +2195,14 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
             _, fail)
     ->  atom_string(WamCode, WamStr),
         split_string(WamStr, "\n", "", Lines),
-        wam_lines_to_instrs(Lines, 0, Instrs, LocalLabels),
+        %% Parse with label markers interspersed in the instruction list
+        wam_lines_to_instrs_with_labels(Lines, 0, InstrsWithLabels),
+        %% Run peephole optimizer (may remove instructions, changing PCs)
+        peephole_neck_cut(InstrsWithLabels, OptimizedWithLabels),
+        %% Extract real instructions and recompute label PCs from the
+        %% optimized list. Label markers (label(Name)) are stripped;
+        %% their position becomes the label PC in the local table.
+        extract_instrs_and_labels(OptimizedWithLabels, 0, Instrs, LocalLabels),
         length(Instrs, NumInstrs),
         format(user_error,
                '  ~w/~w: WAM compilation (~w instructions, start PC ~w)~n',
@@ -2160,8 +2234,9 @@ shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
 %% encode_all_predicates(+PredData, +GlobalLabels, -AllHex)
 %  Re-encode every predicate's instructions against the merged label
 %  table, concatenating the resulting hex byte strings in predicate
-%  order. The order matches pass1 so instruction indices remain
-%  consistent with start PCs.
+%  order. Before encoding, each predicate's instruction list is run
+%  through a peephole optimizer that converts cut-deterministic
+%  2-clause patterns into neck_cut_test instructions (no CP needed).
 encode_all_predicates([], _, '').
 encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
                       GlobalLabels, AllHex) :-
@@ -2169,6 +2244,49 @@ encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
     atomic_list_concat(HexParts, PredHex),
     encode_all_predicates(Rest, GlobalLabels, RestHex),
     atomic_list_concat([PredHex, RestHex], AllHex).
+
+%% peephole_neck_cut(+Instrs, -Optimized)
+%  Detects 2-clause cut-deterministic patterns and replaces
+%  try_me_else + guard + cut with a single neck_cut_test instruction
+%  that does an inline guard check + conditional jump, no CP.
+%
+%  Pattern: try_me_else(L), allocate, ...get/put...,
+%           builtin_call(Guard, N), builtin_call('!/0', 0), ...body1...,
+%           L:trust_me, allocate, ...body2...
+%
+%  Output:  allocate, ...get/put..., neck_cut_test(Guard, N, L),
+%           ...body1 (without cut)...,
+%           L:allocate (trust_me removed), ...body2...
+peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
+    find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
+    remove_label_trust_me(AfterCut, L, Cleaned),
+    !,
+    append([allocate | BeforeGuard],
+           [neck_cut_test(GuardOp, GuardArity, L) | Cleaned],
+           Optimized).
+peephole_neck_cut(Instrs, Instrs).
+
+%% find_guard_and_cut(+Instrs, -Before, -GuardOp, -GuardArity, -After)
+%  Scans for builtin_call(Guard, N), builtin_call('!/0', 0) and splits.
+%  Only matches if the guard is within the first 15 elements (instructions
+%  + label markers). Skips label markers in the "Before" accumulator.
+find_guard_and_cut(Instrs, Before, GuardOp, GuardArity, After) :-
+    find_guard_and_cut_(Instrs, 0, Before, GuardOp, GuardArity, After).
+
+find_guard_and_cut_([builtin_call(G, N), builtin_call('!/0', 0) | After],
+                    _, [], G, N, After) :- !.
+find_guard_and_cut_([I | Rest], Depth, [I | Before], G, N, After) :-
+    Depth < 15,
+    D1 is Depth + 1,
+    find_guard_and_cut_(Rest, D1, Before, G, N, After).
+
+%% remove_label_trust_me(+Instrs, +Label, -Cleaned)
+%  Finds label(L), trust_me in the instruction stream and removes the
+%  trust_me (keeping the label — it is the jump target for neck_cut_test).
+remove_label_trust_me([], _, []).
+remove_label_trust_me([label(L), trust_me | Rest], L, [label(L) | Rest]) :- !.
+remove_label_trust_me([I | Rest], L, [I | Cleaned]) :-
+    remove_label_trust_me(Rest, L, Cleaned).
 
 %% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
 %%                     -Funcs, -Exports)
