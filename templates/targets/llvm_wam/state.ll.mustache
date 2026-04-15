@@ -2223,6 +2223,10 @@ define %Value @wam_make_list_value(%List* %list_ptr) {
 ; Uses a module-level constant to avoid allocation.
 @wam_empty_list = internal constant %List { i32 0, %Value* null }
 
+; Format strings for write/1 and nl/0 builtins.
+@.fmt_int = private constant [3 x i8] c"%d\00"
+@.fmt_nl  = private constant [2 x i8] c"\0A\00"
+
 define %Value @wam_make_empty_list_value() {
   %v0 = insertvalue %Value undef, i32 4, 0
   %ptr_i64 = ptrtoint %List* @wam_empty_list to i64

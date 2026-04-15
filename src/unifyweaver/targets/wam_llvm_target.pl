@@ -2335,9 +2335,19 @@ entry:
     i32 8, label %builtin_true
     i32 9, label %builtin_fail
     i32 10, label %builtin_cut
+    i32 11, label %builtin_write
+    i32 12, label %builtin_nl
+    i32 13, label %builtin_atom_check
     i32 14, label %builtin_integer_check
+    i32 15, label %builtin_float_check
+    i32 16, label %builtin_number_check
+    i32 17, label %builtin_compound_check
     i32 18, label %builtin_var
     i32 19, label %builtin_nonvar
+    i32 20, label %builtin_is_list_check
+    i32 21, label %builtin_neq
+    i32 22, label %builtin_succ
+    i32 23, label %builtin_plus
   ]
 
 builtin_is:
@@ -2441,6 +2451,124 @@ builtin_nonvar:
   %nv.nr = xor i1 %nv.r, true
   ret i1 %nv.nr
 
+builtin_atom_check:
+  %ac.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ac.tag = call i32 @value_tag(%Value %ac.a1)
+  %ac.r = icmp eq i32 %ac.tag, 0
+  ret i1 %ac.r
+
+builtin_float_check:
+  %fc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fc.tag = call i32 @value_tag(%Value %fc.a1)
+  %fc.r = icmp eq i32 %fc.tag, 2
+  ret i1 %fc.r
+
+builtin_number_check:
+  ; number/1: true if integer (tag=1) or float (tag=2)
+  %nc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nc.tag = call i32 @value_tag(%Value %nc.a1)
+  %nc.is_int = icmp eq i32 %nc.tag, 1
+  %nc.is_flt = icmp eq i32 %nc.tag, 2
+  %nc.r = or i1 %nc.is_int, %nc.is_flt
+  ret i1 %nc.r
+
+builtin_compound_check:
+  %cc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cc.tag = call i32 @value_tag(%Value %cc.a1)
+  %cc.r = icmp eq i32 %cc.tag, 3
+  ret i1 %cc.r
+
+builtin_is_list_check:
+  ; is_list/1: true if list (tag=4) or the empty list atom []
+  %ilc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ilc.tag = call i32 @value_tag(%Value %ilc.a1)
+  %ilc.r = icmp eq i32 %ilc.tag, 4
+  ret i1 %ilc.r
+
+builtin_neq:
+  ; \\==/2: not structurally equal
+  %neq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %neq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %neq.eq = call i1 @value_equals(%Value %neq.a1, %Value %neq.a2)
+  %neq.r = xor i1 %neq.eq, true
+  ret i1 %neq.r
+
+builtin_write:
+  ; write/1: print A1 payload as integer via printf. No-op on WASM.
+  %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wr.tag = call i32 @value_tag(%Value %wr.a1)
+  %wr.pay = call i64 @value_payload(%Value %wr.a1)
+  %wr.is_int = icmp eq i32 %wr.tag, 1
+  br i1 %wr.is_int, label %wr.print_int, label %wr.done
+
+wr.print_int:
+  %wr.fmt = getelementptr [3 x i8], [3 x i8]* @.fmt_int, i32 0, i32 0
+  %wr.i32 = trunc i64 %wr.pay to i32
+  call i32 (i8*, ...) @printf(i8* %wr.fmt, i32 %wr.i32)
+  br label %wr.done
+
+wr.done:
+  ret i1 true
+
+builtin_nl:
+  ; nl/0: print newline via printf.
+  %nl.fmt = getelementptr [2 x i8], [2 x i8]* @.fmt_nl, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %nl.fmt)
+  ret i1 true
+
+builtin_succ:
+  ; succ/2: A2 is A1 + 1 (or A1 is A2 - 1 if A1 unbound)
+  %sc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %sc.a1_unb = call i1 @value_is_unbound(%Value %sc.a1)
+  br i1 %sc.a1_unb, label %sc.reverse, label %sc.forward
+
+sc.forward:
+  %sc.v1 = call i64 @value_payload(%Value %sc.a1)
+  %sc.v2 = add i64 %sc.v1, 1
+  %sc.r2 = call %Value @value_integer(i64 %sc.v2)
+  %sc.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sc.a2_unb = call i1 @value_is_unbound(%Value %sc.a2)
+  br i1 %sc.a2_unb, label %sc.bind2, label %sc.check2
+
+sc.bind2:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %sc.r2)
+  ret i1 true
+
+sc.check2:
+  %sc.eq2 = call i1 @value_equals(%Value %sc.a2, %Value %sc.r2)
+  ret i1 %sc.eq2
+
+sc.reverse:
+  %sc.a2r = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sc.v2r = call i64 @value_payload(%Value %sc.a2r)
+  %sc.v1r = sub i64 %sc.v2r, 1
+  %sc.r1 = call %Value @value_integer(i64 %sc.v1r)
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %sc.r1)
+  ret i1 true
+
+builtin_plus:
+  ; plus/3: A3 is A1 + A2 (or reverse if A3 bound)
+  %pl.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %pl.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pl.v1 = call i64 @value_payload(%Value %pl.a1)
+  %pl.v2 = call i64 @value_payload(%Value %pl.a2)
+  %pl.sum = add i64 %pl.v1, %pl.v2
+  %pl.r = call %Value @value_integer(i64 %pl.sum)
+  %pl.a3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pl.a3_unb = call i1 @value_is_unbound(%Value %pl.a3)
+  br i1 %pl.a3_unb, label %pl.bind, label %pl.check
+
+pl.bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %pl.r)
+  ret i1 true
+
+pl.check:
+  %pl.eq = call i1 @value_equals(%Value %pl.a3, %Value %pl.r)
+  ret i1 %pl.eq
+
 unknown:
   ret i1 false
 }'.
@@ -2495,7 +2623,7 @@ eval_binary:
   %b = call i64 @eval_arith(%WamState* %vm, %Value %arg1)
   ; Dispatch on functor: check first char for +, -, *, /
   %fn_first = load i8, i8* %fn_ptr
-  switch i8 %fn_first, label %fail [
+  switch i8 %fn_first, label %check_named_binary [
     i8 43, label %do_add     ; \'+\'
     i8 45, label %do_sub     ; \'-\'
     i8 42, label %do_mul     ; \'*\'
@@ -2522,6 +2650,38 @@ do_div_ok:
   %div_r = sdiv i64 %a, %b
   ret i64 %div_r
 
+check_named_binary:
+  ; Check for named binary ops: mod, max, min (match on first char m).
+  %nb_first = load i8, i8* %fn_ptr
+  %nb_is_m = icmp eq i8 %nb_first, 109  ; \'m\'
+  br i1 %nb_is_m, label %nb_check_second, label %fail
+
+nb_check_second:
+  %nb_second_ptr = getelementptr i8, i8* %fn_ptr, i32 1
+  %nb_second = load i8, i8* %nb_second_ptr
+  switch i8 %nb_second, label %fail [
+    i8 111, label %do_mod   ; \'o\' → mod
+    i8 97, label %do_max    ; \'a\' → max
+    i8 105, label %do_min   ; \'i\' → min
+  ]
+
+do_mod:
+  %mod_zero = icmp eq i64 %b, 0
+  br i1 %mod_zero, label %fail, label %do_mod_ok
+do_mod_ok:
+  %mod_r = srem i64 %a, %b
+  ret i64 %mod_r
+
+do_max:
+  %max_cmp = icmp sgt i64 %a, %b
+  %max_r = select i1 %max_cmp, i64 %a, i64 %b
+  ret i64 %max_r
+
+do_min:
+  %min_cmp = icmp slt i64 %a, %b
+  %min_r = select i1 %min_cmp, i64 %a, i64 %b
+  ret i64 %min_r
+
 check_unary:
   %is_unary = icmp eq i32 %arity, 1
   br i1 %is_unary, label %eval_unary, label %fail
@@ -2531,12 +2691,20 @@ eval_unary:
   %u_arg = load %Value, %Value* %u_arg_ptr
   %u_val = call i64 @eval_arith(%WamState* %vm, %Value %u_arg)
   %u_fn_first = load i8, i8* %fn_ptr
-  %u_is_neg = icmp eq i8 %u_fn_first, 45  ; \'-\'
-  br i1 %u_is_neg, label %do_neg, label %fail
+  switch i8 %u_fn_first, label %fail [
+    i8 45, label %do_neg     ; \'-\' → negation
+    i8 97, label %do_abs     ; \'a\' → abs
+  ]
 
 do_neg:
   %neg_r = sub i64 0, %u_val
   ret i64 %neg_r
+
+do_abs:
+  %abs_neg = icmp slt i64 %u_val, 0
+  %abs_pos = sub i64 0, %u_val
+  %abs_r = select i1 %abs_neg, i64 %abs_pos, i64 %u_val
+  ret i64 %abs_r
 
 fail:
   ret i64 0
@@ -2730,6 +2898,9 @@ builtin_op_to_id('compound/1', 17).
 builtin_op_to_id('var/1', 18).
 builtin_op_to_id('nonvar/1', 19).
 builtin_op_to_id('is_list/1', 20).
+builtin_op_to_id('\\==/2', 21).
+builtin_op_to_id('succ/2', 22).
+builtin_op_to_id('plus/3', 23).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
