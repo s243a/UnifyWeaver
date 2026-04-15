@@ -31,8 +31,14 @@ main :-
         bench_suite:bench_sum_small/0,
         bench_suite:bench_sum_medium/0,
         bench_suite:bench_sum_big/0,
+        bench_suite:bench_term_depth/0,
+        bench_suite:bench_fib10/0,
         bench_term_walk:sum_ints/3,
-        bench_term_walk:sum_ints_args/5
+        bench_term_walk:sum_ints_args/5,
+        bench_suite:term_depth/2,
+        bench_suite:term_depth_args/5,
+        bench_suite:fib/3,
+        bench_suite:max_of/3
     ],
     write_wam_wat_project(
         Predicates,
