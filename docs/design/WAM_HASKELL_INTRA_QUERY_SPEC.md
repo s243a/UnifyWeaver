@@ -74,6 +74,36 @@ If the C# query engine's demand analysis produces a *purity certificate*
 for a predicate, the WAM compiler can emit `ParTryMeElse` automatically.
 This is a future hook, not a Phase 4 deliverable.
 
+### 3.3 Global kill-switch: `intra_query_parallel(false)` (future TODO)
+
+A future addition to `write_wam_haskell_project/3`'s options list —
+not needed for the Phase 4.1 MVP because the annotation is already
+opt-in (unannotated predicates get sequential `TryMeElse` as before,
+so the default *is* "off" predicate-by-predicate). The option would:
+
+- Ignore every `:- parallel/1` / `:- order_independent/1` annotation.
+- Ignore every C# purity certificate (see §3.2).
+- Emit sequential `TryMeElse` / `RetryMeElse` / `TrustMe` for all
+  multi-clause predicates regardless.
+
+Useful once Par* emission exists, for:
+
+- **Debugging.** Confirm a test failure is or isn't caused by the
+  parallel path without touching sources.
+- **Regression benchmarking.** Compare Par* vs sequential on the same
+  generated project.
+- **Host-portability.** Target a GHC build or runtime where spark
+  overhead is intolerable (e.g. very small process, tight RTS budget).
+
+Why it's *not* in the Phase 4.1 MVP: the annotation being opt-in is
+already a stronger guarantee than a runtime flag. A predicate without
+`:- parallel/1` can't, even in principle, be affected by Phase 4.1's
+changes — there's no Par* instruction to gate. Add the option alongside
+the first round of Par* emission (likely Phase 4.1 or 4.2), guarded by
+a single `option(intra_query_parallel(true), Options, true)` check
+around the emit call. Cost is trivial; we leave it out of the MVP only
+to avoid shipping dead code.
+
 A purity certificate guarantees:
 - No `assert`/`retract` in the predicate or transitively
 - No I/O
