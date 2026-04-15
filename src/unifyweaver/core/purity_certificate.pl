@@ -61,7 +61,14 @@
     % Strict whitelist (for tail-recursion transformation and other
     % consumers that refuse to trust the permissive blacklist).
     pure_builtin/1,                   % ?Functor/Arity
-    is_whitelist_pure_goal/1          % +Goal
+    is_whitelist_pure_goal/1,         % +Goal
+
+    % Contradiction detection — runs every producer and reports any
+    % disagreement between a higher-priority `pure` verdict and a
+    % lower-priority `impure` verdict. Pure (no side effects by
+    % default); callers decide how loud to be about findings.
+    check_purity_contradictions/2,    % +PredIndicator, -Contradictions
+    warn_purity_contradictions/1      % +PredIndicator — prints to user_error
 ]).
 
 :- use_module(library(lists)).
@@ -181,6 +188,87 @@ is_certified_impure(PredIndicator, Reasons) :-
 purity_confidence(PredIndicator, Confidence) :-
     analyze_predicate_purity(PredIndicator,
                              purity_cert(_, _, Confidence, _)).
+
+% ============================================================================
+% CONTRADICTION DETECTION
+% ============================================================================
+
+%% check_purity_contradictions(+PredIndicator, -Contradictions)
+%  Runs every registered producer (not just first-match) and reports
+%  disagreement. A contradiction is emitted when a higher-priority
+%  producer says `pure` but a lower-priority producer finds `impure`.
+%
+%  Why this exists: the default `analyze_predicate_purity/2` picks
+%  the highest-priority non-unknown verdict, which means a user
+%  annotation (priority 100) can mask an impure body that the
+%  blacklist (priority 50) would flag. This predicate surfaces the
+%  discrepancy so callers can warn, error, or log — without the
+%  module itself deciding which is "right" (the user may have good
+%  reason to assert purity despite an impure-looking body, e.g.
+%  memoization via assertz that's semantically transparent).
+%
+%  Contradictions are reported as terms of the form:
+%      contradiction(HighSource, HighVerdict, LowSource, LowVerdict)
+%  where HighSource / LowSource are producer names and HighVerdict /
+%  LowVerdict are the full purity_cert terms from each.
+%
+%  No side effects — this predicate is pure. Callers that want a
+%  warning printed should use warn_purity_contradictions/1.
+check_purity_contradictions(PredIndicator, Contradictions) :-
+    normalize_pred_indicator(PredIndicator, Normalized),
+    registered_producers(Specs),
+    producer_verdicts(Specs, Normalized, predicate, Verdicts),
+    % A contradiction is a higher-priority pure paired with a
+    % lower-priority impure. Walk the priority-ordered list and
+    % collect such pairs.
+    find_contradictions(Verdicts, Contradictions).
+
+producer_verdicts([], _, _, []).
+producer_verdicts([producer_spec(Name, _Pri, Analyzer)|Rest],
+                  Subject, Kind,
+                  [verdict(Name, Cert)|RestOut]) :-
+    ( catch(call(Analyzer, Subject, Kind, Cert), _, fail)
+    -> true
+    ; Cert = purity_cert(unknown, inferred, 0.0, [producer_errored])
+    ),
+    producer_verdicts(Rest, Subject, Kind, RestOut).
+
+% find_contradictions: for each pair of verdicts where the higher-priority
+% one is `pure` and the lower-priority one is `impure`, emit a contradiction.
+find_contradictions([], []).
+find_contradictions([verdict(HiName, HiCert)|Rest], Out) :-
+    HiCert = purity_cert(pure, _, _, _),
+    !,
+    findall(contradiction(HiName, HiCert, LoName, LoCert),
+            ( member(verdict(LoName, LoCert), Rest),
+              LoCert = purity_cert(impure(_), _, _, _)
+            ),
+            Here),
+    find_contradictions(Rest, More),
+    append(Here, More, Out).
+find_contradictions([_|Rest], Out) :-
+    find_contradictions(Rest, Out).
+
+%% warn_purity_contradictions(+PredIndicator)
+%  Opt-in convenience over check_purity_contradictions/2 — prints each
+%  contradiction to user_error. Always succeeds; prints nothing if
+%  there are no contradictions.
+%
+%  Suitable for compiler pipelines that want to surface user-declared
+%  purity that looks wrong under static analysis. Unlike a hard
+%  failure, this only warns — the user's declaration is still
+%  trusted by analyze_predicate_purity/2.
+warn_purity_contradictions(PredIndicator) :-
+    check_purity_contradictions(PredIndicator, Contradictions),
+    forall(member(C, Contradictions),
+           print_contradiction(PredIndicator, C)).
+
+print_contradiction(Pred,
+        contradiction(HiName, _HiCert, LoName,
+                      purity_cert(impure(Reasons), _, _, _))) :-
+    format(user_error,
+           "~N[purity_certificate] ~w: ~w says pure but ~w finds impure: ~w~n",
+           [Pred, HiName, LoName, Reasons]).
 
 % ============================================================================
 % MERGE
@@ -351,7 +439,61 @@ impurity_class(send_message(_,_), domain_specific).
 impurity_class(succ_or_zero(_,_), domain_specific).
 
 % ============================================================================
-% PRODUCER 3: STRICT BUILTIN WHITELIST
+% PRODUCER 3: KERNEL REGISTRY (P3)
+% ============================================================================
+
+%% kernel_analyzer(+Subject, +Kind, -Cert)
+%  Decides purity by asking recursive_kernel_detection whether the
+%  predicate matches one of the hand-coded native kernel shapes
+%  (category_ancestor, transitive_closure2, transitive_distance3,
+%  weighted_shortest_path3, transitive_parent_distance4,
+%  astar_shortest_path4, transitive_step_parent_distance5, …).
+%
+%  Rationale: kernels are audited-by-construction. The kernel author
+%  has hand-written native code that implements the predicate with
+%  no side effects, so when the detector matches the predicate's
+%  clause pattern, we're entitled to a very high-confidence pure
+%  verdict — higher than the syntactic blacklist, weaker only than
+%  an explicit user annotation.
+%
+%  Registered at priority 90 (above blacklist 50, below user
+%  annotations 100). This lets kernel verdicts win when the blacklist
+%  would otherwise say `unknown` for a non-standard functor inside
+%  the kernel's body (e.g., the kernel calls some user-defined helper
+%  that the blacklist can't classify).
+%
+%  NOTE: invoking the detector requires actually loading the user's
+%  clauses. For predicates with no clauses we return `unknown` rather
+%  than false — a predicate the compiler hasn't yet seen isn't
+%  provably a kernel *or* provably not one.
+kernel_analyzer(Pred/Arity, predicate, Cert) :-
+    nonvar(Pred), integer(Arity),
+    !,
+    kernel_analyzer(user:Pred/Arity, predicate, Cert).
+kernel_analyzer(Module:Pred/Arity, predicate, Cert) :-
+    nonvar(Module),
+    !,
+    functor(Head, Pred, Arity),
+    findall(Head-StrippedBody,
+            ( catch(clause(Module:Head, Body), _, fail),
+              strip_body_modules(Body, StrippedBody)
+            ),
+            Clauses),
+    ( Clauses == []
+    -> Cert = purity_cert(unknown, inferred, 0.0, [not_a_kernel])
+    ;  catch(
+           recursive_kernel_detection:detect_recursive_kernel(
+               Pred, Arity, Clauses, _Kernel),
+           _, fail)
+    -> Cert = purity_cert(pure, certified(kernel_registry), 1.0,
+                          [kernel_owned])
+    ;  Cert = purity_cert(unknown, inferred, 0.0, [not_a_kernel])
+    ).
+kernel_analyzer(_, _, purity_cert(unknown, inferred, 0.0,
+                                  [kernel_unsupported_subject])).
+
+% ============================================================================
+% PRODUCER 4: STRICT BUILTIN WHITELIST
 % ============================================================================
 
 %% whitelist_analyzer(+Subject, +Kind, -Cert)
@@ -455,6 +597,33 @@ pure_builtin(true/0).
 normalize_pred_indicator(Module:Pred/Arity, Module:Pred/Arity) :- !.
 normalize_pred_indicator(Pred/Arity, user:Pred/Arity).
 
+%% strip_body_modules(+Body, -Stripped)
+%  Peel off any M:Goal wrappers at the top level and inside
+%  conjunctions/disjunctions so downstream pattern matchers see the
+%  raw structure. assertz/1 from a non-user module tags the body with
+%  the calling module, which trips detectors that pattern-match on
+%  `(Goal, Rest)` expecting a bare conjunction.
+strip_body_modules(Var, Var) :- var(Var), !.
+strip_body_modules(_M:Body, Stripped) :-
+    !,
+    strip_body_modules(Body, Stripped).
+strip_body_modules((A, B), (SA, SB)) :-
+    !,
+    strip_body_modules(A, SA),
+    strip_body_modules(B, SB).
+strip_body_modules((A ; B), (SA ; SB)) :-
+    !,
+    strip_body_modules(A, SA),
+    strip_body_modules(B, SB).
+strip_body_modules((A -> B), (SA -> SB)) :-
+    !,
+    strip_body_modules(A, SA),
+    strip_body_modules(B, SB).
+strip_body_modules(\+ A, \+ SA) :-
+    !,
+    strip_body_modules(A, SA).
+strip_body_modules(Goal, Goal).
+
 %% normalize_body_goals(+Body, -Goals)
 %  Flatten a clause body conjunction into a list of goals.
 %  Duplicates clause_body_analysis:normalize_goals/2 to avoid a
@@ -495,6 +664,11 @@ collect_unknown_reasons(Certs, Reasons) :-
                        purity_certificate:user_annotation_analyzer,
                        [goal, predicate]),
        100).
+:- register_purity_producer(
+       purity_producer(kernel_registry,
+                       purity_certificate:kernel_analyzer,
+                       [predicate]),
+       90).
 :- register_purity_producer(
        purity_producer(blacklist,
                        purity_certificate:blacklist_analyzer,
