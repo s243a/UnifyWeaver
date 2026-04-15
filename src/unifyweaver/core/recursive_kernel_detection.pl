@@ -84,6 +84,7 @@ kernel_detector(transitive_distance3, detect_transitive_distance).
 kernel_detector(weighted_shortest_path3, detect_weighted_shortest_path).
 kernel_detector(transitive_parent_distance4, detect_transitive_parent_distance).
 kernel_detector(astar_shortest_path4, detect_astar_shortest_path).
+kernel_detector(transitive_step_parent_distance5, detect_transitive_step_parent_distance).
 
 %% =====================================================================
 %% Kernel metadata
@@ -95,6 +96,7 @@ kernel_native_kind(transitive_distance3, transitive_distance3).
 kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
 kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
 kernel_native_kind(astar_shortest_path4, astar_shortest_path4).
+kernel_native_kind(transitive_step_parent_distance5, transitive_step_parent_distance5).
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
@@ -102,6 +104,7 @@ kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
 kernel_result_layout(transitive_parent_distance4, tuple(3)).  % (target, parent, distance)
 kernel_result_layout(astar_shortest_path4, tuple(1)).  % single distance (goal-directed)
+kernel_result_layout(transitive_step_parent_distance5, tuple(4)).  % (target, step, parent, distance)
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
@@ -109,6 +112,7 @@ kernel_result_mode(transitive_distance3, stream).
 kernel_result_mode(weighted_shortest_path3, stream).
 kernel_result_mode(transitive_parent_distance4, stream).
 kernel_result_mode(astar_shortest_path4, stream).  % stream of at most 1
+kernel_result_mode(transitive_step_parent_distance5, stream).
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
@@ -116,6 +120,7 @@ kernel_expected_arity(transitive_distance3, 3).
 kernel_expected_arity(weighted_shortest_path3, 3).
 kernel_expected_arity(transitive_parent_distance4, 4).
 kernel_expected_arity(astar_shortest_path4, 4).
+kernel_expected_arity(transitive_step_parent_distance5, 5).
 
 %% =====================================================================
 %% Register layout — describes input/output registers for each kernel
@@ -163,6 +168,14 @@ kernel_register_layout(astar_shortest_path4, [
     input(2, atom),          % target node (must be bound — goal-directed)
     input(3, integer),       % dimensionality (Minkowski exponent)
     output(4, float)         % shortest-path distance
+]).
+
+kernel_register_layout(transitive_step_parent_distance5, [
+    input(1, atom),          % source node
+    output(2, atom),         % target node
+    output(3, atom),         % first hop (step) from source
+    output(4, atom),         % immediate parent of target
+    output(5, integer)       % distance
 ]).
 
 %% =====================================================================
@@ -221,6 +234,12 @@ kernel_native_call(astar_shortest_path4,
         reg(3)                                       % dimensionality (integer)
     ])).
 
+kernel_native_call(transitive_step_parent_distance5,
+    call(nativeKernel_transitive_step_parent_distance, [
+        config_facts_from(edge_pred),     % edges map
+        reg(1)                            % source node
+    ])).
+
 %% =====================================================================
 %% Template file mapping — Mustache template for each kernel kind
 %% =====================================================================
@@ -231,6 +250,7 @@ kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustac
 kernel_template_file(weighted_shortest_path3, 'kernel_weighted_shortest_path.hs.mustache').
 kernel_template_file(transitive_parent_distance4, 'kernel_transitive_parent_distance.hs.mustache').
 kernel_template_file(astar_shortest_path4, 'kernel_astar_shortest_path.hs.mustache').
+kernel_template_file(transitive_step_parent_distance5, 'kernel_transitive_step_parent_distance.hs.mustache').
 
 %% =====================================================================
 %% Detector: category_ancestor
@@ -603,6 +623,56 @@ find_astar_recursive_call(Goal, Pred, Start, Target, Dim, RestW) :-
     A2 == Target,
     A3 == Dim,
     RestW = A4.
+
+%% =====================================================================
+%% Detector: transitive_step_parent_distance
+%%   (BFS + first hop + immediate parent + distance)
+%%
+%% Matches the shape:
+%%   tspd(X, Y, Y, X, 1) :- edge(X, Y).
+%%       % direct edge: step is the target, parent is the source
+%%   tspd(X, Y, Mid, P, D) :-
+%%       edge(X, Mid),
+%%       tspd(Mid, Y, _IgnoredStep, P, D1),
+%%       D is D1 + 1.
+%%       % step is the first edge target; parent comes from recursion
+%%
+%% Extracted config: edge_pred(EdgePred/2).
+%% =====================================================================
+
+detect_transitive_step_parent_distance(Pred, 5, Clauses, Kernel) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseBody \= RecBody,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseStep, BaseParent, BaseDist],
+    RecHead =.. [Pred, RecStart, RecTarget, RecStep, RecParent, RecDist],
+    % Base: direct edge with step==target, parent==source, dist==1
+    BaseStep == BaseTarget,
+    BaseParent == BaseStart,
+    (   BaseDist == 1 ; find_unify_one(BaseBody, BaseDist) ),
+    find_edge_in_body(BaseBody, BaseStart, BaseTarget, EdgePred),
+    % Recursive: edge(X, Mid), tspd(Mid, Y, _, P, D1), D is D1 + 1
+    find_edge_from(RecBody, RecStart, EdgePred, Mid),
+    RecStep == Mid,  % step in head is the immediate edge target
+    find_tspd_recursive_call(RecBody, Pred, Mid, RecTarget, RecParent, D1),
+    find_is_plus_one(RecBody, RecDist, D1),
+    Kernel = recursive_kernel(transitive_step_parent_distance5, Pred/5,
+                              [edge_pred(EdgePred/2)]).
+
+%% find_tspd_recursive_call(+Body, +Pred, +Start, +Target, +Parent, -Dist)
+%  Find `Pred(Start, Target, _IgnoredStep, Parent, Dist)` call.
+find_tspd_recursive_call((A, _), Pred, Start, Target, Parent, Dist) :-
+    find_tspd_recursive_call(A, Pred, Start, Target, Parent, Dist), !.
+find_tspd_recursive_call((_, B), Pred, Start, Target, Parent, Dist) :-
+    find_tspd_recursive_call(B, Pred, Start, Target, Parent, Dist), !.
+find_tspd_recursive_call(Goal, Pred, Start, Target, Parent, Dist) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [Pred, A1, A2, _IgnoredA3, A4, A5],
+    A1 == Start,
+    A2 == Target,
+    A4 == Parent,
+    Dist = A5.
 
 %% =====================================================================
 %% Helper: sub_term/2 — check if a term appears anywhere in a body
