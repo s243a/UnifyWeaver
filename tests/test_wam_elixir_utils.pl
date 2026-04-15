@@ -11,7 +11,7 @@ pass(Test) :-
 
 fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
-    (   test_failed -> true ; assert(test_failed) ).
+    (   test_failed -> true ; assertz(test_failed) ).
 
 % --- is_label_part/1 tests ---
 
@@ -40,17 +40,17 @@ test_is_label_part_invalid :-
 
 test_reg_id_x_a :-
     Test = 'reg_id/2: X and A registers',
-    (   reg_id("X1", 1),
-        reg_id("A2", 2),
+    (   reg_id("X1", IdX1), integer(IdX1), IdX1 = 1,
+        reg_id("A2", IdA2), integer(IdA2), IdA2 = 2,
         reg_id('X99', 99),
-        reg_id('A100', 100)
+        reg_id('A100', 100) % Valid syntactically although A1-A99 are more common
     ->  pass(Test)
     ;   fail_test(Test, 'failed mapping X/A registers')
     ).
 
 test_reg_id_y :-
     Test = 'reg_id/2: Y registers',
-    (   reg_id("Y1", 101),
+    (   reg_id("Y1", IdY1), integer(IdY1), IdY1 = 101,
         reg_id("Y2", 102),
         reg_id('Y99', 199)
     ->  pass(Test)
