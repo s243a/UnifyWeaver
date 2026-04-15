@@ -349,18 +349,33 @@ compile_unwind_trail_to_elixir(Code) :-
       state
     else
       [{key, old_val} | rest_trail] = state.trail
-      new_regs = if old_val == {:unbound, -1} do
-        Map.delete(state.regs, key)
-      else
-        Map.put(state.regs, key, old_val)
+      new_state = case key do
+        {:heap_ref, addr} ->
+           if old_val == {:unbound, -1} do
+             %{state | heap: List.replace_at(state.heap, addr, {:unbound, {:heap_ref, addr}})}
+           else
+             %{state | heap: List.replace_at(state.heap, addr, old_val)}
+           end
+        _ ->
+           new_regs = if old_val == {:unbound, -1} do
+             Map.delete(state.regs, key)
+           else
+             Map.put(state.regs, key, old_val)
+           end
+           %{state | regs: new_regs}
       end
-      unwind_trail(%{state | regs: new_regs, trail: rest_trail}, mark)
+      unwind_trail(%{new_state | trail: rest_trail}, mark)
     end
   end', []).
 
 compile_utility_helpers_to_elixir(Code) :-
     format(string(Code),
-'  def trail_binding(state, key) do
+'  def trail_binding(state, {:heap_ref, addr} = key) do
+    old = Enum.at(state.heap, addr, {:unbound, -1})
+    %{state | trail: [{key, old} | state.trail]}
+  end
+
+  def trail_binding(state, key) do
     old = Map.get(state.regs, key, {:unbound, -1})
     %{state | trail: [{key, old} | state.trail]}
   end
@@ -385,8 +400,14 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
+  def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
+    case Enum.at(state.heap, addr) do
+      {:unbound, {:heap_ref, ^addr}} -> ref
+      val -> deref_var(state, val)
+    end
+  end
+
   def deref_var(state, {:unbound, id}) do
-    # TODO: Extend to handle heap addresses (e.g. for get_structure/put_structure)
     case Map.get(state.regs, id) do
       nil -> {:unbound, id}
       val -> deref_var(state, val)
@@ -467,6 +488,16 @@ compile_utility_helpers_to_elixir(Code) :-
   def unify(state, v1, v2) do
     cond do
       v1 == v2 -> {:ok, state}
+      match?({:unbound, {:heap_ref, addr}}, v1) ->
+        {:unbound, {:heap_ref, addr}} = v1
+        new_heap = List.replace_at(state.heap, addr, v2)
+        new_state = state |> trail_binding({:heap_ref, addr})
+        {:ok, %{new_state | heap: new_heap}}
+      match?({:unbound, {:heap_ref, addr}}, v2) ->
+        {:unbound, {:heap_ref, addr}} = v2
+        new_heap = List.replace_at(state.heap, addr, v1)
+        new_state = state |> trail_binding({:heap_ref, addr})
+        {:ok, %{new_state | heap: new_heap}}
       match?({:unbound, _}, v1) ->
         {:unbound, id} = v1
         new_state = state |> trail_binding(id) |> put_reg(id, v2)
