@@ -9,11 +9,7 @@ target triple = "{{target_triple}}"
 {{type_definitions}}
 
 ; === External Declarations ===
-declare i8* @malloc(i64)
-declare void @free(i8*)
-declare i32 @snprintf(i8*, i64, i8*, ...)
-declare i32 @strcmp(i8*, i8*)
-declare i32 @printf(i8*, ...)
+{{external_declarations}}
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1)
 
