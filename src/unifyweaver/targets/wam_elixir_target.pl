@@ -393,7 +393,7 @@ compile_utility_helpers_to_elixir(Code) :-
     Map.get(state.labels, label, state.pc + 1)
   end
 
-  defp parse_functor_arity(fn_name) do
+  def parse_functor_arity(fn_name) do
     case String.split(fn_name, "/") do
       [_, arity_str] -> String.to_integer(arity_str)
       _ -> 0
@@ -415,7 +415,7 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   def deref_var(_state, val), do: val
 
-  defp step_get_structure_ref(state, fn_name, addr) do
+  def step_get_structure_ref(state, fn_name, addr) do
     entry = Enum.at(state.heap, addr)
     cond do
       entry == {:str, fn_name} ->
@@ -426,7 +426,7 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
-  defp step_unify_variable(state, xn) do
+  def step_unify_variable(state, xn) do
     case state.stack do
       [{:unify_ctx, [arg | rest]} | stack_rest] ->
         new_stack = if rest == [], do: stack_rest, else: [{:unify_ctx, rest} | stack_rest]
@@ -443,7 +443,7 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
-  defp step_unify_value(state, xn) do
+  def step_unify_value(state, xn) do
     val = get_reg(state, xn)
     case state.stack do
       [{:unify_ctx, [arg | rest]} | stack_rest] ->
@@ -460,7 +460,7 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
-  defp step_unify_constant(state, c) do
+  def step_unify_constant(state, c) do
     case state.stack do
       [{:unify_ctx, [arg | rest]} | stack_rest] ->
         case unify(state, c, arg) do

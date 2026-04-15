@@ -30,9 +30,9 @@ main :-
     ;   write('FAILED: unify_variable not lowered!'), nl, halt(1)
     ),
     
-    % Verify sum code
+    % Verify sum code uses clause dispatch (try/catch for choice points)
     read_file_to_string('benchmarks/elixir_baseline/lib/test_sum.ex', SumCode, []),
-    (   sub_string(SumCode, _, _, _, 'choice_points:')
-    ->  write('try_me_else lowered successfully.'), nl
-    ;   write('FAILED: try_me_else not lowered!'), nl, halt(1)
+    (   sub_string(SumCode, _, _, _, 'catch')
+    ->  write('try_me_else lowered to clause dispatch.'), nl
+    ;   write('FAILED: try_me_else not dispatched!'), nl, halt(1)
     ).
