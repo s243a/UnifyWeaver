@@ -351,13 +351,13 @@ compile_unwind_trail_to_elixir(Code) :-
       [{key, old_val} | rest_trail] = state.trail
       new_state = case key do
         {:heap_ref, addr} ->
-           if old_val == {:unbound, -1} do
+           if old_val == :not_set do
              %{state | heap: List.replace_at(state.heap, addr, {:unbound, {:heap_ref, addr}})}
            else
              %{state | heap: List.replace_at(state.heap, addr, old_val)}
            end
         _ ->
-           new_regs = if old_val == {:unbound, -1} do
+           new_regs = if old_val == :not_set do
              Map.delete(state.regs, key)
            else
              Map.put(state.regs, key, old_val)
@@ -371,12 +371,12 @@ compile_unwind_trail_to_elixir(Code) :-
 compile_utility_helpers_to_elixir(Code) :-
     format(string(Code),
 '  def trail_binding(state, {:heap_ref, addr} = key) do
-    old = Enum.at(state.heap, addr, {:unbound, -1})
+    old = Enum.at(state.heap, addr, :not_set)
     %{state | trail: [{key, old} | state.trail]}
   end
 
   def trail_binding(state, key) do
-    old = Map.get(state.regs, key, {:unbound, -1})
+    old = Map.get(state.regs, key, :not_set)
     %{state | trail: [{key, old} | state.trail]}
   end
 
@@ -385,7 +385,7 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   def get_reg(state, reg) do
-    val = Map.get(state.regs, reg, {:unbound, -1})
+    val = Map.get(state.regs, reg, {:unbound, reg})
     deref_var(state, val)
   end
 
