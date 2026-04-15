@@ -18,6 +18,7 @@
 :- use_module(library(plunit)).
 :- use_module('../../src/unifyweaver/core/purity_certificate').
 :- use_module('../../src/unifyweaver/core/clause_body_analysis').
+:- use_module('../../src/unifyweaver/core/advanced/purity_analysis').
 
 :- begin_tests(purity_certificate).
 
@@ -146,8 +147,8 @@ test(determinism_predicate,
 % ----------------------------------------------------------------------------
 
 test(termination_deep_conjunction,
-     [setup(build_deep_conjunction(500, Body),
-            assertz((user:deep_pred :- Body))),
+     [setup((build_deep_conjunction(500, Body),
+             assertz((user:deep_pred :- Body)))),
       cleanup(retractall(user:deep_pred))]) :-
     analyze_predicate_purity(deep_pred/0, Cert),
     Cert = purity_cert(pure, _, _, _).
@@ -233,7 +234,8 @@ test(backcompat_is_order_independent_impure_fails,
 test(registered_producers_has_builtins) :-
     registered_producers(Specs),
     assertion(member(producer_spec(user_annotations, 100, _), Specs)),
-    assertion(member(producer_spec(blacklist, 50, _), Specs)).
+    assertion(member(producer_spec(blacklist, 50, _), Specs)),
+    assertion(member(producer_spec(whitelist, 40, _), Specs)).
 
 test(user_annotations_outranks_blacklist,
      % Declared pure wins even over an impure-looking body, because
@@ -248,5 +250,94 @@ test(user_annotations_outranks_blacklist,
       ))]) :-
     analyze_predicate_purity(override_pred/1, Cert),
     Cert = purity_cert(pure, declared, 1.0, _).
+
+% ----------------------------------------------------------------------------
+% P2: whitelist producer
+% ----------------------------------------------------------------------------
+
+test(whitelist_pure_goal_arithmetic) :-
+    assertion(is_whitelist_pure_goal(X is 1 + 2)),
+    _ = X.
+
+test(whitelist_pure_goal_member) :-
+    assertion(is_whitelist_pure_goal(member(_, [1,2,3]))).
+
+test(whitelist_pure_goal_true) :-
+    assertion(is_whitelist_pure_goal(true)).
+
+test(whitelist_pure_goal_rejects_unknown_builtin) :-
+    assertion(\+ is_whitelist_pure_goal(my_unknown_op(_, _))).
+
+test(whitelist_pure_goal_rejects_write) :-
+    assertion(\+ is_whitelist_pure_goal(write(x))).
+
+test(whitelist_analyzer_produces_whitelist_proof) :-
+    purity_certificate:whitelist_analyzer(member(_, [1]), goal, Cert),
+    Cert = purity_cert(pure, analyzed(whitelist), _, Reasons),
+    assertion(memberchk(whitelist_only, Reasons)).
+
+test(whitelist_analyzer_unknown_for_unrecognized) :-
+    purity_certificate:whitelist_analyzer(my_unknown_op(_, _), goal, Cert),
+    Cert = purity_cert(unknown, analyzed(whitelist), _, Reasons),
+    assertion(memberchk(not_in_whitelist, Reasons)).
+
+test(whitelist_catalogue_contains_is) :-
+    assertion(pure_builtin(is/2)).
+
+test(whitelist_catalogue_contains_length) :-
+    assertion(pure_builtin(length/2)).
+
+test(whitelist_catalogue_rejects_assertz) :-
+    assertion(\+ pure_builtin(assertz/1)).
+
+% ----------------------------------------------------------------------------
+% P2: advanced/purity_analysis back-compat
+% ----------------------------------------------------------------------------
+
+test(advanced_is_pure_goal_delegates) :-
+assertion(purity_analysis:is_pure_goal(member(_, [1]))).
+
+test(advanced_is_pure_goal_rejects_write) :-
+assertion(\+ purity_analysis:is_pure_goal(write(x))).
+
+test(advanced_is_pure_goal_rejects_unknown_builtin) :-
+% Stricter than the blacklist — an unknown builtin isn't in the
+    % whitelist, so purity_analysis rejects it even though the
+    % blacklist would (permissively) accept it.
+    assertion(\+ purity_analysis:is_pure_goal(my_unknown_op(x))).
+
+test(advanced_is_pure_body_conjunction) :-
+assertion(purity_analysis:is_pure_body((member(_, [1]), X is 1 + 2))),
+    _ = X.
+
+test(advanced_is_pure_body_rejects_impure) :-
+assertion(\+ purity_analysis:is_pure_body((member(_, [1]), write(x)))).
+
+test(advanced_pure_builtin_delegates) :-
+assertion(purity_analysis:pure_builtin(is/2)),
+    assertion(purity_analysis:pure_builtin(length/2)),
+    assertion(\+ purity_analysis:pure_builtin(assertz/1)).
+
+test(advanced_is_associative_op_local) :-
+% is_associative_op/1 stays local to purity_analysis — it's not
+    % a purity concern and shouldn't have migrated.
+    assertion(purity_analysis:is_associative_op(+)),
+    assertion(purity_analysis:is_associative_op(*)),
+    assertion(\+ purity_analysis:is_associative_op(-)).
+
+% ----------------------------------------------------------------------------
+% P2: whitelist is strictly narrower than blacklist
+% ----------------------------------------------------------------------------
+
+test(whitelist_narrower_than_blacklist) :-
+    % A predicate that's pure by blacklist (not impure) but NOT in
+    % whitelist shows the distinction. user-defined functors fall
+    % into this gap: blacklist can't see them as impure, so they
+    % pass. Whitelist can't see them as pure, so they fail.
+    Goal = my_random_userdef(_),
+    assertion(\+ is_whitelist_pure_goal(Goal)),
+    % Blacklist-layer producer still says pure:
+    purity_certificate:blacklist_analyzer(Goal, goal, BlCert),
+    BlCert = purity_cert(pure, analyzed(blacklist), _, _).
 
 :- end_tests(purity_certificate).
