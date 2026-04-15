@@ -133,9 +133,11 @@ test_parameterized_execute_foreign_category_ancestor :-
         sub_string(Code, _, _, _, "nativeKernel_category_ancestor"),
         %% Output register binding
         sub_string(Code, _, _, _, "IM.lookup 3 (wsRegs s)"),
-        sub_string(Code, _, _, _, "Integer (fromIntegral rv)"),
-        %% Choice point creation for stream results
-        sub_string(Code, _, _, _, "HopsRetry"),
+        sub_string(Code, _, _, _, "Integer (fromIntegral rv_1)"),
+        %% Choice point creation for stream results — all kernels now
+        %% route through FFIStreamRetry (pre-wrapped Values) for type
+        %% correctness with atom/float outputs.
+        sub_string(Code, _, _, _, "FFIStreamRetry"),
         %% Fallback
         sub_string(Code, _, _, _, "executeForeign _ _ _ = Nothing")
     ->  pass(Test)
@@ -190,8 +192,9 @@ test_transitive_closure_execute_foreign :-
         %% Native call: first arg is facts, second is interned atom lookup
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
         sub_string(Code, _, _, _, "Map.lookup r1S (wcAtomIntern ctx)"),
-        %% Output is atom: de-intern via wcAtomDeintern
-        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv (wcAtomDeintern ctx)))"),
+        %% Output is atom: de-intern via wcAtomDeintern (rv_1 after
+        %% routing single-output through the multi-output FFIStreamRetry path)
+        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv_1 (wcAtomDeintern ctx)))"),
         %% Single-input case pattern (not tuple)
         sub_string(Code, _, _, _, "case r1 of"),
         sub_string(Code, _, _, _, "Atom r1S ->")

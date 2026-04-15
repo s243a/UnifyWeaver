@@ -426,19 +426,23 @@ type_pattern(vlist_atoms, VarName, Pattern) :-
 %% emit_native_call_and_binding(+OutputRegs, +FuncName, +ArgSpecs, +InputRegs, +Indent)
 %  Emit the native function call followed by stream binding, all inside
 %  a case branch at the given indentation level.
-%  Single-output kernels (length OutputRegs = 1) keep the original fast
-%  path using HopsRetry. Multi-output kernels use a generalized
-%  FFIStreamRetry variant.
+%
+%  All kernels — single- AND multi-output — go through the FFIStreamRetry
+%  path. The single-output fast path with HopsRetry was retained for
+%  back-compat with category_ancestor/transitive_closure2, but had a
+%  latent bug: its resume logic hardcodes `Integer (fromIntegral h)`,
+%  which is wrong for atom/float outputs. The multi-output path is
+%  type-correct by construction — it carries pre-wrapped Values in the
+%  choice point — so it's strictly better for any non-integer output.
+%
+%  For single-output kernels (length OutputRegs = 1), the emitted code
+%  treats the result as a 1-tuple: `bindResult rv_1` (not a tuple
+%  pattern; `emit_tuple_pattern(1)` produces just `rv_1`).
 emit_native_call_and_binding(OutputRegs, FuncName, ArgSpecs, InputRegs, Indent) :-
     format('~wlet results = ~w', [Indent, FuncName]),
     emit_call_args(ArgSpecs, InputRegs),
     format('~n'),
-    length(OutputRegs, NOuts),
-    (   NOuts =:= 1
-    ->  OutputRegs = [output(OutRegN, OutType)],
-        emit_stream_binding_single(OutRegN, OutType, Indent)
-    ;   emit_stream_binding_multi(OutputRegs, Indent)
-    ).
+    emit_stream_binding_multi(OutputRegs, Indent).
 
 %% emit_stream_binding_single(+OutRegN, +OutType, +Indent)
 %  Single-output stream binding. Unchanged from the original for
