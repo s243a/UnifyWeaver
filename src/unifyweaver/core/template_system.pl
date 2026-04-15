@@ -611,8 +611,16 @@ template('facts/lookup_unary', [
 
 template('facts/lookup_binary', [
 "{{pred}}() {",
-"  local key=\"$1:$2\"",
-"  [[ -n \"${{{pred}}_data[$key]}\" ]] && echo \"$key\"",
+"  if [[ -n \"$2\" ]]; then",
+"    local key=\"$1:$2\"",
+"    [[ -n \"${{{pred}}_data[$key]}\" ]] && echo \"$key\"",
+"  else",
+"    local _m=1",
+"    for key in \"${!{{pred}}_data[@]}\"; do",
+"      if [[ \"$key\" == \"$1:\"* ]]; then echo \"$key\"; _m=0; fi",
+"    done",
+"    return $_m",
+"  fi",
 "}",
 ""
 ]).
