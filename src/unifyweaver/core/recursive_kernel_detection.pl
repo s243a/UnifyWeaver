@@ -83,6 +83,7 @@ kernel_detector(transitive_closure2, detect_transitive_closure).
 kernel_detector(transitive_distance3, detect_transitive_distance).
 kernel_detector(weighted_shortest_path3, detect_weighted_shortest_path).
 kernel_detector(transitive_parent_distance4, detect_transitive_parent_distance).
+kernel_detector(astar_shortest_path4, detect_astar_shortest_path).
 
 %% =====================================================================
 %% Kernel metadata
@@ -93,24 +94,28 @@ kernel_native_kind(transitive_closure2, transitive_closure2).
 kernel_native_kind(transitive_distance3, transitive_distance3).
 kernel_native_kind(weighted_shortest_path3, weighted_shortest_path3).
 kernel_native_kind(transitive_parent_distance4, transitive_parent_distance4).
+kernel_native_kind(astar_shortest_path4, astar_shortest_path4).
 
 kernel_result_layout(category_ancestor, tuple(1)).
 kernel_result_layout(transitive_closure2, tuple(1)).
 kernel_result_layout(transitive_distance3, tuple(2)).  % (target, distance)
 kernel_result_layout(weighted_shortest_path3, tuple(2)).  % (target, weight)
 kernel_result_layout(transitive_parent_distance4, tuple(3)).  % (target, parent, distance)
+kernel_result_layout(astar_shortest_path4, tuple(1)).  % single distance (goal-directed)
 
 kernel_result_mode(category_ancestor, stream).
 kernel_result_mode(transitive_closure2, stream).
 kernel_result_mode(transitive_distance3, stream).
 kernel_result_mode(weighted_shortest_path3, stream).
 kernel_result_mode(transitive_parent_distance4, stream).
+kernel_result_mode(astar_shortest_path4, stream).  % stream of at most 1
 
 kernel_expected_arity(category_ancestor, 4).
 kernel_expected_arity(transitive_closure2, 2).
 kernel_expected_arity(transitive_distance3, 3).
 kernel_expected_arity(weighted_shortest_path3, 3).
 kernel_expected_arity(transitive_parent_distance4, 4).
+kernel_expected_arity(astar_shortest_path4, 4).
 
 %% =====================================================================
 %% Register layout — describes input/output registers for each kernel
@@ -151,6 +156,13 @@ kernel_register_layout(transitive_parent_distance4, [
     output(2, atom),         % target node
     output(3, atom),         % parent on shortest path
     output(4, integer)       % distance
+]).
+
+kernel_register_layout(astar_shortest_path4, [
+    input(1, atom),          % source node
+    input(2, atom),          % target node (must be bound — goal-directed)
+    input(3, integer),       % dimensionality (Minkowski exponent)
+    output(4, float)         % shortest-path distance
 ]).
 
 %% =====================================================================
@@ -200,6 +212,15 @@ kernel_native_call(transitive_parent_distance4,
         reg(1)                            % source node
     ])).
 
+kernel_native_call(astar_shortest_path4,
+    call(nativeKernel_astar_shortest_path, [
+        config_weighted_facts_from(edge_pred),       % weighted edges
+        config_weighted_facts_from(direct_dist_pred), % heuristic oracle
+        reg(1),                                      % source (interned)
+        reg(2),                                      % target (interned)
+        reg(3)                                       % dimensionality (integer)
+    ])).
+
 %% =====================================================================
 %% Template file mapping — Mustache template for each kernel kind
 %% =====================================================================
@@ -209,6 +230,7 @@ kernel_template_file(transitive_closure2, 'kernel_transitive_closure.hs.mustache
 kernel_template_file(transitive_distance3, 'kernel_transitive_distance.hs.mustache').
 kernel_template_file(weighted_shortest_path3, 'kernel_weighted_shortest_path.hs.mustache').
 kernel_template_file(transitive_parent_distance4, 'kernel_transitive_parent_distance.hs.mustache').
+kernel_template_file(astar_shortest_path4, 'kernel_astar_shortest_path.hs.mustache').
 
 %% =====================================================================
 %% Detector: category_ancestor
@@ -516,6 +538,71 @@ find_pd_recursive_call(Goal, Pred, Start, Target, Parent, Dist) :-
     A2 == Target,
     A3 == Parent,
     Dist = A4.
+
+%% =====================================================================
+%% Detector: astar_shortest_path (A* with heuristic)
+%%
+%% Matches the shape (4-arity weighted shortest path with Dim passthrough):
+%%   astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
+%%   astar(X, Y, Dim, TotalW) :-
+%%       weighted_edge(X, Mid, W1),
+%%       astar(Mid, Y, Dim, RestW),
+%%       TotalW is RestW + W1.
+%%
+%% Extracted config:
+%%   - edge_pred(EdgePred/3)             from clauses
+%%   - direct_dist_pred(DistPred/3)      from user-asserted fact (optional)
+%%   - dimensionality(Dim)               from user-asserted fact (default 5)
+%%
+%% If no direct_dist_pred is asserted, astar degenerates to Dijkstra
+%% (heuristic = 0) — still different from wsp because it is goal-directed
+%% (takes a Target input) and returns a single distance.
+%% =====================================================================
+
+detect_astar_shortest_path(Pred, 4, Clauses, Kernel) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseBody \= RecBody,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, _BaseDim, BaseW],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDim, RecTotalW],
+    % Base: astar(X, Y, _, W) :- edge(X, Y, W)
+    find_weighted_edge(BaseBody, BaseStart, BaseTarget, BaseW, EdgePred),
+    % Recursive: edge(X, Mid, W1), astar(Mid, Y, Dim, RestW), TotalW is RestW + W1
+    find_weighted_edge_from(RecBody, RecStart, EdgePred, Mid, W1),
+    find_astar_recursive_call(RecBody, Pred, Mid, RecTarget, RecDim, RestW),
+    find_is_sum(RecBody, RecTotalW, RestW, W1),
+    % Extract optional direct_dist_pred from user facts
+    (   current_predicate(user:direct_dist_pred/1),
+        user:direct_dist_pred(DistPredSpec)
+    ->  DirectDistConf = direct_dist_pred(DistPredSpec)
+    ;   DirectDistConf = direct_dist_pred(EdgePred/3)  % fallback = edges
+    ),
+    % Extract optional dimensionality from user facts
+    (   current_predicate(user:dimensionality/1),
+        user:dimensionality(Dim),
+        integer(Dim)
+    ->  true
+    ;   Dim = 5
+    ),
+    Kernel = recursive_kernel(astar_shortest_path4, Pred/4,
+                              [edge_pred(EdgePred/3),
+                               DirectDistConf,
+                               dimensionality(Dim)]).
+
+%% find_astar_recursive_call(+Body, +Pred, +Start, +Target, +Dim, -RestW)
+%  Find `Pred(Start, Target, Dim, RestW)` recursive call.
+find_astar_recursive_call((A, _), Pred, Start, Target, Dim, RestW) :-
+    find_astar_recursive_call(A, Pred, Start, Target, Dim, RestW), !.
+find_astar_recursive_call((_, B), Pred, Start, Target, Dim, RestW) :-
+    find_astar_recursive_call(B, Pred, Start, Target, Dim, RestW), !.
+find_astar_recursive_call(Goal, Pred, Start, Target, Dim, RestW) :-
+    Goal \= (_, _),
+    compound(Goal),
+    Goal =.. [Pred, A1, A2, A3, A4],
+    A1 == Start,
+    A2 == Target,
+    A3 == Dim,
+    RestW = A4.
 
 %% =====================================================================
 %% Helper: sub_term/2 — check if a term appears anywhere in a body
