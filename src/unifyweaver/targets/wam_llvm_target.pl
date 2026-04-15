@@ -1186,6 +1186,9 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     ;  atomic_list_concat([ForeignGlobals, '\n\n', NativeCode], FinalNativeCode)
     ),
 
+    % Generate external declarations (native vs WASM).
+    generate_external_declarations(Triple, ExternalDecls),
+
     % Assemble full module
     read_template_file('templates/targets/llvm_wam/module.ll.mustache', ModuleTemplate),
     render_template(ModuleTemplate, [
@@ -1194,6 +1197,7 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
         target_datalayout=DataLayout,
         target_triple=Triple,
         type_definitions=TypesDef,
+        external_declarations=ExternalDecls,
         value_functions=ValueFuncs,
         state_functions=StateFuncs,
         runtime_functions=RuntimeFuncs,
@@ -1275,6 +1279,55 @@ write_wam_llvm_wasm_project(Predicates, Options, OutputFile) :-
         close(Stream)
     ),
     format('WAM WASM module created at: ~w~n', [OutputFile]).
+
+%% generate_external_declarations(+Triple, -Decls)
+%  For native targets: declare malloc, free, snprintf, strcmp, printf.
+%  For wasm32: define malloc/free as bump allocator (self-contained),
+%  omit snprintf/strcmp/printf (not available in standalone WASM).
+generate_external_declarations(Triple, Decls) :-
+    ( sub_atom(Triple, 0, _, _, wasm32)
+    -> Decls = '
+; WASM bump allocator providing malloc/free symbols.
+; Heap starts at offset 65536 (64KB reserved for WASM stack).
+; free() is a no-op — memory is reclaimed by @wam_cleanup via arena rewind.
+@wam_malloc_ptr = internal global i64 65536
+
+define i8* @malloc(i64 %size) {
+entry:
+  %ptr_val = load i64, i64* @wam_malloc_ptr
+  %aligned = add i64 %size, 7
+  %masked = and i64 %aligned, -8
+  %new_ptr = add i64 %ptr_val, %masked
+  store i64 %new_ptr, i64* @wam_malloc_ptr
+  %result = inttoptr i64 %ptr_val to i8*
+  ret i8* %result
+}
+
+define void @free(i8* %ptr) {
+  ret void
+}
+
+; Stub printf for WASM (no-op, returns 0).
+define i32 @printf(i8* %fmt, ...) {
+  ret i32 0
+}
+
+; Stub snprintf for WASM (no-op, returns 0).
+define i32 @snprintf(i8* %buf, i64 %size, i8* %fmt, ...) {
+  ret i32 0
+}
+
+; Stub strcmp for WASM (returns 0 = equal, conservative).
+define i32 @strcmp(i8* %a, i8* %b) {
+  ret i32 0
+}
+'
+    ;  Decls = 'declare i8* @malloc(i64)
+declare void @free(i8*)
+declare i32 @snprintf(i8*, i64, i8*, ...)
+declare i32 @strcmp(i8*, i8*)
+declare i32 @printf(i8*, ...)'
+    ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
 %  Generate WASM export wrappers that expose predicates as i32-returning functions.
