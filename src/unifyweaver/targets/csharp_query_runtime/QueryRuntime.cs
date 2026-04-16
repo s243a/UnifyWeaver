@@ -12475,7 +12475,7 @@ namespace UnifyWeaver.QueryRuntime
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
-            var bufferedRows = preserveAllPaths ? new List<PathAwareDepthRow>() : null;
+            var bufferedRows = preserveAllPaths ? new List<PathAwareTargetDepthRow>() : null;
 
             var initialPath = CompactVisitedPath.Create(seedNodeId);
             var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Visited)>();
@@ -12546,7 +12546,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
                     else
                     {
-                        RecordBufferedPathAwareDepthRow(bufferedRows!, seed, next, nextDepth);
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, next, nextDepth);
                     }
 
                     var nextVisited = visited.Extend(nextId);
@@ -12559,7 +12559,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (bufferedRows is not null)
             {
-                MaterializePathAwareDepthRows(bufferedRows, output, metrics);
+                MaterializePathAwareDepthRows(seed, bufferedRows, output, metrics);
             }
 
             if (bestKnown is not null)
@@ -12585,16 +12585,16 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static void RecordBufferedPathAwareDepthRow(
-            List<PathAwareDepthRow> rows,
-            object? seed,
+            List<PathAwareTargetDepthRow> rows,
             object? target,
             int depth)
         {
-            rows.Add(new PathAwareDepthRow(seed, target, depth));
+            rows.Add(new PathAwareTargetDepthRow(target, depth));
         }
 
         private static void MaterializePathAwareDepthRows(
-            List<PathAwareDepthRow> rows,
+            object? seed,
+            List<PathAwareTargetDepthRow> rows,
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
         {
@@ -12608,7 +12608,7 @@ namespace UnifyWeaver.QueryRuntime
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i];
-                    output.Add(new object[] { row.Seed!, row.Target!, row.Depth });
+                    output.Add(new object[] { seed!, row.Target!, row.Depth });
                     metrics?.RecordOutputRow();
                 }
 
@@ -12619,7 +12619,7 @@ namespace UnifyWeaver.QueryRuntime
             for (var i = 0; i < rows.Count; i++)
             {
                 var row = rows[i];
-                outputList.Add(new object[] { row.Seed!, row.Target!, row.Depth });
+                outputList.Add(new object[] { seed!, row.Target!, row.Depth });
                 metrics?.RecordOutputRow();
             }
 
@@ -14016,8 +14016,7 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private readonly record struct PathAwareDepthRow(
-            object? Seed,
+        private readonly record struct PathAwareTargetDepthRow(
             object? Target,
             int Depth);
 
