@@ -72,6 +72,9 @@ func (i *Deallocate) instrTag() {}
 type Call struct { Pred string; Arity int }
 func (i *Call) instrTag() {}
 
+type CallForeign struct { Pred string; Arity int }
+func (i *CallForeign) instrTag() {}
+
 type CallPc struct { TargetPC int; Arity int }
 func (i *CallPc) instrTag() {}
 
