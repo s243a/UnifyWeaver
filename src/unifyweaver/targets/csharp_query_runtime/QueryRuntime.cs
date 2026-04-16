@@ -12478,15 +12478,21 @@ namespace UnifyWeaver.QueryRuntime
             var bufferedRows = preserveAllPaths ? new List<PathAwareTargetDepthRow>() : null;
 
             var initialPath = CompactVisitedPath.Create(seedNodeId);
-            var stack = new Stack<(object? Node, int Depth, CompactVisitedPath Visited)>();
-            stack.Push((seed, 0, initialPath));
+            var initialStackCapacity = maxDepth > 0
+                ? Math.Min(Math.Max(maxDepth + 1, 4), 256)
+                : 64;
+            var stack = new Stack<PathAwareTraversalFrame>(initialStackCapacity);
+            stack.Push(new PathAwareTraversalFrame(seed, 0, initialPath));
             metrics?.RecordEnqueuedState(1);
             metrics?.RecordStackSize(stack.Count);
 
             var traversalStarted = Stopwatch.GetTimestamp();
             while (stack.Count > 0)
             {
-                var (current, depth, visited) = stack.Pop();
+                var frame = stack.Pop();
+                var current = frame.Node;
+                var depth = frame.Depth;
+                var visited = frame.Visited;
                 metrics?.RecordStackPop();
                 metrics?.RecordPathLength(visited.Count);
                 var lookupKey = current ?? NullFactIndexKey;
@@ -12550,7 +12556,7 @@ namespace UnifyWeaver.QueryRuntime
                     }
 
                     var nextVisited = visited.Extend(nextId);
-                    stack.Push((next, nextDepth, nextVisited));
+                    stack.Push(new PathAwareTraversalFrame(next, nextDepth, nextVisited));
                     metrics?.RecordEnqueuedState(nextVisited.Count);
                     metrics?.RecordStackSize(stack.Count);
                 }
@@ -14019,6 +14025,11 @@ namespace UnifyWeaver.QueryRuntime
         private readonly record struct PathAwareTargetDepthRow(
             object? Target,
             int Depth);
+
+        private readonly record struct PathAwareTraversalFrame(
+            object? Node,
+            int Depth,
+            CompactVisitedPath Visited);
 
         private sealed record VisitedAccumulatorState(
             object Accumulator,

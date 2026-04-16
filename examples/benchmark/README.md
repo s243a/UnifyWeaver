@@ -967,22 +967,23 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 ```
 
 Latest local results after edge-state node-id preindexing, per-row timing
-removal, a compact `(target, depth)` buffered row shape, and O(1)
-parent-linked visited-path extension:
+removal, a compact `(target, depth)` buffered row shape, O(1)
+parent-linked visited-path extension, and a dedicated counted-path traversal
+frame stack with explicit initial capacity:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.430s | 0.181s | 2.38x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.270s | 0.132s | 2.05x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.408s | 0.170s | 2.40x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.272s | 0.127s | 2.14x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 147.247ms | 0.000ms | 64.580ms | n/a |
-| 300 | Min | 38.480ms | 0.000ms | 5.090ms | 11.550ms |
-| 1k | All | 64.303ms | 0.000ms | 52.634ms | n/a |
-| 1k | Min | 19.198ms | 0.000ms | 1.478ms | 5.629ms |
+| 300 | All | 133.261ms | 0.000ms | 81.388ms | n/a |
+| 300 | Min | 44.482ms | 0.000ms | 5.550ms | 12.525ms |
+| 1k | All | 58.902ms | 0.000ms | 48.229ms | n/a |
+| 1k | Min | 15.291ms | 0.000ms | 1.277ms | 4.789ms |
 
 Additional path-state observations:
 
@@ -1007,6 +1008,9 @@ Additional path-state observations:
   of copying the full visited-node array on every successor push, which
   reduces traversal-time allocation/copy overhead while preserving exact
   cycle checks and frontier semantics.
+- counted-path traversal now uses a dedicated frame struct and an explicit
+  initial stack capacity, which trims hot-path stack overhead without changing
+  the reported `path_state_*` counters.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
