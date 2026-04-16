@@ -1177,14 +1177,15 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % Compile predicates (native or WAM fallback). Any predicate with a
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
+    retractall(functor_string_global(_, _)),
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
 
-    % Prepend foreign kernel globals (fact tables, etc.) to the native
+    % Emit functor string globals collected during WAM compilation.
+    emit_functor_string_globals(FunctorGlobals),
+
+    % Prepend foreign kernel globals + functor strings to the native
     % predicates section so they are at module scope before any use.
-    ( ForeignGlobals == ''
-    -> FinalNativeCode = NativeCode
-    ;  atomic_list_concat([ForeignGlobals, '\n\n', NativeCode], FinalNativeCode)
-    ),
+    atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n\n', NativeCode], FinalNativeCode),
 
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
@@ -1816,17 +1817,38 @@ wam_llvm_case('put_value',
   ret i1 true').
 
 wam_llvm_case('put_structure',
-'  ; put_structure: op2 = Ai register index
-  ; Push structure marker on heap, bind Ai to Ref, push WriteCtx
-  %ps.ai = trunc i64 %op2 to i32
-  %ps.marker = call %Value @value_atom(i8* null)
-  %ps.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %ps.marker)
-  %ps.ref = call %Value @value_ref(i32 %ps.addr)
-  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.ref)
-  %ps.arity = trunc i64 %op1 to i32
-  %ps.arity_zero = icmp eq i32 %ps.arity, 0
-  %ps.arity_safe = select i1 %ps.arity_zero, i32 2, i32 %ps.arity
-  call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity_safe)
+'  ; put_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
+  ; Allocate a %Compound struct, set functor/arity, allocate args array.
+  ; Bind register to Compound value (tag=3, payload=ptr to %Compound).
+  %ps.fn_ptr = inttoptr i64 %op1 to i8*
+  %ps.op2_32 = trunc i64 %op2 to i32
+  %ps.arity = lshr i32 %ps.op2_32, 16
+  %ps.ai = and i32 %ps.op2_32, 65535
+  ; Allocate %Compound struct.
+  %ps.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %ps.cp_mem = call i8* @malloc(i64 %ps.cp_size)
+  %ps.cp = bitcast i8* %ps.cp_mem to %Compound*
+  ; Set functor.
+  %ps.fn_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 0
+  store i8* %ps.fn_ptr, i8** %ps.fn_slot
+  ; Set arity.
+  %ps.ar_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 1
+  store i32 %ps.arity, i32* %ps.ar_slot
+  ; Allocate args array: arity x %Value.
+  %ps.arity64 = zext i32 %ps.arity to i64
+  %ps.args_bytes = shl i64 %ps.arity64, 4
+  %ps.args_mem = call i8* @malloc(i64 %ps.args_bytes)
+  %ps.args = bitcast i8* %ps.args_mem to %Value*
+  %ps.args_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 2
+  store %Value* %ps.args, %Value** %ps.args_slot
+  ; Create Compound value (tag=3) and bind register.
+  %ps.cp_i64 = ptrtoint %Compound* %ps.cp to i64
+  %ps.val0 = insertvalue %Value undef, i32 3, 0
+  %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
+  call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
+  ; Push WriteCtx with args pointer so set_value/set_constant fill the args.
+  call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -1844,32 +1866,30 @@ wam_llvm_case('put_list',
 
 wam_llvm_case('set_variable',
 '  ; set_variable: op1 = Xn register index
-  ; Create unbound var, push on heap, store in Xn, decrement WriteCtx
+  ; Create unbound var, write into compound args via WriteCtx, store in Xn.
   %sv.xn = trunc i64 %op1 to i32
   %sv.var = call %Value @value_unbound(i8* null)
-  %sv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sv.var)
-  %sv.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sv.var)
   call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.var)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('set_value',
 '  ; set_value: op1 = Xn register index
-  ; Push Xn value onto heap, decrement WriteCtx
+  ; Write Xn value into the compound args array via WriteCtx.
   %sve.xn = trunc i64 %op1 to i32
   %sve.val = call %Value @wam_get_reg(%WamState* %vm, i32 %sve.xn)
-  %sve.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sve.val)
-  %sve.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sve.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('set_constant',
-'  ; set_constant: op1 = constant value (packed)
-  ; Push constant onto heap, decrement WriteCtx
-  %sc.val = insertvalue %Value undef, i32 0, 0
+'  ; set_constant: op1 = constant payload, op2 = tag (0=atom, 1=integer)
+  ; Write constant into the compound args array via WriteCtx.
+  %sc.tag = trunc i64 %op2 to i32
+  %sc.val = insertvalue %Value undef, i32 %sc.tag, 0
   %sc.val2 = insertvalue %Value %sc.val, i64 %op1, 1
-  %sc.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sc.val2)
-  %sc.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sc.val2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -2902,6 +2922,37 @@ wam_instruction_to_llvm_literal(Instr, Lit) :-
 % same name always get the same ID; different names always get different IDs.
 % This avoids hash collisions that would cause silent correctness bugs.
 
+:- dynamic functor_string_global/2. % functor_string_global(NameStr, LenPlus1)
+
+%% emit_functor_string_globals(-IR)
+%  Emits LLVM global constants for functor names collected during WAM
+%  compilation (by put_structure instructions). Each functor "name" becomes
+%  @.fn_name = private constant [N x i8] c"name\00".
+emit_functor_string_globals(IR) :-
+    findall(GlobalDef,
+        ( functor_string_global(NameStr, Len),
+          sanitize_functor_for_llvm(NameStr, SaneName),
+          format(atom(GlobalDef), '@.fn_~w = private constant [~w x i8] c"~w\\00"',
+              [SaneName, Len, NameStr])
+        ),
+        Defs),
+    ( Defs == []
+    -> IR = ''
+    ;  atomic_list_concat(Defs, '\n', IR)
+    ).
+
+%% sanitize_functor_for_llvm(+Name, -Sanitized)
+%  Replace characters invalid in LLVM identifiers with descriptive names.
+sanitize_functor_for_llvm(Name, Sanitized) :-
+    string_codes(Name, Codes),
+    maplist(sanitize_char, Codes, SanCodes),
+    string_codes(Sanitized, SanCodes).
+
+sanitize_char(C, C) :- C >= 0'a, C =< 0'z, !.
+sanitize_char(C, C) :- C >= 0'A, C =< 0'Z, !.
+sanitize_char(C, C) :- C >= 0'0, C =< 0'9, !.
+sanitize_char(0'_, 0'_) :- !.
+sanitize_char(_, 0'_).
 :- dynamic atom_table_entry/2.   % atom_table_entry(AtomName, Id)
 :- dynamic atom_table_next_id/1. % atom_table_next_id(NextId)
 atom_table_next_id(1).           % Start from 1; 0 reserved for empty
@@ -3362,10 +3413,26 @@ wam_line_to_llvm_literal(["put_value", Xn, Ai], Lit) :-
     reg_name_to_index(CAiAtom, AiIdx),
     format(atom(Lit), '%Instruction { i32 10, i64 ~w, i64 ~w }', [XnIdx, AiIdx]).
 wam_line_to_llvm_literal(["put_structure", FN, Ai], Lit) :-
-    clean_comma(FN, _CFN), clean_comma(Ai, CAi),
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, AiIdx),
-    format(atom(Lit), '%Instruction { i32 11, i64 0, i64 ~w }', [AiIdx]).
+    % Parse functor/arity from "name/N" format.
+    atom_string(CFN, CFNStr),
+    split_string(CFNStr, "/", "", [NameStr, ArityStr]),
+    number_string(Arity, ArityStr),
+    string_length(NameStr, NameLen),
+    NameLenPlus1 is NameLen + 1,
+    % Encode: op1 = ptrtoint of functor string global, op2 = (arity << 16) | reg_idx.
+    Op2 is (Arity << 16) \/ AiIdx,
+    % Sanitize functor name for LLVM identifier (replace special chars).
+    sanitize_functor_for_llvm(NameStr, SaneName),
+    format(atom(Lit),
+        '%Instruction { i32 11, i64 ptrtoint ([~w x i8]* @.fn_~w to i64), i64 ~w }',
+        [NameLenPlus1, SaneName, Op2]),
+    % Record functor string for emission as global.
+    ( functor_string_global(NameStr, _) -> true
+    ; assert(functor_string_global(NameStr, NameLenPlus1))
+    ).
 wam_line_to_llvm_literal(["put_list", Ai], Lit) :-
     clean_comma(Ai, CAi),
     atom_string(CAi, CAiAtom),
@@ -3384,7 +3451,9 @@ wam_line_to_llvm_literal(["set_value", Xn], Lit) :-
 wam_line_to_llvm_literal(["set_constant", C], Lit) :-
     clean_comma(C, CC),
     llvm_pack_value_str(CC, PackedVal),
-    format(atom(Lit), '%Instruction { i32 15, i64 ~w, i64 0 }', [PackedVal]).
+    % Determine tag: integers get tag=1, atoms get tag=0.
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    format(atom(Lit), '%Instruction { i32 15, i64 ~w, i64 ~w }', [PackedVal, Tag]).
 
 wam_line_to_llvm_literal(["allocate"], '%Instruction { i32 16, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["deallocate"], '%Instruction { i32 17, i64 0, i64 0 }').
@@ -3453,7 +3522,7 @@ wam_line_to_llvm_literal(["proceed"], '%Instruction { i32 20, i64 0, i64 0 }').
 wam_line_to_llvm_literal(["builtin_call", Op, N], Lit) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    atom_string(COp, COpAtom),
+    ( atom(COp) -> COpAtom = COp ; atom_string(COpAtom, COp) ),
     builtin_op_to_id(COpAtom, OpId),
     format(atom(Lit), '%Instruction { i32 21, i64 ~w, i64 ~w }', [OpId, Num]).
 wam_line_to_llvm_literal(["trust_me"], '%Instruction { i32 24, i64 0, i64 0 }').
