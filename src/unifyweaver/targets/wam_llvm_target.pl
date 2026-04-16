@@ -2348,6 +2348,8 @@ entry:
     i32 21, label %builtin_neq
     i32 22, label %builtin_succ
     i32 23, label %builtin_plus
+    i32 24, label %builtin_unify
+    i32 25, label %builtin_not_unify
   ]
 
 builtin_is:
@@ -2568,6 +2570,52 @@ pl.bind:
 pl.check:
   %pl.eq = call i1 @value_equals(%Value %pl.a3, %Value %pl.r)
   ret i1 %pl.eq
+
+builtin_unify:
+  ; =/2: unify A1 with A2. If either is unbound, bind it to the other.
+  ; If both are bound, check structural equality.
+  %uf.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %uf.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %uf.a1_unb = call i1 @value_is_unbound(%Value %uf.a1)
+  br i1 %uf.a1_unb, label %uf.bind_a1, label %uf.check_a2
+
+uf.bind_a1:
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %uf.a2)
+  ret i1 true
+
+uf.check_a2:
+  %uf.a2_unb = call i1 @value_is_unbound(%Value %uf.a2)
+  br i1 %uf.a2_unb, label %uf.bind_a2, label %uf.both_bound
+
+uf.bind_a2:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %uf.a1)
+  ret i1 true
+
+uf.both_bound:
+  %uf.eq = call i1 @value_equals(%Value %uf.a1, %Value %uf.a2)
+  ret i1 %uf.eq
+
+builtin_not_unify:
+  ; not-unify: succeeds if A1 and A2 do NOT unify.
+  ; Simplified: fails if either is unbound (would unify), checks inequality if both bound.
+  %nu.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nu.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %nu.a1_unb = call i1 @value_is_unbound(%Value %nu.a1)
+  br i1 %nu.a1_unb, label %nu.fail, label %nu.check_a2
+
+nu.check_a2:
+  %nu.a2_unb = call i1 @value_is_unbound(%Value %nu.a2)
+  br i1 %nu.a2_unb, label %nu.fail, label %nu.both_bound
+
+nu.both_bound:
+  %nu.eq = call i1 @value_equals(%Value %nu.a1, %Value %nu.a2)
+  %nu.r = xor i1 %nu.eq, true
+  ret i1 %nu.r
+
+nu.fail:
+  ret i1 false
 
 unknown:
   ret i1 false
@@ -2901,6 +2949,8 @@ builtin_op_to_id('is_list/1', 20).
 builtin_op_to_id('\\==/2', 21).
 builtin_op_to_id('succ/2', 22).
 builtin_op_to_id('plus/3', 23).
+builtin_op_to_id('=/2', 24).
+builtin_op_to_id('\\=/2', 25).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
