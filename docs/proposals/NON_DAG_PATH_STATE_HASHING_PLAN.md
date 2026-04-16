@@ -155,15 +155,15 @@ Local survey:
 | negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
 
 Counted-closure phase split after typed row buffering, pre-sized
-materialization, edge-state node-id preindexing, and removing per-row buffer
-timing from the traversal hot path:
+materialization, edge-state node-id preindexing, per-row timing removal, and a
+compact `(target, depth)` buffered row shape:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 217.951ms | 0.000ms | 99.800ms | n/a |
-| 300 | Min | 53.414ms | 0.000ms | 7.487ms | 13.907ms |
-| 1k | All | 122.026ms | 0.000ms | 63.798ms | n/a |
-| 1k | Min | 21.147ms | 0.000ms | 1.794ms | 5.640ms |
+| 300 | All | 165.620ms | 0.000ms | 76.569ms | n/a |
+| 300 | Min | 43.825ms | 0.000ms | 5.471ms | 12.509ms |
+| 1k | All | 97.050ms | 0.000ms | 35.733ms | n/a |
+| 1k | Min | 17.656ms | 0.000ms | 1.418ms | 5.662ms |
 
 Interpretation:
 
@@ -179,6 +179,9 @@ Interpretation:
 - row-buffer recording no longer starts a stopwatch for every emitted path
   row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
   work is included in traversal timing
+- the counted-path `All` buffer now stores only `(target, depth)` per row,
+  because `seed` is constant for each per-seed traversal; this reduces buffer
+  footprint and lowers final `object[]` materialization cost
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by

@@ -966,23 +966,23 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
     --scales 300,1k --repetitions 3
 ```
 
-Latest local results after compact visited paths, typed row buffering,
-pre-sized result materialization, edge-state node-id preindexing, and removing
-per-row buffer timing from the traversal hot path:
+Latest local results after compact visited paths, edge-state node-id
+preindexing, per-row timing removal, and a compact `(target, depth)` buffered
+row shape for counted path materialization:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.558s | 0.219s | 2.55x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.395s | 0.167s | 2.37x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.439s | 0.179s | 2.45x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.306s | 0.149s | 2.06x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 217.951ms | 0.000ms | 99.800ms | n/a |
-| 300 | Min | 53.414ms | 0.000ms | 7.487ms | 13.907ms |
-| 1k | All | 122.026ms | 0.000ms | 63.798ms | n/a |
-| 1k | Min | 21.147ms | 0.000ms | 1.794ms | 5.640ms |
+| 300 | All | 165.620ms | 0.000ms | 76.569ms | n/a |
+| 300 | Min | 43.825ms | 0.000ms | 5.471ms | 12.509ms |
+| 1k | All | 97.050ms | 0.000ms | 35.733ms | n/a |
+| 1k | Min | 17.656ms | 0.000ms | 1.418ms | 5.662ms |
 
 Additional path-state observations:
 
@@ -994,15 +994,15 @@ Additional path-state observations:
   `1k` without changing final shortest-path answers.
 - compact visited paths reduce the allocation-heavy `All` traversal while
   preserving the same path-state counters and output digests.
-- typed row buffering plus pre-sized final materialization reduces avoidable
-  `object[]` allocation/list-growth pressure, but traversal remains the
-  largest phase.
 - edge-state node-id preindexing removes the per-successor candidate node-id
   dictionary lookup from traversal while preserving output hashes and
   `path_state_*` counters.
 - row-buffer recording no longer starts a stopwatch for every emitted path
   row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
   work is included in traversal timing.
+- the counted-path `All` buffer now stores only `(target, depth)` per row,
+  because `seed` is constant for each per-seed traversal; this reduces buffer
+  footprint and lowers final `object[]` materialization cost.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
