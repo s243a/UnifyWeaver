@@ -7,6 +7,11 @@
 
 :- dynamic test_tri_sum/2.
 :- dynamic test_tail_suffix/2.
+:- dynamic test_reaches/2.
+
+edge(a, b).
+edge(b, c).
+edge(c, d).
 
 test_tri_sum(0, 0).
 test_tri_sum(N, Sum) :-
@@ -17,6 +22,9 @@ test_tri_sum(N, Sum) :-
 
 test_tail_suffix(S, S).
 test_tail_suffix([_|T], S) :- test_tail_suffix(T, S).
+
+test_reaches(X, Y) :- edge(X, Y).
+test_reaches(X, Y) :- edge(X, Z), test_reaches(Z, Y).
 
 test(foreign_spec_wrapper_generation) :-
     ForeignSpec = foreign_predicate(
@@ -35,41 +43,53 @@ test(foreign_spec_wrapper_generation) :-
     assertion(sub_string(Code, _, _, _, 'return vm.executeForeignPredicate("test_tri_sum", 2)')).
 
 test(foreign_call_rewrite_generation) :-
-    ForeignSpec = foreign_predicate(
-        test_tri_sum/2,
-        [ register_foreign_native_kind(test_tri_sum/2, countdown_sum2),
-          register_foreign_result_layout(test_tri_sum/2, tuple(1)),
-          register_foreign_result_mode(test_tri_sum/2, deterministic)
-        ],
-        [helper/2]
-    ),
-    wam_go_target:wam_line_to_go_literal(["call", "helper/2", "2"], test_tri_sum/2,
-        [foreign_lowering(ForeignSpec)], Lit1),
-    wam_go_target:wam_line_to_go_literal(["execute", "helper/2"], test_tri_sum/2,
-        [foreign_lowering(ForeignSpec)], Lit2),
-    assertion(Lit1 == '&CallForeign{Pred: "test_tri_sum", Arity: 2}'),
-    assertion(Lit2 == '&CallForeign{Pred: "test_tri_sum", Arity: 2}').
+    once((
+        ForeignSpec = foreign_predicate(
+            test_tri_sum/2,
+            [ register_foreign_native_kind(test_tri_sum/2, countdown_sum2),
+              register_foreign_result_layout(test_tri_sum/2, tuple(1)),
+              register_foreign_result_mode(test_tri_sum/2, deterministic)
+            ],
+            [helper/2]
+        ),
+        wam_go_target:wam_line_to_go_literal(["call", "helper/2", "2"], test_tri_sum/2,
+            [foreign_lowering(ForeignSpec)], Lit1),
+        wam_go_target:wam_line_to_go_literal(["execute", "helper/2"], test_tri_sum/2,
+            [foreign_lowering(ForeignSpec)], Lit2),
+        assertion(Lit1 == '&CallForeign{Pred: "test_tri_sum", Arity: 2}'),
+        assertion(Lit2 == '&CallForeign{Pred: "test_tri_sum", Arity: 2}')
+    )).
+
+test(foreign_auto_detect_generation) :-
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches/2, "call test_reaches/2, 2",
+        [foreign_lowering(true)], Code),
+    assertion(sub_string(Code, _, _, _, 'vm.registerForeignNativeKind("test_reaches/2", "transitive_closure2")')),
+    assertion(sub_string(Code, _, _, _, 'vm.registerForeignResultMode("test_reaches/2", "stream")')),
+    assertion(sub_string(Code, _, _, _, 'vm.registerForeignStringConfig("test_reaches/2", "edge_pred", "edge/2")')),
+    assertion(sub_string(Code, _, _, _, 'vm.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{{Left: "a", Right: "b"}, {Left: "b", Right: "c"}, {Left: "c", Right: "d"}})')),
+    assertion(sub_string(Code, _, _, _, 'return vm.executeForeignPredicate("test_reaches", 2)')).
 
 test(foreign_execution_deterministic_and_stream) :-
-    get_time(T),
-    format(atom(TmpDir), 'tmp_wam_go_foreign_~w', [T]),
-    TailSpec = foreign_predicate(
-        test_tail_suffix/2,
-        [ register_foreign_native_kind(test_tail_suffix/2, list_suffix2),
-          register_foreign_result_layout(test_tail_suffix/2, tuple(1)),
-          register_foreign_result_mode(test_tail_suffix/2, stream)
-        ],
-        [test_tail_suffix/2]
-    ),
-    write_wam_go_project(
-        [plunit_wam_go_foreign_lowering:test_tail_suffix/2],
-        [ module_name(go_foreign_test),
-          foreign_lowering([TailSpec])
-        ],
-        TmpDir
-    ),
-    directory_file_path(TmpDir, 'foreign_test.go', TestPath),
-    write_file(TestPath,
+    once((
+        get_time(T),
+        format(atom(TmpDir), 'tmp_wam_go_foreign_~w', [T]),
+        TailSpec = foreign_predicate(
+            test_tail_suffix/2,
+            [ register_foreign_native_kind(test_tail_suffix/2, list_suffix2),
+              register_foreign_result_layout(test_tail_suffix/2, tuple(1)),
+              register_foreign_result_mode(test_tail_suffix/2, stream)
+            ],
+            [test_tail_suffix/2]
+        ),
+        write_wam_go_project(
+            [plunit_wam_go_foreign_lowering:test_tail_suffix/2],
+            [ module_name(go_foreign_test),
+              foreign_lowering([TailSpec])
+            ],
+            TmpDir
+        ),
+        directory_file_path(TmpDir, 'foreign_test.go', TestPath),
+        write_file(TestPath,
 'package wam
 
 import "testing"
@@ -125,37 +145,18 @@ func TestForeignListSuffixStream(t *testing.T) {
     }
 }
 '),
-    (   catch(process_create(path(go), ['test', './...'], [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]), _, fail)
-    ->  read_string(Out, _, Stdout),
-        read_string(Err, _, Stderr),
-        process_wait(Pid, Exit),
-        assertion(Exit == exit(0)),
-        assertion(\+ sub_string(Stderr, _, _, _, 'FAIL'))
-    ;   true
-    ),
-    delete_directory_and_contents(TmpDir).
+        (   catch(process_create(path(go), ['test', './...'], [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]), _, fail)
+        ->  read_string(Out, _, _Stdout),
+            read_string(Err, _, Stderr),
+            process_wait(Pid, Exit),
+            assertion(Exit == exit(0)),
+            assertion(\+ sub_string(Stderr, _, _, _, 'FAIL'))
+        ;   true
+        ),
+        delete_directory_and_contents(TmpDir)
+    )).
 
 :- end_tests(wam_go_foreign_lowering).
-
-delete_directory_and_contents(Dir) :-
-    (   exists_directory(Dir)
-    ->  delete_directory_contents(Dir),
-        delete_directory(Dir)
-    ;   true
-    ).
-
-delete_directory_contents(Dir) :-
-    directory_files(Dir, Files),
-    member(File, Files),
-    File \== '.',
-    File \== '..',
-    directory_file_path(Dir, File, Path),
-    (   exists_directory(Path)
-    ->  delete_directory_and_contents(Path)
-    ;   delete_file(Path)
-    ),
-    fail.
-delete_directory_contents(_).
 
 write_file(Path, Content) :-
     setup_call_cleanup(
