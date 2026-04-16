@@ -191,6 +191,7 @@ register_builtin_targets :-
     register_target(csharp, dotnet, [compiled, streaming, linq, async]),
     register_target(csharp_native, dotnet, [compiled, streaming, linq, procedural, recursion]),
     register_target(fsharp, dotnet, [compiled, streaming, functional, linq]),
+    register_target(wam_fsharp, dotnet, [compiled, streaming, functional, linq, wam, pattern_matching, choice_points]),
     register_target(powershell, dotnet, [scripting, streaming, system_admin, dotnet_interop]),
 
     % JVM family - can share process
@@ -261,6 +262,7 @@ target_module(lua, lua_target).
 target_module(typescript, typescript_target).
 target_module(haskell, haskell_target).
 target_module(elixir, elixir_target).
+target_module(wam_fsharp, wam_fsharp_target).
 target_module(llvm, llvm_target).
 target_module(wat, wat_target).
 target_module(sql, sql_target).
