@@ -969,21 +969,22 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 Latest local results after edge-state node-id preindexing, per-row timing
 removal, a compact `(target, depth)` buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
-frame stack with explicit initial capacity:
+frame stack with explicit initial capacity, plus direct-write seed-batch
+materialization into the destination output list:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.408s | 0.170s | 2.40x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.272s | 0.127s | 2.14x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.404s | 0.168s | 2.40x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.262s | 0.133s | 1.97x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 133.261ms | 0.000ms | 81.388ms | n/a |
-| 300 | Min | 44.482ms | 0.000ms | 5.550ms | 12.525ms |
-| 1k | All | 58.902ms | 0.000ms | 48.229ms | n/a |
-| 1k | Min | 15.291ms | 0.000ms | 1.277ms | 4.789ms |
+| 300 | All | 136.668ms | 0.000ms | 78.053ms | n/a |
+| 300 | Min | 46.030ms | 0.000ms | 5.568ms | 12.685ms |
+| 1k | All | 58.924ms | 0.000ms | 48.248ms | n/a |
+| 1k | Min | 15.563ms | 0.000ms | 1.312ms | 4.921ms |
 
 Additional path-state observations:
 
@@ -1011,6 +1012,10 @@ Additional path-state observations:
 - counted-path traversal now uses a dedicated frame struct and an explicit
   initial stack capacity, which trims hot-path stack overhead without changing
   the reported `path_state_*` counters.
+- when the destination is a `List<object[]>`, counted-path `All` materialization
+  now grows the list once and writes the new seed batch directly into the new
+  slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
+  final output path.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
