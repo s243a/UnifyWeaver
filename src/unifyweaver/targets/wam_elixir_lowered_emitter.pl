@@ -124,10 +124,12 @@ generate_segment(Name, Instrs, Labels, Code) :-
 
 %% classify_segment_head(+Instrs, -HeadType, -BodyInstrs)
 %  Identifies and strips choice point instructions from segment head.
-classify_segment_head([_PC-try_me_else(L)|Rest], try_me_else(L), Rest) :- !.
-classify_segment_head([_PC-retry_me_else(L)|Rest], retry_me_else(L), Rest) :- !.
-classify_segment_head([_PC-trust_me|Rest], trust_me, Rest) :- !.
-classify_segment_head(Instrs, none, Instrs).
+classify_segment_head(Instrs, HeadType, BodyInstrs) :-
+    (   select(_PC-try_me_else(L), Instrs, BodyInstrs1) -> HeadType = try_me_else(L), BodyInstrs = BodyInstrs1
+    ;   select(_PC-retry_me_else(L), Instrs, BodyInstrs1) -> HeadType = retry_me_else(L), BodyInstrs = BodyInstrs1
+    ;   select(_PC-trust_me, Instrs, BodyInstrs1) -> HeadType = trust_me, BodyInstrs = BodyInstrs1
+    ;   HeadType = none, BodyInstrs = Instrs
+    ), !.
 
 %% wrap_segment(+FuncName, +HeadType, +BodyCode, -Code)
 %  Wraps segment body in appropriate control structure.
@@ -139,6 +141,7 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
 ~w
     catch
       :fail -> ~w(state)
+      {:return, result} -> throw({:return, result})
     end
   end', [FuncName, BodyCode, FallbackFunc]).
 
@@ -150,6 +153,7 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Code) :-
 ~w
     catch
       :fail -> ~w(state)
+      {:return, result} -> throw({:return, result})
     end
   end', [FuncName, BodyCode, FallbackFunc]).
 
@@ -450,8 +454,9 @@ wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, Code) :-
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
     case val do
+      {:unbound, _} -> :ok # Variables fall through to choice points
 ~w
-      _ -> :ok
+      _ -> throw(:fail) # Unmatched constants fail
     end', [CasesStr]).
 
 wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, Code) :-
@@ -460,8 +465,9 @@ wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, Code) :-
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
     case val do
+      {:unbound, _} -> :ok # Variables fall through to choice points
 ~w
-      _ -> :ok
+      _ -> throw(:fail) # Unmatched constants fail
     end', [CasesStr]).
 
 wam_elixir_lower_instr(raw(Combined), _PC, _Labels, Code) :-
@@ -470,7 +476,9 @@ wam_elixir_lower_instr(raw(Combined), _PC, _Labels, Code) :-
 elixir_switch_entry(Entry, CaseCode) :-
     split_string(Entry, ":", "", [Key, Label]),
     (   Label == "default"
-    ->  format(string(CaseCode), '      "~w" -> :ok', [Key])
+    ->  format(string(CaseCode), '      "~w" -> :ok # default label: fall through to choice point', [Key])
     ;   segment_func_name(Label, FuncName),
+        % Note: The {:return, result} throw is explicitly caught and re-thrown by 
+        % the try/catch wrappers in wrap_segment/4 to safely bubble up.
         format(string(CaseCode), '      "~w" -> throw({:return, ~w(state)})', [Key, FuncName])
     ).

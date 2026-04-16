@@ -219,6 +219,8 @@ wam_elixir_case(unify_constant,
 
 wam_elixir_case(call,
 '      {:call, p, _n} ->
+        # Note: Interpreter mode currently only supports intra-module calls via labels.
+        # Dynamic cross-module dispatch requires the lowered emitter and WamDispatcher.
         new_cp = state.pc + 1
         case Map.get(state.labels, p) do
           nil -> :fail
@@ -227,6 +229,7 @@ wam_elixir_case(call,
 
 wam_elixir_case(execute,
 '      {:execute, p} ->
+        # Note: Interpreter mode currently only supports intra-module calls via labels.
         case Map.get(state.labels, p) do
           nil -> :fail
           target_pc -> %{state | pc: target_pc}
@@ -477,10 +480,15 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   defp step_switch_on_constant(state, entries) do
-    val = Map.get(state.regs, 1)
-    case Enum.find(entries, fn {k, _} -> k == val end) do
-      {_, label} -> %{state | pc: resolve_label(state, label)}
-      nil -> %{state | pc: state.pc + 1}
+    val = get_reg(state, 1)
+    cond do
+      match?({:unbound, _}, val) -> %{state | pc: state.pc + 1}
+      true ->
+        case Enum.find(entries, fn {k, _} -> k == val end) do
+          {_, "default"} -> %{state | pc: state.pc + 1}
+          {_, label} -> %{state | pc: resolve_label(state, label)}
+          nil -> :fail
+        end
     end
   end
 
