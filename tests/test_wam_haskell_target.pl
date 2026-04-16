@@ -268,6 +268,106 @@ test_call_foreign_helper :-
     ;   fail_test(Test, 'callForeign helper missing from WamRuntime')
     ).
 
+%% Phase 4.2: MergeStrategy, ForkContext, fork helpers — codegen
+%% --------------------------------------------
+
+test_haskell_merge_strategy_in_types :-
+    Test = 'WAM-Haskell: MergeStrategy constructors present in WamTypes',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "data MergeStrategy"),
+        sub_string(S, _, _, _, "MergeSumInt"),
+        sub_string(S, _, _, _, "MergeSumDouble"),
+        sub_string(S, _, _, _, "MergeCount"),
+        sub_string(S, _, _, _, "MergeFindall"),
+        sub_string(S, _, _, _, "MergeBag"),
+        sub_string(S, _, _, _, "MergeSet"),
+        sub_string(S, _, _, _, "MergeRace"),
+        sub_string(S, _, _, _, "MergeNegation"),
+        sub_string(S, _, _, _, "MergeSequential")
+    ->  pass(Test)
+    ;   fail_test(Test, 'MergeStrategy constructors missing')
+    ).
+
+test_haskell_fork_context_in_types :-
+    Test = 'WAM-Haskell: ForkContext record emitted in WamTypes',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "data ForkContext"),
+        sub_string(S, _, _, _, "fcMergeStrategy"),
+        sub_string(S, _, _, _, "fcWorkEstimate")
+    ->  pass(Test)
+    ;   fail_test(Test, 'ForkContext record missing')
+    ).
+
+test_haskell_agg_frame_has_merge_strategy :-
+    Test = 'WAM-Haskell: AggFrame includes afMergeStrategy field',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "afMergeStrategy :: !MergeStrategy")
+    ->  pass(Test)
+    ;   fail_test(Test, 'afMergeStrategy field missing from AggFrame')
+    ).
+
+test_haskell_infer_merge_strategy :-
+    Test = 'WAM-Haskell: inferMergeStrategy function emitted',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "inferMergeStrategy :: String -> MergeStrategy"),
+        sub_string(S, _, _, _, "inferMergeStrategy \"sum\""),
+        sub_string(S, _, _, _, "inferMergeStrategy \"count\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'inferMergeStrategy function missing')
+    ).
+
+test_haskell_value_nfdata_instance :-
+    Test = 'WAM-Haskell: NFData Value instance emitted for parMap',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "instance NFData Value")
+    ->  pass(Test)
+    ;   fail_test(Test, 'NFData Value instance missing')
+    ).
+
+test_haskell_fork_helpers_present :-
+    Test = 'WAM-Haskell: fork helpers (forkOrSequential, etc.) emitted in runtime',
+    (   wam_haskell_target:compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "forkOrSequential"),
+        sub_string(S, _, _, _, "currentAggMergeStrategy"),
+        sub_string(S, _, _, _, "isForkableStrategy"),
+        sub_string(S, _, _, _, "enumerateParBranches"),
+        sub_string(S, _, _, _, "runBranchForFork"),
+        sub_string(S, _, _, _, "forkParBranches"),
+        sub_string(S, _, _, _, "findOuterEndAggregate")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Phase 4.2 fork helper(s) missing')
+    ).
+
+test_haskell_partryme_else_delegates_to_fork :-
+    Test = 'WAM-Haskell: ParTryMeElse step handler routes through forkOrSequential',
+    (   wam_haskell_target:compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (ParTryMeElse label)"),
+        sub_string(S, _, _, _, "forkOrSequential"),
+        % ParTryMeElsePc also routes through fork path
+        sub_string(S, _, _, _, "step !ctx s (ParTryMeElsePc pc)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'ParTryMeElse step handler does not route to fork')
+    ).
+
+test_haskell_runtime_imports_parallel :-
+    Test = 'WAM-Haskell: WamRuntime imports Control.Parallel.Strategies',
+    (   wam_haskell_target:compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Control.Parallel.Strategies"),
+        sub_string(S, _, _, _, "Control.DeepSeq"),
+        sub_string(S, _, _, _, "parMap"),
+        sub_string(S, _, _, _, "rdeepseq")
+    ->  pass(Test)
+    ;   fail_test(Test, 'parallel/deepseq imports missing from WamRuntime')
+    ).
+
 %% Phase 4.1: Par* instructions — type, step handlers, resolveCallInstrs
 %% --------------------------------------------
 
@@ -289,17 +389,21 @@ test_haskell_par_instructions_in_types :-
     ).
 
 test_haskell_par_step_handlers_present :-
-    Test = 'WAM-Haskell: step function handles Par* by delegating',
+    Test = 'WAM-Haskell: step function handles Par* (fork path + sequential fallback)',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "step !ctx s (ParTryMeElse label)"),
         sub_string(S, _, _, _, "step !ctx s (ParRetryMeElse label)"),
         sub_string(S, _, _, _, "step !ctx s ParTrustMe"),
-        sub_string(S, _, _, _, "step ctx s (TryMeElse label)"),
-        % confirm the ParTrustMe handler delegates to TrustMe
+        % Phase 4.2: ParTryMeElse routes through forkOrSequential which
+        % decides fork vs fallback based on the enclosing aggregate''s
+        % merge strategy. ParRetryMeElse / ParTrustMe still delegate
+        % straight to the sequential variants.
+        sub_string(S, _, _, _, "forkOrSequential ctx s"),
+        sub_string(S, _, _, _, "step ctx s (RetryMeElse label)"),
         sub_string(S, _, _, _, "step ctx s TrustMe")
     ->  pass(Test)
-    ;   fail_test(Test, 'Par* step handlers missing or not delegating')
+    ;   fail_test(Test, 'Par* step handlers missing or not wired correctly')
     ).
 
 test_haskell_par_resolve_present :-
@@ -431,6 +535,15 @@ run_tests :-
     test_call_foreign_step_case,
     test_call_foreign_resolve,
     test_call_foreign_helper,
+    %% Phase 4.2: MergeStrategy / ForkContext / fork helpers
+    test_haskell_merge_strategy_in_types,
+    test_haskell_fork_context_in_types,
+    test_haskell_agg_frame_has_merge_strategy,
+    test_haskell_infer_merge_strategy,
+    test_haskell_value_nfdata_instance,
+    test_haskell_fork_helpers_present,
+    test_haskell_partryme_else_delegates_to_fork,
+    test_haskell_runtime_imports_parallel,
     %% Phase 4.1: Par* instructions + certificate-driven emission
     test_haskell_par_instructions_in_types,
     test_haskell_par_step_handlers_present,
