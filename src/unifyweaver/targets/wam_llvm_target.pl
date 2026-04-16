@@ -1546,24 +1546,26 @@ compile_llvm_step_case(CaseCode) :-
 % --- Head Unification Instructions ---
 
 wam_llvm_case('get_constant',
-'  ; op1 = constant value (packed), op2 = register index
-  %gc.reg_idx = trunc i64 %op2 to i32
+'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx
+  %gc.op2_32 = trunc i64 %op2 to i32
+  %gc.reg_idx = and i32 %gc.op2_32, 65535
+  %gc.tag = lshr i32 %gc.op2_32, 16
   %gc.current = call %Value @wam_get_reg(%WamState* %vm, i32 %gc.reg_idx)
   %gc.is_unb = call i1 @value_is_unbound(%Value %gc.current)
   br i1 %gc.is_unb, label %gc.bind, label %gc.check_eq
 
 gc.bind:
-  ; Unbound: bind to constant
+  ; Unbound: bind to constant with proper tag.
   call void @wam_trail_binding(%WamState* %vm, i32 %gc.reg_idx)
-  %gc.const_val = insertvalue %Value undef, i32 0, 0           ; tag from op1 high bits
+  %gc.const_val = insertvalue %Value undef, i32 %gc.tag, 0
   %gc.const_v2 = insertvalue %Value %gc.const_val, i64 %op1, 1
   call void @wam_set_reg(%WamState* %vm, i32 %gc.reg_idx, %Value %gc.const_v2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
 gc.check_eq:
-  ; Bound: check equality
-  %gc.expected = insertvalue %Value undef, i32 0, 0
+  ; Bound: check equality with proper tag.
+  %gc.expected = insertvalue %Value undef, i32 %gc.tag, 0
   %gc.expected2 = insertvalue %Value %gc.expected, i64 %op1, 1
   %gc.eq = call i1 @value_equals(%Value %gc.current, %Value %gc.expected2)
   br i1 %gc.eq, label %gc.match, label %gc.fail
@@ -2067,26 +2069,43 @@ wam_llvm_case('try_me_else',
 
 wam_llvm_case('retry_me_else',
 '  ; op1 = label index for next alternative
-  %rme.label = trunc i64 %op1 to i32
-  %rme.next_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %rme.label)
-  ; Update top choice point next_pc
+  ; If no CP exists (e.g., entered via switch_on_constant), just advance PC.
   %rme.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %rme.cpn = load i32, i32* %rme.cpn_ptr
+  %rme.has_cp = icmp sgt i32 %rme.cpn, 0
+  br i1 %rme.has_cp, label %rme.update_cp, label %rme.no_cp
+
+rme.update_cp:
+  %rme.label = trunc i64 %op1 to i32
+  %rme.next_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %rme.label)
   %rme.top_idx = sub i32 %rme.cpn, 1
   %rme.cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
   %rme.cps = load %ChoicePoint*, %ChoicePoint** %rme.cps_ptr
   %rme.top = getelementptr %ChoicePoint, %ChoicePoint* %rme.cps, i32 %rme.top_idx
   %rme.npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %rme.top, i32 0, i32 0
   store i32 %rme.next_pc, i32* %rme.npc_ptr
+  br label %rme.done
+
+rme.no_cp:
+  br label %rme.done
+
+rme.done:
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
 wam_llvm_case('trust_me',
-'  ; Pop top choice point
+'  ; Pop top choice point if one exists, otherwise just advance PC.
   %tm.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %tm.cpn = load i32, i32* %tm.cpn_ptr
+  %tm.has_cp = icmp sgt i32 %tm.cpn, 0
+  br i1 %tm.has_cp, label %tm.pop, label %tm.done
+
+tm.pop:
   %tm.new_cpn = sub i32 %tm.cpn, 1
   store i32 %tm.new_cpn, i32* %tm.cpn_ptr
+  br label %tm.done
+
+tm.done:
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -2803,7 +2822,9 @@ compile_wam_runtime_to_llvm(Options, LLVMCode) :-
 wam_instruction_to_llvm_literal(get_constant(C, Ai), Lit) :-
     llvm_pack_value(C, PackedVal),
     reg_name_to_index(Ai, RegIdx),
-    format(atom(Lit), '{ i32 0, i64 ~w, i64 ~w }', [PackedVal, RegIdx]).
+    ( integer(C) -> Tag = 1 ; Tag = 0 ),
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), '{ i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_instruction_to_llvm_literal(get_variable(Xn, Ai), Lit) :-
     reg_name_to_index(Xn, XnIdx),
     reg_name_to_index(Ai, AiIdx),
@@ -3356,7 +3377,11 @@ wam_line_to_llvm_literal(["get_constant", C, Ai], Lit) :-
     llvm_pack_value_str(CC, PackedVal),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, RegIdx),
-    format(atom(Lit), '%Instruction { i32 0, i64 ~w, i64 ~w }', [PackedVal, RegIdx]).
+    % Determine tag: integers get tag=1, atoms get tag=0.
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    % Pack tag into op2 high bits: op2 = (tag << 16) | reg_idx.
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), '%Instruction { i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_line_to_llvm_literal(["get_variable", Xn, Ai], Lit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
