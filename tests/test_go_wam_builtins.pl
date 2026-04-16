@@ -36,6 +36,7 @@ import (
 
 func main() {
 	vm := wam.NewWamState(wam.Test_builtinsCode, wam.Test_builtinsLabels)
+	vm.PC = wam.Test_builtinsStartPC
 	// A1 will hold X — use named unbound so we can deref after execution
 	x := &wam.Unbound{Name: "X"}
 	vm.Regs["A1"] = x

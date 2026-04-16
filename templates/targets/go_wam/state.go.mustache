@@ -14,6 +14,8 @@ type ChoicePoint struct {
 	NextPC    int
 	CP        int
 	Regs      map[string]Value
+	Stack     []StackEntry
+	HeapTop   int
 	TrailMark int
 }
 
@@ -77,6 +79,8 @@ func (vm *WamState) pushChoicePoint(nextPC int) {
 		NextPC:    nextPC,
 		CP:        vm.CP,
 		Regs:      copyMap(vm.Regs),
+		Stack:     copyStack(vm.Stack),
+		HeapTop:   len(vm.Heap),
 		TrailMark: len(vm.Trail),
 	})
 }
@@ -158,6 +162,15 @@ func copyMap(m map[string]Value) map[string]Value {
 		m2[k] = v
 	}
 	return m2
+}
+
+func copyStack(stack []StackEntry) []StackEntry {
+	if len(stack) == 0 {
+		return nil
+	}
+	stack2 := make([]StackEntry, len(stack))
+	copy(stack2, stack)
+	return stack2
 }
 
 func parseFunctorArity(f string) int {
@@ -412,6 +425,10 @@ func (vm *WamState) backtrack() bool {
     cp := vm.ChoicePoints[len(vm.ChoicePoints)-1]
     vm.unwindTrail(cp.TrailMark)
     vm.Regs = copyMap(cp.Regs)
+    vm.Stack = copyStack(cp.Stack)
+    if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
+        vm.Heap = vm.Heap[:cp.HeapTop]
+    }
     vm.PC = cp.NextPC
     vm.CP = cp.CP
     vm.Halted = false
