@@ -98,6 +98,7 @@ instr_tag(cut_ite,         26).
 instr_tag(jump,            27).
 instr_tag(begin_aggregate, 28).
 instr_tag(end_aggregate,   29).
+instr_tag(nop,             30).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -338,6 +339,10 @@ wam_instruction_to_wat_bytes(end_aggregate(ValReg), _Labels, Hex) :-
     reg_name_to_index(ValReg, ValIdx),
     encode_instr_hex(Tag, ValIdx, 0, Hex).
 
+wam_instruction_to_wat_bytes(nop, _Labels, Hex) :-
+    instr_tag(nop, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+
 agg_type_id(sum, 0).
 agg_type_id(count, 1).
 agg_type_id(max, 2).
@@ -574,10 +579,10 @@ wam_parts_to_instr(["jump", L], jump(CL)) :-
 %% is correct because the clause bodies still have try_me_else/trust_me
 %% for linear dispatch. A future optimization would implement them as
 %% O(log n) dispatch, but for now a no-op is sufficient for correctness.
-wam_parts_to_instr(["switch_on_constant"|_], proceed) :- !.
-wam_parts_to_instr(["switch_on_structure"|_], proceed) :- !.
-wam_parts_to_instr(["switch_on_term"|_], proceed) :- !.
-wam_parts_to_instr(["switch_on_constant_a2"|_], proceed) :- !.
+wam_parts_to_instr(["switch_on_constant"|_], nop) :- !.
+wam_parts_to_instr(["switch_on_structure"|_], nop) :- !.
+wam_parts_to_instr(["switch_on_term"|_], nop) :- !.
+wam_parts_to_instr(["switch_on_constant_a2"|_], nop) :- !.
 
 wam_parts_to_instr(["begin_aggregate", Type, ValReg, ResReg],
                    begin_aggregate(CType, CValReg, CResReg)) :-
@@ -1112,6 +1117,11 @@ wam_wat_case(begin_aggregate,
   (global.set $agg_sum (i64.const 0))
   (global.set $agg_count (i32.const 0))
   (global.set $agg_return_pc (i32.const 0))
+  ;; Save caller CP so finalization can restore it. The inner call
+  ;; (e.g. my_fact) will overwrite CP; without saving, the proceed
+  ;; at the end of the aggregate predicate would jump back into the
+  ;; end_aggregate instruction rather than returning to the caller.
+  (global.set $agg_saved_cp (call $get_cp))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1143,6 +1153,12 @@ wam_wat_case(end_aggregate,
   (global.set $agg_return_pc (i32.add (call $get_pc) (i32.const 1)))
   ;; Force-backtrack to try next solution (return 0 = step failed)
   (i32.const 0)').
+
+wam_wat_case(nop,
+'  ;; No-op: placeholder for unimplemented indexing instructions.
+  ;; Just advance PC and continue.
+  (call $inc_pc)
+  (i32.const 1)').
 
 wam_wat_case(trust_me,
 '  ;; Remove choice point (last alternative)
@@ -1212,6 +1228,11 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
             (else
               (call $bind_reg_deref (global.get $agg_res_reg)
                 (i32.const 1) (global.get $agg_sum))))
+          ;; Restore the CP that was current when begin_aggregate ran.
+          ;; The inner call (e.g. my_fact) overwrote CP; the proceed
+          ;; at the end of the aggregate predicate needs the original
+          ;; caller CP so it returns properly.
+          (call $set_cp (global.get $agg_saved_cp))
           ;; Jump to the return PC (instruction after end_aggregate)
           (call $set_pc (global.get $agg_return_pc))
           (return (i32.const 1))))
