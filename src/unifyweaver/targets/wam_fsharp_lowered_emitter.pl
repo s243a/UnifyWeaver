@@ -180,14 +180,14 @@ emit_func_fs(FN, PCInstrs, LabelMap, ForeignPreds) :-
         format("            WsCPsLen = s_init.WsCPsLen + 1 }~n"),
         format("    let clause1 (s_c1: WamState) : WamState option =~n"),
         take_to_proceed_pc_fs(BodyPCs, Clause1PCs),
-        emit_instrs_fs(Clause1PCs, "s_c1", "        ", ForeignPreds),
+        emit_instrs_lm_fs(Clause1PCs, "s_c1", "        ", ForeignPreds, LabelMap),
         format("    match clause1 s_cp with~n"),
         format("    | Some result -> Some result~n"),
         format("    | None ->~n"),
         format("        // Clause 1 failed — backtrack to clause 2+ in the interpreter~n"),
         format("        backtrack s_cp |> Option.bind (fun s_bt -> run ctx { s_bt with WsPC = s_bt.WsPC + 1 })~n")
     ;   % Single-clause: straightforward binding chain
-        emit_instrs_fs(PCInstrs, "s_init", "    ", ForeignPreds)
+        emit_instrs_lm_fs(PCInstrs, "s_init", "    ", ForeignPreds, LabelMap)
     ).
 
 take_to_proceed_pc_fs([], []).
@@ -206,7 +206,74 @@ take_to_proceed_pc_fs([H|T], [H|R]) :- take_to_proceed_pc_fs(T, R).
 %   maybe { let! sv = step ctx ... instr; ... return sv }
 % ============================================================================
 
+%% is_match_instr_fs(+Instr)
+%  True if emit_one_fs for this instruction ends by emitting a
+%  "| Some SVout ->" arm that must have a body nested one level deeper.
+%  This drives the indentation decision in emit_instrs_fs for the
+%  last-instruction case (body = "Some SVout") and intermediate case
+%  (body = the rest of the chain at IndInner).
+is_match_instr_fs(deallocate).
+is_match_instr_fs(get_constant(_, _)).
+is_match_instr_fs(get_value(_, _)).
+is_match_instr_fs(put_structure(_, _)).
+is_match_instr_fs(put_list(_)).
+is_match_instr_fs(set_value(_)).
+is_match_instr_fs(set_constant(_)).
+is_match_instr_fs(call(_, _)).
+is_match_instr_fs(builtin_call(_, _)).
+is_match_instr_fs(cut_ite).
+is_match_instr_fs(jump(_)).
+is_match_instr_fs(trust_me).
+is_match_instr_fs(begin_aggregate(_, _, _)).
+is_match_instr_fs(end_aggregate(_)).
+
+%% emit_instrs_lm_fs(+PCInstrs, +SV, +Indent, +FP, +LabelMap)
+%  LabelMap-aware entry point called from emit_func_fs.
+%  Threads LabelMap into split_ite_blocks_lm_fs so that
+%  split_else_cont_fs can correctly identify the continuation target.
+emit_instrs_lm_fs([], SV, I, _FP, _LM) :-
+    format("~wSome ~w~n", [I, SV]).
+emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
+    atom_string(ElseLabel, ElseLabelStr),
+    split_ite_blocks_lm_fs(Rest, ElseLabel, LM, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs),
+    !,
+    format("~wmatch (~n", [Ind]),
+    atom_concat(Ind, "    ", CondInd),
+    emit_ite_block_fs(CondInstrs, SV, CondInd, FP),
+    format("~w) with~n", [Ind]),
+    fresh_sv_fs(SV, SVthen),
+    format("~w| Some ~w ->~n", [Ind, SVthen]),
+    atom_concat(Ind, "    ", ThenInd),
+    emit_ite_block_fs(ThenInstrs, SVthen, ThenInd, FP),
+    format("~w| None ->~n", [Ind]),
+    atom_concat(Ind, "    ", ElseInd),
+    emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP),
+    % Emit continuation code (if any) after the ITE expression
+    (   ContInstrs = []
+    ->  true
+    ;   fresh_sv_fs(SV, SVcont),
+        format("~w| Some ~w ->~n", [Ind, SVcont]),
+        atom_concat(Ind, "    ", ContInd),
+        emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM)
+    ).
+emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
+    emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
+    (   Rest = []
+    ->  (   is_match_instr_fs(Instr)
+        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ;   true
+        )
+    ;   (   is_match_instr_fs(Instr)
+        ->  emit_instrs_lm_fs(Rest, SVout, IndInner, FP, LM)
+        ;   emit_instrs_lm_fs(Rest, SVout, Ind, FP, LM)
+        )
+    ).
+
 %% emit_instrs_fs(+PCInstrs, +CurrentStateVar, +Indent, +ForeignPreds)
+%  Legacy 4-arg version used inside ITE blocks (LabelMap not needed there
+%  because ITE blocks are self-contained and never themselves contain
+%  nested try_me_else sequences in lowerable predicates).
 emit_instrs_fs([], SV, I, _FP) :-
     % Empty tail — return the current state
     format("~wSome ~w~n", [I, SV]).
@@ -228,10 +295,25 @@ emit_instrs_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP) :-
     emit_ite_block_fs(ElseInstrs, SV, ElseInd, FP).
 emit_instrs_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
     (   Rest = []
-    ->  % last instruction already emitted terminal/return
-        true
-    ;   emit_instrs_fs(Rest, SVout, Ind, FP)
+    ->  % Last instruction.
+        %   - match-emitting instructions leave an open "| Some SVout ->" arm;
+        %     we must emit "Some SVout" indented one level deeper as its body.
+        %   - let-binding instructions (allocate, put_*, get_variable, proceed)
+        %     already closed their output, so nothing more is needed.
+        (   is_match_instr_fs(Instr)
+        ->  format("~wSome ~w~n", [IndInner, SVout])
+        ;   true
+        )
+    ;   % Intermediate instruction: continue chain.
+        %   match-emitting instructions opened a "| Some SVout ->" arm;
+        %   remaining instructions become its body at IndInner.
+        %   let-binding instructions stay at the same indent level.
+        (   is_match_instr_fs(Instr)
+        ->  emit_instrs_fs(Rest, SVout, IndInner, FP)
+        ;   emit_instrs_fs(Rest, SVout, Ind, FP)
+        )
     ).
 
 emit_ite_block_fs([], SV, Ind, _FP) :-
@@ -248,12 +330,25 @@ emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
 
 is_terminal_instr_fs(proceed).
 
+%% split_ite_blocks_fs/6 — legacy no-LabelMap version
+%  Used inside emit_instrs_fs (4-arg). ContInstrs is always [] here
+%  because ITE blocks inside ITE blocks are rare in lowerable predicates.
 split_ite_blocks_fs(Instrs, _ElseLabel, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
+    split_at_instr_fs(Instrs, cut_ite, CondInstrs, AfterCut),
+    split_at_jump_fs(AfterCut, ThenInstrs, _ContLabelStr, AfterJump),
+    AfterJump = [pc(_, trust_me)|ElseInstrs],
+    ContInstrs = [].
+
+%% split_ite_blocks_lm_fs/7 — LabelMap-aware version
+%  Used inside emit_instrs_lm_fs so that ContInstrs (code after the ITE
+%  block's continuation jump target) is correctly split off.
+split_ite_blocks_lm_fs(Instrs, _ElseLabel, LabelMap,
+                        CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
     split_at_instr_fs(Instrs, cut_ite, CondInstrs, AfterCut),
     split_at_jump_fs(AfterCut, ThenInstrs, ContLabelStr, AfterJump),
     AfterJump = [pc(_, trust_me)|ElseAndCont],
     atom_string(ContLabel, ContLabelStr),
-    split_else_cont_fs(ElseAndCont, ContLabel, ElseInstrs, ContInstrs).
+    split_else_cont_fs(ElseAndCont, ContLabel, LabelMap, ElseInstrs, ContInstrs).
 
 split_at_instr_fs([], _, _, _) :- !, fail.
 split_at_instr_fs([pc(_, Instr)|Rest], Instr, [], Rest) :- !.
@@ -265,7 +360,27 @@ split_at_jump_fs([pc(_, jump(Label))|Rest], [], Label, Rest) :- !.
 split_at_jump_fs([H|T], [H|Then], Label, Rest) :-
     split_at_jump_fs(T, Then, Label, Rest).
 
-split_else_cont_fs(Instrs, _ContLabel, Instrs, []).
+%% split_else_cont_fs(+ElseAndCont, +ContLabel, +LabelMap, -ElseInstrs, -ContInstrs)
+%  Split the instruction sequence following trust_me into:
+%    ElseInstrs — the else branch body (up to the continuation target PC)
+%    ContInstrs — instructions at and after the continuation target PC
+%
+%  ContLabel is the atom label that the jump at the end of the then-branch
+%  targets.  We use LabelMap to resolve it to a PC, then split there.
+%
+%  Bug fix: the old stub put all instructions in ElseInstrs and left
+%  ContInstrs=[], silently dropping any continuation code.
+split_else_cont_fs([], _ContLabel, _LM, [], []).
+split_else_cont_fs([pc(PC,Instr)|Rest], ContLabel, LM, Else, Cont) :-
+    (   member(ContLabel-ContPC, LM),
+        PC >= ContPC
+    ->  % Reached or passed the continuation target — everything from here
+        %  is continuation code, not else-branch code.
+        Else = [],
+        Cont = [pc(PC,Instr)|Rest]
+    ;   Else = [pc(PC,Instr)|ElseRest],
+        split_else_cont_fs(Rest, ContLabel, LM, ElseRest, Cont)
+    ).
 
 % ============================================================================
 % emit_one_fs — single instruction → F# binding line
@@ -294,7 +409,10 @@ emit_one_fs(deallocate, PC, SV, SVout, I, _FP) :-
 emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (derefVar ~w.WsBindings (Map.tryFind ~w ~w.WsRegs |> Option.defaultValue (Atom \"\"))) ~w.WsRegs }~n",
+    % Bug fix: Atom "" was a silent wrong default; use failwith so the runtime
+    % surfaces a register-not-bound error immediately rather than producing
+    % a spurious Atom "" binding that propagates silently.
+    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (derefVar ~w.WsBindings (Map.tryFind ~w ~w.WsRegs |> Option.defaultWith (fun _ -> failwith \"GetVariable: source register not bound\"))) ~w.WsRegs }~n",
            [I, SVout, SV, Xn, SV, Ai, SV, SV]).
 
 % GetConstant C Ai — can fail, delegate to step
@@ -315,7 +433,7 @@ emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
 emit_one_fs(put_value(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (getReg ~w ~w |> Option.defaultValue (Atom \"\")) ~w.WsRegs }~n",
+    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (getReg ~w ~w |> Option.defaultWith (fun _ -> failwith \"PutValue: source register not bound\")) ~w.WsRegs }~n",
            [I, SVout, SV, Ai, Xn, SV, SV]).
 
 % PutVariable Xn Ai — always succeeds, inline (creates fresh Unbound)
@@ -431,11 +549,16 @@ emit_one_fs(end_aggregate(ValRegStr), PC, SV, SVout, I, _FP) :-
 
 %% fresh_sv_fs(+Current, -Next)
 %  Generate the next state variable name: s_init → s_0 → s_1 → s_2 ...
+%  The s_init (or any non-numeric suffix) case always maps to s_0 as the
+%  first step.  Once we are in the s_N series, we simply increment N.
+%  Bug fix: the old code collapsed any failed number_string/2 to N1=0,
+%  which re-emitted s_0 for names like s_init → s_0 → s_0 (shadowed).
 fresh_sv_fs(Cur, Next) :-
     atom_string(Cur, CStr),
-    (   sub_string(CStr, 0, 2, _, "s_")
-    ->  sub_string(CStr, 2, _, 0, NumPart),
-        (   number_string(N, NumPart) -> N1 is N + 1 ; N1 = 0 ),
+    (   sub_string(CStr, 0, 2, _, "s_"),
+        sub_string(CStr, 2, _, 0, NumPart),
+        number_string(N, NumPart)
+    ->  N1 is N + 1,
         format(atom(Next), 's_~w', [N1])
     ;   Next = 's_0'
     ).
