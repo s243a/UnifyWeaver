@@ -19,6 +19,12 @@ test_resistant(X, _, X).
 test_resistant_helper(a, b).
 test_resistant_helper(b, c).
 
+%% Second test predicate that resists native lowering AND calls test_resistant/3.
+%% Used to test cross-predicate WAM calls via shared table.
+:- dynamic test_caller/2.
+test_caller(X, Z) :- test_resistant(X, _, Z), test_resistant(Z, _, X).
+test_caller(X, X).
+
 %% Simple predicate that native lowering CAN handle
 :- dynamic test_simple_fact/2.
 test_simple_fact(hello, world).
@@ -1557,6 +1563,114 @@ test_parser_resilience :-
     ;   fail_test(Test, 'Parser missing resilience checks for malformed input')
     ).
 
+%% Cross-predicate WAM shared table tests
+
+test_cross_predicate_shared_wam :-
+    Test = 'WAM-Rust: cross-predicate project uses shared WAM table',
+    TmpDir = 'output/test_wam_rust_cross_pred',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('cross_pred_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % Should contain the shared WAM table
+        sub_string(LibStr, _, _, _, 'SHARED_WAM'),
+        sub_string(LibStr, _, _, _, 'get_shared_wam'),
+        sub_string(LibStr, _, _, _, 'OnceLock'),
+        % Should contain both predicate wrappers referencing the shared table
+        sub_string(LibStr, _, _, _, 'fn test_resistant'),
+        sub_string(LibStr, _, _, _, 'fn test_caller'),
+        % Both should reference get_shared_wam
+        sub_string(LibStr, _, _, _, 'get_shared_wam()'),
+        % Predicate wrappers should NOT contain local vec![...] (only shared table has it)
+        % Check that vm.code = code.clone() appears (shared ref pattern)
+        sub_string(LibStr, _, _, _, 'vm.code = code.clone()')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Cross-predicate shared WAM table not generated correctly')
+    ).
+
+test_cross_predicate_distinct_pcs :-
+    Test = 'WAM-Rust: cross-predicate wrappers have distinct start PCs',
+    TmpDir = 'output/test_wam_rust_cross_pc',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('cross_pc_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % test_resistant starts at pc=1
+        sub_string(LibStr, _, _, _, 'test_resistant/3 (shared table, pc=1)'),
+        % test_caller starts at a DIFFERENT (higher) pc
+        sub_string(LibStr, _, _, _, 'test_caller/2 (shared table, pc='),
+        % Verify test_caller does NOT start at pc=1
+        \+ sub_string(LibStr, _, _, _, 'test_caller/2 (shared table, pc=1)')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Cross-predicate wrappers do not have distinct PCs')
+    ).
+
+test_shared_wam_labels_contain_all_preds :-
+    Test = 'WAM-Rust: shared WAM table labels contain all predicate labels',
+    TmpDir = 'output/test_wam_rust_shared_labels',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('shared_labels_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % The shared table should contain labels for BOTH predicates
+        sub_string(LibStr, _, _, _, 'labels.insert("test_resistant/3"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("test_caller/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Shared WAM table missing labels for some predicates')
+    ).
+
+test_native_wam_mixed_project :-
+    Test = 'WAM-Rust: mixed native+WAM project only shares WAM predicates',
+    TmpDir = 'output/test_wam_rust_mixed',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_simple_fact/2, user:test_resistant/3],
+            [module_name('mixed_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % Native predicate should NOT use get_shared_wam
+        % The test_simple_fact should be natively lowered (no WAM wrapper)
+        sub_string(LibStr, _, _, _, '// Strategy: native'),
+        % WAM predicate test_resistant should reference shared table
+        sub_string(LibStr, _, _, _, 'get_shared_wam()')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Mixed native+WAM project not generated correctly')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -1623,6 +1737,10 @@ run_tests :-
     test_parser_handles_all_instructions,
     test_generated_project_has_parser,
     test_parser_resilience,
+    test_cross_predicate_shared_wam,
+    test_cross_predicate_distinct_pcs,
+    test_shared_wam_labels_contain_all_preds,
+    test_native_wam_mixed_project,
 
     format('~n========================================~n'),
     (   test_failed

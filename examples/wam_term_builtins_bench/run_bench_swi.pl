@@ -50,6 +50,11 @@ main :-
     bench(bench_sum_big,
           bench_term_walk:sum_ints(
               f(1, g(2, h(3,4), 5), k(6,7), m(8, j(9,10))), 0, _), Iters),
+    bench(bench_term_depth,
+          bench_suite:term_depth(
+              f(1, g(2, h(3,4), 5), k(6,7), m(8, j(9,10))), _), Iters),
+    bench(bench_fib10,
+          bench_suite:fib(10, 0, _), Iters),
 
     format('~`-t~70|~n'),
     halt.

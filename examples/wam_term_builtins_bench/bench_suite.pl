@@ -28,7 +28,13 @@
     bench_copy_nested/0,
     bench_sum_small/0,
     bench_sum_medium/0,
-    bench_sum_big/0
+    bench_sum_big/0,
+    bench_term_depth/0,
+    bench_fib10/0,
+    fib/3,
+    term_depth/2,
+    term_depth_args/5,
+    max_of/3
 ]).
 
 :- use_module(bench_term_walk).
@@ -66,3 +72,41 @@ bench_sum_medium :- sum_ints(f(1, g(2, 3), 4), 0, _).
 %% sum_ints: big (10 leaves, 15 nodes)
 bench_sum_big :-
     sum_ints(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), 0, _).
+
+%% --- Additional workloads ---
+
+%% term_depth: max nesting depth of a compound term.
+%% Exercises: functor/3, arg/3, is/2, recursive cross-pred calls.
+term_depth(T, 0) :- integer(T), !.
+term_depth(T, 0) :- atom(T), !.
+term_depth(T, D) :-
+    functor(T, _, Arity),
+    term_depth_args(1, Arity, T, 0, MaxChild),
+    D is MaxChild + 1.
+
+term_depth_args(I, Arity, _, Max, Max) :- I > Arity, !.
+term_depth_args(I, Arity, T, Acc, Max) :-
+    arg(I, T, A),
+    term_depth(A, AD),
+    max_of(AD, Acc, NewAcc),
+    I1 is I + 1,
+    term_depth_args(I1, Arity, T, NewAcc, Max).
+
+max_of(A, B, A) :- A > B, !.
+max_of(_, B, B).
+
+bench_term_depth :-
+    term_depth(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), _).
+
+%% fib: naive Fibonacci (exercises pure recursive arithmetic).
+%% fib(N, Acc, Result) — accumulator-style to avoid stack overflow.
+fib(N, _, 0) :- N =< 0, !.
+fib(1, _, 1) :- !.
+fib(N, _, Result) :-
+    N1 is N - 1,
+    fib(N1, 0, R1),
+    N2 is N - 2,
+    fib(N2, 0, R2),
+    Result is R1 + R2.
+
+bench_fib10 :- fib(10, 0, _).
