@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -12607,17 +12608,15 @@ namespace UnifyWeaver.QueryRuntime
             var started = Stopwatch.GetTimestamp();
             if (output is List<object[]> outputList)
             {
-                outputList.EnsureCapacity(outputList.Count + rows.Count);
-            }
-            else
-            {
+                var baseIndex = outputList.Count;
+                CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
+                var span = CollectionsMarshal.AsSpan(outputList);
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i];
-                    output.Add(new object[] { seed!, row.Target!, row.Depth });
+                    span[baseIndex + i] = new object[] { seed!, row.Target!, row.Depth };
                     metrics?.RecordOutputRow();
                 }
-
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
                 return;
             }
@@ -12625,7 +12624,7 @@ namespace UnifyWeaver.QueryRuntime
             for (var i = 0; i < rows.Count; i++)
             {
                 var row = rows[i];
-                outputList.Add(new object[] { seed!, row.Target!, row.Depth });
+                output.Add(new object[] { seed!, row.Target!, row.Depth });
                 metrics?.RecordOutputRow();
             }
 

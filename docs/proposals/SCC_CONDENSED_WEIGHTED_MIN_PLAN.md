@@ -326,14 +326,15 @@ raw path-state traversal:
 Counted-closure phase split after typed row buffering, pre-sized
 materialization, edge-state node-id preindexing, per-row timing removal, a
 compact `(target, depth)` buffered row shape, O(1) parent-linked
-visited-path extension, and a dedicated counted-path traversal frame stack:
+visited-path extension, a dedicated counted-path traversal frame stack, and
+direct-write seed-batch materialization:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 133.261ms | 0.000ms | 81.388ms | n/a |
-| 300 | Min | 44.482ms | 0.000ms | 5.550ms | 12.525ms |
-| 1k | All | 58.902ms | 0.000ms | 48.229ms | n/a |
-| 1k | Min | 15.291ms | 0.000ms | 1.277ms | 4.789ms |
+| 300 | All | 136.668ms | 0.000ms | 78.053ms | n/a |
+| 300 | Min | 46.030ms | 0.000ms | 5.568ms | 12.685ms |
+| 1k | All | 58.924ms | 0.000ms | 48.248ms | n/a |
+| 1k | Min | 15.563ms | 0.000ms | 1.312ms | 4.921ms |
 
 Interpretation:
 
@@ -372,6 +373,10 @@ Interpretation:
 - counted-path traversal now uses a dedicated frame struct and an explicit
   initial stack capacity, which trims hot-path stack overhead without changing
   the reported `path_state_*` counters
+- when the destination is a `List<object[]>`, counted-path `All` materialization
+  now grows the list once and writes the new seed batch directly into the new
+  slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
+  final output path
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
   remaining work should target expansion/materialization overhead
