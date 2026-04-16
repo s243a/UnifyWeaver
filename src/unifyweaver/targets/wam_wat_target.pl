@@ -94,6 +94,8 @@ instr_tag(try_me_else,     22).
 instr_tag(retry_me_else,   23).
 instr_tag(trust_me,        24).
 instr_tag(neck_cut_test,   25).
+instr_tag(cut_ite,         26).
+instr_tag(jump,            27).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -309,6 +311,15 @@ wam_instruction_to_wat_bytes(retry_me_else(Label), Labels, Hex) :-
 wam_instruction_to_wat_bytes(trust_me, _Labels, Hex) :-
     instr_tag(trust_me, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
+
+wam_instruction_to_wat_bytes(cut_ite, _Labels, Hex) :-
+    instr_tag(cut_ite, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+
+wam_instruction_to_wat_bytes(jump(Label), Labels, Hex) :-
+    instr_tag(jump, Tag),
+    resolve_label(Label, Labels, PC),
+    encode_instr_hex(Tag, PC, 0, Hex).
 
 wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labels, Hex) :-
     instr_tag(neck_cut_test, Tag),
@@ -531,6 +542,9 @@ wam_parts_to_instr(["try_me_else", L], try_me_else(CL)) :-
 wam_parts_to_instr(["retry_me_else", L], retry_me_else(CL)) :-
     clean_comma(L, CL0), atom_string(CL, CL0).
 wam_parts_to_instr(["trust_me"], trust_me).
+wam_parts_to_instr(["cut_ite"], cut_ite).
+wam_parts_to_instr(["jump", L], jump(CL)) :-
+    clean_comma(L, CL0), atom_string(CL, CL0).
 % Fallback
 wam_parts_to_instr(Parts, allocate) :-
     format(user_error, '  WAM-WAT: unrecognized instruction: ~w~n', [Parts]).
@@ -1017,6 +1031,23 @@ wam_wat_case(neck_cut_test,
       (global.set $env_base (i32.load (global.get $env_base)))
       (call $set_pc (local.get $else_pc))
       (i32.const 1)))').
+
+wam_wat_case(cut_ite,
+'  ;; Soft cut for if-then-else: pop only the most recent CP (the
+  ;; ITE try_me_else), preserving any outer choice points and
+  ;; aggregate frames. Unlike !/0 which zeros cp_count, cut_ite
+  ;; just decrements by 1.
+  (if (i32.gt_s (call $get_cp_count) (i32.const 0))
+    (then
+      (call $set_cp_count (i32.sub (call $get_cp_count) (i32.const 1)))))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(jump,
+'  ;; Unconditional jump to target PC (op1). Used after the then-
+  ;; branch of if-then-else to skip over the else-branch.
+  (call $set_pc (i32.wrap_i64 (local.get $op1)))
+  (i32.const 1)').
 
 wam_wat_case(trust_me,
 '  ;; Remove choice point (last alternative)

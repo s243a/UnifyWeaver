@@ -37,8 +37,7 @@ main :-
         bench_term_walk:sum_ints_args/5,
         bench_suite:term_depth/2,
         bench_suite:term_depth_args/5,
-        bench_suite:fib/3,
-        bench_suite:max_of/3
+        bench_suite:fib/3
     ],
     write_wam_wat_project(
         Predicates,
