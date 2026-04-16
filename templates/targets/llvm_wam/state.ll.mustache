@@ -381,6 +381,62 @@ not_match:
   ret i32 0
 }
 
+; Second-argument indexing dispatch. Identical to @wam_switch_on_constant
+; but reads A2 (register 1) instead of A1 (register 0).
+define i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
+entry:
+  %a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %is_unbound = call i1 @value_is_unbound(%Value %a2)
+  br i1 %is_unbound, label %skip_switch, label %scan_init
+
+scan_init:
+  %a2_tag = extractvalue %Value %a2, 0
+  %a2_payload = extractvalue %Value %a2, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %scan_init ], [ %i_next, %continue ]
+  %done = icmp uge i32 %i, %count
+  br i1 %done, label %not_match, label %check
+
+check:
+  %entry_ptr = getelementptr %SwitchEntry, %SwitchEntry* %table, i32 %i
+  %key_tag_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 0
+  %key_tag = load i32, i32* %key_tag_ptr
+  %key_pay_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 1
+  %key_pay = load i64, i64* %key_pay_ptr
+  %tag_eq = icmp eq i32 %key_tag, %a2_tag
+  %pay_eq = icmp eq i64 %key_pay, %a2_payload
+  %match = and i1 %tag_eq, %pay_eq
+  br i1 %match, label %found, label %continue
+
+continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+found:
+  %label_idx_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 2
+  %label_idx = load i32, i32* %label_idx_ptr
+  %is_default = icmp eq i32 %label_idx, -1
+  br i1 %is_default, label %fall_through, label %resolve_label
+
+fall_through:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 1
+
+resolve_label:
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i32 1
+
+skip_switch:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 2
+
+not_match:
+  ret i32 0
+}
+
 ; === Stack Context Helpers (for compound term read/write mode) ===
 
 ; Push a UnifyCtx (type=1) with args array and arg count
