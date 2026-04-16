@@ -156,15 +156,15 @@ Local survey:
 
 Counted-closure phase split after typed row buffering, pre-sized
 materialization, edge-state node-id preindexing, per-row timing removal, a
-compact `(target, depth)` buffered row shape, and O(1) parent-linked
-visited-path extension:
+compact `(target, depth)` buffered row shape, O(1) parent-linked
+visited-path extension, and a dedicated counted-path traversal frame stack:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 147.247ms | 0.000ms | 64.580ms | n/a |
-| 300 | Min | 38.480ms | 0.000ms | 5.090ms | 11.550ms |
-| 1k | All | 64.303ms | 0.000ms | 52.634ms | n/a |
-| 1k | Min | 19.198ms | 0.000ms | 1.478ms | 5.629ms |
+| 300 | All | 133.261ms | 0.000ms | 81.388ms | n/a |
+| 300 | Min | 44.482ms | 0.000ms | 5.550ms | 12.525ms |
+| 1k | All | 58.902ms | 0.000ms | 48.229ms | n/a |
+| 1k | Min | 15.291ms | 0.000ms | 1.277ms | 4.789ms |
 
 Interpretation:
 
@@ -187,6 +187,9 @@ Interpretation:
   of copying the full visited-node array on every successor push, which
   reduces traversal-time allocation/copy overhead while preserving exact
   cycle checks and frontier semantics
+- counted-path traversal now uses a dedicated frame struct and an explicit
+  initial stack capacity, which trims hot-path stack overhead without changing
+  the reported `path_state_*` counters
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
