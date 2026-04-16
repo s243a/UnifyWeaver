@@ -324,14 +324,15 @@ raw path-state traversal:
 | counted shortest path | 1k | 0.450s | 0.180s | 2.50x | 352,522 | 10,328 | 592,698 | 38,196 |
 
 Counted-closure phase split after typed row buffering, pre-sized
-materialization, and edge-state node-id preindexing:
+materialization, edge-state node-id preindexing, and removing per-row buffer
+timing from the traversal hot path:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 201.268ms | 27.712ms | 96.200ms | n/a |
-| 300 | Min | 68.297ms | n/a | 7.207ms | 17.291ms |
-| 1k | All | 119.368ms | 23.988ms | 60.008ms | n/a |
-| 1k | Min | 19.815ms | n/a | 1.808ms | 5.863ms |
+| 300 | All | 217.951ms | 0.000ms | 99.800ms | n/a |
+| 300 | Min | 53.414ms | 0.000ms | 7.487ms | 13.907ms |
+| 1k | All | 122.026ms | 0.000ms | 63.798ms | n/a |
+| 1k | Min | 21.147ms | 0.000ms | 1.794ms | 5.640ms |
 
 Interpretation:
 
@@ -357,6 +358,9 @@ Interpretation:
 - edge-state node-id preindexing removes the per-successor candidate node-id
   dictionary lookup from traversal while preserving output hashes and
   `path_state_*` counters
+- row-buffer recording no longer starts a stopwatch for every emitted path
+  row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
+  work is included in traversal timing
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
   remaining work should target expansion/materialization overhead
