@@ -43,6 +43,8 @@
              [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2,
               kernel_register_layout/2, kernel_native_call/2, kernel_template_file/2]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../core/purity_certificate',
+             [analyze_predicate_purity/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -1367,6 +1369,17 @@ step !ctx s (RetryMeElsePc nextPC) =
     (cp : rest) -> Just (s { wsPC = wsPC s + 1, wsCPs = cp { cpNextPC = nextPC } : rest })
     [] -> Nothing
 
+-- Phase 4.1 parallel-forkable variants. For now they alias their
+-- sequential counterparts — the instructions mark the predicate as
+-- fork-safe but the runtime doesn''t fork yet. Phase 4.2 will split
+-- these handlers off to do actual parMap-based forking at the
+-- surrounding aggregate boundary.
+step !ctx s (ParTryMeElse label)    = step ctx s (TryMeElse label)
+step !ctx s (ParRetryMeElse label)  = step ctx s (RetryMeElse label)
+step !ctx s ParTrustMe              = step ctx s TrustMe
+step !ctx s (ParTryMeElsePc pc)     = step ctx s (TryMeElsePc pc)
+step !ctx s (ParRetryMeElsePc pc)   = step ctx s (RetryMeElsePc pc)
+
 step !ctx s (SwitchOnConstantPc table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
@@ -2181,6 +2194,15 @@ resolveCallInstrs labels foreignPreds = map resolve
     resolve (RetryMeElse label) = case Map.lookup label labels of
       Just pc -> RetryMeElsePc pc
       Nothing -> RetryMeElse label
+    -- Phase 4.1 Par* variants resolve the same way as their sequential
+    -- counterparts. The instruction carries forkability intent; label
+    -- resolution is orthogonal.
+    resolve (ParTryMeElse label) = case Map.lookup label labels of
+      Just pc -> ParTryMeElsePc pc
+      Nothing -> ParTryMeElse label
+    resolve (ParRetryMeElse label) = case Map.lookup label labels of
+      Just pc -> ParRetryMeElsePc pc
+      Nothing -> ParRetryMeElse label
     resolve (SwitchOnConstant table) =
       let extractKey (Atom s) = s
           extractKey (Integer n) = show n
@@ -2340,6 +2362,17 @@ data Instruction
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
+  -- Phase 4.1: parallel-forkable variants. Emitted by the compiler
+  -- when the predicate has a pure purity certificate. At Phase 4.1
+  -- they dispatch to the same sequential handlers as the non-Par
+  -- variants — the instructions carry intent, not behavior. Phase 4.2
+  -- will add the runtime fork. See
+  -- docs/design/WAM_HASKELL_INTRA_QUERY_SPEC.md §2.
+  | ParTryMeElse String
+  | ParRetryMeElse String
+  | ParTrustMe
+  | ParTryMeElsePc !Int
+  | ParRetryMeElsePc !Int
   | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
   | BeginAggregate String !RegId !RegId   -- type, valueReg, resultReg
   | EndAggregate !RegId                   -- valueReg
@@ -2418,8 +2451,8 @@ executable ~w
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
 %  Compiles all predicates into a single merged code array and label map,
 %  with proper PC offsets for each predicate.
-compile_predicates_to_haskell(Predicates, _Options, Code) :-
-    compile_predicates_merged(Predicates, 1, AllInstrs, AllLabels),
+compile_predicates_to_haskell(Predicates, Options, Code) :-
+    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels),
     atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
     atomic_list_concat(AllLabels, '\n    , ', LabelCode),
     format(string(Code),
@@ -2441,8 +2474,8 @@ allLabels = Map.fromList
     ]
 ', [InstrCode, LabelCode]).
 
-compile_predicates_merged([], _, [], []).
-compile_predicates_merged([PredIndicator|Rest], StartPC, AllInstrs, AllLabels) :-
+compile_predicates_merged([], _, _, [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
@@ -2450,10 +2483,60 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, AllInstrs, AllLabels) :
     format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_haskell(Lines, StartPC, InstrExprs, LabelExprs, NextPC),
-    compile_predicates_merged(Rest, NextPC, RestInstrs, RestLabels),
+    wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
+    % Phase 4.1: if the purity certificate says this predicate is
+    % safe to parallelize, rewrite its choice-point instructions
+    % (TryMeElse / RetryMeElse / TrustMe) to the Par* variants.
+    maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
+    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels),
     append(InstrExprs, RestInstrs, AllInstrs),
     append(LabelExprs, RestLabels, AllLabels).
+
+%% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
+%  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
+%  pure with confidence >= 0.85 and intra_query_parallel/1 hasn't
+%  been disabled. Otherwise leaves instructions alone.
+%
+%  Confidence threshold: 0.85 — catches user-declared (1.0),
+%  kernel-registry-certified (1.0), and blacklist-clean (0.9) as
+%  forkable. Inferred / low-confidence verdicts fall back to sequential.
+maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs) :-
+    (   option(intra_query_parallel(false), Options)
+    ->  InstrExprs = InstrExprs0
+    ;   purity_certificate:analyze_predicate_purity(
+            PredIndicator,
+            purity_cert(pure, _, Conf, _)),
+        Conf >= 0.85
+    ->  maplist(parallelize_choice_instr, InstrExprs0, InstrExprs),
+        ( InstrExprs \== InstrExprs0
+        -> ( PredIndicator = _:Pred/Arity -> true ; PredIndicator = Pred/Arity ),
+           format(user_error,
+                  '    [Par] ~w/~w: emitting Par* for forkable choice points~n',
+                  [Pred, Arity])
+        ; true
+        )
+    ;   InstrExprs = InstrExprs0
+    ).
+
+%% parallelize_choice_instr(+InstrStr0, -InstrStr)
+%  String-level rewrite of choice-point instructions:
+%    TryMeElse   "…"  →  ParTryMeElse   "…"
+%    RetryMeElse "…"  →  ParRetryMeElse "…"
+%    TrustMe          →  ParTrustMe
+%
+%  Accepts either atom or string input; returns the same type so
+%  callers and tests can mix representations without surprises.
+parallelize_choice_instr(S0, S) :-
+    atom_string(A0, S0),
+    ( sub_atom(A0, 0, _, _, 'TryMeElse ')
+    -> atom_concat('Par', A0, A)
+    ; sub_atom(A0, 0, _, _, 'RetryMeElse ')
+    -> atom_concat('Par', A0, A)
+    ; A0 == 'TrustMe'
+    -> A = 'ParTrustMe'
+    ; A = A0
+    ),
+    ( atom(S0) -> S = A ; atom_string(A, S) ).
 
 compile_single_predicate_to_haskell(PredIndicator, _Options, Code) :-
     (   PredIndicator = _Module:Pred/Arity -> true

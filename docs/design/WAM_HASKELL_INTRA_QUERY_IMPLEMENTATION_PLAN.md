@@ -109,11 +109,20 @@ WAM interpreter result is identical.)
 
 ---
 
-## Phase 4.1: Instruction emission
+## Phase 4.1: Instruction emission — **DELIVERED 2026-04-15**
 
 Add the new instructions and have the WAM compiler emit them for
 annotated predicates. **No runtime behavior change yet** — they're
 treated as their sequential equivalents at runtime.
+
+**Status: delivered**, combined with purity certificate P4 on the
+same branch. The emission decision is driven by
+`purity_certificate:analyze_predicate_purity/2` rather than a direct
+annotation check, so user annotations, kernel registry certifications,
+and blacklist verdicts all feed into Par* emission uniformly. The
+`intra_query_parallel(false)` option from §3.3 of the spec lands here
+as well. Generated `Par*` instructions route to the sequential step
+handlers (placeholder for Phase 4.2's actual fork).
 
 ### Changes
 
