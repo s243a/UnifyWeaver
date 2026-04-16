@@ -1820,35 +1820,32 @@ wam_llvm_case('put_value',
 
 wam_llvm_case('put_structure',
 '  ; put_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
-  ; Allocate a %Compound struct, set functor/arity, allocate args array.
-  ; Bind register to Compound value (tag=3, payload=ptr to %Compound).
+  ; Allocate %Compound struct + args array from the arena (not malloc).
+  ; Compounds are transient and reclaimed on @wam_cleanup().
   %ps.fn_ptr = inttoptr i64 %op1 to i8*
   %ps.op2_32 = trunc i64 %op2 to i32
   %ps.arity = lshr i32 %ps.op2_32, 16
   %ps.ai = and i32 %ps.op2_32, 65535
-  ; Allocate %Compound struct.
+  call void @wam_arena_ensure()
+  ; Allocate %Compound struct from arena.
   %ps.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
-  %ps.cp_mem = call i8* @malloc(i64 %ps.cp_size)
+  %ps.cp_mem = call i8* @wam_arena_alloc(i64 %ps.cp_size)
   %ps.cp = bitcast i8* %ps.cp_mem to %Compound*
-  ; Set functor.
   %ps.fn_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 0
   store i8* %ps.fn_ptr, i8** %ps.fn_slot
-  ; Set arity.
   %ps.ar_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 1
   store i32 %ps.arity, i32* %ps.ar_slot
-  ; Allocate args array: arity x %Value.
+  ; Allocate args array from arena.
   %ps.arity64 = zext i32 %ps.arity to i64
   %ps.args_bytes = shl i64 %ps.arity64, 4
-  %ps.args_mem = call i8* @malloc(i64 %ps.args_bytes)
+  %ps.args_mem = call i8* @wam_arena_alloc(i64 %ps.args_bytes)
   %ps.args = bitcast i8* %ps.args_mem to %Value*
   %ps.args_slot = getelementptr %Compound, %Compound* %ps.cp, i32 0, i32 2
   store %Value* %ps.args, %Value** %ps.args_slot
-  ; Create Compound value (tag=3) and bind register.
   %ps.cp_i64 = ptrtoint %Compound* %ps.cp to i64
   %ps.val0 = insertvalue %Value undef, i32 3, 0
   %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
   call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
-  ; Push WriteCtx with args pointer so set_value/set_constant fill the args.
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
