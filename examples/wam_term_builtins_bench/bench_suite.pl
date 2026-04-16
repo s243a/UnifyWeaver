@@ -33,8 +33,7 @@
     bench_fib10/0,
     fib/3,
     term_depth/2,
-    term_depth_args/5,
-    max_of/3
+    term_depth_args/5
 ]).
 
 :- use_module(bench_term_walk).
@@ -88,12 +87,9 @@ term_depth_args(I, Arity, _, Max, Max) :- I > Arity, !.
 term_depth_args(I, Arity, T, Acc, Max) :-
     arg(I, T, A),
     term_depth(A, AD),
-    max_of(AD, Acc, NewAcc),
+    (   AD > Acc -> NewAcc = AD ; NewAcc = Acc ),
     I1 is I + 1,
     term_depth_args(I1, Arity, T, NewAcc, Max).
-
-max_of(A, B, A) :- A > B, !.
-max_of(_, B, B).
 
 bench_term_depth :-
     term_depth(f(1, g(2, h(3, 4), 5), k(6, 7), m(8, j(9, 10))), _).
