@@ -991,6 +991,15 @@ wam_line_to_python_literal(["get_structure", Fn, Ai], Py) :-
 wam_line_to_python_literal(["get_list", Ai], Py) :-
 	clean_comma(Ai, CAi),
 	format(atom(Py), '("get_list", ~w)', [CAi]).
+wam_line_to_python_literal(["get_nil", Ai], Py) :-
+	clean_comma(Ai, CAi),
+	format(atom(Py), '("get_nil", ~w)', [CAi]).
+wam_line_to_python_literal(["get_integer", N, Ai], Py) :-
+	clean_comma(N, CN), clean_comma(Ai, CAi),
+	format(atom(Py), '("get_integer", ~w, ~w)', [CN, CAi]).
+wam_line_to_python_literal(["get_float", F, Ai], Py) :-
+	clean_comma(F, CF), clean_comma(Ai, CAi),
+	format(atom(Py), '("get_float", ~w, ~w)', [CF, CAi]).
 wam_line_to_python_literal(["unify_variable", Xn], Py) :-
 	clean_comma(Xn, CXn),
 	format(atom(Py), '("unify_variable", ~w)', [CXn]).
@@ -1022,6 +1031,12 @@ wam_line_to_python_literal(["put_constant", C, Ai], Py) :-
 wam_line_to_python_literal(["put_nil", Ai], Py) :-
 	clean_comma(Ai, CAi),
 	format(atom(Py), '("put_nil", ~w)', [CAi]).
+wam_line_to_python_literal(["put_integer", N, Ai], Py) :-
+	clean_comma(N, CN), clean_comma(Ai, CAi),
+	format(atom(Py), '("put_integer", ~w, ~w)', [CN, CAi]).
+wam_line_to_python_literal(["put_float", F, Ai], Py) :-
+	clean_comma(F, CF), clean_comma(Ai, CAi),
+	format(atom(Py), '("put_float", ~w, ~w)', [CF, CAi]).
 wam_line_to_python_literal(["put_structure", Fn, Ai], Py) :-
 	clean_comma(Fn, CFn), clean_comma(Ai, CAi),
 	(   split_string(CFn, "/", "", [_Name, ArStr])
@@ -1080,6 +1095,9 @@ wam_line_to_python_literal(["switch_on_term"|Args], Py) :-
 	maplist(clean_comma, Args, CArgs),
 	CArgs = [V, C, L, S],
 	format(atom(Py), '("switch_on_term", "~w", "~w", "~w", "~w")', [V, C, L, S]).
+wam_line_to_python_literal(["is", Target, Expr], Py) :-
+	clean_comma(Target, CT), clean_comma(Expr, CE),
+	format(atom(Py), '("is", ~w, ~w)', [CT, CE]).
 wam_line_to_python_literal(["builtin_call", Op, Arity], Py) :-
 	clean_comma(Op, COp), clean_comma(Arity, CArity),
 	escape_python_string(COp, EOp),
@@ -1219,13 +1237,14 @@ write_wam_python_project(Predicates, Options, ProjectDir) :-
 
 %% copy_static_runtime(+ProjectDir)
 %  Copy the static WamRuntime.py into the project directory.
+%  Uses module source location for reliable path resolution.
 copy_static_runtime(ProjectDir) :-
 	directory_file_path(ProjectDir, 'wam_runtime.py', DestPath),
-	% Read the static runtime source
-	(   absolute_file_name(
-			'python_runtime/WamRuntime.py',
-			SrcPath,
-			[relative_to('src/unifyweaver/targets'), access(read), file_errors(fail)])
+	% Resolve relative to this module's source file
+	(   source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+		file_directory_name(ThisFile, ThisDir),
+		directory_file_path(ThisDir, 'python_runtime/WamRuntime.py', SrcPath),
+		exists_file(SrcPath)
 	->  copy_file(SrcPath, DestPath)
 	;   % Generate from bindings if static file not found
 		compile_wam_runtime_to_python([], RuntimeCode),

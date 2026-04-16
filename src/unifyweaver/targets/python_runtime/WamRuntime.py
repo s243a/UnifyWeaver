@@ -71,7 +71,7 @@ class Environment:
 
 class WamState:
     def __init__(self):
-        self.regs: List = [None] * 512   # A1->0..N, X1->100..N, Y1->200..N (0-indexed internally)
+        self.regs: List = [None] * 512   # A1->1, X1->101, Y1->201 (1-indexed, same as all targets)
         self.heap: List = []
         self.stack: List = []            # environments + choice points (typed)
         self.trail: List[int] = []       # heap addresses to unbind
