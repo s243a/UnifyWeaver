@@ -1024,7 +1024,7 @@ finalizeAggregate returnPC s = go (wsCPs s)
   where
     go [] = Nothing
     go (cp : rest) = case cpAggFrame cp of
-      Just (AggFrame typ _valReg resReg _) ->
+      Just (AggFrame typ _valReg resReg _ _) ->
         let accum = reverse (wsAggAccum s)
             result = applyAggregation typ accum
             -- Restore the CP snapshot state so we can read Y-registers
@@ -1062,6 +1062,163 @@ finalizeAggregate returnPC s = go (wsCPs s)
     putRegStack rid val (EnvFrame ecp yregs : rest) =
       EnvFrame ecp (IM.insert rid val yregs) : rest
     putRegStack rid val (x : rest) = x : putRegStack rid val rest
+
+-- ============================================================================
+-- Phase 4.2: Intra-query parallel fork at ParTryMeElse
+-- ============================================================================
+
+-- | Entry point for ParTryMeElse execution. Picks fork vs sequential.
+-- Accepts either a Left label (pre-resolution) or Right targetPC
+-- (post-resolution) for the else branch. The "this branch" always
+-- starts at wsPC + 1 regardless of which variant fired.
+forkOrSequential :: WamContext -> WamState -> Either String Int -> Maybe WamState
+forkOrSequential !ctx s elseTarget =
+  case currentAggMergeStrategy s of
+    Just ms | isForkableStrategy ms ->
+      let elsePC = case elseTarget of
+            Right pc -> pc
+            Left lbl -> fromMaybe (-1) (Map.lookup lbl (wcLabels ctx))
+      in if elsePC > 0
+         then Just (forkParBranches ctx s ms elsePC)
+         else fallback
+    _ -> fallback
+  where
+    fallback = case elseTarget of
+      Left lbl -> step ctx s (TryMeElse lbl)
+      Right pc -> step ctx s (TryMeElsePc pc)
+
+-- | Locate the nearest surrounding aggregate frame and return its
+-- merge strategy. Returns Nothing when no aggregate frame is active.
+currentAggMergeStrategy :: WamState -> Maybe MergeStrategy
+currentAggMergeStrategy s = go (wsCPs s)
+  where
+    go [] = Nothing
+    go (cp : rest) = case cpAggFrame cp of
+      Just af -> Just (afMergeStrategy af)
+      Nothing -> go rest
+
+-- | Phase 4.2 scope: only sum and count merge strategies fork.
+-- Findall/bag/set land in Phase 4.3; race/negation in 4.4.
+isForkableStrategy :: MergeStrategy -> Bool
+isForkableStrategy MergeSumInt    = True
+isForkableStrategy MergeSumDouble = True
+isForkableStrategy MergeCount     = True
+isForkableStrategy _              = False
+
+-- | Enumerate the entry PCs of every branch in a Par* choice-point
+-- chain. The chain is laid out as:
+--
+--     ParTryMeElse  L1   <-- starting at parPC (wsPC s)
+--     <branch 0 body>
+--   L1:
+--     ParRetryMeElse L2
+--     <branch 1 body>
+--   L2:
+--     ParTrustMe
+--     <branch N body>
+--
+-- Each branch''s body begins at `chainOpPC + 1`. We walk the chain by
+-- following the else-label of each non-terminal op. Returns the entry
+-- PC of every branch in chain order.
+enumerateParBranches :: WamContext -> Int -> Int -> [Int]
+enumerateParBranches ctx parPC elsePC =
+    (parPC + 1) : collectRest elsePC
+  where
+    (lo, hi) = bounds (wcCode ctx)
+    collectRest pc
+      | pc < lo || pc > hi = []  -- safety: malformed chain
+      | otherwise = case wcCode ctx ! pc of
+          ParRetryMeElse nextLabel ->
+            (pc + 1) : collectRest (fromMaybe (-1) (Map.lookup nextLabel (wcLabels ctx)))
+          ParRetryMeElsePc nextPC ->
+            (pc + 1) : collectRest nextPC
+          ParTrustMe -> [pc + 1]
+          -- Pre-Par variants can appear if someone mixed sequential
+          -- and parallel chain entries. Treat them as chain
+          -- terminators for safety — the fork still covers everything
+          -- up to that point.
+          RetryMeElse _   -> []
+          RetryMeElsePc _ -> []
+          TrustMe         -> []
+          _ -> []
+
+-- | Run one branch of a forked Par* chain. Starts from the given
+-- branch entry PC with a fresh wsAggAccum, reuses the parent''s
+-- bindings / CPs / trail. Runs until the branch''s own sub-solutions
+-- exhaust. Returns the values the branch contributed to the
+-- aggregate — the parent merges these across branches.
+--
+-- Key invariant: when the branch''s EndAggregate would fire
+-- finalizeAggregate (i.e. the outer aggregate CP is next to pop), we
+-- instead *stop* and return wsAggAccum. The fork driver then merges
+-- all branches'' contributions and calls finalizeAggregate once at
+-- the outer level.
+runBranchForFork :: WamContext -> WamState -> Int -> [Value]
+runBranchForFork !ctx !parent !branchPC =
+    let branchInit = parent { wsPC = branchPC, wsAggAccum = [] }
+    in runBranchLoop branchInit
+  where
+    runBranchLoop !s
+      | wsPC s < fst (bounds (wcCode ctx)) = wsAggAccum s
+      | wsPC s > snd (bounds (wcCode ctx)) = wsAggAccum s
+      | otherwise =
+          let instr = wcCode ctx ! wsPC s
+          in case instr of
+               EndAggregate valReg ->
+                 let val = derefVar (wsBindings s) $
+                           fromMaybe (Integer 0) (getReg valReg s)
+                     s1 = s { wsAggAccum = val : wsAggAccum s
+                            , wsPC = wsPC s + 1 }
+                 -- Prefer backtrackInner: if the branch has more
+                 -- internal solutions, keep exploring. Otherwise the
+                 -- branch is exhausted — return its contribution
+                 -- without finalizing the outer aggregate.
+                 in case backtrackInner (wsPC s + 1) s1 of
+                      Just s2 -> runBranchLoop s2
+                      Nothing -> wsAggAccum s1
+               _ -> case step ctx s instr of
+                      Just s2 -> runBranchLoop s2
+                      Nothing -> case backtrack s of
+                        Just s3 -> runBranchLoop s3
+                        Nothing -> wsAggAccum s
+
+-- | Fork every branch of a Par* chain and merge their aggregate
+-- contributions via the outer aggregate''s strategy. Returns the
+-- post-finalize state (ready to resume after the outer EndAggregate).
+forkParBranches :: WamContext -> WamState -> MergeStrategy -> Int -> WamState
+forkParBranches !ctx !s _strategy !elsePC =
+  let branchPCs = enumerateParBranches ctx (wsPC s) elsePC
+      branchResults = parMap rdeepseq (runBranchForFork ctx s) branchPCs
+      allValues = concat branchResults
+      -- Combine into the current state''s accumulator before
+      -- finalizing. finalizeAggregate''s applyAggregation folds
+      -- these per the aggregate''s afType (which matches the
+      -- strategy — sum folds as sum, count counts, etc.).
+      combined = s { wsAggAccum = allValues ++ wsAggAccum s }
+      -- finalizeAggregate wants the returnPC. For the outer aggregate
+      -- this is the PC just after the matching EndAggregate. We
+      -- locate it by scanning forward from wsPC s (the ParTryMeElse)
+      -- for the first EndAggregate. All Par* branches share this
+      -- returnPC because they share the enclosing BeginAggregate.
+      retPC = findOuterEndAggregate ctx (wsPC s)
+  in case finalizeAggregate retPC combined of
+       Just sf -> sf
+       Nothing -> combined  -- shouldn''t happen; defensive
+
+-- | Scan forward from the given PC looking for the first EndAggregate.
+-- Returns the PC immediately after it (the aggregate''s return
+-- target). Returns 0 on overrun; finalizeAggregate handles that
+-- gracefully via its CP walk.
+findOuterEndAggregate :: WamContext -> Int -> Int
+findOuterEndAggregate !ctx !startPC =
+    let (_, hi) = bounds (wcCode ctx)
+    in go (startPC + 1) hi
+  where
+    go !pc !hi
+      | pc > hi   = 0
+      | otherwise = case wcCode ctx ! pc of
+          EndAggregate _ -> pc + 1
+          _              -> go (pc + 1) hi
 
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
@@ -1374,10 +1531,25 @@ step !ctx s (RetryMeElsePc nextPC) =
 -- fork-safe but the runtime doesn''t fork yet. Phase 4.2 will split
 -- these handlers off to do actual parMap-based forking at the
 -- surrounding aggregate boundary.
-step !ctx s (ParTryMeElse label)    = step ctx s (TryMeElse label)
+--
+-- Phase 4.2: when a ParTryMeElse fires inside a fork-compatible
+-- aggregate (sum / count), we collect all N alternative branch
+-- entry PCs, run each branch in parallel via `parMap rdeepseq`, then
+-- merge the accumulated values via the aggregate strategy. Each
+-- branch''s EndAggregate is intercepted so it appends to that
+-- branch''s local wsAggAccum without finalizing the outer aggregate.
+-- Falls back to the sequential TryMeElse handler when the enclosing
+-- aggregate is not fork-compatible (or when there is no aggregate at
+-- all).
+--
+-- ParRetryMeElse / ParTrustMe still delegate to their sequential
+-- counterparts — once ParTryMeElse has chosen to fork, the runtime
+-- never walks through those; they''re only reached if the fork
+-- path bailed out to sequential.
+step !ctx s (ParTryMeElse label)    = forkOrSequential ctx s (Left label)
 step !ctx s (ParRetryMeElse label)  = step ctx s (RetryMeElse label)
 step !ctx s ParTrustMe              = step ctx s TrustMe
-step !ctx s (ParTryMeElsePc pc)     = step ctx s (TryMeElsePc pc)
+step !ctx s (ParTryMeElsePc pc)     = forkOrSequential ctx s (Right pc)
 step !ctx s (ParRetryMeElsePc pc)   = step ctx s (RetryMeElsePc pc)
 
 step !ctx s (SwitchOnConstantPc table) =
@@ -1525,7 +1697,9 @@ step !ctx s (BeginAggregate typ valReg resReg) =
         , cpHeapLen  = wsHeapLen s
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
-        , cpAggFrame = Just (AggFrame typ valReg resReg 0), cpBuiltin = Nothing
+        , cpAggFrame = Just (AggFrame typ valReg resReg 0
+                                      (inferMergeStrategy typ))
+        , cpBuiltin = Nothing
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
@@ -2039,6 +2213,11 @@ import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
 import Data.List (isPrefixOf, foldl'')
 import Data.Maybe (fromMaybe)
+-- Phase 4.2: intra-query parallelism. parMap/rdeepseq spark the
+-- alternative clauses of a forkable ParTryMeElse choice point; the
+-- WamState NFData instance lives in WamTypes.
+import Control.Parallel.Strategies (parMap, rdeepseq)
+import Control.DeepSeq (NFData(..), deepseq)
 import WamTypes
 
 ~w
@@ -2219,6 +2398,9 @@ generate_wam_types_hs(Code) :-
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
 import Data.Array (Array, listArray, (!), bounds)
+-- Phase 4.2: NFData is needed for parMap rdeepseq to fully evaluate
+-- each forked branch''s contribution before the merge step.
+import Control.DeepSeq (NFData(..))
 
 data Value = Atom String
            | Integer !Int
@@ -2261,11 +2443,65 @@ data BuiltinState
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
 data AggFrame = AggFrame
-  { afType      :: !String   -- "sum", "count", "collect", etc.
-  , afValueReg  :: !Int      -- register ID holding value per solution
-  , afResultReg :: !Int      -- register ID for final result
-  , afReturnPC  :: !Int      -- PC after end_aggregate
+  { afType      :: !String         -- "sum", "count", "collect", etc.
+  , afValueReg  :: !Int            -- register ID holding value per solution
+  , afResultReg :: !Int            -- register ID for final result
+  , afReturnPC  :: !Int            -- PC after end_aggregate
+  , afMergeStrategy :: !MergeStrategy  -- Phase 4.2: derived from afType;
+                                       -- carried on the frame so inner
+                                       -- ParTryMeElse choice points can
+                                       -- decide whether to fork without
+                                       -- re-parsing the type string.
   } deriving (Show)
+
+-- | Phase 4.2: how to combine per-branch aggregate values when forking.
+-- Commutative-and-associative strategies (sum/count) go in Phase 4.2;
+-- findall/bag/set arrive in Phase 4.3; race/negation in 4.4. Unknown
+-- aggregate types yield MergeSequential, which disables forking.
+data MergeStrategy
+  = MergeSumInt
+  | MergeSumDouble
+  | MergeCount
+  | MergeFindall       -- Phase 4.3
+  | MergeBag           -- Phase 4.3
+  | MergeSet           -- Phase 4.3
+  | MergeRace          -- Phase 4.4
+  | MergeNegation      -- Phase 4.4
+  | MergeSequential    -- Default fallback; fork disabled
+  deriving (Show, Eq)
+
+-- | Phase 4.2: fork context threaded from BeginAggregate through to the
+-- inner ParTryMeElse choice point that does the actual fork.
+data ForkContext = ForkContext
+  { fcMergeStrategy :: !MergeStrategy
+  , fcWorkEstimate  :: !(Maybe Double)  -- microseconds, Phase 4.5
+  } deriving (Show)
+
+-- | Parse a MergeStrategy from the aggregate type string (as stored in
+-- AggFrame.afType). Returns MergeSequential for anything we don''t
+-- recognize, which causes the ParTryMeElse fork to fall back to the
+-- sequential TryMeElse handler.
+inferMergeStrategy :: String -> MergeStrategy
+inferMergeStrategy "sum"   = MergeSumDouble
+inferMergeStrategy "count" = MergeCount
+inferMergeStrategy "bag"   = MergeBag
+inferMergeStrategy "set"   = MergeSet
+inferMergeStrategy "findall" = MergeFindall
+inferMergeStrategy _       = MergeSequential
+
+-- | Phase 4.2: NFData instances so parMap rdeepseq can spark forked
+-- branches. We need this only for the types that end up in a parMap
+-- result — for us that''s `[Value]` (each branch''s contributed
+-- aggregate values). Everything is first-order / strict already;
+-- these definitions just walk the structure to force evaluation.
+instance NFData Value where
+  rnf (Atom s)         = rnf s
+  rnf (Integer n)      = rnf n
+  rnf (Float f)        = rnf f
+  rnf (VList xs)       = rnf xs
+  rnf (Str name args)  = rnf name `seq` rnf args
+  rnf (Unbound n)      = rnf n
+  rnf (Ref n)          = rnf n
 
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
 data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID, arity, collected args
