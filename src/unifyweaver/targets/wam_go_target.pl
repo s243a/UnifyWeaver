@@ -102,33 +102,84 @@ read_template_file(Path, Content) :-
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
-compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
+compile_predicates_for_project(Predicates, Options, Code) :-
+    classify_predicates(Predicates, Options, Classified),
+    collect_wam_entries(Classified, 0, WamEntries, AllInstrParts, AllLabelEntries),
+    (   WamEntries \== []
+    ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
+        atomic_list_concat(AllLabelEntries, '\n', AllLabels),
+        format(atom(SharedCode),
+'var sharedWamCodeRaw = []Instruction{
+~w
+}
+
+var sharedWamLabels = map[string]int{
+~w
+}
+
+var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
+', [AllInstrs, AllLabels])
+    ;   SharedCode = ""
+    ),
+    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    atomic_list_concat(PredCodes, '\n\n', PredicatesCode),
+    (   SharedCode == ""
+    ->  Code = PredicatesCode
+    ;   format(atom(Code), '~w~n~w', [SharedCode, PredicatesCode])
+    ).
+
+classify_predicates([], _, []).
+classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    (   % Try native Go lowering first
-        catch(
+    (   catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        Strategy = native
-    ;   % Fall back to WAM compilation
-        option(wam_fallback(WamFB), Options, true),
+        Entry = classified(Module, Pred, Arity, native, PredCode)
+    ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
-        compile_wam_predicate_to_go(Pred/Arity, WamCode, Options, PredCode)
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
     ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        Strategy = wam
-    ;   % Neither worked
-        format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity]),
-        Strategy = failed
+        Entry = classified(Module, Pred, Arity, wam, WamCode)
+    ;   format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, failed, PredCode)
     ),
-    compile_predicates_for_project(Rest, Options, RestCode),
-    (   RestCode == ""
-    ->  format(atom(Code), "// Strategy: ~w\n~w", [Strategy, PredCode])
-    ;   format(atom(Code), "// Strategy: ~w\n~w\n\n~w", [Strategy, PredCode, RestCode])
-    ).
+    classify_predicates(Rest, Options, RestEntries).
+
+collect_wam_entries([], _, [], [], []).
+collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_go(Lines, PC, GoLiterals, LabelEntries),
+    maplist([Lit, Entry]>>(format(atom(Entry), '        ~w,', [Lit])), GoLiterals, InstrEntries),
+    maplist([Label-Idx, Entry]>>(format(atom(Entry), '        "~w": ~w,', [Label, Idx])), LabelEntries, LabelRows),
+    length(GoLiterals, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrEntries, RestInstrs, AllInstrs),
+    append(LabelRows, RestLabels, AllLabels).
+collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
+
+generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// Strategy: native~n~w', [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    member(wam_entry(Pred, Arity, StartPC), WamEntries),
+    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Code),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
 
 %% compile_wam_runtime_to_go(+Options, -GoCode)
 %  Placeholder for potentially transpiling larger parts of wam_runtime.pl
@@ -244,6 +295,8 @@ go_struct_case(Functor-Label, Case) :-
 compile_wam_predicate_to_go(Pred/Arity, WamCode, _Options, GoCode) :-
     atom_string(Pred, PredStr),
     capitalize_atom(Pred, CapPred),
+    build_go_wam_arg_list(Arity, ArgList),
+    build_go_wam_arg_setup(Arity, ArgSetup),
     %% Parse WAM code lines into instruction terms
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
@@ -263,7 +316,50 @@ var ~wCode = []Instruction{
 var ~wLabels = map[string]int{
 ~w
 }
-', [PredStr, Arity, CapPred, EntriesStr, CapPred, LabelsStr]).
+
+var ~wResolvedCode = resolveInstructions(~wCode, ~wLabels)
+
+func ~w(~w) bool {
+    vm := NewWamState(~wResolvedCode, ~wLabels)
+~w
+    return vm.Run()
+}
+', [PredStr, Arity, CapPred, EntriesStr, CapPred, LabelsStr,
+    CapPred, CapPred, CapPred, CapPred, ArgList, CapPred, CapPred, ArgSetup]).
+
+compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
+    atom_string(Pred, PredStr),
+    capitalize_atom(Pred, CapPred),
+    build_go_wam_arg_list(Arity, ArgList),
+    build_go_wam_arg_setup(Arity, ArgSetup),
+    format(atom(GoCode),
+'// Strategy: wam
+// WAM-compiled predicate: ~w/~w (shared table, pc=~w)
+var ~wCode = sharedWamCode
+var ~wLabels = sharedWamLabels
+const ~wStartPC = ~w
+
+func ~w(~w) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    vm.PC = ~w
+~w
+    return vm.Run()
+}
+', [PredStr, Arity, StartPC,
+    CapPred, CapPred, CapPred, StartPC,
+    CapPred, ArgList, StartPC, ArgSetup]).
+
+build_go_wam_arg_list(0, "") :- !.
+build_go_wam_arg_list(Arity, ArgList) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>format(atom(S), 'a~w Value', [I]), Indices, Parts),
+    atomic_list_concat(Parts, ', ', ArgList).
+
+build_go_wam_arg_setup(0, "") :- !.
+build_go_wam_arg_setup(Arity, Setup) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>format(atom(S), '    vm.Regs["A~w"] = a~w', [I, I]), Indices, Lines),
+    atomic_list_concat(Lines, '\n', Setup).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
@@ -751,11 +847,18 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
         }
         return false').
 
+wam_go_case('CallPc', '        vm.CP = vm.PC + 1
+        vm.PC = i.TargetPC
+        return true').
+
 wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
         return false').
+
+wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+        return true').
 
 wam_go_case('Proceed', '        if vm.CP > 0 {
             vm.PC = vm.CP
@@ -780,10 +883,20 @@ wam_go_case('TryMeElse', '        nextPC := 0
         vm.PC++
         return true').
 
+wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC)
+        vm.PC++
+        return true').
+
 wam_go_case('RetryMeElse', '        if pc, ok := vm.Labels[i.Label]; ok {
             if len(vm.ChoicePoints) > 0 {
                 vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = pc
             }
+        }
+        vm.PC++
+        return true').
+
+wam_go_case('RetryMeElsePc', '        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = i.NextPC
         }
         vm.PC++
         return true').
@@ -809,6 +922,17 @@ wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isU
         vm.PC++
         return true').
 
+wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+            for _, c := range i.Cases {
+                if valueEquals(c.Val, val) {
+                    vm.PC = c.TargetPC
+                    return true
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
 wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
@@ -825,6 +949,20 @@ wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
         vm.PC++
         return true').
 
+wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
+            if f, args := decompose(val); f != "" {
+                key := fmt.Sprintf("%s/%d", f, len(args))
+                for _, c := range i.Cases {
+                    if c.Functor == key {
+                        vm.PC = c.TargetPC
+                        return true
+                    }
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
 wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
@@ -832,6 +970,17 @@ wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !i
                         vm.PC = pc
                         return true
                     }
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
+wam_go_case('SwitchOnConstantA2Pc', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+            for _, c := range i.Cases {
+                if valueEquals(c.Val, val) {
+                    vm.PC = c.TargetPC
+                    return true
                 }
             }
         }
@@ -943,6 +1092,89 @@ func (vm *WamState) fetch() Instruction {
         return vm.Code[vm.PC]
     }
     return nil
+}
+
+func resolveInstructions(code []Instruction, labels map[string]int) []Instruction {
+    resolved := make([]Instruction, 0, len(code))
+    for _, instr := range code {
+        switch i := instr.(type) {
+        case *Call:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &CallPc{TargetPC: pc, Arity: i.Arity})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *Execute:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &ExecutePc{TargetPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *TryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &TryMeElsePc{NextPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *RetryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &RetryMeElsePc{NextPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstant:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnConstantPc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnStructure:
+            cases := make([]StructPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, StructPcCase{Functor: c.Functor, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnStructurePc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstantA2:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnConstantA2Pc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        default:
+            resolved = append(resolved, instr)
+        }
+    }
+    return resolved
 }
 ', []).
 
