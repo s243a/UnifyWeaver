@@ -461,7 +461,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
   ret void
 }
 
-; Push a WriteCtx (type=2) with write count
+; Push a WriteCtx (type=2) with write count.
+; For compound terms, data field stores the args %Value* pointer
+; so set_value/set_constant write directly into the compound's args array.
 define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
@@ -471,12 +473,66 @@ define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   ; type = 2 (WriteCtx)
   %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
   store i32 2, i32* %type_ptr
-  ; aux = count
+  ; aux = count (remaining args to write)
   %count_ext = zext i32 %count to i64
   %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
   store i64 %count_ext, i64* %aux_ptr
+  ; data = null (will be set by put_structure after this call)
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* null, %Value** %data_ptr
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Set the args pointer on the top WriteCtx (called by put_structure after push).
+define void @wam_write_ctx_set_args(%WamState* %vm, %Value* %args) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* %args, %Value** %data_ptr
+  ret void
+}
+
+; Write a value to the next slot in the compound args array.
+; Reads the args pointer and remaining count from the WriteCtx,
+; writes the value, decrements count, auto-pops when exhausted.
+define void @wam_write_ctx_set_arg(%WamState* %vm, %Value %val) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  ; Read remaining count.
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count64 = load i64, i64* %aux_ptr
+  %count = trunc i64 %count64 to i32
+  ; Read args pointer.
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  %args = load %Value*, %Value** %data_ptr
+  ; Compute write index: arity - remaining_count (arity stored originally).
+  ; Actually simpler: advance the args pointer after each write.
+  ; Write value at args[0], then advance args to args+1.
+  store %Value %val, %Value* %args
+  %args_next = getelementptr %Value, %Value* %args, i32 1
+  store %Value* %args_next, %Value** %data_ptr
+  ; Decrement count.
+  %new_count = sub i32 %count, 1
+  %new_count64 = zext i32 %new_count to i64
+  store i64 %new_count64, i64* %aux_ptr
+  ; Auto-pop if exhausted.
+  %done = icmp sle i32 %new_count, 0
+  br i1 %done, label %pop, label %ret
+pop:
+  store i32 %top_idx, i32* %ss_ptr
+  br label %ret
+ret:
   ret void
 }
 
