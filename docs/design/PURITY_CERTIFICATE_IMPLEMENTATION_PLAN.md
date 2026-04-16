@@ -191,10 +191,16 @@ that as a follow-up.
 
 ---
 
-## Phase P4: Wire into Haskell WAM Phase 4.1 emission
+## Phase P4: Wire into Haskell WAM Phase 4.1 emission — **DELIVERED 2026-04-15**
 
 First real consumer. When Phase 4.1 emits `ParTryMeElse` vs
 `TryMeElse`, it consults the certificate module.
+
+**Status: delivered**, combined with intra-query Phase 4.1 on the same
+branch — emission was wired certificate-driven from the start rather
+than shipping a simpler annotation check first. Confidence threshold
+0.85 matches the spec. Kill switch `intra_query_parallel(false)`
+lands alongside the emission path.
 
 **Precondition:** Phase 4.1 of the intra-query parallelism
 implementation plan (WAM instruction additions). P4 of this plan

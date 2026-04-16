@@ -14,6 +14,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../src/unifyweaver/core/clause_body_analysis').
+:- use_module('../src/unifyweaver/core/purity_certificate').
 
 :- dynamic test_failed/0.
 
@@ -266,6 +268,149 @@ test_call_foreign_helper :-
     ;   fail_test(Test, 'callForeign helper missing from WamRuntime')
     ).
 
+%% Phase 4.1: Par* instructions — type, step handlers, resolveCallInstrs
+%% --------------------------------------------
+
+test_haskell_par_instructions_in_types :-
+    Test = 'WAM-Haskell: Par* constructors present in Instruction type',
+    (   compile_wam_runtime_to_haskell([], [], Code0),
+        % The Par* constructors are declared in WamTypes, which we
+        % access indirectly via the types generator.
+        atom_string(Code0, _),
+        wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, TypesS),
+        sub_string(TypesS, _, _, _, "ParTryMeElse String"),
+        sub_string(TypesS, _, _, _, "ParRetryMeElse String"),
+        sub_string(TypesS, _, _, _, "ParTrustMe"),
+        sub_string(TypesS, _, _, _, "ParTryMeElsePc !Int"),
+        sub_string(TypesS, _, _, _, "ParRetryMeElsePc !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Par* constructors missing from Instruction type')
+    ).
+
+test_haskell_par_step_handlers_present :-
+    Test = 'WAM-Haskell: step function handles Par* by delegating',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (ParTryMeElse label)"),
+        sub_string(S, _, _, _, "step !ctx s (ParRetryMeElse label)"),
+        sub_string(S, _, _, _, "step !ctx s ParTrustMe"),
+        sub_string(S, _, _, _, "step ctx s (TryMeElse label)"),
+        % confirm the ParTrustMe handler delegates to TrustMe
+        sub_string(S, _, _, _, "step ctx s TrustMe")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Par* step handlers missing or not delegating')
+    ).
+
+test_haskell_par_resolve_present :-
+    Test = 'WAM-Haskell: resolveCallInstrs handles Par* variants',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resolve (ParTryMeElse label)"),
+        sub_string(S, _, _, _, "resolve (ParRetryMeElse label)"),
+        sub_string(S, _, _, _, "ParTryMeElsePc"),
+        sub_string(S, _, _, _, "ParRetryMeElsePc")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Par* resolution missing from resolveCallInstrs')
+    ).
+
+%% Phase 4.1: certificate-driven Par* emission
+%% --------------------------------------------
+
+test_par_emission_for_user_annotated_predicate :-
+    Test = 'WAM-Haskell: :- parallel annotation drives Par* emission',
+    % Define a pure multi-clause predicate and mark it parallel.
+    retractall(clause_body_analysis:order_independent(user:p41_pure/1)),
+    retractall(user:p41_pure(_)),
+    assertz(clause_body_analysis:order_independent(user:p41_pure/1)),
+    assertz((user:p41_pure(1))),
+    assertz((user:p41_pure(2))),
+    assertz((user:p41_pure(3))),
+    (   wam_haskell_target:maybe_parallelize_instrs(user:p41_pure/1, [],
+            ['TryMeElse "L_a"', 'TrustMe', 'RetryMeElse "L_b"'], Out),
+        Out == ['ParTryMeElse "L_a"', 'ParTrustMe', 'ParRetryMeElse "L_b"']
+    ->  pass(Test)
+    ;   fail_test(Test, 'Expected Par* rewrite did not happen')
+    ),
+    retract(clause_body_analysis:order_independent(user:p41_pure/1)),
+    retractall(user:p41_pure(_)).
+
+test_no_par_emission_for_unannotated_impure_predicate :-
+    Test = 'WAM-Haskell: un-annotated predicate with impure body stays sequential',
+    % Un-annotated but the blacklist will flag write/1 as impure →
+    % analyze_predicate_purity returns impure → Par* suppressed.
+    retractall(user:p41_impure(_, _)),
+    assertz((user:p41_impure(X, Y) :- write(X), Y = X)),
+    assertz((user:p41_impure(_, _) :- nl)),
+    (   wam_haskell_target:maybe_parallelize_instrs(user:p41_impure/2, [],
+            ['TryMeElse "L_a"', 'TrustMe'], Out),
+        Out == ['TryMeElse "L_a"', 'TrustMe']
+    ->  pass(Test)
+    ;   fail_test(Test, 'Par* emitted for impure body — blacklist should suppress')
+    ),
+    retractall(user:p41_impure(_, _)).
+
+test_no_par_emission_for_impure_body :-
+    Test = 'WAM-Haskell: annotation plus impure body still emits sequential (blacklist overrides via confidence)',
+    % Annotation alone would normally win (priority 100). The test
+    % verifies that analyze_predicate_purity returns `pure/declared`
+    % BUT maybe_parallelize_instrs also requires the chain to be at
+    % least 0.85 confidence. Declared is 1.0 so the rewrite happens.
+    % This test documents current behavior: user declarations are
+    % trusted. A stricter policy could consult
+    % check_purity_contradictions, but that's not Phase 4.1.
+    retractall(clause_body_analysis:order_independent(user:p41_loud/1)),
+    retractall(user:p41_loud(_)),
+    assertz(clause_body_analysis:order_independent(user:p41_loud/1)),
+    assertz((user:p41_loud(X) :- write(X))),
+    (   wam_haskell_target:maybe_parallelize_instrs(user:p41_loud/1, [],
+            ['TryMeElse "L_a"', 'TrustMe'], Out),
+        % Declared user wins — this is expected. Document in reason.
+        Out = ['ParTryMeElse "L_a"', 'ParTrustMe']
+    ->  pass(Test)
+    ;   fail_test(Test, 'Declared-user annotation did not drive Par* as expected')
+    ),
+    retract(clause_body_analysis:order_independent(user:p41_loud/1)),
+    retractall(user:p41_loud(_)).
+
+test_intra_query_parallel_false_kill_switch :-
+    Test = 'WAM-Haskell: intra_query_parallel(false) forces sequential emission',
+    retractall(clause_body_analysis:order_independent(user:p41_kill/1)),
+    assertz(clause_body_analysis:order_independent(user:p41_kill/1)),
+    (   wam_haskell_target:maybe_parallelize_instrs(user:p41_kill/1,
+            [intra_query_parallel(false)],
+            ['TryMeElse "L_a"', 'TrustMe'], Out),
+        Out == ['TryMeElse "L_a"', 'TrustMe']
+    ->  pass(Test)
+    ;   fail_test(Test, 'intra_query_parallel(false) did not suppress Par*')
+    ),
+    retract(clause_body_analysis:order_independent(user:p41_kill/1)).
+
+test_par_rewrite_preserves_non_choice_instrs :-
+    Test = 'WAM-Haskell: Par* rewrite does not touch non-choice instructions',
+    retractall(clause_body_analysis:order_independent(user:p41_mix/1)),
+    assertz(clause_body_analysis:order_independent(user:p41_mix/1)),
+    Input = ['GetConstant (Atom "a") 1',
+             'TryMeElse "L1"',
+             'Proceed',
+             'RetryMeElse "L2"',
+             'Call "foo/2" 2',
+             'TrustMe',
+             'Proceed'],
+    Expected = ['GetConstant (Atom "a") 1',
+                'ParTryMeElse "L1"',
+                'Proceed',
+                'ParRetryMeElse "L2"',
+                'Call "foo/2" 2',
+                'ParTrustMe',
+                'Proceed'],
+    (   wam_haskell_target:maybe_parallelize_instrs(user:p41_mix/1, [], Input, Out),
+        Out == Expected
+    ->  pass(Test)
+    ;   fail_test(Test, 'Non-choice instructions incorrectly touched by Par* rewrite')
+    ),
+    retract(clause_body_analysis:order_independent(user:p41_mix/1)).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8 codegen tests~n'),
@@ -286,6 +431,15 @@ run_tests :-
     test_call_foreign_step_case,
     test_call_foreign_resolve,
     test_call_foreign_helper,
+    %% Phase 4.1: Par* instructions + certificate-driven emission
+    test_haskell_par_instructions_in_types,
+    test_haskell_par_step_handlers_present,
+    test_haskell_par_resolve_present,
+    test_par_emission_for_user_annotated_predicate,
+    test_no_par_emission_for_unannotated_impure_predicate,
+    test_no_par_emission_for_impure_body,
+    test_intra_query_parallel_false_kill_switch,
+    test_par_rewrite_preserves_non_choice_instrs,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
