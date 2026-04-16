@@ -712,6 +712,15 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     open(RuntimePath, write, RS),
     write(RS, RuntimeCode),
     close(RS),
+    % Generate dispatcher for lowered mode
+    (   Mode == lowered
+    ->  generate_elixir_dispatcher(Predicates, DispatcherCode),
+        directory_file_path(LibDir, 'wam_dispatcher.ex', DispatcherPath),
+        open(DispatcherPath, write, DS),
+        write(DS, DispatcherCode),
+        close(DS)
+    ;   true
+    ),
     % Generate predicate modules
     forall(
         member(Pred/Arity-WamCode, Predicates),
@@ -745,3 +754,20 @@ end', [ModuleName, ModuleName]),
     open(MixPath, write, MS),
     write(MS, MixCode),
     close(MS).
+
+generate_elixir_dispatcher(Predicates, Code) :-
+    findall(Case,
+        (   member(Pred/Arity-_, Predicates),
+            atom_string(Pred, PredStr),
+            format(string(Case), '  def call("~w/~w", state), do: WamPredLow.~w.run(state)', [PredStr, Arity, PredStr])
+        ),
+        Cases
+    ),
+    atomic_list_concat(Cases, '\n', CasesStr),
+    format(string(Code),
+'defmodule WamDispatcher do
+  @moduledoc "Global dispatcher for dynamic WAM calls"
+
+~w
+  def call(pred, _state), do: throw({:undefined_predicate, pred})
+end', [CasesStr]).
