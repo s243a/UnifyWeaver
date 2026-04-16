@@ -324,15 +324,16 @@ raw path-state traversal:
 | counted shortest path | 1k | 0.450s | 0.180s | 2.50x | 352,522 | 10,328 | 592,698 | 38,196 |
 
 Counted-closure phase split after typed row buffering, pre-sized
-materialization, edge-state node-id preindexing, per-row timing removal, and a
-compact `(target, depth)` buffered row shape:
+materialization, edge-state node-id preindexing, per-row timing removal, a
+compact `(target, depth)` buffered row shape, and O(1) parent-linked
+visited-path extension:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 165.620ms | 0.000ms | 76.569ms | n/a |
-| 300 | Min | 43.825ms | 0.000ms | 5.471ms | 12.509ms |
-| 1k | All | 97.050ms | 0.000ms | 35.733ms | n/a |
-| 1k | Min | 17.656ms | 0.000ms | 1.418ms | 5.662ms |
+| 300 | All | 147.247ms | 0.000ms | 64.580ms | n/a |
+| 300 | Min | 38.480ms | 0.000ms | 5.090ms | 11.550ms |
+| 1k | All | 64.303ms | 0.000ms | 52.634ms | n/a |
+| 1k | Min | 19.198ms | 0.000ms | 1.478ms | 5.629ms |
 
 Interpretation:
 
@@ -364,6 +365,10 @@ Interpretation:
 - the counted-path `All` buffer now stores only `(target, depth)` per row,
   because `seed` is constant for each per-seed traversal; this reduces buffer
   footprint and lowers final `object[]` materialization cost
+- `CompactVisitedPath.Extend` now uses a parent-linked immutable node instead
+  of copying the full visited-node array on every successor push, which
+  reduces traversal-time allocation/copy overhead while preserving exact
+  cycle checks and frontier semantics
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
   remaining work should target expansion/materialization overhead
