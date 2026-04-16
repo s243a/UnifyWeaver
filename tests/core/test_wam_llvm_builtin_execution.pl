@@ -88,7 +88,7 @@ entry:
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
       i32 ~w,
       i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
-      i32 0)
+      i32 ~w)
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   %ok = call i1 @run_loop(%WamState* %vm)
@@ -101,7 +101,7 @@ miss:
   ret i32 255
 }
 ',
-        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom]),
+        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom, LC]),
     setup_call_cleanup(
         open(LLPath, append, Out),
         ( write(Out, '\n'), write(Out, DriverIR) ),
@@ -158,7 +158,7 @@ entry:
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
       i32 ~w,
       i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
-      i32 0)
+      i32 ~w)
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   %ok = call i1 @run_loop(%WamState* %vm)
@@ -171,7 +171,7 @@ miss:
   ret i32 255
 }
 ',
-        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom]),
+        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom, LC]),
     setup_call_cleanup(
         open(LLPath, append, Out),
         ( write(Out, '\n'), write(Out, DriverIR) ),
@@ -213,7 +213,10 @@ test_all :-
        run_test_r0('10+1 = 11', test_add, 10, 11),
        run_test_r0('0+1 = 1', test_add, 0, 1),
        run_test_r0('7*3 = 21', test_mul, 7, 21),
-       format('--- compound arithmetic passed ---~n')
+       format('--- multi-clause (first-arg indexing) ---~n'),
+       run_test('choice(1) = 10', test_choice, 1, 10),
+       run_test('choice(2) = 20', test_choice, 2, 20),
+       run_test('choice(3) = 30', test_choice, 3, 30)
     ;  format('  SKIP: clang or llc not found~n')
     ).
 
