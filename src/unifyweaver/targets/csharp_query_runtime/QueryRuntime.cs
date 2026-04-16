@@ -14026,11 +14026,13 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class CompactVisitedPath
         {
-            private readonly int[] _nodeIds;
+            private readonly CompactVisitedPath? _previous;
+            private readonly int _nodeId;
 
-            private CompactVisitedPath(int[] nodeIds, int count, ulong maskA, ulong maskB, ulong fingerprint)
+            private CompactVisitedPath(CompactVisitedPath? previous, int nodeId, int count, ulong maskA, ulong maskB, ulong fingerprint)
             {
-                _nodeIds = nodeIds;
+                _previous = previous;
+                _nodeId = nodeId;
                 Count = count;
                 MaskA = maskA;
                 MaskB = maskB;
@@ -14047,13 +14049,26 @@ namespace UnifyWeaver.QueryRuntime
 
             public int GetNodeId(int index)
             {
-                return _nodeIds[index];
+                if ((uint)index >= (uint)Count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                var steps = Count - 1 - index;
+                var current = this;
+                for (var i = 0; i < steps; i++)
+                {
+                    current = current._previous!;
+                }
+
+                return current._nodeId;
             }
 
             public static CompactVisitedPath Create(int nodeId)
             {
                 return new CompactVisitedPath(
-                    new[] { nodeId },
+                    previous: null,
+                    nodeId: nodeId,
                     1,
                     ComputeVisitedMaskA(nodeId),
                     ComputeVisitedMaskB(nodeId),
@@ -14074,9 +14089,9 @@ namespace UnifyWeaver.QueryRuntime
                     return false;
                 }
 
-                for (var i = 0; i < Count; i++)
+                for (var current = this; current is not null; current = current._previous)
                 {
-                    if (_nodeIds[i] == nodeId)
+                    if (current._nodeId == nodeId)
                     {
                         return true;
                     }
@@ -14087,11 +14102,9 @@ namespace UnifyWeaver.QueryRuntime
 
             public CompactVisitedPath Extend(int nodeId)
             {
-                var nodeIds = new int[Count + 1];
-                Array.Copy(_nodeIds, nodeIds, Count);
-                nodeIds[Count] = nodeId;
                 return new CompactVisitedPath(
-                    nodeIds,
+                    this,
+                    nodeId,
                     Count + 1,
                     MaskA | ComputeVisitedMaskA(nodeId),
                     MaskB | ComputeVisitedMaskB(nodeId),
@@ -14110,20 +14123,9 @@ namespace UnifyWeaver.QueryRuntime
                     return false;
                 }
 
-                for (var i = 0; i < Count; i++)
+                for (var current = this; current is not null; current = current._previous)
                 {
-                    var found = false;
-                    var value = _nodeIds[i];
-                    for (var j = 0; j < other.Count; j++)
-                    {
-                        if (value == other._nodeIds[j])
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (!found)
+                    if (!other.Contains(current._nodeId))
                     {
                         return false;
                     }

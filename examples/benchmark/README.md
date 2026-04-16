@@ -966,23 +966,23 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
     --scales 300,1k --repetitions 3
 ```
 
-Latest local results after compact visited paths, edge-state node-id
-preindexing, per-row timing removal, and a compact `(target, depth)` buffered
-row shape for counted path materialization:
+Latest local results after edge-state node-id preindexing, per-row timing
+removal, a compact `(target, depth)` buffered row shape, and O(1)
+parent-linked visited-path extension:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.439s | 0.179s | 2.45x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.306s | 0.149s | 2.06x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.430s | 0.181s | 2.38x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.270s | 0.132s | 2.05x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 165.620ms | 0.000ms | 76.569ms | n/a |
-| 300 | Min | 43.825ms | 0.000ms | 5.471ms | 12.509ms |
-| 1k | All | 97.050ms | 0.000ms | 35.733ms | n/a |
-| 1k | Min | 17.656ms | 0.000ms | 1.418ms | 5.662ms |
+| 300 | All | 147.247ms | 0.000ms | 64.580ms | n/a |
+| 300 | Min | 38.480ms | 0.000ms | 5.090ms | 11.550ms |
+| 1k | All | 64.303ms | 0.000ms | 52.634ms | n/a |
+| 1k | Min | 19.198ms | 0.000ms | 1.478ms | 5.629ms |
 
 Additional path-state observations:
 
@@ -1003,6 +1003,10 @@ Additional path-state observations:
 - the counted-path `All` buffer now stores only `(target, depth)` per row,
   because `seed` is constant for each per-seed traversal; this reduces buffer
   footprint and lowers final `object[]` materialization cost.
+- `CompactVisitedPath.Extend` now uses a parent-linked immutable node instead
+  of copying the full visited-node array on every successor push, which
+  reduces traversal-time allocation/copy overhead while preserving exact
+  cycle checks and frontier semantics.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
