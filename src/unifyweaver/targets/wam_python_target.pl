@@ -1243,7 +1243,7 @@ copy_static_runtime(ProjectDir) :-
 	% Resolve relative to this module's source file
 	(   source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
 		file_directory_name(ThisFile, ThisDir),
-		directory_file_path(ThisDir, 'python_runtime/WamRuntime.py', SrcPath),
+		directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
 		exists_file(SrcPath)
 	->  copy_file(SrcPath, DestPath)
 	;   % Generate from bindings if static file not found
