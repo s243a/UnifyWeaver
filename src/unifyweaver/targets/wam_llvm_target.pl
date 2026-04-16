@@ -2087,11 +2087,15 @@ wam_llvm_case('switch_on_structure',
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
-% switch_on_constant_a2: nop fallthrough for now.
+% switch_on_constant_a2: like switch_on_constant but indexes on A2.
 wam_llvm_case('switch_on_constant_a2',
-'  ; Nop fallthrough: just advance PC and continue.
-  call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+'  ; op1 = ptrtoint of %SwitchEntry* table
+  ; op2 = entry count
+  %soca2.table = inttoptr i64 %op1 to %SwitchEntry*
+  %soca2.count = trunc i64 %op2 to i32
+  %soca2.result = call i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %soca2.table, i32 %soca2.count)
+  %soca2.ok = icmp ne i32 %soca2.result, 0
+  ret i1 %soca2.ok').
 
 % begin_aggregate: push an aggregate-frame choice point and reset accumulator.
 % op1 = (agg_type)
@@ -3043,6 +3047,21 @@ resolve_switch_tables([switch_deferred(constant, Entries) | Rest], PredStr, Idx,
         [Count, TableName, Count]),
     Idx1 is Idx + 1,
     resolve_switch_tables(Rest, PredStr, Idx1, RestOut, RestDefs).
+resolve_switch_tables([switch_deferred(constant_a2, Entries) | Rest], PredStr, Idx,
+        [InstrLit | RestOut], [TableDef | RestDefs]) :- !,
+    length(Entries, Count),
+    format(atom(TableName), '~w_switch_a2_~w', [PredStr, Idx]),
+    render_switch_entries(Entries, EntryLines),
+    atomic_list_concat(EntryLines, ',\n', EntriesStr),
+    format(atom(TableDef),
+'@~w = private constant [~w x %SwitchEntry] [
+~w
+]',         [TableName, Count, EntriesStr]),
+    format(atom(InstrLit),
+'%Instruction { i32 27, i64 ptrtoint ([~w x %SwitchEntry]* @~w to i64), i64 ~w }',
+        [Count, TableName, Count]),
+    Idx1 is Idx + 1,
+    resolve_switch_tables(Rest, PredStr, Idx1, RestOut, RestDefs).
 resolve_switch_tables([Lit | Rest], PredStr, Idx, [Lit | RestOut], RestDefs) :-
     resolve_switch_tables(Rest, PredStr, Idx, RestOut, RestDefs).
 
@@ -3236,8 +3255,9 @@ wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
 wam_line_to_llvm_literal_resolved(["switch_on_structure" | _], _, Lit) :- !,
     % nop fallthrough — the try_me_else chain still runs.
     Lit = '%Instruction { i32 26, i64 0, i64 0 }'.
-wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | _], _, Lit) :- !,
-    Lit = '%Instruction { i32 27, i64 0, i64 0 }'.
+wam_line_to_llvm_literal_resolved(["switch_on_constant_a2" | EntryParts], LabelMap,
+        switch_deferred(constant_a2, Entries)) :- !,
+    parse_switch_entries(EntryParts, LabelMap, Entries).
 % All other instructions: delegate to existing parser (no labels needed)
 wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
     wam_line_to_llvm_literal(Parts, Lit).
