@@ -382,6 +382,12 @@ def eval_arith(val, state):
     if isinstance(d, Float):
         return d.f
     if isinstance(d, Compound):
+        # Unary minus
+        if d.functor == '-' and len(d.args) == 1:
+            a = eval_arith(d.args[0], state)
+            if a is not None:
+                return -a
+            return None
         if d.functor == '+' and len(d.args) == 2:
             a = eval_arith(d.args[0], state)
             b = eval_arith(d.args[1], state)
@@ -402,11 +408,63 @@ def eval_arith(val, state):
             b = eval_arith(d.args[1], state)
             if a is not None and b is not None and b != 0.0:
                 return a / b
+        elif d.functor == '//' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None and b != 0.0:
+                return float(int(a) // int(b))
         elif d.functor == 'mod' and len(d.args) == 2:
             a = eval_arith(d.args[0], state)
             b = eval_arith(d.args[1], state)
             if a is not None and b is not None and b != 0.0:
                 return float(int(a) % int(b))
+        elif d.functor == 'abs' and len(d.args) == 1:
+            a = eval_arith(d.args[0], state)
+            if a is not None:
+                return abs(a)
+        elif d.functor == 'sign' and len(d.args) == 1:
+            a = eval_arith(d.args[0], state)
+            if a is not None:
+                return float(1 if a > 0 else (-1 if a < 0 else 0))
+        elif d.functor == 'max' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return max(a, b)
+        elif d.functor == 'min' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return min(a, b)
+        elif d.functor == '/\\\\' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return float(int(a) & int(b))
+        elif d.functor == '\\\\/' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return float(int(a) | int(b))
+        elif d.functor == 'xor' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return float(int(a) ^ int(b))
+        elif d.functor == '\\\\' and len(d.args) == 1:
+            a = eval_arith(d.args[0], state)
+            if a is not None:
+                return float(~int(a))
+        elif d.functor == '>>' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return float(int(a) >> int(b))
+        elif d.functor == '<<' and len(d.args) == 2:
+            a = eval_arith(d.args[0], state)
+            b = eval_arith(d.args[1], state)
+            if a is not None and b is not None:
+                return float(int(a) << int(b))
     return None
 
 # ============================================================================

@@ -283,11 +283,34 @@ def eval_arith(term: Term, state: WamState):
     if isinstance(t, Float):  return t.f
     if isinstance(t, Compound):
         args = [eval_arith(a, state) for a in t.args]
-        ops = {'+': lambda a,b: a+b, '-': lambda a,b: a-b,
-               '*': lambda a,b: a*b, '/': lambda a,b: a/b,
-               '//': lambda a,b: a//b, 'mod': lambda a,b: a%b,
-               '**': lambda a,b: a**b, 'abs': lambda a: abs(a),
-               'max': lambda a,b: max(a,b), 'min': lambda a,b: min(a,b)}
+        # Unary minus: -(X)
+        if t.functor == '-' and len(t.args) == 1:
+            return -args[0]
+        ops = {
+            # Basic arithmetic
+            '+': lambda a, b: a + b,
+            '-': lambda a, b: a - b,
+            '*': lambda a, b: a * b,
+            '/': lambda a, b: a / b,
+            # Integer division and modulo
+            '//': lambda a, b: int(a) // int(b),
+            'mod': lambda a, b: int(a) % int(b),
+            # Power
+            '**': lambda a, b: a ** b,
+            # Unary
+            'abs': lambda a: abs(a),
+            'sign': lambda a: (1 if a > 0 else (-1 if a < 0 else 0)),
+            # Min/max
+            'max': lambda a, b: max(a, b),
+            'min': lambda a, b: min(a, b),
+            # Bitwise (operate on int truncations)
+            '/\\': lambda a, b: int(a) & int(b),
+            '\\/': lambda a, b: int(a) | int(b),
+            'xor': lambda a, b: int(a) ^ int(b),
+            '\\': lambda a: ~int(a),
+            '>>': lambda a, b: int(a) >> int(b),
+            '<<': lambda a, b: int(a) << int(b),
+        }
         if t.functor in ops:
             return ops[t.functor](*args)
     raise WAMError(f"Cannot evaluate: {term}")

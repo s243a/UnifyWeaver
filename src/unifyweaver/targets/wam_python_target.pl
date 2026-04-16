@@ -1212,7 +1212,22 @@ compile_wam_runtime_to_python(Options, PythonCode) :-
 % ============================================================================
 
 %% write_wam_python_project(+Predicates, +Options, +ProjectDir)
-%  Generates a complete Python WAM project.
+%  Generates a runnable Python WAM project in ProjectDir.
+%
+%  Generated files:
+%    - wam_runtime.py   — WAM runtime (copied from wam_python_runtime/ or
+%                         generated from bindings if the static file is absent)
+%    - predicates.py    — compiled predicates (via compile_wam_predicate_to_python/4)
+%    - main.py          — entry point: parses argv, runs a named predicate,
+%                         prints register results
+%    - __init__.py      — empty; marks the directory as a Python package
+%
+%  Options recognised:
+%    module_name(Name)  — Python module name (default: 'wam_generated')
+%    project_dir(Dir)   — overridden by ProjectDir argument
+%    emit_mode(Mode)    — interpreter (default) or lowered
+%
+%  Follows the same layout as write_wam_fsharp_project/3 in wam_fsharp_target.pl.
 write_wam_python_project(Predicates, Options, ProjectDir) :-
 	option(module_name(ModuleName), Options, 'wam_generated'),
 
@@ -1221,6 +1236,10 @@ write_wam_python_project(Predicates, Options, ProjectDir) :-
 
 	% Copy static runtime
 	copy_static_runtime(ProjectDir),
+
+	% Generate __init__.py (makes directory a Python package)
+	directory_file_path(ProjectDir, '__init__.py', InitPath),
+	write_file(InitPath, ""),
 
 	% Generate predicates.py
 	compile_all_predicates(Predicates, Options, PredicatesCode),
