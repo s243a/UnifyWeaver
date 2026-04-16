@@ -256,6 +256,23 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
         atom_concat(Ind, "    ", ContInd),
         emit_instrs_lm_fs(ContInstrs, SVcont, ContInd, FP, LM)
     ).
+% execute/1 is a tail call — it must always be the last instruction.
+% If it isn’t, the chain silently breaks because emit_one_fs emits a bare
+% expression with no ‘| Some sv ->’ arm for callers to continue into.
+% This dedicated clause fires before the general catch-all to:
+%   (a) emit a visible F# comment warning if Rest ≠ [], so the generated
+%       code fails loudly rather than silently producing wrong output, and
+%   (b) emit the execute expression and stop (Rest is dropped — the user
+%       gets the warning and can fix the upstream WAM generator).
+emit_instrs_lm_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP, _LM) :-
+    (   Rest \= []
+    ->  format("~w// WARNING: execute(~w) is not the last instruction — "
+               "tail-call semantics violated; ~w instruction(s) unreachable~n",
+               [Ind, PredStr, Rest])
+    ;   true
+    ),
+    emit_one_fs(execute(PredStr), PC, SV, _, Ind, FP).
+
 emit_instrs_lm_fs([pc(PC, Instr)|Rest], SV, Ind, FP, LM) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     atom_concat(Ind, "    ", IndInner),
@@ -320,13 +337,21 @@ emit_ite_block_fs([], SV, Ind, _FP) :-
     format("~wSome ~w~n", [Ind, SV]).
 emit_ite_block_fs([pc(PC, Instr)], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
+    atom_concat(Ind, "    ", IndInner),
     (   is_terminal_instr_fs(Instr) -> true
+    ;   is_match_instr_fs(Instr)    -> format("~wSome ~w~n", [IndInner, SVout])
     ;   format("~wSome ~w~n", [Ind, SVout])
     ).
 emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
     Rest \= [],
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
-    emit_ite_block_fs(Rest, SVout, Ind, FP).
+    % Mirror emit_instrs_lm_fs: match-emitting instructions open a
+    % '| Some SVout ->' arm, so remaining code becomes its body at IndInner.
+    atom_concat(Ind, "    ", IndInner),
+    (   is_match_instr_fs(Instr)
+    ->  emit_ite_block_fs(Rest, SVout, IndInner, FP)
+    ;   emit_ite_block_fs(Rest, SVout, Ind, FP)
+    ).
 
 is_terminal_instr_fs(proceed).
 
@@ -370,8 +395,23 @@ split_at_jump_fs([H|T], [H|Then], Label, Rest) :-
 %
 %  Bug fix: the old stub put all instructions in ElseInstrs and left
 %  ContInstrs=[], silently dropping any continuation code.
-split_else_cont_fs([], _ContLabel, _LM, [], []).
-split_else_cont_fs([pc(PC,Instr)|Rest], ContLabel, LM, Else, Cont) :-
+%% split_else_cont_fs(+ElseAndCont, +ContLabel, +LabelMap, -Else, -Cont)
+%  Entry point: warn if ContLabel is absent from LabelMap (defensive hardening
+%  for label typos or parsing gaps), then delegate to the worker predicate.
+%  Without this guard, a missing label causes member/2 to silently fail on
+%  every instruction and all code ends up in ElseInstrs — the same silent
+%  data-loss as the old no-op stub, just harder to notice.
+split_else_cont_fs(Instrs, ContLabel, LM, Else, Cont) :-
+    (   \+ member(ContLabel-_, LM)
+    ->  format(user_error,
+               'WARNING: split_else_cont_fs — ContLabel ~q not in LabelMap ~w; continuation code will be empty~n',
+               [ContLabel, LM])
+    ;   true
+    ),
+    split_else_cont_fs_(Instrs, ContLabel, LM, Else, Cont).
+
+split_else_cont_fs_([], _ContLabel, _LM, [], []).
+split_else_cont_fs_([pc(PC,Instr)|Rest], ContLabel, LM, Else, Cont) :-
     (   member(ContLabel-ContPC, LM),
         PC >= ContPC
     ->  % Reached or passed the continuation target — everything from here
@@ -379,7 +419,7 @@ split_else_cont_fs([pc(PC,Instr)|Rest], ContLabel, LM, Else, Cont) :-
         Else = [],
         Cont = [pc(PC,Instr)|Rest]
     ;   Else = [pc(PC,Instr)|ElseRest],
-        split_else_cont_fs(Rest, ContLabel, LM, ElseRest, Cont)
+        split_else_cont_fs_(Rest, ContLabel, LM, ElseRest, Cont)
     ).
 
 % ============================================================================
