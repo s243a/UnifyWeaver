@@ -23,12 +23,15 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module('../core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_metadata/4]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 
 :- discontiguous wam_go_case/2.
+:- discontiguous wam_line_to_go_literal/4.
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -130,9 +133,7 @@ var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
 
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
-    (   PredIndicator = Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity, Module = user
-    ),
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
     (   catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
@@ -142,8 +143,8 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
-    ->  (   go_foreign_spec(Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
-        ->  compile_wam_predicate_to_go(Pred/Arity, WamCode, Options, PredCode),
+    ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
+        ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
         ;   format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
@@ -301,12 +302,13 @@ go_struct_case(Functor-Label, Case) :-
 %% compile_wam_predicate_to_go(+Pred/Arity, +WamCode, +Options, -GoCode)
 %  Takes WAM instruction output and produces Go code with instruction
 %  slice and label map.
-compile_wam_predicate_to_go(Pred/Arity, WamCode, Options, GoCode) :-
+compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
     capitalize_atom(Pred, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
-    (   foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
+    (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
     ->  format(atom(GoCode),
 '// WAM-compiled predicate: ~w/~w
 func ~w(~w) bool {
@@ -379,8 +381,8 @@ build_go_wam_arg_setup(Arity, Setup) :-
     maplist([I, S]>>format(atom(S), '    vm.Regs["A~w"] = a~w', [I, I]), Indices, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
-foreign_wrapper_setup(Pred/Arity, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
-    go_foreign_spec(Pred/Arity, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
+foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
+    go_foreign_spec(PredIndicator, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
     InstrSetup = '    vm.PC = 1',
     go_foreign_setup_code(SetupOps, Setup),
     format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
@@ -393,7 +395,12 @@ go_foreign_spec(PredArity, Options, SetupOps, RewriteCalls, EntryPredArity) :-
     ->  member(Spec, ForeignSpec),
         go_foreign_spec_term(PredArity, Spec, SetupOps, RewriteCalls, EntryPredArity)
     ;   go_foreign_spec_term(PredArity, ForeignSpec, SetupOps, RewriteCalls, EntryPredArity)
-    ).
+    ),
+    !.
+go_foreign_spec(PredIndicator, Options, SetupOps, RewriteCalls, EntryPredArity) :-
+    option(foreign_lowering(true), Options),
+    go_foreign_lowering_spec(PredIndicator, SetupOps, RewriteCalls, EntryPredArity),
+    !.
 
 go_foreign_spec_term(Pred/Arity,
         foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
@@ -439,6 +446,105 @@ capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
     code_type(FirstUpper, to_upper(First)),
     atom_codes(Cap, [FirstUpper|Rest]).
+
+predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
+predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
+
+go_foreign_lowering_spec(PredIndicator, SetupOps, RewriteCalls, EntryPred/EntryArity) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, Module:clause(Head, Body), Clauses),
+    Clauses \= [],
+    go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel),
+    go_recursive_kernel_spec(Kernel, SetupOps, RewriteCalls, EntryPred/EntryArity).
+
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
+    go_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffix2, Pred/Arity, [])) :-
+    go_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffixes2, Pred/Arity, [])) :-
+    go_foreign_lowerable_list_suffixes(Pred, Arity, Clauses).
+go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel) :-
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel0),
+    go_supported_shared_kernel(Kernel0),
+    go_recursive_kernel_with_facts(Module, Kernel0, Kernel).
+
+go_supported_shared_kernel(recursive_kernel(transitive_closure2, _, _)).
+
+go_recursive_kernel_with_facts(Module,
+        recursive_kernel(transitive_closure2, PredIndicator, KernelConfig0),
+        recursive_kernel(transitive_closure2, PredIndicator,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    member(edge_pred(EdgePred/2), KernelConfig0),
+    go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs),
+    FactPairs \= [].
+
+go_recursive_kernel_spec(recursive_kernel(KernelKind, PredIndicator, KernelConfig),
+        SetupOps, RewriteCalls, PredIndicator) :-
+    go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig, SetupOps),
+    RewriteCalls = [PredIndicator].
+
+go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
+        [ register_foreign_native_kind(PredIndicator, NativeKind),
+          register_foreign_result_layout(PredIndicator, ResultLayout),
+          register_foreign_result_mode(PredIndicator, ResultMode)
+        |ConfigOps]) :-
+    go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout, ResultMode),
+    go_recursive_kernel_config_ops(PredIndicator, KernelConfig, ConfigOps).
+
+go_recursive_kernel_metadata(countdown_sum2, _KernelConfig, countdown_sum2, tuple(1), deterministic).
+go_recursive_kernel_metadata(list_suffix2, _KernelConfig, list_suffix2, tuple(1), stream).
+go_recursive_kernel_metadata(list_suffixes2, _KernelConfig, list_suffixes2, tuple(1), deterministic_collection).
+go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout, ResultMode) :-
+    kernel_metadata(recursive_kernel(KernelKind, _PredIndicator, KernelConfig),
+        NativeKind, ResultLayout, ResultMode).
+
+go_recursive_kernel_config_ops(_PredIndicator, [], []).
+go_recursive_kernel_config_ops(PredIndicator, [edge_pred(EdgePred/2), fact_pairs(FactPairs)], [
+        register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
+        register_indexed_atom_fact2(EdgePred/2, FactPairs)
+    ]).
+
+go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          Module:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs).
+
+go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, 0, 0],
+    RecHead =.. [Pred, N, Sum],
+    RecBody = (GtGoal, (StepGoal, (RecGoal, SumGoal))),
+    GtGoal =.. [>, N, 0],
+    StepGoal =.. [is, PrevN, StepExpr],
+    (   StepExpr =.. [-, N, 1]
+    ;   StepExpr =.. [+, N, -1]
+    ),
+    RecGoal =.. [Pred, PrevN, PrevSum],
+    SumGoal =.. [is, Sum, SumExpr],
+    SumExpr =.. [+, PrevSum, N].
+
+go_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseList, BaseList],
+    var(BaseList),
+    RecHead =.. [Pred, InputList, Suffix],
+    InputList = [_|Tail],
+    RecBody =.. [Pred, Tail, Suffix].
+
+go_foreign_lowerable_list_suffixes(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, [], [[]]],
+    RecHead =.. [Pred, [Head|Tail], [[Head|Tail]|Rest]],
+    RecBody =.. [Pred, Tail, Rest].
 
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, _, _, [], []).
