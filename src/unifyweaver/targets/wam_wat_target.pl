@@ -96,6 +96,8 @@ instr_tag(trust_me,        24).
 instr_tag(neck_cut_test,   25).
 instr_tag(cut_ite,         26).
 instr_tag(jump,            27).
+instr_tag(begin_aggregate, 28).
+instr_tag(end_aggregate,   29).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -321,6 +323,28 @@ wam_instruction_to_wat_bytes(jump(Label), Labels, Hex) :-
     resolve_label(Label, Labels, PC),
     encode_instr_hex(Tag, PC, 0, Hex).
 
+%% begin_aggregate Type, ValReg, ResReg
+%% op1 = (agg_type << 32) | val_reg_index, op2 = res_reg_index
+wam_instruction_to_wat_bytes(begin_aggregate(Type, ValReg, ResReg), _Labels, Hex) :-
+    instr_tag(begin_aggregate, Tag),
+    agg_type_id(Type, TypeId),
+    reg_name_to_index(ValReg, ValIdx),
+    reg_name_to_index(ResReg, ResIdx),
+    Op1 is (TypeId << 32) \/ ValIdx,
+    encode_instr_hex(Tag, Op1, ResIdx, Hex).
+
+wam_instruction_to_wat_bytes(end_aggregate(ValReg), _Labels, Hex) :-
+    instr_tag(end_aggregate, Tag),
+    reg_name_to_index(ValReg, ValIdx),
+    encode_instr_hex(Tag, ValIdx, 0, Hex).
+
+agg_type_id(sum, 0).
+agg_type_id(count, 1).
+agg_type_id(max, 2).
+agg_type_id(min, 3).
+agg_type_id(collect, 4).
+agg_type_id(_, 0).  % default to sum
+
 wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labels, Hex) :-
     instr_tag(neck_cut_test, Tag),
     resolve_label(ElseLabel, Labels, ElsePC),
@@ -545,6 +569,23 @@ wam_parts_to_instr(["trust_me"], trust_me).
 wam_parts_to_instr(["cut_ite"], cut_ite).
 wam_parts_to_instr(["jump", L], jump(CL)) :-
     clean_comma(L, CL0), atom_string(CL, CL0).
+%% switch_on_constant/switch_on_structure/switch_on_term: first-argument
+%% indexing instructions. These are OPTIONAL optimizations — skipping them
+%% is correct because the clause bodies still have try_me_else/trust_me
+%% for linear dispatch. A future optimization would implement them as
+%% O(log n) dispatch, but for now a no-op is sufficient for correctness.
+wam_parts_to_instr(["switch_on_constant"|_], proceed) :- !.
+wam_parts_to_instr(["switch_on_structure"|_], proceed) :- !.
+wam_parts_to_instr(["switch_on_term"|_], proceed) :- !.
+wam_parts_to_instr(["switch_on_constant_a2"|_], proceed) :- !.
+
+wam_parts_to_instr(["begin_aggregate", Type, ValReg, ResReg],
+                   begin_aggregate(CType, CValReg, CResReg)) :-
+    clean_comma(Type, CType0), atom_string(CType, CType0),
+    clean_comma(ValReg, CValReg0), atom_string(CValReg, CValReg0),
+    clean_comma(ResReg, CResReg0), atom_string(CResReg, CResReg0).
+wam_parts_to_instr(["end_aggregate", ValReg], end_aggregate(CValReg)) :-
+    clean_comma(ValReg, CValReg0), atom_string(CValReg, CValReg0).
 % Fallback
 wam_parts_to_instr(Parts, allocate) :-
     format(user_error, '  WAM-WAT: unrecognized instruction: ~w~n', [Parts]).
@@ -1049,6 +1090,60 @@ wam_wat_case(jump,
   (call $set_pc (i32.wrap_i64 (local.get $op1)))
   (i32.const 1)').
 
+wam_wat_case(begin_aggregate,
+'  ;; Push an aggregate frame: a normal choice point PLUS set global
+  ;; aggregate state. The inner body will run; each solution reaching
+  ;; end_aggregate adds to the running accumulator and force-backtracks.
+  ;; When backtrack exhausts all solutions, $backtrack detects
+  ;; $agg_active and finalizes instead of failing.
+  ;; op1 = (agg_type << 32) | val_reg_index, op2 = res_reg_index.
+  (local $agg_type i32) (local $val_reg i32) (local $res_reg i32)
+  (local.set $val_reg (i32.wrap_i64 (local.get $op1)))
+  (local.set $agg_type (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
+  (local.set $res_reg (i32.wrap_i64 (local.get $op2)))
+  ;; Save aggregate metadata in globals. Do NOT push a CP — the inner
+  ;; body goals will push their own try_me_else CPs for clause dispatch.
+  ;; When all inner solutions are exhausted, cp_count reaches 0 and
+  ;; $backtrack detects $agg_active for finalization.
+  (global.set $agg_active (i32.const 1))
+  (global.set $agg_type (local.get $agg_type))
+  (global.set $agg_val_reg (local.get $val_reg))
+  (global.set $agg_res_reg (local.get $res_reg))
+  (global.set $agg_sum (i64.const 0))
+  (global.set $agg_count (i32.const 0))
+  (global.set $agg_return_pc (i32.const 0))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(end_aggregate,
+'  ;; Collect one solution value and force-backtrack to try the next.
+  ;; op1 = val_reg_index. Read the value, accumulate, then return 0
+  ;; (fail) so run_loop calls $backtrack for the next solution.
+  ;; When $backtrack exhausts all inner solutions and $agg_active is 1,
+  ;; it finalizes instead of returning failure.
+  (local $val_reg i32) (local $val i64)
+  (local.set $val_reg (i32.wrap_i64 (local.get $op1)))
+  ;; Read and accumulate the value
+  (local.set $val (call $deref_reg_payload (local.get $val_reg)))
+  ;; Type-specific accumulation
+  (if (i32.eqz (global.get $agg_type)) ;; sum
+    (then (global.set $agg_sum (i64.add (global.get $agg_sum) (local.get $val)))))
+  (if (i32.eq (global.get $agg_type) (i32.const 1)) ;; count
+    (then (global.set $agg_count (i32.add (global.get $agg_count) (i32.const 1)))))
+  (if (i32.eq (global.get $agg_type) (i32.const 2)) ;; max
+    (then (if (i32.or (i32.eqz (global.get $agg_count))
+                      (i64.gt_s (local.get $val) (global.get $agg_sum)))
+            (then (global.set $agg_sum (local.get $val))))))
+  (if (i32.eq (global.get $agg_type) (i32.const 3)) ;; min
+    (then (if (i32.or (i32.eqz (global.get $agg_count))
+                      (i64.lt_s (local.get $val) (global.get $agg_sum)))
+            (then (global.set $agg_sum (local.get $val))))))
+  (global.set $agg_count (i32.add (global.get $agg_count) (i32.const 1)))
+  ;; Store the return PC = current PC + 1 (the instruction after end_aggregate)
+  (global.set $agg_return_pc (i32.add (call $get_pc) (i32.const 1)))
+  ;; Force-backtrack to try next solution (return 0 = step failed)
+  (i32.const 0)').
+
 wam_wat_case(trust_me,
 '  ;; Remove choice point (last alternative)
   (call $pop_choice_point_no_restore)
@@ -1102,7 +1197,25 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   ;; Check if any choice points
   (local.set $n (call $get_cp_count))
   (if (i32.eqz (local.get $n))
-    (then (return (i32.const 0))))
+    (then
+      ;; No more choice points. If we are inside an aggregate
+      ;; (begin_aggregate was active), finalize instead of failing.
+      (if (global.get $agg_active)
+        (then
+          ;; Finalize: bind res_reg to the accumulated result
+          (global.set $agg_active (i32.const 0))
+          ;; sum/max/min → bind to $agg_sum; count → bind to $agg_count
+          (if (i32.eq (global.get $agg_type) (i32.const 1))
+            (then
+              (call $bind_reg_deref (global.get $agg_res_reg)
+                (i32.const 1) (i64.extend_i32_u (global.get $agg_count))))
+            (else
+              (call $bind_reg_deref (global.get $agg_res_reg)
+                (i32.const 1) (global.get $agg_sum))))
+          ;; Jump to the return PC (instruction after end_aggregate)
+          (call $set_pc (global.get $agg_return_pc))
+          (return (i32.const 1))))
+      (return (i32.const 0))))
   ;; Choice point layout in stack: [next_pc:i32][trail_mark:i32][saved_cp:i32][64 regs x 12 bytes]
   ;; Size = ~w bytes per choice point (12 metadata + ~w regs x 12)
   ;; Pop the latest choice point (stored before env frames in stack)
