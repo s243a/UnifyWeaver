@@ -179,6 +179,7 @@ register_builtin_targets :-
 
     % Python family
     register_target(python, python, [streaming, pipes, libraries, ml, data_science]),
+    register_target(wam_python, python, [compiled, streaming, wam, trail_backtracking, ml_interop, foreign_predicates]),
     register_target(ironpython, dotnet, [streaming, dotnet_interop, scripting]),
 
     % Ruby family
@@ -255,6 +256,7 @@ target_module(bash, bash_target).
 target_module(awk, awk_target).
 target_module(perl, perl_target).
 target_module(python, python_target).
+target_module(wam_python, wam_python_target).
 target_module(r, r_target).
 target_module(typr, typr_target).
 target_module(ruby, ruby_target).
