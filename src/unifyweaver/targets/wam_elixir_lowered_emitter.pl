@@ -26,8 +26,7 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
     split_into_segments(Lines, 1, Segments),
-    generate_all_segments(Segments, Labels, MapAttrCodes, FuncCodes),
-    atomic_list_concat(MapAttrCodes, '\n', MapAttrsBody),
+    generate_all_segments(Segments, Labels, FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
@@ -38,8 +37,6 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
-
-~w
 
   def run(%WamRuntime.WamState{} = state) do
     try do
@@ -63,7 +60,7 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
   end
 
 ~w
-end', [CamelMod, CamelPred, PredStr, Arity, MapAttrsBody, FirstFunc, CamelPred, FuncsBody]).
+end', [CamelMod, CamelPred, PredStr, Arity, FirstFunc, CamelPred, FuncsBody]).
 
 % ============================================================================
 % LABEL COLLECTION
@@ -115,14 +112,14 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
         extract_segment_body(Rest, PC1, RestBody, Next, NPC)
     ).
 
-generate_all_segments([], _, [], []).
-generate_all_segments([Name-Instrs | Rest], Labels, ["" | RestAttrs], [Code | RestCodes]) :-
+generate_all_segments([], _, []).
+generate_all_segments([Name-Instrs | Rest], Labels, [Code | RestCodes]) :-
     segment_func_name(Name, FuncName),
     classify_segment_head(Instrs, HeadType, BodyInstrs),
     lower_instr_list(BodyInstrs, Labels, FuncName, BodyExprs),
     atomic_list_concat(BodyExprs, '\n', BodyCode),
     wrap_segment(FuncName, HeadType, BodyCode, Code),
-    generate_all_segments(Rest, Labels, RestAttrs, RestCodes).
+    generate_all_segments(Rest, Labels, RestCodes).
 
 %% split_last_colon(+Entry, -Key, -Label)
 %  Splits an "apple:L1" entry into Key="apple" and Label="L1".
