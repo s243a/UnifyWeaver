@@ -332,6 +332,8 @@ compile_backtrack_to_elixir(Code) :-
     case state.choice_points do
       [] -> :fail
       [cp | rest] ->
+        # cp.trail contains the trail snapshot at save time.
+        # mark = length(cp.trail). We unwind all entries added after that.
         state = state
         |> unwind_trail(length(cp.trail))
         |> Map.put(:pc, cp.pc)
@@ -354,27 +356,21 @@ compile_unwind_trail_to_elixir(Code) :-
     format(string(Code),
 '  @doc "Undo register bindings back to trail mark"
   def unwind_trail(state, mark) do
-    if length(state.trail) <= mark do
-      state
-    else
-      [{key, old_val} | rest_trail] = state.trail
-      new_state = case key do
+    # mark is the length of the trail when the choice point was created.
+    # Newest entries are at the head of state.trail.
+    entries_to_undo = Enum.take(state.trail, length(state.trail) - mark)
+    new_trail = Enum.drop(state.trail, length(state.trail) - mark)
+    
+    Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
+      case key do
         {:heap_ref, addr} ->
-           if old_val == :not_set do
-             %{state | heap: List.replace_at(state.heap, addr, {:unbound, {:heap_ref, addr}})}
-           else
-             %{state | heap: List.replace_at(state.heap, addr, old_val)}
-           end
+           val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
+           %{s | heap: List.replace_at(s.heap, addr, val)}
         _ ->
-           new_regs = if old_val == :not_set do
-             Map.delete(state.regs, key)
-           else
-             Map.put(state.regs, key, old_val)
-           end
-           %{state | regs: new_regs}
+           new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
+           %{s | regs: new_regs}
       end
-      unwind_trail(%{new_state | trail: rest_trail}, mark)
-    end
+    end)
   end', []).
 
 compile_utility_helpers_to_elixir(Code) :-
@@ -411,7 +407,7 @@ compile_utility_helpers_to_elixir(Code) :-
 
   def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
     case Enum.at(state.heap, addr) do
-      {:unbound, {:heap_ref, ^addr}} -> ref
+      {:unbound, {:heap_ref, _addr}} -> ref
       val -> deref_var(state, val)
     end
   end
@@ -498,10 +494,13 @@ compile_utility_helpers_to_elixir(Code) :-
     cond do
       match?({:unbound, _}, val) -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
       true ->
-        case Enum.find(entries, fn {k, _} -> k == val end) do
-          {_, "default"} -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
-          {_, label} -> %{state | pc: resolve_label(state, label)}
+        # entries is a list of {"key", "label"}. Convert to Map for faster lookup.
+        # Ideally this conversion happens at compile time or load time.
+        map = Map.new(entries)
+        case Map.get(map, val) do
+          "default" -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
           nil -> :fail
+          label -> %{state | pc: resolve_label(state, label)}
         end
     end
   end
@@ -510,12 +509,12 @@ compile_utility_helpers_to_elixir(Code) :-
   def unify(state, v1, v2) do
     cond do
       v1 == v2 -> {:ok, state}
-      match?({:unbound, {:heap_ref, addr}}, v1) ->
+      match?({:unbound, {:heap_ref, _addr}}, v1) ->
         {:unbound, {:heap_ref, addr}} = v1
         new_heap = List.replace_at(state.heap, addr, v2)
         new_state = state |> trail_binding({:heap_ref, addr})
         {:ok, %{new_state | heap: new_heap}}
-      match?({:unbound, {:heap_ref, addr}}, v2) ->
+      match?({:unbound, {:heap_ref, _addr}}, v2) ->
         {:unbound, {:heap_ref, addr}} = v2
         new_heap = List.replace_at(state.heap, addr, v1)
         new_state = state |> trail_binding({:heap_ref, addr})
@@ -576,7 +575,7 @@ compile_utility_helpers_to_elixir(Code) :-
                    :fail -> %{state | pc: new_pc}
                    _ -> :fail
                  end
-               _ -> :fail
+               _ -> :fail # TODO: General negation
             end
           _ -> :fail
         end

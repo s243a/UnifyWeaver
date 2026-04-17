@@ -125,9 +125,9 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
 generate_all_segments([], _, []).
 generate_all_segments([Name-Instrs | Rest], Labels, [Code | RestCodes]) :-
     segment_func_name(Name, FuncName),
-    lower_instr_list(Instrs, Labels, BodyExprs),
+    classify_segment_head(Instrs, HeadType, BodyInstrs),  % strip CP ops
+    lower_instr_list(BodyInstrs, Labels, BodyExprs),       % use stripped list
     atomic_list_concat(BodyExprs, '\n', BodyCode),
-    classify_segment_head(Instrs, HeadType, BodyInstrs), % Optional: strip leading CP ops
     wrap_segment(FuncName, HeadType, BodyCode, Code),
     generate_all_segments(Rest, Labels, RestCodes).
 
@@ -467,7 +467,15 @@ pred_to_module(PredStr, ModName) :-
     format(atom(ModName), 'WamPredLow.~w', [CamelName]).
 
 elixir_switch_entry(Entry, CaseCode) :-
-    split_string(Entry, ":", "", [Key, Label]),
+    % Expected entry format: "key:label"
+    % Find the LAST colon to handle atoms containing colons.
+    atom_string(E, Entry),
+    (   sub_atom(E, Before, 1, After, ':'), \+ sub_atom(E, _, 1, After, ':')
+    ->  sub_atom(E, 0, Before, _, Key),
+        sub_atom(E, _, After, 0, Label)
+    ;   % Fallback if no colon found (should not happen in valid WAM)
+        Key = Entry, Label = "default"
+    ),
     (   Label == "default"
     ->  format(string(CaseCode), '      "~w" -> :ok # default label: fall through to choice point', [Key])
     ;   segment_func_name(Label, FuncName),

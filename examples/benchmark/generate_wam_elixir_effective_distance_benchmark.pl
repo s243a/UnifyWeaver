@@ -56,13 +56,14 @@ generate_wam_elixir_benchmark_scoped(OutputDir) :-
     Options = [
         module_name('wam_elixir_bench'),
         emit_mode(lowered)
-    ],
-
     % Convert predicate indicators to Pred/Arity-WamCode pairs
     findall(P/A-WamCode, (
         member(P/A, Predicates),
         (   wam_target:compile_predicate_to_wam(P/A, [], WamCode) -> true
         ;   wam_target:compile_predicate_to_wam(user:P/A, [], WamCode) -> true
+        ;   format(user_error, '[WARN] Could not compile ~w/~w, skipping~n', [P, A]), fail
+        )
+    ), PredWamPairs),
         ;   format(user_error, '[WARN] Could not compile ~w/~w, skipping~n', [P, A]), fail
         )
     ), PredWamPairs),
