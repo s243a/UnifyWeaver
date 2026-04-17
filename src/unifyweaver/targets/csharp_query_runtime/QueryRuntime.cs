@@ -12476,7 +12476,7 @@ namespace UnifyWeaver.QueryRuntime
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
-            var bufferedRows = preserveAllPaths ? new List<PathAwareTargetDepthRow>() : null;
+            var bufferedRows = preserveAllPaths ? new PathAwareTargetDepthBuffer() : null;
 
             var initialPath = CompactVisitedPath.Create(seedNodeId);
             var initialStackCapacity = maxDepth > 0
@@ -12592,16 +12592,16 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static void RecordBufferedPathAwareDepthRow(
-            List<PathAwareTargetDepthRow> rows,
+            PathAwareTargetDepthBuffer rows,
             object? target,
             int depth)
         {
-            rows.Add(new PathAwareTargetDepthRow(target, depth));
+            rows.Add(target, depth);
         }
 
         private static void MaterializePathAwareDepthRows(
             object? seed,
-            List<PathAwareTargetDepthRow> rows,
+            PathAwareTargetDepthBuffer rows,
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
         {
@@ -12611,20 +12611,22 @@ namespace UnifyWeaver.QueryRuntime
                 var baseIndex = outputList.Count;
                 CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
                 var span = CollectionsMarshal.AsSpan(outputList);
+                var targets = CollectionsMarshal.AsSpan(rows.Targets);
+                var depths = CollectionsMarshal.AsSpan(rows.Depths);
                 for (var i = 0; i < rows.Count; i++)
                 {
-                    var row = rows[i];
-                    span[baseIndex + i] = new object[] { seed!, row.Target!, row.Depth };
+                    span[baseIndex + i] = new object[] { seed!, targets[i]!, depths[i] };
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
                 return;
             }
 
+            var fallbackTargets = rows.Targets;
+            var fallbackDepths = rows.Depths;
             for (var i = 0; i < rows.Count; i++)
             {
-                var row = rows[i];
-                output.Add(new object[] { seed!, row.Target!, row.Depth });
+                output.Add(new object[] { seed!, fallbackTargets[i]!, fallbackDepths[i] });
                 metrics?.RecordOutputRow();
             }
 
@@ -14021,9 +14023,20 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private readonly record struct PathAwareTargetDepthRow(
-            object? Target,
-            int Depth);
+        private sealed class PathAwareTargetDepthBuffer
+        {
+            public List<object?> Targets { get; } = new();
+
+            public List<int> Depths { get; } = new();
+
+            public int Count => Targets.Count;
+
+            public void Add(object? target, int depth)
+            {
+                Targets.Add(target);
+                Depths.Add(depth);
+            }
+        }
 
         private readonly record struct PathAwareTraversalFrame(
             object? Node,

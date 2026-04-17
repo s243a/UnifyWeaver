@@ -969,22 +969,23 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 Latest local results after edge-state node-id preindexing, per-row timing
 removal, a compact `(target, depth)` buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
-frame stack with explicit initial capacity, plus direct-write seed-batch
-materialization into the destination output list:
+frame stack with explicit initial capacity, direct-write seed-batch
+materialization into the destination output list, and a packed target/depth
+row buffer:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.404s | 0.168s | 2.40x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.262s | 0.133s | 1.97x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.392s | 0.167s | 2.35x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.256s | 0.129s | 1.98x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 136.668ms | 0.000ms | 78.053ms | n/a |
-| 300 | Min | 46.030ms | 0.000ms | 5.568ms | 12.685ms |
-| 1k | All | 58.924ms | 0.000ms | 48.248ms | n/a |
-| 1k | Min | 15.563ms | 0.000ms | 1.312ms | 4.921ms |
+| 300 | All | 149.430ms | 0.000ms | 52.088ms | n/a |
+| 300 | Min | 44.722ms | 0.000ms | 5.591ms | 12.771ms |
+| 1k | All | 85.494ms | 0.000ms | 22.895ms | n/a |
+| 1k | Min | 15.479ms | 0.000ms | 1.316ms | 5.006ms |
 
 Additional path-state observations:
 
@@ -1016,6 +1017,9 @@ Additional path-state observations:
   now grows the list once and writes the new seed batch directly into the new
   slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
   final output path.
+- the counted-path `All` staging buffer now stores targets and depths in
+  parallel packed lists instead of shuttling a tiny struct per row, reducing
+  replay overhead on the final materialization path.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
