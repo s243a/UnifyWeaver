@@ -168,7 +168,7 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
     format(string(Code),
 '  defp ~w(state) do
     cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
-           cp: state.cp, trail: state.trail, stack: state.stack}
+           cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
     state = %{state | choice_points: [cp | state.choice_points]}
 ~w
   end', [FuncName, FallbackFunc, BodyCode]).
@@ -180,7 +180,7 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Code) :-
     case state.choice_points do
       [_old | rest] ->
         cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
-               cp: state.cp, trail: state.trail, stack: state.stack}
+               cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         state = %{state | choice_points: [cp | rest]}
 ~w
       _ -> throw(:fail)

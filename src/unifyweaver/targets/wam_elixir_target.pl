@@ -264,7 +264,7 @@ wam_elixir_case(try_me_else,
 '      {:try_me_else, label} ->
         target = resolve_label(state, label)
         cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
-               cp: state.cp, trail: state.trail, stack: state.stack}
+               cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}').
 
 wam_elixir_case(retry_me_else,
@@ -273,7 +273,7 @@ wam_elixir_case(retry_me_else,
         case state.choice_points do
           [_old | rest] ->
             cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
-                   cp: state.cp, trail: state.trail, stack: state.stack}
+                   cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
             %{state | choice_points: [cp | rest], pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
         end').
@@ -339,10 +339,9 @@ compile_backtrack_to_elixir(Code) :-
     case state.choice_points do
       [] -> :fail
       [cp | rest] ->
-        # cp.trail contains the trail snapshot at save time.
-        # mark = length(cp.trail). We unwind all entries added after that.
+        # cp.trail_len is the mark — unwind all entries pushed after that.
         state = state
-        |> unwind_trail(length(cp.trail))
+        |> unwind_trail(cp.trail_len)
         |> Map.put(:pc, cp.pc)
         |> Map.put(:regs, cp.regs)
         |> Map.put(:heap, cp.heap)
@@ -350,6 +349,7 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:cp, cp.cp)
         |> Map.put(:stack, cp.stack)
         |> Map.put(:trail, cp.trail)
+        |> Map.put(:trail_len, cp.trail_len)
         |> Map.put(:choice_points, rest)
 
         if is_function(cp.pc) do
@@ -364,16 +364,17 @@ compile_unwind_trail_to_elixir(Code) :-
     format(string(Code),
 '  @doc "Undo register bindings back to trail mark"
   def unwind_trail(state, mark) do
-    # mark is the length of the trail when the choice point was created.
+    # mark is the trail_len when the choice point was created.
     # Newest entries are at the head of state.trail.
-    curr_len = length(state.trail)
+    curr_len = state.trail_len
     if curr_len <= mark do
       state
     else
-      entries_to_undo = Enum.take(state.trail, curr_len - mark)
-      new_trail = Enum.drop(state.trail, curr_len - mark)
+      drop_n = curr_len - mark
+      entries_to_undo = Enum.take(state.trail, drop_n)
+      new_trail = Enum.drop(state.trail, drop_n)
 
-      Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
+      Enum.reduce(entries_to_undo, %{state | trail: new_trail, trail_len: mark}, fn {key, old_val}, s ->
         case key do
           {:heap_ref, addr} ->
              val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
@@ -390,12 +391,12 @@ compile_utility_helpers_to_elixir(Code) :-
     format(string(Code),
 '  def trail_binding(state, {:heap_ref, addr} = key) do
     old = Map.get(state.heap, addr, :not_set)
-    %{state | trail: [{key, old} | state.trail]}
+    %{state | trail: [{key, old} | state.trail], trail_len: state.trail_len + 1}
   end
 
   def trail_binding(state, key) do
     old = Map.get(state.regs, key, :not_set)
-    %{state | trail: [{key, old} | state.trail]}
+    %{state | trail: [{key, old} | state.trail], trail_len: state.trail_len + 1}
   end
 
   def put_reg(state, reg, val) do
@@ -682,8 +683,10 @@ compile_wam_runtime_to_elixir(Options, Code) :-
 
   defmodule WamState do
     # heap is a map keyed by integer address; heap_len is the next free addr.
+    # trail_len caches list length to avoid O(n) re-measure on unwind.
     # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
-    defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0, trail: [],
+    defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0,
+              trail: [], trail_len: 0,
               choice_points: [], stack: [], code: [], labels: %{}
   end
 
