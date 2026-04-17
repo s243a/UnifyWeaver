@@ -85,6 +85,20 @@ for wb in "${PACKAGE_WORKBOOKS[@]}"; do
 done
 echo "    $WB_COUNT workbooks"
 
+# ---- 5c. Copy template files (mustache, tmpl.sh) ----
+echo "  Copying templates/..."
+if [ -d "templates" ]; then
+    find templates -type f \( -name '*.mustache' -o -name '*.tmpl.sh' -o -name '*.txt' \) | while read -r f; do
+        mkdir -p "$STAGING_DIR/$(dirname "$f")"
+        cp "$f" "$STAGING_DIR/$f"
+    done
+    TMPL_COUNT=$(find "$STAGING_DIR/templates" -type f 2>/dev/null | wc -l)
+    echo "    $TMPL_COUNT template files"
+else
+    echo "    ! templates/ directory not found"
+    TMPL_COUNT=0
+fi
+
 # ---- 6. Generate prelude.pl ----
 echo "  Generating prelude.pl..."
 cat > "$STAGING_DIR/prelude.pl" << 'PRELUDE_EOF'
@@ -221,7 +235,8 @@ $NB_ENTRIES
     { "src": "src/", "dest": "/user/src/" },
     { "src": "examples/", "dest": "/user/examples/" },
     { "src": "education/", "dest": "/user/education/" },
-    { "src": "workbooks/", "dest": "/user/workbooks/" }
+    { "src": "workbooks/", "dest": "/user/workbooks/" },
+    { "src": "templates/", "dest": "/user/templates/" }
   ],
   "search_paths": [
     { "alias": "unifyweaver", "dir": "/user/src/unifyweaver" },
@@ -256,5 +271,6 @@ echo "  - src/unifyweaver/ ($SRC_COUNT .pl modules)"
 echo "  - education/notebooks/ ($NB_COUNT notebooks)"
 echo "  - examples/ ($EX_COUNT examples)"
 echo "  - workbooks/ ($WB_COUNT workbooks)"
+echo "  - templates/ ($TMPL_COUNT template files)"
 echo ""
 echo "To use: Import in SciREPL via Menu > Import Package"
