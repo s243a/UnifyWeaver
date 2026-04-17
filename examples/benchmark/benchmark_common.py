@@ -33,6 +33,11 @@ def require_file(path: Path) -> Path:
     return path
 
 
+def is_termux_environment() -> bool:
+    prefix = os.environ.get("PREFIX", "")
+    return "com.termux" in prefix or "termux" in prefix.lower() or "TERMUX_VERSION" in os.environ
+
+
 def scale_sort_key(scale: str) -> tuple[int, str]:
     digits = "".join(ch for ch in scale if ch.isdigit())
     suffix = "".join(ch for ch in scale if not ch.isdigit())
@@ -49,6 +54,9 @@ def available_targets(requested: list[str]) -> list[str]:
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
+            continue
+        if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
+            print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
             continue
         if target.startswith("rust-") and shutil.which("rustc") is None:
             print(f"skip {target}: rustc not found", file=sys.stderr)
@@ -193,6 +201,15 @@ def build_go_binary(
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(binary), str(source)], env=env)
     return [str(binary)]
+
+
+def build_haskell_project(project_dir: Path, executable_name: str) -> list[str]:
+    run_command(["cabal", "build", f"exe:{executable_name}"], cwd=project_dir)
+    result = run_command(["cabal", "list-bin", f"exe:{executable_name}"], cwd=project_dir)
+    binary = result.stdout.strip()
+    if not binary:
+        raise RuntimeError(f"could not resolve cabal binary for {executable_name}")
+    return [binary]
 
 
 def digest_normalized_output(normalized: str) -> tuple[str, int]:
