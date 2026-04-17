@@ -107,12 +107,15 @@ read_template_file(Path, Content) :-
 compile_predicates_for_project([], _, "").
 compile_predicates_for_project(Predicates, Options, Code) :-
     classify_predicates(Predicates, Options, Classified),
-    collect_wam_entries(Classified, 0, WamEntries, AllInstrParts, AllLabelEntries),
+    collect_wam_entries(Classified, Options, 0, WamEntries, AllInstrParts, AllLabelEntries),
+    compile_shared_foreign_setup(Classified, Options, SharedForeignSetup),
     (   WamEntries \== []
     ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
         atomic_list_concat(AllLabelEntries, '\n', AllLabels),
         format(atom(SharedCode),
-'var sharedWamCodeRaw = []Instruction{
+'~w
+
+var sharedWamCodeRaw = []Instruction{
 ~w
 }
 
@@ -121,7 +124,7 @@ var sharedWamLabels = map[string]int{
 }
 
 var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
-', [AllInstrs, AllLabels])
+', [SharedForeignSetup, AllInstrs, AllLabels])
     ;   SharedCode = ""
     ),
     generate_predicate_codes(Classified, WamEntries, PredCodes),
@@ -162,22 +165,22 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     ),
     classify_predicates(Rest, Options, RestEntries).
 
-collect_wam_entries([], _, [], [], []).
-collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
+collect_wam_entries([], _, _, [], [], []).
+collect_wam_entries([classified(Module, Pred, Arity, wam, WamCode)|Rest], Options, PC,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_go(Lines, PC, Pred/Arity, [], GoLiterals, LabelEntries),
+    wam_lines_to_go(Lines, PC, Module:Pred/Arity, Options, GoLiterals, LabelEntries),
     maplist([Lit, Entry]>>(format(atom(Entry), '        ~w,', [Lit])), GoLiterals, InstrEntries),
     maplist([Label-Idx, Entry]>>(format(atom(Entry), '        "~w": ~w,', [Label, Idx])), LabelEntries, LabelRows),
     length(GoLiterals, InstrCount),
     NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    collect_wam_entries(Rest, Options, NextPC, RestEntries, RestInstrs, RestLabels),
     append(InstrEntries, RestInstrs, AllInstrs),
     append(LabelRows, RestLabels, AllLabels).
-collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
-    collect_wam_entries(Rest, PC, Entries, Instrs, Labels).
+collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
 
 generate_predicate_codes([], _, []).
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
@@ -197,6 +200,24 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], 
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
+
+compile_shared_foreign_setup(Classified, Options, Code) :-
+    findall(Line,
+        ( member(classified(Module, Pred, Arity, wam_foreign, _), Classified),
+          go_foreign_spec(Module:Pred/Arity, Options, SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
+          maplist(go_foreign_setup_line, SetupOps, SetupLines),
+          member(Line, SetupLines)
+        ),
+        RawLines),
+    sort(RawLines, Lines),
+    (   Lines == []
+    ->  Body = ""
+    ;   atomic_list_concat(Lines, '\n', Body)
+    ),
+    format(atom(Code),
+'func setupSharedForeignPredicates(vm *WamState) {
+~w
+}', [Body]).
 
 %% compile_wam_runtime_to_go(+Options, -GoCode)
 %  Placeholder for potentially transpiling larger parts of wam_runtime.pl
@@ -368,6 +389,7 @@ const ~wStartPC = ~w
 
 func ~w(~w) bool {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
     vm.PC = ~w
 ~w
     return vm.Run()
@@ -429,7 +451,8 @@ go_foreign_setup_code(Ops, Setup) :-
 go_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
     format(atom(Line), '    vm.registerForeignNativeKind("~w/~w", "~w")', [Pred, Arity, Kind]).
 go_foreign_setup_line(register_foreign_result_layout(Pred/Arity, tuple(ResultArity)), Line) :-
-    format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "tuple:~w")', [Pred, Arity, ResultArity]).
+    format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "tuple:~w")', [Pred, Arity, ResultArity]),
+    !.
 go_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line) :-
     format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "~w")', [Pred, Arity, Layout]).
 go_foreign_setup_line(register_foreign_result_mode(Pred/Arity, Mode), Line) :-
@@ -712,16 +735,16 @@ parse_string_to_go_val(Str, GoVal) :-
     ;   go_value_literal(Str, GoVal)
     ).
 
-wam_line_to_go_literal(["call", P, N], Pred/Arity, Options, GoLit) :-
+wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Num, CN) -> true ; Num = 0 ),
-    (   go_foreign_rewrite_call(Options, Pred/Arity, CP, Num, ForeignPred, ForeignArity)
+    (   go_foreign_rewrite_call(Options, PredIndicator, CP, Num, ForeignPred, ForeignArity)
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   format(atom(GoLit), '&Call{Pred: "~w", Arity: ~w}', [CP, CN])
     ).
-wam_line_to_go_literal(["execute", P], Pred/Arity, Options, GoLit) :-
+wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP),
-    (   go_foreign_rewrite_execute(Options, Pred/Arity, CP, ForeignPred, ForeignArity)
+    (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
@@ -813,12 +836,26 @@ go_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred,
     format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
     TargetPredArity == ExpectedTarget,
     Num =:= ForeignArity.
+go_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
+    predicate_indicator_parts(CurrentPred, Module, _CurrentPred, _CurrentArity),
+    target_predicate_parts(TargetPredArity, TargetPred, TargetArity),
+    go_foreign_spec(Module:TargetPred/TargetArity, Options, _SetupOps, _RewriteCalls, ForeignPred/ForeignArity),
+    Num =:= ForeignArity.
 
 go_foreign_rewrite_execute(Options, CurrentPred, TargetPredArity, ForeignPred, ForeignArity) :-
     go_foreign_spec(CurrentPred, Options, _SetupOps, RewriteCalls, ForeignPred/ForeignArity),
     member(TargetPred/TargetArity, RewriteCalls),
     format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
     TargetPredArity == ExpectedTarget.
+go_foreign_rewrite_execute(Options, CurrentPred, TargetPredArity, ForeignPred, ForeignArity) :-
+    predicate_indicator_parts(CurrentPred, Module, _CurrentPred, _CurrentArity),
+    target_predicate_parts(TargetPredArity, TargetPred, TargetArity),
+    go_foreign_spec(Module:TargetPred/TargetArity, Options, _SetupOps, _RewriteCalls, ForeignPred/ForeignArity).
+
+target_predicate_parts(TargetPredArity, Pred, Arity) :-
+    split_string(TargetPredArity, "/", "", [PredStr, ArityStr]),
+    atom_string(Pred, PredStr),
+    number_string(Arity, ArityStr).
 
 wam_line_to_go_literal(Parts, _PredIndicator, _Options, GoLit) :-
     wam_line_to_go_literal(Parts, GoLit).
