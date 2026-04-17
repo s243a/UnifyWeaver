@@ -974,8 +974,9 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
     --scales 300,1k --repetitions 3
 ```
 
-Latest local results after edge-state node-id preindexing, per-row timing
-removal, a compact `(target, depth)` buffered row shape, O(1)
+Latest local results after edge-state node-id preindexing, node-id keyed
+retained-min tracking/flush, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
 frame stack with explicit initial capacity, direct-write seed-batch
 materialization into the destination output list, a packed target/depth
@@ -984,17 +985,17 @@ tables:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.386s | 0.170s | 2.27x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.270s | 0.131s | 2.07x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.383s | 0.163s | 2.34x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.269s | 0.129s | 2.08x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
-| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
-| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
-| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+| 300 | All | 124.070ms | 0.000ms | 70.186ms | n/a |
+| 300 | Min | 33.045ms | 0.000ms | 6.058ms | 5.755ms |
+| 1k | All | 59.255ms | 0.000ms | 39.878ms | n/a |
+| 1k | Min | 11.824ms | 0.000ms | 1.074ms | 2.195ms |
 
 Additional path-state observations:
 
@@ -1033,6 +1034,10 @@ Additional path-state observations:
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
   materialization time.
+- counted-path `Min` now keeps retained best depths keyed by interned target
+  node id until the final target-sorted flush, cutting object-key hashing and
+  reducing `best_known_flush_sort` plus final `Min` materialization cost while
+  preserving the deterministic ordering contract.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
