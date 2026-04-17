@@ -1546,6 +1546,10 @@ namespace UnifyWeaver.QueryRuntime
         public List<object?> Targets { get; } = new();
 
         public List<int> TargetNodeIds { get; } = new();
+
+        public ulong TargetMaskA { get; set; }
+
+        public ulong TargetMaskB { get; set; }
     }
 
     internal sealed class PathAwareEdgeState
@@ -6259,6 +6263,22 @@ namespace UnifyWeaver.QueryRuntime
                 nodeMaskAs[i] = ComputeVisitedMaskA(i);
                 nodeMaskBs[i] = ComputeVisitedMaskB(i);
                 nodeFingerprints[i] = ComputeVisitedFingerprint(i);
+            }
+
+            foreach (var bucket in successors.Values)
+            {
+                ulong targetMaskA = 0;
+                ulong targetMaskB = 0;
+                var targetNodeIds = bucket.TargetNodeIds;
+                for (var i = 0; i < targetNodeIds.Count; i++)
+                {
+                    var targetNodeId = targetNodeIds[i];
+                    targetMaskA |= nodeMaskAs[targetNodeId];
+                    targetMaskB |= nodeMaskBs[targetNodeId];
+                }
+
+                bucket.TargetMaskA = targetMaskA;
+                bucket.TargetMaskB = targetMaskB;
             }
 
             return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId, nodeMaskAs, nodeMaskBs, nodeFingerprints);
@@ -12575,6 +12595,28 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 var targetNodeIds = bucket.TargetNodeIds;
+                var bulkDepthSkipCandidateCount = 0;
+                if (depth != 0)
+                {
+                    var nextDepth = checked(depth + depthIncrement);
+                    // If this bucket cannot intersect the current visited set,
+                    // every successor would fail only on depth, so we can skip
+                    // per-successor cycle probes while preserving counters.
+                    if (maxDepth > 0 &&
+                        nextDepth > maxDepth &&
+                        (((visited.MaskA & bucket.TargetMaskA) == 0) || ((visited.MaskB & bucket.TargetMaskB) == 0)))
+                    {
+                        bulkDepthSkipCandidateCount = targetNodeIds.Count;
+                    }
+                }
+
+                if (bulkDepthSkipCandidateCount > 0)
+                {
+                    metrics?.AddSuccessorCandidates(bulkDepthSkipCandidateCount);
+                    metrics?.AddDepthSkips(bulkDepthSkipCandidateCount);
+                    continue;
+                }
+
                 if (bestKnown is null)
                 {
                     for (var i = targetNodeIds.Count - 1; i >= 0; i--)
@@ -14094,9 +14136,13 @@ namespace UnifyWeaver.QueryRuntime
 
             public void RecordSuccessorCandidate() => SuccessorCandidateCount++;
 
+            public void AddSuccessorCandidates(int count) => SuccessorCandidateCount += count;
+
             public void RecordCycleSkip() => CycleSkipCount++;
 
             public void RecordDepthSkip() => DepthSkipCount++;
+
+            public void AddDepthSkips(int count) => DepthSkipCount += count;
 
             public void RecordBestKnownPrune() => BestKnownPruneCount++;
 
