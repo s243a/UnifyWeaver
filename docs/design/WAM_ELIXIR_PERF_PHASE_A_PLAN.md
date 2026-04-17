@@ -87,19 +87,23 @@ args = for i <- (addr + 1)..(addr + arity), do: Map.get(state.heap, i)
 Trail rewind (`unwind_trail`) and `unify` use `List.replace_at(heap, addr, v)`.
 With a Map this becomes `Map.put(heap, addr, v)` — O(1) and simpler.
 
-### 2. Cached counters for trail and choice_points
+### 2. Cached counter for trail
 
-`trail` and `choice_points` stay as lists — prepend is already O(1). Only
-`length/1` calls are costly. Add `trail_len` / `cps_len` counter fields
-and maintain them on every push/pop.
+`trail` stays a list — prepend is already O(1). Only `length/1` calls
+are costly. Add a `trail_len` counter field and maintain it on every
+push/pop.
 
-Only two code paths actually read the length:
+Two code paths actually read the length:
 
 1. `unwind_trail(state, mark)` in the runtime — currently `length(state.trail)`
-   twice per call. Uses cached `trail_len`.
-2. `backtrack` — `length(cp.trail)` to establish the mark. The choice
-   point stores its trail snapshot; cache `cp.trail_len` at save time so
-   the restore path doesn't re-measure.
+   on each call. Uses cached `state.trail_len`.
+2. `backtrack` — `length(cp.trail)` to establish the mark. Choice
+   points snapshot `trail_len` at save time so the restore path reads
+   `cp.trail_len` directly.
+
+**Not adding `cps_len`**: no caller ever reads `length(state.choice_points)`
+in the current codebase, so there's nothing to optimize. Skip per
+"no speculative generality".
 
 ### 3. Code: tuple instead of list
 
