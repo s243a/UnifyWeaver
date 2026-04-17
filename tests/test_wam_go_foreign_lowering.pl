@@ -508,6 +508,56 @@ func TestForeignGraphKernels(t *testing.T) {
         delete_directory_and_contents(TmpDir)
     )).
 
+test(foreign_project_auto_detect_weighted_and_astar) :-
+    once((
+        get_time(T),
+        format(atom(TmpDir), 'tmp_wam_go_project_foreign_~w', [T]),
+        write_wam_go_project(
+            [plunit_wam_go_foreign_lowering:test_weighted_path/3,
+             plunit_wam_go_foreign_lowering:test_astar_weighted_path/4],
+            [module_name(go_project_foreign_test),
+             foreign_lowering(true)],
+            TmpDir
+        ),
+        directory_file_path(TmpDir, 'lib.go', LibPath),
+        read_file_to_string(LibPath, LibCode, []),
+        assertion(sub_string(LibCode, _, _, _, 'func Test_weighted_path(a1 Value, a2 Value, a3 Value) bool {')),
+        assertion(sub_string(LibCode, _, _, _, 'func Test_astar_weighted_path(a1 Value, a2 Value, a3 Value, a4 Value) bool {')),
+        assertion(sub_string(LibCode, _, _, _, 'vm.registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")')),
+        assertion(sub_string(LibCode, _, _, _, 'vm.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")')),
+        directory_file_path(TmpDir, 'foreign_project_test.go', TestPath),
+        write_file(TestPath,
+'package wam
+
+import "testing"
+
+func TestForeignProjectAutoDetectWeightedAndAstar(t *testing.T) {
+    if !Test_weighted_path(&Atom{Name: "s"}, &Atom{Name: "d"}, &Float{Val: 7.0}) {
+        t.Fatalf("expected auto-detected weighted exact match to succeed")
+    }
+    if Test_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Unbound{Name: "WEIGHTED_FAIL"}) {
+        t.Fatalf("expected weighted project reverse query to fail")
+    }
+
+    if !Test_astar_weighted_path(&Atom{Name: "s"}, &Atom{Name: "d"}, &Integer{Val: 5}, &Float{Val: 7.0}) {
+        t.Fatalf("expected auto-detected astar exact match to succeed")
+    }
+    if Test_astar_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Integer{Val: 5}, &Unbound{Name: "ASTAR_FAIL"}) {
+        t.Fatalf("expected astar project reverse query to fail")
+    }
+}
+'),
+        (   catch(process_create(path(go), ['test', './...'], [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]), _, fail)
+        ->  read_string(Out, _, _Stdout),
+            read_string(Err, _, Stderr),
+            process_wait(Pid, Exit),
+            assertion(Exit == exit(0)),
+            assertion(\+ sub_string(Stderr, _, _, _, 'FAIL'))
+        ;   true
+        ),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 :- end_tests(wam_go_foreign_lowering).
 
 write_file(Path, Content) :-
