@@ -976,8 +976,9 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 
 Latest local results after edge-state node-id preindexing, node-id keyed
 retained-min tracking/flush, concrete-array `nodeValues` replay on the counted
-path materialization path, per-row timing removal, a compact `(target, depth)`
-buffered row shape, O(1)
+path materialization path, cached boxed depth reuse for counted-path row
+construction, per-row timing removal, a compact `(target, depth)` buffered row
+shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
 frame stack with explicit initial capacity, direct-write seed-batch
 materialization into the destination output list, a packed target/depth
@@ -986,17 +987,17 @@ tables:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.392s | 0.154s | 2.54x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.266s | 0.134s | 1.99x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.339s | 0.157s | 2.16x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.249s | 0.129s | 1.93x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 145.095ms | 0.000ms | 87.814ms | n/a |
-| 300 | Min | 33.375ms | 0.000ms | 5.672ms | 4.638ms |
-| 1k | All | 60.023ms | 0.000ms | 37.890ms | n/a |
-| 1k | Min | 16.766ms | 0.000ms | 1.284ms | 2.349ms |
+| 300 | All | 105.838ms | 0.000ms | 47.047ms | n/a |
+| 300 | Min | 29.808ms | 0.000ms | 11.718ms | 4.819ms |
+| 1k | All | 50.357ms | 0.000ms | 34.107ms | n/a |
+| 1k | Min | 11.941ms | 0.000ms | 0.980ms | 1.827ms |
 
 Additional path-state observations:
 
@@ -1042,6 +1043,9 @@ Additional path-state observations:
 - counted-path replay/materialization now uses the concrete `object?[]`
   node-value table directly instead of an `IReadOnlyList<object?>` view, which
   trims lookup overhead on the hot replay path without changing output rows.
+- counted-path row construction now reuses cached boxed depth objects for
+  common small path depths, reducing per-row boxing churn on the high-volume
+  `All` materialization path.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization

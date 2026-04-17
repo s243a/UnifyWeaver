@@ -1728,6 +1728,7 @@ namespace UnifyWeaver.QueryRuntime
     {
         private readonly IRelationProvider _provider;
         private static readonly object NullFactIndexKey = new();
+        private static readonly object[] SmallIntBoxes = CreateSmallIntBoxes(256);
         private static readonly RowWrapperComparer StructuralRowWrapperComparer = new(StructuralArrayComparer.Instance);
         private readonly EvaluationContext? _cacheContext;
         private readonly int _pairProbeCacheMaxEntries;
@@ -1770,6 +1771,24 @@ namespace UnifyWeaver.QueryRuntime
             _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
+        }
+
+        private static object[] CreateSmallIntBoxes(int count)
+        {
+            var values = new object[count];
+            for (var i = 0; i < count; i++)
+            {
+                values[i] = i;
+            }
+
+            return values;
+        }
+
+        private static object BoxCountedPathDepth(int value)
+        {
+            return (uint)value < (uint)SmallIntBoxes.Length
+                ? SmallIntBoxes[value]
+                : value;
         }
 
         public IEnumerable<object[]> Execute(
@@ -12646,7 +12665,7 @@ namespace UnifyWeaver.QueryRuntime
                 var depths = CollectionsMarshal.AsSpan(rows.Depths);
                 for (var i = 0; i < rows.Count; i++)
                 {
-                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, depths[i] };
+                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, BoxCountedPathDepth(depths[i]) };
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
@@ -12657,7 +12676,7 @@ namespace UnifyWeaver.QueryRuntime
             var fallbackDepths = rows.Depths;
             for (var i = 0; i < rows.Count; i++)
             {
-                output.Add(new object[] { seedValue, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
+                output.Add(new object[] { seedValue, nodeValues[fallbackTargetNodeIds[i]]!, BoxCountedPathDepth(fallbackDepths[i]) });
                 metrics?.RecordOutputRow();
             }
 
