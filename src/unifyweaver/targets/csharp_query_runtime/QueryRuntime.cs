@@ -1555,13 +1555,19 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyList<object?> seeds,
             IReadOnlyList<int> seedNodeIds,
             object?[] nodeValues,
-            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId)
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
+            ulong[] nodeMaskAs,
+            ulong[] nodeMaskBs,
+            ulong[] nodeFingerprints)
         {
             Successors = successors;
             Seeds = seeds;
             SeedNodeIds = seedNodeIds;
             NodeValues = nodeValues;
             BucketsByNodeId = bucketsByNodeId;
+            NodeMaskAs = nodeMaskAs;
+            NodeMaskBs = nodeMaskBs;
+            NodeFingerprints = nodeFingerprints;
         }
 
         public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
@@ -1573,6 +1579,12 @@ namespace UnifyWeaver.QueryRuntime
         public object?[] NodeValues { get; }
 
         public IReadOnlyList<PathAwareSuccessorBucket?> BucketsByNodeId { get; }
+
+        public ulong[] NodeMaskAs { get; }
+
+        public ulong[] NodeMaskBs { get; }
+
+        public ulong[] NodeFingerprints { get; }
     }
 
     internal sealed class PathAwareSccGraph
@@ -6239,7 +6251,17 @@ namespace UnifyWeaver.QueryRuntime
                 bucketsByNodeId[bucket.SourceNodeId] = bucket;
             }
 
-            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId);
+            var nodeMaskAs = new ulong[nodeIds.Count];
+            var nodeMaskBs = new ulong[nodeIds.Count];
+            var nodeFingerprints = new ulong[nodeIds.Count];
+            for (var i = 0; i < nodeIds.Count; i++)
+            {
+                nodeMaskAs[i] = ComputeVisitedMaskA(i);
+                nodeMaskBs[i] = ComputeVisitedMaskB(i);
+                nodeFingerprints[i] = ComputeVisitedFingerprint(i);
+            }
+
+            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId, nodeMaskAs, nodeMaskBs, nodeFingerprints);
         }
 
         private static int GetOrAddPathAwareNodeId(
@@ -12416,7 +12438,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < edgeState.Seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, edgeState.NodeMaskAs, edgeState.NodeMaskBs, edgeState.NodeFingerprints, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12487,7 +12509,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, edgeState.NodeMaskAs, edgeState.NodeMaskBs, edgeState.NodeFingerprints, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12508,6 +12530,9 @@ namespace UnifyWeaver.QueryRuntime
             int seedNodeId,
             object?[] nodeValues,
             IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
+            ulong[] nodeMaskAs,
+            ulong[] nodeMaskBs,
+            ulong[] nodeFingerprints,
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
@@ -12520,7 +12545,7 @@ namespace UnifyWeaver.QueryRuntime
             var bestKnown = preserveAllPaths ? null : new Dictionary<int, int>();
             var bufferedRows = preserveAllPaths ? new PathAwareTargetDepthBuffer() : null;
 
-            var initialPath = CompactVisitedPath.Create(seedNodeId);
+            var initialPath = CompactVisitedPath.Create(seedNodeId, nodeMaskAs[seedNodeId], nodeMaskBs[seedNodeId], nodeFingerprints[seedNodeId]);
             var initialStackCapacity = maxDepth > 0
                 ? Math.Min(Math.Max(maxDepth + 1, 4), 256)
                 : 64;
@@ -12556,7 +12581,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         metrics?.RecordSuccessorCandidate();
                         var nextId = targetNodeIds[i];
-                        if (visited.Contains(nextId))
+                        if (visited.Contains(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId]))
                         {
                             metrics?.RecordCycleSkip();
                             continue;
@@ -12574,7 +12599,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
 
-                        var nextVisited = visited.Extend(nextId);
+                        var nextVisited = visited.Extend(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId], nodeFingerprints[nextId]);
                         stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
                         metrics?.RecordEnqueuedState(nextVisited.Count);
                         metrics?.RecordStackSize(stack.Count);
@@ -12586,7 +12611,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         metrics?.RecordSuccessorCandidate();
                         var nextId = targetNodeIds[i];
-                        if (visited.Contains(nextId))
+                        if (visited.Contains(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId]))
                         {
                             metrics?.RecordCycleSkip();
                             continue;
@@ -12628,7 +12653,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         bestKnown[nextId] = nextDepth;
 
-                        var nextVisited = visited.Extend(nextId);
+                        var nextVisited = visited.Extend(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId], nodeFingerprints[nextId]);
                         stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
                         metrics?.RecordEnqueuedState(nextVisited.Count);
                         metrics?.RecordStackSize(stack.Count);
@@ -14166,24 +14191,36 @@ namespace UnifyWeaver.QueryRuntime
 
             public static CompactVisitedPath Create(int nodeId)
             {
-                return new CompactVisitedPath(
-                    previous: null,
-                    nodeId: nodeId,
-                    1,
+                return Create(
+                    nodeId,
                     ComputeVisitedMaskA(nodeId),
                     ComputeVisitedMaskB(nodeId),
                     ComputeVisitedFingerprint(nodeId));
             }
 
+            public static CompactVisitedPath Create(int nodeId, ulong maskA, ulong maskB, ulong fingerprint)
+            {
+                return new CompactVisitedPath(
+                    previous: null,
+                    nodeId: nodeId,
+                    1,
+                    maskA,
+                    maskB,
+                    fingerprint);
+            }
+
             public bool Contains(int nodeId)
             {
-                var maskA = ComputeVisitedMaskA(nodeId);
+                return Contains(nodeId, ComputeVisitedMaskA(nodeId), ComputeVisitedMaskB(nodeId));
+            }
+
+            public bool Contains(int nodeId, ulong maskA, ulong maskB)
+            {
                 if ((MaskA & maskA) == 0)
                 {
                     return false;
                 }
 
-                var maskB = ComputeVisitedMaskB(nodeId);
                 if ((MaskB & maskB) == 0)
                 {
                     return false;
@@ -14202,13 +14239,22 @@ namespace UnifyWeaver.QueryRuntime
 
             public CompactVisitedPath Extend(int nodeId)
             {
+                return Extend(
+                    nodeId,
+                    ComputeVisitedMaskA(nodeId),
+                    ComputeVisitedMaskB(nodeId),
+                    ComputeVisitedFingerprint(nodeId));
+            }
+
+            public CompactVisitedPath Extend(int nodeId, ulong maskA, ulong maskB, ulong fingerprint)
+            {
                 return new CompactVisitedPath(
                     this,
                     nodeId,
                     Count + 1,
-                    MaskA | ComputeVisitedMaskA(nodeId),
-                    MaskB | ComputeVisitedMaskB(nodeId),
-                    Fingerprint ^ ComputeVisitedFingerprint(nodeId));
+                    MaskA | maskA,
+                    MaskB | maskB,
+                    Fingerprint ^ fingerprint);
             }
 
             public bool IsSubsetOf(CompactVisitedPath other)

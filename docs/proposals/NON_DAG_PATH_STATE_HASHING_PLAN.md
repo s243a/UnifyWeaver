@@ -166,10 +166,10 @@ with a packed target/depth row buffer and node-id driven traversal/replay:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 102.950ms | 0.000ms | 47.579ms | n/a |
-| 300 | Min | 33.300ms | 0.000ms | 14.862ms | 5.522ms |
-| 1k | All | 50.315ms | 0.000ms | 39.439ms | n/a |
-| 1k | Min | 12.421ms | 0.000ms | 1.026ms | 1.875ms |
+| 300 | All | 95.476ms | 0.000ms | 52.799ms | n/a |
+| 300 | Min | 33.764ms | 0.000ms | 5.895ms | 4.619ms |
+| 1k | All | 62.974ms | 0.000ms | 27.954ms | n/a |
+| 1k | Min | 11.950ms | 0.000ms | 0.925ms | 1.835ms |
 
 Interpretation:
 
@@ -219,6 +219,10 @@ Interpretation:
 - counted-path traversal now uses a separate `All` hot-path successor loop so
   the high-volume `All` case no longer pays retained-min dictionary and mode
   branching checks on every successor candidate
+- counted-path cycle checks on the `All` hot path now reuse precomputed
+  node-id masks and fingerprints from edge-state construction, avoiding
+  repeated per-successor summary derivation while preserving exact
+  cycle-detection behavior
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
