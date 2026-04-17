@@ -607,7 +607,7 @@ flatten_conjunction(Goal, [Goal]).
 %  Compile (Cond -> Then ; Else) to WAM try/cut/trust + jump pattern.
 %  The condition runs in a temporary choice point; if it succeeds, cut
 %  commits to Then. If it fails, backtrack to Else.
-compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, HasEnv, Code) :-
+compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
     next_ite_label(ElseLabel, ContLabel),
     % Flatten condition and branch bodies into goal lists
     flatten_conjunction(CondGoal, CondGoals),

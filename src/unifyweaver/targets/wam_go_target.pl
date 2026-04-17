@@ -134,7 +134,14 @@ var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   catch(
+    (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
+        option(wam_fallback(WamFB), Options, true),
+        WamFB \== false,
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+    ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
+        format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+    ;   catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
             _, fail)
@@ -387,6 +394,10 @@ foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunEx
     go_foreign_setup_code(SetupOps, Setup),
     format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
 
+go_foreign_spec(_PredArity, Options, _SetupOps, _RewriteCalls, _EntryPredArity) :-
+    option(no_kernels(true), Options),
+    !,
+    fail.
 go_foreign_spec(PredArity, Options, SetupOps, RewriteCalls, EntryPredArity) :-
     option(foreign_lowering(ForeignSpec), Options),
     nonvar(ForeignSpec),
