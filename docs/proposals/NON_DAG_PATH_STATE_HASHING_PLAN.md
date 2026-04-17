@@ -158,14 +158,14 @@ Counted-closure phase split after typed row buffering, pre-sized
 materialization, edge-state node-id preindexing, per-row timing removal, a
 compact `(target, depth)` buffered row shape, O(1) parent-linked
 visited-path extension, a dedicated counted-path traversal frame stack, and
-direct-write seed-batch materialization:
+direct-write seed-batch materialization with a packed target/depth row buffer:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 136.668ms | 0.000ms | 78.053ms | n/a |
-| 300 | Min | 46.030ms | 0.000ms | 5.568ms | 12.685ms |
-| 1k | All | 58.924ms | 0.000ms | 48.248ms | n/a |
-| 1k | Min | 15.563ms | 0.000ms | 1.312ms | 4.921ms |
+| 300 | All | 149.430ms | 0.000ms | 52.088ms | n/a |
+| 300 | Min | 44.722ms | 0.000ms | 5.591ms | 12.771ms |
+| 1k | All | 85.494ms | 0.000ms | 22.895ms | n/a |
+| 1k | Min | 15.479ms | 0.000ms | 1.316ms | 5.006ms |
 
 Interpretation:
 
@@ -195,6 +195,9 @@ Interpretation:
   now grows the list once and writes the new seed batch directly into the new
   slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
   final output path
+- the counted-path `All` staging buffer now stores targets and depths in
+  parallel packed lists instead of shuttling a tiny struct per row, reducing
+  replay overhead on the final materialization path
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
