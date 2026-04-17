@@ -56,6 +56,8 @@ generate_wam_elixir_benchmark_scoped(OutputDir) :-
     Options = [
         module_name('wam_elixir_bench'),
         emit_mode(lowered)
+    ],
+
     % Convert predicate indicators to Pred/Arity-WamCode pairs
     findall(P/A-WamCode, (
         member(P/A, Predicates),
@@ -64,30 +66,26 @@ generate_wam_elixir_benchmark_scoped(OutputDir) :-
         ;   format(user_error, '[WARN] Could not compile ~w/~w, skipping~n', [P, A]), fail
         )
     ), PredWamPairs),
-        ;   format(user_error, '[WARN] Could not compile ~w/~w, skipping~n', [P, A]), fail
-        )
-    ), PredWamPairs),
 
     write_wam_elixir_project(PredWamPairs, Options, OutputDir),
     
     % Write the benchmark driver in Elixir
     directory_file_path(OutputDir, 'test_bench.exs', BenchPath),
-    write_bench_driver(BenchPath, Options),
+    write_bench_driver(BenchPath, Predicates, Options),
     
     format(user_error, '[WAM-Elixir] Benchmark project generated at: ~w~n', [OutputDir]).
 
-write_bench_driver(Path, Options) :-
+write_bench_driver(Path, Predicates, Options) :-
     option(module_name(ModName), Options, wam_elixir_bench),
     camel_case(ModName, CamelMod),
     open(Path, write, S),
     format(S, 'Code.require_file("lib/wam_runtime.ex", __DIR__)~n', []),
     format(S, 'Code.require_file("lib/wam_dispatcher.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/dimension_n.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/max_depth.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/category_ancestor.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/category_parent.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/article_category.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/root_category.ex", __DIR__)~n', []),
+    % Dynamically require all compiled predicate files
+    forall(member(P/_, Predicates), (
+        atom_string(P, PStr),
+        format(S, 'Code.require_file("lib/~w.ex", __DIR__)~n', [PStr])
+    )),
     format(S, '~n', []),
     format(S, 'defmodule BenchDriver do~n', []),
     format(S, '  def run_all(facts_dir) do~n', []),
@@ -127,13 +125,13 @@ write_bench_driver(Path, Options) :-
     format(S, '  end~n', []),
     format(S, '~n', []),
     format(S, '  defp execute_backtrack(state, acc) do~n', []),
-    format(S, '    hops = Map.get(state.regs, 3)~n', []),
-    format(S, '    h_val = if is_integer(hops), do: hops, else: String.to_integer(hops)~n', []),
-    format(S, '    weight = :math.pow(h_val + 1, -5)~n', []),
-    format(S, '    new_acc = acc + weight~n', []),
     format(S, '    case WamRuntime.backtrack(state) do~n', []),
-    format(S, '      {:ok, next_state} -> execute_backtrack(next_state, new_acc)~n', []),
-    format(S, '      :fail -> new_acc~n', []),
+    format(S, '      {:ok, next_state} ->~n', []),
+    format(S, '        hops = Map.get(next_state.regs, 3)~n', []),
+    format(S, '        h_val = if is_integer(hops), do: hops, else: String.to_integer(hops)~n', []),
+    format(S, '        weight = :math.pow(h_val + 1, -5)~n', []),
+    format(S, '        execute_backtrack(next_state, acc + weight)~n', []),
+    format(S, '      :fail -> acc~n', []),
     format(S, '    end~n', []),
     format(S, '  end~n', []),
     format(S, '~n', []),

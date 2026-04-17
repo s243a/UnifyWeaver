@@ -12,8 +12,8 @@
 % to guide future progressive implementation.
 
 :- module(wam_elixir_lowered_emitter, [
-    lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -ElixirCode
-    wam_elixir_lower_instr/4      % +Instr, +PC, +Labels, -Code
+    lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -Code
+    wam_elixir_lower_instr/5      % +Instr, +PC, +Labels, +FuncName, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -24,7 +24,7 @@
 % MAIN ENTRY POINT
 % ============================================================================
 
-%% lower_predicate_to_elixir(+PredIndicator, +WamCode, +Options, -ElixirCode)
+%% lower_predicate_to_elixir(+PredIndicator, +WamCode, +Options, -Code)
 %  Compiles a WAM predicate into a lowered Elixir module with one function
 %  per clause and try/catch for backtracking.
 lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
@@ -126,10 +126,31 @@ generate_all_segments([], _, []).
 generate_all_segments([Name-Instrs | Rest], Labels, [Code | RestCodes]) :-
     segment_func_name(Name, FuncName),
     classify_segment_head(Instrs, HeadType, BodyInstrs),  % strip CP ops
-    lower_instr_list(BodyInstrs, Labels, BodyExprs),       % use stripped list
+    lower_instr_list(BodyInstrs, Labels, FuncName, BodyExprs), % use stripped list
     atomic_list_concat(BodyExprs, '\n', BodyCode),
-    wrap_segment(FuncName, HeadType, BodyCode, Code),
+    % Pre-extract any switch maps to module attributes
+    extract_switch_maps(BodyInstrs, FuncName, MapAttrBody),
+    wrap_segment(FuncName, HeadType, BodyCode, SegmentCode),
+    atomic_list_concat([MapAttrBody, SegmentCode], Code),
     generate_all_segments(Rest, Labels, RestCodes).
+
+extract_switch_maps(Instrs, FuncName, AttrBody) :-
+    (   (member(_PC-switch_on_constant(Entries), Instrs) ; member(_PC-switch_on_constant_a2(Entries), Instrs))
+    ->  maplist(switch_entry_pair, Entries, Pairs),
+        atomic_list_concat(Pairs, ', ', PairsStr),
+        format(string(AttrBody), '  @switch_map_~w Map.new([~w])\n', [FuncName, PairsStr])
+    ;   AttrBody = ""
+    ).
+
+switch_entry_pair(Entry, Pair) :-
+    % entry is "key:label"
+    atom_string(E, Entry),
+    (   sub_atom(E, Before, 1, After, ':'), \+ sub_atom(E, _, 1, After, ':')
+    ->  sub_atom(E, 0, Before, _, Key),
+        sub_atom(E, _, After, 0, Label)
+    ;   Key = Entry, Label = "default"
+    ),
+    format(string(Pair), '{"~w", "~w"}', [Key, Label]).
 
 segment_func_name("clause_start", "clause_main") :- !.
 segment_func_name(Label, Name) :- 
@@ -183,11 +204,11 @@ wrap_segment(FuncName, none, BodyCode, Code) :-
 ~w
   end', [FuncName, BodyCode]).
 
-%% lower_instr_list(+PCInstrs, +Labels, -Exprs)
-lower_instr_list([], _, []).
-lower_instr_list([PC-Instr|Rest], Labels, [Expr|Exprs]) :-
-    wam_elixir_lower_instr(Instr, PC, Labels, Expr),
-    lower_instr_list(Rest, Labels, Exprs).
+%% lower_instr_list(+PCInstrs, +Labels, +FuncName, -Exprs)
+lower_instr_list([], _, _, []).
+lower_instr_list([PC-Instr|Rest], Labels, FuncName, [Expr|Exprs]) :-
+    wam_elixir_lower_instr(Instr, PC, Labels, FuncName, Expr),
+    lower_instr_list(Rest, Labels, FuncName, Exprs).
 
 % ============================================================================
 % INSTRUCTION PARSING
@@ -227,8 +248,8 @@ instr_from_parts(Parts, raw(Combined)) :-
 % INSTRUCTION LOWERING
 % ============================================================================
 
-%% wam_elixir_lower_instr(+Instr, +PC, +Labels, -Code)
-wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, Code) :-
+%% wam_elixir_lower_instr(+Instr, +PC, +Labels, +FuncName, -Code)
+wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
@@ -240,13 +261,13 @@ wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, Code) :-
       true -> throw(:fail)
     end', [Ai, C, C]).
 
-wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = state |> WamRuntime.trail_binding(~w) |> WamRuntime.put_reg(~w, val)', [Ai, Xn, Xn]).
 
-wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val_a = WamRuntime.deref_var(state, Map.get(state.regs, ~w))
@@ -256,7 +277,7 @@ wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, Code) :-
       :fail -> throw(:fail)
     end', [Ai, Xn]).
 
-wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = length(state.heap)
@@ -268,7 +289,7 @@ wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, Code) :-
     |> Map.put(:heap, new_heap)
     |> Map.put(:stack, [{:write_ctx, arity} | state.stack])', [F, F, Ai, Ai]).
 
-wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
@@ -291,7 +312,7 @@ wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, Code) :-
       true -> throw(:fail)
     end', [Ai, F, F, Ai, Ai, F]).
 
-wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    state = case WamRuntime.step_unify_variable(state, ~w) do
@@ -299,7 +320,7 @@ wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, Code) :-
       s -> s
     end', [Xn]).
 
-wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    state = case WamRuntime.step_unify_value(state, ~w) do
@@ -307,33 +328,33 @@ wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, Code) :-
       s -> s
     end', [Xn]).
 
-wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, Code) :-
     format(string(Code),
 '    state = case WamRuntime.step_unify_constant(state, "~w") do
       :fail -> throw(:fail)
       s -> s
     end', [C]).
 
-wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, _FuncName, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(trust_me, _PC, _Labels, Code) :-
+wam_elixir_lower_instr(trust_me, _PC, _Labels, _FuncName, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(allocate, _PC, _Labels, Code) :-
+wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, Code) :-
     Code = '    new_env = %{cp: state.cp, regs: %{}}
     state = %{state | stack: [new_env | state.stack]}'.
 
-wam_elixir_lower_instr(deallocate, _PC, _Labels, Code) :-
+wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, Code) :-
     Code = '    state = case state.stack do
       [env | rest] -> %{state | cp: env.cp, stack: rest}
       _ -> state
     end'.
 
-wam_elixir_lower_instr(call(P, _N), PC, _Labels, Code) :-
+wam_elixir_lower_instr(call(P, _N), PC, _Labels, _FuncName, Code) :-
     NPC is PC + 1,
     format(string(Code),
 '    state = case WamDispatcher.call("~w", state) do
@@ -341,22 +362,22 @@ wam_elixir_lower_instr(call(P, _N), PC, _Labels, Code) :-
       :fail -> throw(:fail)
     end', [P, NPC]).
 
-wam_elixir_lower_instr(execute(P), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(execute(P), _PC, _Labels, _FuncName, Code) :-
     format(string(Code),
 '    WamDispatcher.call("~w", state)', [P]).
 
-wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, Code) :-
     format(string(Code),
 '    state = case WamRuntime.execute_builtin(state, "~w", ~w) do
       :fail -> throw(:fail)
       s -> s
     end', [Op, Ar]).
 
-wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code), '    state = %{state | regs: Map.put(state.regs, ~w, "~w")}', [Ai, C]).
 
-wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    fresh = {:unbound, make_ref()}
@@ -365,7 +386,7 @@ wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, Code) :-
     |> WamRuntime.put_reg(~w, fresh)
     |> WamRuntime.put_reg(~w, fresh)', [Xn, Xn, Ai]).
 
-wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val = WamRuntime.get_reg(state, ~w)
@@ -373,7 +394,7 @@ wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, Code) :-
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, val))', [Xn, Ai, Ai]).
 
-wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = length(state.heap)
@@ -384,7 +405,7 @@ wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, Code) :-
     |> Map.put(:heap, new_heap)
     |> Map.put(:stack, [{:write_ctx, 2} | state.stack])', [Ai, Ai]).
 
-wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
@@ -409,7 +430,7 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, Code) :-
       true -> throw(:fail)
     end', [Ai, Ai, Ai]).
 
-wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    addr = length(state.heap)
@@ -419,41 +440,45 @@ wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, Code) :-
     |> WamRuntime.put_reg(~w, fresh)
     |> Map.put(:heap, new_heap)', [Xn]).
 
-wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    val = WamRuntime.get_reg(state, ~w)
     state = %{state | heap: state.heap ++ [val]}', [Xn]).
 
-wam_elixir_lower_instr(set_constant(C), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, Code) :-
     format(string(Code), '    state = %{state | heap: state.heap ++ ["~w"]}', [C]).
 
-wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, Code) :-
-    maplist(elixir_switch_entry, Entries, Cases),
-    atomic_list_concat(Cases, '\n', CasesStr),
+wam_elixir_lower_instr(switch_on_constant(_Entries), _PC, _Labels, FuncName, Code) :-
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
     case val do
-      {:unbound, _} -> :ok # Variables fall through to choice points
-~w
-      _ -> throw(:fail) # Unmatched constants fail
-    end', [CasesStr]).
+      {:unbound, _} -> :ok
+      _ ->
+        case Map.get(@switch_map_~w, val) do
+          nil -> throw(:fail)
+          "default" -> :ok
+          label -> throw({:return, WamDispatcher.call(label, state)})
+        end
+    end', [FuncName]).
 
-wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, Code) :-
-    maplist(elixir_switch_entry, Entries, Cases),
-    atomic_list_concat(Cases, '\n', CasesStr),
+wam_elixir_lower_instr(switch_on_constant_a2(_Entries), _PC, _Labels, FuncName, Code) :-
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
     case val do
-      {:unbound, _} -> :ok # Variables fall through to choice points
-~w
-      _ -> throw(:fail) # Unmatched constants fail
-    end', [CasesStr]).
+      {:unbound, _} -> :ok
+      _ ->
+        case Map.get(@switch_map_~w, val) do
+          nil -> throw(:fail)
+          "default" -> :ok
+          label -> throw({:return, WamDispatcher.call(label, state)})
+        end
+    end', [FuncName]).
 
-wam_elixir_lower_instr(proceed, _PC, _Labels, Code) :-
+wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, Code) :-
     Code = '    {:ok, %{state | pc: state.cp}}'.
 
-wam_elixir_lower_instr(raw(Combined), _PC, _Labels, Code) :-
+wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
 
 %% pred_to_module(+PredStr, -ModuleName)
@@ -465,21 +490,3 @@ pred_to_module(PredStr, ModName) :-
     ),
     camel_case(Name, CamelName),
     format(atom(ModName), 'WamPredLow.~w', [CamelName]).
-
-elixir_switch_entry(Entry, CaseCode) :-
-    % Expected entry format: "key:label"
-    % Find the LAST colon to handle atoms containing colons.
-    atom_string(E, Entry),
-    (   sub_atom(E, Before, 1, After, ':'), \+ sub_atom(E, _, 1, After, ':')
-    ->  sub_atom(E, 0, Before, _, Key),
-        sub_atom(E, _, After, 0, Label)
-    ;   % Fallback if no colon found (should not happen in valid WAM)
-        Key = Entry, Label = "default"
-    ),
-    (   Label == "default"
-    ->  format(string(CaseCode), '      "~w" -> :ok # default label: fall through to choice point', [Key])
-    ;   segment_func_name(Label, FuncName),
-        % Note: The {:return, result} throw is explicitly caught and re-thrown by 
-        % the try/catch wrappers in wrap_segment/4 to safely bubble up.
-        format(string(CaseCode), '      "~w" -> throw({:return, ~w(state)})', [Key, FuncName])
-    ).

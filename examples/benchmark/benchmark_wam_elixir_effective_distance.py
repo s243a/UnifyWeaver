@@ -167,6 +167,13 @@ def main() -> int:
             print(f"Benchmarking scale {scale}...", file=sys.stderr)
             try:
                 command = build_wam_elixir_effective_distance(temp_root, scale)
+            except subprocess.CalledProcessError as e:
+                print(f"ERROR building scale {scale}: {e}", file=sys.stderr)
+                if e.stderr:
+                    print(f"  stderr: {e.stderr}", file=sys.stderr)
+                if e.stdout:
+                    print(f"  stdout: {e.stdout}", file=sys.stderr)
+                raise
             except Exception as e:
                 print(f"ERROR building scale {scale}: {e}", file=sys.stderr)
                 raise

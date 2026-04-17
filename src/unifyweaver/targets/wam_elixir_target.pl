@@ -358,19 +358,24 @@ compile_unwind_trail_to_elixir(Code) :-
   def unwind_trail(state, mark) do
     # mark is the length of the trail when the choice point was created.
     # Newest entries are at the head of state.trail.
-    entries_to_undo = Enum.take(state.trail, length(state.trail) - mark)
-    new_trail = Enum.drop(state.trail, length(state.trail) - mark)
+    curr_len = length(state.trail)
+    if curr_len <= mark do
+      state
+    else
+      entries_to_undo = Enum.take(state.trail, curr_len - mark)
+      new_trail = Enum.drop(state.trail, curr_len - mark)
     
-    Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
-      case key do
-        {:heap_ref, addr} ->
-           val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
-           %{s | heap: List.replace_at(s.heap, addr, val)}
-        _ ->
-           new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
-           %{s | regs: new_regs}
-      end
-    end)
+      Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
+        case key do
+          {:heap_ref, addr} ->
+             val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
+             %{s | heap: List.replace_at(s.heap, addr, val)}
+          _ ->
+             new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
+             %{s | regs: new_regs}
+        end
+      end)
+    end
   end', []).
 
 compile_utility_helpers_to_elixir(Code) :-
@@ -395,7 +400,8 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   defp resolve_label(state, label) do
-    Map.get(state.labels, label, state.pc)
+    target = Map.get(state.labels, label, state.pc)
+    target
   end
 
   def parse_functor_arity(fn_name) do
@@ -494,9 +500,8 @@ compile_utility_helpers_to_elixir(Code) :-
     cond do
       match?({:unbound, _}, val) -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
       true ->
-        # entries is a list of {"key", "label"}. Convert to Map for faster lookup.
-        # Ideally this conversion happens at compile time or load time.
-        map = Map.new(entries)
+        # entries is expected to be a list of {key, label} or a map.
+        map = if is_map(entries), do: entries, else: Map.new(entries)
         case Map.get(map, val) do
           "default" -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
           nil -> :fail
@@ -542,8 +547,9 @@ compile_utility_helpers_to_elixir(Code) :-
         cond do
           match?({:unbound, _}, lhs) ->
             id = case lhs do {:unbound, i} -> i end
-            state |> trail_binding(id)
-            |> Map.put(:regs, Map.put(state.regs, id, result))
+            state 
+            |> trail_binding(id)
+            |> put_reg(id, result)
             |> Map.put(:pc, new_pc)
           lhs == result -> %{state | pc: new_pc}
           true -> :fail
@@ -563,21 +569,46 @@ compile_utility_helpers_to_elixir(Code) :-
         end
       {neg_op, 1} when neg_op in ["\\\\+/1", "\\+/1"] ->
         # Negation: \\+ Goal
-        goal = get_reg(state, 1)
-        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        case goal do
+        goal_val = deref_var(state, get_reg(state, 1))
+        # Isolated state for negation check
+        temp_state = %{state | choice_points: [], stack: []}
+        
+        # Determine if goal succeeds or fails
+        res = case goal_val do
           {:ref, addr} ->
             case Enum.at(state.heap, addr) do
-              {:str, "member/2"} ->
-                 [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
-                 temp_state = %{state | regs: Map.merge(state.regs, %{1 => v1, 2 => v2})}
-                 case execute_builtin(temp_state, "member/2", 2) do
-                   :fail -> %{state | pc: new_pc}
-                   _ -> :fail
-                 end
-               _ -> :fail # TODO: General negation
+              {:str, pred_arity} ->
+                # This is a bit of a hack: we need a dispatcher that can take 
+                # a Pred/Arity and a state. WamDispatcher.call/2 works for 
+                # predicates, but builtins need execute_builtin.
+                arity = parse_functor_arity(pred_arity)
+                args = Enum.slice(state.heap, addr + 1, arity)
+                # Map args to registers for the call
+                call_state = Enum.with_index(args, 1)
+                |> Enum.reduce(temp_state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
+
+                # Try to run via dispatcher (for predicates) or builtin
+                try do
+                  case WamDispatcher.call(pred_arity, call_state) do
+                    {:ok, _} -> :success
+                    :fail -> :fail
+                  end
+                catch
+                  _ -> # If dispatcher fails, maybe it is a builtin?
+                    case execute_builtin(call_state, pred_arity, arity) do
+                      :fail -> :fail
+                      _ -> :success
+                    end
+                end
+              _ -> :fail # Not a runnable term
             end
-          _ -> :fail
+          _ -> :fail # Ground values fail as goals
+        end
+
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        case res do
+          :fail -> %{state | pc: new_pc}
+          :success -> :fail
         end
       {"member/2", 2} ->
         item = get_reg(state, 1)
