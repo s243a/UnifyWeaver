@@ -12,21 +12,22 @@
 % to guide future progressive implementation.
 
 :- module(wam_elixir_lowered_emitter, [
-    lower_predicate_to_elixir/3,  % +PredIndicator, +WamCode, -ElixirCode
+    lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -ElixirCode
     wam_elixir_lower_instr/4      % +Instr, +PC, +Labels, -Code
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(option)).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2]).
 
 % ============================================================================
 % MAIN ENTRY POINT
 % ============================================================================
 
-%% lower_predicate_to_elixir(+PredIndicator, +WamCode, -ElixirCode)
+%% lower_predicate_to_elixir(+PredIndicator, +WamCode, +Options, -ElixirCode)
 %  Compiles a WAM predicate into a lowered Elixir module with one function
 %  per clause and try/catch for backtracking.
-lower_predicate_to_elixir(Pred/Arity, WamCode, Code) :-
+lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
@@ -35,10 +36,12 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Code) :-
     atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
+    option(module_name(ModName), Options, 'WamPredLow'),
+    camel_case(ModName, CamelMod),
     Segments = [FirstSegName-_|_],
     segment_func_name(FirstSegName, FirstFunc),
     format(string(Code),
-'defmodule WamPredLow.~w do
+'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
 
   def run(%WamRuntime.WamState{} = state) do
@@ -65,7 +68,7 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Code) :-
   end
 
 ~w
-end', [CamelPred, PredStr, Arity, FirstFunc, CamelPred, FuncsBody]).
+end', [CamelMod, CamelPred, PredStr, Arity, FirstFunc, CamelPred, FuncsBody]).
 
 % ============================================================================
 % LABEL COLLECTION

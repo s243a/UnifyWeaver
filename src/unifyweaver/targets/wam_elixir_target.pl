@@ -28,7 +28,7 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
-:- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/3]).
+:- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
 :- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2]).
 
 :- discontiguous wam_elixir_case/2.
@@ -796,7 +796,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     close(RS),
     % Generate dispatcher for lowered mode
     (   Mode == lowered
-    ->  generate_elixir_dispatcher(Predicates, DispatcherCode),
+    ->  generate_elixir_dispatcher(Predicates, Options, DispatcherCode),
         directory_file_path(LibDir, 'wam_dispatcher.ex', DispatcherPath),
         open(DispatcherPath, write, DS),
         write(DS, DispatcherCode),
@@ -807,7 +807,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     forall(
         member(Pred/Arity-WamCode, Predicates),
         (   (   Mode == lowered
-            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, PredCode)
+            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
             ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
             ),
             atom_string(Pred, PredStr),
@@ -837,12 +837,14 @@ end', [ModuleName, ModuleName]),
     write(MS, MixCode),
     close(MS).
 
-generate_elixir_dispatcher(Predicates, Code) :-
+generate_elixir_dispatcher(Predicates, Options, Code) :-
+    option(module_name(ModName), Options, 'WamPredLow'),
+    camel_case(ModName, CamelMod),
     findall(Case,
         (   member(Pred/Arity-_, Predicates),
             atom_string(Pred, PredStr),
             camel_case(PredStr, CamelPred),
-            format(string(Case), '  def call("~w/~w", state), do: WamPredLow.~w.run(state)', [PredStr, Arity, CamelPred])
+            format(string(Case), '  def call("~w/~w", state), do: ~w.~w.run(state)', [PredStr, Arity, CamelMod, CamelPred])
         ),
         Cases
     ),

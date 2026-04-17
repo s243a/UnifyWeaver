@@ -34,10 +34,15 @@ generate_wam_elixir_benchmark(FactsPath, OutputDir) :-
     load_files(WorkloadPath, [silent(true)]),
     load_files(FactsPath, [silent(true)]),
     
-    % Force the mode for WAM compilation
-    retractall(user:mode(category_ancestor(_, _, _, _))),
-    assertz(user:mode(category_ancestor(-, +, -, +))),
+    % Use setup_call_cleanup to restore the original mode state
+    setup_call_cleanup(
+        ( retractall(user:mode(category_ancestor(_, _, _, _))),
+          assertz(user:mode(category_ancestor(-, +, -, +))) ),
+        generate_wam_elixir_benchmark_scoped(OutputDir),
+        ( retractall(user:mode(category_ancestor(-, +, -, +))) )
+    ).
 
+generate_wam_elixir_benchmark_scoped(OutputDir) :-
     % Define the predicates to compile
     Predicates = [
         dimension_n/1,
@@ -58,6 +63,7 @@ generate_wam_elixir_benchmark(FactsPath, OutputDir) :-
         member(P/A, Predicates),
         (   wam_target:compile_predicate_to_wam(P/A, [], WamCode) -> true
         ;   wam_target:compile_predicate_to_wam(user:P/A, [], WamCode) -> true
+        ;   format(user_error, '[WARN] Could not compile ~w/~w, skipping~n', [P, A]), fail
         )
     ), PredWamPairs),
 
@@ -65,11 +71,13 @@ generate_wam_elixir_benchmark(FactsPath, OutputDir) :-
     
     % Write the benchmark driver in Elixir
     directory_file_path(OutputDir, 'test_bench.exs', BenchPath),
-    write_bench_driver(BenchPath),
+    write_bench_driver(BenchPath, Options),
     
     format(user_error, '[WAM-Elixir] Benchmark project generated at: ~w~n', [OutputDir]).
 
-write_bench_driver(Path) :-
+write_bench_driver(Path, Options) :-
+    option(module_name(ModName), Options, wam_elixir_bench),
+    camel_case(ModName, CamelMod),
     open(Path, write, S),
     format(S, 'Code.require_file("lib/wam_runtime.ex", __DIR__)~n', []),
     format(S, 'Code.require_file("lib/wam_dispatcher.ex", __DIR__)~n', []),
@@ -111,22 +119,20 @@ write_bench_driver(Path) :-
     format(S, '~n', []),
     format(S, '  def run_seeded(cat, root) do~n', []),
     format(S, '    args = [cat, root, {:unbound, 3}, [cat]]~n', []),
-    format(S, '    case WamPredLow.CategoryAncestor.run(args) do~n', []),
-    format(S, '      {:ok, state} ->~n', []),
-    format(S, '        hops = Map.get(state.regs, 3)~n', []),
-    format(S, '        weight = :math.pow(hops + 1, -5)~n', []),
-    format(S, '        execute_backtrack(state, weight)~n', []),
+    format(S, '    case ~w.CategoryAncestor.run(args) do~n', [CamelMod]),
+    format(S, '      {:ok, state} -> execute_backtrack(state, 0.0)~n', []),
     format(S, '      :fail -> 0.0~n', []),
     format(S, '    end~n', []),
     format(S, '  end~n', []),
     format(S, '~n', []),
     format(S, '  defp execute_backtrack(state, acc) do~n', []),
+    format(S, '    hops = Map.get(state.regs, 3)~n', []),
+    format(S, '    h_val = if is_integer(hops), do: hops, else: String.to_integer(hops)~n', []),
+    format(S, '    weight = :math.pow(h_val + 1, -5)~n', []),
+    format(S, '    new_acc = acc + weight~n', []),
     format(S, '    case WamRuntime.backtrack(state) do~n', []),
-    format(S, '      {:ok, next_state} ->~n', []),
-    format(S, '        hops = Map.get(next_state.regs, 3)~n', []),
-    format(S, '        weight = :math.pow(hops + 1, -5)~n', []),
-    format(S, '        execute_backtrack(next_state, acc + weight)~n', []),
-    format(S, '      :fail -> acc~n', []),
+    format(S, '      {:ok, next_state} -> execute_backtrack(next_state, new_acc)~n', []),
+    format(S, '      :fail -> new_acc~n', []),
     format(S, '    end~n', []),
     format(S, '  end~n', []),
     format(S, '~n', []),

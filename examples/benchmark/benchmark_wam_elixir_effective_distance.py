@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import statistics
 import sys
 import tempfile
@@ -95,9 +96,11 @@ def build_wam_elixir_effective_distance(root: Path, scale: str) -> list[str]:
     project_dir = root / f"wam_elixir" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
     
-    # Ensure erl shebang is fixed for Termux
-    erl_path = run_command(["which", "erl"]).stdout.strip()
-    run_command(["termux-fix-shebang", erl_path])
+    # Ensure erl shebang is fixed only if on Termux
+    erl_path = shutil.which("erl")
+    fix_tool = shutil.which("termux-fix-shebang")
+    if erl_path and fix_tool:
+        run_command([fix_tool, erl_path])
 
     run_command(
         [
@@ -138,7 +141,7 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
     digits = "".join(ch for ch in scale if ch.isdigit())
     suffix = "".join(ch for ch in scale if not ch.isdigit())
     if scale == "dev":
-        return (0, scale)
+        return (10**9 - 1, scale)
     if not digits:
         return (10**9, scale)
     value = int(digits)
@@ -162,7 +165,11 @@ def main() -> int:
         results: list[RunResult] = []
         for scale in scales:
             print(f"Benchmarking scale {scale}...", file=sys.stderr)
-            command = build_wam_elixir_effective_distance(temp_root, scale)
+            try:
+                command = build_wam_elixir_effective_distance(temp_root, scale)
+            except Exception as e:
+                print(f"ERROR building scale {scale}: {e}", file=sys.stderr)
+                raise
             results.append(benchmark_target(command, scale, args.repetitions, "wam-elixir-lowered"))
 
         print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
