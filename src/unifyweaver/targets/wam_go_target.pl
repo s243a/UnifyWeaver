@@ -434,6 +434,9 @@ go_foreign_setup_line(register_foreign_usize_config(Pred/Arity, Key, Value), Lin
 go_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
     go_fact_pairs_literal(Pairs, Literal),
     format(atom(Line), '    vm.registerIndexedAtomFact2Pairs("~w/~w", []AtomPair{~w})', [Pred, Arity, Literal]).
+go_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line) :-
+    go_fact_triples_literal(Triples, Literal),
+    format(atom(Line), '    vm.registerIndexedWeightedEdgeTriples("~w/~w", []WeightedEdgeTriple{~w})', [Pred, Arity, Literal]).
 
 go_fact_pairs_literal(Pairs, Literal) :-
     maplist(go_fact_pair_literal, Pairs, PairLiterals),
@@ -441,6 +444,13 @@ go_fact_pairs_literal(Pairs, Literal) :-
 
 go_fact_pair_literal(Left-Right, Literal) :-
     format(atom(Literal), '{Left: "~w", Right: "~w"}', [Left, Right]).
+
+go_fact_triples_literal(Triples, Literal) :-
+    maplist(go_fact_triple_literal, Triples, TripleLiterals),
+    atomic_list_concat(TripleLiterals, ', ', Literal).
+
+go_fact_triple_literal(Left-Right-Weight, Literal) :-
+    format(atom(Literal), '{Left: "~w", Right: "~w", Weight: ~15g}', [Left, Right, Weight]).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
@@ -464,21 +474,30 @@ go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffix2
     go_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
 go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffixes2, Pred/Arity, [])) :-
     go_foreign_lowerable_list_suffixes(Pred, Arity, Clauses).
+go_recursive_kernel(Module, Pred, Arity, Clauses,
+        recursive_kernel(weighted_shortest_path3, Pred/Arity,
+            [weight_pred(WeightPred/3), fact_triples(FactTriples)])) :-
+    go_foreign_lowerable_weighted_shortest_path(Module, Pred, Arity, Clauses, WeightPred/3, FactTriples).
+go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel) :-
+    go_foreign_lowerable_astar_shortest_path(Module, Pred, Arity, Clauses, Kernel).
 go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel) :-
     detect_recursive_kernel(Pred, Arity, Clauses, Kernel0),
     go_supported_shared_kernel(Kernel0),
     go_recursive_kernel_with_facts(Module, Kernel0, Kernel).
 
 go_supported_shared_kernel(recursive_kernel(transitive_closure2, _, _)).
-
+go_supported_shared_kernel(recursive_kernel(transitive_distance3, _, _)).
+go_supported_shared_kernel(recursive_kernel(transitive_parent_distance4, _, _)).
+go_supported_shared_kernel(recursive_kernel(transitive_step_parent_distance5, _, _)).
 go_recursive_kernel_with_facts(Module,
-        recursive_kernel(transitive_closure2, PredIndicator, KernelConfig0),
-        recursive_kernel(transitive_closure2, PredIndicator,
+        recursive_kernel(KernelKind, PredIndicator, KernelConfig0),
+        recursive_kernel(KernelKind, PredIndicator,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    member(KernelKind, [transitive_closure2, transitive_distance3,
+        transitive_parent_distance4, transitive_step_parent_distance5]),
     member(edge_pred(EdgePred/2), KernelConfig0),
     go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs),
     FactPairs \= [].
-
 go_recursive_kernel_spec(recursive_kernel(KernelKind, PredIndicator, KernelConfig),
         SetupOps, RewriteCalls, PredIndicator) :-
     go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig, SetupOps),
@@ -495,6 +514,7 @@ go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
 go_recursive_kernel_metadata(countdown_sum2, _KernelConfig, countdown_sum2, tuple(1), deterministic).
 go_recursive_kernel_metadata(list_suffix2, _KernelConfig, list_suffix2, tuple(1), stream).
 go_recursive_kernel_metadata(list_suffixes2, _KernelConfig, list_suffixes2, tuple(1), deterministic_collection).
+go_recursive_kernel_metadata(astar_shortest_path4, _KernelConfig, astar_shortest_path4, tuple(1), stream).
 go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout, ResultMode) :-
     kernel_metadata(recursive_kernel(KernelKind, _PredIndicator, KernelConfig),
         NativeKind, ResultLayout, ResultMode).
@@ -503,6 +523,27 @@ go_recursive_kernel_config_ops(_PredIndicator, [], []).
 go_recursive_kernel_config_ops(PredIndicator, [edge_pred(EdgePred/2), fact_pairs(FactPairs)], [
         register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
         register_indexed_atom_fact2(EdgePred/2, FactPairs)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator, [weight_pred(WeightPred/3), fact_triples(FactTriples)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator,
+        [weight_pred(WeightPred/3), fact_triples(FactTriples),
+         direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+         dimensionality(Dim)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples),
+        register_foreign_string_config(PredIndicator, direct_dist_pred, DirectPred/3),
+        register_indexed_weighted_edge(DirectPred/3, DirectTriples),
+        register_foreign_usize_config(PredIndicator, dimensionality, Dim)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator,
+        [weight_pred(WeightPred/3), fact_triples(FactTriples),
+         dimensionality(Dim)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples),
+        register_foreign_usize_config(PredIndicator, dimensionality, Dim)
     ]).
 
 go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
@@ -514,6 +555,17 @@ go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
           atom(Right)
         ),
         FactPairs).
+
+go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples) :-
+    findall(Left-Right-Weight,
+        ( functor(WeightHead, WeightPred, 3),
+          Module:clause(WeightHead, true),
+          WeightHead =.. [WeightPred, Left, Right, Weight],
+          atom(Left),
+          atom(Right),
+          number(Weight)
+        ),
+        FactTriples).
 
 go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     member(BaseHead-true, Clauses),
@@ -545,6 +597,80 @@ go_foreign_lowerable_list_suffixes(Pred, 2, Clauses) :-
     BaseHead =.. [Pred, [], [[]]],
     RecHead =.. [Pred, [Head|Tail], [[Head|Tail]|Rest]],
     RecBody =.. [Pred, Tail, Rest].
+
+go_foreign_lowerable_weighted_shortest_path(Module, Pred, 3, Clauses, WeightPred/3, FactTriples) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseWeight],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
+    RecHead =.. [Pred, RecStart, RecTarget, RecCost],
+    go_extract_weighted_rec_body(Pred, WeightPred, RecStart, RecTarget, RecCost, RecBody),
+    go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples),
+    FactTriples \= [].
+
+go_extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
+    Body = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, Start, Mid, W],
+    RecGoal =.. [Pred, Mid, Target, RestCost],
+    IsGoal =.. [is, Cost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    !.
+go_extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
+    Body = (WeightGoal, (NegGoal, (RecGoal, IsGoal))),
+    WeightGoal =.. [WeightPred, Start, Mid, W],
+    NegGoal = (\+ _),
+    RecGoal =.. [Pred, Mid, Target, RestCost],
+    IsGoal =.. [is, Cost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    !.
+
+go_foreign_lowerable_astar_shortest_path(Module, Pred, 4, Clauses,
+        recursive_kernel(astar_shortest_path4, Pred/4, KernelConfig)) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, _BaseDim, BaseWeight],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDim, RecCost],
+    RecBody = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, RecStart, Mid, W],
+    RecGoal =.. [Pred, Mid, RecTarget, RecDim, RestCost],
+    IsGoal =.. [is, RecCost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples),
+    FactTriples \= [],
+    go_foreign_astar_direct_pred(Module, WeightPred/3, DirectPred/3, DirectTriples),
+    go_foreign_astar_dimensionality(Module, Dim),
+    KernelConfig = [weight_pred(WeightPred/3), fact_triples(FactTriples),
+                    direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+                    dimensionality(Dim)].
+
+go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    go_weighted_edge_fact_triples(Module, direct_semantic_dist/3, DirectTriples),
+    DirectTriples \= [],
+    DirectPred = direct_semantic_dist,
+    !.
+go_foreign_astar_direct_pred(_Module, FallbackPred, DirectPred, DirectTriples) :-
+    FallbackPred = DirectPred,
+    DirectTriples = [].
+
+go_foreign_astar_dimensionality(Module, Dim) :-
+    (   current_predicate(Module:dimensionality/1),
+        Module:dimensionality(Dim0)
+    ;   current_predicate(user:dimensionality/1),
+        user:dimensionality(Dim0)
+    ),
+    integer(Dim0),
+    !,
+    Dim = Dim0.
+go_foreign_astar_dimensionality(_Module, 5).
 
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
 wam_lines_to_go([], _, _, _, [], []).
@@ -1419,6 +1545,10 @@ func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPa
     vm.IndexedAtomFactPairs[predKey] = pairs
 }
 
+func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
+    vm.IndexedWeightedEdgeTriples[predKey] = triples
+}
+
 func (vm *WamState) foreignResultLayout(predKey string) string {
     return vm.ForeignResultLayouts[predKey]
 }
@@ -1483,26 +1613,39 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []string, re
         baseStack := copyStack(vm.Stack)
         trailMark := len(vm.Trail)
         heapTop := len(vm.Heap)
-        if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
-            return false
+        for idx, result := range results {
+            vm.unwindTrail(trailMark)
+            vm.Regs = copyMap(baseRegs)
+            vm.Stack = copyStack(baseStack)
+            if heapTop >= 0 && heapTop <= len(vm.Heap) {
+                vm.Heap = vm.Heap[:heapTop]
+            }
+            vm.CP = vm.CP
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            if !vm.applyForeignResult(predKey, resultRegs, result) {
+                continue
+            }
+            if idx+1 < len(results) {
+                remaining := append([]Value(nil), results[idx+1:]...)
+                vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+                    NextPC: resumePC,
+                    ResumePC: resumePC,
+                    CP: vm.CP,
+                    Regs: baseRegs,
+                    Stack: baseStack,
+                    HeapTop: heapTop,
+                    TrailMark: trailMark,
+                    ForeignPredKey: predKey,
+                    ForeignResultRegs: append([]string(nil), resultRegs...),
+                    ForeignResults: remaining,
+                })
+            }
+            vm.PC = resumePC
+            return true
         }
-        if len(results) > 1 {
-            remaining := append([]Value(nil), results[1:]...)
-            vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
-                NextPC: resumePC,
-                ResumePC: resumePC,
-                CP: vm.CP,
-                Regs: baseRegs,
-                Stack: baseStack,
-                HeapTop: heapTop,
-                TrailMark: trailMark,
-                ForeignPredKey: predKey,
-                ForeignResultRegs: append([]string(nil), resultRegs...),
-                ForeignResults: remaining,
-            })
-        }
-        vm.PC = resumePC
-        return true
+        return false
     default:
         if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
             return false
@@ -1530,6 +1673,18 @@ func valueAsInteger(vm *WamState, v Value) (int64, bool) {
     return integer.Val, true
 }
 
+func valueAsFloat(vm *WamState, v Value) (float64, bool) {
+    val := vm.deref(v)
+    switch n := val.(type) {
+    case *Integer:
+        return float64(n.Val), true
+    case *Float:
+        return n.Val, true
+    default:
+        return 0, false
+    }
+}
+
 func listAsSlice(vm *WamState, v Value) ([]Value, bool) {
     val := vm.deref(v)
     list, ok := val.(*List)
@@ -1544,6 +1699,226 @@ func (vm *WamState) collectNativeListSuffixes(items []Value, out *[]Value) {
         suffix := append([]Value(nil), items[idx:]...)
         *out = append(*out, &List{Elements: suffix})
     }
+}
+
+func tupleValue(items ...Value) Value {
+    return &Compound{Functor: "__tuple__", Args: items}
+}
+
+func atomAdjacency(pairs []AtomPair) map[string][]string {
+    adjacency := make(map[string][]string)
+    for _, pair := range pairs {
+        adjacency[pair.Left] = append(adjacency[pair.Left], pair.Right)
+    }
+    return adjacency
+}
+
+func weightedAdjacency(triples []WeightedEdgeTriple) map[string][]WeightedEdgeTriple {
+    adjacency := make(map[string][]WeightedEdgeTriple)
+    for _, triple := range triples {
+        adjacency[triple.Left] = append(adjacency[triple.Left], triple)
+    }
+    return adjacency
+}
+
+func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := make(map[string]bool)
+    queue := append([]string(nil), adjacency[source]...)
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        node := queue[0]
+        queue = queue[1:]
+        if visited[node] {
+            continue
+        }
+        visited[node] = true
+        results = append(results, &Atom{Name: node})
+        queue = append(queue, adjacency[node]...)
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    parent := make(map[string]string)
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            parent[next] = current
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Atom{Name: parent[next]},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    parent := make(map[string]string)
+    firstStep := make(map[string]string)
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            parent[next] = current
+            if current == source {
+                firstStep[next] = next
+            } else {
+                firstStep[next] = firstStep[current]
+            }
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Atom{Name: firstStep[next]},
+                &Atom{Name: parent[next]},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func pickShortestCandidate(dist map[string]float64, settled map[string]bool) (string, bool) {
+    bestNode := ""
+    bestDist := 0.0
+    found := false
+    for node, d := range dist {
+        if settled[node] {
+            continue
+        }
+        if !found || d < bestDist || (d == bestDist && node < bestNode) {
+            bestNode = node
+            bestDist = d
+            found = true
+        }
+    }
+    return bestNode, found
+}
+
+func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) float64 {
+    for _, triple := range triples {
+        if triple.Left == from && triple.Right == target {
+            return triple.Weight
+        }
+    }
+    return 0
+}
+
+func (vm *WamState) collectNativeWeightedShortestPathResults(source string, triples []WeightedEdgeTriple) []Value {
+    adjacency := weightedAdjacency(triples)
+    dist := map[string]float64{source: 0}
+    settled := make(map[string]bool)
+    results := make([]Value, 0)
+    for {
+        current, ok := pickShortestCandidate(dist, settled)
+        if !ok {
+            break
+        }
+        settled[current] = true
+        if current != source {
+            results = append(results, tupleValue(
+                &Atom{Name: current},
+                &Float{Val: dist[current]},
+            ))
+        }
+        for _, edge := range adjacency[current] {
+            candidate := dist[current] + edge.Weight
+            prev, exists := dist[edge.Right]
+            if !exists || candidate < prev {
+                dist[edge.Right] = candidate
+            }
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
+    adjacency := weightedAdjacency(weighted)
+    gScore := map[string]float64{source: 0}
+    open := map[string]bool{source: true}
+    closed := make(map[string]bool)
+    for len(open) > 0 {
+        current := ""
+        bestScore := 0.0
+        found := false
+        for node := range open {
+            score := gScore[node] + heuristicLookup(direct, node, target)
+            if !found || score < bestScore || (score == bestScore && node < current) {
+                current = node
+                bestScore = score
+                found = true
+            }
+        }
+        if !found {
+            break
+        }
+        delete(open, current)
+        if current == target {
+            return []Value{&Float{Val: gScore[current]}}
+        }
+        closed[current] = true
+        for _, edge := range adjacency[current] {
+            if closed[edge.Right] {
+                continue
+            }
+            candidate := gScore[current] + edge.Weight
+            prev, exists := gScore[edge.Right]
+            if !exists || candidate < prev {
+                gScore[edge.Right] = candidate
+                open[edge.Right] = true
+            }
+        }
+    }
+    return nil
 }
 
 func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
@@ -1587,24 +1962,62 @@ func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
         }
         edgePred := vm.foreignStringConfig(predKey, "edge_pred")
         pairs := vm.IndexedAtomFactPairs[edgePred]
-        adjacency := make(map[string][]string)
-        for _, pair := range pairs {
-            adjacency[pair.Left] = append(adjacency[pair.Left], pair.Right)
-        }
-        visited := make(map[string]bool)
-        queue := append([]string(nil), adjacency[source]...)
-        results := make([]Value, 0)
-        for len(queue) > 0 {
-            node := queue[0]
-            queue = queue[1:]
-            if visited[node] {
-                continue
-            }
-            visited[node] = true
-            results = append(results, &Atom{Name: node})
-            queue = append(queue, adjacency[node]...)
-        }
+        results := vm.collectNativeTransitiveClosureResults(source, pairs)
         return vm.finishForeignResults(predKey, []string{"A2"}, results)
+    case "transitive_distance3":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+    case "transitive_parent_distance4":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4"}, results)
+    case "transitive_step_parent_distance5":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4", "A5"}, results)
+    case "weighted_shortest_path3":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        triples := vm.IndexedWeightedEdgeTriples[weightPred]
+        results := vm.collectNativeWeightedShortestPathResults(source, triples)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+    case "astar_shortest_path4":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        target, ok := valueAsAtomString(vm, vm.getReg("A2"))
+        if !ok {
+            return false
+        }
+        if _, ok := valueAsFloat(vm, vm.getReg("A3")); !ok {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
+        weighted := vm.IndexedWeightedEdgeTriples[weightPred]
+        direct := vm.IndexedWeightedEdgeTriples[directPred]
+        results := vm.collectNativeAstarShortestPathResult(source, target, weighted, direct)
+        return vm.finishForeignResults(predKey, []string{"A4"}, results)
     default:
         return false
     }
