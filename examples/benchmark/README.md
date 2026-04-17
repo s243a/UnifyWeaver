@@ -959,6 +959,11 @@ comparison point for the weighted `Min` frontier survey: counted closure has
 no subset-dominance frontier, so its cost is mostly raw successor expansion,
 cycle checks, depth-limit skips, and retained simple-path rows.
 
+For the specific question of why end-to-end counted-path `Min` can still beat
+`All` even when `path_state_best_known_flush_sort` is prominent inside the
+`Min` run, see
+[`docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md`](../../docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md).
+
 Command:
 
 ```bash
