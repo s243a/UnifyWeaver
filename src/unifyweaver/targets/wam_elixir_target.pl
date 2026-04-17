@@ -101,13 +101,14 @@ wam_elixir_case(get_structure,
         val = Map.get(state.regs, ai)
         cond do
           match?({:unbound, _}, val) ->
-            addr = length(state.heap)
-            new_heap = state.heap ++ [{:str, fn_name}]
+            addr = state.heap_len
+            new_heap = Map.put(state.heap, addr, {:str, fn_name})
             arity = parse_functor_arity(fn_name)
             state
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
             |> Map.put(:heap, new_heap)
+            |> Map.put(:heap_len, addr + 1)
             |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
@@ -121,12 +122,13 @@ wam_elixir_case(get_list,
         val = Map.get(state.regs, ai)
         cond do
           match?({:unbound, _}, val) ->
-            addr = length(state.heap)
-            new_heap = state.heap ++ [{:str, "./2"}]
+            addr = state.heap_len
+            new_heap = Map.put(state.heap, addr, {:str, "./2"})
             state
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
             |> Map.put(:heap, new_heap)
+            |> Map.put(:heap_len, addr + 1)
             |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
@@ -162,44 +164,49 @@ wam_elixir_case(put_value,
 
 wam_elixir_case(put_structure,
 '      {:put_structure, fn_name, ai} ->
-        addr = length(state.heap)
-        new_heap = state.heap ++ [{:str, fn_name}]
+        addr = state.heap_len
+        new_heap = Map.put(state.heap, addr, {:str, fn_name})
         state
         |> trail_binding(ai)
         |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
         |> Map.put(:heap, new_heap)
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:stack, [{:write_ctx, parse_functor_arity(fn_name)} | state.stack])
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_list,
 '      {:put_list, ai} ->
-        addr = length(state.heap)
-        new_heap = state.heap ++ [{:str, "./2"}]
+        addr = state.heap_len
+        new_heap = Map.put(state.heap, addr, {:str, "./2"})
         state
         |> trail_binding(ai)
         |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
         |> Map.put(:heap, new_heap)
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(set_variable,
 '      {:set_variable, xn} ->
-        addr = length(state.heap)
+        addr = state.heap_len
         fresh = {:unbound, {:heap_ref, addr}}
-        new_heap = state.heap ++ [fresh]
+        new_heap = Map.put(state.heap, addr, fresh)
         state
         |> put_reg(xn, fresh)
         |> Map.put(:heap, new_heap)
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(set_value,
 '      {:set_value, xn} ->
         val = get_reg(state, xn)
-        %{state | heap: state.heap ++ [val], pc: state.pc + 1}').
+        addr = state.heap_len
+        %{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1, pc: state.pc + 1}').
 
 wam_elixir_case(set_constant,
 '      {:set_constant, c} ->
-        %{state | heap: state.heap ++ [c], pc: state.pc + 1}').
+        addr = state.heap_len
+        %{state | heap: Map.put(state.heap, addr, c), heap_len: addr + 1, pc: state.pc + 1}').
 
 % --- Unification Instructions ---
 
@@ -256,7 +263,7 @@ wam_elixir_case(deallocate,
 wam_elixir_case(try_me_else,
 '      {:try_me_else, label} ->
         target = resolve_label(state, label)
-        cp = %{pc: target, regs: state.regs, heap: state.heap,
+        cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}').
 
@@ -265,7 +272,7 @@ wam_elixir_case(retry_me_else,
         target = resolve_label(state, label)
         case state.choice_points do
           [_old | rest] ->
-            cp = %{pc: target, regs: state.regs, heap: state.heap,
+            cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
                    cp: state.cp, trail: state.trail, stack: state.stack}
             %{state | choice_points: [cp | rest], pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
@@ -339,11 +346,12 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:pc, cp.pc)
         |> Map.put(:regs, cp.regs)
         |> Map.put(:heap, cp.heap)
+        |> Map.put(:heap_len, cp.heap_len)
         |> Map.put(:cp, cp.cp)
         |> Map.put(:stack, cp.stack)
         |> Map.put(:trail, cp.trail)
         |> Map.put(:choice_points, rest)
-        
+
         if is_function(cp.pc) do
           cp.pc.(state)
         else
@@ -364,12 +372,12 @@ compile_unwind_trail_to_elixir(Code) :-
     else
       entries_to_undo = Enum.take(state.trail, curr_len - mark)
       new_trail = Enum.drop(state.trail, curr_len - mark)
-    
+
       Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
         case key do
           {:heap_ref, addr} ->
              val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
-             %{s | heap: List.replace_at(s.heap, addr, val)}
+             %{s | heap: Map.put(s.heap, addr, val)}
           _ ->
              new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
              %{s | regs: new_regs}
@@ -381,7 +389,7 @@ compile_unwind_trail_to_elixir(Code) :-
 compile_utility_helpers_to_elixir(Code) :-
     format(string(Code),
 '  def trail_binding(state, {:heap_ref, addr} = key) do
-    old = Enum.at(state.heap, addr, :not_set)
+    old = Map.get(state.heap, addr, :not_set)
     %{state | trail: [{key, old} | state.trail]}
   end
 
@@ -411,8 +419,20 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
+  @doc "Read `len` consecutive heap cells starting at `start`."
+  def heap_slice(_state, _start, 0), do: []
+  def heap_slice(state, start, len) when len > 0 do
+    Enum.map(0..(len - 1), fn i -> Map.get(state.heap, start + i) end)
+  end
+
+  @doc "Append `val` to the heap; returns {new_state, addr}."
+  def heap_push(state, val) do
+    addr = state.heap_len
+    {%{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}, addr}
+  end
+
   def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
-    case Enum.at(state.heap, addr) do
+    case Map.get(state.heap, addr) do
       {:unbound, {:heap_ref, _addr}} -> ref
       val -> deref_var(state, val)
     end
@@ -428,11 +448,11 @@ compile_utility_helpers_to_elixir(Code) :-
   def deref_var(_state, val), do: val
 
   def step_get_structure_ref(state, fn_name, addr) do
-    entry = Enum.at(state.heap, addr)
+    entry = Map.get(state.heap, addr)
     cond do
       entry == {:str, fn_name} ->
         arity = parse_functor_arity(fn_name)
-        args = Enum.slice(state.heap, addr + 1, arity)
+        args = heap_slice(state, addr + 1, arity)
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
       true -> :fail
@@ -447,12 +467,13 @@ compile_utility_helpers_to_elixir(Code) :-
         state |> trail_binding(xn) |> put_reg(xn, arg)
         |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
       [{:write_ctx, n} | stack_rest] when n > 0 ->
-        addr = length(state.heap)
+        addr = state.heap_len
         fresh = {:unbound, {:heap_ref, addr}}
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         state |> put_reg(xn, fresh)
-        |> Map.put(:heap, state.heap ++ [fresh])
+        |> Map.put(:heap, Map.put(state.heap, addr, fresh))
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
       _ -> :fail
     end
@@ -472,7 +493,8 @@ compile_utility_helpers_to_elixir(Code) :-
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | heap: state.heap ++ [val], stack: new_stack, pc: new_pc}
+        addr = state.heap_len
+        %{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1, stack: new_stack, pc: new_pc}
       _ -> :fail
     end
   end
@@ -490,7 +512,8 @@ compile_utility_helpers_to_elixir(Code) :-
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | heap: state.heap ++ [c], stack: new_stack, pc: new_pc}
+        addr = state.heap_len
+        %{state | heap: Map.put(state.heap, addr, c), heap_len: addr + 1, stack: new_stack, pc: new_pc}
       _ -> :fail
     end
   end
@@ -516,12 +539,12 @@ compile_utility_helpers_to_elixir(Code) :-
       v1 == v2 -> {:ok, state}
       match?({:unbound, {:heap_ref, _addr}}, v1) ->
         {:unbound, {:heap_ref, addr}} = v1
-        new_heap = List.replace_at(state.heap, addr, v2)
+        new_heap = Map.put(state.heap, addr, v2)
         new_state = state |> trail_binding({:heap_ref, addr})
         {:ok, %{new_state | heap: new_heap}}
       match?({:unbound, {:heap_ref, _addr}}, v2) ->
         {:unbound, {:heap_ref, addr}} = v2
-        new_heap = List.replace_at(state.heap, addr, v1)
+        new_heap = Map.put(state.heap, addr, v1)
         new_state = state |> trail_binding({:heap_ref, addr})
         {:ok, %{new_state | heap: new_heap}}
       match?({:unbound, _}, v1) ->
@@ -578,10 +601,10 @@ compile_utility_helpers_to_elixir(Code) :-
         # Determine if goal succeeds or fails
         res = case goal_val do
           {:ref, addr} ->
-            case Enum.at(state.heap, addr) do
+            case Map.get(state.heap, addr) do
               {:str, pred_arity} ->
                 arity = parse_functor_arity(pred_arity)
-                args = Enum.slice(state.heap, addr + 1, arity)
+                args = heap_slice(state, addr + 1, arity)
                 call_state = Enum.with_index(args, 1)
                 |> Enum.reduce(temp_state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
 
@@ -630,15 +653,15 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
   defp eval_arith(state, {:ref, addr}) do
-    case Enum.at(state.heap, addr) do
+    case Map.get(state.heap, addr) do
       {:str, "+/2"} ->
-        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        [v1, v2] = heap_slice(state, addr + 1, 2)
         eval_arith(state, v1) + eval_arith(state, v2)
       {:str, "-/2"} ->
-        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        [v1, v2] = heap_slice(state, addr + 1, 2)
         eval_arith(state, v1) - eval_arith(state, v2)
       {:str, "*/2"} ->
-        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        [v1, v2] = heap_slice(state, addr + 1, 2)
         eval_arith(state, v1) * eval_arith(state, v2)
       val -> eval_arith(state, val)
     end
@@ -658,7 +681,9 @@ compile_wam_runtime_to_elixir(Options, Code) :-
   @moduledoc "WAM Virtual Machine runtime - generated by UnifyWeaver"
 
   defmodule WamState do
-    defstruct pc: 1, cp: :halt, regs: %{}, heap: [], trail: [],
+    # heap is a map keyed by integer address; heap_len is the next free addr.
+    # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
+    defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0, trail: [],
               choice_points: [], stack: [], code: [], labels: %{}
   end
 

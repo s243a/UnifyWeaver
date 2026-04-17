@@ -167,7 +167,7 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
     segment_func_name(L, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
-    cp = %{pc: &~w/1, regs: state.regs, heap: state.heap,
+    cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
            cp: state.cp, trail: state.trail, stack: state.stack}
     state = %{state | choice_points: [cp | state.choice_points]}
 ~w
@@ -179,7 +179,7 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Code) :-
 '  defp ~w(state) do
     case state.choice_points do
       [_old | rest] ->
-        cp = %{pc: &~w/1, regs: state.regs, heap: state.heap,
+        cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, stack: state.stack}
         state = %{state | choice_points: [cp | rest]}
 ~w
@@ -273,13 +273,14 @@ wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
 wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
-'    addr = length(state.heap)
-    new_heap = state.heap ++ [{:str, "~w"}]
+'    addr = state.heap_len
+    new_heap = Map.put(state.heap, addr, {:str, "~w"})
     arity = WamRuntime.parse_functor_arity("~w")
     state = state
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
     |> Map.put(:heap, new_heap)
+    |> Map.put(:heap_len, addr + 1)
     |> Map.put(:stack, [{:write_ctx, arity} | state.stack])', [F, F, Ai, Ai]).
 
 wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
@@ -288,13 +289,14 @@ wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) 
 '    val = Map.get(state.regs, ~w)
     state = cond do
       match?({:unbound, _}, val) ->
-        addr = length(state.heap)
-        new_heap = state.heap ++ [{:str, "~w"}]
+        addr = state.heap_len
+        new_heap = Map.put(state.heap, addr, {:str, "~w"})
         arity = WamRuntime.parse_functor_arity("~w")
         state
         |> WamRuntime.trail_binding(~w)
         |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
         |> Map.put(:heap, new_heap)
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
@@ -390,12 +392,13 @@ wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
 wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
-'    addr = length(state.heap)
-    new_heap = state.heap ++ [{:str, "./2"}]
+'    addr = state.heap_len
+    new_heap = Map.put(state.heap, addr, {:str, "./2"})
     state = state
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
     |> Map.put(:heap, new_heap)
+    |> Map.put(:heap_len, addr + 1)
     |> Map.put(:stack, [{:write_ctx, 2} | state.stack])', [Ai, Ai]).
 
 wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
@@ -404,12 +407,13 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
 '    val = Map.get(state.regs, ~w)
     state = cond do
       match?({:unbound, _}, val) ->
-        addr = length(state.heap)
-        new_heap = state.heap ++ [{:str, "./2"}]
+        addr = state.heap_len
+        new_heap = Map.put(state.heap, addr, {:str, "./2"})
         state
         |> WamRuntime.trail_binding(~w)
         |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
         |> Map.put(:heap, new_heap)
+        |> Map.put(:heap_len, addr + 1)
         |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
@@ -426,21 +430,25 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
 wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
-'    addr = length(state.heap)
+'    addr = state.heap_len
     fresh = {:unbound, {:heap_ref, addr}}
-    new_heap = state.heap ++ [fresh]
+    new_heap = Map.put(state.heap, addr, fresh)
     state = state
     |> WamRuntime.put_reg(~w, fresh)
-    |> Map.put(:heap, new_heap)', [Xn]).
+    |> Map.put(:heap, new_heap)
+    |> Map.put(:heap_len, addr + 1)', [Xn]).
 
 wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    val = WamRuntime.get_reg(state, ~w)
-    state = %{state | heap: state.heap ++ [val]}', [Xn]).
+    addr = state.heap_len
+    state = %{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}', [Xn]).
 
 wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, Code) :-
-    format(string(Code), '    state = %{state | heap: state.heap ++ ["~w"]}', [C]).
+    format(string(Code),
+'    addr = state.heap_len
+    state = %{state | heap: Map.put(state.heap, addr, "~w"), heap_len: addr + 1}', [C]).
 
 wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Code) :-
     build_switch_arms(Entries, ArmsStr),
