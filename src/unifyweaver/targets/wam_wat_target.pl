@@ -99,6 +99,8 @@ instr_tag(jump,            27).
 instr_tag(begin_aggregate, 28).
 instr_tag(end_aggregate,   29).
 instr_tag(nop,             30).
+instr_tag(switch_on_const, 31).
+instr_tag(switch_entry,    32).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -127,6 +129,8 @@ builtin_id('arg/3',       19).
 builtin_id('=../2',       20).
 builtin_id('copy_term/2', 21).
 builtin_id('=/2',         22).
+builtin_id('compound/1',  23).
+builtin_id('is_list/1',   24).
 
 % ============================================================================
 % Register name -> index mapping
@@ -343,6 +347,64 @@ wam_instruction_to_wat_bytes(nop, _Labels, Hex) :-
     instr_tag(nop, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
 
+%% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
+wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
+    instr_tag(switch_on_const, Tag),
+    Op1 is (Count << 32) \/ RegIdx,
+    encode_instr_hex(Tag, Op1, 0, Hex).
+
+%% switch_entry: op1 = constant payload (full i64, e.g. atom hash or
+%% integer value), op2 = (const_tag << 32) | target_pc. Scanned by
+%% switch_on_const at runtime; never executed directly.
+wam_instruction_to_wat_bytes(switch_entry(CTag, CPayload, Label), Labels, Hex) :-
+    instr_tag(switch_entry, Tag),
+    resolve_label(Label, Labels, TargetPC),
+    Op2 is (CTag << 32) \/ (TargetPC /\ 0xFFFFFFFF),
+    encode_instr_hex(Tag, CPayload, Op2, Hex).
+
+%% parse_switch_entries(+Parts, -Entries)
+%  Parts is a list of strings like ["10:default,", "20:L_my_fact_1_2,",
+%  "30:L_my_fact_1_3"]. Each entry strips the trailing comma and splits
+%  on ':'. The key is the constant (integer or atom), the value is a
+%  label string.
+parse_switch_entries([], []).
+parse_switch_entries([Part|Rest], [Const-Label|Entries]) :-
+    clean_comma(Part, Clean),
+    split_string(Clean, ":", "", [KeyStr, LabelStr0]),
+    string_to_atom(LabelStr0, Label),
+    parse_switch_const(KeyStr, Const),
+    parse_switch_entries(Rest, Entries).
+
+parse_switch_const(Str, int(Val)) :-
+    number_string(Val, Str),
+    integer(Val), !.
+parse_switch_const(Str, atom(Atom)) :-
+    atom_string(Atom, Str).
+
+%% build_switch_instrs(+RegIdx, +Entries, -MultiResult)
+%  Produces a multi(...) pseudo-instruction that wam_lines_to_instrs
+%  expands into (1 + N_indexed) physical WAM instructions, where
+%  N_indexed is the number of non-default entries.
+%
+%  Entries tagged with the `default` label (emitted by the canonical
+%  WAM indexer for the FIRST clause) are dropped from the indexed
+%  table: the first clause is already the natural fall-through target
+%  after the switch + entries + try_me_else chain, so an indexed
+%  jump is unnecessary. Dropping it also avoids target=0 label
+%  resolution (the `default` atom is not a real label in the global
+%  label map).
+build_switch_instrs(RegIdx, AllEntries, multi([Header|EntryInstrs])) :-
+    exclude(is_default_entry, AllEntries, Entries),
+    length(Entries, Count),
+    Header = switch_on_const(RegIdx, Count),
+    maplist(entry_to_instr, Entries, EntryInstrs).
+
+is_default_entry(_-default).
+
+entry_to_instr(int(V)-Label, switch_entry(1, V, Label)).
+entry_to_instr(atom(A)-Label, switch_entry(0, H, Label)) :-
+    atom_hash_i64(A, H).
+
 agg_type_id(sum, 0).
 agg_type_id(count, 1).
 agg_type_id(max, 2).
@@ -461,6 +523,9 @@ i64_to_le_hex(Val, Hex) :-
 
 %% wam_lines_to_instrs(+Lines, +PC, -Instrs, -Labels)
 %  Parse WAM assembly text lines into instruction terms and label map.
+%  A single line may yield multiple physical instructions via the
+%  multi(Is) wrapper (used by switch_on_const to emit a header plus
+%  one switch_entry per indexed constant).
 wam_lines_to_instrs([], _, [], []).
 wam_lines_to_instrs([Line|Rest], PC, Instrs, Labels) :-
     normalize_space(string(Trimmed), Line),
@@ -473,8 +538,13 @@ wam_lines_to_instrs([Line|Rest], PC, Instrs, Labels) :-
     ;   split_string(Trimmed, " \t", " \t", Parts),
         Parts \== []
     ->  wam_parts_to_instr(Parts, Instr),
-        PC1 is PC + 1,
-        Instrs = [Instr|RestInstrs],
+        (   Instr = multi(Is)
+        ->  length(Is, N),
+            PC1 is PC + N,
+            append(Is, RestInstrs, Instrs)
+        ;   PC1 is PC + 1,
+            Instrs = [Instr|RestInstrs]
+        ),
         wam_lines_to_instrs(Rest, PC1, RestInstrs, Labels)
     ;   wam_lines_to_instrs(Rest, PC, Instrs, Labels)
     ).
@@ -496,8 +566,13 @@ wam_lines_to_instrs_with_labels([Line|Rest], C, Result) :-
     ;   split_string(Trimmed, " \t", " \t", Parts),
         Parts \== []
     ->  wam_parts_to_instr(Parts, Instr),
-        C1 is C + 1,
-        Result = [Instr|RestResult],
+        (   Instr = multi(Is)
+        ->  length(Is, N),
+            C1 is C + N,
+            append(Is, RestResult, Result)
+        ;   C1 is C + 1,
+            Result = [Instr|RestResult]
+        ),
         wam_lines_to_instrs_with_labels(Rest, C1, RestResult)
     ;   wam_lines_to_instrs_with_labels(Rest, C, Result)
     ).
@@ -574,15 +649,20 @@ wam_parts_to_instr(["trust_me"], trust_me).
 wam_parts_to_instr(["cut_ite"], cut_ite).
 wam_parts_to_instr(["jump", L], jump(CL)) :-
     clean_comma(L, CL0), atom_string(CL, CL0).
-%% switch_on_constant/switch_on_structure/switch_on_term: first-argument
-%% indexing instructions. These are OPTIONAL optimizations — skipping them
-%% is correct because the clause bodies still have try_me_else/trust_me
-%% for linear dispatch. A future optimization would implement them as
-%% O(log n) dispatch, but for now a no-op is sufficient for correctness.
-wam_parts_to_instr(["switch_on_constant"|_], nop) :- !.
+%% First-argument indexing: switch_on_constant + switch_on_constant_a2
+%% get real O(N) linear-scan dispatch that commits to the matching
+%% clause, skipping the try_me_else/retry/trust chain on a hit. A miss
+%% (bound non-matching, or unbound) falls through to the chain.
+%% switch_on_structure/switch_on_term remain nop until structure-indexed
+%% dispatch is implemented.
+wam_parts_to_instr(["switch_on_constant"|Rest], Result) :- !,
+    parse_switch_entries(Rest, Entries),
+    build_switch_instrs(0, Entries, Result).
+wam_parts_to_instr(["switch_on_constant_a2"|Rest], Result) :- !,
+    parse_switch_entries(Rest, Entries),
+    build_switch_instrs(1, Entries, Result).
 wam_parts_to_instr(["switch_on_structure"|_], nop) :- !.
 wam_parts_to_instr(["switch_on_term"|_], nop) :- !.
-wam_parts_to_instr(["switch_on_constant_a2"|_], nop) :- !.
 
 wam_parts_to_instr(["begin_aggregate", Type, ValReg, ResReg],
                    begin_aggregate(CType, CValReg, CResReg)) :-
@@ -1049,8 +1129,14 @@ wam_wat_case(try_me_else,
 
 wam_wat_case(retry_me_else,
 '  ;; op1 = next alternative label PC
-  ;; Update choice point with new alternative
-  (call $update_choice_point (i32.wrap_i64 (local.get $op1)))
+  ;; Update choice point with new alternative. If cp_count is 0, the
+  ;; control flow arrived here via first-arg indexing (switch_on_const
+  ;; committed to this clause directly), bypassing try_me_else — so no
+  ;; CP exists to update. Treat retry_me_else as a no-op in that case:
+  ;; the caller has already committed, no alternatives need tracking.
+  (if (i32.gt_s (call $get_cp_count) (i32.const 0))
+    (then
+      (call $update_choice_point (i32.wrap_i64 (local.get $op1)))))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1138,8 +1224,11 @@ wam_wat_case(end_aggregate,
   ;; Type-specific accumulation
   (if (i32.eqz (global.get $agg_type)) ;; sum
     (then (global.set $agg_sum (i64.add (global.get $agg_sum) (local.get $val)))))
-  (if (i32.eq (global.get $agg_type) (i32.const 1)) ;; count
-    (then (global.set $agg_count (i32.add (global.get $agg_count) (i32.const 1)))))
+  ;; Count aggregate: $agg_count is the result directly, incremented
+  ;; once per solution at the bottom of this handler (it doubles as the
+  ;; "seen count" for max/min, so the bump below is unconditional).
+  ;; The previous explicit count-branch incremented twice per solution
+  ;; and produced 2*N for aggregate_all(count, ...) queries.
   (if (i32.eq (global.get $agg_type) (i32.const 2)) ;; max
     (then (if (i32.or (i32.eqz (global.get $agg_count))
                       (i64.gt_s (local.get $val) (global.get $agg_sum)))
@@ -1160,9 +1249,80 @@ wam_wat_case(nop,
   (call $inc_pc)
   (i32.const 1)').
 
+wam_wat_case(switch_on_const,
+'  ;; First-argument constant indexing header.
+  ;; op1 layout: low 32 bits = reg_idx (0 for A1, 1 for A2);
+  ;;             high 32 bits = entry_count.
+  ;; The following `entry_count` instructions are switch_entry records:
+  ;;   op1 = constant payload (i64),
+  ;;   op2 = (const_tag << 32) | target_pc.
+  ;; Semantics: deref target register. If bound to a constant whose
+  ;; tag+payload matches an entry, jump directly to that entry target PC
+  ;; (committing to the clause, skipping the try_me_else/retry/trust chain).
+  ;; If no entry matches, or the register is unbound/ref/compound/list,
+  ;; fall through past all entries into the linear dispatch chain.
+  (local $reg_idx i32) (local $count i32) (local $cur_pc i32)
+  (local $code_base i32) (local $d_addr i32) (local $d_tag i32)
+  (local $d_payload i64)
+  (local $i i32) (local $entry_pc i32)
+  (local $entry_op1 i64) (local $entry_op2 i64)
+  (local $entry_tag i32) (local $entry_target i32)
+  (local.set $reg_idx (i32.wrap_i64 (local.get $op1)))
+  (local.set $count (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
+  (local.set $cur_pc (call $get_pc))
+  (local.set $code_base (global.get $wam_code_base))
+  (local.set $d_addr (call $deref_reg_addr (local.get $reg_idx)))
+  (local.set $d_tag (call $val_tag (local.get $d_addr)))
+  (local.set $d_payload (call $val_payload (local.get $d_addr)))
+  ;; Only atom/integer/float are indexable. For any other tag, fall
+  ;; through past entries.
+  (if (i32.le_u (local.get $d_tag) (i32.const 2))
+    (then
+      (local.set $i (i32.const 0))
+      (block $scan_done
+        (loop $scan
+          (br_if $scan_done (i32.ge_u (local.get $i) (local.get $count)))
+          (local.set $entry_pc
+            (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+                     (local.get $i)))
+          (local.set $entry_op1
+            (call $fetch_instr_op1 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_op2
+            (call $fetch_instr_op2 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_tag
+            (i32.wrap_i64 (i64.shr_u (local.get $entry_op2) (i64.const 32))))
+          (local.set $entry_target
+            (i32.wrap_i64 (i64.and (local.get $entry_op2)
+                                   (i64.const 0xFFFFFFFF))))
+          (if (i32.and
+                (i32.eq (local.get $entry_tag) (local.get $d_tag))
+                (i64.eq (local.get $entry_op1) (local.get $d_payload)))
+            (then
+              (call $set_pc (local.get $entry_target))
+              (return (i32.const 1))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $scan)))))
+  ;; No match (or unindexable tag): skip past entries to the first real
+  ;; instruction, which is the try_me_else of the fall-through chain.
+  (call $set_pc
+    (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+             (local.get $count)))
+  (i32.const 1)').
+
+wam_wat_case(switch_entry,
+'  ;; Record scanned by switch_on_const. Should never execute in normal
+  ;; flow — switch_on_const always jumps over this slot via $set_pc.
+  ;; If reached (e.g. via an unusual backtrack target), behave as nop.
+  (call $inc_pc)
+  (i32.const 1)').
+
 wam_wat_case(trust_me,
-'  ;; Remove choice point (last alternative)
-  (call $pop_choice_point_no_restore)
+'  ;; Remove choice point (last alternative). Guarded for cp_count=0
+  ;; to support first-arg indexing that commits directly to this clause
+  ;; without a matching try_me_else (see retry_me_else note).
+  (if (i32.gt_s (call $get_cp_count) (i32.const 0))
+    (then
+      (call $pop_choice_point_no_restore)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1180,6 +1340,9 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ';; --- Run loop ---
 (func $run_loop (param $code_base i32) (param $num_instrs i32) (result i32)
   (local $pc i32)
+  ;; Expose code_base to do_* handlers that need to walk the instruction
+  ;; stream (e.g. switch_on_const reading switch_entry records at PC+1..).
+  (global.set $wam_code_base (local.get $code_base))
   (block $exit
     (loop $continue
       ;; Check halted
@@ -1420,6 +1583,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; indirect branch.
 (func $execute_builtin (param $id i32) (param $arity i32) (result i32)
   (block $default
+    (block $is_list_b
+    (block $compound_b
     (block $eq
     (block $copy_term (block $univ (block $arg (block $functor
     (block $cut (block $fail (block $true_b
@@ -1433,6 +1598,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
                 $true_b $fail $cut
                 $functor $arg $univ $copy_term
                 $eq
+                $compound_b $is_list_b
                 $default (local.get $id))
     ) ;; write
     (call $print_i64 (call $deref_reg_payload (i32.const 0)))
@@ -1485,6 +1651,10 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (call $builtin_copy_term))
     ) ;; =/2 (ID 22): unify A1 and A2 via the shared $unify_regs helper
     (return (call $unify_regs (i32.const 0) (i32.const 1)))
+    ) ;; compound/1 (ID 23): A1 tag is compound (3) or list cons (4)
+    (return (call $builtin_compound))
+    ) ;; is_list/1 (ID 24): A1 dereferences to a proper list (terminates at empty-list atom)
+    (return (call $builtin_is_list))
   )
   ;; $default fall-through: unknown builtin ID
   (i32.const 0)
@@ -1585,6 +1755,76 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (i64.const 0)
 )
 
+;; --- compound/1: A1 dereferences to a compound (tag=3) or cons (tag=4) ---
+(func $builtin_compound (result i32)
+  (local $tag i32)
+  (local.set $tag (call $deref_reg_tag (i32.const 0)))
+  (i32.or
+    (i32.eq (local.get $tag) (i32.const 3))
+    (i32.eq (local.get $tag) (i32.const 4))))
+
+;; --- is_list/1: A1 dereferences to a proper list ---
+;; A proper list is either the atom empty-list (tag=0, payload=2914, DJB2
+;; hash of chars 91,93) or a cons cell whose tail, after walking Ref
+;; chains, is itself a proper list. The canonical WAM compiler emits two
+;; cons representations:
+;;   * put_list: a tag=4 (list) cell with head at +12, tail at +24.
+;;   * put_structure [|]/2: a tag=3 (compound) cell whose header payload
+;;     encodes arity=2 and functor_hash=87825375 (DJB2 of "[|]/2"), with
+;;     head at +12 and tail at +24.
+;; This helper accepts either representation so that mixed-build lists
+;; (a put_list outer cons wrapping put_structure inner conses) validate.
+(func $builtin_is_list (result i32)
+  (local $addr i32) (local $tag i32) (local $payload i64)
+  (local $arity i32) (local $fhash i32)
+  (local.set $addr (call $deref_reg_addr (i32.const 0)))
+  (loop $walk
+    (local.set $tag (call $val_tag (local.get $addr)))
+    (local.set $payload (call $val_payload (local.get $addr)))
+    ;; Empty-list atom terminates: success.
+    (if (i32.and
+          (i32.eq (local.get $tag) (i32.const 0))
+          (i64.eq (local.get $payload) (i64.const 2914)))
+      (then (return (i32.const 1))))
+    ;; tag=4 cons (put_list form).
+    (if (i32.eq (local.get $tag) (i32.const 4))
+      (then
+        (local.set $addr
+          (i32.add (local.get $addr) (i32.const 24)))
+        (block $tail_done
+          (loop $tail_deref
+            (br_if $tail_done
+              (i32.ne (call $val_tag (local.get $addr)) (i32.const 5)))
+            (local.set $addr
+              (i32.wrap_i64 (call $val_payload (local.get $addr))))
+            (br $tail_deref)))
+        (br $walk)))
+    ;; tag=3 compound with functor [|]/2 (put_structure form).
+    (if (i32.eq (local.get $tag) (i32.const 3))
+      (then
+        (local.set $arity
+          (i32.wrap_i64 (i64.shr_u (local.get $payload) (i64.const 32))))
+        (local.set $fhash
+          (i32.wrap_i64 (i64.and (local.get $payload) (i64.const 0xFFFFFFFF))))
+        (if (i32.and
+              (i32.eq (local.get $arity) (i32.const 2))
+              (i32.eq (local.get $fhash) (i32.const 87825375)))
+          (then
+            (local.set $addr
+              (i32.add (local.get $addr) (i32.const 24)))
+            (block $tail_done2
+              (loop $tail_deref2
+                (br_if $tail_done2
+                  (i32.ne (call $val_tag (local.get $addr)) (i32.const 5)))
+                (local.set $addr
+                  (i32.wrap_i64 (call $val_payload (local.get $addr))))
+                (br $tail_deref2)))
+            (br $walk)))))
+    ;; Any other tag (integer, float, compound non-cons, unbound, ref to
+    ;; unbound): not a proper list.
+    (return (i32.const 0)))
+  (unreachable))
+
 ;; --- Arithmetic comparison: 0==eq, 1==ne, 2==lt, 3==gt, 4==le, 5==ge ---
 ;; Nested-block br_table dispatch. Each case line has the form
 ;;   ) (return (i64.XX ...))
@@ -1612,28 +1852,31 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (i32.const 0)
 )
 
-;; --- arg/3: A1 = N (1-based), A2 = T (ref->compound), A3 = result ---
-;; Reads the Nth argument cell of the compound T references, unifies it
-;; with A3. Argument cells are laid out contiguously after the compound
-;; header, each cell 12 bytes. Arity is recovered from the high 32 bits
-;; of the compound header payload (see encode_structure_op1 in
-;; wam_wat_target.pl).
+;; --- arg/3: A1 = N, A2 = T (ref->compound), A3 = result ---
+;; Two modes based on A1:
+;;   Ground N: deterministic — unify A3 with the Nth arg cell of T.
+;;   Unbound N: nondeterministic — enumerate N = 1..arity on backtrack.
+;;     The generator form pushes a choice point at the builtin_call PC
+;;     on the first entry (if arity >= 2) and tracks iteration state in
+;;     the $arg_iter_* globals. On backtrack, control returns to the
+;;     builtin_call instruction; re-entry detects the active iteration
+;;     (same T address) and advances N. Limitation: only one active
+;;     nondeterministic arg/3 at a time — a nested unbound-N call with
+;;     a different T clobbers the outer iteration state.
+;; Argument cells are laid out contiguously after the compound header,
+;; each cell 12 bytes. Arity is the high 32 bits of the compound header
+;; payload (see encode_structure_op1).
 (func $builtin_arg (result i32)
-  (local $n i32)
+  (local $n i32) (local $a1_tag i32)
   (local $t_tag i32)
   (local $comp_addr i32)
-  (local $comp_tag i32)
   (local $comp_payload i64)
   (local $arity i32)
   (local $arg_off i32)
   (local $arg_tag i32)
   (local $arg_payload i64)
   (local $a3_tag i32)
-  ;; N from A1 (register index 0). Payload is the raw integer value.
-  (local.set $n (i32.wrap_i64 (call $deref_reg_payload (i32.const 0))))
-  (if (i32.lt_s (local.get $n) (i32.const 1))
-    (then (return (i32.const 0))))
-  ;; T from A2 (register index 1). Must be a compound (tag=3 after deref).
+  ;; Dereference A2 first — both modes need T to be a compound.
   (local.set $t_tag (call $deref_reg_tag (i32.const 1)))
   (if (i32.ne (local.get $t_tag) (i32.const 3))
     (then (return (i32.const 0))))
@@ -1641,15 +1884,71 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $comp_payload (call $val_payload (local.get $comp_addr)))
   (local.set $arity
     (i32.wrap_i64 (i64.shr_u (local.get $comp_payload) (i64.const 32))))
+  ;; A1 tag drives mode selection.
+  (local.set $a1_tag (call $deref_reg_tag (i32.const 0)))
+  (if (i32.eq (local.get $a1_tag) (i32.const 6))
+    (then
+      ;; --- Nondeterministic mode ---
+      ;; Re-entry via backtrack: same T address, iteration active. Advance.
+      ;; Otherwise start a fresh iteration at N=1.
+      (if (i32.and
+            (i32.eq (global.get $arg_iter_active) (i32.const 1))
+            (i32.eq (global.get $arg_iter_t_addr) (local.get $comp_addr)))
+        (then
+          (global.set $arg_iter_n
+            (i32.add (global.get $arg_iter_n) (i32.const 1))))
+        (else
+          (global.set $arg_iter_active (i32.const 1))
+          (global.set $arg_iter_t_addr (local.get $comp_addr))
+          (global.set $arg_iter_arity (local.get $arity))
+          (global.set $arg_iter_n (i32.const 1))
+          ;; On fresh entry, push a choice point for N >= 2 alternatives.
+          ;; The CP''s next_pc is this builtin_call itself; on backtrack
+          ;; control returns here with registers restored to pre-bind
+          ;; state (unbound A1 and original A3).
+          (if (i32.ge_s (local.get $arity) (i32.const 2))
+            (then
+              (call $push_choice_point (call $get_pc))))))
+      ;; Exhausted: clear state, pop the CP we pushed, fail.
+      (if (i32.gt_s (global.get $arg_iter_n) (local.get $arity))
+        (then
+          (global.set $arg_iter_active (i32.const 0))
+          (if (i32.gt_s (call $get_cp_count) (i32.const 0))
+            (then (call $pop_choice_point_no_restore)))
+          (return (i32.const 0))))
+      (local.set $n (global.get $arg_iter_n))
+      ;; Bind A1 to N (trailed).
+      (call $bind_reg_deref (i32.const 0) (i32.const 1)
+        (i64.extend_i32_u (local.get $n)))
+      ;; Bind or unify A3 with T[N].
+      (local.set $arg_off
+        (i32.add (local.get $comp_addr)
+                 (i32.mul (local.get $n) (i32.const 12))))
+      (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+      (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+      (local.set $a3_tag (call $deref_reg_tag (i32.const 2)))
+      (if (i32.eq (local.get $a3_tag) (i32.const 6))
+        (then
+          (call $bind_reg_deref (i32.const 2) (local.get $arg_tag)
+            (local.get $arg_payload))
+          (return (i32.const 1))))
+      (return (if (result i32)
+        (i32.and
+          (i32.eq (local.get $a3_tag) (local.get $arg_tag))
+          (i64.eq (call $deref_reg_payload (i32.const 2)) (local.get $arg_payload)))
+        (then (i32.const 1))
+        (else (i32.const 0))))))
+  ;; --- Deterministic mode: A1 is ground ---
+  (local.set $n (i32.wrap_i64 (call $deref_reg_payload (i32.const 0))))
+  (if (i32.lt_s (local.get $n) (i32.const 1))
+    (then (return (i32.const 0))))
   (if (i32.gt_s (local.get $n) (local.get $arity))
     (then (return (i32.const 0))))
-  ;; Argument N at compound_addr + N*12 (header at +0, args start at +12).
   (local.set $arg_off
     (i32.add (local.get $comp_addr)
              (i32.mul (local.get $n) (i32.const 12))))
   (local.set $arg_tag (call $val_tag (local.get $arg_off)))
   (local.set $arg_payload (call $val_payload (local.get $arg_off)))
-  ;; A3 (register index 2): bind if unbound, else shallow compare.
   (local.set $a3_tag (call $deref_reg_tag (i32.const 2)))
   (if (i32.eq (local.get $a3_tag) (i32.const 6))
     (then

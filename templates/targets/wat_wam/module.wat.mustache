@@ -29,6 +29,23 @@
   (global $agg_sum (mut i64) (i64.const 0))
   (global $agg_count (mut i32) (i32.const 0))
 
+  ;; Instruction data segment base address, set by $run_loop at entry.
+  ;; switch_on_const walks the following switch_entry instructions by
+  ;; address — it needs the base to compute their memory offsets from
+  ;; the current PC. Cannot be passed through the do_* handler signature
+  ;; (which takes only op1/op2), so we stash it in a global.
+  (global $wam_code_base (mut i32) (i32.const 0))
+
+  ;; Nondeterministic arg/3 iteration state. Supports a single active
+  ;; iteration at a time (no nesting of unbound-N arg/3 calls). If
+  ;; $arg_iter_active=1 and $arg_iter_t_addr matches the current T,
+  ;; $builtin_arg treats the entry as a backtrack retry and increments
+  ;; $arg_iter_n; otherwise it starts a fresh iteration.
+  (global $arg_iter_active (mut i32) (i32.const 0))
+  (global $arg_iter_n (mut i32) (i32.const 0))
+  (global $arg_iter_arity (mut i32) (i32.const 0))
+  (global $arg_iter_t_addr (mut i32) (i32.const 0))
+
   ;; === Data segments: instruction arrays ===
   {{data_segments}}
 
