@@ -977,8 +977,9 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 Latest local results after edge-state node-id preindexing, node-id keyed
 retained-min tracking/flush, concrete-array `nodeValues` replay on the counted
 path materialization path, cached boxed depth reuse for counted-path row
-construction, per-row timing removal, a compact `(target, depth)` buffered row
-shape, O(1)
+construction, split `All` versus retained-min successor loops in the counted
+path hot traversal, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
 frame stack with explicit initial capacity, direct-write seed-batch
 materialization into the destination output list, a packed target/depth
@@ -987,17 +988,17 @@ tables:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.339s | 0.157s | 2.16x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.249s | 0.129s | 1.93x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.344s | 0.166s | 2.08x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.262s | 0.124s | 2.11x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 105.838ms | 0.000ms | 47.047ms | n/a |
-| 300 | Min | 29.808ms | 0.000ms | 11.718ms | 4.819ms |
-| 1k | All | 50.357ms | 0.000ms | 34.107ms | n/a |
-| 1k | Min | 11.941ms | 0.000ms | 0.980ms | 1.827ms |
+| 300 | All | 102.950ms | 0.000ms | 47.579ms | n/a |
+| 300 | Min | 33.300ms | 0.000ms | 14.862ms | 5.522ms |
+| 1k | All | 50.315ms | 0.000ms | 39.439ms | n/a |
+| 1k | Min | 12.421ms | 0.000ms | 1.026ms | 1.875ms |
 
 Additional path-state observations:
 
@@ -1046,6 +1047,9 @@ Additional path-state observations:
 - counted-path row construction now reuses cached boxed depth objects for
   common small path depths, reducing per-row boxing churn on the high-volume
   `All` materialization path.
+- counted-path traversal now uses a separate `All` hot-path successor loop so
+  the high-volume `All` case no longer pays retained-min dictionary and mode
+  branching checks on every successor candidate.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
