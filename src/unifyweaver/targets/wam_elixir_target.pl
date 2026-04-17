@@ -329,7 +329,7 @@ compile_run_loop_to_elixir(Code) :-
   end
 
   defp fetch(state) do
-    Enum.at(state.code, state.pc - 1)
+    elem(state.code, state.pc - 1)
   end', []).
 
 compile_backtrack_to_elixir(Code) :-
@@ -684,10 +684,11 @@ compile_wam_runtime_to_elixir(Options, Code) :-
   defmodule WamState do
     # heap is a map keyed by integer address; heap_len is the next free addr.
     # trail_len caches list length to avoid O(n) re-measure on unwind.
+    # code is a tuple so fetch is O(1) via elem/2 instead of O(pc) via Enum.at.
     # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
     defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0,
               trail: [], trail_len: 0,
-              choice_points: [], stack: [], code: [], labels: %{}
+              choice_points: [], stack: [], code: {}, labels: %{}
   end
 
 ~w
@@ -707,10 +708,11 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
 'defmodule WamPred.~w do
   @moduledoc "WAM-compiled predicate: ~w/~w"
 
+  # code is a tuple so WamRuntime.fetch uses elem/2 for O(1) instruction lookup.
   def code do
-    [
+    {
 ~w
-    ]
+    }
   end
 
   def labels do

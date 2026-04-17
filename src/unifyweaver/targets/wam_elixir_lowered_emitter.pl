@@ -51,7 +51,7 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
   end
 
   def run(args) when is_list(args) do
-    state = %WamRuntime.WamState{code: [], labels: %{}, pc: 1}
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
     state = Enum.with_index(args, 1)
     |> Enum.reduce(state, fn {arg, i}, s ->
       %{s | regs: Map.put(s.regs, i, arg)}
