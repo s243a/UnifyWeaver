@@ -1554,7 +1554,7 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
             IReadOnlyList<object?> seeds,
             IReadOnlyList<int> seedNodeIds,
-            IReadOnlyList<object?> nodeValues,
+            object?[] nodeValues,
             IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId)
         {
             Successors = successors;
@@ -1570,7 +1570,7 @@ namespace UnifyWeaver.QueryRuntime
 
         public IReadOnlyList<int> SeedNodeIds { get; }
 
-        public IReadOnlyList<object?> NodeValues { get; }
+        public object?[] NodeValues { get; }
 
         public IReadOnlyList<PathAwareSuccessorBucket?> BucketsByNodeId { get; }
     }
@@ -12487,7 +12487,7 @@ namespace UnifyWeaver.QueryRuntime
         private static void AppendPathAwareRowsForSeed(
             object? seed,
             int seedNodeId,
-            IReadOnlyList<object?> nodeValues,
+            object?[] nodeValues,
             IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
             int baseDepth,
             int depthIncrement,
@@ -12630,12 +12630,13 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void MaterializePathAwareDepthRows(
             object? seed,
-            IReadOnlyList<object?> nodeValues,
+            object?[] nodeValues,
             PathAwareTargetDepthBuffer rows,
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
         {
             var started = Stopwatch.GetTimestamp();
+            var seedValue = seed!;
             if (output is List<object[]> outputList)
             {
                 var baseIndex = outputList.Count;
@@ -12645,7 +12646,7 @@ namespace UnifyWeaver.QueryRuntime
                 var depths = CollectionsMarshal.AsSpan(rows.Depths);
                 for (var i = 0; i < rows.Count; i++)
                 {
-                    span[baseIndex + i] = new object[] { seed!, nodeValues[targetNodeIds[i]]!, depths[i] };
+                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, depths[i] };
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
@@ -12656,7 +12657,7 @@ namespace UnifyWeaver.QueryRuntime
             var fallbackDepths = rows.Depths;
             for (var i = 0; i < rows.Count; i++)
             {
-                output.Add(new object[] { seed!, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
+                output.Add(new object[] { seedValue, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
                 metrics?.RecordOutputRow();
             }
 

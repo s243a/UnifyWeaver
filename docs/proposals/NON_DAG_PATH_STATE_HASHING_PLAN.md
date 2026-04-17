@@ -156,17 +156,18 @@ Local survey:
 
 Counted-closure phase split after typed row buffering, pre-sized
 materialization, edge-state node-id preindexing, node-id keyed retained-min
-tracking/flush, per-row timing removal, a compact `(target, depth)` buffered
-row shape, O(1) parent-linked visited-path extension, a dedicated counted-path
-traversal frame stack, and direct-write seed-batch materialization with a
-packed target/depth row buffer and node-id driven traversal/replay:
+tracking/flush, concrete-array `nodeValues` replay on the counted-path
+materialization path, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1) parent-linked visited-path extension, a dedicated
+counted-path traversal frame stack, and direct-write seed-batch materialization
+with a packed target/depth row buffer and node-id driven traversal/replay:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 124.070ms | 0.000ms | 70.186ms | n/a |
-| 300 | Min | 33.045ms | 0.000ms | 6.058ms | 5.755ms |
-| 1k | All | 59.255ms | 0.000ms | 39.878ms | n/a |
-| 1k | Min | 11.824ms | 0.000ms | 1.074ms | 2.195ms |
+| 300 | All | 145.095ms | 0.000ms | 87.814ms | n/a |
+| 300 | Min | 33.375ms | 0.000ms | 5.672ms | 4.638ms |
+| 1k | All | 60.023ms | 0.000ms | 37.890ms | n/a |
+| 1k | Min | 16.766ms | 0.000ms | 1.284ms | 2.349ms |
 
 Interpretation:
 
@@ -207,6 +208,9 @@ Interpretation:
   node id until the final target-sorted flush, cutting object-key hashing and
   reducing `best_known_flush_sort` plus final `Min` materialization cost while
   preserving the deterministic ordering contract
+- counted-path replay/materialization now uses the concrete `object?[]`
+  node-value table directly instead of an `IReadOnlyList<object?>` view, which
+  trims lookup overhead on the hot replay path without changing output rows
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by
