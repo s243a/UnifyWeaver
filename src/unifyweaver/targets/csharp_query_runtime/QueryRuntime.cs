@@ -12498,7 +12498,7 @@ namespace UnifyWeaver.QueryRuntime
         {
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
-            var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
+            var bestKnown = preserveAllPaths ? null : new Dictionary<int, int>();
             var bufferedRows = preserveAllPaths ? new PathAwareTargetDepthBuffer() : null;
 
             var initialPath = CompactVisitedPath.Create(seedNodeId);
@@ -12552,8 +12552,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (bestKnown is not null)
                     {
-                        var next = nodeValues[nextId];
-                        if (bestKnown.TryGetValue(next, out var bestDepth))
+                        if (bestKnown.TryGetValue(nextId, out var bestDepth))
                         {
                             switch (accumulatorMode)
                             {
@@ -12577,7 +12576,7 @@ namespace UnifyWeaver.QueryRuntime
                             }
                         }
 
-                        bestKnown[next] = nextDepth;
+                        bestKnown[nextId] = nextDepth;
                     }
                     else
                     {
@@ -12600,10 +12599,10 @@ namespace UnifyWeaver.QueryRuntime
             if (bestKnown is not null)
             {
                 var flushStarted = Stopwatch.GetTimestamp();
-                var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
+                var bestRows = new List<int>(bestKnown.Keys);
                 // Min-mode retained rows are flushed in deterministic target order
                 // rather than traversal/discovery order.
-                bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
+                bestRows.Sort((left, right) => CompareCacheSeedValues(nodeValues[left], nodeValues[right]));
                 metrics?.AddBestKnownFlushSortElapsed(Stopwatch.GetElapsedTime(flushStarted));
 
                 var materializationStarted = Stopwatch.GetTimestamp();
@@ -12612,9 +12611,9 @@ namespace UnifyWeaver.QueryRuntime
                     outputList.EnsureCapacity(outputList.Count + bestRows.Count);
                 }
 
-                foreach (var (target, depth) in bestRows)
+                foreach (var targetNodeId in bestRows)
                 {
-                    output.Add(new object[] { seed!, target!, depth });
+                    output.Add(new object[] { seed!, nodeValues[targetNodeId]!, bestKnown[targetNodeId] });
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(materializationStarted));
