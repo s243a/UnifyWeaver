@@ -13,6 +13,7 @@
 :- dynamic test_step_parent_distance/5.
 :- dynamic test_weighted_path/3.
 :- dynamic test_astar_weighted_path/4.
+:- dynamic test_mixed_weighted_filtered/2.
 
 edge(a, b).
 edge(b, c).
@@ -78,6 +79,12 @@ test_astar_weighted_path(X, Y, 5, Cost) :-
     weighted_edge(X, Z, W),
     test_astar_weighted_path(Z, Y, 5, RestCost),
     Cost is W + RestCost.
+
+test_mixed_weighted_filtered(Target, Cost) :-
+    test_weighted_path(s, Target, Cost),
+    Cost < 5.0,
+    atom(foo),
+    \+ atom(5).
 
 test(foreign_spec_wrapper_generation) :-
     ForeignSpec = foreign_predicate(
@@ -556,6 +563,94 @@ func TestForeignProjectAutoDetectWeightedAndAstar(t *testing.T) {
         ;   true
         ),
         delete_directory_and_contents(TmpDir)
+    )).
+
+test(foreign_mixed_boundary_weighted_backtracking) :-
+    once((
+        get_time(T),
+        format(atom(TmpDir), 'tmp_wam_go_mixed_foreign_~w', [T]),
+        write_wam_go_project(
+            [plunit_wam_go_foreign_lowering:test_mixed_weighted_filtered/2,
+             plunit_wam_go_foreign_lowering:test_weighted_path/3],
+            [module_name(go_mixed_foreign_test),
+             foreign_lowering(true)],
+            TmpDir
+        ),
+        directory_file_path(TmpDir, 'lib.go', LibPath),
+        read_file_to_string(LibPath, LibCode, []),
+        assertion(sub_string(LibCode, _, _, _, '&CallForeign{Pred: "test_weighted_path", Arity: 3}')),
+        directory_file_path(TmpDir, 'mixed_foreign_test.go', TestPath),
+        write_file(TestPath,
+'package wam
+
+import "testing"
+
+func TestMixedBoundaryWeightedBacktracking(t *testing.T) {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = Test_mixed_weighted_filteredStartPC
+    target := &Unbound{Name: "TARGET"}
+    cost := &Unbound{Name: "COST"}
+    vm.Regs["A1"] = target
+    vm.Regs["A2"] = cost
+    if !vm.Run() {
+        t.Fatalf("expected mixed weighted caller to succeed")
+    }
+    gotTarget, okTarget := vm.deref(target).(*Atom)
+    gotCost, okCost := vm.deref(cost).(*Float)
+    if !okTarget || !okCost || gotTarget.Name != "a" || gotCost.Val != 1.0 {
+        t.Fatalf("expected first mixed result a/1.0, got %#v %#v", vm.deref(target), vm.deref(cost))
+    }
+    if !vm.backtrack() {
+        t.Fatalf("expected second mixed result")
+    }
+    if !vm.Run() {
+        t.Fatalf("expected mixed caller to resume after second backtrack")
+    }
+    gotTarget, okTarget = vm.deref(target).(*Atom)
+    gotCost, okCost = vm.deref(cost).(*Float)
+    if !okTarget || !okCost || gotTarget.Name != "b" || gotCost.Val != 3.0 {
+        t.Fatalf("expected second mixed result b/3.0, got %#v %#v", vm.deref(target), vm.deref(cost))
+    }
+    if !vm.backtrack() {
+        t.Fatalf("expected third mixed result")
+    }
+    if !vm.Run() {
+        t.Fatalf("expected mixed caller to resume after third backtrack")
+    }
+    gotTarget, okTarget = vm.deref(target).(*Atom)
+    gotCost, okCost = vm.deref(cost).(*Float)
+    if !okTarget || !okCost || gotTarget.Name != "c" || gotCost.Val != 4.0 {
+        t.Fatalf("expected third mixed result c/4.0, got %#v %#v", vm.deref(target), vm.deref(cost))
+    }
+    if !vm.backtrack() {
+        t.Fatalf("expected final foreign backtrack to reach filtered-out result")
+    }
+    if vm.Run() {
+        t.Fatalf("expected mixed weighted caller to stop after filtered results")
+    }
+}
+'),
+        (   catch(process_create(path(go), ['test', './...'], [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]), _, fail)
+        ->  read_string(Out, _, _Stdout),
+            read_string(Err, _, Stderr),
+            process_wait(Pid, Exit),
+            assertion(Exit == exit(0)),
+            assertion(\+ sub_string(Stderr, _, _, _, 'FAIL'))
+        ;   true
+        ),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(foreign_no_kernels_suppresses_go_auto_detection) :-
+    once((
+        compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_weighted_path/3,
+            "call test_weighted_path/3, 3",
+            [foreign_lowering(true), no_kernels(true)],
+            Code),
+        assertion(\+ sub_string(Code, _, _, _, 'registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")')),
+        assertion(\+ sub_string(Code, _, _, _, 'executeForeignPredicate("test_weighted_path", 3)')),
+        assertion(sub_string(Code, _, _, _, '&Call{Pred: "test_weighted_path/3", Arity: 3}'))
     )).
 
 :- end_tests(wam_go_foreign_lowering).
