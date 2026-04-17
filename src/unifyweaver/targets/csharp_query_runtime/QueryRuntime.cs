@@ -12549,28 +12549,59 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                for (var i = bucket.Targets.Count - 1; i >= 0; i--)
+                var targetNodeIds = bucket.TargetNodeIds;
+                if (bestKnown is null)
                 {
-                    metrics?.RecordSuccessorCandidate();
-                    var nextId = bucket.TargetNodeIds[i];
-                    if (visited.Contains(nextId))
+                    for (var i = targetNodeIds.Count - 1; i >= 0; i--)
                     {
-                        metrics?.RecordCycleSkip();
-                        continue;
+                        metrics?.RecordSuccessorCandidate();
+                        var nextId = targetNodeIds[i];
+                        if (visited.Contains(nextId))
+                        {
+                            metrics?.RecordCycleSkip();
+                            continue;
+                        }
+
+                        var nextDepth = depth == 0
+                            ? baseDepth
+                            : checked(depth + depthIncrement);
+
+                        if (maxDepth > 0 && nextDepth > maxDepth)
+                        {
+                            metrics?.RecordDepthSkip();
+                            continue;
+                        }
+
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
+
+                        var nextVisited = visited.Extend(nextId);
+                        stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
+                        metrics?.RecordEnqueuedState(nextVisited.Count);
+                        metrics?.RecordStackSize(stack.Count);
                     }
-
-                    var nextDepth = depth == 0
-                        ? baseDepth
-                        : checked(depth + depthIncrement);
-
-                    if (maxDepth > 0 && nextDepth > maxDepth)
+                }
+                else
+                {
+                    for (var i = targetNodeIds.Count - 1; i >= 0; i--)
                     {
-                        metrics?.RecordDepthSkip();
-                        continue;
-                    }
+                        metrics?.RecordSuccessorCandidate();
+                        var nextId = targetNodeIds[i];
+                        if (visited.Contains(nextId))
+                        {
+                            metrics?.RecordCycleSkip();
+                            continue;
+                        }
 
-                    if (bestKnown is not null)
-                    {
+                        var nextDepth = depth == 0
+                            ? baseDepth
+                            : checked(depth + depthIncrement);
+
+                        if (maxDepth > 0 && nextDepth > maxDepth)
+                        {
+                            metrics?.RecordDepthSkip();
+                            continue;
+                        }
+
                         if (bestKnown.TryGetValue(nextId, out var bestDepth))
                         {
                             switch (accumulatorMode)
@@ -12596,16 +12627,12 @@ namespace UnifyWeaver.QueryRuntime
                         }
 
                         bestKnown[nextId] = nextDepth;
-                    }
-                    else
-                    {
-                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
-                    }
 
-                    var nextVisited = visited.Extend(nextId);
-                    stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
-                    metrics?.RecordEnqueuedState(nextVisited.Count);
-                    metrics?.RecordStackSize(stack.Count);
+                        var nextVisited = visited.Extend(nextId);
+                        stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
+                        metrics?.RecordEnqueuedState(nextVisited.Count);
+                        metrics?.RecordStackSize(stack.Count);
+                    }
                 }
             }
             metrics?.AddTraversalElapsed(Stopwatch.GetElapsedTime(traversalStarted));
