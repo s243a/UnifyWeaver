@@ -975,7 +975,8 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
 ```
 
 Latest local results after edge-state node-id preindexing, node-id keyed
-retained-min tracking/flush, per-row timing removal, a compact `(target, depth)`
+retained-min tracking/flush, concrete-array `nodeValues` replay on the counted
+path materialization path, per-row timing removal, a compact `(target, depth)`
 buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
 frame stack with explicit initial capacity, direct-write seed-batch
@@ -985,17 +986,17 @@ tables:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.383s | 0.163s | 2.34x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.269s | 0.129s | 2.08x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.392s | 0.154s | 2.54x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.266s | 0.134s | 1.99x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 124.070ms | 0.000ms | 70.186ms | n/a |
-| 300 | Min | 33.045ms | 0.000ms | 6.058ms | 5.755ms |
-| 1k | All | 59.255ms | 0.000ms | 39.878ms | n/a |
-| 1k | Min | 11.824ms | 0.000ms | 1.074ms | 2.195ms |
+| 300 | All | 145.095ms | 0.000ms | 87.814ms | n/a |
+| 300 | Min | 33.375ms | 0.000ms | 5.672ms | 4.638ms |
+| 1k | All | 60.023ms | 0.000ms | 37.890ms | n/a |
+| 1k | Min | 16.766ms | 0.000ms | 1.284ms | 2.349ms |
 
 Additional path-state observations:
 
@@ -1038,6 +1039,9 @@ Additional path-state observations:
   node id until the final target-sorted flush, cutting object-key hashing and
   reducing `best_known_flush_sort` plus final `Min` materialization cost while
   preserving the deterministic ordering contract.
+- counted-path replay/materialization now uses the concrete `object?[]`
+  node-value table directly instead of an `IReadOnlyList<object?>` view, which
+  trims lookup overhead on the hot replay path without changing output rows.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization
