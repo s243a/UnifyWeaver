@@ -116,33 +116,42 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
     ).
 
 generate_all_segments([], _, [], []).
-generate_all_segments([Name-Instrs | Rest], Labels, [MapAttr | RestAttrs], [Code | RestCodes]) :-
+generate_all_segments([Name-Instrs | Rest], Labels, ["" | RestAttrs], [Code | RestCodes]) :-
     segment_func_name(Name, FuncName),
     classify_segment_head(Instrs, HeadType, BodyInstrs),
     lower_instr_list(BodyInstrs, Labels, FuncName, BodyExprs),
     atomic_list_concat(BodyExprs, '\n', BodyCode),
-    extract_switch_maps(BodyInstrs, FuncName, MapAttr),
     wrap_segment(FuncName, HeadType, BodyCode, Code),
     generate_all_segments(Rest, Labels, RestAttrs, RestCodes).
 
-extract_switch_maps(Instrs, FuncName, AttrBody) :-
-    (   (member(_PC-switch_on_constant(Entries), Instrs) ; member(_PC-switch_on_constant_a2(Entries), Instrs))
-    ->  maplist(switch_entry_pair, Entries, Pairs),
-        atomic_list_concat(Pairs, ', ', PairsStr),
-        format(string(AttrBody), '  @switch_map_~w Map.new([~w])', [FuncName, PairsStr])
-    ;   AttrBody = ""
+%% split_last_colon(+Entry, -Key, -Label)
+%  Splits an "apple:L1" entry into Key="apple" and Label="L1".
+%  For entries with multiple colons, splits at the LAST colon.
+%  For entries with no colon, Label defaults to "default".
+split_last_colon(Entry, Key, Label) :-
+    split_string(Entry, ":", "", Parts),
+    (   Parts = [_, _|_]
+    ->  append(KeyParts, [LabelStr], Parts),
+        atomic_list_concat(KeyParts, ':', KeyAtom),
+        atom_string(KeyAtom, Key),
+        Label = LabelStr
+    ;   Key = Entry, Label = "default"
     ).
 
-switch_entry_pair(Entry, Pair) :-
-    split_last_colon(Entry, Key, Label),
-    format(string(Pair), '{"~w", "~w"}', [Key, Label]).
+%% build_switch_arms(+Entries, -ArmsStr)
+%  Builds inline Elixir case arms for switch_on_constant.
+%  "default" labels fall through (:ok); real labels call the local segment
+%  function directly (local labels, not WamDispatcher predicates).
+build_switch_arms(Entries, ArmsStr) :-
+    maplist(build_switch_arm, Entries, Arms),
+    atomic_list_concat(Arms, '\n          ', ArmsStr).
 
-split_last_colon(Entry, Key, Label) :-
-    atom_string(E, Entry),
-    (   sub_atom(E, Before, 1, After, ':'), \+ sub_atom(E, _, 1, After, ':')
-    ->  sub_atom(E, 0, Before, _, Key),
-        sub_atom(E, _, After, 0, Label)
-    ;   Key = Entry, Label = "default"
+build_switch_arm(Entry, Arm) :-
+    split_last_colon(Entry, Key, Label),
+    (   Label == "default"
+    ->  format(string(Arm), '"~w" -> :ok', [Key])
+    ;   segment_func_name(Label, LocalFunc),
+        format(string(Arm), '"~w" -> throw({:return, ~w(state)})', [Key, LocalFunc])
     ).
 
 segment_func_name("clause_start", "clause_main") :- !.
@@ -436,31 +445,31 @@ wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, Code) :-
 wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, Code) :-
     format(string(Code), '    state = %{state | heap: state.heap ++ ["~w"]}', [C]).
 
-wam_elixir_lower_instr(switch_on_constant(_Entries), _PC, _Labels, FuncName, Code) :-
+wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Code) :-
+    build_switch_arms(Entries, ArmsStr),
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
     case val do
       {:unbound, _} -> :ok
       _ ->
-        case Map.get(@switch_map_~w, val) do
-          nil -> throw(:fail)
-          "default" -> :ok
-          label -> throw({:return, WamDispatcher.call(label, state)})
+        case val do
+          ~w
+          _ -> throw(:fail)
         end
-    end', [FuncName]).
+    end', [ArmsStr]).
 
-wam_elixir_lower_instr(switch_on_constant_a2(_Entries), _PC, _Labels, FuncName, Code) :-
+wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, Code) :-
+    build_switch_arms(Entries, ArmsStr),
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
     case val do
       {:unbound, _} -> :ok
       _ ->
-        case Map.get(@switch_map_~w, val) do
-          nil -> throw(:fail)
-          "default" -> :ok
-          label -> throw({:return, WamDispatcher.call(label, state)})
+        case val do
+          ~w
+          _ -> throw(:fail)
         end
-    end', [FuncName]).
+    end', [ArmsStr]).
 
 wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, Code) :-
     Code = '    {:ok, %{state | pc: state.cp}}'.
