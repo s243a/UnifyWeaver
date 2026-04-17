@@ -8,10 +8,33 @@
 :- dynamic test_tri_sum/2.
 :- dynamic test_tail_suffix/2.
 :- dynamic test_reaches/2.
+:- dynamic test_reaches_dist/3.
+:- dynamic test_parent_distance/4.
+:- dynamic test_step_parent_distance/5.
+:- dynamic test_weighted_path/3.
+:- dynamic test_astar_weighted_path/4.
 
 edge(a, b).
 edge(b, c).
 edge(c, d).
+
+weighted_edge(s, a, 1.0).
+weighted_edge(s, b, 4.0).
+weighted_edge(a, b, 2.0).
+weighted_edge(a, c, 5.0).
+weighted_edge(b, c, 1.0).
+weighted_edge(c, d, 3.0).
+
+user:direct_semantic_dist(s, a, 1.0).
+user:direct_semantic_dist(s, b, 3.0).
+user:direct_semantic_dist(s, c, 4.0).
+user:direct_semantic_dist(s, d, 7.0).
+user:direct_semantic_dist(a, b, 2.0).
+user:direct_semantic_dist(a, c, 3.0).
+user:direct_semantic_dist(a, d, 6.0).
+user:direct_semantic_dist(b, c, 1.0).
+user:direct_semantic_dist(b, d, 4.0).
+user:direct_semantic_dist(c, d, 3.0).
 
 test_tri_sum(0, 0).
 test_tri_sum(N, Sum) :-
@@ -25,6 +48,36 @@ test_tail_suffix([_|T], S) :- test_tail_suffix(T, S).
 
 test_reaches(X, Y) :- edge(X, Y).
 test_reaches(X, Y) :- edge(X, Z), test_reaches(Z, Y).
+
+test_reaches_dist(X, Y, 1) :- edge(X, Y).
+test_reaches_dist(X, Y, D) :-
+    edge(X, Z),
+    test_reaches_dist(Z, Y, D1),
+    D is D1 + 1.
+
+test_parent_distance(X, Y, X, 1) :- edge(X, Y).
+test_parent_distance(X, Y, Parent, D) :-
+    edge(X, Z),
+    test_parent_distance(Z, Y, Parent, D1),
+    D is D1 + 1.
+
+test_step_parent_distance(X, Y, Y, X, 1) :- edge(X, Y).
+test_step_parent_distance(X, Y, Step, Parent, D) :-
+    edge(X, Step),
+    test_step_parent_distance(Step, Y, _Inner, Parent, D1),
+    D is D1 + 1.
+
+test_weighted_path(X, Y, W) :- weighted_edge(X, Y, W).
+test_weighted_path(X, Y, Cost) :-
+    weighted_edge(X, Z, W),
+    test_weighted_path(Z, Y, RestCost),
+    Cost is W + RestCost.
+
+test_astar_weighted_path(X, Y, 5, W) :- weighted_edge(X, Y, W).
+test_astar_weighted_path(X, Y, 5, Cost) :-
+    weighted_edge(X, Z, W),
+    test_astar_weighted_path(Z, Y, 5, RestCost),
+    Cost is W + RestCost.
 
 test(foreign_spec_wrapper_generation) :-
     ForeignSpec = foreign_predicate(
@@ -62,12 +115,33 @@ test(foreign_call_rewrite_generation) :-
 
 test(foreign_auto_detect_generation) :-
     compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches/2, "call test_reaches/2, 2",
-        [foreign_lowering(true)], Code),
-    assertion(sub_string(Code, _, _, _, 'vm.registerForeignNativeKind("test_reaches/2", "transitive_closure2")')),
-    assertion(sub_string(Code, _, _, _, 'vm.registerForeignResultMode("test_reaches/2", "stream")')),
-    assertion(sub_string(Code, _, _, _, 'vm.registerForeignStringConfig("test_reaches/2", "edge_pred", "edge/2")')),
-    assertion(sub_string(Code, _, _, _, 'vm.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{{Left: "a", Right: "b"}, {Left: "b", Right: "c"}, {Left: "c", Right: "d"}})')),
-    assertion(sub_string(Code, _, _, _, 'return vm.executeForeignPredicate("test_reaches", 2)')).
+        [foreign_lowering(true)], ClosureCode),
+    assertion(sub_string(ClosureCode, _, _, _, 'vm.registerForeignNativeKind("test_reaches/2", "transitive_closure2")')),
+    assertion(sub_string(ClosureCode, _, _, _, 'vm.registerForeignStringConfig("test_reaches/2", "edge_pred", "edge/2")')),
+    assertion(sub_string(ClosureCode, _, _, _, 'vm.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{{Left: "a", Right: "b"}, {Left: "b", Right: "c"}, {Left: "c", Right: "d"}})')),
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_reaches_dist/3, "call test_reaches_dist/3, 3",
+        [foreign_lowering(true)], DistanceCode),
+    assertion(sub_string(DistanceCode, _, _, _, 'vm.registerForeignNativeKind("test_reaches_dist/3", "transitive_distance3")')),
+    assertion(sub_string(DistanceCode, _, _, _, 'vm.registerForeignResultLayout("test_reaches_dist/3", "tuple:2")')),
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_parent_distance/4, "call test_parent_distance/4, 4",
+        [foreign_lowering(true)], ParentCode),
+    assertion(sub_string(ParentCode, _, _, _, 'vm.registerForeignNativeKind("test_parent_distance/4", "transitive_parent_distance4")')),
+    assertion(sub_string(ParentCode, _, _, _, 'vm.registerForeignResultLayout("test_parent_distance/4", "tuple:3")')),
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_step_parent_distance/5, "call test_step_parent_distance/5, 5",
+        [foreign_lowering(true)], StepCode),
+    assertion(sub_string(StepCode, _, _, _, 'vm.registerForeignNativeKind("test_step_parent_distance/5", "transitive_step_parent_distance5")')),
+    assertion(sub_string(StepCode, _, _, _, 'vm.registerForeignResultLayout("test_step_parent_distance/5", "tuple:4")')),
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_weighted_path/3, "call test_weighted_path/3, 3",
+        [foreign_lowering(true)], WeightedCode),
+    assertion(sub_string(WeightedCode, _, _, _, 'vm.registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")')),
+    assertion(sub_string(WeightedCode, _, _, _, 'vm.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")')),
+    assertion(sub_string(WeightedCode, _, _, _, 'vm.registerIndexedWeightedEdgeTriples("weighted_edge/3", []WeightedEdgeTriple{')),
+    compile_wam_predicate_to_go(plunit_wam_go_foreign_lowering:test_astar_weighted_path/4, "call test_astar_weighted_path/4, 4",
+        [foreign_lowering(true)], AstarCode),
+    assertion(sub_string(AstarCode, _, _, _, 'vm.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")')),
+    assertion(sub_string(AstarCode, _, _, _, 'vm.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")')),
+    assertion(sub_string(AstarCode, _, _, _, 'vm.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)')),
+    assertion(sub_string(AstarCode, _, _, _, 'return vm.executeForeignPredicate("test_astar_weighted_path", 4)')).
 
 test(foreign_execution_deterministic_and_stream) :-
     once((
@@ -142,6 +216,284 @@ func TestForeignListSuffixStream(t *testing.T) {
     third, ok := vm.deref(out).(*List)
     if !ok || len(third.Elements) != 0 {
         t.Fatalf("expected final suffix [], got %#v", vm.deref(out))
+    }
+}
+'),
+        (   catch(process_create(path(go), ['test', './...'], [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]), _, fail)
+        ->  read_string(Out, _, _Stdout),
+            read_string(Err, _, Stderr),
+            process_wait(Pid, Exit),
+            assertion(Exit == exit(0)),
+            assertion(\+ sub_string(Stderr, _, _, _, 'FAIL'))
+        ;   true
+        ),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(foreign_execution_graph_kernels) :-
+    once((
+        get_time(T),
+        format(atom(TmpDir), 'tmp_wam_go_graph_~w', [T]),
+        write_wam_go_project(
+            [plunit_wam_go_foreign_lowering:test_reaches/2],
+            [module_name(go_graph_test)],
+            TmpDir
+        ),
+        directory_file_path(TmpDir, 'foreign_graph_test.go', TestPath),
+        write_file(TestPath,
+'package wam
+
+import "testing"
+
+func TestForeignGraphKernels(t *testing.T) {
+    vm := NewWamState(nil, nil)
+    vm.registerForeignNativeKind("test_reaches_dist/3", "transitive_distance3")
+    vm.registerForeignResultLayout("test_reaches_dist/3", "tuple:2")
+    vm.registerForeignResultMode("test_reaches_dist/3", "stream")
+    vm.registerForeignStringConfig("test_reaches_dist/3", "edge_pred", "edge/2")
+    vm.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
+        {Left: "a", Right: "b"},
+        {Left: "b", Right: "c"},
+        {Left: "c", Right: "d"},
+    })
+    target := &Unbound{Name: "TARGET"}
+    dist := &Unbound{Name: "DIST"}
+    vm.Regs["A1"] = &Atom{Name: "a"}
+    vm.Regs["A2"] = target
+    vm.Regs["A3"] = dist
+    if !vm.executeForeignPredicate("test_reaches_dist", 3) {
+        t.Fatalf("transitive_distance3 failed")
+    }
+    if got, ok := vm.deref(target).(*Atom); !ok || got.Name != "b" {
+        t.Fatalf("expected first target b, got %#v", vm.deref(target))
+    }
+    if got, ok := vm.deref(dist).(*Integer); !ok || got.Val != 1 {
+        t.Fatalf("expected first distance 1, got %#v", vm.deref(dist))
+    }
+    if !vm.backtrack() {
+        t.Fatalf("expected second transitive_distance3 result")
+    }
+    if got, ok := vm.deref(target).(*Atom); !ok || got.Name != "c" {
+        t.Fatalf("expected second target c, got %#v", vm.deref(target))
+    }
+    if got, ok := vm.deref(dist).(*Integer); !ok || got.Val != 2 {
+        t.Fatalf("expected second distance 2, got %#v", vm.deref(dist))
+    }
+
+    vm2 := NewWamState(nil, nil)
+    vm2.registerForeignNativeKind("test_parent_distance/4", "transitive_parent_distance4")
+    vm2.registerForeignResultLayout("test_parent_distance/4", "tuple:3")
+    vm2.registerForeignResultMode("test_parent_distance/4", "stream")
+    vm2.registerForeignStringConfig("test_parent_distance/4", "edge_pred", "edge/2")
+    vm2.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
+        {Left: "a", Right: "b"},
+        {Left: "b", Right: "c"},
+        {Left: "c", Right: "d"},
+    })
+    pTarget := &Unbound{Name: "PTARGET"}
+    pParent := &Unbound{Name: "PPARENT"}
+    pDist := &Unbound{Name: "PDIST"}
+    vm2.Regs["A1"] = &Atom{Name: "a"}
+    vm2.Regs["A2"] = pTarget
+    vm2.Regs["A3"] = pParent
+    vm2.Regs["A4"] = pDist
+    if !vm2.executeForeignPredicate("test_parent_distance", 4) {
+        t.Fatalf("transitive_parent_distance4 failed")
+    }
+    if got, ok := vm2.deref(pTarget).(*Atom); !ok || got.Name != "b" {
+        t.Fatalf("expected parent-distance target b, got %#v", vm2.deref(pTarget))
+    }
+    if got, ok := vm2.deref(pParent).(*Atom); !ok || got.Name != "a" {
+        t.Fatalf("expected parent-distance parent a, got %#v", vm2.deref(pParent))
+    }
+
+    vm3 := NewWamState(nil, nil)
+    vm3.registerForeignNativeKind("test_step_parent_distance/5", "transitive_step_parent_distance5")
+    vm3.registerForeignResultLayout("test_step_parent_distance/5", "tuple:4")
+    vm3.registerForeignResultMode("test_step_parent_distance/5", "stream")
+    vm3.registerForeignStringConfig("test_step_parent_distance/5", "edge_pred", "edge/2")
+    vm3.registerIndexedAtomFact2Pairs("edge/2", []AtomPair{
+        {Left: "a", Right: "b"},
+        {Left: "b", Right: "c"},
+        {Left: "c", Right: "d"},
+    })
+    sTarget := &Unbound{Name: "STARGET"}
+    sStep := &Unbound{Name: "SSTEP"}
+    sParent := &Unbound{Name: "SPARENT"}
+    sDist := &Unbound{Name: "SDIST"}
+    vm3.Regs["A1"] = &Atom{Name: "a"}
+    vm3.Regs["A2"] = sTarget
+    vm3.Regs["A3"] = sStep
+    vm3.Regs["A4"] = sParent
+    vm3.Regs["A5"] = sDist
+    if !vm3.executeForeignPredicate("test_step_parent_distance", 5) {
+        t.Fatalf("transitive_step_parent_distance5 failed")
+    }
+    if got, ok := vm3.deref(sStep).(*Atom); !ok || got.Name != "b" {
+        t.Fatalf("expected step b, got %#v", vm3.deref(sStep))
+    }
+
+    weighted := []WeightedEdgeTriple{
+        {Left: "s", Right: "a", Weight: 1.0},
+        {Left: "s", Right: "b", Weight: 4.0},
+        {Left: "a", Right: "b", Weight: 2.0},
+        {Left: "a", Right: "c", Weight: 5.0},
+        {Left: "b", Right: "c", Weight: 1.0},
+        {Left: "c", Right: "d", Weight: 3.0},
+    }
+    vm4 := NewWamState(nil, nil)
+    vm4.registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")
+    vm4.registerForeignResultLayout("test_weighted_path/3", "tuple:2")
+    vm4.registerForeignResultMode("test_weighted_path/3", "stream")
+    vm4.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
+    vm4.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    wTarget := &Unbound{Name: "WTARGET"}
+    wCost := &Unbound{Name: "WCOST"}
+    vm4.Regs["A1"] = &Atom{Name: "s"}
+    vm4.Regs["A2"] = wTarget
+    vm4.Regs["A3"] = wCost
+    if !vm4.executeForeignPredicate("test_weighted_path", 3) {
+        t.Fatalf("weighted_shortest_path3 failed")
+    }
+    weightedResults := make([]string, 0)
+    if gotT, okT := vm4.deref(wTarget).(*Atom); okT {
+        if gotC, okC := vm4.deref(wCost).(*Float); okC {
+            weightedResults = append(weightedResults, gotT.Name+":"+gotC.String())
+        } else {
+            t.Fatalf("expected first weighted cost float, got %#v", vm4.deref(wCost))
+        }
+    } else {
+        t.Fatalf("expected first weighted target atom, got %#v", vm4.deref(wTarget))
+    }
+    for vm4.backtrack() {
+        gotT, okT := vm4.deref(wTarget).(*Atom)
+        gotC, okC := vm4.deref(wCost).(*Float)
+        if !okT || !okC {
+            t.Fatalf("expected weighted backtrack tuple, got %#v %#v", vm4.deref(wTarget), vm4.deref(wCost))
+        }
+        weightedResults = append(weightedResults, gotT.Name+":"+gotC.String())
+    }
+    expectedWeighted := []string{"a:1", "b:3", "c:4", "d:7"}
+    if len(weightedResults) != len(expectedWeighted) {
+        t.Fatalf("expected %d weighted results, got %#v", len(expectedWeighted), weightedResults)
+    }
+    for i := range expectedWeighted {
+        if weightedResults[i] != expectedWeighted[i] {
+            t.Fatalf("expected weighted results %v, got %v", expectedWeighted, weightedResults)
+        }
+    }
+
+    vm4Exact := NewWamState(nil, nil)
+    vm4Exact.registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")
+    vm4Exact.registerForeignResultLayout("test_weighted_path/3", "tuple:2")
+    vm4Exact.registerForeignResultMode("test_weighted_path/3", "stream")
+    vm4Exact.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
+    vm4Exact.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    vm4Exact.Regs["A1"] = &Atom{Name: "s"}
+    vm4Exact.Regs["A2"] = &Atom{Name: "d"}
+    vm4Exact.Regs["A3"] = &Float{Val: 7.0}
+    if !vm4Exact.executeForeignPredicate("test_weighted_path", 3) {
+        t.Fatalf("expected weighted exact match for s->d cost 7.0")
+    }
+
+    vm4Fail := NewWamState(nil, nil)
+    vm4Fail.registerForeignNativeKind("test_weighted_path/3", "weighted_shortest_path3")
+    vm4Fail.registerForeignResultLayout("test_weighted_path/3", "tuple:2")
+    vm4Fail.registerForeignResultMode("test_weighted_path/3", "stream")
+    vm4Fail.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
+    vm4Fail.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    vm4Fail.Regs["A1"] = &Atom{Name: "d"}
+    vm4Fail.Regs["A2"] = &Unbound{Name: "WTFAIL"}
+    vm4Fail.Regs["A3"] = &Unbound{Name: "WCFAIL"}
+    if vm4Fail.executeForeignPredicate("test_weighted_path", 3) {
+        t.Fatalf("expected weighted path from d to fail")
+    }
+
+    heuristic := []WeightedEdgeTriple{
+        {Left: "s", Right: "a", Weight: 1.0},
+        {Left: "s", Right: "b", Weight: 3.0},
+        {Left: "s", Right: "c", Weight: 4.0},
+        {Left: "s", Right: "d", Weight: 7.0},
+        {Left: "a", Right: "b", Weight: 2.0},
+        {Left: "a", Right: "c", Weight: 3.0},
+        {Left: "a", Right: "d", Weight: 6.0},
+        {Left: "b", Right: "c", Weight: 1.0},
+        {Left: "b", Right: "d", Weight: 4.0},
+        {Left: "c", Right: "d", Weight: 3.0},
+    }
+    vm5 := NewWamState(nil, nil)
+    vm5.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")
+    vm5.registerForeignResultLayout("test_astar_weighted_path/4", "tuple:1")
+    vm5.registerForeignResultMode("test_astar_weighted_path/4", "stream")
+    vm5.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
+    vm5.registerForeignStringConfig("test_astar_weighted_path/4", "direct_dist_pred", "direct_semantic_dist/3")
+    vm5.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
+    vm5.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    vm5.registerIndexedWeightedEdgeTriples("direct_semantic_dist/3", heuristic)
+    aCost := &Unbound{Name: "ACOST"}
+    vm5.Regs["A1"] = &Atom{Name: "s"}
+    vm5.Regs["A2"] = &Atom{Name: "d"}
+    vm5.Regs["A3"] = &Integer{Val: 5}
+    vm5.Regs["A4"] = aCost
+    if !vm5.executeForeignPredicate("test_astar_weighted_path", 4) {
+        t.Fatalf("astar_shortest_path4 failed")
+    }
+    if got, ok := vm5.deref(aCost).(*Float); !ok || got.Val != 7.0 {
+        t.Fatalf("expected astar cost 7.0, got %#v", vm5.deref(aCost))
+    }
+    if vm5.backtrack() {
+        t.Fatalf("expected astar_shortest_path4 single result")
+    }
+
+    vm5Fallback := NewWamState(nil, nil)
+    vm5Fallback.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")
+    vm5Fallback.registerForeignResultLayout("test_astar_weighted_path/4", "tuple:1")
+    vm5Fallback.registerForeignResultMode("test_astar_weighted_path/4", "stream")
+    vm5Fallback.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
+    vm5Fallback.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
+    vm5Fallback.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    fallbackCost := &Unbound{Name: "FALLBACK_COST"}
+    vm5Fallback.Regs["A1"] = &Atom{Name: "s"}
+    vm5Fallback.Regs["A2"] = &Atom{Name: "d"}
+    vm5Fallback.Regs["A3"] = &Integer{Val: 5}
+    vm5Fallback.Regs["A4"] = fallbackCost
+    if !vm5Fallback.executeForeignPredicate("test_astar_weighted_path", 4) {
+        t.Fatalf("expected astar fallback without heuristic to succeed")
+    }
+    if got, ok := vm5Fallback.deref(fallbackCost).(*Float); !ok || got.Val != 7.0 {
+        t.Fatalf("expected astar fallback cost 7.0, got %#v", vm5Fallback.deref(fallbackCost))
+    }
+
+    vm5Exact := NewWamState(nil, nil)
+    vm5Exact.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")
+    vm5Exact.registerForeignResultLayout("test_astar_weighted_path/4", "tuple:1")
+    vm5Exact.registerForeignResultMode("test_astar_weighted_path/4", "stream")
+    vm5Exact.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
+    vm5Exact.registerForeignStringConfig("test_astar_weighted_path/4", "direct_dist_pred", "direct_semantic_dist/3")
+    vm5Exact.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
+    vm5Exact.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    vm5Exact.registerIndexedWeightedEdgeTriples("direct_semantic_dist/3", heuristic)
+    vm5Exact.Regs["A1"] = &Atom{Name: "s"}
+    vm5Exact.Regs["A2"] = &Atom{Name: "d"}
+    vm5Exact.Regs["A3"] = &Integer{Val: 5}
+    vm5Exact.Regs["A4"] = &Float{Val: 7.0}
+    if !vm5Exact.executeForeignPredicate("test_astar_weighted_path", 4) {
+        t.Fatalf("expected exact astar match for s->d cost 7.0")
+    }
+
+    vm5Fail := NewWamState(nil, nil)
+    vm5Fail.registerForeignNativeKind("test_astar_weighted_path/4", "astar_shortest_path4")
+    vm5Fail.registerForeignResultLayout("test_astar_weighted_path/4", "tuple:1")
+    vm5Fail.registerForeignResultMode("test_astar_weighted_path/4", "stream")
+    vm5Fail.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
+    vm5Fail.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
+    vm5Fail.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
+    vm5Fail.Regs["A1"] = &Atom{Name: "d"}
+    vm5Fail.Regs["A2"] = &Atom{Name: "s"}
+    vm5Fail.Regs["A3"] = &Integer{Val: 5}
+    vm5Fail.Regs["A4"] = &Unbound{Name: "NO_ASTAR"}
+    if vm5Fail.executeForeignPredicate("test_astar_weighted_path", 4) {
+        t.Fatalf("expected astar path from d to s to fail")
     }
 }
 '),

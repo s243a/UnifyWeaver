@@ -15,6 +15,12 @@ type AtomPair struct {
 	Right string
 }
 
+type WeightedEdgeTriple struct {
+	Left   string
+	Right  string
+	Weight float64
+}
+
 type ChoicePoint struct {
 	NextPC    int
 	ResumePC  int
@@ -67,6 +73,7 @@ type WamState struct {
 	ForeignStringConfigs map[string]map[string]string
 	ForeignUsizeConfigs  map[string]map[string]int
 	IndexedAtomFactPairs map[string][]AtomPair
+	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
 }
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
@@ -80,6 +87,7 @@ func NewWamState(code []Instruction, labels map[string]int) *WamState {
 		ForeignStringConfigs: make(map[string]map[string]string),
 		ForeignUsizeConfigs:  make(map[string]map[string]int),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
+		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
 	}
 }
 
@@ -163,6 +171,7 @@ func (vm *WamState) Clone() *WamState {
 		ForeignStringConfigs: vm.ForeignStringConfigs,
 		ForeignUsizeConfigs:  vm.ForeignUsizeConfigs,
 		IndexedAtomFactPairs: vm.IndexedAtomFactPairs,
+		IndexedWeightedEdgeTriples: vm.IndexedWeightedEdgeTriples,
 	}
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
@@ -452,28 +461,31 @@ func (vm *WamState) backtrack() bool {
     topIdx := len(vm.ChoicePoints) - 1
     cp := vm.ChoicePoints[topIdx]
     if len(cp.ForeignResults) > 0 {
-        vm.unwindTrail(cp.TrailMark)
-        vm.Regs = copyMap(cp.Regs)
-        vm.Stack = copyStack(cp.Stack)
-        if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
-            vm.Heap = vm.Heap[:cp.HeapTop]
+        for len(cp.ForeignResults) > 0 {
+            vm.unwindTrail(cp.TrailMark)
+            vm.Regs = copyMap(cp.Regs)
+            vm.Stack = copyStack(cp.Stack)
+            if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
+                vm.Heap = vm.Heap[:cp.HeapTop]
+            }
+            vm.CP = cp.CP
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            nextResult := cp.ForeignResults[0]
+            cp.ForeignResults = cp.ForeignResults[1:]
+            if len(cp.ForeignResults) == 0 {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            } else {
+                vm.ChoicePoints[topIdx] = cp
+            }
+            if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
+                continue
+            }
+            vm.PC = cp.ResumePC
+            return true
         }
-        vm.CP = cp.CP
-        vm.Halted = false
-        vm.CurrentStruct = nil
-        vm.CurrentList = nil
-        nextResult := cp.ForeignResults[0]
-        cp.ForeignResults = cp.ForeignResults[1:]
-        if len(cp.ForeignResults) == 0 {
-            vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-        } else {
-            vm.ChoicePoints[topIdx] = cp
-        }
-        if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
-            return false
-        }
-        vm.PC = cp.ResumePC
-        return true
+        return false
     }
     vm.ChoicePoints = vm.ChoicePoints[:topIdx]
     vm.unwindTrail(cp.TrailMark)
