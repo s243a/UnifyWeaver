@@ -10,6 +10,10 @@ measurements for `PathAwareTransitiveClosureNode`:
 Those statements are not in tension. They describe different levels of the
 same execution.
 
+For the separate question of whether that finishing sort is semantically
+required on the public runtime path, see
+[`COUNTED_PATH_MIN_ORDERING_CONTRACT.md`](./COUNTED_PATH_MIN_ORDERING_CONTRACT.md).
+
 ## The Comparison
 
 The measured phases for counted shortest path include:
