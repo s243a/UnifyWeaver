@@ -118,6 +118,13 @@ Preferred direction:
 - compact exact visited encoding
 - path fingerprint derived from that encoding
 
+Current C# query-runtime status:
+
+- counted `PathAwareTransitiveClosureNode` traversal uses integer node ids and
+  compact exact visited paths for cycle checks
+- weighted `Min` fallback uses compact exact visited paths plus fingerprints,
+  masks, and exact subset verification for frontier dominance candidates
+
 Exact structure options include:
 
 1. sorted integer path vector
@@ -138,6 +145,25 @@ It should not replace:
 
 The planner/runtime should continue to select the cheapest correct model
 for the workload class.
+
+## Trace Metrics
+
+Runtime instrumentation should keep the main exact workload classes separate:
+
+- counted simple-path traversal reports `path_state_*` counters for stack
+  pops, successor candidates, cycle skips, depth-limit skips, best-known
+  pruning, enqueued states, output rows, and maximum path/stack size
+- counted simple-path traversal also reports phase timings for
+  `path_state_traversal`, `path_state_row_creation`,
+  `path_state_result_materialization`, and
+  `path_state_best_known_flush_sort`
+- weighted `Min` frontier fallback reports `min_frontier_*` counters for
+  dominance candidates, subset checks, target buckets, and retained
+  path-state partition sizes
+
+These metrics are intentionally not normalized into one generic counter set.
+The current measurements show different bottlenecks: counted closure is
+expansion-heavy, while weighted `Min` fallback is dominance-candidate-heavy.
 
 ## Success Criteria
 

@@ -19,6 +19,12 @@ test_resistant(X, _, X).
 test_resistant_helper(a, b).
 test_resistant_helper(b, c).
 
+%% Second test predicate that resists native lowering AND calls test_resistant/3.
+%% Used to test cross-predicate WAM calls via shared table.
+:- dynamic test_caller/2.
+test_caller(X, Z) :- test_resistant(X, _, Z), test_resistant(Z, _, X).
+test_caller(X, X).
+
 %% Simple predicate that native lowering CAN handle
 :- dynamic test_simple_fact/2.
 test_simple_fact(hello, world).
@@ -401,7 +407,14 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
         sub_string(S, _, _, _, 'builtin_state'),
-        sub_string(S, _, _, _, 'eprintln!')
+        sub_string(S, _, _, _, 'eprintln!'),
+        %% Phase 4: Group A term inspection builtins are present.
+        sub_string(S, _, _, _, '"functor/3"'),
+        sub_string(S, _, _, _, '"arg/3"'),
+        sub_string(S, _, _, _, '"=../2"'),
+        sub_string(S, _, _, _, '"copy_term/2"'),
+        %% copy_term_walk helper (sharing-preserving recursive copy).
+        sub_string(S, _, _, _, 'copy_term_walk')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
     ).
@@ -590,6 +603,104 @@ test_foreign_stream_wrapper_plan_ir :-
             _)
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign stream wrapper plan IR did not match expected multistage shape')
+    ).
+
+test_foreign_wrapper_stage_plan_ir :-
+    Test = 'WAM-Rust: foreign wrapper stage plan separates compute and filter stages',
+    Head =.. [bucketed_adjusted_weighted_path, Start, Bucket, Adjusted],
+    Body = ( weighted_path(Start, Target, Cost),
+             target_label(Target, Label),
+             label_bucket(Label, Bucket),
+             Cost > 2,
+             Adjusted is Cost + 1 ),
+    (   rust_target:rust_foreign_stream_wrapper_plan(bucketed_adjusted_weighted_path, 3, Head, Body,
+            foreign_wrapper_plan(_, _, GoalArgs, Adjusted, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Adjusted, StagePlan),
+        StagePlan = wrapper_stage_plan(
+            compute_stage("agg_value", "(cost + 1_f64)"),
+            [filter_stage("cost > 2_f64")]),
+        rust_target:rust_foreign_wrapper_render_stage_plan(StagePlan, SetupCode, ValueExpr, FilterCond),
+        SetupCode == "            let agg_value = (cost + 1_f64);\n",
+        ValueExpr == "agg_value",
+        FilterCond == 'cost > 2_f64'
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign wrapper stage plan did not separate compute/filter stages')
+    ).
+
+test_foreign_stream_stage_traversal_ir :-
+    Test = 'WAM-Rust: foreign stream wrapper stage emitter renders joined traversal',
+    Head =.. [bucketed_adjusted_weighted_path, Start, Bucket, Adjusted],
+    Body = ( weighted_path(Start, Target, Cost),
+             target_label(Target, Label),
+             label_bucket(Label, Bucket),
+             Cost > 2,
+             Adjusted is Cost + 1 ),
+    (   rust_target:rust_foreign_stream_wrapper_plan(bucketed_adjusted_weighted_path, 3, Head, Body,
+            foreign_wrapper_plan(_, JoinPreds, GoalArgs, Adjusted, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Adjusted, StagePlan),
+        rust_target:rust_foreign_wrapper_stage_traversal_code(JoinPreds, "join_filter", "target", "&target", "        ",
+            stream, StagePlan, TraversalCode),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::Str("__tuple__".to_string(), vec![')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign stream stage traversal did not render expected joined traversal')
+    ).
+
+test_foreign_scalar_stage_traversal_ir :-
+    Test = 'WAM-Rust: foreign scalar wrapper stage emitter renders joined min traversal',
+    ScalarHead =.. [bucketed_min_semantic_dist, Start, Bucket, MinDist],
+    ScalarBody = aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        MinDist),
+    rust_target:classify_aggregate(ScalarBody, ScalarAggInfo),
+    (   rust_target:rust_foreign_aggregate_wrapper_plan(bucketed_min_semantic_dist, 3,
+            ScalarHead, ScalarAggInfo,
+            foreign_aggregate_plan(_, JoinPreds, GoalArgs, Expr, all, none, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
+        rust_target:rust_foreign_wrapper_stage_traversal_code(JoinPreds, "target_filter", "target", "&target", "        ",
+            scalar_min, StagePlan, TraversalCode),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(TraversalCode, _, _, _, 'best = Some(match best {'),
+        sub_string(TraversalCode, _, _, _, 'Some(current) => current.min(agg_value)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign scalar stage traversal did not render expected joined min traversal')
+    ).
+
+test_foreign_grouped_stage_traversal_ir :-
+    Test = 'WAM-Rust: foreign grouped wrapper stage emitter renders joined min traversal',
+    GroupedHead =.. [grouped_bucketed_min_semantic_dist, Start, Bucket, GroupMin],
+    GroupedBody = aggregate_all(min(Adjusted),
+        ( weighted_path(Start, Target, Cost),
+          target_label(Target, Label),
+          label_bucket(Label, Bucket),
+          Cost > 2,
+          Adjusted is Cost + 1
+        ),
+        Bucket,
+        GroupMin),
+    rust_target:classify_aggregate(GroupedBody, GroupedAggInfo),
+    (   rust_target:rust_foreign_aggregate_wrapper_plan(grouped_bucketed_min_semantic_dist, 3,
+            GroupedHead, GroupedAggInfo,
+            foreign_aggregate_plan(_, JoinPreds, GoalArgs, Expr, group, Bucket, GoalInfo)),
+        rust_target:rust_foreign_wrapper_stage_plan(GoalInfo, GoalArgs, Expr, StagePlan),
+        rust_target:rust_foreign_wrapper_stage_traversal_code(JoinPreds, "output_filter", "target", "&target", "        ",
+            grouped_min, StagePlan, TraversalCode),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
+        sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
+        sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
+        sub_string(TraversalCode, _, _, _, 'grouped.entry(joined_value_2.clone())'),
+        sub_string(TraversalCode, _, _, _, '.and_modify(|current| *current = current.min(agg_value))')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Foreign grouped stage traversal did not render expected joined min traversal')
     ).
 
 test_foreign_aggregate_wrapper_plan_ir :-
@@ -932,7 +1043,7 @@ test_grouped_weighted_min_aggregate_wrapper :-
         sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist/3", "tuple:2")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
-        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'grouped.entry(target.clone())'),
         sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist/3", vec![a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Grouped weighted aggregate wrapper did not delegate correctly')
@@ -947,7 +1058,7 @@ test_grouped_astar_min_aggregate_wrapper :-
         sub_string(S, _, _, _, 'use std::collections::BTreeMap;'),
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_min_semantic_dist_astar/4", "tuple:2")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
-        sub_string(S, _, _, _, 'grouped.entry(target)'),
+        sub_string(S, _, _, _, 'grouped.entry(target.clone())'),
         sub_string(S, _, _, _, 'vm.finish_foreign_results("grouped_min_semantic_dist_astar/4", vec![a2.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Grouped A* aggregate wrapper did not delegate correctly')
@@ -959,8 +1070,10 @@ test_filtered_adjusted_weighted_min_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(S, _, _, _, 'if !(cost > 2_f64) {'),
+        sub_string(S, _, _, _, '&& (cost > 2_f64) {'),
         sub_string(S, _, _, _, 'current.min(agg_value)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal weighted aggregate wrapper did not lower correctly')
@@ -972,8 +1085,10 @@ test_filtered_adjusted_astar_min_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(S, _, _, _, 'if !(cost > 2_f64) {'),
+        sub_string(S, _, _, _, '&& (cost > 2_f64) {'),
         sub_string(S, _, _, _, 'current.min(agg_value)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal A* aggregate wrapper did not lower correctly')
@@ -985,13 +1100,14 @@ test_filtered_adjusted_weighted_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
-        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_weighted_path/3", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_weighted_path/3", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
         sub_string(S, _, _, _, 'let output_value = agg_value;'),
         sub_string(S, _, _, _, '(cost > 2_f64)'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal weighted stream wrapper did not lower correctly')
     ).
@@ -1002,13 +1118,14 @@ test_filtered_adjusted_astar_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn filtered_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
-        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_astar_weighted_path/4", "tuple:2")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("filtered_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("filtered_adjusted_astar_weighted_path/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
         sub_string(S, _, _, _, 'let output_value = agg_value;'),
         sub_string(S, _, _, _, '(cost > 2_f64)'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("filtered_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Mixed-goal A* stream wrapper did not lower correctly')
     ).
@@ -1020,10 +1137,12 @@ test_labeled_weighted_stream_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn labeled_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("weighted_path/3", "weighted_shortest_path3")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("labeled_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'for joined_value_1 in joined_values_1.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Relational weighted stream wrapper did not lower correctly')
     ).
@@ -1035,10 +1154,12 @@ test_labeled_astar_stream_wrapper :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn labeled_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
         sub_string(S, _, _, _, 'register_foreign_native_kind("astar_weighted_path/4", "astar_shortest_path4")'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("labeled_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'for joined_value_1 in joined_values_1.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("labeled_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Relational A* stream wrapper did not lower correctly')
     ).
@@ -1049,12 +1170,14 @@ test_bucketed_weighted_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn bucketed_adjusted_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("bucketed_adjusted_weighted_path/3", "tuple:3")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_weighted_path/3", vec![a2.clone(), a3.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_weighted_path/3", vec![a1.clone(), a2.clone(), a3.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Multi-stage weighted wrapper did not lower correctly')
     ).
@@ -1065,12 +1188,14 @@ test_bucketed_astar_stream_wrapper :-
             [include_main(false), foreign_lowering(true), wam_fallback(true)], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'pub fn bucketed_adjusted_astar_weighted_path(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
+        sub_string(S, _, _, _, 'register_foreign_result_layout("bucketed_adjusted_astar_weighted_path/4", "tuple:4")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'for joined_value_2 in joined_values_2.iter() {'),
-        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_astar_weighted_path/4", vec![a2.clone(), a4.clone()], packed_results)')
+        sub_string(S, _, _, _, 'vm.finish_foreign_results("bucketed_adjusted_astar_weighted_path/4", vec![a1.clone(), a2.clone(), a3.clone(), a4.clone()], packed_results)')
     ->  pass(Test)
     ;   fail_test(Test, 'Multi-stage A* wrapper did not lower correctly')
     ).
@@ -1083,6 +1208,8 @@ test_bucketed_weighted_min_wrapper :-
         sub_string(S, _, _, _, 'pub fn bucketed_min_semantic_dist(vm: &mut WamState, a1: Value, a2: Value, a3: Value) -> bool'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
@@ -1100,6 +1227,8 @@ test_bucketed_astar_min_wrapper :-
         sub_string(S, _, _, _, 'pub fn bucketed_min_semantic_dist_astar(vm: &mut WamState, a1: Value, a2: Value, a3: Value, a4: Value) -> bool'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
@@ -1119,6 +1248,8 @@ test_grouped_bucketed_weighted_min_wrapper :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist/3", "tuple:2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
@@ -1138,6 +1269,8 @@ test_grouped_bucketed_astar_min_wrapper :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("grouped_bucketed_min_semantic_dist_astar/4", "tuple:2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("target_label/2", &[("b", "branch_b"), ("c", "branch_c"), ("d", "goal_d1"), ("d", "goal_d2")])'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("label_bucket/2", &[("branch_b", "branch_bucket"), ("branch_c", "branch_bucket"), ("goal_d1", "goal_bucket"), ("goal_d2", "goal_bucket")])'),
+        sub_string(S, _, _, _, 'let start_candidates: Vec<String> = match &a1 {'),
+        sub_string(S, _, _, _, 'for start in start_candidates {'),
         sub_string(S, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(S, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(S, _, _, _, 'let agg_value = (cost + 1_f64);'),
@@ -1430,6 +1563,114 @@ test_parser_resilience :-
     ;   fail_test(Test, 'Parser missing resilience checks for malformed input')
     ).
 
+%% Cross-predicate WAM shared table tests
+
+test_cross_predicate_shared_wam :-
+    Test = 'WAM-Rust: cross-predicate project uses shared WAM table',
+    TmpDir = 'output/test_wam_rust_cross_pred',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('cross_pred_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % Should contain the shared WAM table
+        sub_string(LibStr, _, _, _, 'SHARED_WAM'),
+        sub_string(LibStr, _, _, _, 'get_shared_wam'),
+        sub_string(LibStr, _, _, _, 'OnceLock'),
+        % Should contain both predicate wrappers referencing the shared table
+        sub_string(LibStr, _, _, _, 'fn test_resistant'),
+        sub_string(LibStr, _, _, _, 'fn test_caller'),
+        % Both should reference get_shared_wam
+        sub_string(LibStr, _, _, _, 'get_shared_wam()'),
+        % Predicate wrappers should NOT contain local vec![...] (only shared table has it)
+        % Check that vm.code = code.clone() appears (shared ref pattern)
+        sub_string(LibStr, _, _, _, 'vm.code = code.clone()')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Cross-predicate shared WAM table not generated correctly')
+    ).
+
+test_cross_predicate_distinct_pcs :-
+    Test = 'WAM-Rust: cross-predicate wrappers have distinct start PCs',
+    TmpDir = 'output/test_wam_rust_cross_pc',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('cross_pc_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % test_resistant starts at pc=1
+        sub_string(LibStr, _, _, _, 'test_resistant/3 (shared table, pc=1)'),
+        % test_caller starts at a DIFFERENT (higher) pc
+        sub_string(LibStr, _, _, _, 'test_caller/2 (shared table, pc='),
+        % Verify test_caller does NOT start at pc=1
+        \+ sub_string(LibStr, _, _, _, 'test_caller/2 (shared table, pc=1)')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Cross-predicate wrappers do not have distinct PCs')
+    ).
+
+test_shared_wam_labels_contain_all_preds :-
+    Test = 'WAM-Rust: shared WAM table labels contain all predicate labels',
+    TmpDir = 'output/test_wam_rust_shared_labels',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('shared_labels_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % The shared table should contain labels for BOTH predicates
+        sub_string(LibStr, _, _, _, 'labels.insert("test_resistant/3"'),
+        sub_string(LibStr, _, _, _, 'labels.insert("test_caller/2"')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Shared WAM table missing labels for some predicates')
+    ).
+
+test_native_wam_mixed_project :-
+    Test = 'WAM-Rust: mixed native+WAM project only shares WAM predicates',
+    TmpDir = 'output/test_wam_rust_mixed',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_simple_fact/2, user:test_resistant/3],
+            [module_name('mixed_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        % Native predicate should NOT use get_shared_wam
+        % The test_simple_fact should be natively lowered (no WAM wrapper)
+        sub_string(LibStr, _, _, _, '// Strategy: native'),
+        % WAM predicate test_resistant should reference shared table
+        sub_string(LibStr, _, _, _, 'get_shared_wam()')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'Mixed native+WAM project not generated correctly')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -1447,6 +1688,10 @@ run_tests :-
     test_recursive_kernel_spec_generation,
     test_recursive_kernel_registry,
     test_foreign_stream_wrapper_plan_ir,
+    test_foreign_wrapper_stage_plan_ir,
+    test_foreign_stream_stage_traversal_ir,
+    test_foreign_scalar_stage_traversal_ir,
+    test_foreign_grouped_stage_traversal_ir,
     test_foreign_aggregate_wrapper_plan_ir,
     test_wam_fallback_enabled,
     test_wam_fallback_disabled,
@@ -1492,6 +1737,10 @@ run_tests :-
     test_parser_handles_all_instructions,
     test_generated_project_has_parser,
     test_parser_resilience,
+    test_cross_predicate_shared_wam,
+    test_cross_predicate_distinct_pcs,
+    test_shared_wam_labels_contain_all_preds,
+    test_native_wam_mixed_project,
 
     format('~n========================================~n'),
     (   test_failed

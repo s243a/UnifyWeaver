@@ -26,7 +26,7 @@ with:
 
 - `TableMode.Min`
 - per-path uniqueness
-- monotone positive accumulation
+- monotone non-negative additive accumulation for the current fast path
 
 ## Supported Semantic Class
 
@@ -36,6 +36,7 @@ The fast path is only sound when all of the following hold:
    Examples:
    - `Acc is Acc1 + Cost`
    - `Acc is Acc1 + log(Deg) / log(N)` with positive step
+   - zero-cost additive steps when the query is depth-bounded
 
 2. The result contract is minimum accumulated cost per `(source,target)`.
 
@@ -45,10 +46,11 @@ The fast path is only sound when all of the following hold:
 4. The optimizer may transform the graph via SCC condensation, but may
    not change the final result set.
 
-Out of scope initially:
+Still on the exact frontier fallback path:
 
 - negative increments
-- zero-cost cyclic edge systems where monotonicity gives no pruning
+- multiplicative recurrence with any finite factor below `1`
+- non-additive recurrence expressions outside the direct positive-product form
 - `max`, `first`, `sum`, `count`
 - multi-auxiliary or non-linear accumulation beyond the current path-aware
   accumulation shape
@@ -130,13 +132,18 @@ The runtime fast path should only activate when:
 - `AccumulatorMode == TableMode.Min`
 - the accumulation expression is monotone additive in practice
 - graph condensation is available
+- the bounded SCC-condensed probe beats the existing layered positive-min
+  path by a margin
 
 The runtime should fall back to the current exact frontier algorithm
 when:
 
 - applicability cannot be proven
+- the additive step is negative for any reachable edge/auxiliary row
+- the recursive expression is non-additive
 - SCC preprocessing fails
 - internal transfer summarization would be lossy
+- measured SCC overhead dominates the existing positive-min path
 
 ## Instrumentation Requirements
 
@@ -150,6 +157,12 @@ At minimum:
 - condensation DAG edge count
 - number of exact local states explored
 - number of outer DAG states explored
+- SCC condensation, SCC probe, and SCC solve phase timings
+- exact frontier fallback candidate count
+- exact frontier fallback dominance, same-fingerprint, lower-count,
+  lower-count index-probe, and subset-check counts
+- exact frontier fallback target-bucket count plus path-state partition count,
+  total retained states, maximum partition size, and average partition size
 - final output row count
 - total runtime
 

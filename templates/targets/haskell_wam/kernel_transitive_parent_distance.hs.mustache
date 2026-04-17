@@ -1,0 +1,26 @@
+-- | Native BFS with parent and distance tracking for binary edge relations.
+-- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+-- Given a source node, returns a stream of (target, parent, distance)
+-- triples: for each reachable target, the immediate parent on the
+-- shortest path and the path length.
+--
+-- Exercises the 3-output FFIStreamRetry path. Atoms (target, parent) are
+-- interned; distance is a plain Int.
+nativeKernel_transitive_parent_distance
+  :: IM.IntMap [Int] -> Int -> [(Int, Int, Int)]
+nativeKernel_transitive_parent_distance edges source =
+  bfs [(source, source, 0)] IS.empty []
+  where
+    -- queue entries: (node, parent-on-shortest-path, distance)
+    bfs [] _ acc = acc
+    bfs ((node, parent, dist):queue) visited acc
+      | IS.member node visited = bfs queue visited acc
+      | otherwise =
+          let visited' = IS.insert node visited
+              neighbors = IM.findWithDefault [] node edges
+              -- Expanded frontier: each neighbor's parent is `node`
+              expanded = [(n, node, dist + 1) | n <- neighbors,
+                                                not (IS.member n visited')]
+              -- Don't emit the source itself
+              acc' = if node == source then acc else acc ++ [(node, parent, dist)]
+          in bfs (queue ++ expanded) visited' acc'

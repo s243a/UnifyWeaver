@@ -438,6 +438,28 @@ def parse_metrics(stderr: str) -> dict[str, str]:
     return metrics
 
 
+def parse_phase_summary(summary: str) -> dict[str, float]:
+    phases: dict[str, float] = {}
+    for part in summary.split("|"):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        try:
+            phases[key] = float(value)
+        except ValueError:
+            continue
+    return phases
+
+
+def extract_effective_pair_plan(planner_summary: str) -> str:
+    for part in planner_summary.split("|"):
+        marker = "MaterializationPlanPairs"
+        index = part.find(marker)
+        if index >= 0:
+            return part[index + len(marker):].split("=", 1)[0]
+    return planner_summary
+
+
 def benchmark_mode(command: list[str], scale: str, mode: str, strategy: str, repetitions: int) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
@@ -495,14 +517,45 @@ def main() -> int:
 
         for scale, mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1])):
             by_strategy = grouped[(scale, mode)]
+            metrics_by_strategy = {strategy: parse_metrics(result.stderr) for strategy, result in by_strategy.items()}
+            row_counts = {
+                strategy: int(metrics.get("row_count", "0") or 0)
+                for strategy, metrics in metrics_by_strategy.items()
+            }
+            max_row_count = max(row_counts.values(), default=0)
+            eligible_results = [
+                result
+                for strategy, result in by_strategy.items()
+                if row_counts.get(strategy, 0) == max_row_count
+            ] or list(by_strategy.values())
+
+            best = min(eligible_results, key=lambda item: item.median)
+            best_by_effective_plan: dict[str, BenchResult] = {}
+            for result in eligible_results:
+                effective_plan = extract_effective_pair_plan(
+                    metrics_by_strategy[result.strategy].get("closure_pair_planner_strategies", ""))
+                existing = best_by_effective_plan.get(effective_plan)
+                if existing is None or result.median < existing.median:
+                    best_by_effective_plan[effective_plan] = result
+            best_effective = min(best_by_effective_plan.values(), key=lambda item: item.median)
+
             auto = by_strategy.get("auto")
-            best = min(by_strategy.values(), key=lambda item: item.median)
             if auto is not None:
+                auto_metrics = metrics_by_strategy["auto"]
                 ratio = auto.median / best.median if best.median else float("inf")
-                auto_metrics = parse_metrics(auto.stderr)
+                effective_ratio = auto.median / best_effective.median if best_effective.median else float("inf")
                 print(f"{scale}	{mode}	best_strategy	{best.strategy}")
                 print(f"{scale}	{mode}	auto_vs_best	{ratio:.2f}x")
+                print(f"{scale}	{mode}	best_effective_plan	{extract_effective_pair_plan(metrics_by_strategy[best_effective.strategy].get('closure_pair_planner_strategies', ''))}")
+                print(f"{scale}	{mode}	auto_vs_best_effective	{effective_ratio:.2f}x")
                 print(f"{scale}	{mode}	auto_planner	{auto_metrics.get('closure_pair_planner_strategies', '')}")
+                auto_phases = parse_phase_summary(auto_metrics.get("closure_pair_phase_summary", ""))
+                probe_ms = sum(
+                    value
+                    for phase, value in auto_phases.items()
+                    if phase.startswith("closure_pair_probe_"))
+                print(f"{scale}	{mode}	auto_strategy_select_ms	{auto_phases.get('closure_pair_strategy_select', 0.0):.3f}")
+                print(f"{scale}	{mode}	auto_probe_ms	{probe_ms:.3f}")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)

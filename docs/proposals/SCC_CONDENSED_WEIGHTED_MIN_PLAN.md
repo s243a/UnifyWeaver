@@ -11,11 +11,25 @@ Current status:
 - positive-additive weighted `min` now has a fast runtime path and
   clearly beats `All`
 - SCC instrumentation is in place in the weighted benchmark harness
-- the remaining work is to broaden fast weighted `min` beyond the
-  positive-additive case
+- an internal SCC-condensed weighted-min candidate now exists for
+  positive-additive `PathAwareAccumulationNode` workloads, with bounded
+  measured selection against the existing layered dynamic-programming path
+- the additive fast-path boundary now includes non-negative steps, so
+  zero-cost source weights no longer force the exact visited-state frontier
+  fallback when the additive form is otherwise safe and depth-bounded
+- negative additive steps and non-additive recurrence expressions are now
+  covered by explicit fallback-shape survey tests and runtime strategy
+  labeling
+- the exact weighted `Min` frontier fallback now records lightweight
+  frontier metrics for candidate counts, dominance checks, subset checks,
+  and retained frontier bucket sizes
+- on the current positive-additive benchmark shape, the measured selector
+  rejects SCC condensation because the layered path is still cheaper after
+  SCC build/probe overhead
 
-So the next step remains algorithmic, but for a narrower class of
-workloads than when this plan was first drafted.
+So the next step remains algorithmic, but should focus on cases where the
+frontier fallback still appears instead of replacing the already-fast
+positive-additive layered path unconditionally.
 
 ## Phase 0: Baseline Preservation
 
@@ -58,6 +72,9 @@ Reason:
 
 ## Phase 2: Internal Runtime Prototype
 
+Status: implemented as a measured candidate for the current
+positive-additive runtime shape.
+
 Prototype a new internal runtime strategy for the remaining weighted
 `min` cases not already handled by the positive-additive fast path:
 
@@ -77,24 +94,37 @@ Deliverable:
 
 - an internal C# runtime path behind the existing node
 - no planner change required yet
+- current implementation records SCC graph metrics, SCC probe phases, and
+  probe local/outer state counts through `QueryExecutionTrace`
 
 ## Phase 3: Strategy Selection
 
+Status: implemented for additive non-negative candidate paths with bounded
+measured probes.
+
 Add a runtime applicability check:
 
-- use SCC-condensed strategy when safe
+- use SCC-condensed strategy when safe and the bounded probe beats the
+  layered additive-min path by a margin
 - otherwise fall back to current exact frontier
 
 Current selection boundary:
 
-- use the layered dynamic-programming fast path for strictly positive
-  additive `min`
+- strictly positive additive `Min` keeps the existing positive layered/SCC
+  measured path
+- non-negative additive `Min` now uses the same depth-bounded layered/SCC
+  measured candidate and reports separate non-negative trace labels
 - use the exact frontier fallback otherwise
 
 Next selection work:
 
-- determine where SCC-condensed evaluation can replace the frontier
-  fallback safely
+- use the explicit frontier-fallback labels to measure the remaining
+  unsupported shapes before adding more shortcuts
+- determine whether a restricted non-additive class, such as positive
+  multiplicative weights, can be transformed safely without losing exact
+  simple-path semantics
+- keep negative-step additive recurrences on the exact frontier path until
+  there is a proof that pruning and condensation remain sound
 
 Deliverable:
 
@@ -104,6 +134,7 @@ Examples:
 
 - `PathAwareAccumulation-Min-Frontier`
 - `PathAwareAccumulation-Min-SccCondensed`
+- `PathAwareAccumulationSeededMinFrontierFallback`
 
 ## Phase 4: Benchmark Loop
 
@@ -119,15 +150,16 @@ Track:
 - total runtime
 - query time
 - SCC metrics
-- local state counts
+- SCC probe/solve phases
+- local state counts and outer condensation-DAG state counts
 
 Current positive-additive benchmark results already satisfy the intended
 performance goal:
 
-- `300`: `3.41x`
-- `1k`: `3.17x`
-- `5k`: `5.03x`
-- `10k`: `6.98x`
+- `300`: `2.93x`
+- `1k`: `2.62x`
+- `5k`: `4.56x`
+- `10k`: `6.84x`
 
 So for the SCC work, success criteria should be read as applying to the
 broader remaining weighted `min` cases that still fall back to the exact
@@ -190,9 +222,169 @@ The original first code step after this document set was:
 
 That step is now complete.
 
-The next coding step should be:
+The fallback survey step now covers two representative cases:
 
-1. identify weighted `Min` recurrence shapes not covered by the current
-   positive-additive fast path
-2. prototype SCC-condensed evaluation for one of those broader cases
-3. benchmark it against the exact frontier fallback
+1. negative additive weighted `Min`, which matches the additive expression
+   shape but is rejected by the non-negative proof
+2. positive multiplicative weighted `Min`, which is monotone for the test
+   data but is not additive and therefore still requires exact path-state
+   evaluation
+
+The frontier metric step now records:
+
+1. `min_frontier_candidate_count`
+2. `min_frontier_dominance_check_count`
+3. `min_frontier_dominance_candidate_check_count`
+4. `min_frontier_same_fingerprint_candidate_check_count`
+5. `min_frontier_lower_count_candidate_check_count`
+6. `min_frontier_lower_count_index_probe_count`
+7. `min_frontier_subset_check_count`
+8. `min_frontier_dominated_state_count`
+9. `min_frontier_recorded_state_count`
+10. `min_frontier_removed_state_count`
+11. `min_frontier_target_bucket_count`
+12. `min_frontier_bucket_count`
+13. `min_frontier_bucket_state_count`
+14. `min_frontier_bucket_max_size`
+15. `min_frontier_bucket_avg_size`
+
+The path-state partitioning step is now complete:
+
+1. weighted `Min` fallback states carry deterministic path fingerprints
+2. target-local frontiers partition retained states by path length and
+   fingerprint before exact subset/dominance verification
+3. `min_frontier_target_bucket_count` preserves the old target-bucket view,
+   while `min_frontier_bucket_*` now describes exact path-state partitions
+
+The lower-cardinality prefilter step is also now implemented:
+
+1. same-cardinality checks use direct fingerprint indexes
+2. lower-cardinality checks use lazy representative-node indexes only after a
+   path-count bucket is large enough for the index to pay for itself
+3. small buckets direct-scan to avoid dictionary overhead
+4. eager dominated-state removal is no longer scanned during insert, because
+   retained dominated states are correctness-safe and the measured removals
+   stayed at `0`
+
+The positive multiplicative step is now implemented as a direct-product layered
+strategy rather than as a geometric-mean or log-output strategy:
+
+1. recurrence must be `Acc is Acc1 * Factor` with the base expression matching
+   `Factor`
+2. every reachable factor must be finite and at least `1`
+3. subunit factors stay on the exact frontier fallback because they would
+   become negative steps under a log transform
+4. the runtime minimizes products directly, avoiding log/exp output drift
+
+The cross-workload comparison step is now complete, and counted simple-path
+closure now uses compact visited paths for cycle checks.
+`PathAwareTransitiveClosureNode` emits `path_state_*` metrics, giving a
+non-weighted non-DAG comparison point before adding more generic frontier
+indexes.
+
+## Frontier Fallback Metric Survey
+
+Measured with:
+
+```bash
+python examples/benchmark/benchmark_weighted_shortest_path.py \
+  --scales 300,1k --repetitions 1 --weight-mode negative \
+  --recurrence-mode additive
+
+python examples/benchmark/benchmark_weighted_shortest_path.py \
+  --scales 300,1k --repetitions 1 --weight-mode positive \
+  --recurrence-mode multiplicative
+```
+
+The negative-additive fallback preserves output agreement between `All` and
+`Min`. After lazy lower-count representative prefiltering, the exact `Min`
+fallback is still slower than `All` on these benchmark-scale cyclic cases, but
+it is faster than the previous path-state partitioning-only fallback.
+
+| Shape | Scale | All | Min | Speedup | Dominance Candidates | Lower Candidates | Index Probes | Subset Checks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| negative additive | 300 | 0.871s | 1.478s | 0.59x | 20,404,270 | 19,826,544 | 912,133 | 12,621 |
+| negative additive | 1k | 0.563s | 1.217s | 0.46x | 16,522,183 | 16,183,799 | 1,138,494 | 11,157 |
+
+Positive multiplicative recurrence now uses the product layered strategy on the
+benchmark shape:
+
+| Shape | Scale | All | Min | Speedup | Strategy |
+| --- | ---: | ---: | ---: | ---: | --- |
+| multiplicative | 300 | 0.892s | 0.264s | 3.38x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
+| multiplicative | 1k | 0.587s | 0.212s | 2.76x | `PathAwareAccumulationSeededMinNonNegativeMultiplicativeLayered` |
+
+Counted simple-path closure provides the non-weighted comparison point. It does
+not use the weighted `min_frontier_*` dominance machinery; its measured cost is
+raw path-state traversal:
+
+| Shape | Scale | All | Min | Speedup | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| counted shortest path | 300 | 0.634s | 0.214s | 2.97x | 602,808 | 30,968 | 982,581 | 101,371 |
+| counted shortest path | 1k | 0.450s | 0.180s | 2.50x | 352,522 | 10,328 | 592,698 | 38,196 |
+
+Counted-closure phase split after typed row buffering, pre-sized
+materialization, edge-state node-id preindexing, per-row timing removal, a
+compact `(target, depth)` buffered row shape, O(1) parent-linked
+visited-path extension, a dedicated counted-path traversal frame stack, and
+direct-write seed-batch materialization with a packed target/depth row buffer
+and node-id driven traversal/replay:
+
+| Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
+| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
+| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
+| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+
+Interpretation:
+
+- dominance-candidate scans are still the dominant counter, but lazy
+  representative-node prefiltering cuts the path-state-partitioning-only
+  counts by roughly `1.35x` to `2.1x` on these runs
+- same-cardinality checks are now visible separately from lower-count scans,
+  which confirms that the remaining work is almost entirely lower-count
+  dominance probing
+- `min_frontier_removed_state_count` stayed at `0` for these runs, so the
+  runtime avoids eager removal scans and keeps dominated retained states as a
+  correctness-safe tradeoff
+- positive multiplicative recurrence no longer contributes frontier counters on
+  the benchmark shape because it does not enter the fallback
+- counted closure confirms that not every non-DAG path-state workload has the
+  same bottleneck: its measured cost is successor expansion and depth-limit
+  pruning, not subset-dominance lookup
+- compact visited paths reduce counted-closure allocation overhead while
+  leaving the measured traversal counters unchanged
+- typed row buffering and pre-sized final materialization reduce avoidable
+  row-output overhead, but traversal is still the largest counted-closure
+  phase
+- edge-state node-id preindexing removes the per-successor candidate node-id
+  dictionary lookup from traversal while preserving output hashes and
+  `path_state_*` counters
+- row-buffer recording no longer starts a stopwatch for every emitted path
+  row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
+  work is included in traversal timing
+- the counted-path `All` buffer now stores only `(target, depth)` per row,
+  because `seed` is constant for each per-seed traversal; this reduces buffer
+  footprint and lowers final `object[]` materialization cost
+- `CompactVisitedPath.Extend` now uses a parent-linked immutable node instead
+  of copying the full visited-node array on every successor push, which
+  reduces traversal-time allocation/copy overhead while preserving exact
+  cycle checks and frontier semantics
+- counted-path traversal now uses a dedicated frame struct and an explicit
+  initial stack capacity, which trims hot-path stack overhead without changing
+  the reported `path_state_*` counters
+- when the destination is a `List<object[]>`, counted-path `All` materialization
+  now grows the list once and writes the new seed batch directly into the new
+  slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
+  final output path
+- the counted-path `All` staging buffer now stores targets and depths in
+  parallel packed lists instead of shuttling a tiny struct per row, reducing
+  replay overhead on the final materialization path
+- counted-path traversal and buffered replay now operate on interned node ids
+  with edge-state lookup tables, avoiding repeated object-key dictionary
+  lookups on the hot path while preserving exact output values at final
+  materialization time
+- the next broad optimization should avoid adding more generic frontier indexes
+  until another dominance-heavy fallback shape appears; for counted closure,
+  remaining work should target expansion/materialization overhead

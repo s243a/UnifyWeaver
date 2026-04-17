@@ -338,3 +338,99 @@ this branch") applies here too. Notably:
 - No `unsafePerformIO`.
 - No new instruction set.
 - No changes to native lowering or to the Rust target.
+
+## 8. Current benchmark results (2026-04-13)
+
+The WAM Haskell target now **beats SWI-Prolog** on a fair comparison
+using the same optimized Prolog workload. The Rust WAM target also
+beats SWI-Prolog on unoptimized Prolog.
+
+### 8.1 Effective-distance benchmark (300 scale, median of 5 runs)
+
+| Target | Prolog variant | query_ms | vs SWI |
+|---|---|---|---|
+| SWI-Prolog | Optimized (accumulated) | 311ms | baseline |
+| **WAM Haskell + FFI** | **Optimized (accumulated)** | **200ms** | **1.56x faster** |
+| **WAM Rust + FFI** | **Unoptimized** | **126ms** | **2.47x faster** |
+| WAM Haskell (no FFI) | Optimized (accumulated) | 4739ms | 15x slower |
+
+### 8.2 Key changes since initial benchmarks
+
+1. **Optimized Prolog pipeline** (#1359): Bridged `prolog_target`
+   optimization passes with the WAM Haskell pipeline. The WAM targets
+   were previously benchmarked against unoptimized Prolog while SWI
+   used optimized variants with seeded accumulation.
+
+2. **CallForeign instruction** (#1355): Compile-time dispatch resolution
+   eliminates the no-handler/no-solutions ambiguity. Foreign predicates
+   use `CallForeign` (Nothing = fail), non-foreign use `Call` (runtime
+   dispatch chain).
+
+3. **Multi-clause lowering** (#1358): Multi-clause predicates are now
+   lowerable (clause 1 inlined, clause 2+ interpreter fallback).
+
+4. **Bug fixes**: `nonvar/1` + type-checking builtins, `Execute`
+   instruction, `finalizeAggregate` Y-register binding, parameterized
+   `executeForeign` via kernel metadata.
+
+### 8.3 Performance breakdown
+
+The ~37x gap from section 0 has been closed:
+- Started at ~11.7s (37x slower than SWI)
+- After HashMap + IntMap + FFI: ~280ms (close to SWI)
+- After optimized Prolog pipeline: ~200ms (1.56x faster than SWI)
+
+The FFI provides ~15x speedup for `category_ancestor/4` by replacing
+the WAM interpreter loop with a native Haskell depth-bounded DFS.
+The optimized Prolog aggregate query adds another ~20% by moving the
+power-sum accumulation from Haskell's `collectSolutions` loop into
+WAM's `begin_aggregate`/`end_aggregate` machinery.
+
+### 8.4 Interpreter profiling (2026-04-13)
+
+Profile-guided optimization of the pure WAM interpreter (no FFI).
+
+**Pre-resolve labels to PCs:** Extended `resolveCallInstrs` to resolve
+`Execute`, `Jump`, `TryMeElse`, `RetryMeElse`, and `SwitchOnConstant`
+labels to direct PC integers at load time. Adds `ExecutePc`, `JumpPc`,
+`TryMeElsePc`, `RetryMeElsePc`, `SwitchOnConstantPc` variants.
+
+Result: pure interpreter **4739ms → 2518ms (47% faster)**.
+
+**Profiling data (before → after):**
+
+| Cost Centre | Before | After | Notes |
+|---|---|---|---|
+| `step` | 47.3% | 55.7% | Core dispatch (proportionally larger after other wins) |
+| `hashWithSalt1` | **10.0%** | **3.2%** | Label hashing eliminated by pre-resolution |
+| `== (Value)` | 6.2% | 7.5% | String equality in atom comparison |
+| `step.nextPC` | 8.8% | — | Merged into step |
+| `run` | 7.0% | 7.7% | Run loop + instruction fetch |
+
+**Remaining opportunities:**
+- **Atom interning** (~10% combined from `==` + `hash`): Store atoms as
+  `Atom !Int` with a global intern table. Eliminates string comparison
+  and hashing in the hot loop. The Rust target already does this.
+- **Hot/cold state splitting**: Separate `WamState` into frequently-
+  updated fields (PC, registers) and rarely-updated fields (stack,
+  bindings, trail). Reduces record copy size on every step. The Rust
+  target uses this approach.
+- **Mutable registers**: The fundamental perf gap vs Rust is that
+  Haskell's persistent IntMap register file allocates on every write.
+  `IORef`/`STRef`-based mutable registers would close this but changes
+  the architecture significantly.
+
+### 8.5 Scale benchmarks (2026-04-13)
+
+Haskell WAM + FFI vs SWI-Prolog (optimized accumulated), single run:
+
+| Scale | Seeds | Articles | SWI (ms) | Haskell+FFI (ms) | Ratio |
+|---|---|---|---|---|---|
+| 300 | 386 | 271 | 331 | 285 | 1.16x faster |
+| 1k | 89 | 580 | 187 | 202 | 0.93x |
+| 5k | 284 | 3224 | 747 | 716 | 1.04x faster |
+
+The Haskell WAM with FFI is competitive with SWI-Prolog at all scales.
+The advantage is most pronounced at 300 scale (more seeds = more FFI
+DFS calls). At 1k scale (fewer seeds, more articles), SWI's optimized
+Prolog has a slight edge.

@@ -12,11 +12,15 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %pc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 0
   store i32 0, i32* %pc_ptr
 
-  ; Initialize registers to zero
+  ; Initialize registers to zero. Prior code used llvm.memcpy with a
+  ; zeroinitializer source pointer — a pre-existing bug that evaluates
+  ; to null and segfaults at runtime. It went unnoticed until M5.7
+  ; execution testing because llvm-as and opt -passes=verify both
+  ; accept the bogus IR without complaint.
   %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %regs_raw = bitcast %Value* %regs_ptr to i8*
   %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %regs_raw, i8* zeroinitializer, i64 %regs_size, i1 false)
+  call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
   ; Allocate stack (initial capacity 256)
   %stack_mem = call i8* @malloc(i64 6144)  ; 256 * sizeof(StackEntry)
@@ -103,6 +107,80 @@ define %Value @wam_get_reg(%WamState* %vm, i32 %idx) {
 define void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val) {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
   store %Value %val, %Value* %reg_ptr
+  ret void
+}
+
+; === FFI Bridge Helpers (for M5 native kernels) ===
+; Kernels called via @wam_execute_foreign_predicate use these to read and
+; write WAM registers without constructing %Value structs inline. All
+; helpers take a register index in the 0..31 range (A1..A16 → 0..15,
+; X1..X16 → 16..31).
+;
+; Value tag encoding (from types.ll.mustache):
+;   0 = Atom     (payload = interned atom id)
+;   1 = Integer  (payload = signed int as i64)
+;   2 = Float    (payload = double bitcast to i64)
+;   3 = Compound
+;   4 = List
+;   5 = Ref
+;   6 = Unbound
+;   7 = Bool     (payload = 0 or 1)
+
+; Get the tag of a register value.
+define i32 @wam_get_reg_tag(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %tag = load i32, i32* %tag_ptr
+  ret i32 %tag
+}
+
+; Get the raw i64 payload of a register value. Caller is responsible for
+; knowing the tag (use wam_get_reg_tag first if the type is not known).
+define i64 @wam_get_reg_payload(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  ret i64 %pay
+}
+
+; Get a register payload as a double. Tag must be 2 (Float) — the caller
+; is responsible for checking. Performs an i64 → double bitcast.
+define double @wam_get_reg_double(%WamState* %vm, i32 %idx) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = load i64, i64* %pay_ptr
+  %d = bitcast i64 %pay to double
+  ret double %d
+}
+
+; Set a register to an Atom value with the given interned atom ID.
+define void @wam_set_reg_atom_id(%WamState* %vm, i32 %idx, i64 %atom_id) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 0, i32* %tag_ptr
+  store i64 %atom_id, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to an Integer value.
+define void @wam_set_reg_int(%WamState* %vm, i32 %idx, i64 %n) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  store i32 1, i32* %tag_ptr
+  store i64 %n, i64* %pay_ptr
+  ret void
+}
+
+; Set a register to a Float value. Performs a double → i64 bitcast.
+define void @wam_set_reg_double(%WamState* %vm, i32 %idx, double %d) {
+  %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx
+  %tag_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 0
+  %pay_ptr = getelementptr %Value, %Value* %reg_ptr, i32 0, i32 1
+  %pay = bitcast double %d to i64
+  store i32 2, i32* %tag_ptr
+  store i64 %pay, i64* %pay_ptr
   ret void
 }
 
@@ -303,6 +381,62 @@ not_match:
   ret i32 0
 }
 
+; Second-argument indexing dispatch. Identical to @wam_switch_on_constant
+; but reads A2 (register 1) instead of A1 (register 0).
+define i32 @wam_switch_on_constant_a2(%WamState* %vm, %SwitchEntry* %table, i32 %count) {
+entry:
+  %a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %is_unbound = call i1 @value_is_unbound(%Value %a2)
+  br i1 %is_unbound, label %skip_switch, label %scan_init
+
+scan_init:
+  %a2_tag = extractvalue %Value %a2, 0
+  %a2_payload = extractvalue %Value %a2, 1
+  br label %loop
+
+loop:
+  %i = phi i32 [ 0, %scan_init ], [ %i_next, %continue ]
+  %done = icmp uge i32 %i, %count
+  br i1 %done, label %not_match, label %check
+
+check:
+  %entry_ptr = getelementptr %SwitchEntry, %SwitchEntry* %table, i32 %i
+  %key_tag_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 0
+  %key_tag = load i32, i32* %key_tag_ptr
+  %key_pay_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 1
+  %key_pay = load i64, i64* %key_pay_ptr
+  %tag_eq = icmp eq i32 %key_tag, %a2_tag
+  %pay_eq = icmp eq i64 %key_pay, %a2_payload
+  %match = and i1 %tag_eq, %pay_eq
+  br i1 %match, label %found, label %continue
+
+continue:
+  %i_next = add i32 %i, 1
+  br label %loop
+
+found:
+  %label_idx_ptr = getelementptr %SwitchEntry, %SwitchEntry* %entry_ptr, i32 0, i32 2
+  %label_idx = load i32, i32* %label_idx_ptr
+  %is_default = icmp eq i32 %label_idx, -1
+  br i1 %is_default, label %fall_through, label %resolve_label
+
+fall_through:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 1
+
+resolve_label:
+  %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
+  call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
+  ret i32 1
+
+skip_switch:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i32 2
+
+not_match:
+  ret i32 0
+}
+
 ; === Stack Context Helpers (for compound term read/write mode) ===
 
 ; Push a UnifyCtx (type=1) with args array and arg count
@@ -327,7 +461,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
   ret void
 }
 
-; Push a WriteCtx (type=2) with write count
+; Push a WriteCtx (type=2) with write count.
+; For compound terms, data field stores the args %Value* pointer
+; so set_value/set_constant write directly into the compound's args array.
 define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %ss = load i32, i32* %ss_ptr
@@ -337,12 +473,66 @@ define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   ; type = 2 (WriteCtx)
   %type_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 0
   store i32 2, i32* %type_ptr
-  ; aux = count
+  ; aux = count (remaining args to write)
   %count_ext = zext i32 %count to i64
   %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
   store i64 %count_ext, i64* %aux_ptr
+  ; data = null (will be set by put_structure after this call)
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* null, %Value** %data_ptr
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
+  ret void
+}
+
+; Set the args pointer on the top WriteCtx (called by put_structure after push).
+define void @wam_write_ctx_set_args(%WamState* %vm, %Value* %args) {
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  store %Value* %args, %Value** %data_ptr
+  ret void
+}
+
+; Write a value to the next slot in the compound args array.
+; Reads the args pointer and remaining count from the WriteCtx,
+; writes the value, decrements count, auto-pops when exhausted.
+define void @wam_write_ctx_set_arg(%WamState* %vm, %Value %val) {
+entry:
+  %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_ptr
+  %top_idx = sub i32 %ss, 1
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %se = getelementptr %StackEntry, %StackEntry* %stack, i32 %top_idx
+  ; Read remaining count.
+  %aux_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 1
+  %count64 = load i64, i64* %aux_ptr
+  %count = trunc i64 %count64 to i32
+  ; Read args pointer.
+  %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
+  %args = load %Value*, %Value** %data_ptr
+  ; Compute write index: arity - remaining_count (arity stored originally).
+  ; Actually simpler: advance the args pointer after each write.
+  ; Write value at args[0], then advance args to args+1.
+  store %Value %val, %Value* %args
+  %args_next = getelementptr %Value, %Value* %args, i32 1
+  store %Value* %args_next, %Value** %data_ptr
+  ; Decrement count.
+  %new_count = sub i32 %count, 1
+  %new_count64 = zext i32 %new_count to i64
+  store i64 %new_count64, i64* %aux_ptr
+  ; Auto-pop if exhausted.
+  %done = icmp sle i32 %new_count, 0
+  br i1 %done, label %pop, label %ret
+pop:
+  store i32 %top_idx, i32* %ss_ptr
+  br label %ret
+ret:
   ret void
 }
 
@@ -671,6 +861,1959 @@ exit:
   ret void
 }
 
+; === Foreign Predicate Dispatch (M3 scaffolding) ===
+; Dispatches a call_foreign instruction to a native kernel.
+; In M3, every kind returns false — M5 will replace the stubs with real
+; kernel implementations (transitive_distance, weighted_shortest_path, etc).
+; When foreign_lowering is disabled (the default), the compile path emits
+; no call_foreign instructions and this function is never reached, so the
+; pure WAM behavior is preserved for testing.
+;
+; Kind IDs (keep in sync with wam_llvm_foreign_kind_id/2 in wam_llvm_target.pl):
+;   0 = category_ancestor
+;   1 = countdown_sum2
+;   2 = list_suffix2
+;   3 = transitive_closure2
+;   4 = transitive_distance3
+;   5 = weighted_shortest_path3
+;   6 = astar_shortest_path4
+; === M5.14: Bump arena allocator ===
+; WASM-portable arena for transient kernel allocations. Kernel helpers
+; (BFS, Dijkstra, A*) allocate scratch buffers at the start and free
+; everything at the end — a pattern that maps perfectly to bump allocation.
+;
+; Native: the arena is backed by a single malloc'd buffer.
+; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory.
+;
+; Usage:  mark → alloc … alloc → rewind (restores to mark).
+
+@wam_arena_buf = internal global i8* null
+@wam_arena_pos = internal global i64 0
+@wam_arena_cap = internal global i64 0
+
+define void @wam_arena_init(i64 %cap) {
+  %buf = call i8* @malloc(i64 %cap)
+  store i8* %buf, i8** @wam_arena_buf
+  store i64 0, i64* @wam_arena_pos
+  store i64 %cap, i64* @wam_arena_cap
+  ret void
+}
+
+define void @wam_arena_destroy() {
+  %buf = load i8*, i8** @wam_arena_buf
+  %is_null = icmp eq i8* %buf, null
+  br i1 %is_null, label %done, label %do_free
+do_free:
+  call void @free(i8* %buf)
+  store i8* null, i8** @wam_arena_buf
+  store i64 0, i64* @wam_arena_pos
+  store i64 0, i64* @wam_arena_cap
+  br label %done
+done:
+  ret void
+}
+
+define i64 @wam_arena_mark() {
+  %pos = load i64, i64* @wam_arena_pos
+  ret i64 %pos
+}
+
+define void @wam_arena_rewind(i64 %mark) {
+  store i64 %mark, i64* @wam_arena_pos
+  ret void
+}
+
+; Bump-allocates %size bytes (8-byte aligned). Returns null if arena
+; is exhausted — callers that need more than the arena provides should
+; fall back to malloc (not yet implemented; current kernels fit easily).
+define i8* @wam_arena_alloc(i64 %size) {
+entry:
+  ; Align size up to 8.
+  %size_plus_7 = add i64 %size, 7
+  %aligned = and i64 %size_plus_7, -8
+  %pos = load i64, i64* @wam_arena_pos
+  %new_pos = add i64 %pos, %aligned
+  %cap = load i64, i64* @wam_arena_cap
+  %overflow = icmp ugt i64 %new_pos, %cap
+  br i1 %overflow, label %oom, label %ok
+ok:
+  store i64 %new_pos, i64* @wam_arena_pos
+  %buf = load i8*, i8** @wam_arena_buf
+  %ptr = getelementptr i8, i8* %buf, i64 %pos
+  ret i8* %ptr
+oom:
+  ret i8* null
+}
+
+; Convenience: init arena if not already initialized, with a default
+; capacity large enough for most kernel workloads (1 MiB).
+define void @wam_arena_ensure() {
+  %buf = load i8*, i8** @wam_arena_buf
+  %need_init = icmp eq i8* %buf, null
+  br i1 %need_init, label %do_init, label %done
+do_init:
+  call void @wam_arena_init(i64 1048576)
+  br label %done
+done:
+  ret void
+}
+
+; Module-level cleanup: frees the arena buffer. Callers should invoke
+; this after all WAM execution is complete. For native targets, the OS
+; reclaims memory on exit, so this is optional but good practice. For
+; WASM targets (where there is no OS cleanup), this is required.
+define void @wam_cleanup() {
+  call void @wam_arena_destroy()
+  ret void
+}
+
+; === M5.2: BFS over an %AtomFactPair table ===
+; Computes the shortest path length (in edges) from %start to %target in
+; the directed graph described by an array of (from, to) atom ID pairs.
+;
+; On success, writes the distance to *%out_dist and returns true.
+; On failure (target unreachable, or start == target handled specially):
+;   - If %start == %target, writes 0 and returns true.
+;   - Otherwise returns false and does not touch *%out_dist.
+;
+; The caller must supply %max_atom_id — the largest atom ID that could
+; appear in either %start, %target, or any row of %table. This bounds
+; the visited / queue arrays. A safe upper bound is (2 * %len + 1) since
+; the table has at most 2*%len distinct atom IDs, but a tighter bound
+; improves cache behavior.
+;
+; Allocates three scratch buffers via the bump arena (visited, queue,
+; dqueue), all freed by arena rewind before return.
+define i1 @wam_bfs_atom_distance(
+    i64 %start, i64 %target,
+    %AtomFactPair* %table, i64 %len,
+    i64 %max_atom_id,
+    i64* %out_dist) {
+entry:
+  ; Edge case: start == target → distance 0, success, no allocation needed.
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store i64 0, i64* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  ; Size = (max_atom_id + 1) entries.
+  %n = add i64 %max_atom_id, 1
+  %vis_bytes = shl i64 %n, 2     ; n * 4
+  %q_bytes   = shl i64 %n, 3     ; n * 8
+  %dq_bytes  = shl i64 %n, 2     ; n * 4
+
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem   = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem  = call i8* @wam_arena_alloc(i64 %dq_bytes)
+
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue   = bitcast i8* %q_mem  to i64*
+  %dqueue  = bitcast i8* %dq_mem to i32*
+
+  ; Zero-init visited[].
+  br label %vis_init
+
+vis_init:
+  %vi = phi i64 [0, %alloc], [%vi_next, %vis_init_body]
+  %vi_cmp = icmp ult i64 %vi, %n
+  br i1 %vi_cmp, label %vis_init_body, label %seed
+
+vis_init_body:
+  %vi_slot = getelementptr i32, i32* %visited, i64 %vi
+  store i32 0, i32* %vi_slot
+  %vi_next = add i64 %vi, 1
+  br label %vis_init
+
+seed:
+  ; Mark start as visited and push onto queue with depth 0.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %loop
+
+loop:
+  %head = phi i64 [0, %seed], [%head_next, %loop_back]
+  %tail = phi i64 [1, %seed], [%tail_cur, %loop_back]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %pop, label %fail_free
+
+pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %depth = load i32, i32* %dq_slot
+  %head_next = add i64 %head, 1
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %pop], [%si_next, %scan_cont]
+  %tail_cur = phi i64 [%tail, %pop], [%tail_kept, %scan_cont]
+  %scan_cmp = icmp ult i64 %si, %len
+  br i1 %scan_cmp, label %scan_body, label %loop_back
+
+scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr   = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from = load i64, i64* %from_ptr
+  %to   = load i64, i64* %to_ptr
+
+  ; Skip rows whose from != current node.
+  %from_match = icmp eq i64 %from, %node
+  br i1 %from_match, label %check_to, label %scan_cont
+
+check_to:
+  ; Safety: skip if to > max_atom_id.
+  %to_in_range = icmp ule i64 %to, %max_atom_id
+  br i1 %to_in_range, label %check_visited, label %scan_cont
+
+check_visited:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to
+  %vis_to = load i32, i32* %vis_to_ptr
+  %is_unseen = icmp eq i32 %vis_to, 0
+  br i1 %is_unseen, label %visit, label %scan_cont
+
+visit:
+  store i32 1, i32* %vis_to_ptr
+  %new_depth = add i32 %depth, 1
+  %is_target = icmp eq i64 %to, %target
+  br i1 %is_target, label %hit, label %enqueue
+
+hit:
+  %new_depth_64 = sext i32 %new_depth to i64
+  store i64 %new_depth_64, i64* %out_dist
+  br label %free_buffers_ok
+
+enqueue:
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to, i64* %q_push
+  %dq_push = getelementptr i32, i32* %dqueue, i64 %tail_cur
+  store i32 %new_depth, i32* %dq_push
+  %tail_after_push = add i64 %tail_cur, 1
+  br label %scan_cont
+
+scan_cont:
+  ; Merge tail across all paths: unchanged on skip, +1 on enqueue.
+  %tail_kept = phi i64 [%tail_cur, %scan_body], [%tail_cur, %check_to], [%tail_cur, %check_visited], [%tail_after_push, %enqueue]
+  %si_next = add i64 %si, 1
+  br label %scan
+
+loop_back:
+  br label %loop
+
+free_buffers_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.3 + M5.14: Dijkstra over a %WeightedFact table ===
+; Computes the minimum-weight path distance from %start to %target in
+; a directed graph of (from, to, weight) triples. All weights must be
+; non-negative — negative edges produce undefined output (Dijkstra
+; doesn't handle them).
+;
+; On success, writes the distance (as a double) to *%out_dist and
+; returns true. On failure (target unreachable), returns false without
+; touching *%out_dist.
+;
+; M5.14 replaces the O(V²) linear-scan extract-min with a binary
+; min-heap using lazy deletion (no decrease-key). The heap stores
+; (priority, node_id) pairs. When a node's distance is improved via
+; edge relaxation, a new entry is inserted with the better priority
+; rather than updating in-place. Stale entries (already-visited nodes)
+; are skipped on extraction. This reduces the per-extraction cost from
+; O(V) to O(log H) where H ≤ E (number of heap entries).
+;
+; Total complexity: O((V + E) * log E) vs the prior O(V² + V*E).
+;
+; "Infinity" is encoded as 0x7FF0000000000000 (IEEE 754 +inf).
+
+; --- Binary min-heap helpers ---
+; The heap is stored as two parallel arrays: heap_keys (double*) and
+; heap_vals (i64*), plus a size counter. Capacity is pre-allocated to
+; max(V, E) + 1 to avoid realloc during the Dijkstra run.
+
+define void @heap_sift_up(double* %keys, i64* %vals, i64 %idx) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [%idx, %entry], [%parent, %do_swap]
+  %has_parent = icmp ugt i64 %i, 0
+  br i1 %has_parent, label %check, label %done
+
+check:
+  %i_minus_1 = sub i64 %i, 1
+  %parent = udiv i64 %i_minus_1, 2
+  %k_i_ptr = getelementptr double, double* %keys, i64 %i
+  %k_p_ptr = getelementptr double, double* %keys, i64 %parent
+  %k_i = load double, double* %k_i_ptr
+  %k_p = load double, double* %k_p_ptr
+  %should_swap = fcmp olt double %k_i, %k_p
+  br i1 %should_swap, label %do_swap, label %done
+
+do_swap:
+  store double %k_i, double* %k_p_ptr
+  store double %k_p, double* %k_i_ptr
+  %v_i_ptr = getelementptr i64, i64* %vals, i64 %i
+  %v_p_ptr = getelementptr i64, i64* %vals, i64 %parent
+  %v_i = load i64, i64* %v_i_ptr
+  %v_p = load i64, i64* %v_p_ptr
+  store i64 %v_i, i64* %v_p_ptr
+  store i64 %v_p, i64* %v_i_ptr
+  br label %loop
+
+done:
+  ret void
+}
+
+define void @heap_sift_down(double* %keys, i64* %vals, i64 %size, i64 %idx) {
+entry:
+  br label %loop
+
+loop:
+  %i = phi i64 [%idx, %entry], [%smallest, %did_swap]
+  %i_times_2 = mul i64 %i, 2
+  %left = add i64 %i_times_2, 1
+  %right = add i64 %left, 1
+  br label %find_smallest
+
+find_smallest:
+  %s0 = phi i64 [%i, %loop]
+  ; Check left child.
+  %left_ok = icmp ult i64 %left, %size
+  br i1 %left_ok, label %cmp_left, label %check_right_only
+
+cmp_left:
+  %k_s0_ptr = getelementptr double, double* %keys, i64 %s0
+  %k_l_ptr = getelementptr double, double* %keys, i64 %left
+  %k_s0 = load double, double* %k_s0_ptr
+  %k_l = load double, double* %k_l_ptr
+  %left_better = fcmp olt double %k_l, %k_s0
+  %s1 = select i1 %left_better, i64 %left, i64 %s0
+  br label %check_right
+
+check_right_only:
+  %s1b = phi i64 [%s0, %find_smallest]
+  br label %check_right
+
+check_right:
+  %s1c = phi i64 [%s1, %cmp_left], [%s1b, %check_right_only]
+  %right_ok = icmp ult i64 %right, %size
+  br i1 %right_ok, label %cmp_right, label %maybe_swap
+
+cmp_right:
+  %k_s1_ptr = getelementptr double, double* %keys, i64 %s1c
+  %k_r_ptr = getelementptr double, double* %keys, i64 %right
+  %k_s1 = load double, double* %k_s1_ptr
+  %k_r = load double, double* %k_r_ptr
+  %right_better = fcmp olt double %k_r, %k_s1
+  %smallest_pre = select i1 %right_better, i64 %right, i64 %s1c
+  br label %maybe_swap
+
+maybe_swap:
+  %smallest = phi i64 [%s1c, %check_right], [%smallest_pre, %cmp_right]
+  %need_swap = icmp ne i64 %smallest, %i
+  br i1 %need_swap, label %did_swap, label %done
+
+did_swap:
+  %dk_i_ptr = getelementptr double, double* %keys, i64 %i
+  %dk_s_ptr = getelementptr double, double* %keys, i64 %smallest
+  %dk_i = load double, double* %dk_i_ptr
+  %dk_s = load double, double* %dk_s_ptr
+  store double %dk_i, double* %dk_s_ptr
+  store double %dk_s, double* %dk_i_ptr
+  %dv_i_ptr = getelementptr i64, i64* %vals, i64 %i
+  %dv_s_ptr = getelementptr i64, i64* %vals, i64 %smallest
+  %dv_i = load i64, i64* %dv_i_ptr
+  %dv_s = load i64, i64* %dv_s_ptr
+  store i64 %dv_i, i64* %dv_s_ptr
+  store i64 %dv_s, i64* %dv_i_ptr
+  br label %loop
+
+done:
+  ret void
+}
+
+define i1 @wam_dijkstra_weighted_distance(
+    i64 %start, i64 %target,
+    %WeightedFact* %table, i64 %len,
+    i64 %max_atom_id,
+    double* %out_dist) {
+entry:
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store double 0.0, double* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %n = add i64 %max_atom_id, 1
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes  = shl i64 %n, 2
+  ; Heap capacity: at most E insertions (one per relaxation).
+  %heap_cap = add i64 %len, 1
+  %heap_key_bytes = shl i64 %heap_cap, 3
+  %heap_val_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem  = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem   = call i8* @wam_arena_alloc(i64 %heap_key_bytes)
+  %hv_mem   = call i8* @wam_arena_alloc(i64 %heap_val_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  ; Init visited[] = 0.
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  ; Init best[] = +inf via loop (memset cannot produce IEEE 754 +inf).
+  br label %init_best
+
+init_best:
+  %ib_i = phi i64 [0, %alloc], [%ib_next, %init_best]
+  %ib_ptr = getelementptr double, double* %best, i64 %ib_i
+  store double 0x7FF0000000000000, double* %ib_ptr
+  %ib_next = add i64 %ib_i, 1
+  %ib_done = icmp uge i64 %ib_next, %n
+  br i1 %ib_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start
+  store double 0.0, double* %best_start
+  ; Insert start into heap with priority 0.0.
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double 0.0, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  ; Extract min from heap (skip stale entries via visited check).
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %fail_free, label %do_extract
+
+do_extract:
+  ; Read root (min).
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  ; Move last to root and sift down.
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  ; Check if this node was already visited (lazy deletion).
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  ; Mark visited.
+  store i32 1, i32* %rv_vis_ptr
+  ; If it's the target, we're done.
+  %is_target = icmp eq i64 %root_val, %target
+  br i1 %is_target, label %hit, label %relax
+
+hit:
+  store double %root_key, double* %out_dist
+  br label %free_ok
+
+relax:
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after_insert, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to   = load i64, i64* %fp_to
+  %edge_w    = load double, double* %fp_w
+
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %root_key, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_and_push, label %relax_cont
+
+store_and_push:
+  store double %alt, double* %best_to_ptr
+  ; Push new entry to heap (lazy: don't remove old one).
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %alt, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_and_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+free_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.4: A* over a %WeightedFact table ===
+; Same as @wam_dijkstra_weighted_distance but orders the frontier by
+; f(n) = g(n) + h(n) instead of just g(n), where g is the best known
+; actual distance from %start and h is a precomputed heuristic estimate
+; of the remaining distance to %target.
+;
+; The heuristic is supplied as a plain double[] indexed by atom ID;
+; %heuristic[i] = estimated distance from node i to %target. Must be
+; admissible (never overestimate) for the result to be optimal.
+;
+; Returns the same g value Dijkstra would return — the heuristic only
+; affects exploration order, not the reported distance.
+;
+; With a zero heuristic this degenerates to Dijkstra. We keep the two
+; helpers separate so the simpler one has no extra parameter and so
+; callers don't allocate a zeroed h[] when they don't want A*.
+define i1 @wam_astar_weighted_distance(
+    i64 %start, i64 %target,
+    %WeightedFact* %table, i64 %len,
+    double* %heuristic,
+    i64 %max_atom_id,
+    double* %out_dist) {
+entry:
+  %is_self = icmp eq i64 %start, %target
+  br i1 %is_self, label %self_hit, label %alloc
+
+self_hit:
+  store double 0.0, double* %out_dist
+  ret i1 true
+
+alloc:
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %n = add i64 %max_atom_id, 1
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes  = shl i64 %n, 2
+  ; Heap capacity: at most E insertions (one per relaxation).
+  %heap_cap = add i64 %len, 1
+  %heap_key_bytes = shl i64 %heap_cap, 3
+  %heap_val_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem  = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem   = call i8* @wam_arena_alloc(i64 %heap_key_bytes)
+  %hv_mem   = call i8* @wam_arena_alloc(i64 %heap_val_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  ; Init visited[] = 0.
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  ; Init best[] = +inf via loop.
+  br label %init_best
+
+init_best:
+  %ii = phi i64 [0, %alloc], [%ii_next, %init_best]
+  %best_slot = getelementptr double, double* %best, i64 %ii
+  store double 0x7FF0000000000000, double* %best_slot
+  %ii_next = add i64 %ii, 1
+  %ii_done = icmp uge i64 %ii_next, %n
+  br i1 %ii_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start
+  store double 0.0, double* %best_start
+  ; Insert start into heap with f = 0 + h(start).
+  %h_start_ptr = getelementptr double, double* %heuristic, i64 %start
+  %h_start = load double, double* %h_start_ptr
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double %h_start, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %fail_free, label %do_extract
+
+do_extract:
+  ; Read root (min f).
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  ; Move last to root and sift down.
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  ; Lazy deletion: skip already-visited nodes.
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  store i32 1, i32* %rv_vis_ptr
+  %is_target = icmp eq i64 %root_val, %target
+  br i1 %is_target, label %hit, label %relax
+
+hit:
+  ; Return g value (actual distance), not f.
+  %best_target_ptr = getelementptr double, double* %best, i64 %target
+  %best_target = load double, double* %best_target_ptr
+  store double %best_target, double* %out_dist
+  br label %free_ok
+
+relax:
+  ; Load the selected node's g value for edge relaxation.
+  %best_pick_ptr = getelementptr double, double* %best, i64 %root_val
+  %best_pick = load double, double* %best_pick_ptr
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after_insert, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to   = load i64, i64* %fp_to
+  %edge_w    = load double, double* %fp_w
+
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %best_pick, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_and_push, label %relax_cont
+
+store_and_push:
+  store double %alt, double* %best_to_ptr
+  ; Push with f = g_new + h(edge_to).
+  %h_to_ptr = getelementptr double, double* %heuristic, i64 %edge_to
+  %h_to = load double, double* %h_to_ptr
+  %f_new = fadd double %alt, %h_to
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %f_new, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_and_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+free_ok:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+fail_free:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
+; === M5.8: td3 common runner helper ===
+; The per-instance bodies generated by the M5.6 compile pipeline all
+; follow the same shape: check A1/A2 are atoms, call the BFS helper
+; with the (table, len, max_atom_id) that's specific to the instance,
+; write A3 on success. Rather than inline that whole sequence into
+; every switch case, we factor it into this helper and the generated
+; impl just passes the right arguments.
+;
+; This lets multiple foreign-lowered td3 predicates with different
+; edge tables share a single body of code, keeping the substituted
+; @wam_td3_kernel_impl small — each instance case is a GEP + a call.
+define i1 @wam_td3_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_is_atom = icmp eq i32 %s_tag, 0
+  br i1 %s_is_atom, label %check_t, label %bail
+
+check_t:
+  ; If A2 is unbound, use stream mode (enumerate all reachable pairs).
+  %t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %t_is_atom = icmp eq i32 %t_tag, 0
+  br i1 %t_is_atom, label %run_bfs, label %check_t_unbound
+
+check_t_unbound:
+  %t_is_unbound = icmp eq i32 %t_tag, 6
+  br i1 %t_is_unbound, label %stream, label %bail
+
+run_bfs:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %dist_slot = alloca i64
+  %ok = call i1 @wam_bfs_atom_distance(
+      i64 %start_id, i64 %target_id,
+      %AtomFactPair* %table, i64 %len,
+      i64 %max_atom_id,
+      i64* %dist_slot)
+  br i1 %ok, label %hit, label %bail
+
+hit:
+  %dist = load i64, i64* %dist_slot
+  call void @wam_set_reg_int(%WamState* %vm, i32 2, i64 %dist)
+  ret i1 true
+
+stream:
+  %st_ok = call i1 @wam_td3_stream_run(
+      %WamState* %vm,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %st_ok
+
+bail:
+  ret i1 false
+}
+
+; === M5.16: Stream-mode td3 (enumerate all reachable target/distance pairs) ===
+; Runs BFS from A1, collects all (node, distance) pairs into a result
+; array. Each result encodes both atom_id and distance into one %Value:
+; tag=1 (Integer), payload = (atom_id << 32) | distance.
+; On yield, the custom logic in a wrapper decodes both registers.
+;
+; For simplicity, we use the standard foreign iterator for A2 (atom values)
+; and store distances in a parallel i64 array. The iterator yields atom
+; values to A2; after each yield we manually write A3 from the distance array.
+; This is done by using a paired-result helper that wraps the push.
+;
+; Actually, the simplest correct approach: collect all (node, dist) pairs,
+; yield each as an Atom to A2 via the standard iterator, and encode the
+; distance into field 6 (agg_result_reg) of the choice point... No, that's
+; a hack.
+;
+; Cleanest approach: each result is a %Value pair (2 entries per result).
+; result[2*i] = Atom(node_id), result[2*i+1] = Integer(distance).
+; Push with count = num_pairs, result_reg = 1 (A2).
+; Override @wam_foreign_iter_next to also write result[2*cursor+1] to A3.
+;
+; But overriding the generic iterator is invasive. Instead: push a custom
+; foreign CP with a secondary array pointer. Too complex for now.
+;
+; Pragmatic solution: use the generic iterator for A2, and store distances
+; in a global scratch buffer that persists across backtracks. Since the
+; iterator restores registers from the CP before yielding, we can use a
+; global to pass the distance for each cursor value.
+;
+; FINAL DESIGN: Interleave atom and distance values in the result array.
+; result[2*i] = Atom(node_id), result[2*i+1] = Integer(distance).
+; total count = 2 * num_pairs. result_reg = 1 (A2).
+; After each iterator yield (which writes result[cursor] to A2), the cursor
+; is odd → next yield writes the distance to A2, which is wrong.
+;
+; OK, truly simplest: just yield atoms to A2 and DON'T write A3 in stream
+; mode. A3 stays unbound. This gives Prolog-correct semantics for
+; enumerating reachable targets without distances. For td3 stream mode
+; that's actually useful — callers who want distances can use the
+; deterministic mode with a specific target.
+define i1 @wam_td3_stream_run(
+    %WamState* %vm,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; BFS to collect all reachable nodes (reuse tc2 stream pattern).
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %dq_bytes = shl i64 %n, 2
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+  %dqueue = bitcast i8* %dq_mem to i32*
+
+  ; Result array: pairs of %Value (atom for A2, int for A3).
+  ; Max 2*n entries. malloc'd to outlive arena rewind.
+  %res_count_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_count_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  ; Seed BFS.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %bfs_loop
+
+bfs_loop:
+  %head = phi i64 [0, %entry], [%head_next, %bfs_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %bfs_scan_done]
+  %rcount = phi i64 [0, %entry], [%rcount_after, %bfs_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %bfs_pop, label %bfs_done
+
+bfs_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %depth = load i32, i32* %dq_slot
+  %head_next = add i64 %head, 1
+  %next_depth = add i32 %depth, 1
+  br label %bfs_scan
+
+bfs_scan:
+  %si = phi i64 [0, %bfs_pop], [%si_next, %bfs_scan_cont]
+  %tail_cur = phi i64 [%tail, %bfs_pop], [%tail_kept, %bfs_scan_cont]
+  %rc_cur = phi i64 [%rcount, %bfs_pop], [%rc_kept, %bfs_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %bfs_scan_body, label %bfs_scan_done
+
+bfs_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %bfs_check_to, label %bfs_scan_cont
+
+bfs_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %bfs_check_vis, label %bfs_scan_cont
+
+bfs_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %bfs_scan_cont, label %bfs_enqueue
+
+bfs_enqueue:
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %dq_push = getelementptr i32, i32* %dqueue, i64 %tail_cur
+  store i32 %next_depth, i32* %dq_push
+  %tail_inc = add i64 %tail_cur, 1
+  ; Store pair: result[2*rc] = Atom(to_id), result[2*rc+1] = Int(depth+1)
+  %ri_atom = shl i64 %rc_cur, 1
+  %ri_dist = or i64 %ri_atom, 1
+  %res_atom_ptr = getelementptr %Value, %Value* %results, i64 %ri_atom
+  %ra_tag = getelementptr %Value, %Value* %res_atom_ptr, i32 0, i32 0
+  store i32 0, i32* %ra_tag
+  %ra_pay = getelementptr %Value, %Value* %res_atom_ptr, i32 0, i32 1
+  store i64 %to_id, i64* %ra_pay
+  %res_dist_ptr = getelementptr %Value, %Value* %results, i64 %ri_dist
+  %rd_tag = getelementptr %Value, %Value* %res_dist_ptr, i32 0, i32 0
+  store i32 1, i32* %rd_tag
+  %nd64 = zext i32 %next_depth to i64
+  %rd_pay = getelementptr %Value, %Value* %res_dist_ptr, i32 0, i32 1
+  store i64 %nd64, i64* %rd_pay
+  %rc_inc = add i64 %rc_cur, 1
+  br label %bfs_scan_cont
+
+bfs_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %bfs_scan_body], [%tail_cur, %bfs_check_to], [%tail_cur, %bfs_check_vis], [%tail_inc, %bfs_enqueue]
+  %rc_kept = phi i64 [%rc_cur, %bfs_scan_body], [%rc_cur, %bfs_check_to], [%rc_cur, %bfs_check_vis], [%rc_inc, %bfs_enqueue]
+  %si_next = add i64 %si, 1
+  br label %bfs_scan
+
+bfs_scan_done:
+  %tail_after = phi i64 [%tail_cur, %bfs_scan]
+  %rcount_after = phi i64 [%rc_cur, %bfs_scan]
+  br label %bfs_loop
+
+bfs_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %no_results = icmp eq i64 %rcount, 0
+  br i1 %no_results, label %stream_fail, label %stream_yield
+
+stream_yield:
+  ; Yield first pair: result[0] → A2 (atom), result[1] → A3 (distance).
+  %first_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_atom = load %Value, %Value* %first_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_atom)
+  %first_dist_ptr = getelementptr %Value, %Value* %results, i64 1
+  %first_dist = load %Value, %Value* %first_dist_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %first_dist)
+
+  ; Push foreign choice point with paired results (2 entries per pair).
+  ; result_reg=1 (A2). The generic iterator will write atoms to A2,
+  ; but we need A3 too. We use result_reg=255 as a sentinel meaning
+  ; "paired mode" — the iterator writes result[2*i] to reg 1 and
+  ; result[2*i+1] to reg 2. For now, we just push the full array and
+  ; use the paired iterator @wam_foreign_iter_next_paired.
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %total_entries = shl i64 %rcount, 1
+  %total32 = trunc i64 %total_entries to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %total32,
+      i32 255,
+      i32 %pc)
+
+  ret i1 true
+
+stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.9: wsp3 common runner helper ===
+; Parallels @wam_td3_run but wraps @wam_dijkstra_weighted_distance
+; (the M5.3 helper) instead of BFS. The concrete M5.9
+; @wam_wsp3_kernel_impl substituted body calls this with per-instance
+; (table, len, max_atom_id).
+;
+; Signature differences from @wam_td3_run:
+;   - %table is a %WeightedFact*, not %AtomFactPair*
+;   - the result slot is double*, not i64*
+;   - success writes A3 via @wam_set_reg_double, not @wam_set_reg_int
+define i1 @wam_wsp3_run(%WamState* %vm, %WeightedFact* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %wsp_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %wsp_s_is_atom = icmp eq i32 %wsp_s_tag, 0
+  br i1 %wsp_s_is_atom, label %wsp_check_t, label %wsp_bail
+
+wsp_check_t:
+  %wsp_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %wsp_t_is_atom = icmp eq i32 %wsp_t_tag, 0
+  br i1 %wsp_t_is_atom, label %wsp_run_dijkstra, label %wsp_check_unbound
+
+wsp_check_unbound:
+  %wsp_t_unbound = icmp eq i32 %wsp_t_tag, 6
+  br i1 %wsp_t_unbound, label %wsp_stream, label %wsp_bail
+
+wsp_run_dijkstra:
+  %wsp_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %wsp_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %wsp_dist_slot = alloca double
+  %wsp_ok = call i1 @wam_dijkstra_weighted_distance(
+      i64 %wsp_start_id, i64 %wsp_target_id,
+      %WeightedFact* %table, i64 %len,
+      i64 %max_atom_id,
+      double* %wsp_dist_slot)
+  br i1 %wsp_ok, label %wsp_hit, label %wsp_bail
+
+wsp_hit:
+  %wsp_dist = load double, double* %wsp_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %wsp_dist)
+  ret i1 true
+
+wsp_stream:
+  %wsp_st_ok = call i1 @wam_wsp3_stream_run(
+      %WamState* %vm,
+      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %wsp_st_ok
+
+wsp_bail:
+  ret i1 false
+}
+
+; === M5.16: Stream-mode wsp3 (enumerate all reachable target/distance pairs) ===
+; Runs Dijkstra from A1, collects all reachable (node, best_distance) pairs.
+; Uses paired mode (result_reg=255): result[2*i] = Atom(node), result[2*i+1] = Float(dist).
+define i1 @wam_wsp3_stream_run(
+    %WamState* %vm,
+    %WeightedFact* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; Run full Dijkstra (target = impossible sentinel to force full exploration).
+  ; We use max_atom_id+1 as an unreachable target so Dijkstra visits everything.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %best_bytes = shl i64 %n, 3
+  %vis_bytes = shl i64 %n, 2
+  %heap_cap = add i64 %len, 1
+  %hk_bytes = shl i64 %heap_cap, 3
+  %hv_bytes = shl i64 %heap_cap, 3
+
+  %best_mem = call i8* @wam_arena_alloc(i64 %best_bytes)
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %hk_mem = call i8* @wam_arena_alloc(i64 %hk_bytes)
+  %hv_mem = call i8* @wam_arena_alloc(i64 %hv_bytes)
+
+  %best = bitcast i8* %best_mem to double*
+  %visited = bitcast i8* %vis_mem to i32*
+  %heap_keys = bitcast i8* %hk_mem to double*
+  %heap_vals = bitcast i8* %hv_mem to i64*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  br label %init_best
+
+init_best:
+  %ib_i = phi i64 [0, %entry], [%ib_next, %init_best]
+  %ib_ptr = getelementptr double, double* %best, i64 %ib_i
+  store double 0x7FF0000000000000, double* %ib_ptr
+  %ib_next = add i64 %ib_i, 1
+  %ib_done = icmp uge i64 %ib_next, %n
+  br i1 %ib_done, label %seed, label %init_best
+
+seed:
+  %best_start = getelementptr double, double* %best, i64 %start_id
+  store double 0.0, double* %best_start
+  %hk0 = getelementptr double, double* %heap_keys, i64 0
+  store double 0.0, double* %hk0
+  %hv0 = getelementptr i64, i64* %heap_vals, i64 0
+  store i64 %start_id, i64* %hv0
+  br label %outer
+
+outer:
+  %heap_size = phi i64 [1, %seed], [%heap_size_after, %relax_done]
+  br label %extract
+
+extract:
+  %es = phi i64 [%heap_size, %outer], [%es_dec, %skip_stale]
+  %es_empty = icmp eq i64 %es, 0
+  br i1 %es_empty, label %dijkstra_done, label %do_extract
+
+do_extract:
+  %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
+  %root_key = load double, double* %root_key_ptr
+  %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
+  %root_val = load i64, i64* %root_val_ptr
+  %es_dec = sub i64 %es, 1
+  %last_key_ptr = getelementptr double, double* %heap_keys, i64 %es_dec
+  %last_val_ptr = getelementptr i64, i64* %heap_vals, i64 %es_dec
+  %last_key = load double, double* %last_key_ptr
+  %last_val = load i64, i64* %last_val_ptr
+  store double %last_key, double* %root_key_ptr
+  store i64 %last_val, i64* %root_val_ptr
+  call void @heap_sift_down(double* %heap_keys, i64* %heap_vals, i64 %es_dec, i64 0)
+  %rv_ok = icmp ule i64 %root_val, %max_atom_id
+  br i1 %rv_ok, label %check_vis, label %skip_stale
+
+check_vis:
+  %rv_vis_ptr = getelementptr i32, i32* %visited, i64 %root_val
+  %rv_vis = load i32, i32* %rv_vis_ptr
+  %rv_stale = icmp ne i32 %rv_vis, 0
+  br i1 %rv_stale, label %skip_stale, label %process_node
+
+skip_stale:
+  br label %extract
+
+process_node:
+  store i32 1, i32* %rv_vis_ptr
+  br label %relax
+
+relax:
+  br label %relax_scan
+
+relax_scan:
+  %ri = phi i64 [0, %relax], [%ri_next, %relax_cont]
+  %hs_cur = phi i64 [%es_dec, %relax], [%hs_after, %relax_cont]
+  %ri_cmp = icmp ult i64 %ri, %len
+  br i1 %ri_cmp, label %relax_body, label %relax_done
+
+relax_body:
+  %fp_ptr = getelementptr %WeightedFact, %WeightedFact* %table, i64 %ri
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 0
+  %fp_to = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 1
+  %fp_w = getelementptr %WeightedFact, %WeightedFact* %fp_ptr, i32 0, i32 2
+  %edge_from = load i64, i64* %fp_from
+  %edge_to = load i64, i64* %fp_to
+  %edge_w = load double, double* %fp_w
+  %from_match = icmp eq i64 %edge_from, %root_val
+  br i1 %from_match, label %check_to_range, label %relax_cont
+
+check_to_range:
+  %to_ok = icmp ule i64 %edge_to, %max_atom_id
+  br i1 %to_ok, label %do_relax, label %relax_cont
+
+do_relax:
+  %alt = fadd double %root_key, %edge_w
+  %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
+  %best_to = load double, double* %best_to_ptr
+  %improved = fcmp olt double %alt, %best_to
+  br i1 %improved, label %store_push, label %relax_cont
+
+store_push:
+  store double %alt, double* %best_to_ptr
+  %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
+  store double %alt, double* %push_key_ptr
+  %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
+  store i64 %edge_to, i64* %push_val_ptr
+  %hs_inc = add i64 %hs_cur, 1
+  call void @heap_sift_up(double* %heap_keys, i64* %heap_vals, i64 %hs_cur)
+  br label %relax_cont
+
+relax_cont:
+  %hs_after = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_push]
+  %ri_next = add i64 %ri, 1
+  br label %relax_scan
+
+relax_done:
+  %heap_size_after = phi i64 [%hs_cur, %relax_scan]
+  br label %outer
+
+dijkstra_done:
+  ; Collect all visited nodes (excluding start) with their best distances.
+  ; Result array: paired (atom, float) entries.
+  %res_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+  br label %collect
+
+collect:
+  %ci = phi i64 [0, %dijkstra_done], [%ci_next, %collect_cont]
+  %rc = phi i64 [0, %dijkstra_done], [%rc_after, %collect_cont]
+  %ci_cmp = icmp ult i64 %ci, %n
+  br i1 %ci_cmp, label %collect_check, label %collect_done
+
+collect_check:
+  ; Skip start node and unvisited nodes.
+  %is_start = icmp eq i64 %ci, %start_id
+  br i1 %is_start, label %collect_cont, label %collect_check_vis
+
+collect_check_vis:
+  %cv_ptr = getelementptr i32, i32* %visited, i64 %ci
+  %cv = load i32, i32* %cv_ptr
+  %cv_visited = icmp ne i32 %cv, 0
+  br i1 %cv_visited, label %collect_add, label %collect_cont
+
+collect_add:
+  %ra_idx = shl i64 %rc, 1
+  %rd_idx = or i64 %ra_idx, 1
+  %ra_ptr = getelementptr %Value, %Value* %results, i64 %ra_idx
+  %ra_tag_ptr = getelementptr %Value, %Value* %ra_ptr, i32 0, i32 0
+  store i32 0, i32* %ra_tag_ptr
+  %ra_pay_ptr = getelementptr %Value, %Value* %ra_ptr, i32 0, i32 1
+  store i64 %ci, i64* %ra_pay_ptr
+  %rd_ptr = getelementptr %Value, %Value* %results, i64 %rd_idx
+  %rd_tag_ptr = getelementptr %Value, %Value* %rd_ptr, i32 0, i32 0
+  store i32 2, i32* %rd_tag_ptr
+  %best_ci_ptr = getelementptr double, double* %best, i64 %ci
+  %best_ci = load double, double* %best_ci_ptr
+  %best_ci_i64 = bitcast double %best_ci to i64
+  %rd_pay_ptr = getelementptr %Value, %Value* %rd_ptr, i32 0, i32 1
+  store i64 %best_ci_i64, i64* %rd_pay_ptr
+  %rc_inc = add i64 %rc, 1
+  br label %collect_cont
+
+collect_cont:
+  %rc_after = phi i64 [%rc, %collect_check], [%rc, %collect_check_vis], [%rc_inc, %collect_add]
+  %ci_next = add i64 %ci, 1
+  br label %collect
+
+collect_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %no_results = icmp eq i64 %rc, 0
+  br i1 %no_results, label %wsp_stream_fail, label %wsp_stream_yield
+
+wsp_stream_yield:
+  ; Yield first pair.
+  %f_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %f_atom = load %Value, %Value* %f_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %f_atom)
+  %f_dist_ptr = getelementptr %Value, %Value* %results, i64 1
+  %f_dist = load %Value, %Value* %f_dist_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %f_dist)
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  %total = shl i64 %rc, 1
+  %total32 = trunc i64 %total to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %total32,
+      i32 255,
+      i32 %pc)
+  ret i1 true
+
+wsp_stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.16: Category ancestor kernel ===
+; Depth-bounded BFS: enumerates all ancestors reachable from A1 within
+; max_depth hops via an edge table. Results are (ancestor, hops) pairs
+; yielded via the paired foreign iterator.
+;
+; A1 = start atom, A2 = result ancestor (unbound for stream), A3 = hops.
+; max_depth is compiled into the kernel as a constant parameter.
+define i1 @wam_ca_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id, i32 %max_depth) {
+entry:
+  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_is_atom = icmp eq i32 %s_tag, 0
+  br i1 %s_is_atom, label %check_a2, label %ca_bail
+
+check_a2:
+  %a2_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %a2_unbound = icmp eq i32 %a2_tag, 6
+  br i1 %a2_unbound, label %ca_stream, label %ca_bail
+
+ca_stream:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; BFS with depth tracking, bounded by max_depth.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %dq_bytes = shl i64 %n, 2
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+  %dqueue = bitcast i8* %dq_mem to i32*
+
+  ; Result array: paired (atom, int hops) entries.
+  %res_max = shl i64 %n, 1
+  %res_bytes = shl i64 %res_max, 4
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  %dq0 = getelementptr i32, i32* %dqueue, i64 0
+  store i32 0, i32* %dq0
+  br label %ca_bfs_loop
+
+ca_bfs_loop:
+  %head = phi i64 [0, %ca_stream], [%head_next, %ca_scan_done]
+  %tail = phi i64 [1, %ca_stream], [%tail_after, %ca_scan_done]
+  %rcount = phi i64 [0, %ca_stream], [%rcount_after, %ca_scan_done]
+  %ca_more = icmp ult i64 %head, %tail
+  br i1 %ca_more, label %ca_pop, label %ca_bfs_done
+
+ca_pop:
+  %ca_q_slot = getelementptr i64, i64* %queue, i64 %head
+  %ca_node = load i64, i64* %ca_q_slot
+  %ca_dq_slot = getelementptr i32, i32* %dqueue, i64 %head
+  %ca_depth = load i32, i32* %ca_dq_slot
+  %head_next = add i64 %head, 1
+  %ca_next_depth = add i32 %ca_depth, 1
+  ; If next_depth > max_depth, don't explore further from this node.
+  %ca_depth_ok = icmp ule i32 %ca_next_depth, %max_depth
+  br i1 %ca_depth_ok, label %ca_scan, label %ca_scan_done_skip
+
+ca_scan_done_skip:
+  br label %ca_scan_done
+
+ca_scan:
+  %ca_si = phi i64 [0, %ca_pop], [%ca_si_next, %ca_scan_cont]
+  %ca_tail_cur = phi i64 [%tail, %ca_pop], [%ca_tail_kept, %ca_scan_cont]
+  %ca_rc_cur = phi i64 [%rcount, %ca_pop], [%ca_rc_kept, %ca_scan_cont]
+  %ca_si_cmp = icmp ult i64 %ca_si, %len
+  br i1 %ca_si_cmp, label %ca_scan_body, label %ca_scan_done
+
+ca_scan_body:
+  %ca_pair = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %ca_si
+  %ca_from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %ca_pair, i32 0, i32 0
+  %ca_to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %ca_pair, i32 0, i32 1
+  %ca_from = load i64, i64* %ca_from_ptr
+  %ca_to = load i64, i64* %ca_to_ptr
+  %ca_from_match = icmp eq i64 %ca_from, %ca_node
+  br i1 %ca_from_match, label %ca_check_to, label %ca_scan_cont
+
+ca_check_to:
+  %ca_to_ok = icmp ult i64 %ca_to, %n
+  br i1 %ca_to_ok, label %ca_check_vis, label %ca_scan_cont
+
+ca_check_vis:
+  %ca_vis_ptr = getelementptr i32, i32* %visited, i64 %ca_to
+  %ca_vis = load i32, i32* %ca_vis_ptr
+  %ca_already = icmp ne i32 %ca_vis, 0
+  br i1 %ca_already, label %ca_scan_cont, label %ca_enqueue
+
+ca_enqueue:
+  store i32 1, i32* %ca_vis_ptr
+  %ca_q_push = getelementptr i64, i64* %queue, i64 %ca_tail_cur
+  store i64 %ca_to, i64* %ca_q_push
+  %ca_dq_push = getelementptr i32, i32* %dqueue, i64 %ca_tail_cur
+  store i32 %ca_next_depth, i32* %ca_dq_push
+  %ca_tail_inc = add i64 %ca_tail_cur, 1
+  ; Store paired result: Atom(ancestor), Integer(hops).
+  %ca_ri_atom = shl i64 %ca_rc_cur, 1
+  %ca_ri_hops = or i64 %ca_ri_atom, 1
+  %ca_ra_ptr = getelementptr %Value, %Value* %results, i64 %ca_ri_atom
+  %ca_ra_tag = getelementptr %Value, %Value* %ca_ra_ptr, i32 0, i32 0
+  store i32 0, i32* %ca_ra_tag
+  %ca_ra_pay = getelementptr %Value, %Value* %ca_ra_ptr, i32 0, i32 1
+  store i64 %ca_to, i64* %ca_ra_pay
+  %ca_rh_ptr = getelementptr %Value, %Value* %results, i64 %ca_ri_hops
+  %ca_rh_tag = getelementptr %Value, %Value* %ca_rh_ptr, i32 0, i32 0
+  store i32 1, i32* %ca_rh_tag
+  %ca_nd64 = zext i32 %ca_next_depth to i64
+  %ca_rh_pay = getelementptr %Value, %Value* %ca_rh_ptr, i32 0, i32 1
+  store i64 %ca_nd64, i64* %ca_rh_pay
+  %ca_rc_inc = add i64 %ca_rc_cur, 1
+  br label %ca_scan_cont
+
+ca_scan_cont:
+  %ca_tail_kept = phi i64 [%ca_tail_cur, %ca_scan_body], [%ca_tail_cur, %ca_check_to], [%ca_tail_cur, %ca_check_vis], [%ca_tail_inc, %ca_enqueue]
+  %ca_rc_kept = phi i64 [%ca_rc_cur, %ca_scan_body], [%ca_rc_cur, %ca_check_to], [%ca_rc_cur, %ca_check_vis], [%ca_rc_inc, %ca_enqueue]
+  %ca_si_next = add i64 %ca_si, 1
+  br label %ca_scan
+
+ca_scan_done:
+  %tail_after = phi i64 [%ca_tail_cur, %ca_scan], [%tail, %ca_scan_done_skip]
+  %rcount_after = phi i64 [%ca_rc_cur, %ca_scan], [%rcount, %ca_scan_done_skip]
+  br label %ca_bfs_loop
+
+ca_bfs_done:
+  call void @wam_arena_rewind(i64 %arena_save)
+  %ca_no_results = icmp eq i64 %rcount, 0
+  br i1 %ca_no_results, label %ca_fail, label %ca_yield
+
+ca_yield:
+  %ca_f_atom_ptr = getelementptr %Value, %Value* %results, i64 0
+  %ca_f_atom = load %Value, %Value* %ca_f_atom_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %ca_f_atom)
+  %ca_f_hops_ptr = getelementptr %Value, %Value* %results, i64 1
+  %ca_f_hops = load %Value, %Value* %ca_f_hops_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %ca_f_hops)
+  %ca_pc = call i32 @wam_get_pc(%WamState* %vm)
+  %ca_total = shl i64 %rcount, 1
+  %ca_total32 = trunc i64 %ca_total to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %ca_total32,
+      i32 255,
+      i32 %ca_pc)
+  ret i1 true
+
+ca_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+
+ca_bail:
+  ret i1 false
+}
+
+; Weak default for category_ancestor kernel impl.
+define weak i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+; === M5.13: countdown_sum2 common runner helper ===
+; Pure arithmetic: reads A1 as an integer N, computes S = N*(N+1)/2,
+; writes A2 as integer S. No tables needed — the same computation
+; works for every instance.
+define i1 @wam_cds2_run(%WamState* %vm) {
+entry:
+  %n_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %n_is_int = icmp eq i32 %n_tag, 1
+  br i1 %n_is_int, label %compute, label %cds_bail
+
+compute:
+  %n = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n_neg = icmp slt i64 %n, 0
+  br i1 %n_neg, label %cds_bail, label %do_sum
+
+do_sum:
+  ; S = N * (N + 1) / 2
+  %n_plus_1 = add i64 %n, 1
+  %n_times = mul i64 %n, %n_plus_1
+  %s = sdiv i64 %n_times, 2
+  call void @wam_set_reg_int(%WamState* %vm, i32 1, i64 %s)
+  ret i1 true
+
+cds_bail:
+  ret i1 false
+}
+
+; === M5.15: List suffix kernel ===
+; list_suffix2(List, Suffix): enumerates all suffixes of List via
+; backtracking. A list [a,b,c] has 4 suffixes: [a,b,c], [b,c], [c], [].
+;
+; List representation: tag=4, payload = pointer to %List = {i32 len, %Value* elems}.
+; Each suffix is a new %List struct pointing into the original elements
+; array at a different offset (zero-copy view).
+
+; Create a %Value with tag=4 (List) from a %List pointer.
+define %Value @wam_make_list_value(%List* %list_ptr) {
+  %ptr_i64 = ptrtoint %List* %list_ptr to i64
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; Create an empty list value (length=0, null elements).
+; Uses a module-level constant to avoid allocation.
+@wam_empty_list = internal constant %List { i32 0, %Value* null }
+
+; Format strings for write/1 and nl/0 builtins.
+@.fmt_int = private constant [3 x i8] c"%d\00"
+@.fmt_nl  = private constant [2 x i8] c"\0A\00"
+
+define %Value @wam_make_empty_list_value() {
+  %v0 = insertvalue %Value undef, i32 4, 0
+  %ptr_i64 = ptrtoint %List* @wam_empty_list to i64
+  %v1 = insertvalue %Value %v0, i64 %ptr_i64, 1
+  ret %Value %v1
+}
+
+; list_suffix2 runner: reads A1 as a list, generates all suffixes,
+; pushes them as a foreign choice point, yields the first.
+;
+; If A1 is not a list (tag != 4), returns false.
+; If A2 is bound (tag=4, list), checks if A2 is a suffix of A1 (deterministic).
+; If A2 is unbound (tag=6), enumerates all suffixes (stream mode).
+define i1 @wam_ls2_run(%WamState* %vm) {
+entry:
+  %a1_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %a1_is_list = icmp eq i32 %a1_tag, 4
+  br i1 %a1_is_list, label %check_a2, label %bail
+
+check_a2:
+  %a2_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %a2_is_unbound = icmp eq i32 %a2_tag, 6
+  br i1 %a2_is_unbound, label %stream, label %bail
+
+stream:
+  ; Get A1 list pointer and length.
+  %a1_pay = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %list_ptr = inttoptr i64 %a1_pay to %List*
+  %len_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 0
+  %len = load i32, i32* %len_ptr
+  %elems_ptr_ptr = getelementptr %List, %List* %list_ptr, i32 0, i32 1
+  %elems = load %Value*, %Value** %elems_ptr_ptr
+
+  ; A list of length N has N+1 suffixes (including the list itself and []).
+  %len64 = zext i32 %len to i64
+  %nsuffixes64 = add i64 %len64, 1
+  %nsuffixes = add i32 %len, 1
+
+  ; Allocate result array + suffix structs in one block so a single
+  ; free() in the iterator pop path releases both.
+  ; Layout: [nsuffixes x %Value] [nsuffixes x %List]
+  %res_bytes = shl i64 %nsuffixes64, 4   ; * 16 (sizeof %Value)
+  %list_struct_size = ptrtoint %List* getelementptr (%List, %List* null, i32 1) to i64
+  %lists_bytes = mul i64 %nsuffixes64, %list_struct_size
+  %total_bytes = add i64 %res_bytes, %lists_bytes
+  %res_mem = call i8* @malloc(i64 %total_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+  %lists_offset = getelementptr i8, i8* %res_mem, i64 %res_bytes
+  %suffix_lists = bitcast i8* %lists_offset to %List*
+
+  ; Build suffixes: suffix[i] = {len-i, &elems[i]} for i=0..len.
+  br label %build_loop
+
+build_loop:
+  %bi = phi i64 [0, %stream], [%bi_next, %build_loop]
+  %bi32 = trunc i64 %bi to i32
+  %rem_len = sub i32 %len, %bi32
+  ; Create %List struct for this suffix.
+  %sl = getelementptr %List, %List* %suffix_lists, i64 %bi
+  %sl_len_ptr = getelementptr %List, %List* %sl, i32 0, i32 0
+  store i32 %rem_len, i32* %sl_len_ptr
+  %sl_elems_ptr = getelementptr %List, %List* %sl, i32 0, i32 1
+  %suffix_start = getelementptr %Value, %Value* %elems, i64 %bi
+  store %Value* %suffix_start, %Value** %sl_elems_ptr
+  ; Create %Value for this suffix (tag=4, payload=ptr to %List).
+  %sv = call %Value @wam_make_list_value(%List* %sl)
+  %res_slot = getelementptr %Value, %Value* %results, i64 %bi
+  store %Value %sv, %Value* %res_slot
+  %bi_next = add i64 %bi, 1
+  %bi_done = icmp uge i64 %bi_next, %nsuffixes64
+  br i1 %bi_done, label %yield_first, label %build_loop
+
+yield_first:
+  ; Yield result[0] (the full list itself) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Push foreign choice point for the remaining suffixes.
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %nsuffixes,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+bail:
+  ret i1 false
+}
+
+; Weak default for ls2 kernel impl (replaced by substitution pipeline
+; when list_suffix2 predicates are lowered).
+define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+; === M5.12: tc2 common runner helper ===
+; Boolean reachability: is there any path from start to target in the
+; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
+; distance — we only care about the success/failure return. No result
+; register is written (tc2 is arity 2: A1=start, A2=target).
+define i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %tc_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %tc_s_is_atom = icmp eq i32 %tc_s_tag, 0
+  br i1 %tc_s_is_atom, label %tc_check_t, label %tc_bail
+
+tc_check_t:
+  ; If A2 is unbound (tag=6), use stream mode (enumerate all reachable).
+  ; If A2 is an atom (tag=0), use deterministic mode (boolean check).
+  %tc_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %tc_t_is_atom = icmp eq i32 %tc_t_tag, 0
+  br i1 %tc_t_is_atom, label %tc_run_bfs, label %tc_check_unbound
+
+tc_check_unbound:
+  %tc_t_is_unbound = icmp eq i32 %tc_t_tag, 6
+  br i1 %tc_t_is_unbound, label %tc_stream, label %tc_bail
+
+tc_run_bfs:
+  %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %tc_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %tc_dist_slot = alloca i64
+  %tc_ok = call i1 @wam_bfs_atom_distance(
+      i64 %tc_start_id, i64 %tc_target_id,
+      %AtomFactPair* %table, i64 %len,
+      i64 %max_atom_id,
+      i64* %tc_dist_slot)
+  ret i1 %tc_ok
+
+tc_stream:
+  ; Stream mode: collect all reachable nodes via BFS, push as foreign
+  ; choice point, yield first result to A2.
+  %st_ok = call i1 @wam_tc2_stream_run(
+      %WamState* %vm,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %st_ok
+
+tc_bail:
+  ret i1 false
+}
+
+; === M5.14: Stream-mode tc2 (enumerate all reachable nodes) ===
+; Runs BFS from A1, collects all reachable nodes (excluding start) into
+; a %Value array, pushes a foreign choice point, and yields the first
+; result. On backtrack, the iterator yields subsequent reachable nodes.
+;
+; Returns false if no reachable nodes exist (start is isolated).
+; The result array is malloc'd (not arena) because it must outlive this
+; call — the choice point holds a pointer to it across backtracks.
+define i1 @wam_tc2_stream_run(
+    %WamState* %vm,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %n = add i64 %max_atom_id, 1
+
+  ; Allocate scratch buffers for BFS (visited, queue) via arena.
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+
+  ; Also allocate a result collector array (max n entries, %Value each).
+  ; This is malloc'd because it must persist in the choice point.
+  %res_bytes = shl i64 %n, 4   ; n * sizeof(%Value) = n * 16
+  %res_mem = call i8* @malloc(i64 %res_bytes)
+  %results = bitcast i8* %res_mem to %Value*
+
+  ; Zero-init visited[].
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+
+  ; Seed BFS with start.
+  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
+  store i32 1, i32* %vis_start
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start_id, i64* %q0
+  br label %bfs_loop
+
+bfs_loop:
+  %head = phi i64 [0, %entry], [%head_next, %bfs_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %bfs_scan_done]
+  %rcount = phi i64 [0, %entry], [%rcount_after, %bfs_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %bfs_pop, label %bfs_done
+
+bfs_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %head_next = add i64 %head, 1
+  br label %bfs_scan
+
+bfs_scan:
+  %si = phi i64 [0, %bfs_pop], [%si_next, %bfs_scan_cont]
+  %tail_cur = phi i64 [%tail, %bfs_pop], [%tail_kept, %bfs_scan_cont]
+  %rc_cur = phi i64 [%rcount, %bfs_pop], [%rc_kept, %bfs_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %bfs_scan_body, label %bfs_scan_done
+
+bfs_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %bfs_check_to, label %bfs_scan_cont
+
+bfs_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %bfs_check_vis, label %bfs_scan_cont
+
+bfs_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %bfs_scan_cont, label %bfs_enqueue
+
+bfs_enqueue:
+  ; Mark visited, enqueue, and add to results.
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %tail_inc = add i64 %tail_cur, 1
+  ; Append to results as Atom value (tag=0, payload=atom_id).
+  %res_slot = getelementptr %Value, %Value* %results, i64 %rc_cur
+  %res_tag = getelementptr %Value, %Value* %res_slot, i32 0, i32 0
+  store i32 0, i32* %res_tag
+  %res_pay = getelementptr %Value, %Value* %res_slot, i32 0, i32 1
+  store i64 %to_id, i64* %res_pay
+  %rc_inc = add i64 %rc_cur, 1
+  br label %bfs_scan_cont
+
+bfs_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %bfs_scan_body], [%tail_cur, %bfs_check_to], [%tail_cur, %bfs_check_vis], [%tail_inc, %bfs_enqueue]
+  %rc_kept = phi i64 [%rc_cur, %bfs_scan_body], [%rc_cur, %bfs_check_to], [%rc_cur, %bfs_check_vis], [%rc_inc, %bfs_enqueue]
+  %si_next = add i64 %si, 1
+  br label %bfs_scan
+
+bfs_scan_done:
+  %tail_after = phi i64 [%tail_cur, %bfs_scan]
+  %rcount_after = phi i64 [%rc_cur, %bfs_scan]
+  br label %bfs_loop
+
+bfs_done:
+  ; Free BFS scratch.
+  call void @wam_arena_rewind(i64 %arena_save)
+
+  ; If no reachable nodes, fail.
+  %no_results = icmp eq i64 %rcount, 0
+  br i1 %no_results, label %stream_fail, label %stream_yield
+
+stream_yield:
+  ; Yield first result (index 0) to A2.
+  %first_ptr = getelementptr %Value, %Value* %results, i64 0
+  %first_val = load %Value, %Value* %first_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_val)
+
+  ; Get current PC for return_pc (where to resume after each yield).
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+
+  ; Push foreign choice point for remaining results.
+  %rcount32 = trunc i64 %rcount to i32
+  call void @wam_push_foreign_choice_point(
+      %WamState* %vm,
+      i8* %res_mem,
+      i32 %rcount32,
+      i32 1,
+      i32 %pc)
+
+  ret i1 true
+
+stream_fail:
+  call void @free(i8* %res_mem)
+  ret i1 false
+}
+
+; === M5.12: Runtime heuristic builder ===
+; Scans a %WeightedFact direct-distance table and builds a per-node
+; heuristic array for a specific target. For each entry where
+; to == %target, writes weight into heuristic[from]. Entries for
+; nodes not in the direct-distance table default to 0.0 (admissible).
+;
+; Returns a malloc'd double* that the caller must free.
+define double* @wam_build_heuristic_from_table(
+    %WeightedFact* %dtable, i64 %dlen,
+    i64 %target, i64 %max_atom_id) {
+entry:
+  call void @wam_arena_ensure()
+  %n = add i64 %max_atom_id, 1
+  %bytes = shl i64 %n, 3
+  %mem = call i8* @wam_arena_alloc(i64 %bytes)
+  call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
+  %h = bitcast i8* %mem to double*
+  br label %scan
+
+scan:
+  %si = phi i64 [0, %entry], [%si_next, %scan_next]
+  %si_cmp = icmp ult i64 %si, %dlen
+  br i1 %si_cmp, label %scan_body, label %done
+
+scan_body:
+  %fp = getelementptr %WeightedFact, %WeightedFact* %dtable, i64 %si
+  %fp_from = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 0
+  %fp_to   = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 1
+  %fp_w    = getelementptr %WeightedFact, %WeightedFact* %fp, i32 0, i32 2
+  %from_id = load i64, i64* %fp_from
+  %to_id   = load i64, i64* %fp_to
+  %w       = load double, double* %fp_w
+  %is_target = icmp eq i64 %to_id, %target
+  br i1 %is_target, label %write_h, label %scan_next
+
+write_h:
+  %h_slot = getelementptr double, double* %h, i64 %from_id
+  store double %w, double* %h_slot
+  br label %scan_next
+
+scan_next:
+  %si_next = add i64 %si, 1
+  br label %scan
+
+done:
+  ret double* %h
+}
+
+; === M5.10: astar4 common runner helper ===
+; Parallels @wam_wsp3_run but wraps @wam_astar_weighted_distance
+; (the M5.4 A* helper). Uses a zeroed heuristic array — the caller
+; allocates and passes it. This means A* degenerates to Dijkstra
+; (same results, same complexity). A future refinement can supply a
+; non-zero heuristic via a separate global or a query-time callback.
+;
+; For M5.10, the zero-heuristic path validates the full A* pipeline
+; end-to-end without requiring a target-dependent heuristic mechanism
+; (the heuristic depends on which target is being queried, which is a
+; runtime value).
+define i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %table, i64 %len, double* %heuristic, i64 %max_atom_id) {
+entry:
+  %as_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %as_s_is_atom = icmp eq i32 %as_s_tag, 0
+  br i1 %as_s_is_atom, label %as_check_t, label %as_bail
+
+as_check_t:
+  %as_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %as_t_is_atom = icmp eq i32 %as_t_tag, 0
+  br i1 %as_t_is_atom, label %as_run, label %as_check_unbound
+
+as_check_unbound:
+  %as_t_unbound = icmp eq i32 %as_t_tag, 6
+  br i1 %as_t_unbound, label %as_stream, label %as_bail
+
+as_stream:
+  ; Stream mode: enumerate all reachable (target, distance) pairs.
+  ; Heuristic only affects exploration order for single-target queries;
+  ; for full enumeration the result set is identical to Dijkstra.
+  %as_st_ok = call i1 @wam_wsp3_stream_run(
+      %WamState* %vm,
+      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %as_st_ok
+
+as_run:
+  %as_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %as_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_dist_slot = alloca double
+  %as_ok = call i1 @wam_astar_weighted_distance(
+      i64 %as_start_id, i64 %as_target_id,
+      %WeightedFact* %table, i64 %len,
+      double* %heuristic,
+      i64 %max_atom_id,
+      double* %as_dist_slot)
+  br i1 %as_ok, label %as_hit, label %as_bail
+
+as_hit:
+  %as_dist = load double, double* %as_dist_slot
+  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %as_dist)
+  ret i1 true
+
+as_bail:
+  ret i1 false
+}
+
+; === M5.5 + M5.8 + M5.9 + M5.10: Foreign kernel impl default stubs ===
+; The dispatcher's stub_{transitive_distance3, weighted_shortest_path3}
+; cases delegate to @wam_td3_kernel_impl and @wam_wsp3_kernel_impl
+; respectively, passing the instance_id encoded in the call_foreign
+; instruction's op2. The default implementations below return false
+; for any instance, so pure WAM modules behave as if foreign dispatch
+; is disabled.
+;
+; When foreign_lowering is enabled, the compile pipeline emits a
+; non-default definition of each relevant function in place of the
+; default. The substituted version contains a `switch i32 %instance`
+; with one case per registered foreign-lowered predicate, each with
+; its own baked-in table as a module-local private constant.
+;
+; LLVM 21 disallows two definitions of the same function in one
+; module, so the compile path picks one or the other (weak default
+; or concrete substituted body) at template-rendering time.
+define weak i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define weak i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance) {
+  ret i1 false
+}
+
+define i1 @wam_execute_foreign_predicate(%WamState* %vm, i32 %kind, i32 %instance) {
+entry:
+  switch i32 %kind, label %not_registered [
+    i32 0, label %stub_category_ancestor
+    i32 1, label %stub_countdown_sum2
+    i32 2, label %stub_list_suffix2
+    i32 3, label %stub_transitive_closure2
+    i32 4, label %stub_transitive_distance3
+    i32 5, label %stub_weighted_shortest_path3
+    i32 6, label %stub_astar_shortest_path4
+  ]
+
+stub_category_ancestor:
+  %ca_r = call i1 @wam_ca_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %ca_r
+
+stub_countdown_sum2:
+  %cds_r = call i1 @wam_cds2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %cds_r
+
+stub_list_suffix2:
+  %ls_r = call i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %ls_r
+
+stub_transitive_closure2:
+  %tc_r = call i1 @wam_tc2_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %tc_r
+
+stub_transitive_distance3:
+  ; Delegate to the user-provided impl, passing the instance_id so
+  ; the concrete substituted body can dispatch to the right
+  ; per-predicate edge table. The pure-WAM path never reaches this
+  ; case because no call_foreign instructions are emitted.
+  %td3_r = call i1 @wam_td3_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %td3_r
+
+stub_weighted_shortest_path3:
+  ; Delegate to the user-provided impl, passing the instance_id so
+  ; the concrete substituted body can dispatch to the right
+  ; per-predicate weighted-edge table.
+  %wsp_r = call i1 @wam_wsp3_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %wsp_r
+
+stub_astar_shortest_path4:
+  %as_r = call i1 @wam_astar4_kernel_impl(%WamState* %vm, i32 %instance)
+  ret i1 %as_r
+
+not_registered:
+  ret i1 false
+}
+
 ; Finalize the top aggregate frame: apply aggregation, bind result reg,
 ; restore state, pop CP. Returns true on success, false if no agg frame.
 define i1 @wam_finalize_aggregate(%WamState* %vm) {
@@ -731,5 +2874,207 @@ do_finalize:
   ret i1 true
 
 fail:
+  ret i1 false
+}
+
+; === M5.14: Multi-result foreign dispatch ===
+; Pushes a foreign-result choice point onto the CP stack. The choice
+; point stores a pointer to a pre-computed %Value array, the total
+; count, and a cursor starting at 0. On first call the kernel yields
+; result[0]; on each backtrack @wam_foreign_iter_next advances the
+; cursor and yields the next result.
+;
+; %results: pointer to a heap-allocated %Value array (count elements)
+; %count:   number of results
+; %result_reg: which WAM register to bind each result to
+; %return_pc:  PC to restore when the iterator is exhausted
+;
+; The first result (index 0) is NOT yielded here — the caller is
+; expected to write result[0] to the register and proceed. This
+; function just saves the state for backtracking.
+define void @wam_push_foreign_choice_point(
+    %WamState* %vm,
+    i8* %results,
+    i32 %count,
+    i32 %result_reg,
+    i32 %return_pc) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+
+  ; TODO: check capacity and realloc if needed (current cap=64, sufficient for now)
+  %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
+
+  ; next_pc = 0 (unused for foreign iter — backtrack handler reads cursor instead)
+  %npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 0
+  store i32 0, i32* %npc_ptr
+
+  ; Save registers (for trail-based restoration on final exhaustion)
+  %dst_regs = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  ; Save trail mark
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 2
+  store i32 %ts, i32* %tm_ptr
+
+  ; Save CP
+  %cp_val_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cp_val = load i32, i32* %cp_val_ptr
+  %scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 3
+  store i32 %cp_val, i32* %scp_ptr
+
+  ; Mark as foreign iterator (agg_type = -2)
+  %at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 4
+  store i32 -2, i32* %at_ptr
+
+  ; Store result_reg in field 5 (agg_value_reg — repurposed)
+  %rr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 5
+  store i32 %result_reg, i32* %rr_ptr
+
+  ; Store return_pc in field 7 (agg_return_pc — repurposed)
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_ptr
+
+  ; Store foreign iterator fields
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 8
+  store i8* %results, i8** %fr_ptr
+  %fc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 9
+  store i32 %count, i32* %fc_ptr
+  ; Cursor: for single mode (result_reg != 255), starts at 1.
+  ; For paired mode (result_reg == 255), starts at 2 (result[0..1] already yielded).
+  %is_paired_mode = icmp eq i32 %result_reg, 255
+  %initial_cursor = select i1 %is_paired_mode, i32 2, i32 1
+  %cur_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 10
+  store i32 %initial_cursor, i32* %cur_ptr
+
+  ; Increment CP count
+  %new_cpn = add i32 %cpn, 1
+  store i32 %new_cpn, i32* %cpn_ptr
+
+  ret void
+}
+
+; Advance the foreign result iterator on the top choice point.
+; Called by @backtrack when it detects agg_type == -2.
+;
+; If cursor < count: restore registers from CP, write result[cursor]
+;   to the result register, advance cursor, set PC to return_pc, return true.
+; If cursor >= count: pop the CP and return false (exhaust).
+define i1 @wam_foreign_iter_next(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+
+  ; Read cursor and count
+  %cur_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 10
+  %cursor = load i32, i32* %cur_ptr
+  %fc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 9
+  %count = load i32, i32* %fc_ptr
+
+  %exhausted = icmp uge i32 %cursor, %count
+  br i1 %exhausted, label %pop_cp, label %yield
+
+yield:
+  ; Restore registers from CP (so each result starts from clean state)
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  ; Unwind trail to CP's saved mark
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  ; Read result register mode
+  %rr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 5
+  %result_reg = load i32, i32* %rr_ptr
+  %is_paired = icmp eq i32 %result_reg, 255
+  br i1 %is_paired, label %yield_paired, label %yield_single
+
+yield_single:
+  ; Read result[cursor], write to result_reg
+  %fr_ptr_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %results_raw_s = load i8*, i8** %fr_ptr_s
+  %results_s = bitcast i8* %results_raw_s to %Value*
+  %cursor_64_s = zext i32 %cursor to i64
+  %val_ptr_s = getelementptr %Value, %Value* %results_s, i64 %cursor_64_s
+  %val_s = load %Value, %Value* %val_ptr_s
+  call void @wam_set_reg(%WamState* %vm, i32 %result_reg, %Value %val_s)
+  %next_cursor_s = add i32 %cursor, 1
+  br label %yield_done
+
+yield_paired:
+  ; Paired mode: result[cursor] → reg 1 (A2), result[cursor+1] → reg 2 (A3).
+  ; Cursor advances by 2.
+  %fr_ptr_p = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %results_raw_p = load i8*, i8** %fr_ptr_p
+  %results_p = bitcast i8* %results_raw_p to %Value*
+  %cursor_64_p = zext i32 %cursor to i64
+  %val1_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p
+  %val1 = load %Value, %Value* %val1_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %val1)
+  %cursor_64_p1 = add i64 %cursor_64_p, 1
+  %val2_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p1
+  %val2 = load %Value, %Value* %val2_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %val2)
+  %next_cursor_p = add i32 %cursor, 2
+  br label %yield_done
+
+yield_done:
+  %next_cursor = phi i32 [%next_cursor_s, %yield_single], [%next_cursor_p, %yield_paired]
+  store i32 %next_cursor, i32* %cur_ptr
+
+  ; Set PC to return_pc (proceed to next instruction after the foreign call)
+  %rpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %rpc = load i32, i32* %rpc_ptr
+  call void @wam_set_pc(%WamState* %vm, i32 %rpc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+
+  ret i1 true
+
+pop_cp:
+  ; Iterator exhausted — pop the choice point.
+  store i32 %top_idx, i32* %cpn_ptr
+
+  ; Free the malloc'd result array before popping.
+  %pop_fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %pop_fr = load i8*, i8** %pop_fr_ptr
+  %pop_fr_null = icmp eq i8* %pop_fr, null
+  br i1 %pop_fr_null, label %pop_restore, label %pop_free_results
+
+pop_free_results:
+  call void @free(i8* %pop_fr)
+  br label %pop_restore
+
+pop_restore:
+  ; Restore registers and trail one last time.
+  %pop_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %pop_src = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %pop_dst_raw = bitcast %Value* %pop_dst to i8*
+  %pop_src_raw = bitcast %Value* %pop_src to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pop_dst_raw, i8* %pop_src_raw, i64 512, i1 false)
+
+  %pop_tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %pop_tm = load i32, i32* %pop_tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %pop_tm)
+
+  ; Restore CP
+  %pop_scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 3
+  %pop_scp = load i32, i32* %pop_scp_ptr
+  call void @wam_set_cp(%WamState* %vm, i32 %pop_scp)
+
   ret i1 false
 }

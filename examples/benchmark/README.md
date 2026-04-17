@@ -51,9 +51,13 @@ scan planning now adds corresponding scan buckets such as
 corresponding closure buckets such as `closure_strategy_select`,
 `closure_probe_*`, and `closure_materialize_*`, with focused validation
 available in `benchmark_closure_materialization.py`. Generic closure-pair
-planning now adds `closure_pair_strategy_select` and
-`*TransitiveClosurePairsMaterializationPlanPairs*` traces, with focused
-validation available in `benchmark_closure_pair_planning.py`.
+planning now adds `closure_pair_strategy_select`,
+`closure_pair_probe_*`, and `*TransitiveClosurePairsMaterializationPlanPairs*`
+traces, with focused validation available in
+`benchmark_closure_pair_planning.py`. That harness now uses a real 3-column
+grouped edge source, produces non-empty grouped rows, and reports
+`best_effective_plan`, `auto_strategy_select_ms`, and `auto_probe_ms` so
+override-label fallbacks and probe overhead do not distort the comparison.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -84,6 +88,32 @@ Semantic note:
   `5k`, and `10k`
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
+
+### WAM-Rust Benchmark Variants
+
+The effective-distance harness also includes WAM-Rust benchmark targets:
+
+- `wam-rust-seeded` compiles the base WAM predicates and uses the generated
+  Rust benchmark driver to compute per-seed weight sums through the
+  `category_ancestor/4` foreign path.
+- `wam-rust-accumulated` additionally runs the same optimized Prolog
+  predicate-generation pipeline used by the Haskell benchmark work and
+  compiles the generated `effective_distance_sum` helper predicates into
+  the merged WAM code vector. The measured driver still uses the stable
+  Rust-side accumulation path until direct WAM aggregate-helper execution
+  has separate runtime coverage.
+
+Example focused run:
+
+```bash
+python examples/benchmark/benchmark_effective_distance.py \
+  --scales dev \
+  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated \
+  --repetitions 1
+```
+
+On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
+`TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
 
 ### Why Seeded Closures Win
 
@@ -225,6 +255,7 @@ Tables:
 | `benchmark_common.py` | Shared build/run utilities for cross-target benchmark runners |
 | `compute_effective_distance.py` | Post-processing aggregation (validation tool) |
 | `benchmark_effective_distance.py` | Rebuild and time effective distance across the C# query engine, accumulated Prolog, optional direct article/root and root-bound Prolog variants, and C#/Rust/Go DFS binaries |
+| `benchmark_shortest_path_to_root.py` | Compare counted simple-path `All` vs minimum-depth pruning inside the C# query runtime and emit path-state metrics |
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
@@ -232,7 +263,7 @@ Tables:
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
-| `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive weighted paths |
+| `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |
 | `benchmark_weighted_shortest_path_cross_target.py` | Compare positive weighted shortest path across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_category_influence_cross_target.py` | Compare category influence propagation across the C# query engine, Rust DFS, Go DFS, and an optional Prolog accumulated path |
 | `generate_prolog_shortest_path_benchmark.pl` | Generate standalone SWI-Prolog shortest-path benchmark scripts with `branch_pruning(auto|false)` |
@@ -311,6 +342,10 @@ python examples/benchmark/benchmark_prolog_effective_distance.py \
 python examples/benchmark/benchmark_shortest_path_cross_target.py \
     --scales 300,1k,5k,10k \
     --targets csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-min
+
+# Compare C# query counted simple-path All vs minimum-depth pruning
+python examples/benchmark/benchmark_shortest_path_to_root.py \
+    --scales 300,1k,5k,10k
 
 # Compare dependency reach count across query engine and DFS targets
 python examples/benchmark/benchmark_dependency_depth_cross_target.py \
@@ -916,6 +951,90 @@ Current interpretation:
   workloads like effective distance where the grouped helper is not the
   better consumer fit
 
+### Counted Simple-Path State Survey
+
+The counted shortest-path benchmark now emits `path_state_*` metrics from
+`PathAwareTransitiveClosureNode`. This provides a non-weighted non-DAG
+comparison point for the weighted `Min` frontier survey: counted closure has
+no subset-dominance frontier, so its cost is mostly raw successor expansion,
+cycle checks, depth-limit skips, and retained simple-path rows.
+
+For the specific question of why end-to-end counted-path `Min` can still beat
+`All` even when `path_state_best_known_flush_sort` is prominent inside the
+`Min` run, see
+[`docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md`](../../docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md).
+
+Command:
+
+```bash
+python examples/benchmark/benchmark_shortest_path_to_root.py \
+    --scales 300,1k --repetitions 3
+```
+
+Latest local results after edge-state node-id preindexing, per-row timing
+removal, a compact `(target, depth)` buffered row shape, O(1)
+parent-linked visited-path extension, and a dedicated counted-path traversal
+frame stack with explicit initial capacity, direct-write seed-batch
+materialization into the destination output list, a packed target/depth
+row buffer, and node-id driven traversal/replay through edge-state value
+tables:
+
+| Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
+|-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
+| 300 | 0.386s | 0.170s | 2.27x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.270s | 0.131s | 2.07x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+
+The same run reports the counted-closure phase split:
+
+| Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
+|-------|------|----------:|-------------:|-----------------------:|----------------------:|
+| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
+| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
+| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
+| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+
+Additional path-state observations:
+
+- `All` mode at `300` recorded `603,194` enqueued states, `11,727`
+  cycle skips, and `368,046` depth-limit skips.
+- `All` mode at `1k` recorded `352,611` enqueued states, `4,870`
+  cycle skips, and `235,306` depth-limit skips.
+- `Min` mode cuts output rows by roughly `19x` at `300` and `34x` at
+  `1k` without changing final shortest-path answers.
+- compact visited paths reduce the allocation-heavy `All` traversal while
+  preserving the same path-state counters and output digests.
+- edge-state node-id preindexing removes the per-successor candidate node-id
+  dictionary lookup from traversal while preserving output hashes and
+  `path_state_*` counters.
+- row-buffer recording no longer starts a stopwatch for every emitted path
+  row; the explicit `path_state_row_creation` phase is now `0`, and row-buffer
+  work is included in traversal timing.
+- the counted-path `All` buffer now stores only `(target, depth)` per row,
+  because `seed` is constant for each per-seed traversal; this reduces buffer
+  footprint and lowers final `object[]` materialization cost.
+- `CompactVisitedPath.Extend` now uses a parent-linked immutable node instead
+  of copying the full visited-node array on every successor push, which
+  reduces traversal-time allocation/copy overhead while preserving exact
+  cycle checks and frontier semantics.
+- counted-path traversal now uses a dedicated frame struct and an explicit
+  initial stack capacity, which trims hot-path stack overhead without changing
+  the reported `path_state_*` counters.
+- when the destination is a `List<object[]>`, counted-path `All` materialization
+  now grows the list once and writes the new seed batch directly into the new
+  slots via `CollectionsMarshal`, avoiding per-row `Add` bookkeeping on the
+  final output path.
+- the counted-path `All` staging buffer now stores targets and depths in
+  parallel packed lists instead of shuttling a tiny struct per row, reducing
+  replay overhead on the final materialization path.
+- counted-path traversal and buffered replay now operate on interned node ids
+  with edge-state lookup tables, avoiding repeated object-key dictionary
+  lookups on the hot path while preserving exact output values at final
+  materialization time.
+- This shape does not exercise the weighted `min_frontier_*` dominance
+  candidate problem; generic frontier indexes would not address its primary
+  cost. Further counted-closure work should target expansion/materialization
+  overhead rather than dominance-frontier machinery.
+
 ### Weighted `Min` Results
 
 The current positive-additive weighted `Min` fast path in the C# query
@@ -929,14 +1048,27 @@ python examples/benchmark/benchmark_weighted_shortest_path.py \
     --scales 300,1k,5k,10k --repetitions 1
 ```
 
+Use `--weight-mode nonnegative-zero` to keep degree-one source weights at zero
+and exercise the broader non-negative additive `Min` path that would otherwise
+fall back to the exact visited-state frontier.
+
+Use `--weight-mode negative --recurrence-mode additive` to force the exact
+frontier fallback for negative additive steps. Use
+`--weight-mode positive --recurrence-mode multiplicative` to exercise the
+direct positive-product `Min` strategy when every factor is at least one.
+Subunit multiplicative factors remain on the exact frontier fallback. Fallback
+variants emit the `min_frontier_*` trace metrics used to profile candidate
+growth, dominance checks, subset checks, target buckets, and retained
+path-state partition sizes.
+
 Latest local results:
 
 | Scale | All | Min | Speedup | Output Match |
 |-------|-----|-----|---------|--------------|
-| 300 | 0.627s | 0.184s | 3.41x | match |
-| 1k | 0.440s | 0.139s | 3.17x | match |
-| 5k | 1.188s | 0.236s | 5.03x | match |
-| 10k | 2.930s | 0.419s | 6.98x | match |
+| 300 | 0.797s | 0.272s | 2.93x | match |
+| 1k | 0.603s | 0.230s | 2.62x | match |
+| 5k | 1.623s | 0.356s | 4.56x | match |
+| 10k | 3.881s | 0.568s | 6.84x | match |
 
 The same run also reports SCC metrics for the category graph. At `10k`
 the graph has:
@@ -950,6 +1082,35 @@ the graph has:
 That matters because it suggests the remaining hard cyclic structure is
 small and localized, which is favorable for future SCC-condensed
 strategies on broader weighted `Min` workloads.
+
+The runtime now also exposes SCC-condensed weighted-min planning through
+trace metrics. For additive `Min`, SCC condensation is a measured candidate
+rather than an unconditional replacement for the layered dynamic programming
+path. Strictly positive steps keep the `phase_scc_probe_positive_layered_ms`
+trace label, while zero-cost non-negative steps report
+`phase_scc_probe_nonnegative_layered_ms` and
+`phase_nonnegative_min_layered_solve_ms`. Current trace output also includes
+`phase_scc_condense_graph_ms`, `phase_scc_probe_condensed_ms`,
+`metric_scc_count`, `metric_scc_condensed_edge_count`,
+`metric_scc_probe_local_states_explored`, and
+`metric_scc_probe_outer_dag_states_explored`; on the current benchmark
+shape the selector keeps the layered path when the SCC probe is slower.
+
+Negative-additive fallback metric runs on `300` and `1k` now use exact
+path-state partitioning for weighted `Min` frontier states plus lazy
+lower-count representative prefilters.
+The negative-additive fallback reached `20,404,270` dominance-candidate checks
+at `300` and `16,522,183` at `1k`, down from the previous path-partition-only
+counts of `34,704,185` and `35,271,278`. Output agreement still reports
+`match`; the remaining fallback work is mostly lower-count dominance probing,
+now measured separately from same-fingerprint checks.
+
+Positive multiplicative `Min` no longer uses the exact frontier fallback on the
+benchmark shape. The runtime minimizes direct products with a layered strategy
+when all factors are finite and at least `1`; it does not compute a geometric
+mean or normalize by path length. Current runs report `all_vs_min=match` with
+`300`: `0.264s` `Min` and `3.38x` speedup, and `1k`: `0.212s` `Min` and
+`2.76x` speedup.
 
 ### Available Targets
 

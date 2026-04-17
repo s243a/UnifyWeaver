@@ -10,11 +10,28 @@ type TrailEntry struct {
 	Var string
 }
 
+type AtomPair struct {
+	Left  string
+	Right string
+}
+
+type WeightedEdgeTriple struct {
+	Left   string
+	Right  string
+	Weight float64
+}
+
 type ChoicePoint struct {
 	NextPC    int
+	ResumePC  int
 	CP        int
 	Regs      map[string]Value
+	Stack     []StackEntry
+	HeapTop   int
 	TrailMark int
+	ForeignPredKey   string
+	ForeignResultRegs []string
+	ForeignResults   []Value
 }
 
 type EnvFrame struct {
@@ -50,6 +67,13 @@ type WamState struct {
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
+	ForeignNativeKinds   map[string]string
+	ForeignResultLayouts map[string]string
+	ForeignResultModes   map[string]string
+	ForeignStringConfigs map[string]map[string]string
+	ForeignUsizeConfigs  map[string]map[string]int
+	IndexedAtomFactPairs map[string][]AtomPair
+	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
 }
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
@@ -57,6 +81,13 @@ func NewWamState(code []Instruction, labels map[string]int) *WamState {
 		Code:   code,
 		Labels: labels,
 		Regs:   make(map[string]Value),
+		ForeignNativeKinds:   make(map[string]string),
+		ForeignResultLayouts: make(map[string]string),
+		ForeignResultModes:   make(map[string]string),
+		ForeignStringConfigs: make(map[string]map[string]string),
+		ForeignUsizeConfigs:  make(map[string]map[string]int),
+		IndexedAtomFactPairs: make(map[string][]AtomPair),
+		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
 	}
 }
 
@@ -77,6 +108,8 @@ func (vm *WamState) pushChoicePoint(nextPC int) {
 		NextPC:    nextPC,
 		CP:        vm.CP,
 		Regs:      copyMap(vm.Regs),
+		Stack:     copyStack(vm.Stack),
+		HeapTop:   len(vm.Heap),
 		TrailMark: len(vm.Trail),
 	})
 }
@@ -132,6 +165,13 @@ func (vm *WamState) Clone() *WamState {
 		Halted:       vm.Halted,
 		CurrentStruct: vm.CurrentStruct,
 		CurrentList:   vm.CurrentList,
+		ForeignNativeKinds:   vm.ForeignNativeKinds,
+		ForeignResultLayouts: vm.ForeignResultLayouts,
+		ForeignResultModes:   vm.ForeignResultModes,
+		ForeignStringConfigs: vm.ForeignStringConfigs,
+		ForeignUsizeConfigs:  vm.ForeignUsizeConfigs,
+		IndexedAtomFactPairs: vm.IndexedAtomFactPairs,
+		IndexedWeightedEdgeTriples: vm.IndexedWeightedEdgeTriples,
 	}
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
@@ -158,6 +198,15 @@ func copyMap(m map[string]Value) map[string]Value {
 		m2[k] = v
 	}
 	return m2
+}
+
+func copyStack(stack []StackEntry) []StackEntry {
+	if len(stack) == 0 {
+		return nil
+	}
+	stack2 := make([]StackEntry, len(stack))
+	copy(stack2, stack)
+	return stack2
 }
 
 func parseFunctorArity(f string) int {
@@ -409,9 +458,42 @@ func (vm *WamState) backtrack() bool {
     if len(vm.ChoicePoints) == 0 {
         return false
     }
-    cp := vm.ChoicePoints[len(vm.ChoicePoints)-1]
+    topIdx := len(vm.ChoicePoints) - 1
+    cp := vm.ChoicePoints[topIdx]
+    if len(cp.ForeignResults) > 0 {
+        for len(cp.ForeignResults) > 0 {
+            vm.unwindTrail(cp.TrailMark)
+            vm.Regs = copyMap(cp.Regs)
+            vm.Stack = copyStack(cp.Stack)
+            if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
+                vm.Heap = vm.Heap[:cp.HeapTop]
+            }
+            vm.CP = cp.CP
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            nextResult := cp.ForeignResults[0]
+            cp.ForeignResults = cp.ForeignResults[1:]
+            if len(cp.ForeignResults) == 0 {
+                vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+            } else {
+                vm.ChoicePoints[topIdx] = cp
+            }
+            if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
+                continue
+            }
+            vm.PC = cp.ResumePC
+            return true
+        }
+        return false
+    }
+    vm.ChoicePoints = vm.ChoicePoints[:topIdx]
     vm.unwindTrail(cp.TrailMark)
     vm.Regs = copyMap(cp.Regs)
+    vm.Stack = copyStack(cp.Stack)
+    if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
+        vm.Heap = vm.Heap[:cp.HeapTop]
+    }
     vm.PC = cp.NextPC
     vm.CP = cp.CP
     vm.Halted = false

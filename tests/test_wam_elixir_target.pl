@@ -192,5 +192,3 @@ run_tests :-
     test_functional_run_loop,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
-
-:- initialization(run_tests, main).

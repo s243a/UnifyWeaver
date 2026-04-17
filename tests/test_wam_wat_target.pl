@@ -20,7 +20,7 @@ test(reg_x1_index) :-
 
 test(reg_y1_index) :-
     reg_name_to_index('Y1', Idx),
-    assertion(Idx == 32).
+    assertion(Idx == 64).  %% Y1 = 64 (env frame range), not 32 (X range)
 
 %% --- Atom hashing ---
 
@@ -70,6 +70,21 @@ test(encode_get_structure) :-
     wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
     assertion(atom(Hex)),
     assertion(sub_string(Hex, 0, _, _, "\\03")).  % tag=3
+
+%% Verify arity is packed into the high 32 bits of the op1 i64.
+%% Byte layout: bytes 0-3 = tag, 4-11 = op1 (little-endian), 12-19 = op2.
+%% Each byte renders as 3 chars in the hex atom: "\XX". So byte N starts
+%% at offset N*3. Bytes 8-11 (high 32 bits of op1) contain the arity.
+%% For 'f/2' we expect \02\00\00\00 at bytes 8-11 (offset 24, length 12).
+test(encode_get_structure_arity_packed) :-
+    wam_instruction_to_wat_bytes(get_structure('f/2', 'A1'), [], Hex),
+    sub_atom(Hex, 24, 12, _, HighBytes),
+    assertion(HighBytes == '\\02\\00\\00\\00').
+
+test(encode_put_structure_arity_packed) :-
+    wam_instruction_to_wat_bytes(put_structure('g/3', 'A1'), [], Hex),
+    sub_atom(Hex, 24, 12, _, HighBytes),
+    assertion(HighBytes == '\\03\\00\\00\\00').
 
 test(encode_get_list) :-
     wam_instruction_to_wat_bytes(get_list('A1'), [], Hex),
@@ -164,6 +179,104 @@ test(helpers_generated) :-
     assertion(sub_string(HelpersCode, _, _, _, "$unify_regs")),
     assertion(sub_string(HelpersCode, _, _, _, "$execute_builtin")).
 
+%% --- Phase 2.1: arg/3 codegen ---
+
+test(arg_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('arg/3', 19)).
+
+test(arg_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    %% The $builtin_arg function must be emitted
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_arg")),
+    %% It must be reachable from $execute_builtin''s O(1) br_table
+    %% dispatch — Phase 6 moved term builtins from a linear if-chain
+    %% into the main br_table. The $arg label must appear inside the
+    %% table and a (block $arg ...) must wrap its handler.
+    assertion(sub_string(HelpersCode, _, _, _, "$arg $univ")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $arg")),
+    %% Sanity: the helper body should reference the arity-extraction
+    %% shift (high 32 bits of compound payload).
+    assertion(sub_string(HelpersCode, _, _, _, "i64.shr_u")).
+
+test(arg_builtin_call_encoding) :-
+    %% Verify a builtin_call arg/3 instruction encodes with builtin ID 19.
+    wam_instruction_to_wat_bytes(builtin_call('arg/3', 3), [], Hex),
+    assertion(atom(Hex)),
+    %% Tag byte is builtin_call = 21 = 0x15
+    assertion(sub_string(Hex, 0, _, _, "\\15")),
+    %% Op1 (low byte of i64) should be builtin ID 19 = 0x13
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\13').
+
+%% --- Phase 2.2: functor/3 codegen ---
+
+test(functor_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('functor/3', 18)).
+
+test(functor_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_functor")),
+    %% Both modes: construct branch uses i64.shl to pack arity,
+    %% read branch uses i64.shr_u to extract it.
+    assertion(sub_string(HelpersCode, _, _, _, "i64.shl")),
+    %% Dispatch: $functor label present in the main br_table and
+    %% wrapped by a (block $functor ...) after the optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$functor $arg")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $functor")).
+
+test(functor_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('functor/3', 3), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 18 = 0x12
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\12').
+
+%% --- Phase 2.3: =../2 (univ) codegen ---
+
+test(univ_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('=../2', 20)).
+
+test(univ_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_univ")),
+    %% Cons cells use tag=4 (list) to match put_list''s runtime layout.
+    %% The empty-list atom hash literal 2914 must appear as the nil
+    %% terminator in the decompose-mode build path.
+    assertion(sub_string(HelpersCode, _, _, _, "2914")),
+    %% Dispatch: $univ label present in the main br_table after the
+    %% Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $univ")).
+
+test(univ_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('=../2', 2), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 20 = 0x14
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\14').
+
+%% --- Phase 2.4: copy_term/2 codegen ---
+
+test(copy_term_builtin_id_registered) :-
+    assertion(wam_wat_target:builtin_id('copy_term/2', 21)).
+
+test(copy_term_helper_generated) :-
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$builtin_copy_term")),
+    %% Sharing-preservation var map is referenced explicitly.
+    assertion(sub_string(HelpersCode, _, _, _, "var map")),
+    %% Dispatch: $copy_term label present in the main br_table and
+    %% wrapped by its own block after the Phase 6 O(1) optimization.
+    assertion(sub_string(HelpersCode, _, _, _, "$univ $copy_term")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $copy_term")).
+
+test(copy_term_builtin_call_encoding) :-
+    wam_instruction_to_wat_bytes(builtin_call('copy_term/2', 2), [], Hex),
+    assertion(atom(Hex)),
+    %% Op1 low byte = builtin ID 21 = 0x15
+    sub_atom(Hex, 12, 3, _, FirstOp1Byte),
+    assertion(FirstOp1Byte == '\\15').
+
 %% --- Predicate compilation ---
 
 test(compile_simple_predicate) :-
@@ -201,32 +314,385 @@ test(write_wat_project) :-
 
 %% --- wat2wasm syntax validation ---
 
-test(wat2wasm_validates) :-
+%% --- Functional execution via wat2wasm + node ---
+%%
+%% These tests compile a generated .wat to .wasm and actually run it
+%% via Node.js, which provides the `env` host imports the WAM-WAT
+%% runtime requires (print_i64, print_char, print_newline). This is
+%% the first layer of real runtime validation for the WAM-WAT target
+%% — everything prior was codegen-only. Tests skip gracefully if
+%% either wat2wasm or node is missing.
+
+tool_available(Tool) :-
+    catch(
+        process_create(path(Tool), ['--version'],
+            [stdout(null), stderr(null)]),
+        _, fail).
+
+%% Build the node harness script that loads a .wasm and calls an export.
+%% Written to a tmp file on first use. Returns the RESULT value on stdout.
+node_harness_source(Src) :-
+    Src = "const fs=require('fs');\n\c
+const [,,wasmPath,exportName]=process.argv;\n\c
+const bytes=fs.readFileSync(wasmPath);\n\c
+const log=[];\n\c
+const imports={env:{\n\c
+  print_i64:v=>log.push(String(v)),\n\c
+  print_char:c=>log.push(String.fromCharCode(c)),\n\c
+  print_newline:()=>log.push('\\n')\n\c
+}};\n\c
+(async()=>{\n\c
+  try{\n\c
+    const{instance}=await WebAssembly.instantiate(bytes,imports);\n\c
+    const fn=instance.exports[exportName];\n\c
+    if(typeof fn!=='function'){console.log('ERROR export '+exportName+' not found');process.exit(1);}\n\c
+    const result=fn();\n\c
+    for(const line of log)process.stderr.write(line);\n\c
+    console.log('RESULT '+result);\n\c
+  }catch(e){console.log('ERROR '+e.message);process.exit(1);}\n\c
+})();\n".
+
+ensure_node_harness(HarnessPath) :-
+    HarnessPath = '/data/data/com.termux/files/home/tmp/wam_wat_test_harness.js',
+    (   exists_file(HarnessPath)
+    ->  true
+    ;   node_harness_source(Src),
+        open(HarnessPath, write, S),
+        write(S, Src),
+        close(S)
+    ).
+
+%% run_wam_wat_module_export(+WatFile, +ExportName, -Result)
+%%   Compile WatFile with wat2wasm, run with node harness, unify Result
+%%   with the i32 return value. Throws wam_wat_runtime_skip(Reason) if
+%%   the toolchain is unavailable. Throws wam_wat_runtime_error(Detail)
+%%   on compilation or execution failure.
+run_wam_wat_module_export(WatFile, ExportName, Result) :-
+    (   tool_available(wat2wasm), tool_available(node)
+    ->  true
+    ;   throw(wam_wat_runtime_skip(tools_missing))
+    ),
+    file_name_extension(Base, _, WatFile),
+    file_name_extension(Base, wasm, WasmFile),
+    format(string(CompileCmd), "wat2wasm ~w -o ~w 2>&1", [WatFile, WasmFile]),
+    process_create(path(sh), ['-c', CompileCmd],
+        [stdout(pipe(COut)), process(CPid)]),
+    read_string(COut, _, CompileOut),
+    close(COut),
+    process_wait(CPid, CExit),
+    (   CExit == exit(0)
+    ->  true
+    ;   throw(wam_wat_runtime_error(compile(CompileOut)))
+    ),
+    ensure_node_harness(Harness),
+    process_create(path(node), [Harness, WasmFile, ExportName],
+        [stdout(pipe(ROut)), stderr(null), process(RPid)]),
+    read_string(ROut, _, RunOut),
+    close(ROut),
+    process_wait(RPid, RExit),
+    (   sub_string(RunOut, _, _, _, "RESULT "),
+        split_string(RunOut, " \n", " \n", Parts),
+        append(_, ["RESULT", RS|_], Parts),
+        number_string(Result, RS)
+    ->  true
+    ;   throw(wam_wat_runtime_error(run(RExit, RunOut)))
+    ).
+
+test(eq_builtin_id_registered) :-
+    %% =/2 is recognized by the canonical WAM layer and assigned
+    %% builtin ID 22 in WAM-WAT''s builtin_id table. Prior to this
+    %% branch, X = Y body goals compiled to `execute =/2`, which
+    %% (since =/2 was never registered) resolved to PC=0 and
+    %% corrupted execution at runtime.
+    assertion(wam_target:is_builtin_pred('=', 2)),
+    assertion(wam_wat_target:builtin_id('=/2', 22)).
+
+test(eq_dispatch_in_br_table) :-
+    %% =/2 is wired into the br_table via the new $eq block, so
+    %% dispatch is O(1) and calls $unify_regs A1 A2 directly.
+    wam_wat_target:compile_wam_helpers_to_wat([], HelpersCode),
+    assertion(sub_string(HelpersCode, _, _, _, "$eq")),
+    assertion(sub_string(HelpersCode, _, _, _, "(block $eq")),
+    assertion(sub_string(HelpersCode, _, _, _,
+        "(call $unify_regs (i32.const 0) (i32.const 1))")).
+
+test(constant_tag_encoded_in_op2) :-
+    %% put_constant encodes the value-cell tag hint (0=atom, 1=int,
+    %% 2=float) in op2''s high 32 bits alongside the target reg idx
+    %% in the low 32 bits. Before this fix, put_constant always
+    %% assumed tag=0 (atom), so integer constants were stored with
+    %% the wrong runtime tag and integer/1 always failed on them.
+    %%
+    %% Test: put_constant with integer 42 targeting A1 (reg idx 0).
+    %% 20-byte instruction layout:
+    %%   tag (4 bytes): \08 \00 \00 \00  (put_constant = 8)
+    %%   op1 (8 bytes): \2a \00 \00 \00 \00 \00 \00 \00  (LE i64 = 42)
+    %%   op2 (8 bytes): \00 \00 \00 \00 \01 \00 \00 \00
+    %%                  low 32 bits = 0 (reg A1)
+    %;                  high 32 bits = 0x00000001 (integer tag)
+    %% Each byte is encoded as "\xx" (3 chars). Byte 16 (op2 byte 4,
+    %% which carries the low byte of the high 32 bits) is at string
+    %% position 48 and should be "\\01".
+    wam_instruction_to_wat_bytes(put_constant(integer(42), 'A1'), [], Hex),
+    assertion(atom(Hex)),
+    sub_atom(Hex, 48, 3, _, Op2Byte4),
+    assertion(Op2Byte4 == '\\01').
+
+test(functional_integer_type_check, [condition(tool_available(wat2wasm)),
+                                       condition(tool_available(node))]) :-
+    %% integer/1 as a guard: `integer(42)` should succeed, returning 1.
+    %% Before this PR, integer/1 at ID 12 fell through the br_table to
+    %% $default which returned 0 (fail) unconditionally. After the fix,
+    %% the br_table routes ID 12 to a real handler that checks
+    %% A1.tag == 1 (integer).
     get_time(T),
-    format(atom(TmpWat), '/tmp/test_wam_validate_~w.wat', [T]),
-    format(atom(TmpWasm), '/tmp/test_wam_validate_~w.wasm', [T]),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_int_~w.wat', [T]),
+    assertz(user:test_int_check :- integer(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_int_check/0],
+                                  [module_name(func_int_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_int_check_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(int_check_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_int_check),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_atom_type_check_fail, [condition(tool_available(wat2wasm)),
+                                         condition(tool_available(node))]) :-
+    %% atom/1 as a guard: `atom(42)` should FAIL (42 is integer, not
+    %% atom). Return value 0 proves the dispatch distinguishes tags
+    %% correctly rather than unconditionally returning 1. Pairs with
+    %% functional_integer_type_check as a negative test.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_atomfail_~w.wat', [T]),
+    assertz(user:test_atom_fail :- atom(42)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_atom_fail/0],
+                                  [module_name(func_atomfail_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_atom_fail_0, Result),
+            (   Result =:= 0
+            ->  true
+            ;   throw(wam_wat_runtime_error(atom_fail_wrong(Result)))
+            )
+        ),
+        (   retractall(user:test_atom_fail),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_cross_predicate_call, [condition(tool_available(wat2wasm)),
+                                         condition(tool_available(node))]) :-
+    %% Cross-predicate label resolution end-to-end:
+    %%
+    %%   simple_id(X, X).
+    %%   cross_caller :- simple_id(hello, _).
+    %%
+    %% cross_caller executes simple_id/2 as a tail call. Before the
+    %% cross-predicate fix, resolve_label/3 used each predicate''s
+    %% LOCAL label table — so `execute simple_id/2` from inside
+    %% cross_caller''s instruction stream would not find simple_id/2
+    %% (it''s in simple_id''s own label table, not cross_caller''s),
+    %% fall back to PC=0, and the VM would re-enter cross_caller,
+    %% creating an infinite loop or silent failure depending on
+    %% exact timing.
+    %%
+    %% The two-pass compile_wat_predicates/6 builds a project-level
+    %% merged label table where both cross_caller''s and simple_id''s
+    %% entries live at their absolute start PCs in the single merged
+    %% instruction array. A return value of 1 proves:
+    %%   (a) cross_caller''s entry PC is set correctly on the VM
+    %%   (b) the `execute simple_id/2` encodes an absolute PC that
+    %%       reaches simple_id''s first instruction
+    %%   (c) simple_id''s head unifies with A1 and A2 correctly
+    %%       using the shared single data segment
+    %%   (d) simple_id''s proceed halts cleanly since CP=-1
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_cross_~w.wat', [T]),
+    assertz(user:simple_id(X, X)),
+    assertz(user:cross_caller :- simple_id(hello, _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([cross_caller/0, simple_id/2],
+                                  [module_name(func_cross_test)], WatFile),
+            run_wam_wat_module_export(WatFile, cross_caller_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(cross_pred_failed(Result)))
+            )
+        ),
+        (   retractall(user:simple_id/2),
+            retractall(user:cross_caller),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_copy_term_nested, [condition(tool_available(wat2wasm)),
+                                     condition(tool_available(node))]) :-
+    %% Deep copy_term follow-up: copy_term(outer(inner(a, b), c), _)
+    %% exercises the worklist''s compound→compound recursion. The v1
+    %% shallow impl would copy the outer compound but leave `inner(a,b)`
+    %% structure-shared with the source; the deep impl allocates a
+    %% fresh inner compound and recursively copies its args. A return
+    %% value of 1 means the worklist processed every level and the
+    %% final root value was written back to A2.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_nested_~w.wat', [T]),
+    assertz(user:test_func_copy_nested :- copy_term(outer(inner(a, b), c), _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_copy_nested/0],
+                                  [module_name(func_copy_nested_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_copy_nested_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(copy_term_nested_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_copy_nested),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_copy_term_compound, [condition(tool_available(wat2wasm)),
+                                       condition(tool_available(node))]) :-
+    %% Flat compound case: copy_term(foo(a, b), _). Validates the
+    %; worklist''s trivial path (one compound, no nesting, no vars).
+    %% With the deep impl this is still a meaningful sanity test and
+    %% a regression guard.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_copy_~w.wat', [T]),
+    assertz(user:test_func_copy :- copy_term(foo(a, b), _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_copy/0],
+                                  [module_name(func_copy_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_copy_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(copy_term_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_copy),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_univ_decompose_compound, [condition(tool_available(wat2wasm)),
+                                            condition(tool_available(node))]) :-
+    %% End-to-end: bar(a, b) =.. L should succeed (L is a fresh var on
+    %% first use so decompose mode just builds a fresh cons list and
+    %% binds L). We do not try to unify L with a pre-built list here —
+    %% v1 decompose mode does not structurally unify a bound A2; that
+    %% path is deferred. The test exercises the entire pipeline:
+    %% canonical WAM → builtin_call =../2 → $builtin_univ → cons-list
+    %% construction on the heap → success return.
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_univ_~w.wat', [T]),
+    assertz(user:test_func_univ :- (bar(a, b) =.. _)),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_univ/0],
+                                  [module_name(func_univ_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_univ_0, Result),
+            (   Result =:= 1
+            ->  true
+            ;   throw(wam_wat_runtime_error(univ_failed(Result)))
+            )
+        ),
+        (   retractall(user:test_func_univ),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(functional_true_succeeds, [condition(tool_available(wat2wasm)),
+                                 condition(tool_available(node))]) :-
+    get_time(T),
+    format(atom(WatFile),
+        '/data/data/com.termux/files/home/tmp/test_wam_func_true_~w.wat', [T]),
+    assertz(user:test_func_true :- true),
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project([test_func_true/0],
+                                  [module_name(func_true_test)], WatFile),
+            run_wam_wat_module_export(WatFile, test_func_true_0, Result),
+            assertion(Result =:= 1)
+        ),
+        (   retractall(user:test_func_true),
+            (exists_file(WatFile) -> delete_file(WatFile) ; true),
+            file_name_extension(Base, _, WatFile),
+            file_name_extension(Base, wasm, WasmFile),
+            (exists_file(WasmFile) -> delete_file(WasmFile) ; true)
+        )
+    ).
+
+test(wat2wasm_validates) :-
+    %% Generate a minimal WAM-WAT module and verify wat2wasm accepts it
+    %% (exit 0). The earlier version of this test used assertion/1 on
+    %% the exit code, which only *warns* on failure rather than failing
+    %% the test; that allowed the step-dispatch off-by-one bug and a
+    %% paren imbalance in $builtin_arith_cmp to ship unnoticed. The
+    %% assertion is now replaced with a direct unification that fails
+    %% the test on non-zero exit.
+    get_time(T),
+    TmpDir = '/data/data/com.termux/files/home/tmp',
+    format(atom(TmpWat), '~w/test_wam_validate_~w.wat', [TmpDir, T]),
+    format(atom(TmpWasm), '~w/test_wam_validate_~w.wasm', [TmpDir, T]),
     assertz(user:test_validate :- true),
     Predicates = [test_validate/0],
     Options = [module_name(validate_test)],
-    (   catch(
-            write_wam_wat_project(Predicates, Options, TmpWat),
-            _, fail)
-    ->  %% Try wat2wasm validation
-        (   catch(process_create(path(wat2wasm), ['--version'],
-                    [stdout(null), stderr(null)]), _, fail)
-        ->  format(string(Cmd), "wat2wasm ~w -o ~w 2>&1", [TmpWat, TmpWasm]),
-            process_create(path(sh), ['-c', Cmd],
-                [stdout(pipe(Out)), process(Pid)]),
-            read_string(Out, _, Output),
-            process_wait(Pid, Exit),
-            format('wat2wasm output: ~s~n', [Output]),
-            assertion(Exit == exit(0))
-        ;   format("wat2wasm not found, skipping syntax validation.~n")
+    setup_call_cleanup(
+        true,
+        (   write_wam_wat_project(Predicates, Options, TmpWat),
+            (   catch(process_create(path(wat2wasm), ['--version'],
+                        [stdout(null), stderr(null)]), _, fail)
+            ->  format(string(Cmd), "wat2wasm ~w -o ~w 2>&1", [TmpWat, TmpWasm]),
+                process_create(path(sh), ['-c', Cmd],
+                    [stdout(pipe(Out)), process(Pid)]),
+                read_string(Out, _, Output),
+                process_wait(Pid, Exit),
+                (   Exit == exit(0)
+                ->  true
+                ;   format(user_error, 'wat2wasm failed: ~s~n', [Output]),
+                    fail
+                )
+            ;   format("wat2wasm not found, skipping syntax validation.~n")
+            )
+        ),
+        (   retractall(user:test_validate),
+            (exists_file(TmpWat) -> delete_file(TmpWat) ; true),
+            (exists_file(TmpWasm) -> delete_file(TmpWasm) ; true)
         )
-    ;   format("write_wam_wat_project failed, skipping validation.~n")
-    ),
-    retractall(user:test_validate),
-    (exists_file(TmpWat) -> delete_file(TmpWat) ; true),
-    (exists_file(TmpWasm) -> delete_file(TmpWasm) ; true).
+    ).
 
 :- end_tests(wam_wat_target).

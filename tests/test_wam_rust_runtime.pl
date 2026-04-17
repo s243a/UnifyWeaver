@@ -963,6 +963,18 @@ fn test_generated_predicates() {
         other => panic!("expected filtered_adjusted_min_semantic_dist(s, Target, Min) to bind float cost, got {:?}", other),
     }
 
+    let mut vm_filtered_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok36b = filtered_adjusted_min_semantic_dist(&mut vm_filtered_reverse_any,
+        Value::Unbound("FilteredAnyStart".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Unbound("FilteredReverseGlobalMin".to_string()));
+    assert!(ok36b, "filtered_adjusted_min_semantic_dist(Start, d, Min) should succeed");
+    assert!(vm_filtered_reverse_any.bindings.get("FilteredAnyStart").is_none(), "filtered aggregate wrapper should not bind existential Start");
+    match vm_filtered_reverse_any.bindings.get("FilteredReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected filtered_adjusted_min_semantic_dist(Start, d, Min) to bind float cost, got {:?}", other),
+    }
+
     let mut vm_filtered_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok37 = filtered_adjusted_min_semantic_dist(&mut vm_filtered_exact,
         Value::Atom("s".to_string()),
@@ -1001,6 +1013,19 @@ fn test_generated_predicates() {
     match vm_filtered_astar_any.bindings.get("FilteredAStarGlobalMin").cloned() {
         Some(Value::Float(cost)) => assert_close(cost, 4.0),
         other => panic!("expected filtered_adjusted_min_semantic_dist_astar(s, Target, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_filtered_astar_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok40b = filtered_adjusted_min_semantic_dist_astar(&mut vm_filtered_astar_reverse_any,
+        Value::Unbound("FilteredAStarAnyStart".to_string()),
+        Value::Atom("d".to_string()),
+        Value::Integer(5),
+        Value::Unbound("FilteredAStarReverseGlobalMin".to_string()));
+    assert!(ok40b, "filtered_adjusted_min_semantic_dist_astar(Start, d, 5, Min) should succeed");
+    assert!(vm_filtered_astar_reverse_any.bindings.get("FilteredAStarAnyStart").is_none(), "filtered A* aggregate wrapper should not bind existential Start");
+    match vm_filtered_astar_reverse_any.bindings.get("FilteredAStarReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected filtered_adjusted_min_semantic_dist_astar(Start, d, 5, Min) to bind float cost, got {:?}", other),
     }
 
     let mut vm_filtered_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
@@ -1048,6 +1073,42 @@ fn test_generated_predicates() {
         ("d".to_string(), 8.0),
     ]);
 
+    let mut vm_weighted_stream_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok43b = filtered_adjusted_weighted_path(&mut vm_weighted_stream_any_start,
+        Value::Unbound("WeightedStreamStart".to_string()),
+        Value::Unbound("WeightedStreamAnyTarget".to_string()),
+        Value::Unbound("WeightedStreamAnyAdjusted".to_string()));
+    assert!(ok43b, "filtered_adjusted_weighted_path(Start, Target, Adjusted) first solution should succeed");
+    let mut weighted_stream_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_weighted_stream_any_start.bindings.get("WeightedStreamStart").cloned(),
+         vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyTarget").cloned(),
+         vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyAdjusted").cloned()) {
+        weighted_stream_any_start_results.push((start, target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_weighted_path(Start, Target, Adjusted) result");
+    }
+    while vm_weighted_stream_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_weighted_stream_any_start.bindings.get("WeightedStreamStart").cloned(),
+             vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyTarget").cloned(),
+             vm_weighted_stream_any_start.bindings.get("WeightedStreamAnyAdjusted").cloned()) {
+            weighted_stream_any_start_results.push((start, target, cost));
+        } else {
+            panic!("expected filtered_adjusted_weighted_path(Start, Target, Adjusted) backtrack result");
+        }
+    }
+    weighted_stream_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(weighted_stream_any_start_results, vec![
+        ("a".to_string(), "c".to_string(), 4.0),
+        ("a".to_string(), "d".to_string(), 7.0),
+        ("b".to_string(), "d".to_string(), 5.0),
+        ("c".to_string(), "d".to_string(), 4.0),
+        ("s".to_string(), "b".to_string(), 4.0),
+        ("s".to_string(), "c".to_string(), 5.0),
+        ("s".to_string(), "d".to_string(), 8.0),
+    ]);
+
     let mut vm_weighted_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok44 = filtered_adjusted_weighted_path(&mut vm_weighted_stream_exact,
         Value::Atom("s".to_string()),
@@ -1091,6 +1152,35 @@ fn test_generated_predicates() {
         ("c".to_string(), 5.0),
         ("d".to_string(), 8.0),
     ]);
+
+    let mut vm_astar_stream_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok46b = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_any_start,
+        Value::Unbound("AStarStreamStart".to_string()),
+        Value::Unbound("AStarStreamAnyTarget".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarStreamAnyAdjusted".to_string()));
+    assert!(ok46b, "filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) first solution should succeed");
+    let mut astar_stream_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+        (vm_astar_stream_any_start.bindings.get("AStarStreamStart").cloned(),
+         vm_astar_stream_any_start.bindings.get("AStarStreamAnyTarget").cloned(),
+         vm_astar_stream_any_start.bindings.get("AStarStreamAnyAdjusted").cloned()) {
+        astar_stream_any_start_results.push((start, target, cost));
+    } else {
+        panic!("expected first filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) result");
+    }
+    while vm_astar_stream_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(target)), Some(Value::Float(cost))) =
+            (vm_astar_stream_any_start.bindings.get("AStarStreamStart").cloned(),
+             vm_astar_stream_any_start.bindings.get("AStarStreamAnyTarget").cloned(),
+             vm_astar_stream_any_start.bindings.get("AStarStreamAnyAdjusted").cloned()) {
+            astar_stream_any_start_results.push((start, target, cost));
+        } else {
+            panic!("expected filtered_adjusted_astar_weighted_path(Start, Target, 5, Adjusted) backtrack result");
+        }
+    }
+    astar_stream_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(astar_stream_any_start_results, weighted_stream_any_start_results);
 
     let mut vm_astar_stream_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok47 = filtered_adjusted_astar_weighted_path(&mut vm_astar_stream_exact,
@@ -1229,6 +1319,46 @@ fn test_generated_predicates() {
         ("goal_bucket".to_string(), 8.0),
     ]);
 
+    let mut vm_bucketed_weighted_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok55b = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_any_start,
+        Value::Unbound("WeightedBucketStart".to_string()),
+        Value::Unbound("WeightedAnyBucket".to_string()),
+        Value::Unbound("WeightedAnyBucketAdjusted".to_string()));
+    assert!(ok55b, "bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) first solution should succeed");
+    let mut bucketed_weighted_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_weighted_any_start.bindings.get("WeightedBucketStart").cloned(),
+         vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucket").cloned(),
+         vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucketAdjusted").cloned()) {
+        bucketed_weighted_any_start_results.push((start, bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) result");
+    }
+    while vm_bucketed_weighted_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_weighted_any_start.bindings.get("WeightedBucketStart").cloned(),
+             vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucket").cloned(),
+             vm_bucketed_weighted_any_start.bindings.get("WeightedAnyBucketAdjusted").cloned()) {
+            bucketed_weighted_any_start_results.push((start, bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_weighted_path(Start, Bucket, Adjusted) backtrack result");
+        }
+    }
+    bucketed_weighted_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(bucketed_weighted_any_start_results, vec![
+        ("a".to_string(), "branch_bucket".to_string(), 4.0),
+        ("a".to_string(), "goal_bucket".to_string(), 7.0),
+        ("a".to_string(), "goal_bucket".to_string(), 7.0),
+        ("b".to_string(), "goal_bucket".to_string(), 5.0),
+        ("b".to_string(), "goal_bucket".to_string(), 5.0),
+        ("c".to_string(), "goal_bucket".to_string(), 4.0),
+        ("c".to_string(), "goal_bucket".to_string(), 4.0),
+        ("s".to_string(), "branch_bucket".to_string(), 4.0),
+        ("s".to_string(), "branch_bucket".to_string(), 5.0),
+        ("s".to_string(), "goal_bucket".to_string(), 8.0),
+        ("s".to_string(), "goal_bucket".to_string(), 8.0),
+    ]);
+
     let mut vm_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok56 = bucketed_adjusted_weighted_path(&mut vm_bucketed_weighted_exact,
         Value::Atom("s".to_string()),
@@ -1274,6 +1404,35 @@ fn test_generated_predicates() {
         ("goal_bucket".to_string(), 8.0),
     ]);
 
+    let mut vm_bucketed_astar_any_start = WamState::new(vec![], std::collections::HashMap::new());
+    let ok58b = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_any_start,
+        Value::Unbound("AStarBucketStart".to_string()),
+        Value::Unbound("AStarAnyBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("AStarAnyBucketAdjusted".to_string()));
+    assert!(ok58b, "bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) first solution should succeed");
+    let mut bucketed_astar_any_start_results: Vec<(String, String, f64)> = Vec::new();
+    if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_bucketed_astar_any_start.bindings.get("AStarBucketStart").cloned(),
+         vm_bucketed_astar_any_start.bindings.get("AStarAnyBucket").cloned(),
+         vm_bucketed_astar_any_start.bindings.get("AStarAnyBucketAdjusted").cloned()) {
+        bucketed_astar_any_start_results.push((start, bucket, cost));
+    } else {
+        panic!("expected first bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) result");
+    }
+    while vm_bucketed_astar_any_start.backtrack() {
+        if let (Some(Value::Atom(start)), Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_bucketed_astar_any_start.bindings.get("AStarBucketStart").cloned(),
+             vm_bucketed_astar_any_start.bindings.get("AStarAnyBucket").cloned(),
+             vm_bucketed_astar_any_start.bindings.get("AStarAnyBucketAdjusted").cloned()) {
+            bucketed_astar_any_start_results.push((start, bucket, cost));
+        } else {
+            panic!("expected bucketed_adjusted_astar_weighted_path(Start, Bucket, 5, Adjusted) backtrack result");
+        }
+    }
+    bucketed_astar_any_start_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.partial_cmp(&b.2).unwrap()));
+    assert_eq!(bucketed_astar_any_start_results, bucketed_weighted_any_start_results);
+
     let mut vm_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());
     let ok59 = bucketed_adjusted_astar_weighted_path(&mut vm_bucketed_astar_exact,
         Value::Atom("s".to_string()),
@@ -1314,6 +1473,18 @@ fn test_generated_predicates() {
         other => panic!("expected bucketed_min_semantic_dist(s, Bucket, Min) to bind float cost, got {:?}", other),
     }
 
+    let mut vm_bucketed_min_weighted_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok62b = bucketed_min_semantic_dist(&mut vm_bucketed_min_weighted_reverse_any,
+        Value::Unbound("AnyBucketedStart".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Unbound("BucketedReverseGlobalMin".to_string()));
+    assert!(ok62b, "bucketed_min_semantic_dist(Start, goal_bucket, Min) should succeed");
+    assert!(vm_bucketed_min_weighted_reverse_any.bindings.get("AnyBucketedStart").is_none(), "scalar aggregate wrapper should not bind existential Start");
+    match vm_bucketed_min_weighted_reverse_any.bindings.get("BucketedReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected bucketed_min_semantic_dist(Start, goal_bucket, Min) to bind float cost, got {:?}", other),
+    }
+
     let mut vm_bucketed_min_weighted_fail = WamState::new(vec![], std::collections::HashMap::new());
     let ok63 = bucketed_min_semantic_dist(&mut vm_bucketed_min_weighted_fail,
         Value::Atom("s".to_string()),
@@ -1345,6 +1516,19 @@ fn test_generated_predicates() {
     match vm_bucketed_min_astar_any.bindings.get("BucketedAStarGlobalMin").cloned() {
         Some(Value::Float(cost)) => assert_close(cost, 4.0),
         other => panic!("expected bucketed_min_semantic_dist_astar(s, Bucket, 5, Min) to bind float cost, got {:?}", other),
+    }
+
+    let mut vm_bucketed_min_astar_reverse_any = WamState::new(vec![], std::collections::HashMap::new());
+    let ok65b = bucketed_min_semantic_dist_astar(&mut vm_bucketed_min_astar_reverse_any,
+        Value::Unbound("AnyAStarBucketedStart".to_string()),
+        Value::Atom("goal_bucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("BucketedAStarReverseGlobalMin".to_string()));
+    assert!(ok65b, "bucketed_min_semantic_dist_astar(Start, goal_bucket, 5, Min) should succeed");
+    assert!(vm_bucketed_min_astar_reverse_any.bindings.get("AnyAStarBucketedStart").is_none(), "scalar A* aggregate wrapper should not bind existential Start");
+    match vm_bucketed_min_astar_reverse_any.bindings.get("BucketedAStarReverseGlobalMin").cloned() {
+        Some(Value::Float(cost)) => assert_close(cost, 4.0),
+        other => panic!("expected bucketed_min_semantic_dist_astar(Start, goal_bucket, 5, Min) to bind float cost, got {:?}", other),
     }
 
     let mut vm_bucketed_min_astar_fail = WamState::new(vec![], std::collections::HashMap::new());
@@ -1381,6 +1565,35 @@ fn test_generated_predicates() {
     assert_eq!(grouped_bucketed_weighted_results, vec![
         ("branch_bucket".to_string(), 4.0),
         ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_grouped_bucketed_weighted_reverse = WamState::new(vec![], std::collections::HashMap::new());
+    let ok67b = grouped_bucketed_min_semantic_dist(&mut vm_grouped_bucketed_weighted_reverse,
+        Value::Unbound("GroupedAnyStart".to_string()),
+        Value::Unbound("GroupedAnyStartBucket".to_string()),
+        Value::Unbound("GroupedAnyStartMin".to_string()));
+    assert!(ok67b, "grouped_bucketed_min_semantic_dist(Start, Bucket, Min) first grouped result should succeed");
+    assert!(vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStart").is_none(), "grouped aggregate wrapper should not bind existential Start");
+    let mut grouped_bucketed_weighted_reverse_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartBucket").cloned(), vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartMin").cloned()) {
+        grouped_bucketed_weighted_reverse_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist(Start, Bucket, Min) result");
+    }
+    while vm_grouped_bucketed_weighted_reverse.backtrack() {
+        assert!(vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStart").is_none(), "grouped aggregate wrapper should not bind existential Start on backtracking");
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartBucket").cloned(), vm_grouped_bucketed_weighted_reverse.bindings.get("GroupedAnyStartMin").cloned()) {
+            grouped_bucketed_weighted_reverse_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist(Start, Bucket, Min) backtrack result");
+        }
+    }
+    grouped_bucketed_weighted_reverse_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_weighted_reverse_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 4.0),
     ]);
 
     let mut vm_grouped_bucketed_weighted_exact = WamState::new(vec![], std::collections::HashMap::new());
@@ -1428,6 +1641,36 @@ fn test_generated_predicates() {
     assert_eq!(grouped_bucketed_astar_results, vec![
         ("branch_bucket".to_string(), 4.0),
         ("goal_bucket".to_string(), 8.0),
+    ]);
+
+    let mut vm_grouped_bucketed_astar_reverse = WamState::new(vec![], std::collections::HashMap::new());
+    let ok70b = grouped_bucketed_min_semantic_dist_astar(&mut vm_grouped_bucketed_astar_reverse,
+        Value::Unbound("GroupedAStarAnyStart".to_string()),
+        Value::Unbound("GroupedAStarAnyStartBucket".to_string()),
+        Value::Integer(5),
+        Value::Unbound("GroupedAStarAnyStartMin".to_string()));
+    assert!(ok70b, "grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) first grouped result should succeed");
+    assert!(vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStart").is_none(), "grouped A* aggregate wrapper should not bind existential Start");
+    let mut grouped_bucketed_astar_reverse_results: Vec<(String, f64)> = Vec::new();
+    if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+        (vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartBucket").cloned(), vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartMin").cloned()) {
+        grouped_bucketed_astar_reverse_results.push((bucket, cost));
+    } else {
+        panic!("expected first grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) result");
+    }
+    while vm_grouped_bucketed_astar_reverse.backtrack() {
+        assert!(vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStart").is_none(), "grouped A* aggregate wrapper should not bind existential Start on backtracking");
+        if let (Some(Value::Atom(bucket)), Some(Value::Float(cost))) =
+            (vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartBucket").cloned(), vm_grouped_bucketed_astar_reverse.bindings.get("GroupedAStarAnyStartMin").cloned()) {
+            grouped_bucketed_astar_reverse_results.push((bucket, cost));
+        } else {
+            panic!("expected grouped_bucketed_min_semantic_dist_astar(Start, Bucket, 5, Min) backtrack result");
+        }
+    }
+    grouped_bucketed_astar_reverse_results.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(grouped_bucketed_astar_reverse_results, vec![
+        ("branch_bucket".to_string(), 4.0),
+        ("goal_bucket".to_string(), 4.0),
     ]);
 
     let mut vm_grouped_bucketed_astar_exact = WamState::new(vec![], std::collections::HashMap::new());

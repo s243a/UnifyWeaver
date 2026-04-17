@@ -65,22 +65,60 @@
 (func $set_trail_top (param $top i32)
   (i32.store (i32.const 65548) (local.get $top)))
 
-;; Trail entry: [reg_idx:i32 +0] [old_tag:i32 +4] [old_payload:i64 +8] = 16 bytes
-(func $trail_binding (param $reg_idx i32)
+;; --- Deref: follow Ref chains to the ultimate cell address ---
+;; Given a register index, follows any Ref(addr) chain until the
+;; pointed-to cell is non-Ref. Returns the MEMORY ADDRESS of the
+;; final cell (which may be a heap address if the register held a
+;; Ref, or the register's own address if it held a non-Ref value).
+;; This is the foundation for correct variable aliasing: after
+;; put_variable allocates a heap cell and stores Ref(H) in both
+;; Xn and Ai, deref_reg_addr on either register returns H so
+;; bindings reach the shared heap cell.
+(func $deref_reg_addr (param $idx i32) (result i32)
+  (local $off i32) (local $tag i32)
+  (local.set $off (call $reg_offset (local.get $idx)))
+  (block $done
+    (loop $deref
+      (local.set $tag (call $val_tag (local.get $off)))
+      (br_if $done (i32.ne (local.get $tag) (i32.const 5)))
+      (local.set $off (i32.wrap_i64 (call $val_payload (local.get $off))))
+      (br $deref)))
+  (local.get $off))
+
+;; Convenience: deref + read tag / payload.
+(func $deref_reg_tag (param $idx i32) (result i32)
+  (call $val_tag (call $deref_reg_addr (local.get $idx))))
+(func $deref_reg_payload (param $idx i32) (result i64)
+  (call $val_payload (call $deref_reg_addr (local.get $idx))))
+
+;; Trail entry: [mem_off:i32 +0] [old_tag:i32 +4] [old_payload:i64 +8] = 16 bytes
+;; mem_off is any linear-memory address (register offset OR heap address).
+;; Unwind restores via val_store so it works uniformly for both.
+(func $trail_binding_at (param $mem_off i32)
   (local $toff i32)
-  (local $reg_off i32)
   (local.set $toff (call $get_trail_top))
-  (local.set $reg_off (call $reg_offset (local.get $reg_idx)))
-  ;; Save reg index
-  (i32.store (local.get $toff) (local.get $reg_idx))
-  ;; Save old tag
+  (i32.store (local.get $toff) (local.get $mem_off))
   (i32.store (i32.add (local.get $toff) (i32.const 4))
-    (call $val_tag (local.get $reg_off)))
-  ;; Save old payload
+    (call $val_tag (local.get $mem_off)))
   (i64.store (i32.add (local.get $toff) (i32.const 8))
-    (call $val_payload (local.get $reg_off)))
-  ;; Advance trail top
+    (call $val_payload (local.get $mem_off)))
   (call $set_trail_top (i32.add (local.get $toff) (i32.const 16))))
+
+;; Convenience wrapper: trail a register by its index (delegates to
+;; trail_binding_at with the register's memory offset).
+(func $trail_binding (param $reg_idx i32)
+  (call $trail_binding_at (call $reg_offset (local.get $reg_idx))))
+
+;; Bind a register to (tag, payload) through its deref chain.
+;; Follows Ref(H) to the heap cell, trails it, writes the value.
+;; This is the correct binding mechanism for put_variable-aliased
+;; registers: both the register and any co-aliased register will
+;; see the binding because they share the same heap cell.
+(func $bind_reg_deref (param $idx i32) (param $tag i32) (param $payload i64)
+  (local $addr i32)
+  (local.set $addr (call $deref_reg_addr (local.get $idx)))
+  (call $trail_binding_at (local.get $addr))
+  (call $val_store (local.get $addr) (local.get $tag) (local.get $payload)))
 
 ;; --- Environment/Choice point stack (base at 65536 + 8192 = 73728) ---
 
@@ -112,11 +150,30 @@
 (func $set_mode (param $m i32)
   (i32.store (i32.const 65564) (local.get $m)))
 
-;; --- Register file (base at 65536 + 64 = 65600, 64 regs x 12 bytes) ---
-;; A1-A32 = indices 0-31, X1-X32 = indices 32-63
+;; --- Register file ---
+;; A1-A32 (indices 0-31) and X temporaries live in the fixed register
+;; file at 65600. Y registers (indices 32-63) live in the current
+;; environment frame on the stack, accessed via the $env_base global
+;; set by allocate. This ensures each predicate invocation has its
+;; own Y storage, so a callee's Y writes don't stomp the caller's
+;; permanent variables.
+;;
+;; Frame layout (set by allocate, popped by deallocate):
+;;   +0: prev_env_base (i32)
+;;   +4: saved CP (i32)
+;;   +8: Y1 slot (12 bytes), +20: Y2 slot, ..., +8+(N-1)*12: YN
+;; Total: 8 + 32*12 = 392 bytes per frame.
 
 (func $reg_offset (param $idx i32) (result i32)
-  (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))
+  (if (result i32) (i32.ge_u (local.get $idx) (i32.const 64))
+    (then
+      ;; Y register (index 64+): slot in current environment frame.
+      ;; Y_n has index n+63, so frame slot = (idx - 64) * 12 + 8.
+      (i32.add (i32.add (global.get $env_base) (i32.const 8))
+               (i32.mul (i32.sub (local.get $idx) (i32.const 64)) (i32.const 12))))
+    (else
+      ;; A/X register (index 0-63): slot in fixed register file.
+      (i32.add (i32.const 65600) (i32.mul (local.get $idx) (i32.const 12))))))
 
 (func $get_reg_tag (param $idx i32) (result i32)
   (i32.load (call $reg_offset (local.get $idx))))
@@ -160,6 +217,7 @@
 ;; --- State initialization ---
 
 (func $wam_init (param $heap_base i32)
+  (local $i i32)
   (call $set_pc (i32.const 0))
   (call $set_cp (i32.const -1))
   (call $set_heap_top (local.get $heap_base))
@@ -167,4 +225,25 @@
   (call $set_stack_top (i32.const 73728))   ;; 65536 + 8192
   (call $set_cp_count (i32.const 0))
   (call $set_halted (i32.const 0))
-  (call $set_mode (i32.const 0)))
+  (call $set_mode (i32.const 0))
+  (global.set $env_base (i32.const 0))
+  ;; Reset aggregate and arg/3 iteration state — otherwise stale globals
+  ;; from a prior query corrupt detection logic across predicate
+  ;; invocations sharing the same WASM instance.
+  (global.set $agg_active (i32.const 0))
+  (global.set $agg_sum (i64.const 0))
+  (global.set $agg_count (i32.const 0))
+  (global.set $arg_iter_active (i32.const 0))
+  (global.set $arg_iter_n (i32.const 0))
+  (global.set $arg_iter_arity (i32.const 0))
+  (global.set $arg_iter_t_addr (i32.const 0))
+  ;; Zero all A/X registers (indices 0-63) to Unbound. This prevents
+  ;; stale Ref cells from previous invocations leading to corrupted
+  ;; heap addresses when put_structure uses bind_reg_deref.
+  (local.set $i (i32.const 0))
+  (block $done
+    (loop $clear
+      (br_if $done (i32.ge_u (local.get $i) (i32.const 64)))
+      (call $set_reg (local.get $i) (i32.const 6) (i64.const 0))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $clear))))

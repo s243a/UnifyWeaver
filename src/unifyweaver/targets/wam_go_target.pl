@@ -23,12 +23,15 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module('../core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_metadata/4]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 
 :- discontiguous wam_go_case/2.
+:- discontiguous wam_line_to_go_literal/4.
 
 % ============================================================================
 % PHASE 4: Hybrid Module Assembly
@@ -102,33 +105,119 @@ read_template_file(Path, Content) :-
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
-compile_predicates_for_project([PredIndicator|Rest], Options, Code) :-
-    (   PredIndicator = Module:Pred/Arity -> true
-    ;   PredIndicator = Pred/Arity, Module = user
+compile_predicates_for_project(Predicates, Options, Code) :-
+    classify_predicates(Predicates, Options, Classified),
+    collect_wam_entries(Classified, Options, 0, WamEntries, AllInstrParts, AllLabelEntries),
+    compile_shared_foreign_setup(Classified, Options, SharedForeignSetup),
+    (   WamEntries \== []
+    ->  atomic_list_concat(AllInstrParts, '\n', AllInstrs),
+        atomic_list_concat(AllLabelEntries, '\n', AllLabels),
+        format(atom(SharedCode),
+'~w
+
+var sharedWamCodeRaw = []Instruction{
+~w
+}
+
+var sharedWamLabels = map[string]int{
+~w
+}
+
+var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
+', [SharedForeignSetup, AllInstrs, AllLabels])
+    ;   SharedCode = ""
     ),
-    (   % Try native Go lowering first
-        catch(
+    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    atomic_list_concat(PredCodes, '\n\n', PredicatesCode),
+    (   SharedCode == ""
+    ->  Code = PredicatesCode
+    ;   format(atom(Code), '~w~n~w', [SharedCode, PredicatesCode])
+    ).
+
+classify_predicates([], _, []).
+classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
+    (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
+        option(wam_fallback(WamFB), Options, true),
+        WamFB \== false,
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+    ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
+        format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+    ;   catch(
             go_target:compile_predicate_to_go(Module:Pred/Arity,
                 [include_package(false)|Options], PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        Strategy = native
-    ;   % Fall back to WAM compilation
-        option(wam_fallback(WamFB), Options, true),
+        Entry = classified(Module, Pred, Arity, native, PredCode)
+    ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
-        compile_wam_predicate_to_go(Pred/Arity, WamCode, Options, PredCode)
-    ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        Strategy = wam
-    ;   % Neither worked
-        format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity]),
-        Strategy = failed
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
+    ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
+        ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
+            format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
+            Entry = classified(Module, Pred, Arity, wam, WamCode)
+        )
+    ;   format(atom(PredCode), '// ~w/~w: compilation failed', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, failed, PredCode)
     ),
-    compile_predicates_for_project(Rest, Options, RestCode),
-    (   RestCode == ""
-    ->  format(atom(Code), "// Strategy: ~w\n~w", [Strategy, PredCode])
-    ;   format(atom(Code), "// Strategy: ~w\n~w\n\n~w", [Strategy, PredCode, RestCode])
-    ).
+    classify_predicates(Rest, Options, RestEntries).
+
+collect_wam_entries([], _, _, [], [], []).
+collect_wam_entries([classified(Module, Pred, Arity, wam, WamCode)|Rest], Options, PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_go(Lines, PC, Module:Pred/Arity, Options, GoLiterals, LabelEntries),
+    maplist([Lit, Entry]>>(format(atom(Entry), '        ~w,', [Lit])), GoLiterals, InstrEntries),
+    maplist([Label-Idx, Entry]>>(format(atom(Entry), '        "~w": ~w,', [Label, Idx])), LabelEntries, LabelRows),
+    length(GoLiterals, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, Options, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrEntries, RestInstrs, AllInstrs),
+    append(LabelRows, RestLabels, AllLabels).
+collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
+
+generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// Strategy: native~n~w', [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// Strategy: wam_foreign~n~w', [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    member(wam_entry(Pred, Arity, StartPC), WamEntries),
+    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Code),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+
+compile_shared_foreign_setup(Classified, Options, Code) :-
+    findall(Line,
+        ( member(classified(Module, Pred, Arity, wam_foreign, _), Classified),
+          go_foreign_spec(Module:Pred/Arity, Options, SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
+          maplist(go_foreign_setup_line, SetupOps, SetupLines),
+          member(Line, SetupLines)
+        ),
+        RawLines),
+    sort(RawLines, Lines),
+    (   Lines == []
+    ->  Body = ""
+    ;   atomic_list_concat(Lines, '\n', Body)
+    ),
+    format(atom(Code),
+'func setupSharedForeignPredicates(vm *WamState) {
+~w
+}', [Body]).
 
 %% compile_wam_runtime_to_go(+Options, -GoCode)
 %  Placeholder for potentially transpiling larger parts of wam_runtime.pl
@@ -241,20 +330,31 @@ go_struct_case(Functor-Label, Case) :-
 %% compile_wam_predicate_to_go(+Pred/Arity, +WamCode, +Options, -GoCode)
 %  Takes WAM instruction output and produces Go code with instruction
 %  slice and label map.
-compile_wam_predicate_to_go(Pred/Arity, WamCode, _Options, GoCode) :-
+compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
     capitalize_atom(Pred, CapPred),
-    %% Parse WAM code lines into instruction terms
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_go(Lines, 0, GoLiterals, LabelEntries),
-    %% Build Go slice
-    maplist([Lit, Entry]>>(format(atom(Entry), '        ~w,', [Lit])), GoLiterals, Entries),
-    atomic_list_concat(Entries, '\n', EntriesStr),
-    %% Format labels
-    maplist([Label-Idx, Entry]>>(format(atom(Entry), '        "~w": ~w,', [Label, Idx])), LabelEntries, LabelRows),
-    atomic_list_concat(LabelRows, '\n', LabelsStr),
-    format(atom(GoCode),
+    build_go_wam_arg_list(Arity, ArgList),
+    build_go_wam_arg_setup(Arity, ArgSetup),
+    (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
+    ->  format(atom(GoCode),
+'// WAM-compiled predicate: ~w/~w
+func ~w(~w) bool {
+    vm := NewWamState(nil, nil)
+~w
+~w
+~w
+    return ~w
+}
+', [PredStr, Arity, CapPred, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr])
+    ;   atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        wam_lines_to_go(Lines, 0, Pred/Arity, Options, GoLiterals, LabelEntries),
+        maplist([Lit, Entry]>>(format(atom(Entry), '        ~w,', [Lit])), GoLiterals, Entries),
+        atomic_list_concat(Entries, '\n', EntriesStr),
+        maplist([Label-Idx, Entry]>>(format(atom(Entry), '        "~w": ~w,', [Label, Idx])), LabelEntries, LabelRows),
+        atomic_list_concat(LabelRows, '\n', LabelsStr),
+        format(atom(GoCode),
 '// WAM-compiled predicate: ~w/~w
 var ~wCode = []Instruction{
 ~w
@@ -263,31 +363,367 @@ var ~wCode = []Instruction{
 var ~wLabels = map[string]int{
 ~w
 }
-', [PredStr, Arity, CapPred, EntriesStr, CapPred, LabelsStr]).
+
+var ~wResolvedCode = resolveInstructions(~wCode, ~wLabels)
+
+func ~w(~w) bool {
+    vm := NewWamState(~wResolvedCode, ~wLabels)
+~w
+    return vm.Run()
+}
+', [PredStr, Arity, CapPred, EntriesStr, CapPred, LabelsStr,
+    CapPred, CapPred, CapPred, CapPred, ArgList, CapPred, CapPred, ArgSetup])
+    ).
+
+compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
+    atom_string(Pred, PredStr),
+    capitalize_atom(Pred, CapPred),
+    build_go_wam_arg_list(Arity, ArgList),
+    build_go_wam_arg_setup(Arity, ArgSetup),
+    format(atom(GoCode),
+'// Strategy: wam
+// WAM-compiled predicate: ~w/~w (shared table, pc=~w)
+var ~wCode = sharedWamCode
+var ~wLabels = sharedWamLabels
+const ~wStartPC = ~w
+
+func ~w(~w) bool {
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = ~w
+~w
+    return vm.Run()
+}
+', [PredStr, Arity, StartPC,
+    CapPred, CapPred, CapPred, StartPC,
+    CapPred, ArgList, StartPC, ArgSetup]).
+
+build_go_wam_arg_list(0, "") :- !.
+build_go_wam_arg_list(Arity, ArgList) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>format(atom(S), 'a~w Value', [I]), Indices, Parts),
+    atomic_list_concat(Parts, ', ', ArgList).
+
+build_go_wam_arg_setup(0, "") :- !.
+build_go_wam_arg_setup(Arity, Setup) :-
+    numlist(1, Arity, Indices),
+    maplist([I, S]>>format(atom(S), '    vm.Regs["A~w"] = a~w', [I, I]), Indices, Lines),
+    atomic_list_concat(Lines, '\n', Setup).
+
+foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
+    go_foreign_spec(PredIndicator, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
+    InstrSetup = '    vm.PC = 1',
+    go_foreign_setup_code(SetupOps, Setup),
+    format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
+
+go_foreign_spec(_PredArity, Options, _SetupOps, _RewriteCalls, _EntryPredArity) :-
+    option(no_kernels(true), Options),
+    !,
+    fail.
+go_foreign_spec(PredArity, Options, SetupOps, RewriteCalls, EntryPredArity) :-
+    option(foreign_lowering(ForeignSpec), Options),
+    nonvar(ForeignSpec),
+    ForeignSpec \== true,
+    (   is_list(ForeignSpec)
+    ->  member(Spec, ForeignSpec),
+        go_foreign_spec_term(PredArity, Spec, SetupOps, RewriteCalls, EntryPredArity)
+    ;   go_foreign_spec_term(PredArity, ForeignSpec, SetupOps, RewriteCalls, EntryPredArity)
+    ),
+    !.
+go_foreign_spec(PredIndicator, Options, SetupOps, RewriteCalls, EntryPredArity) :-
+    option(foreign_lowering(true), Options),
+    go_foreign_lowering_spec(PredIndicator, SetupOps, RewriteCalls, EntryPredArity),
+    !.
+
+go_foreign_spec_term(Pred/Arity,
+        foreign_predicate(Pred/Arity, SetupOps, RewriteCalls),
+        SetupOps,
+        RewriteCalls,
+        Pred/Arity) :-
+    is_list(SetupOps),
+    is_list(RewriteCalls).
+
+go_foreign_setup_code([], "").
+go_foreign_setup_code(Ops, Setup) :-
+    maplist(go_foreign_setup_line, Ops, Lines),
+    atomic_list_concat(Lines, '\n', Setup).
+
+go_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
+    format(atom(Line), '    vm.registerForeignNativeKind("~w/~w", "~w")', [Pred, Arity, Kind]).
+go_foreign_setup_line(register_foreign_result_layout(Pred/Arity, tuple(ResultArity)), Line) :-
+    format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "tuple:~w")', [Pred, Arity, ResultArity]),
+    !.
+go_foreign_setup_line(register_foreign_result_layout(Pred/Arity, Layout), Line) :-
+    format(atom(Line), '    vm.registerForeignResultLayout("~w/~w", "~w")', [Pred, Arity, Layout]).
+go_foreign_setup_line(register_foreign_result_mode(Pred/Arity, Mode), Line) :-
+    format(atom(Line), '    vm.registerForeignResultMode("~w/~w", "~w")', [Pred, Arity, Mode]).
+go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
+    format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
+        [Pred, Arity, Key, ValuePred, ValueArity]).
+go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, Value), Line) :-
+    format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w")',
+        [Pred, Arity, Key, Value]).
+go_foreign_setup_line(register_foreign_usize_config(Pred/Arity, Key, Value), Line) :-
+    format(atom(Line), '    vm.registerForeignUsizeConfig("~w/~w", "~w", ~w)', [Pred, Arity, Key, Value]).
+go_foreign_setup_line(register_indexed_atom_fact2(Pred/Arity, Pairs), Line) :-
+    go_fact_pairs_literal(Pairs, Literal),
+    format(atom(Line), '    vm.registerIndexedAtomFact2Pairs("~w/~w", []AtomPair{~w})', [Pred, Arity, Literal]).
+go_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line) :-
+    go_fact_triples_literal(Triples, Literal),
+    format(atom(Line), '    vm.registerIndexedWeightedEdgeTriples("~w/~w", []WeightedEdgeTriple{~w})', [Pred, Arity, Literal]).
+
+go_fact_pairs_literal(Pairs, Literal) :-
+    maplist(go_fact_pair_literal, Pairs, PairLiterals),
+    atomic_list_concat(PairLiterals, ', ', Literal).
+
+go_fact_pair_literal(Left-Right, Literal) :-
+    format(atom(Literal), '{Left: "~w", Right: "~w"}', [Left, Right]).
+
+go_fact_triples_literal(Triples, Literal) :-
+    maplist(go_fact_triple_literal, Triples, TripleLiterals),
+    atomic_list_concat(TripleLiterals, ', ', Literal).
+
+go_fact_triple_literal(Left-Right-Weight, Literal) :-
+    format(atom(Literal), '{Left: "~w", Right: "~w", Weight: ~15g}', [Left, Right, Weight]).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
     code_type(FirstUpper, to_upper(First)),
     atom_codes(Cap, [FirstUpper|Rest]).
 
+predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
+predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
+
+go_foreign_lowering_spec(PredIndicator, SetupOps, RewriteCalls, EntryPred/EntryArity) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, Module:clause(Head, Body), Clauses),
+    Clauses \= [],
+    go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel),
+    go_recursive_kernel_spec(Kernel, SetupOps, RewriteCalls, EntryPred/EntryArity).
+
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(countdown_sum2, Pred/Arity, [])) :-
+    go_foreign_lowerable_countdown_sum(Pred, Arity, Clauses).
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffix2, Pred/Arity, [])) :-
+    go_foreign_lowerable_list_suffix(Pred, Arity, Clauses).
+go_recursive_kernel(_Module, Pred, Arity, Clauses, recursive_kernel(list_suffixes2, Pred/Arity, [])) :-
+    go_foreign_lowerable_list_suffixes(Pred, Arity, Clauses).
+go_recursive_kernel(Module, Pred, Arity, Clauses,
+        recursive_kernel(weighted_shortest_path3, Pred/Arity,
+            [weight_pred(WeightPred/3), fact_triples(FactTriples)])) :-
+    go_foreign_lowerable_weighted_shortest_path(Module, Pred, Arity, Clauses, WeightPred/3, FactTriples).
+go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel) :-
+    go_foreign_lowerable_astar_shortest_path(Module, Pred, Arity, Clauses, Kernel).
+go_recursive_kernel(Module, Pred, Arity, Clauses, Kernel) :-
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel0),
+    go_supported_shared_kernel(Kernel0),
+    go_recursive_kernel_with_facts(Module, Kernel0, Kernel).
+
+go_supported_shared_kernel(recursive_kernel(transitive_closure2, _, _)).
+go_supported_shared_kernel(recursive_kernel(transitive_distance3, _, _)).
+go_supported_shared_kernel(recursive_kernel(transitive_parent_distance4, _, _)).
+go_supported_shared_kernel(recursive_kernel(transitive_step_parent_distance5, _, _)).
+go_recursive_kernel_with_facts(Module,
+        recursive_kernel(KernelKind, PredIndicator, KernelConfig0),
+        recursive_kernel(KernelKind, PredIndicator,
+            [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    member(KernelKind, [transitive_closure2, transitive_distance3,
+        transitive_parent_distance4, transitive_step_parent_distance5]),
+    member(edge_pred(EdgePred/2), KernelConfig0),
+    go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs),
+    FactPairs \= [].
+go_recursive_kernel_spec(recursive_kernel(KernelKind, PredIndicator, KernelConfig),
+        SetupOps, RewriteCalls, PredIndicator) :-
+    go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig, SetupOps),
+    RewriteCalls = [PredIndicator].
+
+go_recursive_kernel_setup_ops(KernelKind, PredIndicator, KernelConfig,
+        [ register_foreign_native_kind(PredIndicator, NativeKind),
+          register_foreign_result_layout(PredIndicator, ResultLayout),
+          register_foreign_result_mode(PredIndicator, ResultMode)
+        |ConfigOps]) :-
+    go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout, ResultMode),
+    go_recursive_kernel_config_ops(PredIndicator, KernelConfig, ConfigOps).
+
+go_recursive_kernel_metadata(countdown_sum2, _KernelConfig, countdown_sum2, tuple(1), deterministic).
+go_recursive_kernel_metadata(list_suffix2, _KernelConfig, list_suffix2, tuple(1), stream).
+go_recursive_kernel_metadata(list_suffixes2, _KernelConfig, list_suffixes2, tuple(1), deterministic_collection).
+go_recursive_kernel_metadata(astar_shortest_path4, _KernelConfig, astar_shortest_path4, tuple(1), stream).
+go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout, ResultMode) :-
+    kernel_metadata(recursive_kernel(KernelKind, _PredIndicator, KernelConfig),
+        NativeKind, ResultLayout, ResultMode).
+
+go_recursive_kernel_config_ops(_PredIndicator, [], []).
+go_recursive_kernel_config_ops(PredIndicator, [edge_pred(EdgePred/2), fact_pairs(FactPairs)], [
+        register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
+        register_indexed_atom_fact2(EdgePred/2, FactPairs)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator, [weight_pred(WeightPred/3), fact_triples(FactTriples)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator,
+        [weight_pred(WeightPred/3), fact_triples(FactTriples),
+         direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+         dimensionality(Dim)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples),
+        register_foreign_string_config(PredIndicator, direct_dist_pred, DirectPred/3),
+        register_indexed_weighted_edge(DirectPred/3, DirectTriples),
+        register_foreign_usize_config(PredIndicator, dimensionality, Dim)
+    ]).
+go_recursive_kernel_config_ops(PredIndicator,
+        [weight_pred(WeightPred/3), fact_triples(FactTriples),
+         dimensionality(Dim)], [
+        register_foreign_string_config(PredIndicator, weight_pred, WeightPred/3),
+        register_indexed_weighted_edge(WeightPred/3, FactTriples),
+        register_foreign_usize_config(PredIndicator, dimensionality, Dim)
+    ]).
+
+go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
+    findall(Left-Right,
+        ( functor(EdgeHead, EdgePred, 2),
+          Module:clause(EdgeHead, true),
+          EdgeHead =.. [EdgePred, Left, Right],
+          atom(Left),
+          atom(Right)
+        ),
+        FactPairs).
+
+go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples) :-
+    findall(Left-Right-Weight,
+        ( functor(WeightHead, WeightPred, 3),
+          Module:clause(WeightHead, true),
+          WeightHead =.. [WeightPred, Left, Right, Weight],
+          atom(Left),
+          atom(Right),
+          number(Weight)
+        ),
+        FactTriples).
+
+go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, 0, 0],
+    RecHead =.. [Pred, N, Sum],
+    RecBody = (GtGoal, (StepGoal, (RecGoal, SumGoal))),
+    GtGoal =.. [>, N, 0],
+    StepGoal =.. [is, PrevN, StepExpr],
+    (   StepExpr =.. [-, N, 1]
+    ;   StepExpr =.. [+, N, -1]
+    ),
+    RecGoal =.. [Pred, PrevN, PrevSum],
+    SumGoal =.. [is, Sum, SumExpr],
+    SumExpr =.. [+, PrevSum, N].
+
+go_foreign_lowerable_list_suffix(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, BaseList, BaseList],
+    var(BaseList),
+    RecHead =.. [Pred, InputList, Suffix],
+    InputList = [_|Tail],
+    RecBody =.. [Pred, Tail, Suffix].
+
+go_foreign_lowerable_list_suffixes(Pred, 2, Clauses) :-
+    member(BaseHead-true, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead =.. [Pred, [], [[]]],
+    RecHead =.. [Pred, [Head|Tail], [[Head|Tail]|Rest]],
+    RecBody =.. [Pred, Tail, Rest].
+
+go_foreign_lowerable_weighted_shortest_path(Module, Pred, 3, Clauses, WeightPred/3, FactTriples) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, BaseWeight],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
+    RecHead =.. [Pred, RecStart, RecTarget, RecCost],
+    go_extract_weighted_rec_body(Pred, WeightPred, RecStart, RecTarget, RecCost, RecBody),
+    go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples),
+    FactTriples \= [].
+
+go_extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
+    Body = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, Start, Mid, W],
+    RecGoal =.. [Pred, Mid, Target, RestCost],
+    IsGoal =.. [is, Cost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    !.
+go_extract_weighted_rec_body(Pred, WeightPred, Start, Target, Cost, Body) :-
+    Body = (WeightGoal, (NegGoal, (RecGoal, IsGoal))),
+    WeightGoal =.. [WeightPred, Start, Mid, W],
+    NegGoal = (\+ _),
+    RecGoal =.. [Pred, Mid, Target, RestCost],
+    IsGoal =.. [is, Cost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    !.
+
+go_foreign_lowerable_astar_shortest_path(Module, Pred, 4, Clauses,
+        recursive_kernel(astar_shortest_path4, Pred/4, KernelConfig)) :-
+    member(BaseHead-BaseBody, Clauses),
+    member(RecHead-RecBody, Clauses),
+    BaseHead \== RecHead,
+    BaseHead =.. [Pred, BaseStart, BaseTarget, _BaseDim, BaseWeight],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseWeight],
+    RecHead =.. [Pred, RecStart, RecTarget, RecDim, RecCost],
+    RecBody = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, RecStart, Mid, W],
+    RecGoal =.. [Pred, Mid, RecTarget, RecDim, RestCost],
+    IsGoal =.. [is, RecCost, PlusExpr],
+    (   PlusExpr =.. [+, W, RestCost]
+    ;   PlusExpr =.. [+, RestCost, W]
+    ),
+    go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples),
+    FactTriples \= [],
+    go_foreign_astar_direct_pred(Module, WeightPred/3, DirectPred/3, DirectTriples),
+    go_foreign_astar_dimensionality(Module, Dim),
+    KernelConfig = [weight_pred(WeightPred/3), fact_triples(FactTriples),
+                    direct_dist_pred(DirectPred/3), direct_triples(DirectTriples),
+                    dimensionality(Dim)].
+
+go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    go_weighted_edge_fact_triples(Module, direct_semantic_dist/3, DirectTriples),
+    DirectTriples \= [],
+    DirectPred = direct_semantic_dist,
+    !.
+go_foreign_astar_direct_pred(_Module, FallbackPred, DirectPred, DirectTriples) :-
+    FallbackPred = DirectPred,
+    DirectTriples = [].
+
+go_foreign_astar_dimensionality(Module, Dim) :-
+    (   current_predicate(Module:dimensionality/1),
+        Module:dimensionality(Dim0)
+    ;   current_predicate(user:dimensionality/1),
+        user:dimensionality(Dim0)
+    ),
+    integer(Dim0),
+    !,
+    Dim = Dim0.
+go_foreign_astar_dimensionality(_Module, 5).
+
 %% wam_lines_to_go(+Lines, +PC, -GoLits, -LabelEntries)
-wam_lines_to_go([], _, [], []).
-wam_lines_to_go([Line|Rest], PC, GoLits, Labels) :-
+wam_lines_to_go([], _, _, _, [], []).
+wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
     split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_go(Rest, PC, GoLits, Labels)
+    ->  wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, Labels)
     ;   CleanParts = [First|_],
         (   % Label line: "pred/2:" or "L_label:"
             sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             Labels = [LabelName-PC | RestLabels],
-            wam_lines_to_go(Rest, PC, GoLits, RestLabels)
+            wam_lines_to_go(Rest, PC, PredIndicator, Options, GoLits, RestLabels)
         ;   % Instruction line
-            wam_line_to_go_literal(CleanParts, GoLit),
+            wam_line_to_go_literal(CleanParts, PredIndicator, Options, GoLit),
             GoLits = [GoLit | RestLits],
             NPC is PC + 1,
-            wam_lines_to_go(Rest, NPC, RestLits, Labels)
+            wam_lines_to_go(Rest, NPC, PredIndicator, Options, RestLits, Labels)
         )
     ).
 
@@ -297,6 +733,20 @@ parse_string_to_go_val(Str, GoVal) :-
     (   number_string(N, Str)
     ->  go_value_literal(N, GoVal)
     ;   go_value_literal(Str, GoVal)
+    ).
+
+wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    (   go_foreign_rewrite_call(Options, PredIndicator, CP, Num, ForeignPred, ForeignArity)
+    ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
+    ;   format(atom(GoLit), '&Call{Pred: "~w", Arity: ~w}', [CP, CN])
+    ).
+wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
+    clean_comma(P, CP),
+    (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
+    ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
+    ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
 
 wam_line_to_go_literal(["get_constant", C, Ai], GoLit) :-
@@ -355,12 +805,6 @@ wam_line_to_go_literal(["set_constant", C], GoLit) :-
 
 wam_line_to_go_literal(["allocate"], '&Allocate{}').
 wam_line_to_go_literal(["deallocate"], '&Deallocate{}').
-wam_line_to_go_literal(["call", P, N], GoLit) :-
-    clean_comma(P, CP), clean_comma(N, CN),
-    format(atom(GoLit), '&Call{Pred: "~w", Arity: ~w}', [CP, CN]).
-wam_line_to_go_literal(["execute", P], GoLit) :-
-    clean_comma(P, CP),
-    format(atom(GoLit), '&Execute{Pred: "~w"}', [CP]).
 wam_line_to_go_literal(["proceed"], '&Proceed{}').
 wam_line_to_go_literal(["builtin_call", Op, N], GoLit) :-
     clean_comma(Op, COp), clean_comma(N, CN),
@@ -385,6 +829,36 @@ wam_line_to_go_literal(["switch_on_structure" | Table], GoLit) :-
 wam_line_to_go_literal(Parts, GoLit) :-
     atomic_list_concat(Parts, " ", Line),
     format(atom(GoLit), '// TODO: ~w', [Line]).
+
+go_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
+    go_foreign_spec(CurrentPred, Options, _SetupOps, RewriteCalls, ForeignPred/ForeignArity),
+    member(TargetPred/TargetArity, RewriteCalls),
+    format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
+    TargetPredArity == ExpectedTarget,
+    Num =:= ForeignArity.
+go_foreign_rewrite_call(Options, CurrentPred, TargetPredArity, Num, ForeignPred, ForeignArity) :-
+    predicate_indicator_parts(CurrentPred, Module, _CurrentPred, _CurrentArity),
+    target_predicate_parts(TargetPredArity, TargetPred, TargetArity),
+    go_foreign_spec(Module:TargetPred/TargetArity, Options, _SetupOps, _RewriteCalls, ForeignPred/ForeignArity),
+    Num =:= ForeignArity.
+
+go_foreign_rewrite_execute(Options, CurrentPred, TargetPredArity, ForeignPred, ForeignArity) :-
+    go_foreign_spec(CurrentPred, Options, _SetupOps, RewriteCalls, ForeignPred/ForeignArity),
+    member(TargetPred/TargetArity, RewriteCalls),
+    format(string(ExpectedTarget), "~w/~w", [TargetPred, TargetArity]),
+    TargetPredArity == ExpectedTarget.
+go_foreign_rewrite_execute(Options, CurrentPred, TargetPredArity, ForeignPred, ForeignArity) :-
+    predicate_indicator_parts(CurrentPred, Module, _CurrentPred, _CurrentArity),
+    target_predicate_parts(TargetPredArity, TargetPred, TargetArity),
+    go_foreign_spec(Module:TargetPred/TargetArity, Options, _SetupOps, _RewriteCalls, ForeignPred/ForeignArity).
+
+target_predicate_parts(TargetPredArity, Pred, Arity) :-
+    split_string(TargetPredArity, "/", "", [PredStr, ArityStr]),
+    atom_string(Pred, PredStr),
+    number_string(Arity, ArityStr).
+
+wam_line_to_go_literal(Parts, _PredIndicator, _Options, GoLit) :-
+    wam_line_to_go_literal(Parts, GoLit).
 
 clean_comma(S, Clean) :-
     (   sub_string(S, Before, 1, 0, ",")
@@ -751,11 +1225,20 @@ wam_go_case('Call', '        vm.CP = vm.PC + 1
         }
         return false').
 
+wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.Arity)').
+
+wam_go_case('CallPc', '        vm.CP = vm.PC + 1
+        vm.PC = i.TargetPC
+        return true').
+
 wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
         return false').
+
+wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+        return true').
 
 wam_go_case('Proceed', '        if vm.CP > 0 {
             vm.PC = vm.CP
@@ -780,10 +1263,20 @@ wam_go_case('TryMeElse', '        nextPC := 0
         vm.PC++
         return true').
 
+wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC)
+        vm.PC++
+        return true').
+
 wam_go_case('RetryMeElse', '        if pc, ok := vm.Labels[i.Label]; ok {
             if len(vm.ChoicePoints) > 0 {
                 vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = pc
             }
+        }
+        vm.PC++
+        return true').
+
+wam_go_case('RetryMeElsePc', '        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = i.NextPC
         }
         vm.PC++
         return true').
@@ -809,6 +1302,17 @@ wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isU
         vm.PC++
         return true').
 
+wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+            for _, c := range i.Cases {
+                if valueEquals(c.Val, val) {
+                    vm.PC = c.TargetPC
+                    return true
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
 wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
@@ -825,6 +1329,20 @@ wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
         vm.PC++
         return true').
 
+wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
+            if f, args := decompose(val); f != "" {
+                key := fmt.Sprintf("%s/%d", f, len(args))
+                for _, c := range i.Cases {
+                    if c.Functor == key {
+                        vm.PC = c.TargetPC
+                        return true
+                    }
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
 wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
@@ -832,6 +1350,17 @@ wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !i
                         vm.PC = pc
                         return true
                     }
+                }
+            }
+        }
+        vm.PC++
+        return true').
+
+wam_go_case('SwitchOnConstantA2Pc', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+            for _, c := range i.Cases {
+                if valueEquals(c.Val, val) {
+                    vm.PC = c.TargetPC
+                    return true
                 }
             }
         }
@@ -943,6 +1472,603 @@ func (vm *WamState) fetch() Instruction {
         return vm.Code[vm.PC]
     }
     return nil
+}
+
+func resolveInstructions(code []Instruction, labels map[string]int) []Instruction {
+    resolved := make([]Instruction, 0, len(code))
+    for _, instr := range code {
+        switch i := instr.(type) {
+        case *Call:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &CallPc{TargetPC: pc, Arity: i.Arity})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *CallForeign:
+            resolved = append(resolved, instr)
+        case *Execute:
+            if pc, ok := labels[i.Pred]; ok {
+                resolved = append(resolved, &ExecutePc{TargetPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *TryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &TryMeElsePc{NextPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *RetryMeElse:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &RetryMeElsePc{NextPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstant:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnConstantPc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnStructure:
+            cases := make([]StructPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, StructPcCase{Functor: c.Functor, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnStructurePc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *SwitchOnConstantA2:
+            cases := make([]ConstPcCase, 0, len(i.Cases))
+            complete := true
+            for _, c := range i.Cases {
+                pc, ok := labels[c.Label]
+                if !ok {
+                    complete = false
+                    break
+                }
+                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
+            }
+            if complete {
+                resolved = append(resolved, &SwitchOnConstantA2Pc{Cases: cases})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        default:
+            resolved = append(resolved, instr)
+        }
+    }
+    return resolved
+}
+
+func (vm *WamState) registerForeignNativeKind(predKey string, kind string) {
+    vm.ForeignNativeKinds[predKey] = kind
+}
+
+func (vm *WamState) registerForeignResultLayout(predKey string, layout string) {
+    vm.ForeignResultLayouts[predKey] = layout
+}
+
+func (vm *WamState) registerForeignResultMode(predKey string, mode string) {
+    vm.ForeignResultModes[predKey] = mode
+}
+
+func (vm *WamState) registerForeignStringConfig(predKey string, key string, value string) {
+    cfg, ok := vm.ForeignStringConfigs[predKey]
+    if !ok {
+        cfg = make(map[string]string)
+        vm.ForeignStringConfigs[predKey] = cfg
+    }
+    cfg[key] = value
+}
+
+func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value int) {
+    cfg, ok := vm.ForeignUsizeConfigs[predKey]
+    if !ok {
+        cfg = make(map[string]int)
+        vm.ForeignUsizeConfigs[predKey] = cfg
+    }
+    cfg[key] = value
+}
+
+func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
+    vm.IndexedAtomFactPairs[predKey] = pairs
+}
+
+func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
+    vm.IndexedWeightedEdgeTriples[predKey] = triples
+}
+
+func (vm *WamState) foreignResultLayout(predKey string) string {
+    return vm.ForeignResultLayouts[predKey]
+}
+
+func (vm *WamState) foreignResultMode(predKey string) string {
+    return vm.ForeignResultModes[predKey]
+}
+
+func (vm *WamState) foreignStringConfig(predKey string, key string) string {
+    cfg, ok := vm.ForeignStringConfigs[predKey]
+    if !ok {
+        return ""
+    }
+    return cfg[key]
+}
+
+func (vm *WamState) foreignUsizeConfig(predKey string, key string) int {
+    cfg, ok := vm.ForeignUsizeConfigs[predKey]
+    if !ok {
+        return 0
+    }
+    return cfg[key]
+}
+
+func parseForeignTupleLayout(layout string) int {
+    var arity int
+    if _, err := fmt.Sscanf(layout, "tuple:%d", &arity); err == nil {
+        return arity
+    }
+    return 0
+}
+
+func (vm *WamState) applyForeignResult(predKey string, resultRegs []string, result Value) bool {
+    tupleArity := parseForeignTupleLayout(vm.foreignResultLayout(predKey))
+    if tupleArity <= 1 {
+        if len(resultRegs) < 1 {
+            return false
+        }
+        return vm.Unify(vm.getReg(resultRegs[0]), result)
+    }
+    tuple, ok := result.(*Compound)
+    if !ok || tuple.Functor != "__tuple__" || len(tuple.Args) != tupleArity || len(resultRegs) < tupleArity {
+        return false
+    }
+    for idx := 0; idx < tupleArity; idx++ {
+        if !vm.Unify(vm.getReg(resultRegs[idx]), tuple.Args[idx]) {
+            return false
+        }
+    }
+    return true
+}
+
+func (vm *WamState) finishForeignResults(predKey string, resultRegs []string, results []Value) bool {
+    if len(results) == 0 {
+        return false
+    }
+    resumePC := vm.PC + 1
+    mode := vm.foreignResultMode(predKey)
+    switch mode {
+    case "stream":
+        baseRegs := copyMap(vm.Regs)
+        baseStack := copyStack(vm.Stack)
+        trailMark := len(vm.Trail)
+        heapTop := len(vm.Heap)
+        for idx, result := range results {
+            vm.unwindTrail(trailMark)
+            vm.Regs = copyMap(baseRegs)
+            vm.Stack = copyStack(baseStack)
+            if heapTop >= 0 && heapTop <= len(vm.Heap) {
+                vm.Heap = vm.Heap[:heapTop]
+            }
+            vm.CP = vm.CP
+            vm.Halted = false
+            vm.CurrentStruct = nil
+            vm.CurrentList = nil
+            if !vm.applyForeignResult(predKey, resultRegs, result) {
+                continue
+            }
+            if idx+1 < len(results) {
+                remaining := append([]Value(nil), results[idx+1:]...)
+                vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+                    NextPC: resumePC,
+                    ResumePC: resumePC,
+                    CP: vm.CP,
+                    Regs: baseRegs,
+                    Stack: baseStack,
+                    HeapTop: heapTop,
+                    TrailMark: trailMark,
+                    ForeignPredKey: predKey,
+                    ForeignResultRegs: append([]string(nil), resultRegs...),
+                    ForeignResults: remaining,
+                })
+            }
+            vm.PC = resumePC
+            return true
+        }
+        return false
+    default:
+        if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
+            return false
+        }
+        vm.PC = resumePC
+        return true
+    }
+}
+
+func valueAsAtomString(vm *WamState, v Value) (string, bool) {
+    val := vm.deref(v)
+    atom, ok := val.(*Atom)
+    if !ok {
+        return "", false
+    }
+    return atom.Name, true
+}
+
+func valueAsInteger(vm *WamState, v Value) (int64, bool) {
+    val := vm.deref(v)
+    integer, ok := val.(*Integer)
+    if !ok {
+        return 0, false
+    }
+    return integer.Val, true
+}
+
+func valueAsFloat(vm *WamState, v Value) (float64, bool) {
+    val := vm.deref(v)
+    switch n := val.(type) {
+    case *Integer:
+        return float64(n.Val), true
+    case *Float:
+        return n.Val, true
+    default:
+        return 0, false
+    }
+}
+
+func listAsSlice(vm *WamState, v Value) ([]Value, bool) {
+    val := vm.deref(v)
+    list, ok := val.(*List)
+    if !ok {
+        return nil, false
+    }
+    return list.Elements, true
+}
+
+func (vm *WamState) collectNativeListSuffixes(items []Value, out *[]Value) {
+    for idx := 0; idx <= len(items); idx++ {
+        suffix := append([]Value(nil), items[idx:]...)
+        *out = append(*out, &List{Elements: suffix})
+    }
+}
+
+func tupleValue(items ...Value) Value {
+    return &Compound{Functor: "__tuple__", Args: items}
+}
+
+func atomAdjacency(pairs []AtomPair) map[string][]string {
+    adjacency := make(map[string][]string)
+    for _, pair := range pairs {
+        adjacency[pair.Left] = append(adjacency[pair.Left], pair.Right)
+    }
+    return adjacency
+}
+
+func weightedAdjacency(triples []WeightedEdgeTriple) map[string][]WeightedEdgeTriple {
+    adjacency := make(map[string][]WeightedEdgeTriple)
+    for _, triple := range triples {
+        adjacency[triple.Left] = append(adjacency[triple.Left], triple)
+    }
+    return adjacency
+}
+
+func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := make(map[string]bool)
+    queue := append([]string(nil), adjacency[source]...)
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        node := queue[0]
+        queue = queue[1:]
+        if visited[node] {
+            continue
+        }
+        visited[node] = true
+        results = append(results, &Atom{Name: node})
+        queue = append(queue, adjacency[node]...)
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    parent := make(map[string]string)
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            parent[next] = current
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Atom{Name: parent[next]},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source string, pairs []AtomPair) []Value {
+    adjacency := atomAdjacency(pairs)
+    visited := map[string]bool{source: true}
+    dist := map[string]int{source: 0}
+    parent := make(map[string]string)
+    firstStep := make(map[string]string)
+    queue := []string{source}
+    results := make([]Value, 0)
+    for len(queue) > 0 {
+        current := queue[0]
+        queue = queue[1:]
+        for _, next := range adjacency[current] {
+            if visited[next] {
+                continue
+            }
+            visited[next] = true
+            dist[next] = dist[current] + 1
+            parent[next] = current
+            if current == source {
+                firstStep[next] = next
+            } else {
+                firstStep[next] = firstStep[current]
+            }
+            queue = append(queue, next)
+            results = append(results, tupleValue(
+                &Atom{Name: next},
+                &Atom{Name: firstStep[next]},
+                &Atom{Name: parent[next]},
+                &Integer{Val: int64(dist[next])},
+            ))
+        }
+    }
+    return results
+}
+
+func pickShortestCandidate(dist map[string]float64, settled map[string]bool) (string, bool) {
+    bestNode := ""
+    bestDist := 0.0
+    found := false
+    for node, d := range dist {
+        if settled[node] {
+            continue
+        }
+        if !found || d < bestDist || (d == bestDist && node < bestNode) {
+            bestNode = node
+            bestDist = d
+            found = true
+        }
+    }
+    return bestNode, found
+}
+
+func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) float64 {
+    for _, triple := range triples {
+        if triple.Left == from && triple.Right == target {
+            return triple.Weight
+        }
+    }
+    return 0
+}
+
+func (vm *WamState) collectNativeWeightedShortestPathResults(source string, triples []WeightedEdgeTriple) []Value {
+    adjacency := weightedAdjacency(triples)
+    dist := map[string]float64{source: 0}
+    settled := make(map[string]bool)
+    results := make([]Value, 0)
+    for {
+        current, ok := pickShortestCandidate(dist, settled)
+        if !ok {
+            break
+        }
+        settled[current] = true
+        if current != source {
+            results = append(results, tupleValue(
+                &Atom{Name: current},
+                &Float{Val: dist[current]},
+            ))
+        }
+        for _, edge := range adjacency[current] {
+            candidate := dist[current] + edge.Weight
+            prev, exists := dist[edge.Right]
+            if !exists || candidate < prev {
+                dist[edge.Right] = candidate
+            }
+        }
+    }
+    return results
+}
+
+func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
+    adjacency := weightedAdjacency(weighted)
+    gScore := map[string]float64{source: 0}
+    open := map[string]bool{source: true}
+    closed := make(map[string]bool)
+    for len(open) > 0 {
+        current := ""
+        bestScore := 0.0
+        found := false
+        for node := range open {
+            score := gScore[node] + heuristicLookup(direct, node, target)
+            if !found || score < bestScore || (score == bestScore && node < current) {
+                current = node
+                bestScore = score
+                found = true
+            }
+        }
+        if !found {
+            break
+        }
+        delete(open, current)
+        if current == target {
+            return []Value{&Float{Val: gScore[current]}}
+        }
+        closed[current] = true
+        for _, edge := range adjacency[current] {
+            if closed[edge.Right] {
+                continue
+            }
+            candidate := gScore[current] + edge.Weight
+            prev, exists := gScore[edge.Right]
+            if !exists || candidate < prev {
+                gScore[edge.Right] = candidate
+                open[edge.Right] = true
+            }
+        }
+    }
+    return nil
+}
+
+func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
+    predKey := fmt.Sprintf("%s/%d", pred, arity)
+    nativeKind, ok := vm.ForeignNativeKinds[predKey]
+    if !ok {
+        return false
+    }
+    switch nativeKind {
+    case "countdown_sum2":
+        n, ok := valueAsInteger(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        sum := n * (n + 1) / 2
+        return vm.finishForeignResults(predKey, []string{"A2"}, []Value{&Integer{Val: sum}})
+    case "list_suffix2":
+        items, ok := listAsSlice(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        suffixes := make([]Value, 0, len(items)+1)
+        vm.collectNativeListSuffixes(items, &suffixes)
+        packed := make([]Value, 0, len(suffixes))
+        for _, suffix := range suffixes {
+            packed = append(packed, suffix)
+        }
+        return vm.finishForeignResults(predKey, []string{"A2"}, packed)
+    case "list_suffixes2":
+        items, ok := listAsSlice(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        suffixes := make([]Value, 0, len(items)+1)
+        vm.collectNativeListSuffixes(items, &suffixes)
+        return vm.finishForeignResults(predKey, []string{"A2"}, []Value{&List{Elements: suffixes}})
+    case "transitive_closure2":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveClosureResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2"}, results)
+    case "transitive_distance3":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+    case "transitive_parent_distance4":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4"}, results)
+    case "transitive_step_parent_distance5":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.IndexedAtomFactPairs[edgePred]
+        results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4", "A5"}, results)
+    case "weighted_shortest_path3":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        triples := vm.IndexedWeightedEdgeTriples[weightPred]
+        results := vm.collectNativeWeightedShortestPathResults(source, triples)
+        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+    case "astar_shortest_path4":
+        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        if !ok {
+            return false
+        }
+        target, ok := valueAsAtomString(vm, vm.getReg("A2"))
+        if !ok {
+            return false
+        }
+        if _, ok := valueAsFloat(vm, vm.getReg("A3")); !ok {
+            return false
+        }
+        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
+        directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
+        weighted := vm.IndexedWeightedEdgeTriples[weightPred]
+        direct := vm.IndexedWeightedEdgeTriples[directPred]
+        results := vm.collectNativeAstarShortestPathResult(source, target, weighted, direct)
+        return vm.finishForeignResults(predKey, []string{"A4"}, results)
+    default:
+        return false
+    }
 }
 ', []).
 

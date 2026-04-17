@@ -169,6 +169,18 @@
 :- dynamic user:test_weighted_min_metadata_edge/2.
 :- dynamic user:test_weighted_min_metadata_cost/2.
 :- dynamic user:test_weighted_min_metadata_path/3.
+:- dynamic user:test_weighted_zero_min_edge/2.
+:- dynamic user:test_weighted_zero_min_cost/2.
+:- dynamic user:test_weighted_zero_min_path/3.
+:- dynamic user:test_weighted_negative_min_edge/2.
+:- dynamic user:test_weighted_negative_min_cost/2.
+:- dynamic user:test_weighted_negative_min_path/3.
+:- dynamic user:test_weighted_product_min_edge/2.
+:- dynamic user:test_weighted_product_min_factor/2.
+:- dynamic user:test_weighted_product_min_path/3.
+:- dynamic user:test_weighted_discount_min_edge/2.
+:- dynamic user:test_weighted_discount_min_factor/2.
+:- dynamic user:test_weighted_discount_min_path/3.
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
@@ -320,6 +332,7 @@ test_csharp_query_target :-
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
         verify_path_aware_transitive_closure_preserves_path_multiplicity,
+        verify_path_aware_transitive_closure_metrics_runtime,
         verify_path_aware_transitive_closure_min_mode_plan,
         verify_path_aware_accumulation_plan,
         verify_parameterized_path_aware_accumulation_plan,
@@ -327,6 +340,10 @@ test_csharp_query_target :-
         verify_path_aware_accumulation_min_mode_plan,
         verify_path_aware_accumulation_positive_guard_plan,
         verify_path_aware_accumulation_positive_metadata_plan,
+        verify_path_aware_accumulation_nonnegative_min_strategy_runtime,
+        verify_path_aware_accumulation_negative_min_frontier_fallback_runtime,
+        verify_path_aware_accumulation_product_min_multiplicative_strategy_runtime,
+        verify_path_aware_accumulation_product_min_subunit_factor_fallback_runtime,
         verify_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_plan,
         verify_parameterized_grouped_transitive_closure_pairs_strategy_runtime,
@@ -1266,6 +1283,86 @@ setup_test_data :-
     )),
     assertz(user:'table'(test_weighted_min_metadata_path(_, _, min))),
     declare_constraint(test_weighted_min_metadata_path/3, [positive_step(3)]),
+    assertz(user:test_weighted_zero_min_edge(a, b)),
+    assertz(user:test_weighted_zero_min_edge(a, c)),
+    assertz(user:test_weighted_zero_min_edge(b, a)),
+    assertz(user:test_weighted_zero_min_edge(b, d)),
+    assertz(user:test_weighted_zero_min_edge(c, d)),
+    assertz(user:test_weighted_zero_min_cost(a, 0)),
+    assertz(user:test_weighted_zero_min_cost(b, 2)),
+    assertz(user:test_weighted_zero_min_cost(c, 4)),
+    assertz(user:(test_weighted_zero_min_path(X, Y, Acc) :-
+        test_weighted_zero_min_edge(X, Y),
+        test_weighted_zero_min_cost(X, Cost),
+        Acc is Cost
+    )),
+    assertz(user:(test_weighted_zero_min_path(X, Z, Acc) :-
+        test_weighted_zero_min_edge(X, Y),
+        test_weighted_zero_min_cost(X, Cost),
+        test_weighted_zero_min_path(Y, Z, Acc1),
+        Acc is Acc1 + Cost
+    )),
+    assertz(user:'table'(test_weighted_zero_min_path(_, _, min))),
+    assertz(user:test_weighted_negative_min_edge(a, b)),
+    assertz(user:test_weighted_negative_min_edge(a, c)),
+    assertz(user:test_weighted_negative_min_edge(b, a)),
+    assertz(user:test_weighted_negative_min_edge(b, d)),
+    assertz(user:test_weighted_negative_min_edge(c, d)),
+    assertz(user:test_weighted_negative_min_cost(a, -1)),
+    assertz(user:test_weighted_negative_min_cost(b, 3)),
+    assertz(user:test_weighted_negative_min_cost(c, 4)),
+    assertz(user:(test_weighted_negative_min_path(X, Y, Acc) :-
+        test_weighted_negative_min_edge(X, Y),
+        test_weighted_negative_min_cost(X, Cost),
+        Acc is Cost
+    )),
+    assertz(user:(test_weighted_negative_min_path(X, Z, Acc) :-
+        test_weighted_negative_min_edge(X, Y),
+        test_weighted_negative_min_cost(X, Cost),
+        test_weighted_negative_min_path(Y, Z, Acc1),
+        Acc is Acc1 + Cost
+    )),
+    assertz(user:'table'(test_weighted_negative_min_path(_, _, min))),
+    assertz(user:test_weighted_product_min_edge(a, b)),
+    assertz(user:test_weighted_product_min_edge(a, c)),
+    assertz(user:test_weighted_product_min_edge(b, a)),
+    assertz(user:test_weighted_product_min_edge(b, d)),
+    assertz(user:test_weighted_product_min_edge(c, d)),
+    assertz(user:test_weighted_product_min_factor(a, 2)),
+    assertz(user:test_weighted_product_min_factor(b, 3)),
+    assertz(user:test_weighted_product_min_factor(c, 5)),
+    assertz(user:(test_weighted_product_min_path(X, Y, Acc) :-
+        test_weighted_product_min_edge(X, Y),
+        test_weighted_product_min_factor(X, Factor),
+        Acc is Factor
+    )),
+    assertz(user:(test_weighted_product_min_path(X, Z, Acc) :-
+        test_weighted_product_min_edge(X, Y),
+        test_weighted_product_min_factor(X, Factor),
+        test_weighted_product_min_path(Y, Z, Acc1),
+        Acc is Acc1 * Factor
+    )),
+    assertz(user:'table'(test_weighted_product_min_path(_, _, min))),
+    assertz(user:test_weighted_discount_min_edge(a, b)),
+    assertz(user:test_weighted_discount_min_edge(a, c)),
+    assertz(user:test_weighted_discount_min_edge(b, a)),
+    assertz(user:test_weighted_discount_min_edge(b, d)),
+    assertz(user:test_weighted_discount_min_edge(c, d)),
+    assertz(user:test_weighted_discount_min_factor(a, 0.5)),
+    assertz(user:test_weighted_discount_min_factor(b, 3)),
+    assertz(user:test_weighted_discount_min_factor(c, 5)),
+    assertz(user:(test_weighted_discount_min_path(X, Y, Acc) :-
+        test_weighted_discount_min_edge(X, Y),
+        test_weighted_discount_min_factor(X, Factor),
+        Acc is Factor
+    )),
+    assertz(user:(test_weighted_discount_min_path(X, Z, Acc) :-
+        test_weighted_discount_min_edge(X, Y),
+        test_weighted_discount_min_factor(X, Factor),
+        test_weighted_discount_min_path(Y, Z, Acc1),
+        Acc is Acc1 * Factor
+    )),
+    assertz(user:'table'(test_weighted_discount_min_path(_, _, min))),
     assert_binary_recursive_fixture(
         test_probe_dir_forward_edge,
         test_probe_dir_forward_reach,
@@ -1498,6 +1595,18 @@ cleanup_test_data :-
     retractall(user:test_weighted_min_metadata_cost(_, _)),
     retractall(user:test_weighted_min_metadata_path(_, _, _)),
     clear_constraints(test_weighted_min_metadata_path/3),
+    retractall(user:test_weighted_zero_min_edge(_, _)),
+    retractall(user:test_weighted_zero_min_cost(_, _)),
+    retractall(user:test_weighted_zero_min_path(_, _, _)),
+    retractall(user:test_weighted_negative_min_edge(_, _)),
+    retractall(user:test_weighted_negative_min_cost(_, _)),
+    retractall(user:test_weighted_negative_min_path(_, _, _)),
+    retractall(user:test_weighted_product_min_edge(_, _)),
+    retractall(user:test_weighted_product_min_factor(_, _)),
+    retractall(user:test_weighted_product_min_path(_, _, _)),
+    retractall(user:test_weighted_discount_min_edge(_, _)),
+    retractall(user:test_weighted_discount_min_factor(_, _)),
+    retractall(user:test_weighted_discount_min_path(_, _, _)),
     cleanup_recursive_fixture(test_probe_dir_forward_edge, test_probe_dir_forward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_backward_edge, test_probe_dir_backward_reach, 2),
     cleanup_recursive_fixture(test_probe_dir_mixed_edge, test_probe_dir_mixed_reach, 2),
@@ -3669,6 +3778,39 @@ verify_path_aware_transitive_closure_preserves_path_multiplicity :-
         [[a]],
         HarnessSource).
 
+verify_path_aware_transitive_closure_metrics_runtime :-
+    csharp_target:build_query_plan(
+        test_pathaware_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_transitive_closure),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    path_aware_traversal_metric_names(MetricNames),
+    path_aware_traversal_positive_metric_names(PositiveMetricNames),
+    harness_source_with_strategy_and_metric_flags_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareTransitiveClosureSeeded',
+        MetricNames,
+        PositiveMetricNames,
+        HarnessSource),
+    path_aware_traversal_metric_expectations(MetricRows),
+    append(['a,b,1',
+            'a,c,2',
+            'STRATEGY_USED:PathAwareTransitiveClosureSeeded=true'],
+           MetricRows,
+           ExpectedRows),
+    maybe_run_query_runtime_with_harness(Plan,
+        ExpectedRows,
+        Params,
+        HarnessSource).
+
 verify_path_aware_transitive_closure_min_mode_plan :-
     csharp_target:build_query_plan(
         test_pathaware_min_reach/3,
@@ -3694,6 +3836,43 @@ verify_path_aware_transitive_closure_min_mode_plan :-
          'a,d,2',
          'a,e,2'],
         [[a]]).
+
+path_aware_traversal_metric_names([
+    'path_state_seed_count',
+    'path_state_stack_pop_count',
+    'path_state_successor_candidate_count',
+    'path_state_cycle_skip_count',
+    'path_state_depth_skip_count',
+    'path_state_best_known_prune_count',
+    'path_state_enqueued_state_count',
+    'path_state_output_row_count',
+    'path_state_max_stack_size',
+    'path_state_max_path_length'
+]).
+
+path_aware_traversal_positive_metric_names([
+    'path_state_seed_count',
+    'path_state_stack_pop_count',
+    'path_state_successor_candidate_count',
+    'path_state_cycle_skip_count',
+    'path_state_enqueued_state_count',
+    'path_state_output_row_count',
+    'path_state_max_stack_size',
+    'path_state_max_path_length'
+]).
+
+path_aware_traversal_metric_expectations(Rows) :-
+    path_aware_traversal_metric_names(MetricNames),
+    path_aware_traversal_positive_metric_names(PositiveMetricNames),
+    findall(Row,
+            (member(Metric, MetricNames),
+             format(atom(Row), 'METRIC_RECORDED:~w=true', [Metric])),
+            RecordedRows),
+    findall(Row,
+            (member(Metric, PositiveMetricNames),
+             format(atom(Row), 'METRIC_POSITIVE:~w=true', [Metric])),
+            PositiveRows),
+    append(RecordedRows, PositiveRows, Rows).
 
 verify_path_aware_accumulation_plan :-
     csharp_query_target:build_query_plan(test_weighted_path/3, [target(csharp_query)], Plan),
@@ -3839,6 +4018,173 @@ verify_path_aware_accumulation_positive_metadata_plan :-
          'a,c,1',
          'a,d,3'],
         [[a]]).
+
+verify_path_aware_accumulation_nonnegative_min_strategy_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_zero_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_zero_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    harness_source_with_strategy_flag_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinNonNegativeAdditiveLayered',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,0',
+         'a,c,0',
+         'a,d,2',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinNonNegativeAdditiveLayered=true'],
+        Params,
+        HarnessSource).
+
+verify_path_aware_accumulation_negative_min_frontier_fallback_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_negative_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_negative_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    weighted_min_frontier_metric_names(MetricNames),
+    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
+    harness_source_with_strategy_and_metric_flags_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinFrontierFallback',
+        MetricNames,
+        PositiveMetricNames,
+        HarnessSource),
+    weighted_min_frontier_metric_expectations(MetricRows),
+    append(['a,b,-1',
+            'a,c,-1',
+            'a,d,2',
+            'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+           MetricRows,
+           ExpectedRows),
+    maybe_run_query_runtime_with_harness(Plan,
+        ExpectedRows,
+        Params,
+        HarnessSource).
+
+verify_path_aware_accumulation_product_min_multiplicative_strategy_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_product_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_product_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    harness_source_with_strategy_flag_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinPositiveMultiplicativeLayered',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,2',
+         'a,c,2',
+         'a,d,6',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinPositiveMultiplicativeLayered=true'],
+        Params,
+        HarnessSource).
+
+verify_path_aware_accumulation_product_min_subunit_factor_fallback_runtime :-
+    csharp_target:build_query_plan(
+        test_weighted_discount_min_path/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    get_dict(type, Root, path_aware_accumulation),
+    get_dict(head, Root, predicate{name:test_weighted_discount_min_path, arity:3}),
+    get_dict(table_modes, Root, [lattice, lattice, min]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareAccumulationNode'),
+    sub_string(Source, _, _, _, 'TableMode.Min'),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    Params = [[a]],
+    harness_source_with_strategy_flag_no_reuse(
+        ModuleClass,
+        Params,
+        'PathAwareAccumulationSeededMinFrontierFallback',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['a,b,0.5',
+         'a,c,0.5',
+         'a,d,1.5',
+         'STRATEGY_USED:PathAwareAccumulationSeededMinFrontierFallback=true'],
+        Params,
+        HarnessSource).
+
+weighted_min_frontier_metric_names([
+    'min_frontier_candidate_count',
+    'min_frontier_dominance_check_count',
+    'min_frontier_dominance_candidate_check_count',
+    'min_frontier_same_fingerprint_candidate_check_count',
+    'min_frontier_lower_count_candidate_check_count',
+    'min_frontier_lower_count_index_probe_count',
+    'min_frontier_subset_check_count',
+    'min_frontier_dominated_state_count',
+    'min_frontier_recorded_state_count',
+    'min_frontier_removed_state_count',
+    'min_frontier_target_bucket_count',
+    'min_frontier_bucket_count',
+    'min_frontier_bucket_state_count',
+    'min_frontier_bucket_max_size',
+    'min_frontier_bucket_avg_size'
+]).
+
+weighted_min_frontier_positive_metric_names([
+    'min_frontier_candidate_count',
+    'min_frontier_dominance_check_count',
+    'min_frontier_dominance_candidate_check_count',
+    'min_frontier_recorded_state_count',
+    'min_frontier_target_bucket_count',
+    'min_frontier_bucket_count',
+    'min_frontier_bucket_state_count',
+    'min_frontier_bucket_max_size',
+    'min_frontier_bucket_avg_size'
+]).
+
+weighted_min_frontier_metric_expectations(Rows) :-
+    weighted_min_frontier_metric_names(MetricNames),
+    weighted_min_frontier_positive_metric_names(PositiveMetricNames),
+    findall(Row,
+            (member(Metric, MetricNames),
+             format(atom(Row), 'METRIC_RECORDED:~w=true', [Metric])),
+            RecordedRows),
+    findall(Row,
+            (member(Metric, PositiveMetricNames),
+             format(atom(Row), 'METRIC_POSITIVE:~w=true', [Metric])),
+            PositiveRows),
+    append(RecordedRows, PositiveRows, Rows).
 
 verify_grouped_transitive_closure_plan :-
     csharp_query_target:build_query_plan(test_label_cat_reach/4, [target(csharp_query)], Plan),
@@ -7035,7 +7381,7 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
 
      Console.WriteLine(string.Join(\",\", projected));
    }
- 
+
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
@@ -7149,19 +7495,19 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
 
      Console.WriteLine(string.Join(\",\", projected));
    }
- 
+
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
-harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
+harness_source_with_strategy_and_metric_flags_no_reuse(ModuleClass, Params, Strategy, MetricNames, PositiveMetricNames, Source) :-
+    csharp_string_array_literal(MetricNames, MetricNamesLiteral),
+    csharp_string_array_literal(PositiveMetricNames, PositiveMetricNamesLiteral),
     (   Params == []
-    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\n',
-        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, null, warmTrace).ToList();\n',
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
         ExecCall = 'executor.Execute(result.Plan, null, trace)'
     ;   csharp_params_literal(Params, ParamsLiteral),
-        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
-        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, parameters, warmTrace).ToList();\n',
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
     format(atom(Source),
@@ -7173,7 +7519,71 @@ harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
  using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: false));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   var metrics = trace.SnapshotMetrics().ToDictionary(m => m.Metric, m => m.Value, StringComparer.Ordinal);
+   foreach (var metricName in ~w)
+   {
+       var recorded = metrics.TryGetValue(metricName, out var metricValue);
+       Console.WriteLine(\"METRIC_RECORDED:\" + metricName + \"=\" + (recorded ? \"true\" : \"false\"));
+   }
+   foreach (var metricName in ~w)
+   {
+       metrics.TryGetValue(metricName, out var metricValue);
+       Console.WriteLine(\"METRIC_POSITIVE:\" + metricName + \"=\" + (metricValue > 0 ? \"true\" : \"false\"));
+   }
+   ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy, MetricNamesLiteral, PositiveMetricNamesLiteral]).
+
+cache_query_executor_options(_Cache, BaseOptions, OptionsLiteral) :-
+    format(atom(OptionsLiteral),
+        '~w, EnableMeasuredClosurePairStrategy: false, UseSeededClosureCachesForPairBatches: true',
+        [BaseOptions]).
+
+harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\n',
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, null, warmTrace).ToList();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, parameters, warmTrace).ToList();\n',
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  string FormatValue(object? value) => value switch
@@ -7202,7 +7612,7 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Cache, Source) :-
     (   WarmParams == []
@@ -7219,6 +7629,7 @@ harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Ca
         format(atom(ExecDecl), 'var parameters = ~w;~n', [ExecLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7228,7 +7639,7 @@ harness_source_with_cache_flag_warm_exec(ModuleClass, WarmParams, ExecParams, Ca
  using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 ~w~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
@@ -7258,7 +7669,7 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_pair_cache_flag_warm_exec_normalized(
         ModuleClass,
@@ -7283,6 +7694,10 @@ harness_source_with_pair_cache_flag_warm_exec_normalized(
         format(atom(ExecDecl), 'var parameters = ~w;~n', [ExecLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7294,11 +7709,7 @@ harness_source_with_pair_cache_flag_warm_exec_normalized(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 ~w~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
@@ -7328,12 +7739,16 @@ var _planText = QueryPlanExplainer.Explain(result.Plan);
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmDecl, ExecDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, PairLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w',
+        [PairLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7345,7 +7760,7 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit(ModuleClass, WarmParams1
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7382,7 +7797,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
   var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
   Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
         ModuleClass,
@@ -7397,6 +7812,10 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7408,11 +7827,7 @@ harness_source_with_cache_flag_two_warm_exec_pair_limit_normalized(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7449,12 +7864,16 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_cache_flag_two_warm_exec_seed_limit(ModuleClass, WarmParams1, WarmParams2, ExecParams, Cache, SeedLimit, Source) :-
     csharp_params_literal(WarmParams1, WarmLiteral1),
     csharp_params_literal(WarmParams2, WarmLiteral2),
     csharp_params_literal(ExecParams, ExecLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w',
+        [SeedLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7466,7 +7885,7 @@ harness_source_with_cache_flag_two_warm_exec_seed_limit(ModuleClass, WarmParams1
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var _planText = QueryPlanExplainer.Explain(result.Plan);
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
@@ -7503,7 +7922,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == "~w" && s.Hits > 0);
    Console.WriteLine("CACHE_HIT:~w=" + (used ? "true" : "false"));
-    ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, ExecLiteral, Cache, Cache]).
 
 harness_source_with_pair_cache_lru_recency_flag(
         ModuleClass,
@@ -7522,6 +7941,10 @@ harness_source_with_pair_cache_lru_recency_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w',
+        [PairLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7530,7 +7953,7 @@ harness_source_with_pair_cache_lru_recency_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, PairProbeCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7556,7 +7979,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, PairLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_pair_cache_lru_recency_normalized_flag(
         ModuleClass,
@@ -7577,6 +8000,10 @@ harness_source_with_pair_cache_lru_recency_normalized_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, PairProbeCacheMaxEntries: ~w, PairProbeCacheAdmissionMinCost: ~w, PairProbeCacheAdmissionMinCostPerProbe: ~w',
+        [PairLimit, MinCost, MinCostPerProbe]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7585,11 +8012,7 @@ harness_source_with_pair_cache_lru_recency_normalized_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(
-        ReuseCaches: true,
-        PairProbeCacheMaxEntries: ~w,
-        PairProbeCacheAdmissionMinCost: ~w,
-        PairProbeCacheAdmissionMinCostPerProbe: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7615,7 +8038,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, PairLimit, MinCost, MinCostPerProbe, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_seed_cache_lru_recency_flag(
         ModuleClass,
@@ -7634,6 +8057,10 @@ harness_source_with_seed_cache_lru_recency_flag(
     csharp_params_literal(InsertParams, InsertLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    format(atom(BaseOptions),
+        'ReuseCaches: true, SeededCacheMaxEntries: ~w',
+        [SeedLimit]),
+    cache_query_executor_options(Cache, BaseOptions, OptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7642,7 +8069,7 @@ harness_source_with_seed_cache_lru_recency_flag(
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(
     result.Provider,
-    new QueryExecutorOptions(ReuseCaches: true, SeededCacheMaxEntries: ~w));
+    new QueryExecutorOptions(~w));
 var warmParameters1 = ~w;
 var warmTrace1 = new QueryExecutionTrace();
 _ = executor.Execute(result.Plan, warmParameters1, warmTrace1).ToList();
@@ -7668,7 +8095,7 @@ var evictions = insertTrace.SnapshotCaches().Where(s => s.Cache == "~w").Sum(s =
 Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_EVICTIONS:~w=" + evictions.ToString());
-    ', [ModuleClass, SeedLimit, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, WarmLiteral1, WarmLiteral2, TouchLiteral, InsertLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 seed_cache_admission_options(SeedLimit, MinRows, none, OptionsLiteral) :-
     format(atom(OptionsLiteral),
@@ -7703,6 +8130,7 @@ harness_source_with_cache_admission_internal(
     csharp_params_literal(WarmColdParams, WarmColdLiteral),
     csharp_params_literal(HotParams, HotLiteral),
     csharp_params_literal(ColdParams, ColdLiteral),
+    cache_query_executor_options(Cache, OptionsLiteral, EffectiveOptionsLiteral),
     format(atom(Source),
 'using System;
  using System.Linq;
@@ -7735,7 +8163,7 @@ Console.WriteLine("CACHE_HIT_HOT:~w=" + (hotHit ? "true" : "false"));
 Console.WriteLine("CACHE_HIT_COLD:~w=" + (coldHit ? "true" : "false"));
 Console.WriteLine("CACHE_ADMISSIONS:~w=" + admissions.ToString());
 Console.WriteLine("CACHE_ADMISSION_SKIPS:~w=" + admissionSkips.ToString());
-    ', [ModuleClass, OptionsLiteral, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
+    ', [ModuleClass, EffectiveOptionsLiteral, WarmHotLiteral, WarmColdLiteral, HotLiteral, ColdLiteral, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache, Cache]).
 
 harness_source_with_seed_cache_admission_flag(
         ModuleClass,
@@ -7831,6 +8259,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
         format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
         ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
+    cache_query_executor_options(Cache, 'ReuseCaches: true', OptionsLiteral),
     format(atom(Source),
 'using System;
   using System.Linq;
@@ -7840,7 +8269,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
   using System.Text.Json.Nodes;
 
  var result = UnifyWeaver.Generated.~w.Build();
- var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(~w));
  ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
   string FormatValue(object? value) => value switch
@@ -7869,7 +8298,7 @@ harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
   
     var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
     Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-    ', [ModuleClass, ParamDecl, ExecCall, Cache, Cache]).
+    ', [ModuleClass, OptionsLiteral, ParamDecl, ExecCall, Cache, Cache]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),

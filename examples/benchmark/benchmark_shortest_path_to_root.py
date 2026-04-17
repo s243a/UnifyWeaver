@@ -43,6 +43,7 @@ PROGRAM = """\
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
@@ -51,6 +52,35 @@ class Program
 {
     const string ROOT_CATEGORY = "Physics";
     const int MAX_DEPTH = 10;
+
+    static void PrintRuntimeTrace(QueryExecutionTrace? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(PathAwareTransitiveClosureNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"strategy_{strategy.Strategy}={strategy.Count}");
+        }
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(PathAwareTransitiveClosureNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"phase_{phase.Phase}_ms={phase.Elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)}");
+        }
+
+        foreach (var metric in trace.SnapshotMetrics()
+            .Where(m => m.NodeType == nameof(PathAwareTransitiveClosureNode))
+            .OrderBy(m => m.Metric, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"metric_{metric.Metric}={metric.Value.ToString("G17", CultureInfo.InvariantCulture)}");
+        }
+    }
 
     static void Main(string[] args)
     {
@@ -149,7 +179,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var trace = new QueryExecutionTrace();
+        var rows = executor.Execute(plan, seedParams, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -224,6 +255,7 @@ class Program
         Console.Error.WriteLine($"seed_count={seedParams.Count}");
         Console.Error.WriteLine($"tuple_count={rows.Count}");
         Console.Error.WriteLine($"article_count={results.Count}");
+        PrintRuntimeTrace(trace);
     }
 }
 """

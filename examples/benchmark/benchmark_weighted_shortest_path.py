@@ -6,8 +6,13 @@ PathAwareAccumulationNode runtime modes:
   - all : preserve all simple weighted paths
   - min : mode-directed pruning on the accumulator
 
-The harness derives a positive source weight from category out-degree so the
-recursive increment remains monotone and min-pruning is sound.
+By default the harness derives a positive source weight from category out-degree
+so the recursive increment remains monotone and min-pruning is sound. The
+`--weight-mode nonnegative-zero` variant leaves degree-one sources at zero cost
+to exercise the broader non-negative additive `Min` fast path. The
+`--weight-mode negative` forces the exact frontier fallback and exposes its
+trace metrics at benchmark scale. `--recurrence-mode multiplicative` exercises
+the positive product `Min` strategy when all factors are at least one.
 """
 
 from __future__ import annotations
@@ -52,15 +57,46 @@ class Program
     const string ROOT_CATEGORY = "Physics";
     const int MAX_DEPTH = 10;
 
+    static void PrintRuntimeTrace(QueryExecutionTrace? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => s.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(s => s.Strategy, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"strategy_{strategy.Strategy}={strategy.Count}");
+        }
+
+        foreach (var phase in trace.SnapshotPhases()
+            .Where(p => p.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(p => p.Phase, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"phase_{phase.Phase}_ms={phase.Elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)}");
+        }
+
+        foreach (var metric in trace.SnapshotMetrics()
+            .Where(m => m.NodeType == nameof(PathAwareAccumulationNode))
+            .OrderBy(m => m.Metric, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"metric_{metric.Metric}={metric.Value.ToString("G17", CultureInfo.InvariantCulture)}");
+        }
+    }
+
     static void Main(string[] args)
     {
-        if (args.Length < 3)
+        if (args.Length < 5)
         {
-            Console.Error.WriteLine("Usage: program <all|min> <category_parent.tsv> <article_category.tsv>");
+            Console.Error.WriteLine("Usage: program <all|min> <positive|nonnegative-zero|negative> <additive|multiplicative> <category_parent.tsv> <article_category.tsv>");
             Environment.Exit(1);
         }
 
         var modeName = args[0];
+        var weightMode = args[1];
+        var recurrenceMode = args[2];
         var mode = modeName switch
         {
             "all" => TableMode.All,
@@ -82,7 +118,7 @@ class Program
         var allNodes = new HashSet<string>(StringComparer.Ordinal);
         var edgeCount = 0;
 
-        foreach (var (line, i) in File.ReadLines(args[1]).Select((l, i) => (l, i)))
+        foreach (var (line, i) in File.ReadLines(args[3]).Select((l, i) => (l, i)))
         {
             if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
             {
@@ -119,11 +155,17 @@ class Program
         foreach (var source in sourceNodes)
         {
             outDegree.TryGetValue(source, out var degree);
-            var weight = 1.0 + Math.Log(Math.Max(1, degree), 5.0);
+            var weight = weightMode switch
+            {
+                "positive" => 1.0 + Math.Log(Math.Max(1, degree), 5.0),
+                "nonnegative-zero" => degree <= 1 ? 0.0 : Math.Log(degree, 5.0),
+                "negative" => degree <= 1 ? 1.0 : -Math.Log(degree, 5.0),
+                _ => throw new ArgumentException($"Unknown weight mode: {weightMode}")
+            };
             provider.AddFact(weightId, source, weight);
         }
 
-        foreach (var (line, i) in File.ReadLines(args[2]).Select((l, i) => (l, i)))
+        foreach (var (line, i) in File.ReadLines(args[4]).Select((l, i) => (l, i)))
         {
             if (i == 0 && (line.StartsWith("article") || line.StartsWith("child")))
             {
@@ -148,6 +190,19 @@ class Program
         var sccStats = ComputeSccStats(adjacency);
         swLoad.Stop();
 
+        ArithmeticExpression recursiveExpression = recurrenceMode switch
+        {
+            "additive" => new BinaryArithmeticExpression(
+                ArithmeticBinaryOperator.Add,
+                new ColumnExpression(2),
+                new ColumnExpression(3)),
+            "multiplicative" => new BinaryArithmeticExpression(
+                ArithmeticBinaryOperator.Multiply,
+                new ColumnExpression(2),
+                new ColumnExpression(3)),
+            _ => throw new ArgumentException($"Unknown recurrence mode: {recurrenceMode}")
+        };
+
         var plan = new QueryPlan(
             predId,
             new PathAwareAccumulationNode(
@@ -155,10 +210,7 @@ class Program
                 predId,
                 weightId,
                 new ColumnExpression(3),
-                new BinaryArithmeticExpression(
-                    ArithmeticBinaryOperator.Add,
-                    new ColumnExpression(2),
-                    new ColumnExpression(3)),
+                recursiveExpression,
                 MAX_DEPTH,
                 mode),
             true,
@@ -181,7 +233,8 @@ class Program
 
         var swQuery = Stopwatch.StartNew();
         var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: false));
-        var rows = executor.Execute(plan, seedParams).ToList();
+        var trace = new QueryExecutionTrace();
+        var rows = executor.Execute(plan, seedParams, trace: trace).ToList();
         swQuery.Stop();
 
         var swAgg = Stopwatch.StartNew();
@@ -248,6 +301,8 @@ class Program
         }
 
         Console.Error.WriteLine($"mode={modeName}");
+        Console.Error.WriteLine($"weight_mode={weightMode}");
+        Console.Error.WriteLine($"recurrence_mode={recurrenceMode}");
         Console.Error.WriteLine($"load_ms={swLoad.ElapsedMilliseconds}");
         Console.Error.WriteLine($"query_ms={swQuery.ElapsedMilliseconds}");
         Console.Error.WriteLine($"aggregation_ms={swAgg.ElapsedMilliseconds}");
@@ -262,6 +317,7 @@ class Program
         Console.Error.WriteLine($"largest_scc={sccStats.LargestScc}");
         Console.Error.WriteLine($"largest_cyclic_scc={sccStats.LargestCyclicScc}");
         Console.Error.WriteLine($"condensed_edges={sccStats.CondensedEdgeCount}");
+        PrintRuntimeTrace(trace);
     }
 
     static SccStats ComputeSccStats(Dictionary<string, List<string>> adjacency)
@@ -397,6 +453,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,1k,5k,10k")
     parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument(
+        "--weight-mode",
+        choices=["positive", "nonnegative-zero", "negative"],
+        default="positive",
+        help="Use strictly positive, non-negative zero, or negative source weights.",
+    )
+    parser.add_argument(
+        "--recurrence-mode",
+        choices=["additive", "multiplicative"],
+        default="additive",
+        help="Use additive accumulation or multiplicative accumulation. Multiplicative Min uses the product layered strategy when all factors are at least one.",
+    )
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -429,7 +497,14 @@ def build_harness(root: Path) -> list[str]:
     return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "benchmark_weighted_shortest_path.dll")]
 
 
-def benchmark_mode(command: list[str], scale: str, mode: str, repetitions: int) -> RunResult:
+def benchmark_mode(
+    command: list[str],
+    scale: str,
+    mode: str,
+    weight_mode: str,
+    recurrence_mode: str,
+    repetitions: int,
+) -> RunResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
     article_path = scale_dir / "article_category.tsv"
@@ -439,7 +514,7 @@ def benchmark_mode(command: list[str], scale: str, mode: str, repetitions: int) 
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run(command + [mode, str(edge_path), str(article_path)])
+        result = run(command + [mode, weight_mode, recurrence_mode, str(edge_path), str(article_path)])
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         stdout = result.stdout
@@ -465,8 +540,8 @@ def main() -> int:
         command = build_harness(temp_root)
         results: list[RunResult] = []
         for scale in scales:
-            results.append(benchmark_mode(command, scale, "all", args.repetitions))
-            results.append(benchmark_mode(command, scale, "min", args.repetitions))
+            results.append(benchmark_mode(command, scale, "all", args.weight_mode, args.recurrence_mode, args.repetitions))
+            results.append(benchmark_mode(command, scale, "min", args.weight_mode, args.recurrence_mode, args.repetitions))
 
         print("scale\tmode\tmedian_s\tmin_s\tmax_s\trows")
         grouped: dict[str, dict[str, RunResult]] = {}

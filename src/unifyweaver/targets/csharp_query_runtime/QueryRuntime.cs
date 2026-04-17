@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -638,7 +639,9 @@ namespace UnifyWeaver.QueryRuntime
         /// Default 0 = unlimited (standard Datalog convergence assumed).
         /// Recommended: 50 for graphs with cycles and arithmetic counters.
         /// </summary>
-        int MaxFixpointIterations = 0);
+        int MaxFixpointIterations = 0,
+        bool EnableMeasuredClosurePairStrategy = true,
+        bool UseSeededClosureCachesForPairBatches = false);
 
     public sealed record QueryNodeTrace(
         int Id,
@@ -681,6 +684,13 @@ namespace UnifyWeaver.QueryRuntime
         string NodeType,
         string Phase,
         TimeSpan Elapsed
+    );
+
+    public sealed record QueryMetricTrace(
+        int NodeId,
+        string NodeType,
+        string Metric,
+        double Value
     );
 
     public sealed class QueryExecutionTrace
@@ -736,6 +746,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
         private readonly List<QueryFixpointIterationTrace> _fixpointIterations = new();
         private readonly Dictionary<(PlanNode Node, string Phase), TimeSpan> _phases = new(new PlanNodeStrategyComparer());
+        private readonly Dictionary<(PlanNode Node, string Metric), double> _metrics = new(new PlanNodeStrategyComparer());
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -875,6 +886,32 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        internal void RecordMetric(PlanNode node, string metric, double value)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (metric is null) throw new ArgumentNullException(nameof(metric));
+
+            _ = GetOrAdd(node);
+            _metrics[(node, metric)] = value;
+        }
+
+        internal void AddMetric(PlanNode node, string metric, double value)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (metric is null) throw new ArgumentNullException(nameof(metric));
+
+            _ = GetOrAdd(node);
+            var key = (node, metric);
+            if (_metrics.TryGetValue(key, out var existing))
+            {
+                _metrics[key] = existing + value;
+            }
+            else
+            {
+                _metrics.Add(key, value);
+            }
+        }
+
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
@@ -985,6 +1022,23 @@ namespace UnifyWeaver.QueryRuntime
                 })
                 .OrderBy(s => s.NodeId)
                 .ThenBy(s => s.Phase, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryMetricTrace> SnapshotMetrics()
+        {
+            return _metrics
+                .Select(kvp =>
+                {
+                    var node = kvp.Key.Node;
+                    return new QueryMetricTrace(
+                        GetOrAdd(node).Id,
+                        node.GetType().Name,
+                        kvp.Key.Metric,
+                        kvp.Value);
+                })
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Metric, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -1364,34 +1418,75 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            var expectedWidth = Math.Max(2, source.ExpectedWidth);
             string? line;
             while ((line = reader.ReadLine()) is not null)
             {
-                if (!TrySplitTwoColumnLine(line, source.Delimiter, out var left, out var right))
+                if (!TrySplitDelimitedLine(line, source.Delimiter, expectedWidth, out var fields))
                 {
                     continue;
                 }
 
-                yield return new object[] { left, right };
+                yield return fields;
             }
         }
 
         public static StreamReader OpenSequentialReader(string path) =>
             new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1 << 16);
 
+        public static bool TrySplitDelimitedLine(string line, char delimiter, int expectedWidth, out object[] fields)
+        {
+            if (expectedWidth <= 1)
+            {
+                expectedWidth = 2;
+            }
+
+            var parts = new object[expectedWidth];
+            var span = line.AsSpan();
+            var start = 0;
+
+            for (var i = 0; i < expectedWidth - 1; i++)
+            {
+                var remainder = span.Slice(start);
+                var split = remainder.IndexOf(delimiter);
+                if (split <= 0)
+                {
+                    fields = Array.Empty<object>();
+                    return false;
+                }
+
+                parts[i] = remainder.Slice(0, split).ToString();
+                start += split + 1;
+                if (start >= span.Length)
+                {
+                    fields = Array.Empty<object>();
+                    return false;
+                }
+            }
+
+            var tail = span.Slice(start);
+            if (tail.Length == 0 || tail.IndexOf(delimiter) >= 0)
+            {
+                fields = Array.Empty<object>();
+                return false;
+            }
+
+            parts[expectedWidth - 1] = tail.ToString();
+            fields = parts;
+            return true;
+        }
+
         public static bool TrySplitTwoColumnLine(string line, char delimiter, out string left, out string right)
         {
-            var span = line.AsSpan();
-            var split = span.IndexOf(delimiter);
-            if (split <= 0 || split >= span.Length - 1)
+            if (!TrySplitDelimitedLine(line, delimiter, 2, out var fields))
             {
                 left = string.Empty;
                 right = string.Empty;
                 return false;
             }
 
-            left = span.Slice(0, split).ToString();
-            right = span.Slice(split + 1).ToString();
+            left = fields[0]?.ToString() ?? string.Empty;
+            right = fields[1]?.ToString() ?? string.Empty;
             return true;
         }
     }
@@ -1438,29 +1533,100 @@ namespace UnifyWeaver.QueryRuntime
 
     internal sealed class PathAwareSuccessorBucket
     {
-        public PathAwareSuccessorBucket(object? source)
+        public PathAwareSuccessorBucket(object? source, int sourceNodeId)
         {
             Source = source;
+            SourceNodeId = sourceNodeId;
         }
 
         public object? Source { get; }
 
+        public int SourceNodeId { get; }
+
         public List<object?> Targets { get; } = new();
+
+        public List<int> TargetNodeIds { get; } = new();
     }
 
     internal sealed class PathAwareEdgeState
     {
         public PathAwareEdgeState(
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
-            IReadOnlyList<object?> seeds)
+            IReadOnlyList<object?> seeds,
+            IReadOnlyList<int> seedNodeIds,
+            IReadOnlyList<object?> nodeValues,
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId)
         {
             Successors = successors;
             Seeds = seeds;
+            SeedNodeIds = seedNodeIds;
+            NodeValues = nodeValues;
+            BucketsByNodeId = bucketsByNodeId;
         }
 
         public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
 
         public IReadOnlyList<object?> Seeds { get; }
+
+        public IReadOnlyList<int> SeedNodeIds { get; }
+
+        public IReadOnlyList<object?> NodeValues { get; }
+
+        public IReadOnlyList<PathAwareSuccessorBucket?> BucketsByNodeId { get; }
+    }
+
+    internal sealed class PathAwareSccGraph
+    {
+        public PathAwareSccGraph(
+            IReadOnlyDictionary<object, int> componentByNode,
+            int nodeCount,
+            int edgeCount,
+            int componentCount,
+            int cyclicComponentCount,
+            int largestComponentSize,
+            int largestCyclicComponentSize,
+            int condensedEdgeCount)
+        {
+            ComponentByNode = componentByNode;
+            NodeCount = nodeCount;
+            EdgeCount = edgeCount;
+            ComponentCount = componentCount;
+            CyclicComponentCount = cyclicComponentCount;
+            LargestComponentSize = largestComponentSize;
+            LargestCyclicComponentSize = largestCyclicComponentSize;
+            CondensedEdgeCount = condensedEdgeCount;
+        }
+
+        public IReadOnlyDictionary<object, int> ComponentByNode { get; }
+
+        public int NodeCount { get; }
+
+        public int EdgeCount { get; }
+
+        public int ComponentCount { get; }
+
+        public int CyclicComponentCount { get; }
+
+        public int LargestComponentSize { get; }
+
+        public int LargestCyclicComponentSize { get; }
+
+        public int CondensedEdgeCount { get; }
+    }
+
+    internal readonly record struct SccCondensedWeightedMinStats(
+        long LocalStatesExplored,
+        long OuterDagStatesExplored,
+        long QueuePops);
+
+    internal readonly record struct SccCondensedWeightedMinProbe(
+        TimeSpan Elapsed,
+        SccCondensedWeightedMinStats Stats);
+
+    internal enum AdditiveMinStepSafety
+    {
+        StrictlyPositive,
+        NonNegative
     }
 
     public sealed class InMemoryRelationProvider : IRetentionAwareRelationProvider
@@ -1575,6 +1741,8 @@ namespace UnifyWeaver.QueryRuntime
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
         private readonly ClosureRelationRetentionStrategy _closureRelationRetentionStrategy;
         private readonly ClosurePairStrategy _closurePairStrategy;
+        private readonly bool _enableMeasuredClosurePairStrategy;
+        private readonly bool _useSeededClosureCachesForPairBatches;
         private readonly PathAwareEdgeRetentionStrategy _pathAwareEdgeRetentionStrategy;
         private readonly PathAwareSupportRelationRetentionStrategy _pathAwareSupportRelationRetentionStrategy;
         private readonly PathAwareGroupedSummaryStrategy _pathAwareGroupedMinStrategy;
@@ -1596,6 +1764,8 @@ namespace UnifyWeaver.QueryRuntime
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
             _closureRelationRetentionStrategy = options.ClosureRelationRetentionStrategy;
             _closurePairStrategy = options.ClosurePairStrategy;
+            _enableMeasuredClosurePairStrategy = options.EnableMeasuredClosurePairStrategy;
+            _useSeededClosureCachesForPairBatches = options.UseSeededClosureCachesForPairBatches;
             _pathAwareEdgeRetentionStrategy = options.PathAwareEdgeRetentionStrategy;
             _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
@@ -6002,17 +6172,22 @@ namespace UnifyWeaver.QueryRuntime
             Dictionary<object, PathAwareSuccessorBucket> successors,
             List<object?> seeds,
             HashSet<object?> seenSeeds,
+            Dictionary<object, int> nodeIds,
+            ref int nextNodeId,
             object? source,
             object? target)
         {
             var lookupKey = source ?? NullFactIndexKey;
+            var sourceNodeId = GetOrAddPathAwareNodeId(nodeIds, ref nextNodeId, source);
+            var targetNodeId = GetOrAddPathAwareNodeId(nodeIds, ref nextNodeId, target);
             if (!successors.TryGetValue(lookupKey, out var bucket))
             {
-                bucket = new PathAwareSuccessorBucket(source);
+                bucket = new PathAwareSuccessorBucket(source, sourceNodeId);
                 successors[lookupKey] = bucket;
             }
 
             bucket.Targets.Add(target);
+            bucket.TargetNodeIds.Add(targetNodeId);
             if (seenSeeds.Add(source))
             {
                 seeds.Add(source);
@@ -6021,10 +6196,47 @@ namespace UnifyWeaver.QueryRuntime
 
         private static PathAwareEdgeState FinalizePathAwareEdgeState(
             Dictionary<object, PathAwareSuccessorBucket> successors,
-            List<object?> seeds)
+            List<object?> seeds,
+            IReadOnlyDictionary<object, int> nodeIds)
         {
             seeds.Sort(CompareCacheSeedValues);
-            return new PathAwareEdgeState(successors, seeds);
+            var seedNodeIds = new List<int>(seeds.Count);
+            for (var i = 0; i < seeds.Count; i++)
+            {
+                seedNodeIds.Add(nodeIds[seeds[i] ?? NullFactIndexKey]);
+            }
+
+            var nodeValues = new object?[nodeIds.Count];
+            foreach (var entry in nodeIds)
+            {
+                nodeValues[entry.Value] = ReferenceEquals(entry.Key, NullFactIndexKey)
+                    ? null
+                    : entry.Key;
+            }
+
+            var bucketsByNodeId = new PathAwareSuccessorBucket?[nodeIds.Count];
+            foreach (var bucket in successors.Values)
+            {
+                bucketsByNodeId[bucket.SourceNodeId] = bucket;
+            }
+
+            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId);
+        }
+
+        private static int GetOrAddPathAwareNodeId(
+            Dictionary<object, int> nodeIds,
+            ref int nextNodeId,
+            object? value)
+        {
+            var key = value ?? NullFactIndexKey;
+            if (nodeIds.TryGetValue(key, out var existing))
+            {
+                return existing;
+            }
+
+            var id = nextNodeId++;
+            nodeIds[key] = id;
+            return id;
         }
 
         private static PathAwareEdgeState BuildPathAwareEdgeStateFromRows(IEnumerable<object[]> edges)
@@ -6032,6 +6244,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
 
             foreach (var edge in edges)
             {
@@ -6040,10 +6254,10 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, edge[0], edge[1]);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, edge[0], edge[1]);
             }
 
-            return FinalizePathAwareEdgeState(successors, seeds);
+            return FinalizePathAwareEdgeState(successors, seeds, nodeIds);
         }
 
         private static PathAwareEdgeState BuildPathAwareEdgeStateFromDelimited(DelimitedRelationSource delimitedSource)
@@ -6051,6 +6265,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
 
             using var reader = DelimitedRelationReader.OpenSequentialReader(delimitedSource.InputPath);
             for (var i = 0; i < delimitedSource.SkipRows; i++)
@@ -6069,10 +6285,10 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, left, right);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, left, right);
             }
 
-            return FinalizePathAwareEdgeState(successors, seeds);
+            return FinalizePathAwareEdgeState(successors, seeds, nodeIds);
         }
 
         private static void ProbePathAwareEdgeRows(IEnumerable<object[]> edges, int maxRows)
@@ -6080,6 +6296,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
             var consumed = 0;
 
             foreach (var edge in edges)
@@ -6089,7 +6307,7 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, edge[0], edge[1]);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, edge[0], edge[1]);
                 consumed++;
                 if (consumed >= maxRows)
                 {
@@ -6105,6 +6323,8 @@ namespace UnifyWeaver.QueryRuntime
             var successors = new Dictionary<object, PathAwareSuccessorBucket>();
             var seeds = new List<object?>();
             var seenSeeds = new HashSet<object?>();
+            var nodeIds = new Dictionary<object, int>();
+            var nextNodeId = 0;
             var consumed = 0;
 
             using var reader = DelimitedRelationReader.OpenSequentialReader(delimitedSource.InputPath);
@@ -6124,7 +6344,7 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                AddPathAwareEdge(successors, seeds, seenSeeds, left, right);
+                AddPathAwareEdge(successors, seeds, seenSeeds, nodeIds, ref nextNodeId, left, right);
                 consumed++;
                 if (consumed >= maxRows)
                 {
@@ -9781,6 +10001,8 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static ClosurePairPlanStrategy ResolveStructuralClosurePairStrategy(
+            int sourceRequestCount,
+            int targetRequestCount,
             bool singleConcretePairRequest,
             bool preferForwardSingleProbe,
             bool hasForwardBatch,
@@ -9789,13 +10011,33 @@ namespace UnifyWeaver.QueryRuntime
             bool canMemoizeForwardBatch,
             bool canMemoizeBackwardBatch,
             bool canMemoizePairs,
-            bool preferForwardFallback)
+            bool preferForwardFallback,
+            bool preferSeededClosureCachesForPairBatches)
         {
             if (singleConcretePairRequest)
             {
                 return preferForwardSingleProbe
                     ? ClosurePairPlanStrategy.SingleProbeForward
                     : ClosurePairPlanStrategy.SingleProbeBackward;
+            }
+
+            if (sourceRequestCount == 1 && targetRequestCount > 1 && canMemoizePairs)
+            {
+                return preferSeededClosureCachesForPairBatches
+                    ? ClosurePairPlanStrategy.MemoizedBySource
+                    : ClosurePairPlanStrategy.Forward;
+            }
+
+            if (targetRequestCount == 1 && sourceRequestCount > 1 && canMemoizePairs)
+            {
+                if (preferSeededClosureCachesForPairBatches)
+                {
+                    return ClosurePairPlanStrategy.MemoizedByTarget;
+                }
+
+                return hasBackwardBatch
+                    ? ClosurePairPlanStrategy.Backward
+                    : ClosurePairPlanStrategy.MemoizedByTarget;
             }
 
             if (hasForwardBatch && hasBackwardBatch)
@@ -9841,10 +10083,204 @@ namespace UnifyWeaver.QueryRuntime
                 : ClosurePairPlanStrategy.Backward;
         }
 
+        private static IReadOnlyList<ClosurePairPlanStrategy> DetermineClosurePairProbeStrategies(
+            ClosurePairPlanStrategy structuralStrategy,
+            int sourceRequestCount,
+            int targetRequestCount,
+            bool singleConcretePairRequest,
+            bool hasForwardBatch,
+            bool hasBackwardBatch,
+            bool canUseBatchedPairProbeCache,
+            bool canMemoizeForwardBatch,
+            bool canMemoizeBackwardBatch,
+            bool canMemoizePairs)
+        {
+            var strategies = new List<ClosurePairPlanStrategy>();
+
+            void Add(ClosurePairPlanStrategy strategy)
+            {
+                if (!strategies.Contains(strategy))
+                {
+                    strategies.Add(strategy);
+                }
+            }
+
+            Add(structuralStrategy);
+
+            if (singleConcretePairRequest)
+            {
+                return strategies;
+            }
+
+            if (sourceRequestCount == 1 && targetRequestCount > 1)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedBySource);
+                Add(ClosurePairPlanStrategy.Forward);
+                Add(ClosurePairPlanStrategy.Backward);
+                if (hasForwardBatch && hasBackwardBatch)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirection);
+                    if (canUseBatchedPairProbeCache)
+                    {
+                        Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                    }
+                }
+
+                return strategies;
+            }
+
+            if (targetRequestCount == 1 && sourceRequestCount > 1)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedByTarget);
+                Add(ClosurePairPlanStrategy.Backward);
+                Add(ClosurePairPlanStrategy.Forward);
+                if (hasForwardBatch && hasBackwardBatch)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirection);
+                    if (canUseBatchedPairProbeCache)
+                    {
+                        Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                    }
+                }
+
+                return strategies;
+            }
+
+            if (hasForwardBatch && hasBackwardBatch &&
+                (structuralStrategy == ClosurePairPlanStrategy.MixedDirection ||
+                 structuralStrategy == ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache))
+            {
+                Add(ClosurePairPlanStrategy.MixedDirection);
+                if (canUseBatchedPairProbeCache)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                }
+
+                return strategies;
+            }
+
+            if (hasForwardBatch && hasBackwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.MixedDirection);
+                if (canUseBatchedPairProbeCache)
+                {
+                    Add(ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache);
+                }
+
+                Add(ClosurePairPlanStrategy.Forward);
+                Add(ClosurePairPlanStrategy.Backward);
+                return strategies;
+            }
+
+            if (hasForwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.Forward);
+                if (canMemoizeForwardBatch || canMemoizePairs)
+                {
+                    Add(ClosurePairPlanStrategy.MemoizedBySource);
+                }
+                Add(ClosurePairPlanStrategy.Backward);
+                return strategies;
+            }
+
+            if (hasBackwardBatch)
+            {
+                Add(ClosurePairPlanStrategy.Backward);
+                if (canMemoizeBackwardBatch || canMemoizePairs)
+                {
+                    Add(ClosurePairPlanStrategy.MemoizedByTarget);
+                }
+                Add(ClosurePairPlanStrategy.Forward);
+                return strategies;
+            }
+
+            if (canMemoizePairs)
+            {
+                Add(ClosurePairPlanStrategy.MemoizedBySource);
+                Add(ClosurePairPlanStrategy.MemoizedByTarget);
+            }
+
+            Add(ClosurePairPlanStrategy.Forward);
+            Add(ClosurePairPlanStrategy.Backward);
+            return strategies;
+        }
+
+        private static bool ShouldProbeClosurePairStrategy(
+            int requestCount,
+            bool singleConcretePairRequest,
+            IReadOnlyCollection<ClosurePairPlanStrategy> candidateStrategies)
+        {
+            if (singleConcretePairRequest || requestCount <= 1)
+            {
+                return false;
+            }
+
+            if (candidateStrategies.Count <= 1)
+            {
+                return false;
+            }
+
+            return requestCount <= 16;
+        }
+
+        private const double ClosurePairProbeOverrideMargin = 1.15d;
+
+        private static ClosurePairPlanStrategy ResolveMeasuredClosurePairStrategy(
+            IReadOnlyDictionary<ClosurePairPlanStrategy, TimeSpan> probes,
+            ClosurePairPlanStrategy structuralStrategy)
+        {
+            if (probes.Count == 0)
+            {
+                return structuralStrategy;
+            }
+
+            var bestProbe = probes
+                .Where(entry => entry.Value > TimeSpan.Zero && entry.Value < TimeSpan.MaxValue)
+                .OrderBy(entry => entry.Value)
+                .FirstOrDefault();
+
+            if (bestProbe.Equals(default(KeyValuePair<ClosurePairPlanStrategy, TimeSpan>)) && !probes.ContainsKey(default))
+            {
+                return structuralStrategy;
+            }
+
+            if (!probes.TryGetValue(structuralStrategy, out var structuralProbe) ||
+                structuralProbe <= TimeSpan.Zero ||
+                structuralProbe == TimeSpan.MaxValue)
+            {
+                return bestProbe.Key;
+            }
+
+            if (bestProbe.Key == structuralStrategy)
+            {
+                return structuralStrategy;
+            }
+
+            return bestProbe.Value.Ticks * ClosurePairProbeOverrideMargin < structuralProbe.Ticks
+                ? bestProbe.Key
+                : structuralStrategy;
+        }
+
+        private static string GetClosurePairProbePhase(ClosurePairPlanStrategy strategy) => strategy switch
+        {
+            ClosurePairPlanStrategy.SingleProbeForward => "closure_pair_probe_single_forward",
+            ClosurePairPlanStrategy.SingleProbeBackward => "closure_pair_probe_single_backward",
+            ClosurePairPlanStrategy.Forward => "closure_pair_probe_forward",
+            ClosurePairPlanStrategy.Backward => "closure_pair_probe_backward",
+            ClosurePairPlanStrategy.MemoizedBySource => "closure_pair_probe_memo_source",
+            ClosurePairPlanStrategy.MemoizedByTarget => "closure_pair_probe_memo_target",
+            ClosurePairPlanStrategy.MixedDirection => "closure_pair_probe_mixed",
+            ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache => "closure_pair_probe_mixed_cache",
+            _ => "closure_pair_probe_unknown"
+        };
+
         private static ClosurePairStrategySelection ResolveClosurePairStrategy(
             QueryExecutionTrace? trace,
             PlanNode node,
             ClosurePairStrategy configuredStrategy,
+            int requestCount,
+            int sourceRequestCount,
+            int targetRequestCount,
             bool singleConcretePairRequest,
             bool preferForwardSingleProbe,
             bool canBuildDirectionBatches,
@@ -9854,7 +10290,9 @@ namespace UnifyWeaver.QueryRuntime
             bool canMemoizeForwardBatch,
             bool canMemoizeBackwardBatch,
             bool canMemoizePairs,
-            bool preferForwardFallback)
+            bool preferForwardFallback,
+            bool preferSeededClosureCachesForPairBatches,
+            IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measureProbes = null)
         {
             return MeasurePhase(trace, node, "closure_pair_strategy_select", () =>
             {
@@ -9868,6 +10306,8 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 var structural = ResolveStructuralClosurePairStrategy(
+                    sourceRequestCount,
+                    targetRequestCount,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     hasForwardBatch,
@@ -9876,14 +10316,64 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    preferSeededClosureCachesForPairBatches);
 
                 if (configuredStrategy != ClosurePairStrategy.Auto)
                 {
                     return new ClosurePairStrategySelection(structural, "ConfiguredFallback");
                 }
 
-                return new ClosurePairStrategySelection(structural, "Structural");
+                if (sourceRequestCount <= 1 || targetRequestCount <= 1)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                var candidateStrategies = DetermineClosurePairProbeStrategies(
+                    structural,
+                    sourceRequestCount,
+                    targetRequestCount,
+                    singleConcretePairRequest,
+                    hasForwardBatch,
+                    hasBackwardBatch,
+                    canUseBatchedPairProbeCache,
+                    canMemoizeForwardBatch,
+                    canMemoizeBackwardBatch,
+                    canMemoizePairs);
+
+                if (!ShouldProbeClosurePairStrategy(requestCount, singleConcretePairRequest, candidateStrategies) ||
+                    measureProbes is null ||
+                    measureProbes.Count == 0)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                var probes = new Dictionary<ClosurePairPlanStrategy, TimeSpan>();
+                foreach (var candidate in candidateStrategies)
+                {
+                    if (!measureProbes.TryGetValue(candidate, out var measureProbe))
+                    {
+                        continue;
+                    }
+
+                    var probe = measureProbe();
+                    if (probe <= TimeSpan.Zero || probe == TimeSpan.MaxValue)
+                    {
+                        continue;
+                    }
+
+                    trace?.RecordPhase(node, GetClosurePairProbePhase(candidate), probe);
+                    probes[candidate] = probe;
+                }
+
+                if (probes.Count == 0)
+                {
+                    return new ClosurePairStrategySelection(structural, "Structural");
+                }
+
+                return new ClosurePairStrategySelection(
+                    ResolveMeasuredClosurePairStrategy(probes, structural),
+                    "MeasuredProbe");
             });
         }
 
@@ -9895,6 +10385,350 @@ namespace UnifyWeaver.QueryRuntime
         {
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanSelection{selection.DecisionMode}");
             trace?.RecordStrategy(node, $"{nodeStrategyPrefix}MaterializationPlanPairs{selection.Strategy}");
+        }
+
+        private static int CountClosurePairRequests(IEnumerable<HashSet<object?>> requestSets) =>
+            requestSets.Sum(requestSet => requestSet.Count);
+
+        private const int MaxMeasuredClosurePairProbeRequests = 4;
+
+        private static void TakeClosurePairRequestSample(
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            int maxRequestCount,
+            out Dictionary<object?, HashSet<object?>> sampleBySource,
+            out Dictionary<object?, HashSet<object?>> sampleByTarget)
+        {
+            sampleBySource = new Dictionary<object?, HashSet<object?>>();
+            sampleByTarget = new Dictionary<object?, HashSet<object?>>();
+            var remaining = maxRequestCount;
+            var active = bySource
+                .Select(entry => (Source: entry.Key, Targets: entry.Value.GetEnumerator()))
+                .ToList();
+
+            while (remaining > 0 && active.Count > 0)
+            {
+                for (var i = 0; i < active.Count && remaining > 0;)
+                {
+                    var (source, targets) = active[i];
+                    if (!targets.MoveNext())
+                    {
+                        active.RemoveAt(i);
+                        continue;
+                    }
+
+                    var target = targets.Current;
+                    if (!sampleBySource.TryGetValue(source, out var sampleTargets))
+                    {
+                        sampleTargets = new HashSet<object?>();
+                        sampleBySource.Add(source, sampleTargets);
+                    }
+
+                    sampleTargets.Add(target);
+
+                    if (!sampleByTarget.TryGetValue(target, out var sampleSources))
+                    {
+                        sampleSources = new HashSet<object?>();
+                        sampleByTarget.Add(target, sampleSources);
+                    }
+
+                    sampleSources.Add(source);
+                    remaining--;
+                    i++;
+                }
+            }
+        }
+
+        private static void TakeGroupedClosurePairRequestSample(
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            int maxRequestCount,
+            out Dictionary<RowWrapper, HashSet<object?>> sampleTargetsBySource,
+            out Dictionary<RowWrapper, HashSet<object?>> sampleSourcesByTarget)
+        {
+            var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+            sampleTargetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            sampleSourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+            var remaining = maxRequestCount;
+            var active = targetsBySource
+                .Select(entry => (SourceWrapper: entry.Key, Targets: entry.Value.GetEnumerator()))
+                .ToList();
+
+            while (remaining > 0 && active.Count > 0)
+            {
+                for (var i = 0; i < active.Count && remaining > 0;)
+                {
+                    var (sourceWrapper, targets) = active[i];
+                    if (!targets.MoveNext())
+                    {
+                        active.RemoveAt(i);
+                        continue;
+                    }
+
+                    var sourceRow = sourceWrapper.Row;
+                    var source = sourceRow[sourceRow.Length - 1];
+                    var target = targets.Current;
+                    if (!sampleTargetsBySource.TryGetValue(sourceWrapper, out var sampleTargets))
+                    {
+                        sampleTargets = new HashSet<object?>();
+                        sampleTargetsBySource.Add(sourceWrapper, sampleTargets);
+                    }
+
+                    sampleTargets.Add(target);
+
+                    var targetRow = new object[sourceRow.Length];
+                    Array.Copy(sourceRow, targetRow, sourceRow.Length - 1);
+                    targetRow[sourceRow.Length - 1] = target;
+                    var targetWrapper = new RowWrapper(targetRow);
+
+                    if (!sampleSourcesByTarget.TryGetValue(targetWrapper, out var sampleSources))
+                    {
+                        sampleSources = new HashSet<object?>();
+                        sampleSourcesByTarget.Add(targetWrapper, sampleSources);
+                    }
+
+                    sampleSources.Add(source);
+                    remaining--;
+                    i++;
+                }
+            }
+        }
+
+        private EvaluationContext CreateClosurePairProbeContext(EvaluationContext context)
+        {
+            var probeContext = new EvaluationContext(trace: new QueryExecutionTrace(), cancellationToken: context.CancellationToken)
+            {
+                Current = context.Current,
+                FixpointDepth = context.FixpointDepth
+            };
+
+            foreach (var kvp in context.Facts)
+            {
+                probeContext.Facts[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.FactSources)
+            {
+                probeContext.FactSources[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.ReplayableFactSources)
+            {
+                probeContext.ReplayableFactSources[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.ClosureRelationRetentionSelections)
+            {
+                probeContext.ClosureRelationRetentionSelections[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.FactIndices)
+            {
+                probeContext.FactIndices[kvp.Key] = kvp.Value;
+            }
+
+            foreach (var kvp in context.JoinIndices)
+            {
+                probeContext.JoinIndices[kvp.Key] = kvp.Value;
+            }
+
+            return probeContext;
+        }
+
+        private TimeSpan MeasureGroupedClosurePairStrategyProbe(
+            GroupedTransitiveClosureNode closure,
+            ClosurePairPlanStrategy strategy,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> targetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> sourcesByTarget,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> forwardTargetsBySource,
+            IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
+            EvaluationContext context)
+        {
+            var sampleTargetsBySource = targetsBySource;
+            var sampleSourcesByTarget = sourcesByTarget;
+            var sampleForwardTargetsBySource = forwardTargetsBySource;
+            var sampleBackwardSourcesByTarget = backwardSourcesByTarget;
+
+            if (CountClosurePairRequests(targetsBySource.Values) > MaxMeasuredClosurePairProbeRequests)
+            {
+                TakeGroupedClosurePairRequestSample(
+                    targetsBySource,
+                    MaxMeasuredClosurePairProbeRequests,
+                    out var limitedTargetsBySource,
+                    out var limitedSourcesByTarget);
+                sampleTargetsBySource = limitedTargetsBySource;
+                sampleSourcesByTarget = limitedSourcesByTarget;
+
+                var batchProbeContext = CreateClosurePairProbeContext(context);
+                if (!TryBuildGroupedPairProbeDirectionBatches(
+                    closure,
+                    sampleTargetsBySource,
+                    batchProbeContext,
+                    out var limitedForwardTargetsBySource,
+                    out var limitedBackwardSourcesByTarget))
+                {
+                    var wrapperComparer = new RowWrapperComparer(StructuralArrayComparer.Instance);
+                    limitedForwardTargetsBySource = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+                    limitedBackwardSourcesByTarget = new Dictionary<RowWrapper, HashSet<object?>>(wrapperComparer);
+                }
+
+                sampleForwardTargetsBySource = limitedForwardTargetsBySource;
+                sampleBackwardSourcesByTarget = limitedBackwardSourcesByTarget;
+            }
+
+            return strategy switch
+            {
+                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache when sampleForwardTargetsBySource.Count > 0 && sampleBackwardSourcesByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        inputPositions,
+                        sampleForwardTargetsBySource,
+                        sampleBackwardSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MixedDirection when sampleForwardTargetsBySource.Count > 0 && sampleBackwardSourcesByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMixedDirection(
+                        closure,
+                        inputPositions,
+                        sampleForwardTargetsBySource,
+                        sampleBackwardSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedBySource => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        inputPositions,
+                        sampleTargetsBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedByTarget => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        inputPositions,
+                        sampleSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Forward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsForward(
+                        closure,
+                        sampleTargetsBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Backward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededGroupedTransitiveClosurePairsBackward(
+                        closure,
+                        sampleSourcesByTarget,
+                        probeContext).ToList();
+                }),
+                _ => TimeSpan.MaxValue
+            };
+        }
+
+        private TimeSpan MeasureUngroupedClosurePairStrategyProbe(
+            TransitiveClosureNode closure,
+            ClosurePairPlanStrategy strategy,
+            IReadOnlyDictionary<object?, HashSet<object?>> bySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> byTarget,
+            IReadOnlyDictionary<object?, HashSet<object?>> forwardBySource,
+            IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
+            EvaluationContext context)
+        {
+            var sampleBySource = bySource;
+            var sampleByTarget = byTarget;
+            var sampleForwardBySource = forwardBySource;
+            var sampleBackwardByTarget = backwardByTarget;
+
+            if (CountClosurePairRequests(bySource.Values) > MaxMeasuredClosurePairProbeRequests)
+            {
+                TakeClosurePairRequestSample(
+                    bySource,
+                    MaxMeasuredClosurePairProbeRequests,
+                    out var limitedBySource,
+                    out var limitedByTarget);
+                sampleBySource = limitedBySource;
+                sampleByTarget = limitedByTarget;
+
+                var batchProbeContext = CreateClosurePairProbeContext(context);
+                if (!TryBuildPairProbeDirectionBatches(
+                    closure,
+                    sampleBySource,
+                    batchProbeContext,
+                    out var limitedForwardBySource,
+                    out var limitedBackwardByTarget))
+                {
+                    limitedForwardBySource = new Dictionary<object?, HashSet<object?>>();
+                    limitedBackwardByTarget = new Dictionary<object?, HashSet<object?>>();
+                }
+
+                sampleForwardBySource = limitedForwardBySource;
+                sampleBackwardByTarget = limitedBackwardByTarget;
+            }
+
+            return strategy switch
+            {
+                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache when sampleForwardBySource.Count > 0 && sampleBackwardByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMixedDirectionWithPairProbeCache(
+                        closure,
+                        sampleForwardBySource,
+                        sampleBackwardByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MixedDirection when sampleForwardBySource.Count > 0 && sampleBackwardByTarget.Count > 0 => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMixedDirection(
+                        closure,
+                        sampleForwardBySource,
+                        sampleBackwardByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedBySource => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMemoizedBySource(
+                        closure,
+                        sampleBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.MemoizedByTarget => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
+                        closure,
+                        sampleByTarget,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Forward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsForward(
+                        closure,
+                        sampleBySource,
+                        probeContext).ToList();
+                }),
+                ClosurePairPlanStrategy.Backward => MeasureElapsed(() =>
+                {
+                    var probeContext = CreateClosurePairProbeContext(context);
+                    _ = ExecuteSeededTransitiveClosurePairsBackward(
+                        closure,
+                        sampleByTarget,
+                        probeContext).ToList();
+                }),
+                _ => TimeSpan.MaxValue
+            };
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, double>> ExecuteSeedGroupedPathAwareWeightSumFallback(
@@ -10280,6 +11114,302 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return nodes.Count;
+        }
+
+        private static PathAwareSccGraph BuildPathAwareSccGraph(IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex)
+        {
+            var adjacency = new Dictionary<object, List<object>>();
+            var edgeCount = 0;
+
+            void EnsureNode(object key)
+            {
+                if (!adjacency.ContainsKey(key))
+                {
+                    adjacency[key] = new List<object>();
+                }
+            }
+
+            foreach (var (sourceKey, bucket) in succIndex)
+            {
+                EnsureNode(sourceKey);
+                foreach (var target in bucket.Targets)
+                {
+                    var targetKey = target ?? NullFactIndexKey;
+                    EnsureNode(targetKey);
+                    adjacency[sourceKey].Add(targetKey);
+                    edgeCount++;
+                }
+            }
+
+            var index = 0;
+            var indexByNode = new Dictionary<object, int>();
+            var lowLink = new Dictionary<object, int>();
+            var onStack = new HashSet<object>();
+            var stack = new Stack<object>();
+            var componentByNode = new Dictionary<object, int>();
+            var componentSizes = new List<int>();
+            var componentHasSelfLoop = new List<bool>();
+
+            void StrongConnect(object node)
+            {
+                indexByNode[node] = index;
+                lowLink[node] = index;
+                index++;
+                stack.Push(node);
+                onStack.Add(node);
+
+                foreach (var next in adjacency[node])
+                {
+                    if (!indexByNode.ContainsKey(next))
+                    {
+                        StrongConnect(next);
+                        lowLink[node] = Math.Min(lowLink[node], lowLink[next]);
+                    }
+                    else if (onStack.Contains(next))
+                    {
+                        lowLink[node] = Math.Min(lowLink[node], indexByNode[next]);
+                    }
+                }
+
+                if (lowLink[node] != indexByNode[node])
+                {
+                    return;
+                }
+
+                var componentId = componentSizes.Count;
+                var size = 0;
+                var hasSelfLoop = false;
+                while (true)
+                {
+                    var member = stack.Pop();
+                    onStack.Remove(member);
+                    componentByNode[member] = componentId;
+                    size++;
+                    foreach (var next in adjacency[member])
+                    {
+                        if (Equals(next, member))
+                        {
+                            hasSelfLoop = true;
+                            break;
+                        }
+                    }
+
+                    if (Equals(member, node))
+                    {
+                        break;
+                    }
+                }
+
+                componentSizes.Add(size);
+                componentHasSelfLoop.Add(hasSelfLoop);
+            }
+
+            foreach (var node in adjacency.Keys.OrderBy(key => key, Comparer<object>.Create(CompareCacheSeedValues)))
+            {
+                if (!indexByNode.ContainsKey(node))
+                {
+                    StrongConnect(node);
+                }
+            }
+
+            var condensedEdges = new HashSet<(int From, int To)>();
+            foreach (var (sourceKey, targets) in adjacency)
+            {
+                var sourceComponent = componentByNode[sourceKey];
+                foreach (var targetKey in targets)
+                {
+                    var targetComponent = componentByNode[targetKey];
+                    if (sourceComponent != targetComponent)
+                    {
+                        condensedEdges.Add((sourceComponent, targetComponent));
+                    }
+                }
+            }
+
+            var cyclicComponentCount = 0;
+            var largestComponentSize = 0;
+            var largestCyclicComponentSize = 0;
+            for (var componentId = 0; componentId < componentSizes.Count; componentId++)
+            {
+                var size = componentSizes[componentId];
+                largestComponentSize = Math.Max(largestComponentSize, size);
+                var cyclic = size > 1 || componentHasSelfLoop[componentId];
+                if (!cyclic)
+                {
+                    continue;
+                }
+
+                cyclicComponentCount++;
+                largestCyclicComponentSize = Math.Max(largestCyclicComponentSize, size);
+            }
+
+            return new PathAwareSccGraph(
+                componentByNode,
+                adjacency.Count,
+                edgeCount,
+                componentSizes.Count,
+                cyclicComponentCount,
+                largestComponentSize,
+                largestCyclicComponentSize,
+                condensedEdges.Count);
+        }
+
+        private static bool ShouldUseSccCondensedAdditiveMin(PathAwareSccGraph graph, int maxDepth)
+        {
+            const int MaxCyclicComponentSize = 128;
+            return maxDepth > 0 &&
+                graph.CyclicComponentCount > 0 &&
+                graph.LargestCyclicComponentSize <= MaxCyclicComponentSize;
+        }
+
+        private const double SccCondensedProbeWinMargin = 0.50d;
+
+        private static bool ResolveMeasuredSccCondensedAdditiveMinStrategy(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            string strategyPrefix,
+            PathAwareSccGraph graph,
+            int maxDepth,
+            string layeredProbePhase,
+            IReadOnlyList<object?> orderedSeeds,
+            Func<IReadOnlyList<object?>, TimeSpan> measureLayeredProbe,
+            Func<IReadOnlyList<object?>, SccCondensedWeightedMinProbe> measureSccProbe)
+        {
+            if (!ShouldUseSccCondensedAdditiveMin(graph, maxDepth))
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedStructural");
+                return false;
+            }
+
+            if (orderedSeeds.Count == 0)
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedNoSeeds");
+                return false;
+            }
+
+            var sampleSeedCount = Math.Min(orderedSeeds.Count, 16);
+            var sampleSeeds = orderedSeeds.Take(sampleSeedCount).ToList();
+            var layeredProbe = measureLayeredProbe(sampleSeeds);
+            trace?.RecordPhase(node, layeredProbePhase, layeredProbe);
+            var sccProbe = measureSccProbe(sampleSeeds);
+            trace?.RecordPhase(node, "scc_probe_condensed", sccProbe.Elapsed);
+            trace?.RecordMetric(node, "scc_probe_local_states_explored", sccProbe.Stats.LocalStatesExplored);
+            trace?.RecordMetric(node, "scc_probe_outer_dag_states_explored", sccProbe.Stats.OuterDagStatesExplored);
+            trace?.RecordMetric(node, "scc_probe_queue_pops", sccProbe.Stats.QueuePops);
+
+            if (layeredProbe <= TimeSpan.Zero || sccProbe.Elapsed <= TimeSpan.Zero)
+            {
+                trace?.RecordStrategy(node, $"{strategyPrefix}SccCondensedRejectedInvalidProbe");
+                return false;
+            }
+
+            var useScc = sccProbe.Elapsed.Ticks < layeredProbe.Ticks * SccCondensedProbeWinMargin;
+            trace?.RecordStrategy(node, useScc
+                ? $"{strategyPrefix}SccCondensedSelectedMeasured"
+                : $"{strategyPrefix}SccCondensedRejectedMeasured");
+            return useScc;
+        }
+
+        private static string GetAdditiveMinLayeredStrategy(string strategyPrefix, AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? $"{strategyPrefix}PositiveAdditiveLayered"
+                : $"{strategyPrefix}NonNegativeAdditiveLayered";
+
+        private static string GetAdditiveMinLayeredProbePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "scc_probe_positive_layered"
+                : "scc_probe_nonnegative_layered";
+
+        private static string GetAdditiveMinLayeredSolvePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "positive_min_layered_solve"
+                : "nonnegative_min_layered_solve";
+
+        private static string GetMultiplicativeMinLayeredStrategy(string strategyPrefix, AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? $"{strategyPrefix}PositiveMultiplicativeLayered"
+                : $"{strategyPrefix}NonNegativeMultiplicativeLayered";
+
+        private static string GetMultiplicativeMinLayeredSolvePhase(AdditiveMinStepSafety stepSafety) =>
+            stepSafety == AdditiveMinStepSafety.StrictlyPositive
+                ? "positive_multiplicative_min_layered_solve"
+                : "nonnegative_multiplicative_min_layered_solve";
+
+        private static void RecordPathAwareSccGraphMetrics(QueryExecutionTrace? trace, PlanNode node, PathAwareSccGraph graph)
+        {
+            trace?.RecordMetric(node, "scc_node_count", graph.NodeCount);
+            trace?.RecordMetric(node, "scc_edge_count", graph.EdgeCount);
+            trace?.RecordMetric(node, "scc_count", graph.ComponentCount);
+            trace?.RecordMetric(node, "scc_cyclic_count", graph.CyclicComponentCount);
+            trace?.RecordMetric(node, "scc_largest_size", graph.LargestComponentSize);
+            trace?.RecordMetric(node, "scc_largest_cyclic_size", graph.LargestCyclicComponentSize);
+            trace?.RecordMetric(node, "scc_condensed_edge_count", graph.CondensedEdgeCount);
+        }
+
+        private static void RecordSccCondensedWeightedMinStats(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            SccCondensedWeightedMinStats stats,
+            int outputRows)
+        {
+            trace?.AddMetric(node, "scc_local_states_explored", stats.LocalStatesExplored);
+            trace?.AddMetric(node, "scc_outer_dag_states_explored", stats.OuterDagStatesExplored);
+            trace?.AddMetric(node, "scc_queue_pops", stats.QueuePops);
+            trace?.AddMetric(node, "scc_output_rows", outputRows);
+        }
+
+        private static void RecordPathAwareMinFrontierMetrics(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareMinFrontierMetrics metrics)
+        {
+            trace?.AddMetric(node, "min_frontier_candidate_count", metrics.CandidateCount);
+            trace?.AddMetric(node, "min_frontier_dominance_check_count", metrics.DominanceCheckCount);
+            trace?.AddMetric(node, "min_frontier_dominance_candidate_check_count", metrics.DominanceCandidateCheckCount);
+            trace?.AddMetric(node, "min_frontier_same_fingerprint_candidate_check_count", metrics.SameFingerprintCandidateCheckCount);
+            trace?.AddMetric(node, "min_frontier_lower_count_candidate_check_count", metrics.LowerCountCandidateCheckCount);
+            trace?.AddMetric(node, "min_frontier_lower_count_index_probe_count", metrics.LowerCountIndexProbeCount);
+            trace?.AddMetric(node, "min_frontier_subset_check_count", metrics.SubsetCheckCount);
+            trace?.AddMetric(node, "min_frontier_dominated_state_count", metrics.DominatedStateCount);
+            trace?.AddMetric(node, "min_frontier_recorded_state_count", metrics.RecordedStateCount);
+            trace?.AddMetric(node, "min_frontier_removed_state_count", metrics.RemovedStateCount);
+            trace?.AddMetric(node, "min_frontier_target_bucket_count", metrics.TargetBucketCount);
+            trace?.AddMetric(node, "min_frontier_bucket_count", metrics.BucketCount);
+            trace?.AddMetric(node, "min_frontier_bucket_state_count", metrics.BucketStateCount);
+            trace?.RecordMetric(node, "min_frontier_bucket_max_size", metrics.MaxBucketSize);
+            trace?.RecordMetric(
+                node,
+                "min_frontier_bucket_avg_size",
+                metrics.BucketCount == 0
+                    ? 0d
+                    : metrics.BucketStateCount / (double)metrics.BucketCount);
+        }
+
+        private static void RecordPathAwareTraversalMetrics(
+            QueryExecutionTrace? trace,
+            PlanNode node,
+            PathAwareTraversalMetrics metrics)
+        {
+            var traversalElapsed = metrics.TraversalElapsed - metrics.RowCreationElapsed;
+            if (traversalElapsed < TimeSpan.Zero)
+            {
+                traversalElapsed = TimeSpan.Zero;
+            }
+
+            trace?.RecordPhase(node, "path_state_traversal", traversalElapsed);
+            trace?.RecordPhase(node, "path_state_row_creation", metrics.RowCreationElapsed);
+            trace?.RecordPhase(node, "path_state_best_known_flush_sort", metrics.BestKnownFlushSortElapsed);
+            trace?.RecordPhase(node, "path_state_result_materialization", metrics.ResultMaterializationElapsed);
+            trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
+            trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
+            trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
+            trace?.AddMetric(node, "path_state_cycle_skip_count", metrics.CycleSkipCount);
+            trace?.AddMetric(node, "path_state_depth_skip_count", metrics.DepthSkipCount);
+            trace?.AddMetric(node, "path_state_best_known_prune_count", metrics.BestKnownPruneCount);
+            trace?.AddMetric(node, "path_state_enqueued_state_count", metrics.EnqueuedStateCount);
+            trace?.AddMetric(node, "path_state_output_row_count", metrics.OutputRowCount);
+            trace?.RecordMetric(node, "path_state_max_stack_size", metrics.MaxStackSize);
+            trace?.RecordMetric(node, "path_state_max_path_length", metrics.MaxPathLength);
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
@@ -10707,40 +11837,176 @@ namespace UnifyWeaver.QueryRuntime
 
                 Dictionary<object, List<object[]>>? auxIndex = null;
                 PositiveStepEvaluator? stepEvaluator = null;
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
+                PathAwareSccGraph? sccGraph = null;
                 var directSeedValue = Convert.ToDouble(closure.DirectSeedValue, CultureInfo.InvariantCulture);
-                var positiveFastPathPrepared = false;
-                var usePositiveMinFastPath = false;
+                var additiveFastPathPrepared = false;
+                var useAdditiveMinFastPath = false;
+                var useSccCondensedMinFastPath = false;
 
-                void EnsurePositiveMinFastPathPrepared()
+                void EnsureAdditiveMinFastPathPrepared()
                 {
-                    if (positiveFastPathPrepared)
+                    if (additiveFastPathPrepared)
                     {
                         return;
                     }
 
-                    positiveFastPathPrepared = true;
+                    additiveFastPathPrepared = true;
                     var auxRows = MeasurePhase(trace, closure, "load_auxiliary", () => GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure));
                     auxIndex = MeasurePhase(trace, closure, "build_auxiliary_index", () => GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context));
-                    usePositiveMinFastPath = closure.MaxDepth > 0 &&
-                        TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                    useAdditiveMinFastPath = closure.MaxDepth > 0 &&
+                        TryCreateNonNegativeAdditiveStepEvaluator(
+                            closure.BaseExpression,
+                            closure.RecursiveExpression,
+                            succIndex,
+                            auxIndex,
+                            closure.PositiveStepProven,
+                            out stepEvaluator,
+                            out additiveMinStepSafety);
+                    if (useAdditiveMinFastPath)
+                    {
+                        sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                        RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                        useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
+                            trace,
+                            closure,
+                            "SeedGroupedPathAwareAccumulationMin",
+                            sccGraph,
+                            closure.MaxDepth,
+                            GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
+                            orderedUniqueSeeds,
+                            sampleSeeds => MeasureElapsed(() =>
+                            {
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    _ = ComputePositiveMinRootAccumulationsForSeed(
+                                        seed,
+                                        succIndex,
+                                        auxIndex,
+                                        rootKeys,
+                                        stepEvaluator!,
+                                        directSeedValue,
+                                        closure.MaxDepth);
+                                }
+                            }),
+                            sampleSeeds =>
+                            {
+                                long localStates = 0;
+                                long outerDagStates = 0;
+                                long queuePops = 0;
+                                var elapsed = MeasureElapsed(() =>
+                                {
+                                    foreach (var seed in sampleSeeds)
+                                    {
+                                        _ = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                                            seed,
+                                            succIndex,
+                                            auxIndex,
+                                            rootKeys,
+                                            sccGraph,
+                                            stepEvaluator!,
+                                            closure.MaxDepth,
+                                            directSeedValue,
+                                            out var stats);
+                                        localStates += stats.LocalStatesExplored;
+                                        outerDagStates += stats.OuterDagStatesExplored;
+                                        queuePops += stats.QueuePops;
+                                    }
+                                });
+                                return new SccCondensedWeightedMinProbe(
+                                    elapsed,
+                                    new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                            });
+                    }
                 }
 
-                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds)
+                Dictionary<object, Dictionary<object, object>> BuildCompactSeedMinima(IReadOnlyList<object?> seeds, bool recordMetrics)
                 {
-                    EnsurePositiveMinFastPathPrepared();
-                    if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                    EnsureAdditiveMinFastPathPrepared();
+                    if (!useAdditiveMinFastPath || auxIndex is null || stepEvaluator is null)
                     {
                         return new Dictionary<object, Dictionary<object, object>>();
                     }
 
-                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
-                    foreach (var seed in seeds)
+                    if (useSccCondensedMinFastPath && sccGraph is not null)
                     {
-                        var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
-                        if (mins.Count > 0)
+                        if (recordMetrics)
                         {
-                            fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                            trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinSccCondensed");
                         }
+
+                        long localStates = 0;
+                        long outerDagStates = 0;
+                        long queuePops = 0;
+                        var sccSeedMinima = recordMetrics
+                            ? MeasurePhase(trace, closure, "scc_condensed_solve", BuildSccMinima)
+                            : BuildSccMinima();
+                        if (recordMetrics)
+                        {
+                            RecordSccCondensedWeightedMinStats(
+                                trace,
+                                closure,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                                sccSeedMinima.Sum(kvp => kvp.Value.Count));
+                        }
+
+                        return sccSeedMinima;
+
+                        Dictionary<object, Dictionary<object, object>> BuildSccMinima()
+                        {
+                            var minima = new Dictionary<object, Dictionary<object, object>>();
+                            foreach (var seed in seeds)
+                            {
+                                var mins = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                                    seed,
+                                    succIndex,
+                                    auxIndex,
+                                    rootKeys,
+                                    sccGraph,
+                                    stepEvaluator,
+                                    closure.MaxDepth,
+                                    directSeedValue,
+                                    out var stats);
+                                localStates += stats.LocalStatesExplored;
+                                outerDagStates += stats.OuterDagStatesExplored;
+                                queuePops += stats.QueuePops;
+                                if (mins.Count > 0)
+                                {
+                                    minima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                                }
+                            }
+
+                            return minima;
+                        }
+                    }
+
+                    if (recordMetrics)
+                    {
+                        trace?.RecordStrategy(closure, GetAdditiveMinLayeredStrategy(
+                            "SeedGroupedPathAwareAccumulationMin",
+                            additiveMinStepSafety));
+                    }
+
+                    var fastSeedMinima = new Dictionary<object, Dictionary<object, object>>();
+                    void BuildLayeredMinima()
+                    {
+                        foreach (var seed in seeds)
+                        {
+                            var mins = ComputePositiveMinRootAccumulationsForSeed(seed, succIndex, auxIndex, rootKeys, stepEvaluator, directSeedValue, closure.MaxDepth);
+                            if (mins.Count > 0)
+                            {
+                                fastSeedMinima[seed ?? NullFactIndexKey] = mins.ToDictionary(kvp => kvp.Key, kvp => (object)kvp.Value);
+                            }
+                        }
+                    }
+
+                    if (recordMetrics)
+                    {
+                        MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildLayeredMinima);
+                    }
+                    else
+                    {
+                        BuildLayeredMinima();
                     }
 
                     return fastSeedMinima;
@@ -10749,13 +12015,13 @@ namespace UnifyWeaver.QueryRuntime
                 TimeSpan MeasureCompactProbe(IReadOnlyList<object?> sampleSeeds) =>
                     MeasureElapsed(() =>
                     {
-                        EnsurePositiveMinFastPathPrepared();
-                        if (!usePositiveMinFastPath || auxIndex is null || stepEvaluator is null)
+                        EnsureAdditiveMinFastPathPrepared();
+                        if (!useAdditiveMinFastPath || auxIndex is null || stepEvaluator is null)
                         {
                             return;
                         }
 
-                        _ = BuildCompactSeedMinima(sampleSeeds);
+                        _ = BuildCompactSeedMinima(sampleSeeds, recordMetrics: false);
                     });
 
                 TimeSpan MeasureLegacyProbe(IReadOnlyList<object?> sampleSeeds) =>
@@ -10789,16 +12055,16 @@ namespace UnifyWeaver.QueryRuntime
                 }
                 else
                 {
-                    EnsurePositiveMinFastPathPrepared();
-                    if (usePositiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
+                    EnsureAdditiveMinFastPathPrepared();
+                    if (useAdditiveMinFastPath && auxIndex is not null && stepEvaluator is not null)
                     {
                         seedMinima = MeasurePhase(trace, closure, "build_compact_grouped", () =>
-                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds));
+                            (IReadOnlyDictionary<object, Dictionary<object, object>>)BuildCompactSeedMinima(orderedUniqueSeeds, recordMetrics: true));
                     }
                     else
                     {
-                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoPositiveFastPath");
-                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoPositiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinLegacySeededRowsNoAdditiveFastPath");
+                        trace?.RecordStrategy(closure, "SeedGroupedPathAwareAccumulationMinMaterializationPlanFallbackLegacyNoAdditiveFastPath");
                         seedMinima = MeasurePhase(trace, closure, "build_legacy_seeded_rows", () =>
                             (IReadOnlyDictionary<object, Dictionary<object, object>>)ExecuteSeedGroupedPathAwareAccumulationMinFallback(closure, orderedUniqueSeeds, rootKeys, context));
                     }
@@ -10974,6 +12240,11 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         var next = edgeBucket.Targets[edgeIndex];
                         var nextKey = next ?? NullFactIndexKey;
+                        if (Equals(nextKey, seedKey))
+                        {
+                            continue;
+                        }
+
                         for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                         {
                             var auxRow = auxBucket[auxIndexPos];
@@ -11006,6 +12277,110 @@ namespace UnifyWeaver.QueryRuntime
             return mins;
         }
 
+        private static Dictionary<object, double> ComputeSccCondensedPositiveMinAccumulationsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            ISet<object>? rootKeys,
+            PathAwareSccGraph sccGraph,
+            PositiveStepEvaluator stepEvaluator,
+            int maxDepth,
+            double? directSeedValue,
+            out SccCondensedWeightedMinStats stats)
+        {
+            var mins = new Dictionary<object, double>();
+            var seedKey = seed ?? NullFactIndexKey;
+            if (directSeedValue is { } directValue && rootKeys is not null && rootKeys.Contains(seedKey))
+            {
+                mins[seedKey] = directValue;
+            }
+
+            var bestByDepth = new Dictionary<(object Key, int Depth), double>
+            {
+                [(seedKey, 0)] = 0d
+            };
+            var queue = new PriorityQueue<(object? Node, object Key, int Depth, double Cost), double>();
+            queue.Enqueue((seed, seedKey, 0, 0d), 0d);
+
+            long localStates = 0;
+            long outerDagStates = 0;
+            long queuePops = 0;
+
+            while (queue.Count > 0)
+            {
+                var (current, currentKey, depth, currentCost) = queue.Dequeue();
+                queuePops++;
+                if (!bestByDepth.TryGetValue((currentKey, depth), out var recordedCost) || currentCost > recordedCost)
+                {
+                    continue;
+                }
+
+                if (depth >= maxDepth)
+                {
+                    continue;
+                }
+
+                if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                sccGraph.ComponentByNode.TryGetValue(currentKey, out var currentComponent);
+                var nextDepth = depth + 1;
+                for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                {
+                    var next = edgeBucket.Targets[edgeIndex];
+                    var nextKey = next ?? NullFactIndexKey;
+                    if (Equals(nextKey, seedKey))
+                    {
+                        continue;
+                    }
+
+                    sccGraph.ComponentByNode.TryGetValue(nextKey, out var nextComponent);
+                    for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                    {
+                        var auxRow = auxBucket[auxIndexPos];
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var step = stepEvaluator(current!, next!, auxRow[1]!);
+                        var nextCost = currentCost + step;
+                        var stateKey = (nextKey, nextDepth);
+                        if (bestByDepth.TryGetValue(stateKey, out var existingCost) && existingCost <= nextCost)
+                        {
+                            continue;
+                        }
+
+                        bestByDepth[stateKey] = nextCost;
+                        queue.Enqueue((next, nextKey, nextDepth, nextCost), nextCost);
+                        if (currentComponent == nextComponent)
+                        {
+                            localStates++;
+                        }
+                        else
+                        {
+                            outerDagStates++;
+                        }
+
+                        if (rootKeys is not null && !rootKeys.Contains(nextKey))
+                        {
+                            continue;
+                        }
+
+                        if (!mins.TryGetValue(nextKey, out var currentMin) || nextCost < currentMin)
+                        {
+                            mins[nextKey] = nextCost;
+                        }
+                    }
+                }
+            }
+
+            stats = new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops);
+            return mins;
+        }
+
         private IEnumerable<object[]> ExecutePathAwareTransitiveClosure(PathAwareTransitiveClosureNode closure, EvaluationContext? parentContext)
         {
             if (closure is null) throw new ArgumentNullException(nameof(closure));
@@ -11019,9 +12394,15 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var totalRows = new List<object[]>();
-                foreach (var seed in edgeState.Seeds)
+                var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
+                for (var i = 0; i < edgeState.Seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                }
+
+                if (traversalMetrics is not null)
+                {
+                    RecordPathAwareTraversalMetrics(trace, closure, traversalMetrics);
                 }
 
                 return totalRows;
@@ -11051,7 +12432,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 var edgeState = GetPathAwareEdgeState(closure.EdgeRelation, context, closure);
                 var seeds = new List<object?>();
-                var seenSeeds = new HashSet<object?>();
+                var seedNodeIds = new List<int>();
+                var seenSeeds = new Dictionary<object, int>();
 
                 foreach (var paramTuple in parameters)
                 {
@@ -11065,17 +12447,33 @@ namespace UnifyWeaver.QueryRuntime
                         continue;
                     }
 
-                    if (seenSeeds.Add(seed))
+                    var lookupKey = seed ?? NullFactIndexKey;
+                    if (!seenSeeds.ContainsKey(lookupKey))
                     {
                         seeds.Add(seed);
+                        seenSeeds[lookupKey] = edgeState.Successors.TryGetValue(lookupKey, out var bucket)
+                            ? bucket.SourceNodeId
+                            : -1;
                     }
                 }
 
                 seeds.Sort(CompareCacheSeedValues);
-                var totalRows = new List<object[]>();
-                foreach (var seed in seeds)
+                seedNodeIds.EnsureCapacity(seeds.Count);
+                for (var i = 0; i < seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seed, edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth);
+                    seedNodeIds.Add(seenSeeds[seeds[i] ?? NullFactIndexKey]);
+                }
+
+                var totalRows = new List<object[]>();
+                var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
+                for (var i = 0; i < seeds.Count; i++)
+                {
+                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                }
+
+                if (traversalMetrics is not null)
+                {
+                    RecordPathAwareTraversalMetrics(trace, closure, traversalMetrics);
                 }
 
                 return totalRows;
@@ -11088,32 +12486,57 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void AppendPathAwareRowsForSeed(
             object? seed,
-            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            int seedNodeId,
+            IReadOnlyList<object?> nodeValues,
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
             TableMode accumulatorMode,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            PathAwareTraversalMetrics? metrics = null)
         {
+            metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
             var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
-            var stack = new Stack<(object? Node, int Depth, HashSet<object?> Visited)>();
-            stack.Push((seed, 0, new HashSet<object?> { seed }));
+            var bufferedRows = preserveAllPaths ? new PathAwareTargetDepthBuffer() : null;
 
+            var initialPath = CompactVisitedPath.Create(seedNodeId);
+            var initialStackCapacity = maxDepth > 0
+                ? Math.Min(Math.Max(maxDepth + 1, 4), 256)
+                : 64;
+            var stack = new Stack<PathAwareTraversalFrame>(initialStackCapacity);
+            stack.Push(new PathAwareTraversalFrame(seedNodeId, 0, initialPath));
+            metrics?.RecordEnqueuedState(1);
+            metrics?.RecordStackSize(stack.Count);
+
+            var traversalStarted = Stopwatch.GetTimestamp();
             while (stack.Count > 0)
             {
-                var (current, depth, visited) = stack.Pop();
-                var lookupKey = current ?? NullFactIndexKey;
-                if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                var frame = stack.Pop();
+                var currentNodeId = frame.NodeId;
+                var depth = frame.Depth;
+                var visited = frame.Visited;
+                metrics?.RecordStackPop();
+                metrics?.RecordPathLength(visited.Count);
+                if ((uint)currentNodeId >= (uint)bucketsByNodeId.Count)
+                {
+                    continue;
+                }
+
+                var bucket = bucketsByNodeId[currentNodeId];
+                if (bucket is null)
                 {
                     continue;
                 }
 
                 for (var i = bucket.Targets.Count - 1; i >= 0; i--)
                 {
-                    var next = bucket.Targets[i];
-                    if (visited.Contains(next))
+                    metrics?.RecordSuccessorCandidate();
+                    var nextId = bucket.TargetNodeIds[i];
+                    if (visited.Contains(nextId))
                     {
+                        metrics?.RecordCycleSkip();
                         continue;
                     }
 
@@ -11123,11 +12546,13 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (maxDepth > 0 && nextDepth > maxDepth)
                     {
+                        metrics?.RecordDepthSkip();
                         continue;
                     }
 
                     if (bestKnown is not null)
                     {
+                        var next = nodeValues[nextId];
                         if (bestKnown.TryGetValue(next, out var bestDepth))
                         {
                             switch (accumulatorMode)
@@ -11135,16 +12560,19 @@ namespace UnifyWeaver.QueryRuntime
                                 case TableMode.Min:
                                     if (nextDepth >= bestDepth)
                                     {
+                                        metrics?.RecordBestKnownPrune();
                                         continue;
                                     }
                                     break;
                                 case TableMode.Max:
                                     if (nextDepth <= bestDepth)
                                     {
+                                        metrics?.RecordBestKnownPrune();
                                         continue;
                                     }
                                     break;
                                 case TableMode.First:
+                                    metrics?.RecordBestKnownPrune();
                                     continue;
                             }
                         }
@@ -11153,23 +12581,85 @@ namespace UnifyWeaver.QueryRuntime
                     }
                     else
                     {
-                        output.Add(new object[] { seed!, next!, nextDepth });
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
                     }
 
-                    var nextVisited = new HashSet<object?>(visited) { next };
-                    stack.Push((next, nextDepth, nextVisited));
+                    var nextVisited = visited.Extend(nextId);
+                    stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
+                    metrics?.RecordEnqueuedState(nextVisited.Count);
+                    metrics?.RecordStackSize(stack.Count);
                 }
+            }
+            metrics?.AddTraversalElapsed(Stopwatch.GetElapsedTime(traversalStarted));
+
+            if (bufferedRows is not null)
+            {
+                MaterializePathAwareDepthRows(seed, nodeValues, bufferedRows, output, metrics);
             }
 
             if (bestKnown is not null)
             {
+                var flushStarted = Stopwatch.GetTimestamp();
                 var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
                 bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
+                metrics?.AddBestKnownFlushSortElapsed(Stopwatch.GetElapsedTime(flushStarted));
+
+                var materializationStarted = Stopwatch.GetTimestamp();
+                if (output is List<object[]> outputList)
+                {
+                    outputList.EnsureCapacity(outputList.Count + bestRows.Count);
+                }
+
                 foreach (var (target, depth) in bestRows)
                 {
                     output.Add(new object[] { seed!, target!, depth });
+                    metrics?.RecordOutputRow();
                 }
+                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(materializationStarted));
             }
+        }
+
+        private static void RecordBufferedPathAwareDepthRow(
+            PathAwareTargetDepthBuffer rows,
+            int targetNodeId,
+            int depth)
+        {
+            rows.Add(targetNodeId, depth);
+        }
+
+        private static void MaterializePathAwareDepthRows(
+            object? seed,
+            IReadOnlyList<object?> nodeValues,
+            PathAwareTargetDepthBuffer rows,
+            ICollection<object[]> output,
+            PathAwareTraversalMetrics? metrics)
+        {
+            var started = Stopwatch.GetTimestamp();
+            if (output is List<object[]> outputList)
+            {
+                var baseIndex = outputList.Count;
+                CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
+                var span = CollectionsMarshal.AsSpan(outputList);
+                var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
+                var depths = CollectionsMarshal.AsSpan(rows.Depths);
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    span[baseIndex + i] = new object[] { seed!, nodeValues[targetNodeIds[i]]!, depths[i] };
+                    metrics?.RecordOutputRow();
+                }
+                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
+                return;
+            }
+
+            var fallbackTargetNodeIds = rows.TargetNodeIds;
+            var fallbackDepths = rows.Depths;
+            for (var i = 0; i < rows.Count; i++)
+            {
+                output.Add(new object[] { seed!, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
+                metrics?.RecordOutputRow();
+            }
+
+            metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
 
         private IEnumerable<object[]> ExecutePathAwareAccumulation(PathAwareAccumulationNode closure, EvaluationContext? parentContext)
@@ -11188,20 +12678,146 @@ namespace UnifyWeaver.QueryRuntime
                 var auxRows = GetClosureFactsList(closure.AuxiliaryRelation, ClosureRelationAccessKind.Support, context, closure);
                 var auxIndex = GetFactIndex(closure.AuxiliaryRelation, 0, auxRows, context);
                 PositiveStepEvaluator? stepEvaluator = null;
-                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
+                var useAdditiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    closure.MaxDepth > 0 &&
+                    TryCreateNonNegativeAdditiveStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        closure.PositiveStepProven,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                var useMultiplicativeMinFastPath = false;
+                if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && closure.MaxDepth > 0)
+                {
+                    useMultiplicativeMinFastPath = TryCreateNonNegativeMultiplicativeStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                }
+
+                PathAwareSccGraph? sccGraph = null;
+                var useSccCondensedMinFastPath = false;
+                if (useAdditiveMinFastPath)
+                {
+                    sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                    RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
+                        trace,
+                        closure,
+                        "PathAwareAccumulationMin",
+                        sccGraph,
+                        closure.MaxDepth,
+                        GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
+                        edgeState.Seeds,
+                        sampleSeeds => MeasureElapsed(() =>
+                        {
+                            var probeRows = new List<object[]>();
+                            foreach (var seed in sampleSeeds)
+                            {
+                                AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, probeRows, closure.MaxDepth);
+                            }
+                        }),
+                        sampleSeeds =>
+                        {
+                            long localStates = 0;
+                            long outerDagStates = 0;
+                            long queuePops = 0;
+                            var elapsed = MeasureElapsed(() =>
+                            {
+                                var probeRows = new List<object[]>();
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, probeRows, closure.MaxDepth);
+                                    localStates += stats.LocalStatesExplored;
+                                    outerDagStates += stats.OuterDagStatesExplored;
+                                    queuePops += stats.QueuePops;
+                                }
+                            });
+                            return new SccCondensedWeightedMinProbe(
+                                elapsed,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                        });
+                    trace?.RecordStrategy(closure, useSccCondensedMinFastPath
+                        ? "PathAwareAccumulationMinSccCondensed"
+                        : GetAdditiveMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    trace?.RecordStrategy(closure, GetMultiplicativeMinLayeredStrategy("PathAwareAccumulationMin", additiveMinStepSafety));
+                }
+                else if (closure.AccumulatorMode == TableMode.Min)
+                {
+                    trace?.RecordStrategy(closure, "PathAwareAccumulationMinFrontierFallback");
+                }
 
                 var totalRows = new List<object[]>();
-                foreach (var seed in edgeState.Seeds)
+                long localStates = 0;
+                long outerDagStates = 0;
+                long queuePops = 0;
+                var useLayeredMinFastPath = useAdditiveMinFastPath || useMultiplicativeMinFastPath;
+                var frontierMetrics = useLayeredMinFastPath
+                    ? null
+                    : new PathAwareMinFrontierMetrics();
+                void BuildAccumulationRows()
                 {
-                    if (usePositiveMinFastPath)
+                    foreach (var seed in edgeState.Seeds)
                     {
-                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        if (useSccCondensedMinFastPath && sccGraph is not null)
+                        {
+                            var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, totalRows, closure.MaxDepth);
+                            localStates += stats.LocalStatesExplored;
+                            outerDagStates += stats.OuterDagStatesExplored;
+                            queuePops += stats.QueuePops;
+                        }
+                        else if (useAdditiveMinFastPath)
+                        {
+                            AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else if (useMultiplicativeMinFastPath)
+                        {
+                            AppendPositiveProductMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else
+                        {
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
+                        }
                     }
-                    else
-                    {
-                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
-                    }
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
+                }
+                else if (useAdditiveMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetMultiplicativeMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else
+                {
+                    BuildAccumulationRows();
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    RecordSccCondensedWeightedMinStats(
+                        trace,
+                        closure,
+                        new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                        totalRows.Count);
+                }
+                else if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && frontierMetrics is not null)
+                {
+                    RecordPathAwareMinFrontierMetrics(trace, closure, frontierMetrics);
                 }
 
                 return totalRows;
@@ -11236,8 +12852,36 @@ namespace UnifyWeaver.QueryRuntime
                 var seeds = new List<object?>();
                 var seenSeeds = new HashSet<object?>();
                 PositiveStepEvaluator? stepEvaluator = null;
-                var usePositiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
-                    TryCreatePositiveAdditiveStepEvaluator(closure.BaseExpression, closure.RecursiveExpression, succIndex, auxIndex, closure.PositiveStepProven, out stepEvaluator);
+                var additiveMinStepSafety = AdditiveMinStepSafety.StrictlyPositive;
+                var useAdditiveMinFastPath = closure.AccumulatorMode == TableMode.Min &&
+                    closure.MaxDepth > 0 &&
+                    TryCreateNonNegativeAdditiveStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        closure.PositiveStepProven,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                var useMultiplicativeMinFastPath = false;
+                if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && closure.MaxDepth > 0)
+                {
+                    useMultiplicativeMinFastPath = TryCreateNonNegativeMultiplicativeStepEvaluator(
+                        closure.BaseExpression,
+                        closure.RecursiveExpression,
+                        succIndex,
+                        auxIndex,
+                        out stepEvaluator,
+                        out additiveMinStepSafety);
+                }
+
+                PathAwareSccGraph? sccGraph = null;
+                var useSccCondensedMinFastPath = false;
+                if (useAdditiveMinFastPath)
+                {
+                    sccGraph = MeasurePhase(trace, closure, "scc_condense_graph", () => BuildPathAwareSccGraph(succIndex));
+                    RecordPathAwareSccGraphMetrics(trace, closure, sccGraph);
+                }
 
                 foreach (var paramTuple in parameters)
                 {
@@ -11258,17 +12902,119 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 seeds.Sort(CompareCacheSeedValues);
-                var totalRows = new List<object[]>();
-                foreach (var seed in seeds)
+                if (useAdditiveMinFastPath && sccGraph is not null)
                 {
-                    if (usePositiveMinFastPath)
+                    useSccCondensedMinFastPath = ResolveMeasuredSccCondensedAdditiveMinStrategy(
+                        trace,
+                        closure,
+                        "PathAwareAccumulationSeededMin",
+                        sccGraph,
+                        closure.MaxDepth,
+                        GetAdditiveMinLayeredProbePhase(additiveMinStepSafety),
+                        seeds,
+                        sampleSeeds => MeasureElapsed(() =>
+                        {
+                            var probeRows = new List<object[]>();
+                            foreach (var seed in sampleSeeds)
+                            {
+                                AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, probeRows, closure.MaxDepth);
+                            }
+                        }),
+                        sampleSeeds =>
+                        {
+                            long localStates = 0;
+                            long outerDagStates = 0;
+                            long queuePops = 0;
+                            var elapsed = MeasureElapsed(() =>
+                            {
+                                var probeRows = new List<object[]>();
+                                foreach (var seed in sampleSeeds)
+                                {
+                                    var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, probeRows, closure.MaxDepth);
+                                    localStates += stats.LocalStatesExplored;
+                                    outerDagStates += stats.OuterDagStatesExplored;
+                                    queuePops += stats.QueuePops;
+                                }
+                            });
+                            return new SccCondensedWeightedMinProbe(
+                                elapsed,
+                                new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops));
+                        });
+                    trace?.RecordStrategy(closure, useSccCondensedMinFastPath
+                        ? "PathAwareAccumulationSeededMinSccCondensed"
+                        : GetAdditiveMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    trace?.RecordStrategy(closure, GetMultiplicativeMinLayeredStrategy("PathAwareAccumulationSeededMin", additiveMinStepSafety));
+                }
+                else if (closure.AccumulatorMode == TableMode.Min)
+                {
+                    trace?.RecordStrategy(closure, "PathAwareAccumulationSeededMinFrontierFallback");
+                }
+
+                var totalRows = new List<object[]>();
+                long localStates = 0;
+                long outerDagStates = 0;
+                long queuePops = 0;
+                var useLayeredMinFastPath = useAdditiveMinFastPath || useMultiplicativeMinFastPath;
+                var frontierMetrics = useLayeredMinFastPath
+                    ? null
+                    : new PathAwareMinFrontierMetrics();
+                void BuildAccumulationRows()
+                {
+                    foreach (var seed in seeds)
                     {
-                        AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        if (useSccCondensedMinFastPath && sccGraph is not null)
+                        {
+                            var stats = AppendSccCondensedPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, sccGraph, stepEvaluator!, totalRows, closure.MaxDepth);
+                            localStates += stats.LocalStatesExplored;
+                            outerDagStates += stats.OuterDagStatesExplored;
+                            queuePops += stats.QueuePops;
+                        }
+                        else if (useAdditiveMinFastPath)
+                        {
+                            AppendPositiveMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else if (useMultiplicativeMinFastPath)
+                        {
+                            AppendPositiveProductMinAccumulationRowsForSeed(seed, succIndex, auxIndex, stepEvaluator!, totalRows, closure.MaxDepth);
+                        }
+                        else
+                        {
+                            AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth, frontierMetrics);
+                        }
                     }
-                    else
-                    {
-                        AppendPathAwareAccumulationRowsForSeed(seed, succIndex, auxIndex, closure.BaseExpression, closure.RecursiveExpression, totalRows, closure.AccumulatorMode, closure.MaxDepth);
-                    }
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    MeasurePhase(trace, closure, "scc_condensed_solve", BuildAccumulationRows);
+                }
+                else if (useAdditiveMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetAdditiveMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else if (useMultiplicativeMinFastPath)
+                {
+                    MeasurePhase(trace, closure, GetMultiplicativeMinLayeredSolvePhase(additiveMinStepSafety), BuildAccumulationRows);
+                }
+                else
+                {
+                    BuildAccumulationRows();
+                }
+
+                if (useSccCondensedMinFastPath)
+                {
+                    RecordSccCondensedWeightedMinStats(
+                        trace,
+                        closure,
+                        new SccCondensedWeightedMinStats(localStates, outerDagStates, queuePops),
+                        totalRows.Count);
+                }
+                else if (!useAdditiveMinFastPath && closure.AccumulatorMode == TableMode.Min && frontierMetrics is not null)
+                {
+                    RecordPathAwareMinFrontierMetrics(trace, closure, frontierMetrics);
                 }
 
                 return totalRows;
@@ -11281,18 +13027,22 @@ namespace UnifyWeaver.QueryRuntime
 
         private delegate double PositiveStepEvaluator(object current, object next, object auxValue);
 
-        // For strictly positive additive steps, the minimum-cost walk within a hop
-        // budget is simple automatically. That lets us replace the expensive
-        // visited-state frontier with dynamic programming over (node, depth).
+        // For non-negative additive steps, any repeated-node walk can have its
+        // cycle removed without increasing cost. That lets us replace the
+        // expensive visited-state frontier with dynamic programming over
+        // (node, depth) for bounded Min queries.
         private void AppendPositiveMinAccumulationRowsForSeed(
             object? seed,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             PositiveStepEvaluator stepEvaluator,
             ICollection<object[]> output,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            Func<double, object>? resultProjector = null)
         {
+            resultProjector ??= static cost => cost;
             var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
+            var seedKey = seed ?? NullFactIndexKey;
             var depthCosts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
             {
                 new Dictionary<object?, double> { [seed] = 0d }
@@ -11330,6 +13080,11 @@ namespace UnifyWeaver.QueryRuntime
                     for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
                     {
                         var next = edgeBucket.Targets[edgeIndex];
+                        if (Equals(next ?? NullFactIndexKey, seedKey))
+                        {
+                            continue;
+                        }
+
                         for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
                         {
                             var auxRow = auxBucket[auxIndexPos];
@@ -11360,19 +13115,138 @@ namespace UnifyWeaver.QueryRuntime
                 .ToList();
             foreach (var (target, cost) in bestRows)
             {
-                output.Add(new object[] { seed!, target!, cost });
+                output.Add(new object[] { seed!, target!, resultProjector(cost) });
             }
         }
 
-        private bool TryCreatePositiveAdditiveStepEvaluator(
+        private void AppendPositiveProductMinAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            PositiveStepEvaluator factorEvaluator,
+            ICollection<object[]> output,
+            int maxDepth = 0)
+        {
+            var effectiveMaxDepth = maxDepth > 0 ? maxDepth : int.MaxValue;
+            var seedKey = seed ?? NullFactIndexKey;
+            var depthProducts = new List<Dictionary<object?, double>>(effectiveMaxDepth == int.MaxValue ? 16 : effectiveMaxDepth + 1)
+            {
+                new Dictionary<object?, double> { [seed] = 1d }
+            };
+            var bestKnown = new Dictionary<object?, double>();
+
+            for (var depth = 0; depth < effectiveMaxDepth && depth < depthProducts.Count; depth++)
+            {
+                var currentLayer = depthProducts[depth];
+                if (currentLayer.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var (current, currentProduct) in currentLayer)
+                {
+                    var currentKey = current ?? NullFactIndexKey;
+                    if (!succIndex.TryGetValue(currentKey, out var edgeBucket) || !auxIndex.TryGetValue(currentKey, out var auxBucket))
+                    {
+                        continue;
+                    }
+
+                    var nextDepth = depth + 1;
+                    if (nextDepth > effectiveMaxDepth)
+                    {
+                        continue;
+                    }
+
+                    while (depthProducts.Count <= nextDepth)
+                    {
+                        depthProducts.Add(new Dictionary<object?, double>());
+                    }
+
+                    var nextLayer = depthProducts[nextDepth];
+                    for (var edgeIndex = edgeBucket.Targets.Count - 1; edgeIndex >= 0; edgeIndex--)
+                    {
+                        var next = edgeBucket.Targets[edgeIndex];
+                        if (Equals(next ?? NullFactIndexKey, seedKey))
+                        {
+                            continue;
+                        }
+
+                        for (var auxIndexPos = auxBucket.Count - 1; auxIndexPos >= 0; auxIndexPos--)
+                        {
+                            var auxRow = auxBucket[auxIndexPos];
+                            if (auxRow is null || auxRow.Length < 2)
+                            {
+                                continue;
+                            }
+
+                            var factor = factorEvaluator(current!, next!, auxRow[1]!);
+                            var nextProduct = currentProduct * factor;
+
+                            if (!nextLayer.TryGetValue(next, out var existingProduct) || nextProduct < existingProduct)
+                            {
+                                nextLayer[next] = nextProduct;
+                            }
+
+                            if (!bestKnown.TryGetValue(next, out var bestProduct) || nextProduct < bestProduct)
+                            {
+                                bestKnown[next] = nextProduct;
+                            }
+                        }
+                    }
+                }
+            }
+
+            var bestRows = bestKnown
+                .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
+                .ToList();
+            foreach (var (target, product) in bestRows)
+            {
+                output.Add(new object[] { seed!, target!, product });
+            }
+        }
+
+        private static SccCondensedWeightedMinStats AppendSccCondensedPositiveMinAccumulationRowsForSeed(
+            object? seed,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            PathAwareSccGraph sccGraph,
+            PositiveStepEvaluator stepEvaluator,
+            ICollection<object[]> output,
+            int maxDepth)
+        {
+            var minima = ComputeSccCondensedPositiveMinAccumulationsForSeed(
+                seed,
+                succIndex,
+                auxIndex,
+                rootKeys: null,
+                sccGraph,
+                stepEvaluator,
+                maxDepth,
+                directSeedValue: null,
+                out var stats);
+
+            var bestRows = minima
+                .OrderBy(kvp => kvp.Key, Comparer<object>.Create(CompareCacheSeedValues))
+                .ToList();
+            foreach (var (target, cost) in bestRows)
+            {
+                output.Add(new object[] { seed!, ReferenceEquals(target, NullFactIndexKey) ? null! : target, cost });
+            }
+
+            return stats;
+        }
+
+        private bool TryCreateNonNegativeAdditiveStepEvaluator(
             ArithmeticExpression baseExpression,
             ArithmeticExpression recursiveExpression,
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
             IReadOnlyDictionary<object, List<object[]>> auxIndex,
             bool positiveStepProven,
-            out PositiveStepEvaluator? evaluator)
+            out PositiveStepEvaluator? evaluator,
+            out AdditiveMinStepSafety stepSafety)
         {
             evaluator = null;
+            stepSafety = AdditiveMinStepSafety.StrictlyPositive;
             if (!TryExtractMinStepExpression(baseExpression, recursiveExpression, out var stepExpression))
             {
                 return false;
@@ -11389,6 +13263,7 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
+            var strictlyPositive = true;
             foreach (var (currentKey, edgeBucket) in succIndex)
             {
                 if (!auxIndex.TryGetValue(currentKey, out var auxBucket))
@@ -11417,19 +13292,96 @@ namespace UnifyWeaver.QueryRuntime
                             return false;
                         }
 
-                        if (!(step > 0d))
+                        if (!(step >= 0d))
                         {
                             return false;
+                        }
+
+                        if (!(step > 0d))
+                        {
+                            strictlyPositive = false;
                         }
                     }
                 }
             }
 
+            stepSafety = strictlyPositive
+                ? AdditiveMinStepSafety.StrictlyPositive
+                : AdditiveMinStepSafety.NonNegative;
             evaluator = (current, next, auxValue) =>
             {
                 var evalTuple = new object[] { current, next, 0, auxValue };
                 var stepObject = EvaluateArithmeticExpression(stepExpression, evalTuple);
                 return Convert.ToDouble(stepObject, CultureInfo.InvariantCulture);
+            };
+            return true;
+        }
+
+        private bool TryCreateNonNegativeMultiplicativeStepEvaluator(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyDictionary<object, List<object[]>> auxIndex,
+            out PositiveStepEvaluator? evaluator,
+            out AdditiveMinStepSafety stepSafety)
+        {
+            evaluator = null;
+            stepSafety = AdditiveMinStepSafety.StrictlyPositive;
+            if (!TryExtractMinProductFactorExpression(baseExpression, recursiveExpression, out var factorExpression))
+            {
+                return false;
+            }
+
+            var strictlyGreaterThanOne = true;
+            foreach (var (currentKey, edgeBucket) in succIndex)
+            {
+                if (!auxIndex.TryGetValue(currentKey, out var auxBucket))
+                {
+                    continue;
+                }
+
+                foreach (var next in edgeBucket.Targets)
+                {
+                    foreach (var auxRow in auxBucket)
+                    {
+                        if (auxRow is null || auxRow.Length < 2)
+                        {
+                            continue;
+                        }
+
+                        var evalTuple = new object[] { edgeBucket.Source!, next!, 1, auxRow[1]! };
+                        var factorObject = EvaluateArithmeticExpression(factorExpression, evalTuple);
+                        double factor;
+                        try
+                        {
+                            factor = Convert.ToDouble(factorObject, CultureInfo.InvariantCulture);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+
+                        if (!double.IsFinite(factor) || !(factor >= 1d))
+                        {
+                            return false;
+                        }
+
+                        if (!(factor > 1d))
+                        {
+                            strictlyGreaterThanOne = false;
+                        }
+                    }
+                }
+            }
+
+            stepSafety = strictlyGreaterThanOne
+                ? AdditiveMinStepSafety.StrictlyPositive
+                : AdditiveMinStepSafety.NonNegative;
+            evaluator = (current, next, auxValue) =>
+            {
+                var evalTuple = new object[] { current, next, 1, auxValue };
+                var factorObject = EvaluateArithmeticExpression(factorExpression, evalTuple);
+                return Convert.ToDouble(factorObject, CultureInfo.InvariantCulture);
             };
             return true;
         }
@@ -11459,6 +13411,37 @@ namespace UnifyWeaver.QueryRuntime
             if (add.Right is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, add.Left))
             {
                 stepExpression = add.Left;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryExtractMinProductFactorExpression(
+            ArithmeticExpression baseExpression,
+            ArithmeticExpression recursiveExpression,
+            out ArithmeticExpression factorExpression)
+        {
+            factorExpression = baseExpression;
+            if (ReferencesAccumulator(baseExpression))
+            {
+                return false;
+            }
+
+            if (recursiveExpression is not BinaryArithmeticExpression { Operator: ArithmeticBinaryOperator.Multiply } multiply)
+            {
+                return false;
+            }
+
+            if (multiply.Left is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, multiply.Right))
+            {
+                factorExpression = multiply.Right;
+                return true;
+            }
+
+            if (multiply.Right is ColumnExpression { Index: 2 } && ArithmeticExpressionStructuralEquals(baseExpression, multiply.Left))
+            {
+                factorExpression = multiply.Left;
                 return true;
             }
 
@@ -11498,7 +13481,8 @@ namespace UnifyWeaver.QueryRuntime
             ArithmeticExpression recursiveExpression,
             ICollection<object[]> output,
             TableMode accumulatorMode,
-            int maxDepth = 0)
+            int maxDepth = 0,
+            PathAwareMinFrontierMetrics? frontierMetrics = null)
         {
             var useMinPruning = accumulatorMode == TableMode.Min;
             var preserveAllPaths = !useMinPruning;
@@ -11506,7 +13490,7 @@ namespace UnifyWeaver.QueryRuntime
                 ? new Dictionary<object?, object>()
                 : null;
             var frontier = useMinPruning
-                ? new Dictionary<object?, List<VisitedAccumulatorState>>()
+                ? new Dictionary<object?, PathAwareMinFrontierBucket>()
                 : null;
             var nodeIds = new Dictionary<object, int>();
             var nextNodeId = 0;
@@ -11532,8 +13516,9 @@ namespace UnifyWeaver.QueryRuntime
             while (stack.Count > 0)
             {
                 var (current, state, depth) = stack.Pop();
-                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, state))
+                if (useMinPruning && current is not null && IsDominatedMinState(frontier!, current, state, frontierMetrics))
                 {
+                    frontierMetrics?.RecordDominatedState();
                     continue;
                 }
 
@@ -11582,12 +13567,14 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         else
                         {
-                            if (IsDominatedMinState(frontier!, next, nextState))
+                            frontierMetrics?.RecordCandidate();
+                            if (IsDominatedMinState(frontier!, next, nextState, frontierMetrics))
                             {
+                                frontierMetrics?.RecordDominatedState();
                                 continue;
                             }
 
-                            RecordMinState(frontier!, next, nextState);
+                            RecordMinState(frontier!, next, nextState, frontierMetrics);
                             if (!bestKnown!.TryGetValue(next, out var bestAccumulator) ||
                                 CompareValues(nextAccumulator, bestAccumulator) < 0)
                             {
@@ -11602,6 +13589,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (!preserveAllPaths && bestKnown is not null)
             {
+                frontierMetrics?.RecordBucketSnapshot(frontier!);
                 var bestRows = bestKnown
                     .OrderBy(kvp => kvp.Key, Comparer<object?>.Create(CompareCacheSeedValues))
                     .ToList();
@@ -11614,76 +13602,475 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private static bool IsDominatedMinState(
-            IReadOnlyDictionary<object?, List<VisitedAccumulatorState>> frontier,
+            IReadOnlyDictionary<object?, PathAwareMinFrontierBucket> frontier,
             object? node,
-            VisitedAccumulatorState state)
+            VisitedAccumulatorState state,
+            PathAwareMinFrontierMetrics? metrics = null)
         {
-            if (!frontier.TryGetValue(node, out var states))
+            metrics?.RecordDominanceCheck();
+            return frontier.TryGetValue(node, out var bucket) &&
+                bucket.IsDominatedByExisting(state, metrics);
+        }
+
+        private static void RecordMinState(
+            IDictionary<object?, PathAwareMinFrontierBucket> frontier,
+            object? node,
+            VisitedAccumulatorState state,
+            PathAwareMinFrontierMetrics? metrics = null)
+        {
+            if (!frontier.TryGetValue(node, out var bucket))
             {
+                bucket = new PathAwareMinFrontierBucket();
+                frontier[node] = bucket;
+            }
+
+            bucket.AddState(state);
+            metrics?.RecordRecordedState();
+        }
+
+        private sealed class PathAwareMinFrontierBucket
+        {
+            private readonly Dictionary<int, PathAwareMinFrontierCountBucket> _statesByCount = new();
+
+            public bool IsDominatedByExisting(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                for (var pathCount = 1; pathCount <= state.Path.Count; pathCount++)
+                {
+                    if (!_statesByCount.TryGetValue(pathCount, out var countBucket))
+                    {
+                        continue;
+                    }
+
+                    if (pathCount == state.Path.Count)
+                    {
+                        return countBucket.IsDominatedBySameFingerprint(state, metrics);
+                    }
+
+                    if (countBucket.IsDominatedByAny(state, metrics, representativesExcludeEndpoints: pathCount > 2))
+                    {
+                        return true;
+                    }
+                }
+
                 return false;
             }
 
-            foreach (var candidate in states)
+            public void AddState(VisitedAccumulatorState state)
             {
+                if (!_statesByCount.TryGetValue(state.Path.Count, out var bucketByCount))
+                {
+                    bucketByCount = new PathAwareMinFrontierCountBucket();
+                    _statesByCount[state.Path.Count] = bucketByCount;
+                }
+
+                bucketByCount.Add(state);
+            }
+
+            public void RecordSnapshot(PathAwareMinFrontierMetrics metrics)
+            {
+                foreach (var countBucket in _statesByCount.Values)
+                {
+                    countBucket.RecordSnapshot(metrics);
+                }
+            }
+        }
+
+        private sealed class PathAwareMinFrontierCountBucket
+        {
+            private const int DirectScanStateThreshold = 64;
+            private readonly List<VisitedAccumulatorState> _states = new();
+            private readonly Dictionary<ulong, List<int>> _fingerprintIndexes = new();
+            private readonly Dictionary<ulong, int> _fingerprintCounts = new();
+            private Dictionary<int, List<int>>? _representativeNodeIndexes;
+            private Dictionary<int, int>? _representativeNodeCounts;
+
+            public void Add(VisitedAccumulatorState state)
+            {
+                var index = _states.Count;
+                _states.Add(state);
+
+                var fingerprint = state.Path.Fingerprint;
+                if (!_fingerprintIndexes.TryGetValue(fingerprint, out var fingerprintIndexes))
+                {
+                    fingerprintIndexes = new List<int>();
+                    _fingerprintIndexes[fingerprint] = fingerprintIndexes;
+                }
+
+                fingerprintIndexes.Add(index);
+                _fingerprintCounts.TryGetValue(fingerprint, out var count);
+                _fingerprintCounts[fingerprint] = count + 1;
+
+                if (_representativeNodeIndexes is not null && _representativeNodeCounts is not null)
+                {
+                    AddToRepresentativeIndex(index, state.Path, _representativeNodeIndexes, _representativeNodeCounts);
+                }
+            }
+
+            public bool IsDominatedBySameFingerprint(VisitedAccumulatorState state, PathAwareMinFrontierMetrics? metrics)
+            {
+                return _fingerprintIndexes.TryGetValue(state.Path.Fingerprint, out var indexes) &&
+                    IsDominatedByIndexes(indexes, state, metrics, PathAwareMinFrontierScanKind.SameFingerprint);
+            }
+
+            public bool IsDominatedByAny(
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                bool representativesExcludeEndpoints)
+            {
+                var start = representativesExcludeEndpoints && state.Path.Count > 2 ? 1 : 0;
+                var endExclusive = representativesExcludeEndpoints && state.Path.Count > 2
+                    ? state.Path.Count - 1
+                    : state.Path.Count;
+                var queryNodeCount = endExclusive - start;
+
+                if (_states.Count <= DirectScanStateThreshold)
+                {
+                    return IsDominatedByAllStates(state, metrics, PathAwareMinFrontierScanKind.LowerCount);
+                }
+
+                var representativeNodeIndexes = EnsureRepresentativeNodeIndex();
+                if (representativeNodeIndexes.Count < queryNodeCount)
+                {
+                    foreach (var (nodeId, indexes) in representativeNodeIndexes)
+                    {
+                        metrics?.RecordLowerCountIndexProbe();
+                        if (!state.Path.Contains(nodeId))
+                        {
+                            continue;
+                        }
+
+                        if (IsDominatedByIndexes(indexes, state, metrics, PathAwareMinFrontierScanKind.LowerCount))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                for (var i = start; i < endExclusive; i++)
+                {
+                    metrics?.RecordLowerCountIndexProbe();
+                    var nodeId = state.Path.GetNodeId(i);
+                    if (!representativeNodeIndexes.TryGetValue(nodeId, out var indexes))
+                    {
+                        continue;
+                    }
+
+                    if (IsDominatedByIndexes(indexes, state, metrics, PathAwareMinFrontierScanKind.LowerCount))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private bool IsDominatedByAllStates(
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                PathAwareMinFrontierScanKind scanKind)
+            {
+                for (var index = 0; index < _states.Count; index++)
+                {
+                    if (IsDominatedByState(_states[index], state, metrics, scanKind))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public void RecordSnapshot(PathAwareMinFrontierMetrics metrics)
+            {
+                foreach (var count in _fingerprintCounts.Values)
+                {
+                    metrics.RecordPartitionBucket(count);
+                }
+            }
+
+            private Dictionary<int, List<int>> EnsureRepresentativeNodeIndex()
+            {
+                if (_representativeNodeIndexes is not null && _representativeNodeCounts is not null)
+                {
+                    return _representativeNodeIndexes;
+                }
+
+                _representativeNodeIndexes = new Dictionary<int, List<int>>();
+                _representativeNodeCounts = new Dictionary<int, int>();
+                for (var index = 0; index < _states.Count; index++)
+                {
+                    AddToRepresentativeIndex(index, _states[index].Path, _representativeNodeIndexes, _representativeNodeCounts);
+                }
+
+                return _representativeNodeIndexes;
+            }
+
+            private static void AddToRepresentativeIndex(
+                int stateIndex,
+                CompactVisitedPath path,
+                Dictionary<int, List<int>> representativeNodeIndexes,
+                Dictionary<int, int> representativeNodeCounts)
+            {
+                var representativeNode = ChooseRepresentativeNode(path, representativeNodeCounts);
+                if (!representativeNodeIndexes.TryGetValue(representativeNode, out var nodeIndexes))
+                {
+                    nodeIndexes = new List<int>();
+                    representativeNodeIndexes[representativeNode] = nodeIndexes;
+                }
+
+                nodeIndexes.Add(stateIndex);
+                representativeNodeCounts.TryGetValue(representativeNode, out var nodeCount);
+                representativeNodeCounts[representativeNode] = nodeCount + 1;
+            }
+
+            private static int ChooseRepresentativeNode(
+                CompactVisitedPath path,
+                IReadOnlyDictionary<int, int> representativeNodeCounts)
+            {
+                var start = path.Count > 2 ? 1 : 0;
+                var endExclusive = path.Count > 2 ? path.Count - 1 : path.Count;
+                var bestNode = path.GetNodeId(start);
+                representativeNodeCounts.TryGetValue(bestNode, out var bestCount);
+
+                for (var i = start + 1; i < endExclusive; i++)
+                {
+                    var nodeId = path.GetNodeId(i);
+                    representativeNodeCounts.TryGetValue(nodeId, out var count);
+                    if (count < bestCount)
+                    {
+                        bestNode = nodeId;
+                        bestCount = count;
+                    }
+                }
+
+                return bestNode;
+            }
+
+            private bool IsDominatedByIndexes(
+                IEnumerable<int> indexes,
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                PathAwareMinFrontierScanKind scanKind)
+            {
+                foreach (var index in indexes)
+                {
+                    if (IsDominatedByState(_states[index], state, metrics, scanKind))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool IsDominatedByState(
+                VisitedAccumulatorState candidate,
+                VisitedAccumulatorState state,
+                PathAwareMinFrontierMetrics? metrics,
+                PathAwareMinFrontierScanKind scanKind)
+            {
+                metrics?.RecordDominanceCandidateCheck(scanKind);
                 var sameState = ReferenceEquals(candidate.Path, state.Path) && Equals(candidate.Accumulator, state.Accumulator);
                 if (sameState)
                 {
-                    continue;
-                }
-
-                if (candidate.Path.Count > state.Path.Count)
-                {
-                    continue;
+                    return false;
                 }
 
                 if ((candidate.Path.MaskA & ~state.Path.MaskA) != 0 || (candidate.Path.MaskB & ~state.Path.MaskB) != 0)
                 {
-                    continue;
+                    return false;
                 }
 
-                if (CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
-                    candidate.Path.IsSubsetOf(state.Path))
-                {
-                    return true;
-                }
+                return CompareValues(candidate.Accumulator, state.Accumulator) <= 0 &&
+                    (metrics?.RecordSubsetCheckAndReturnTrue() ?? true) &&
+                    candidate.Path.IsSubsetOf(state.Path);
             }
-
-            return false;
         }
 
-        private static void RecordMinState(
-            IDictionary<object?, List<VisitedAccumulatorState>> frontier,
-            object? node,
-            VisitedAccumulatorState state)
+        private enum PathAwareMinFrontierScanKind
         {
-            if (!frontier.TryGetValue(node, out var states))
-            {
-                states = new List<VisitedAccumulatorState>();
-                frontier[node] = states;
-            }
-
-            for (var i = states.Count - 1; i >= 0; i--)
-            {
-                var existing = states[i];
-                if (state.Path.Count > existing.Path.Count)
-                {
-                    continue;
-                }
-
-                if ((state.Path.MaskA & ~existing.Path.MaskA) != 0 || (state.Path.MaskB & ~existing.Path.MaskB) != 0)
-                {
-                    continue;
-                }
-
-                if (CompareValues(state.Accumulator, existing.Accumulator) <= 0 &&
-                    state.Path.IsSubsetOf(existing.Path))
-                {
-                    states.RemoveAt(i);
-                }
-            }
-
-            states.Add(state);
+            SameFingerprint,
+            LowerCount
         }
+
+        private sealed class PathAwareMinFrontierMetrics
+        {
+            public long CandidateCount { get; private set; }
+
+            public long DominanceCheckCount { get; private set; }
+
+            public long DominanceCandidateCheckCount { get; private set; }
+
+            public long SameFingerprintCandidateCheckCount { get; private set; }
+
+            public long LowerCountCandidateCheckCount { get; private set; }
+
+            public long LowerCountIndexProbeCount { get; private set; }
+
+            public long SubsetCheckCount { get; private set; }
+
+            public long DominatedStateCount { get; private set; }
+
+            public long RecordedStateCount { get; private set; }
+
+            public long RemovedStateCount { get; private set; }
+
+            public long TargetBucketCount { get; private set; }
+
+            public long BucketCount { get; private set; }
+
+            public long BucketStateCount { get; private set; }
+
+            public long MaxBucketSize { get; private set; }
+
+            public void RecordCandidate() => CandidateCount++;
+
+            public void RecordDominanceCheck() => DominanceCheckCount++;
+
+            public void RecordDominanceCandidateCheck(PathAwareMinFrontierScanKind scanKind)
+            {
+                DominanceCandidateCheckCount++;
+                switch (scanKind)
+                {
+                    case PathAwareMinFrontierScanKind.SameFingerprint:
+                        SameFingerprintCandidateCheckCount++;
+                        break;
+                    case PathAwareMinFrontierScanKind.LowerCount:
+                        LowerCountCandidateCheckCount++;
+                        break;
+                }
+            }
+
+            public void RecordLowerCountIndexProbe() => LowerCountIndexProbeCount++;
+
+            public bool RecordSubsetCheckAndReturnTrue()
+            {
+                SubsetCheckCount++;
+                return true;
+            }
+
+            public void RecordDominatedState() => DominatedStateCount++;
+
+            public void RecordRecordedState() => RecordedStateCount++;
+
+            public void RecordRemovedState() => RemovedStateCount++;
+
+            public void RecordBucketSnapshot(IReadOnlyDictionary<object?, PathAwareMinFrontierBucket> frontier)
+            {
+                TargetBucketCount += frontier.Count;
+                foreach (var bucket in frontier.Values)
+                {
+                    bucket.RecordSnapshot(this);
+                }
+            }
+
+            public void RecordPartitionBucket(int count)
+            {
+                BucketCount++;
+                BucketStateCount += count;
+                if (count > MaxBucketSize)
+                {
+                    MaxBucketSize = count;
+                }
+            }
+        }
+
+        private sealed class PathAwareTraversalMetrics
+        {
+            public TimeSpan TraversalElapsed { get; private set; }
+
+            public TimeSpan RowCreationElapsed { get; private set; }
+
+            public TimeSpan BestKnownFlushSortElapsed { get; private set; }
+
+            public TimeSpan ResultMaterializationElapsed { get; private set; }
+
+            public long SeedCount { get; private set; }
+
+            public long StackPopCount { get; private set; }
+
+            public long SuccessorCandidateCount { get; private set; }
+
+            public long CycleSkipCount { get; private set; }
+
+            public long DepthSkipCount { get; private set; }
+
+            public long BestKnownPruneCount { get; private set; }
+
+            public long EnqueuedStateCount { get; private set; }
+
+            public long OutputRowCount { get; private set; }
+
+            public int MaxStackSize { get; private set; }
+
+            public int MaxPathLength { get; private set; }
+
+            public void AddTraversalElapsed(TimeSpan elapsed) => TraversalElapsed += elapsed;
+
+            public void AddRowCreationElapsed(TimeSpan elapsed) => RowCreationElapsed += elapsed;
+
+            public void AddBestKnownFlushSortElapsed(TimeSpan elapsed) => BestKnownFlushSortElapsed += elapsed;
+
+            public void AddResultMaterializationElapsed(TimeSpan elapsed) => ResultMaterializationElapsed += elapsed;
+
+            public void RecordSeed() => SeedCount++;
+
+            public void RecordStackPop() => StackPopCount++;
+
+            public void RecordSuccessorCandidate() => SuccessorCandidateCount++;
+
+            public void RecordCycleSkip() => CycleSkipCount++;
+
+            public void RecordDepthSkip() => DepthSkipCount++;
+
+            public void RecordBestKnownPrune() => BestKnownPruneCount++;
+
+            public void RecordOutputRow() => OutputRowCount++;
+
+            public void RecordEnqueuedState(int pathLength)
+            {
+                EnqueuedStateCount++;
+                RecordPathLength(pathLength);
+            }
+
+            public void RecordStackSize(int stackSize)
+            {
+                if (stackSize > MaxStackSize)
+                {
+                    MaxStackSize = stackSize;
+                }
+            }
+
+            public void RecordPathLength(int pathLength)
+            {
+                if (pathLength > MaxPathLength)
+                {
+                    MaxPathLength = pathLength;
+                }
+            }
+        }
+
+        private sealed class PathAwareTargetDepthBuffer
+        {
+            public List<int> TargetNodeIds { get; } = new();
+
+            public List<int> Depths { get; } = new();
+
+            public int Count => TargetNodeIds.Count;
+
+            public void Add(int targetNodeId, int depth)
+            {
+                TargetNodeIds.Add(targetNodeId);
+                Depths.Add(depth);
+            }
+        }
+
+        private readonly record struct PathAwareTraversalFrame(
+            int NodeId,
+            int Depth,
+            CompactVisitedPath Visited);
 
         private sealed record VisitedAccumulatorState(
             object Accumulator,
@@ -11691,14 +14078,17 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class CompactVisitedPath
         {
-            private readonly int[] _nodeIds;
+            private readonly CompactVisitedPath? _previous;
+            private readonly int _nodeId;
 
-            private CompactVisitedPath(int[] nodeIds, int count, ulong maskA, ulong maskB)
+            private CompactVisitedPath(CompactVisitedPath? previous, int nodeId, int count, ulong maskA, ulong maskB, ulong fingerprint)
             {
-                _nodeIds = nodeIds;
+                _previous = previous;
+                _nodeId = nodeId;
                 Count = count;
                 MaskA = maskA;
                 MaskB = maskB;
+                Fingerprint = fingerprint;
             }
 
             public int Count { get; }
@@ -11707,9 +14097,34 @@ namespace UnifyWeaver.QueryRuntime
 
             public ulong MaskB { get; }
 
+            public ulong Fingerprint { get; }
+
+            public int GetNodeId(int index)
+            {
+                if ((uint)index >= (uint)Count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                var steps = Count - 1 - index;
+                var current = this;
+                for (var i = 0; i < steps; i++)
+                {
+                    current = current._previous!;
+                }
+
+                return current._nodeId;
+            }
+
             public static CompactVisitedPath Create(int nodeId)
             {
-                return new CompactVisitedPath(new[] { nodeId }, 1, ComputeVisitedMaskA(nodeId), ComputeVisitedMaskB(nodeId));
+                return new CompactVisitedPath(
+                    previous: null,
+                    nodeId: nodeId,
+                    1,
+                    ComputeVisitedMaskA(nodeId),
+                    ComputeVisitedMaskB(nodeId),
+                    ComputeVisitedFingerprint(nodeId));
             }
 
             public bool Contains(int nodeId)
@@ -11726,9 +14141,9 @@ namespace UnifyWeaver.QueryRuntime
                     return false;
                 }
 
-                for (var i = 0; i < Count; i++)
+                for (var current = this; current is not null; current = current._previous)
                 {
-                    if (_nodeIds[i] == nodeId)
+                    if (current._nodeId == nodeId)
                     {
                         return true;
                     }
@@ -11739,10 +14154,13 @@ namespace UnifyWeaver.QueryRuntime
 
             public CompactVisitedPath Extend(int nodeId)
             {
-                var nodeIds = new int[Count + 1];
-                Array.Copy(_nodeIds, nodeIds, Count);
-                nodeIds[Count] = nodeId;
-                return new CompactVisitedPath(nodeIds, Count + 1, MaskA | ComputeVisitedMaskA(nodeId), MaskB | ComputeVisitedMaskB(nodeId));
+                return new CompactVisitedPath(
+                    this,
+                    nodeId,
+                    Count + 1,
+                    MaskA | ComputeVisitedMaskA(nodeId),
+                    MaskB | ComputeVisitedMaskB(nodeId),
+                    Fingerprint ^ ComputeVisitedFingerprint(nodeId));
             }
 
             public bool IsSubsetOf(CompactVisitedPath other)
@@ -11757,20 +14175,9 @@ namespace UnifyWeaver.QueryRuntime
                     return false;
                 }
 
-                for (var i = 0; i < Count; i++)
+                for (var current = this; current is not null; current = current._previous)
                 {
-                    var found = false;
-                    var value = _nodeIds[i];
-                    for (var j = 0; j < other.Count; j++)
-                    {
-                        if (value == other._nodeIds[j])
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (!found)
+                    if (!other.Contains(current._nodeId))
                     {
                         return false;
                     }
@@ -11788,6 +14195,14 @@ namespace UnifyWeaver.QueryRuntime
         private static ulong ComputeVisitedMaskB(int value)
         {
             return 1UL << ((value >> 6) & 63);
+        }
+
+        private static ulong ComputeVisitedFingerprint(int value)
+        {
+            var z = unchecked((ulong)(uint)value + 0x9E3779B97F4A7C15UL);
+            z = unchecked((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL);
+            z = unchecked((z ^ (z >> 27)) * 0x94D049BB133111EBUL);
+            return z ^ (z >> 31);
         }
 
         private IEnumerable<object[]> ExecuteGroupedTransitiveClosure(GroupedTransitiveClosureNode closure, EvaluationContext? parentContext)
@@ -13940,11 +16355,99 @@ namespace UnifyWeaver.QueryRuntime
                     targetsBySource.Count <= MaxMemoizedGroupedPairSeeds &&
                     sourcesByTarget.Count <= MaxMemoizedGroupedPairSeeds;
                 var preferForwardFallback = targetsBySource.Count <= sourcesByTarget.Count;
+                var pairRequestCount = CountClosurePairRequests(targetsBySource.Values);
+                IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
+                if (_enableMeasuredClosurePairStrategy &&
+                    !singleConcretePairRequest &&
+                    pairRequestCount > 1 &&
+                    pairRequestCount <= 16)
+                {
+                    var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
+                    {
+                        [ClosurePairPlanStrategy.Forward] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Forward,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context),
+                        [ClosurePairPlanStrategy.Backward] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Backward,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context)
+                    };
+
+                    if (canMemoizeForwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedBySource] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedBySource,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    if (canMemoizeBackwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedByTarget] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedByTarget,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+                    }
+
+                    if (canBuildDirectionBatches &&
+                        forwardTargetsBySource.Count > 0 &&
+                        backwardSourcesByTarget.Count > 0)
+                    {
+                        probes[ClosurePairPlanStrategy.MixedDirection] = () => MeasureGroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MixedDirection,
+                            inputPositions,
+                            targetsBySource,
+                            sourcesByTarget,
+                            forwardTargetsBySource,
+                            backwardSourcesByTarget,
+                            context);
+
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            probes[ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache] = () => MeasureGroupedClosurePairStrategyProbe(
+                                closure,
+                                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache,
+                                inputPositions,
+                                targetsBySource,
+                                sourcesByTarget,
+                                forwardTargetsBySource,
+                                backwardSourcesByTarget,
+                                context);
+                        }
+                    }
+
+                    measurePairStrategyProbes = probes;
+                }
 
                 var pairStrategySelection = ResolveClosurePairStrategy(
                     trace,
                     closure,
                     _closurePairStrategy,
+                    pairRequestCount,
+                    targetsBySource.Count,
+                    sourcesByTarget.Count,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     canBuildDirectionBatches,
@@ -13954,7 +16457,9 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    _useSeededClosureCachesForPairBatches && _cacheContext is not null,
+                    measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "GroupedTransitiveClosurePairs", pairStrategySelection);
 
                 return pairStrategySelection.Strategy switch
@@ -13995,37 +16500,19 @@ namespace UnifyWeaver.QueryRuntime
                         forwardTargetsBySource,
                         backwardSourcesByTarget,
                         context),
-                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
-                        closure,
-                        inputPositions,
-                        forwardTargetsBySource,
-                        context),
                     ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(
                         closure,
                         inputPositions,
                         targetsBySource,
-                        context),
-                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
-                        closure,
-                        inputPositions,
-                        backwardSourcesByTarget,
                         context),
                     ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(
                         closure,
                         inputPositions,
                         sourcesByTarget,
                         context),
-                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardTargetsBySource.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsForward(
-                        closure,
-                        forwardTargetsBySource,
-                        context),
                     ClosurePairPlanStrategy.Forward => ExecuteSeededGroupedTransitiveClosurePairsForward(
                         closure,
                         targetsBySource,
-                        context),
-                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardSourcesByTarget.Count > 0 => ExecuteSeededGroupedTransitiveClosurePairsBackward(
-                        closure,
-                        backwardSourcesByTarget,
                         context),
                     _ => ExecuteSeededGroupedTransitiveClosurePairsBackward(
                         closure,
@@ -14126,6 +16613,21 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<RowWrapper, HashSet<object?>> backwardSourcesByTarget,
             EvaluationContext context)
         {
+            if (_useSeededClosureCachesForPairBatches && _cacheContext is not null)
+            {
+                foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsMemoizedBySource(closure, inputPositions, forwardTargetsBySource, context))
+                {
+                    yield return row;
+                }
+
+                foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsMemoizedByTarget(closure, inputPositions, backwardSourcesByTarget, context))
+                {
+                    yield return row;
+                }
+
+                yield break;
+            }
+
             foreach (var row in ExecuteSeededGroupedTransitiveClosurePairsForward(closure, forwardTargetsBySource, context))
             {
                 yield return row;
@@ -17301,11 +19803,93 @@ namespace UnifyWeaver.QueryRuntime
                     bySource.Count <= MaxMemoizedPairSeeds &&
                     byTarget.Count <= MaxMemoizedPairSeeds;
                 var preferForwardFallback = bySource.Count <= byTarget.Count;
+                var pairRequestCount = CountClosurePairRequests(bySource.Values);
+                IReadOnlyDictionary<ClosurePairPlanStrategy, Func<TimeSpan>>? measurePairStrategyProbes = null;
+                if (_enableMeasuredClosurePairStrategy &&
+                    !singleConcretePairRequest &&
+                    pairRequestCount > 1 &&
+                    pairRequestCount <= 16)
+                {
+                    var probes = new Dictionary<ClosurePairPlanStrategy, Func<TimeSpan>>
+                    {
+                        [ClosurePairPlanStrategy.Forward] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Forward,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context),
+                        [ClosurePairPlanStrategy.Backward] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.Backward,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context)
+                    };
+
+                    if (canMemoizeForwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedBySource] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedBySource,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
+                    if (canMemoizeBackwardBatch || canMemoizePairs)
+                    {
+                        probes[ClosurePairPlanStrategy.MemoizedByTarget] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MemoizedByTarget,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+                    }
+
+                    if (canBuildDirectionBatches &&
+                        forwardBySource.Count > 0 &&
+                        backwardByTarget.Count > 0)
+                    {
+                        probes[ClosurePairPlanStrategy.MixedDirection] = () => MeasureUngroupedClosurePairStrategyProbe(
+                            closure,
+                            ClosurePairPlanStrategy.MixedDirection,
+                            bySource,
+                            byTarget,
+                            forwardBySource,
+                            backwardByTarget,
+                            context);
+
+                        if (canReuseBatchedPairProbeCache)
+                        {
+                            probes[ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache] = () => MeasureUngroupedClosurePairStrategyProbe(
+                                closure,
+                                ClosurePairPlanStrategy.MixedDirectionWithPairProbeCache,
+                                bySource,
+                                byTarget,
+                                forwardBySource,
+                                backwardByTarget,
+                                context);
+                        }
+                    }
+
+                    measurePairStrategyProbes = probes;
+                }
 
                 var pairStrategySelection = ResolveClosurePairStrategy(
                     trace,
                     closure,
                     _closurePairStrategy,
+                    pairRequestCount,
+                    bySource.Count,
+                    byTarget.Count,
                     singleConcretePairRequest,
                     preferForwardSingleProbe,
                     canBuildDirectionBatches,
@@ -17315,7 +19899,9 @@ namespace UnifyWeaver.QueryRuntime
                     canMemoizeForwardBatch,
                     canMemoizeBackwardBatch,
                     canMemoizePairs,
-                    preferForwardFallback);
+                    preferForwardFallback,
+                    _useSeededClosureCachesForPairBatches && _cacheContext is not null,
+                    measurePairStrategyProbes);
                 RecordClosurePairStrategy(trace, closure, "TransitiveClosurePairs", pairStrategySelection);
 
                 return pairStrategySelection.Strategy switch
@@ -17352,33 +19938,17 @@ namespace UnifyWeaver.QueryRuntime
                         forwardBySource,
                         backwardByTarget,
                         context),
-                    ClosurePairPlanStrategy.MemoizedBySource when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
-                        closure,
-                        forwardBySource,
-                        context),
                     ClosurePairPlanStrategy.MemoizedBySource => ExecuteSeededTransitiveClosurePairsMemoizedBySource(
                         closure,
                         bySource,
-                        context),
-                    ClosurePairPlanStrategy.MemoizedByTarget when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
-                        closure,
-                        backwardByTarget,
                         context),
                     ClosurePairPlanStrategy.MemoizedByTarget => ExecuteSeededTransitiveClosurePairsMemoizedByTarget(
                         closure,
                         byTarget,
                         context),
-                    ClosurePairPlanStrategy.Forward when canBuildDirectionBatches && forwardBySource.Count > 0 => ExecuteSeededTransitiveClosurePairsForward(
-                        closure,
-                        forwardBySource,
-                        context),
                     ClosurePairPlanStrategy.Forward => ExecuteSeededTransitiveClosurePairsForward(
                         closure,
                         bySource,
-                        context),
-                    ClosurePairPlanStrategy.Backward when canBuildDirectionBatches && backwardByTarget.Count > 0 => ExecuteSeededTransitiveClosurePairsBackward(
-                        closure,
-                        backwardByTarget,
                         context),
                     _ => ExecuteSeededTransitiveClosurePairsBackward(
                         closure,
@@ -17468,6 +20038,21 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object?, HashSet<object?>> backwardByTarget,
             EvaluationContext context)
         {
+            if (_useSeededClosureCachesForPairBatches && _cacheContext is not null)
+            {
+                foreach (var row in ExecuteSeededTransitiveClosurePairsMemoizedBySource(closure, forwardBySource, context))
+                {
+                    yield return row;
+                }
+
+                foreach (var row in ExecuteSeededTransitiveClosurePairsMemoizedByTarget(closure, backwardByTarget, context))
+                {
+                    yield return row;
+                }
+
+                yield break;
+            }
+
             foreach (var row in ExecuteSeededTransitiveClosurePairsForward(closure, forwardBySource, context))
             {
                 yield return row;

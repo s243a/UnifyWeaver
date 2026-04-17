@@ -400,6 +400,78 @@ is_valid_service_option(partition_key(Key)) :-
 is_valid_service_option(cluster(Config)) :-
     is_valid_cluster_config(Config).
 
+%% Phase 7: Service Discovery Options
+
+%% discovery_enabled - Enable service discovery
+is_valid_service_option(discovery_enabled(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+%% health_check - Health check configuration
+is_valid_service_option(health_check(Config)) :-
+    is_valid_health_check_config(Config).
+
+%% discovery_ttl - Time-to-live for service registration
+is_valid_service_option(discovery_ttl(Seconds)) :-
+    integer(Seconds),
+    Seconds > 0.
+
+%% discovery_backend - Service discovery backend
+is_valid_service_option(discovery_backend(Backend)) :-
+    is_valid_discovery_backend(Backend).
+
+%% discovery_tags - Tags for service filtering
+is_valid_service_option(discovery_tags(Tags)) :-
+    is_list(Tags),
+    maplist(atom, Tags).
+
+%% discovery_metadata - Additional metadata for registration
+is_valid_service_option(discovery_metadata(Metadata)) :-
+    is_list(Metadata).
+
+%% Phase 8: Service Tracing Options
+
+%% tracing - Enable distributed tracing
+is_valid_service_option(tracing(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+%% trace_sampling - Sampling rate (0.0 to 1.0)
+is_valid_service_option(trace_sampling(Rate)) :-
+    number(Rate),
+    Rate >= 0.0,
+    Rate =< 1.0.
+
+%% trace_exporter - Tracing exporter backend
+is_valid_service_option(trace_exporter(Exporter)) :-
+    is_valid_trace_exporter(Exporter).
+
+%% trace_service_name - Service name for tracing
+is_valid_service_option(trace_service_name(Name)) :-
+    atom(Name).
+
+%% trace_propagation - Context propagation format
+is_valid_service_option(trace_propagation(Format)) :-
+    is_valid_trace_propagation(Format).
+
+%% trace_attributes - Additional span attributes
+is_valid_service_option(trace_attributes(Attrs)) :-
+    is_list(Attrs).
+
+%% trace_batch_size - Batch size for exporting spans
+is_valid_service_option(trace_batch_size(Size)) :-
+    integer(Size),
+    Size > 0.
+
+%% trace_export_interval - Export interval in milliseconds
+is_valid_service_option(trace_export_interval(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+
+%% KG Topology Phase 3: Kleinberg Routing Options
+
+%% routing - Query routing strategy for distributed KG topology
+is_valid_service_option(routing(Strategy)) :-
+    is_valid_routing_strategy(Strategy).
+
 %% Load balance validation
 is_valid_load_balance_strategy(round_robin).
 is_valid_load_balance_strategy(random).
@@ -819,32 +891,6 @@ is_distributed_service(service(_, Options, _)) :-
 %% Phase 7: Service Discovery Options
 %% ============================================
 
-%% discovery_enabled - Enable service discovery
-is_valid_service_option(discovery_enabled(Bool)) :-
-    ( Bool = true ; Bool = false ).
-
-%% health_check - Health check configuration
-is_valid_service_option(health_check(Config)) :-
-    is_valid_health_check_config(Config).
-
-%% discovery_ttl - Time-to-live for service registration
-is_valid_service_option(discovery_ttl(Seconds)) :-
-    integer(Seconds),
-    Seconds > 0.
-
-%% discovery_backend - Service discovery backend
-is_valid_service_option(discovery_backend(Backend)) :-
-    is_valid_discovery_backend(Backend).
-
-%% discovery_tags - Tags for service filtering
-is_valid_service_option(discovery_tags(Tags)) :-
-    is_list(Tags),
-    maplist(atom, Tags).
-
-%% discovery_metadata - Additional metadata for registration
-is_valid_service_option(discovery_metadata(Metadata)) :-
-    is_list(Metadata).
-
 %% Health check configuration validation
 is_valid_health_check_config(http(Path, Interval)) :-
     atom(Path),
@@ -941,42 +987,6 @@ get_discovery_tags(_, []).
 %% Phase 8: Service Tracing Options
 %% ============================================
 
-%% tracing - Enable distributed tracing
-is_valid_service_option(tracing(Bool)) :-
-    ( Bool = true ; Bool = false ).
-
-%% trace_sampling - Sampling rate (0.0 to 1.0)
-is_valid_service_option(trace_sampling(Rate)) :-
-    number(Rate),
-    Rate >= 0.0,
-    Rate =< 1.0.
-
-%% trace_exporter - Tracing exporter backend
-is_valid_service_option(trace_exporter(Exporter)) :-
-    is_valid_trace_exporter(Exporter).
-
-%% trace_service_name - Service name for tracing
-is_valid_service_option(trace_service_name(Name)) :-
-    atom(Name).
-
-%% trace_propagation - Context propagation format
-is_valid_service_option(trace_propagation(Format)) :-
-    is_valid_trace_propagation(Format).
-
-%% trace_attributes - Additional span attributes
-is_valid_service_option(trace_attributes(Attrs)) :-
-    is_list(Attrs).
-
-%% trace_batch_size - Batch size for exporting spans
-is_valid_service_option(trace_batch_size(Size)) :-
-    integer(Size),
-    Size > 0.
-
-%% trace_export_interval - Export interval in milliseconds
-is_valid_service_option(trace_export_interval(Ms)) :-
-    integer(Ms),
-    Ms > 0.
-
 %% Trace exporter validation
 is_valid_trace_exporter(jaeger).
 is_valid_trace_exporter(jaeger(Endpoint)) :-
@@ -1040,7 +1050,7 @@ get_trace_exporter(_, otlp).
 
 %% get_trace_service_name(+Service, -Name)
 %  Extract trace service name from service definition.
-get_trace_service_name(service(Name, Options, _), ServiceName) :-
+get_trace_service_name(service(_Name, Options, _), ServiceName) :-
     is_list(Options),
     member(trace_service_name(ServiceName), Options),
     !.
@@ -1066,10 +1076,6 @@ get_trace_attributes(_, []).
 %% ============================================
 %% KG Topology Phase 3: Kleinberg Routing Options
 %% ============================================
-
-%% routing - Query routing strategy for distributed KG topology
-is_valid_service_option(routing(Strategy)) :-
-    is_valid_routing_strategy(Strategy).
 
 %% Valid routing strategies
 is_valid_routing_strategy(direct).           % No routing, local only
@@ -1101,6 +1107,13 @@ is_valid_discovery_metadata_entry(interface_topics(Topics)) :-
     maplist(atom, Topics).
 is_valid_discovery_metadata_entry(embedding_model(Model)) :-
     atom(Model).
+is_valid_discovery_metadata_entry(corpus_id(Id)) :-
+    atom(Id).
+is_valid_discovery_metadata_entry(data_sources(Sources)) :-
+    is_list(Sources),
+    maplist(atom, Sources).
+is_valid_discovery_metadata_entry(last_updated(Date)) :-
+    atom(Date).
 
 %% ============================================
 %% KG Topology Phase 3: Kleinberg Routing Helper Predicates
@@ -1215,6 +1228,36 @@ is_valid_federation_option(adaptive_k(false)).
 is_valid_federation_option(adaptive_k(Opts)) :-
     is_list(Opts), maplist(is_valid_adaptive_k_option, Opts).
 
+% Phase 5c: Query planning options
+is_valid_federation_option(query_planning(enabled)).
+is_valid_federation_option(query_planning(disabled)).
+is_valid_federation_option(query_planning(Opts)) :-
+    is_list(Opts), maplist(is_valid_query_planning_option, Opts).
+
+% Phase 5a: Hierarchical federation options
+is_valid_federation_option(hierarchical(true)).
+is_valid_federation_option(hierarchical(false)).
+is_valid_federation_option(hierarchical(Opts)) :-
+    is_list(Opts), maplist(is_valid_hierarchy_option, Opts).
+
+% Phase 5d: Streaming aggregation options
+is_valid_federation_option(streaming(true)).
+is_valid_federation_option(streaming(false)).
+is_valid_federation_option(streaming(Opts)) :-
+    is_list(Opts), maplist(is_valid_streaming_option, Opts).
+
+%% Cross-model federation options.
+is_valid_federation_option(cross_model(true)).
+is_valid_federation_option(cross_model(false)).
+is_valid_federation_option(cross_model(Opts)) :-
+    is_list(Opts), maplist(is_valid_cross_model_option, Opts).
+
+%% Adversarial protection configuration.
+is_valid_federation_option(adversarial_protection(true)).
+is_valid_federation_option(adversarial_protection(false)).
+is_valid_federation_option(adversarial_protection(Opts)) :-
+    is_list(Opts), maplist(is_valid_adversarial_option, Opts).
+
 %% is_valid_adaptive_k_option(+Option)
 %  Validate adaptive-k configuration options for dynamic node selection.
 is_valid_adaptive_k_option(base_k(K)) :-
@@ -1240,12 +1283,6 @@ is_valid_adaptive_k_option(latency_budget_ms(N)) :-
 is_valid_adaptive_k_option(history_size(N)) :-
     integer(N), N > 0.
 
-% Phase 5c: Query planning options
-is_valid_federation_option(query_planning(enabled)).
-is_valid_federation_option(query_planning(disabled)).
-is_valid_federation_option(query_planning(Opts)) :-
-    is_list(Opts), maplist(is_valid_query_planning_option, Opts).
-
 %% is_valid_query_planning_option(+Option)
 %  Validate query planning configuration options.
 is_valid_query_planning_option(specific_threshold(T)) :-
@@ -1267,12 +1304,6 @@ is_valid_query_planning_option(default_latency_ms(L)) :-
 is_valid_query_planning_option(parallel_overhead_ms(O)) :-
     number(O), O >= 0.
 
-% Phase 5a: Hierarchical federation options
-is_valid_federation_option(hierarchical(true)).
-is_valid_federation_option(hierarchical(false)).
-is_valid_federation_option(hierarchical(Opts)) :-
-    is_list(Opts), maplist(is_valid_hierarchy_option, Opts).
-
 %% is_valid_hierarchy_option(+Option)
 %  Validate hierarchy configuration options.
 is_valid_hierarchy_option(max_levels(N)) :-
@@ -1289,12 +1320,6 @@ is_valid_hierarchy_option(drill_down_k(K)) :-
     integer(K), K > 0.
 is_valid_hierarchy_option(regional_aggregation(Strategy)) :-
     is_valid_aggregation_strategy(Strategy).
-
-% Phase 5d: Streaming aggregation options
-is_valid_federation_option(streaming(true)).
-is_valid_federation_option(streaming(false)).
-is_valid_federation_option(streaming(Opts)) :-
-    is_list(Opts), maplist(is_valid_streaming_option, Opts).
 
 %% is_valid_streaming_option(+Option)
 %  Validate streaming configuration options.
@@ -1422,24 +1447,9 @@ get_diversity_field(Service, Field) :-
     !.
 get_diversity_field(_, corpus_id).  % Default: corpus_id
 
-%% is_valid_discovery_metadata_entry(+Entry) - Phase 4 additions
-%  Additional metadata entries for federation.
-is_valid_discovery_metadata_entry(corpus_id(Id)) :- atom(Id).
-is_valid_discovery_metadata_entry(data_sources(Sources)) :-
-    is_list(Sources), maplist(atom, Sources).
-is_valid_discovery_metadata_entry(last_updated(Date)) :- atom(Date).
-
-
 % =============================================================================
 % KG TOPOLOGY PHASE 6e: CROSS-MODEL FEDERATION VALIDATION
 % =============================================================================
-
-%% is_valid_federation_option(cross_model(+Opts))
-%  Validate cross-model federation options.
-is_valid_federation_option(cross_model(true)).
-is_valid_federation_option(cross_model(false)).
-is_valid_federation_option(cross_model(Opts)) :-
-    is_list(Opts), maplist(is_valid_cross_model_option, Opts).
 
 %% is_valid_cross_model_option(+Option)
 %  Validate individual cross-model configuration options.
@@ -1535,13 +1545,6 @@ get_pool_model(pool(Model, _), Model).
 % =============================================================================
 % PHASE 6f: ADVERSARIAL ROBUSTNESS VALIDATION
 % =============================================================================
-
-%% is_valid_federation_option(adversarial_protection(+Opts))
-%  Validate adversarial protection configuration.
-is_valid_federation_option(adversarial_protection(true)).
-is_valid_federation_option(adversarial_protection(false)).
-is_valid_federation_option(adversarial_protection(Opts)) :-
-    is_list(Opts), maplist(is_valid_adversarial_option, Opts).
 
 %% is_valid_adversarial_option(+Option)
 %  Validate individual adversarial protection options.

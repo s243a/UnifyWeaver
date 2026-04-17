@@ -35,7 +35,7 @@ target_info(info{
 %% init_wam_target
 init_wam_target :-
     % Initialize any WAM-specific state or bindings if needed
-    true.
+    nb_setval(wam_ite_counter, 0).
 
 %% compile_predicate/3 - dispatch alias for target_registry
 compile_predicate(PredArity, Options, Code) :-
@@ -386,11 +386,31 @@ compile_body_goals(Goals, V, _Options, Code) :-
 %  A variable is permanent if it is used in any non-first goal (i.e., it
 %  must survive across at least one call instruction). This includes
 %  head-bound variables referenced after the first call.
-pre_assign_permanent_vars(Goals, vmap(Bindings, X), vmap(NewBindings, X)) :-
+pre_assign_permanent_vars(Goals, vmap(Bindings, X), vmap(NewBindings, XOut)) :-
     collect_goal_vars(Goals, GoalVarSets),
     find_permanent_vars(GoalVarSets, PermVars),
     reassign_to_yi(Bindings, PermVars, 1, ReassignedBindings, NextY),
-    pre_bind_unbound_yi(PermVars, ReassignedBindings, NextY, NewBindings).
+    pre_bind_unbound_yi(PermVars, ReassignedBindings, NextY, NewBindings),
+    %% Bump the X register counter past all allocated Yi indices.
+    %% Yi and Xi share the same register-file range (both map to
+    %% N + 31 in reg_name_to_index), so a subsequent next_x_reg
+    %% must not hand out an Xi that collides with an allocated Yi.
+    max_yi_index(NewBindings, 0, MaxY),
+    XOut is max(X, MaxY + 1).
+
+%% max_yi_index(+Bindings, +Acc, -Max)
+%  Finds the highest Y-register number among b(_, Yi) and y_alloc(_, Yi)
+%  entries. Returns 0 if there are no Y registers.
+max_yi_index([], Max, Max).
+max_yi_index([Entry|Rest], Acc, Max) :-
+    (   ( Entry = b(_, Reg) ; Entry = y_alloc(_, Reg) ),
+        atom_string(Reg, S),
+        string_codes(S, [0'Y|Digits]),
+        number_codes(N, Digits)
+    ->  NewAcc is max(Acc, N)
+    ;   NewAcc = Acc
+    ),
+    max_yi_index(Rest, NewAcc, Max).
 
 collect_goal_vars([], []).
 collect_goal_vars([Goal|Rest], [Vars|RestVars]) :-
@@ -475,6 +495,31 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
             format(string(Code), "~w~n~w", [GoalCode, RestCode])
         )
+    % If-then-else: (Cond -> Then ; Else)
+    ;   Goal = (CondGoal -> ThenGoal ; ElseGoal)
+    ->  compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, V1, HasEnv, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
+    % Bare disjunction: (A ; B) without ->
+    ;   Goal = (LeftGoal ; RightGoal),
+        \+ (LeftGoal = (_ -> _))
+    ->  compile_disjunction(LeftGoal, RightGoal, V0, V1, HasEnv, GoalCode),
+        (   Rest == []
+        ->  Vf = V1,
+            (   HasEnv == yes
+            ->  format(string(Code), "~w~n    deallocate~n    proceed", [GoalCode])
+            ;   format(string(Code), "~w~n    proceed", [GoalCode])
+            )
+        ;   compile_goals(Rest, V1, HasEnv, Vf, RestCode),
+            format(string(Code), "~w~n~w", [GoalCode, RestCode])
+        )
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
         (   HasEnv == yes
@@ -541,6 +586,15 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
 compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-
     compile_aggregate_all(collect-Template, InnerGoal, Result, V0, Vf, Code).
 
+%% next_ite_label(-ElseLabel, -ContLabel)
+%  Generate unique labels for if-then-else compilation.
+next_ite_label(ElseLabel, ContLabel) :-
+    (   nb_current(wam_ite_counter, N) -> true ; N = 0 ),
+    N1 is N + 1,
+    nb_setval(wam_ite_counter, N1),
+    format(atom(ElseLabel), "L_ite_else_~w", [N1]),
+    format(atom(ContLabel), "L_ite_cont_~w", [N1]).
+
 %% flatten_conjunction(+Conj, -GoalList)
 %  Flatten (A, B, C) into [A, B, C].
 flatten_conjunction((A, B), Goals) :- !,
@@ -548,6 +602,49 @@ flatten_conjunction((A, B), Goals) :- !,
     flatten_conjunction(B, BG),
     append(AG, BG, Goals).
 flatten_conjunction(Goal, [Goal]).
+
+%% compile_if_then_else(+Cond, +Then, +Else, +V0, -Vf, +HasEnv, -Code)
+%  Compile (Cond -> Then ; Else) to WAM try/cut/trust + jump pattern.
+%  The condition runs in a temporary choice point; if it succeeds, cut
+%  commits to Then. If it fails, backtrack to Else.
+compile_if_then_else(CondGoal, ThenGoal, ElseGoal, V0, Vf, _HasEnv, Code) :-
+    next_ite_label(ElseLabel, ContLabel),
+    % Flatten condition and branch bodies into goal lists
+    flatten_conjunction(CondGoal, CondGoals),
+    flatten_conjunction(ThenGoal, ThenGoals),
+    flatten_conjunction(ElseGoal, ElseGoals),
+    % Compile condition goals as calls (never TCO)
+    compile_inner_call_goals(CondGoals, V0, V1, CondCode),
+    % Compile then-branch goals as calls
+    compile_inner_call_goals(ThenGoals, V1, V2, ThenCode),
+    % Compile else-branch goals as calls (start from V0 since backtrack
+    % restores to before the condition)
+    compile_inner_call_goals(ElseGoals, V0, V3, ElseCode),
+    % Use the wider variable map as output
+    (   V2 = V3 -> Vf = V2
+    ;   Vf = V2  % prefer then-branch vars (else-branch is alternative)
+    ),
+    % Emit: try_me_else ElseLabel / Cond / !/0 / Then / jump ContLabel
+    %        ElseLabel: trust_me / Else / ContLabel:
+    % Use cut_ite (soft cut) instead of !/0 — pops only the if-then-else
+    % CP, preserving aggregate frames and outer choice points.
+    % ContLabel marks the continuation after both branches.
+    format(string(Code),
+        "    try_me_else ~w~n~w~n    cut_ite~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+        [ElseLabel, CondCode, ThenCode, ContLabel, ElseLabel, ElseCode, ContLabel]).
+
+%% compile_disjunction(+Left, +Right, +V0, -Vf, +HasEnv, -Code)
+%  Compile (A ; B) to WAM try/trust + jump pattern (no cut).
+compile_disjunction(LeftGoal, RightGoal, V0, Vf, _HasEnv, Code) :-
+    next_ite_label(RightLabel, ContLabel),
+    flatten_conjunction(LeftGoal, LeftGoals),
+    flatten_conjunction(RightGoal, RightGoals),
+    compile_inner_call_goals(LeftGoals, V0, V1, LeftCode),
+    compile_inner_call_goals(RightGoals, V0, V2, RightCode),
+    (   V1 = V2 -> Vf = V1 ; Vf = V1 ),
+    format(string(Code),
+        "    try_me_else ~w~n~w~n    jump ~w~n~w:~n    trust_me~n~w~n~w:",
+        [RightLabel, LeftCode, ContLabel, RightLabel, RightCode, ContLabel]).
 
 %% compile_inner_call_goals(+Goals, +V0, -Vf, -Code)
 %  Compile all goals as calls (never execute/TCO) for use inside aggregate bodies.
@@ -617,6 +714,17 @@ is_builtin_pred(\+, 1).      % negation-as-failure
 is_builtin_pred(member, 2).  % list operations
 is_builtin_pred(append, 3).
 is_builtin_pred(length, 2).
+is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
+is_builtin_pred(arg, 3).     % term inspection: Nth argument access
+is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
+is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
+is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
+                             % Without this entry, X = Y in a body goal
+                             % would compile to `execute =/2`, which looks
+                             % up "=/2" as a user predicate, misses, and
+                             % resolves to PC=0 at runtime — silently
+                             % re-entering the project's first predicate
+                             % and corrupting execution state.
 
 compile_put_arguments([], _, V, V, "").
 compile_put_arguments([Arg|Rest], I, V0, Vf, Code) :-

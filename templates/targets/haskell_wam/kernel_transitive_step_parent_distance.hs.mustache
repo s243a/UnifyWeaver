@@ -1,0 +1,37 @@
+-- | Native BFS tracking the FIRST hop, immediate parent, and distance.
+-- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+-- Given a source node, returns a stream of (target, step, parent, distance)
+-- tuples where:
+--   - target: a reachable node
+--   - step:   the FIRST node on the shortest path from source to target
+--             (i.e., the immediate child of source on this path)
+--   - parent: the immediate parent of target on the shortest path
+--   - distance: shortest path length in edges
+--
+-- Useful for path attribution: "which initial decision led to reaching
+-- this node?". Exercises the 4-output FFIStreamRetry path.
+nativeKernel_transitive_step_parent_distance
+  :: IM.IntMap [Int] -> Int -> [(Int, Int, Int, Int)]
+nativeKernel_transitive_step_parent_distance edges source =
+  bfs [(source, source, source, 0)] IS.empty []
+  where
+    -- Queue entries: (node, first-hop-from-source, parent-of-node, distance).
+    -- For the source itself, step and parent are both source (irrelevant —
+    -- we don't emit the source).
+    bfs [] _ acc = acc
+    bfs ((node, step, parent, dist):queue) visited acc
+      | IS.member node visited = bfs queue visited acc
+      | otherwise =
+          let visited' = IS.insert node visited
+              neighbors = IM.findWithDefault [] node edges
+              -- For each neighbor: parent is current node. Step is the first
+              -- hop from source: if we're expanding from source itself, the
+              -- step IS the neighbor. Otherwise, step propagates from the
+              -- current node's frame.
+              newStep n = if node == source then n else step
+              expanded = [(n, newStep n, node, dist + 1)
+                         | n <- neighbors, not (IS.member n visited')]
+              acc' = if node == source
+                       then acc
+                       else acc ++ [(node, step, parent, dist)]
+          in bfs (queue ++ expanded) visited' acc'

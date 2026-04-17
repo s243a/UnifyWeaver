@@ -20,6 +20,17 @@
 ; ptrtoint of the table pointer and operand2 holds the entry count.
 %SwitchEntry = type { i32, i64, i32 }     ; key_tag, key_payload, label_idx
 
+; === Indexed Fact Tables (for foreign kernels) ===
+; Used by transitive_closure, transitive_distance, and similar graph
+; kernels. Facts are emitted as global constant arrays; kernels scan
+; them via direct GEP loops. Atom values are stored as interned IDs
+; (same encoding used by switch_on_constant's atom keys).
+%AtomFactPair = type { i64, i64 }         ; from_atom_id, to_atom_id
+
+; Weighted edge fact for Dijkstra / A* / effective semantic distance.
+; Weight is an f64 semantic distance (1 - cosine_similarity).
+%WeightedFact = type { i64, i64, double } ; from, to, weight
+
 ; === Stack Entries ===
 ; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
 %StackEntry = type { i32, i64, %Value* }  ; type, aux (cp or n), data
@@ -28,17 +39,21 @@
 %TrailEntry = type { i32, %Value }        ; register index, old value
 
 ; === Choice Point ===
-; agg_type field: -1 = normal CP (not an aggregate frame)
+; agg_type field: -2 = foreign-result iterator (multi-result dispatch)
+;                 -1 = normal CP (not an aggregate frame)
 ;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
 %ChoicePoint = type {
     i32,                                   ; 0: next_pc
     [32 x %Value],                         ; 1: saved registers
     i32,                                   ; 2: trail mark
     i32,                                   ; 3: saved cp
-    i32,                                   ; 4: agg_type (-1 = not aggregate)
+    i32,                                   ; 4: agg_type (-1=normal, -2=foreign iter)
     i32,                                   ; 5: agg_value_reg
     i32,                                   ; 6: agg_result_reg
-    i32                                    ; 7: agg_return_pc
+    i32,                                   ; 7: agg_return_pc
+    i8*,                                   ; 8: foreign_results (ptr to %Value array)
+    i32,                                   ; 9: foreign_count (total results)
+    i32                                    ; 10: foreign_cursor (next to yield)
 }
 
 ; === WAM State ===

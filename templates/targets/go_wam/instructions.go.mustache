@@ -72,8 +72,17 @@ func (i *Deallocate) instrTag() {}
 type Call struct { Pred string; Arity int }
 func (i *Call) instrTag() {}
 
+type CallForeign struct { Pred string; Arity int }
+func (i *CallForeign) instrTag() {}
+
+type CallPc struct { TargetPC int; Arity int }
+func (i *CallPc) instrTag() {}
+
 type Execute struct { Pred string }
 func (i *Execute) instrTag() {}
+
+type ExecutePc struct { TargetPC int }
+func (i *ExecutePc) instrTag() {}
 
 type Proceed struct{}
 func (i *Proceed) instrTag() {}
@@ -84,8 +93,14 @@ func (i *BuiltinCall) instrTag() {}
 type TryMeElse struct { Label string }
 func (i *TryMeElse) instrTag() {}
 
+type TryMeElsePc struct { NextPC int }
+func (i *TryMeElsePc) instrTag() {}
+
 type RetryMeElse struct { Label string }
 func (i *RetryMeElse) instrTag() {}
+
+type RetryMeElsePc struct { NextPC int }
+func (i *RetryMeElsePc) instrTag() {}
 
 type TrustMe struct{}
 func (i *TrustMe) instrTag() {}
@@ -93,8 +108,27 @@ func (i *TrustMe) instrTag() {}
 type SwitchOnConstant struct { Cases []ConstCase }
 func (i *SwitchOnConstant) instrTag() {}
 
+type ConstPcCase struct {
+	Val      Value
+	TargetPC int
+}
+
+type SwitchOnConstantPc struct { Cases []ConstPcCase }
+func (i *SwitchOnConstantPc) instrTag() {}
+
 type SwitchOnStructure struct { Cases []StructCase }
 func (i *SwitchOnStructure) instrTag() {}
 
+type StructPcCase struct {
+	Functor  string
+	TargetPC int
+}
+
+type SwitchOnStructurePc struct { Cases []StructPcCase }
+func (i *SwitchOnStructurePc) instrTag() {}
+
 type SwitchOnConstantA2 struct { Cases []ConstCase }
 func (i *SwitchOnConstantA2) instrTag() {}
+
+type SwitchOnConstantA2Pc struct { Cases []ConstPcCase }
+func (i *SwitchOnConstantA2Pc) instrTag() {}

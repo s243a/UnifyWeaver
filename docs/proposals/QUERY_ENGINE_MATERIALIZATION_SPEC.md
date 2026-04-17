@@ -91,11 +91,19 @@ Examples:
   same measured relation-retention boundary before building successor,
   predecessor, or auxiliary lookup indices, with an explicit override via
   `QueryExecutorOptions.ClosureRelationRetentionStrategy`
+- delimited relation ingestion now honors `DelimitedRelationSource.ExpectedWidth`
+  beyond 2-column rows, so grouped benchmark and planner harness sources can
+  flow through the runtime without silently dropping extra fields
 - generic closure pair probes can now choose among forward, backward, mixed,
   mixed-with-pair-probe-cache, and memoized source/target strategies through
   an explicit planner surface, with an override via
-  `QueryExecutorOptions.ClosurePairStrategy` and focused validation in
-  `examples/benchmark/benchmark_closure_pair_planning.py`
+  `QueryExecutorOptions.ClosurePairStrategy`; `Auto` can now use bounded
+  measured probes for ambiguous request sets, keeps mixed-direction structural
+  decisions conservative, and prefers direct forward/backward traversal for
+  pure fan-out/fan-in request shapes; focused validation in
+  `examples/benchmark/benchmark_closure_pair_planning.py` now produces
+  non-empty grouped rows and reports the best effective pair plan, strategy
+  selection cost, and probe cost separately from the raw override label
 - generic scan planning now also has focused validation coverage in
   `examples/benchmark/benchmark_scan_materialization.py`, so scan-heavy join,
   negation, aggregate, relation-scan, and pattern-scan paths can be checked

@@ -1,0 +1,57 @@
+-- | Native goal-directed A* shortest path.
+-- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+-- Heuristic: direct_dist_pred (weighted edges acting as heuristic oracle).
+--
+-- Finds the shortest weighted path from source to target using A* search
+-- with a Minkowski-dimensional priority: f(n) = g(n)^D + h(n)^D, where
+-- g is the cost so far, h is the heuristic estimate to target, and D is
+-- the dimensionality parameter (amplifies heuristic effect in
+-- higher-dimensional spaces).
+--
+-- Returns a singleton list `[distance]` on success, or `[]` if no path
+-- exists. Uses stream-mode FFIStreamRetry though it only ever emits
+-- one result, to fit the existing single-output kernel pipeline.
+--
+-- All atoms (source, target, nodes) are interned at the FFI boundary.
+nativeKernel_astar_shortest_path
+  :: IM.IntMap [(Int, Double)]   -- ^ weight edges
+  -> IM.IntMap [(Int, Double)]   -- ^ heuristic oracle (direct_dist_pred)
+  -> Int                         -- ^ source
+  -> Int                         -- ^ target
+  -> Int                         -- ^ dimensionality (typically 5)
+  -> [Double]
+nativeKernel_astar_shortest_path edges heur source target dim =
+  let dimD = fromIntegral dim :: Double
+      -- h(n) = heuristic estimate from n to target.
+      -- Stored as a weighted edge (n, target, h) in the heur map.
+      heuristic node =
+        case IM.lookup node heur of
+          Nothing -> 0.0
+          Just es -> case filter (\(t, _) -> t == target) es of
+            ((_, h):_) -> h
+            []         -> 0.0
+      -- Priority queue keyed by (f, node). g-scores in a separate IntMap.
+      initF = 0.0 ** dimD + heuristic source ** dimD
+      initQueue = Set.singleton (initF, source)
+      initG = IM.singleton source 0.0
+      relax g (q, d) (nxt, w) =
+        let newG = g + w
+            prevG = IM.findWithDefault (1/0) nxt d
+        in if newG < prevG
+             then let f = newG ** dimD + heuristic nxt ** dimD
+                  in (Set.insert (f, nxt) q, IM.insert nxt newG d)
+             else (q, d)
+      astarLoop queue gScores =
+        case Set.minView queue of
+          Nothing -> []  -- no path
+          Just ((_fCost, node), queue')
+            | node == target ->
+                case IM.lookup node gScores of
+                  Just g  -> [g]
+                  Nothing -> []
+            | otherwise ->
+                let g = IM.findWithDefault (1/0) node gScores
+                    neighbors = IM.findWithDefault [] node edges
+                    (queue'', gScores') = foldl' (relax g) (queue', gScores) neighbors
+                in astarLoop queue'' gScores'
+  in astarLoop initQueue initG

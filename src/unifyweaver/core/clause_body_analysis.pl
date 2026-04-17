@@ -100,6 +100,7 @@
 :- multifile render_ite_block/7.        % +Target, +Cond, +ThenLines, +ElseLines, +Indent, +ReturnVars, -Lines
 
 :- use_module(library(lists)).
+:- use_module(purity_certificate).
 
 % ============================================================================
 % GOAL NORMALIZATION
@@ -970,22 +971,16 @@ partition_parallel_goals([G|Rest], HeadVars, SeenVars, Parallel, Result) :-
 
 %% is_order_independent(+PredIndicator, -Reason)
 %  True if the predicate's clauses can be evaluated in any order.
-is_order_independent(PredIndicator, declared) :-
-    order_independent(PredIndicator),
-    !.
-is_order_independent(Module:Pred/Arity, proven(Reasons)) :-
-    !,
-    functor(Head, Pred, Arity),
-    findall(Head-Body, clause(Module:Head, Body), Clauses),
-    Clauses \= [],
-    % Static analysis for order independence: all goals must be pure
-    forall(member(_-Body, Clauses), (
-        normalize_goals(Body, Goals),
-        forall(member(G, Goals), is_pure_goal(G))
-    )),
-    Reasons = [pure_goals].
-is_order_independent(Pred/Arity, Reason) :-
-    is_order_independent(user:Pred/Arity, Reason).
+%  Thin wrapper over purity_certificate:analyze_predicate_purity/2.
+%  Preserves the legacy return shape: `declared` for user-annotated
+%  predicates, `proven([pure_goals])` for statically-verified ones.
+is_order_independent(PredIndicator, Reason) :-
+    purity_certificate:analyze_predicate_purity(PredIndicator, Cert),
+    Cert = purity_cert(pure, Proof, _, _),
+    ( Proof = declared
+    -> Reason = declared
+    ;  Reason = proven([pure_goals])
+    ).
 
 %% goals_are_independent(+Goals)
 %  True if a list of goals can be executed in parallel.
@@ -995,35 +990,12 @@ goals_are_independent(Goals) :-
 
 %% is_pure_goal(+Goal)
 %  True if the goal has no side effects.
+%  Thin wrapper over purity_certificate:analyze_goal_purity/2. The
+%  impurity catalogue now lives in purity_certificate:impurity_class/2
+%  so both modules share a single source of truth.
 is_pure_goal(Goal) :-
-    functor(Goal, Pred, Arity),
-    parallel_safe(Pred/Arity),
-    !.
-is_pure_goal(Goal) :-
-    \+ is_impure_builtin(Goal).
-
-% I/O Impure
-is_impure_builtin(write(_)).
-is_impure_builtin(nl).
-is_impure_builtin(format(_,_)).
-is_impure_builtin(read(_)).
-is_impure_builtin(read_term(_,_)).
-is_impure_builtin(get_char(_)).
-is_impure_builtin(get_code(_)).
-is_impure_builtin(peek_char(_)).
-is_impure_builtin(peek_code(_)).
-% Database Impure
-is_impure_builtin(assert(_)).
-is_impure_builtin(asserta(_)).
-is_impure_builtin(assertz(_)).
-is_impure_builtin(retract(_)).
-is_impure_builtin(retractall(_)).
-% Global Variable Impure
-is_impure_builtin(nb_setval(_,_)).
-is_impure_builtin(b_setval(_,_)).
-% Target-specific / Domain-specific
-is_impure_builtin(send_message(_,_)).
-is_impure_builtin(succ_or_zero(_,_)).
+    purity_certificate:analyze_goal_purity(Goal,
+                                           purity_cert(pure, _, _, _)).
 
 %% goals_have_disjoint_bindings(+Goals)
 %  Conservative check for disjoint bindings.
