@@ -963,6 +963,9 @@ For the specific question of why end-to-end counted-path `Min` can still beat
 `All` even when `path_state_best_known_flush_sort` is prominent inside the
 `Min` run, see
 [`docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md`](../../docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md).
+For the separate ordering-contract question, including why benchmark hash
+normalization does not by itself justify sort-elision in the runtime, see
+[`docs/proposals/COUNTED_PATH_MIN_ORDERING_CONTRACT.md`](../../docs/proposals/COUNTED_PATH_MIN_ORDERING_CONTRACT.md).
 
 Command:
 

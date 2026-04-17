@@ -12601,6 +12601,8 @@ namespace UnifyWeaver.QueryRuntime
             {
                 var flushStarted = Stopwatch.GetTimestamp();
                 var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
+                // Min-mode retained rows are flushed in deterministic target order
+                // rather than traversal/discovery order.
                 bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
                 metrics?.AddBestKnownFlushSortElapsed(Stopwatch.GetElapsedTime(flushStarted));
 

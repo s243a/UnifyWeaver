@@ -3812,6 +3812,9 @@ verify_path_aware_transitive_closure_metrics_runtime :-
         HarnessSource).
 
 verify_path_aware_transitive_closure_min_mode_plan :-
+    % The expected rows are intentionally target-sorted for Min mode.
+    % This guards the runtime contract that best-known minima are flushed in a
+    % deterministic order rather than raw traversal/discovery order.
     csharp_target:build_query_plan(
         test_pathaware_min_reach/3,
         [target(csharp_query)],
@@ -3951,6 +3954,8 @@ verify_path_aware_accumulation_preserves_path_multiplicity :-
         HarnessSource).
 
 verify_path_aware_accumulation_min_mode_plan :-
+    % Weighted Min follows the same deterministic retained-minima flush order
+    % contract as counted-path Min.
     csharp_target:build_query_plan(
         test_weighted_min_path/3,
         [target(csharp_query)],
