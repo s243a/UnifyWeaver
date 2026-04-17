@@ -28,8 +28,8 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
-:- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/3]).
-:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1]).
+:- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
+:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2]).
 
 :- discontiguous wam_elixir_case/2.
 
@@ -332,7 +332,9 @@ compile_backtrack_to_elixir(Code) :-
     case state.choice_points do
       [] -> :fail
       [cp | rest] ->
-        state
+        # cp.trail contains the trail snapshot at save time.
+        # mark = length(cp.trail). We unwind all entries added after that.
+        state = state
         |> unwind_trail(length(cp.trail))
         |> Map.put(:pc, cp.pc)
         |> Map.put(:regs, cp.regs)
@@ -341,6 +343,12 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:stack, cp.stack)
         |> Map.put(:trail, cp.trail)
         |> Map.put(:choice_points, rest)
+        
+        if is_function(cp.pc) do
+          cp.pc.(state)
+        else
+          {:ok, state}
+        end
     end
   end', []).
 
@@ -348,26 +356,25 @@ compile_unwind_trail_to_elixir(Code) :-
     format(string(Code),
 '  @doc "Undo register bindings back to trail mark"
   def unwind_trail(state, mark) do
-    if length(state.trail) <= mark do
+    # mark is the length of the trail when the choice point was created.
+    # Newest entries are at the head of state.trail.
+    curr_len = length(state.trail)
+    if curr_len <= mark do
       state
     else
-      [{key, old_val} | rest_trail] = state.trail
-      new_state = case key do
-        {:heap_ref, addr} ->
-           if old_val == :not_set do
-             %{state | heap: List.replace_at(state.heap, addr, {:unbound, {:heap_ref, addr}})}
-           else
-             %{state | heap: List.replace_at(state.heap, addr, old_val)}
-           end
-        _ ->
-           new_regs = if old_val == :not_set do
-             Map.delete(state.regs, key)
-           else
-             Map.put(state.regs, key, old_val)
-           end
-           %{state | regs: new_regs}
-      end
-      unwind_trail(%{new_state | trail: rest_trail}, mark)
+      entries_to_undo = Enum.take(state.trail, curr_len - mark)
+      new_trail = Enum.drop(state.trail, curr_len - mark)
+    
+      Enum.reduce(entries_to_undo, %{state | trail: new_trail}, fn {key, old_val}, s ->
+        case key do
+          {:heap_ref, addr} ->
+             val = if old_val == :not_set, do: {:unbound, {:heap_ref, addr}}, else: old_val
+             %{s | heap: List.replace_at(s.heap, addr, val)}
+          _ ->
+             new_regs = if old_val == :not_set, do: Map.delete(s.regs, key), else: Map.put(s.regs, key, old_val)
+             %{s | regs: new_regs}
+        end
+      end)
     end
   end', []).
 
@@ -393,7 +400,8 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   defp resolve_label(state, label) do
-    Map.get(state.labels, label, state.pc + 1)
+    target = Map.get(state.labels, label, state.pc)
+    target
   end
 
   def parse_functor_arity(fn_name) do
@@ -405,7 +413,7 @@ compile_utility_helpers_to_elixir(Code) :-
 
   def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
     case Enum.at(state.heap, addr) do
-      {:unbound, {:heap_ref, ^addr}} -> ref
+      {:unbound, {:heap_ref, _addr}} -> ref
       val -> deref_var(state, val)
     end
   end
@@ -413,6 +421,7 @@ compile_utility_helpers_to_elixir(Code) :-
   def deref_var(state, {:unbound, id}) do
     case Map.get(state.regs, id) do
       nil -> {:unbound, id}
+      {:unbound, ^id} -> {:unbound, id}
       val -> deref_var(state, val)
     end
   end
@@ -424,7 +433,8 @@ compile_utility_helpers_to_elixir(Code) :-
       entry == {:str, fn_name} ->
         arity = parse_functor_arity(fn_name)
         args = Enum.slice(state.heap, addr + 1, arity)
-        %{state | stack: [{:unify_ctx, args} | state.stack], pc: state.pc + 1}
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
       true -> :fail
     end
   end
@@ -433,15 +443,17 @@ compile_utility_helpers_to_elixir(Code) :-
     case state.stack do
       [{:unify_ctx, [arg | rest]} | stack_rest] ->
         new_stack = if rest == [], do: stack_rest, else: [{:unify_ctx, rest} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         state |> trail_binding(xn) |> put_reg(xn, arg)
-        |> Map.put(:stack, new_stack) |> Map.put(:pc, state.pc + 1)
+        |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         addr = length(state.heap)
         fresh = {:unbound, {:heap_ref, addr}}
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         state |> put_reg(xn, fresh)
         |> Map.put(:heap, state.heap ++ [fresh])
-        |> Map.put(:stack, new_stack) |> Map.put(:pc, state.pc + 1)
+        |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
       _ -> :fail
     end
   end
@@ -453,12 +465,14 @@ compile_utility_helpers_to_elixir(Code) :-
         case unify(state, val, arg) do
           {:ok, new_state} ->
             new_stack = if rest == [], do: stack_rest, else: [{:unify_ctx, rest} | stack_rest]
-            %{new_state | stack: new_stack, pc: new_state.pc + 1}
+            new_pc = if is_integer(new_state.pc), do: new_state.pc + 1, else: new_state.pc
+            %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
-        %{state | heap: state.heap ++ [val], stack: new_stack, pc: state.pc + 1}
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: state.heap ++ [val], stack: new_stack, pc: new_pc}
       _ -> :fail
     end
   end
@@ -469,12 +483,14 @@ compile_utility_helpers_to_elixir(Code) :-
         case unify(state, c, arg) do
           {:ok, new_state} ->
             new_stack = if rest == [], do: stack_rest, else: [{:unify_ctx, rest} | stack_rest]
-            %{new_state | stack: new_stack, pc: new_state.pc + 1}
+            new_pc = if is_integer(new_state.pc), do: new_state.pc + 1, else: new_state.pc
+            %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
-        %{state | heap: state.heap ++ [c], stack: new_stack, pc: state.pc + 1}
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: state.heap ++ [c], stack: new_stack, pc: new_pc}
       _ -> :fail
     end
   end
@@ -482,12 +498,14 @@ compile_utility_helpers_to_elixir(Code) :-
   defp step_switch_on_constant(state, entries) do
     val = get_reg(state, 1)
     cond do
-      match?({:unbound, _}, val) -> %{state | pc: state.pc + 1}
+      match?({:unbound, _}, val) -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
       true ->
-        case Enum.find(entries, fn {k, _} -> k == val end) do
-          {_, "default"} -> %{state | pc: state.pc + 1}
-          {_, label} -> %{state | pc: resolve_label(state, label)}
+        # entries is expected to be a list of {key, label} or a map.
+        map = if is_map(entries), do: entries, else: Map.new(entries)
+        case Map.get(map, val) do
+          "default" -> %{state | pc: if(is_integer(state.pc), do: state.pc + 1, else: state.pc)}
           nil -> :fail
+          label -> %{state | pc: resolve_label(state, label)}
         end
     end
   end
@@ -496,12 +514,12 @@ compile_utility_helpers_to_elixir(Code) :-
   def unify(state, v1, v2) do
     cond do
       v1 == v2 -> {:ok, state}
-      match?({:unbound, {:heap_ref, addr}}, v1) ->
+      match?({:unbound, {:heap_ref, _addr}}, v1) ->
         {:unbound, {:heap_ref, addr}} = v1
         new_heap = List.replace_at(state.heap, addr, v2)
         new_state = state |> trail_binding({:heap_ref, addr})
         {:ok, %{new_state | heap: new_heap}}
-      match?({:unbound, {:heap_ref, addr}}, v2) ->
+      match?({:unbound, {:heap_ref, _addr}}, v2) ->
         {:unbound, {:heap_ref, addr}} = v2
         new_heap = List.replace_at(state.heap, addr, v1)
         new_state = state |> trail_binding({:heap_ref, addr})
@@ -519,40 +537,113 @@ compile_utility_helpers_to_elixir(Code) :-
   end
 
   @doc "Execute a builtin predicate"
-  def execute_builtin(state, op, _arity) do
-    case op do
-      "is/2" ->
+  def execute_builtin(state, op, arity) do
+    case {op, arity} do
+      {"is/2", 2} ->
         expr = get_reg(state, 2)
         result = eval_arith(state, expr)
         lhs = get_reg(state, 1)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         cond do
           match?({:unbound, _}, lhs) ->
-            {:unbound, id} = lhs
-            state |> trail_binding(id)
-            |> Map.put(:regs, Map.put(state.regs, id, result))
-            |> Map.put(:pc, state.pc + 1)
-          lhs == result -> %{state | pc: state.pc + 1}
+            id = case lhs do {:unbound, i} -> i end
+            state 
+            |> trail_binding(id)
+            |> put_reg(id, result)
+            |> Map.put(:pc, new_pc)
+          lhs == result -> %{state | pc: new_pc}
+          true -> :fail
+        end
+      {"</2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 < v2, do: %{state | pc: new_pc}, else: :fail
+      {"length/2", 2} ->
+        list = get_reg(state, 1)
+        len = if is_list(list), do: length(list), else: throw(:fail)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        case unify(state, len, get_reg(state, 2)) do
+          {:ok, s} -> %{s | pc: new_pc}
+          :fail -> :fail
+        end
+      {neg_op, 1} when neg_op in ["\\\\+/1", "\\+/1"] ->
+        # Negation: \\+ Goal
+        # Note: Ground atoms as goals (e.g. \\+ true) always fail negation check 
+        # in this implementation as they are not runnable without arity.
+        goal_val = deref_var(state, get_reg(state, 1))
+        # Isolated state for negation check
+        temp_state = %{state | choice_points: [], stack: []}
+        
+        # Determine if goal succeeds or fails
+        res = case goal_val do
+          {:ref, addr} ->
+            case Enum.at(state.heap, addr) do
+              {:str, pred_arity} ->
+                arity = parse_functor_arity(pred_arity)
+                args = Enum.slice(state.heap, addr + 1, arity)
+                call_state = Enum.with_index(args, 1)
+                |> Enum.reduce(temp_state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
+
+                try do
+                  case WamDispatcher.call(pred_arity, call_state) do
+                    {:ok, _} -> :success
+                    :fail -> :fail
+                  end
+                catch
+                  :fail -> :fail
+                  {:return, _} -> :success
+                  # Let other exceptions propagate for easier debugging
+                end
+              _ -> :fail
+            end
+          _ -> :fail
+        end
+
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        case res do
+          :fail -> %{state | pc: new_pc}
+          :success -> :fail
+        end
+      {"member/2", 2} ->
+        item = get_reg(state, 1)
+        list = get_reg(state, 2)
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        cond do
+          is_list(list) ->
+            if item in list, do: %{state | pc: new_pc}, else: :fail
           true -> :fail
         end
       _ -> :fail
     end
   end
 
-  defp eval_arith(_state, val) when is_integer(val), do: val
-  defp eval_arith(_state, val) when is_float(val), do: val
-  defp eval_arith(state, {op, a, b}) do
-    va = eval_arith(state, a)
-    vb = eval_arith(state, b)
-    case op do
-      :+ -> va + vb
-      :- -> va - vb
-      :* -> va * vb
-      :/ -> div(va, vb)
-      :mod -> rem(va, vb)
-      _ -> 0
+  defp eval_arith(_state, n) when is_number(n), do: n
+  defp eval_arith(_state, n) when is_binary(n) do
+    case Float.parse(n) do
+      {f, _} -> f
+      :error ->
+        case Integer.parse(n) do
+          {i, _} -> i
+          :error -> throw({:eval_error, n})
+        end
     end
   end
-  defp eval_arith(_state, _), do: 0', []).
+  defp eval_arith(state, {:ref, addr}) do
+    case Enum.at(state.heap, addr) do
+      {:str, "+/2"} ->
+        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        eval_arith(state, v1) + eval_arith(state, v2)
+      {:str, "-/2"} ->
+        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        eval_arith(state, v1) - eval_arith(state, v2)
+      {:str, "*/2"} ->
+        [v1, v2] = Enum.slice(state.heap, addr + 1, 2)
+        eval_arith(state, v1) * eval_arith(state, v2)
+      val -> eval_arith(state, val)
+    end
+  end
+  defp eval_arith(state, val), do: eval_arith(state, deref_var(state, val))', []).
 
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3
@@ -671,19 +762,23 @@ wam_line_to_elixir_instr(["get_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:get_constant, "~w", ~w}', [CC, AiId]).
 wam_line_to_elixir_instr(["get_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+    reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_variable, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["get_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+    reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_value, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["put_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:put_constant, "~w", ~w}', [CC, AiId]).
 wam_line_to_elixir_instr(["put_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+    reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_variable, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["put_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), reg_id(CXn, XnId), reg_id(CAi, AiId),
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+    reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_value, ~w, ~w}', [XnId, AiId]).
 wam_line_to_elixir_instr(["proceed"], ':proceed').
 wam_line_to_elixir_instr(["call", P, N], Instr) :-
@@ -698,7 +793,11 @@ wam_line_to_elixir_instr(["allocate", N], Instr) :-
 wam_line_to_elixir_instr(["deallocate"], ':deallocate').
 wam_line_to_elixir_instr(["builtin_call", Op, Ar], Instr) :-
     clean_comma(Op, COp), clean_comma(Ar, CAr),
-    format(string(Instr), '{:builtin_call, "~w", ~w}', [COp, CAr]).
+    (   sub_atom(COp, 0, 1, _, '\\') % Handle \+ / 1
+    ->  sub_atom(COp, 1, _, 0, Rest),
+        format(string(Instr), '{:builtin_call, "\\\\~w", ~w}', [Rest, CAr])
+    ;   format(string(Instr), '{:builtin_call, "~w", ~w}', [COp, CAr])
+    ).
 wam_line_to_elixir_instr(Parts, Instr) :-
     atomic_list_concat(Parts, ' ', Combined),
     format(string(Instr), '{:raw, "~w"}', [Combined]).
@@ -707,7 +806,7 @@ wam_line_to_elixir_instr(Parts, Instr) :-
 % PROJECT GENERATION
 % ============================================================================
 
-%% write_wam_elixir_project(+Predicates, +Options, +ProjectDir)
+%% write_wam_elixir_project(Predicates, Options, ProjectDir)
 write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     wam_elixir_resolve_emit_mode(Options, Mode),
@@ -722,7 +821,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     close(RS),
     % Generate dispatcher for lowered mode
     (   Mode == lowered
-    ->  generate_elixir_dispatcher(Predicates, DispatcherCode),
+    ->  generate_elixir_dispatcher(Predicates, Options, DispatcherCode),
         directory_file_path(LibDir, 'wam_dispatcher.ex', DispatcherPath),
         open(DispatcherPath, write, DS),
         write(DS, DispatcherCode),
@@ -733,7 +832,7 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     forall(
         member(Pred/Arity-WamCode, Predicates),
         (   (   Mode == lowered
-            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, PredCode)
+            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
             ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
             ),
             atom_string(Pred, PredStr),
@@ -763,11 +862,14 @@ end', [ModuleName, ModuleName]),
     write(MS, MixCode),
     close(MS).
 
-generate_elixir_dispatcher(Predicates, Code) :-
+generate_elixir_dispatcher(Predicates, Options, Code) :-
+    option(module_name(ModName), Options, 'WamPredLow'),
+    camel_case(ModName, CamelMod),
     findall(Case,
         (   member(Pred/Arity-_, Predicates),
             atom_string(Pred, PredStr),
-            format(string(Case), '  def call("~w/~w", state), do: WamPredLow.~w.run(state)', [PredStr, Arity, PredStr])
+            camel_case(PredStr, CamelPred),
+            format(string(Case), '  def call("~w/~w", state), do: ~w.~w.run(state)', [PredStr, Arity, CamelMod, CamelPred])
         ),
         Cases
     ),

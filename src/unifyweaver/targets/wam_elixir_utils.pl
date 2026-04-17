@@ -7,7 +7,8 @@
 :- module(wam_elixir_utils, [
     reg_id/2,       % +Reg, -Id
     clean_comma/2,  % +String, -CleanString
-    is_label_part/1 % +String
+    is_label_part/1, % +String
+    camel_case/2    % +String, -CamelString
 ]).
 
 %% is_label_part(+String)
@@ -16,13 +17,29 @@ is_label_part(Str) :-
     sub_string(Str, _, 1, 0, ":"),
     \+ sub_string(Str, 0, 1, _, "%").
 
+%% camel_case(+String, -CamelString)
+%  Converts snake_case to CamelCase for Elixir module names.
+camel_case(Str, Camel) :-
+    atom_string(Str, S),
+    split_string(S, "_/", "_/", Parts),
+    include([P]>>(P \= "" , P \= "_", P \= "/"), Parts, FinalParts),
+    maplist(capitalize_string, FinalParts, Caps),
+    atomic_list_concat(Caps, Camel).
+
+capitalize_string("", "") :- !.
+capitalize_string(Str, Cap) :-
+    string_chars(Str, [First|Rest]),
+    upcase_atom(First, UpFirst),
+    string_chars(Cap, [UpFirst|Rest]).
+
 %% reg_id(+Reg, -Id)
 % Maps string/atom WAM register names to integer IDs for Elixir.
 % Y-registers are offset by 100 to avoid collision with X/A registers (1-99).
 reg_id(Reg, Id) :-
-    (   sub_atom(Reg, 0, 1, _, 'A') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(Reg, 0, 1, _, 'X') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(Reg, 0, 1, _, 'Y') -> sub_atom(Reg, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
+    (atom(Reg) -> RegAtom = Reg ; atom_string(RegAtom, Reg)),
+    (   sub_atom(RegAtom, 0, 1, _, 'A') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, Id)
+    ;   sub_atom(RegAtom, 0, 1, _, 'X') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, Id)
+    ;   sub_atom(RegAtom, 0, 1, _, 'Y') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
     ;   Id = Reg
     ).
 
