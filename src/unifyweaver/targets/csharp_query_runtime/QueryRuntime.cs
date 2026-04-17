@@ -1553,11 +1553,15 @@ namespace UnifyWeaver.QueryRuntime
         public PathAwareEdgeState(
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
             IReadOnlyList<object?> seeds,
-            IReadOnlyList<int> seedNodeIds)
+            IReadOnlyList<int> seedNodeIds,
+            IReadOnlyList<object?> nodeValues,
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId)
         {
             Successors = successors;
             Seeds = seeds;
             SeedNodeIds = seedNodeIds;
+            NodeValues = nodeValues;
+            BucketsByNodeId = bucketsByNodeId;
         }
 
         public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
@@ -1565,6 +1569,10 @@ namespace UnifyWeaver.QueryRuntime
         public IReadOnlyList<object?> Seeds { get; }
 
         public IReadOnlyList<int> SeedNodeIds { get; }
+
+        public IReadOnlyList<object?> NodeValues { get; }
+
+        public IReadOnlyList<PathAwareSuccessorBucket?> BucketsByNodeId { get; }
     }
 
     internal sealed class PathAwareSccGraph
@@ -6198,7 +6206,21 @@ namespace UnifyWeaver.QueryRuntime
                 seedNodeIds.Add(nodeIds[seeds[i] ?? NullFactIndexKey]);
             }
 
-            return new PathAwareEdgeState(successors, seeds, seedNodeIds);
+            var nodeValues = new object?[nodeIds.Count];
+            foreach (var entry in nodeIds)
+            {
+                nodeValues[entry.Value] = ReferenceEquals(entry.Key, NullFactIndexKey)
+                    ? null
+                    : entry.Key;
+            }
+
+            var bucketsByNodeId = new PathAwareSuccessorBucket?[nodeIds.Count];
+            foreach (var bucket in successors.Values)
+            {
+                bucketsByNodeId[bucket.SourceNodeId] = bucket;
+            }
+
+            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId);
         }
 
         private static int GetOrAddPathAwareNodeId(
@@ -12375,7 +12397,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < edgeState.Seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12446,7 +12468,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.Successors, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12465,7 +12487,8 @@ namespace UnifyWeaver.QueryRuntime
         private static void AppendPathAwareRowsForSeed(
             object? seed,
             int seedNodeId,
-            IReadOnlyDictionary<object, PathAwareSuccessorBucket> succIndex,
+            IReadOnlyList<object?> nodeValues,
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
@@ -12483,7 +12506,7 @@ namespace UnifyWeaver.QueryRuntime
                 ? Math.Min(Math.Max(maxDepth + 1, 4), 256)
                 : 64;
             var stack = new Stack<PathAwareTraversalFrame>(initialStackCapacity);
-            stack.Push(new PathAwareTraversalFrame(seed, 0, initialPath));
+            stack.Push(new PathAwareTraversalFrame(seedNodeId, 0, initialPath));
             metrics?.RecordEnqueuedState(1);
             metrics?.RecordStackSize(stack.Count);
 
@@ -12491,20 +12514,24 @@ namespace UnifyWeaver.QueryRuntime
             while (stack.Count > 0)
             {
                 var frame = stack.Pop();
-                var current = frame.Node;
+                var currentNodeId = frame.NodeId;
                 var depth = frame.Depth;
                 var visited = frame.Visited;
                 metrics?.RecordStackPop();
                 metrics?.RecordPathLength(visited.Count);
-                var lookupKey = current ?? NullFactIndexKey;
-                if (!succIndex.TryGetValue(lookupKey, out var bucket))
+                if ((uint)currentNodeId >= (uint)bucketsByNodeId.Count)
+                {
+                    continue;
+                }
+
+                var bucket = bucketsByNodeId[currentNodeId];
+                if (bucket is null)
                 {
                     continue;
                 }
 
                 for (var i = bucket.Targets.Count - 1; i >= 0; i--)
                 {
-                    var next = bucket.Targets[i];
                     metrics?.RecordSuccessorCandidate();
                     var nextId = bucket.TargetNodeIds[i];
                     if (visited.Contains(nextId))
@@ -12525,6 +12552,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (bestKnown is not null)
                     {
+                        var next = nodeValues[nextId];
                         if (bestKnown.TryGetValue(next, out var bestDepth))
                         {
                             switch (accumulatorMode)
@@ -12553,11 +12581,11 @@ namespace UnifyWeaver.QueryRuntime
                     }
                     else
                     {
-                        RecordBufferedPathAwareDepthRow(bufferedRows!, next, nextDepth);
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
                     }
 
                     var nextVisited = visited.Extend(nextId);
-                    stack.Push(new PathAwareTraversalFrame(next, nextDepth, nextVisited));
+                    stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
                     metrics?.RecordEnqueuedState(nextVisited.Count);
                     metrics?.RecordStackSize(stack.Count);
                 }
@@ -12566,7 +12594,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (bufferedRows is not null)
             {
-                MaterializePathAwareDepthRows(seed, bufferedRows, output, metrics);
+                MaterializePathAwareDepthRows(seed, nodeValues, bufferedRows, output, metrics);
             }
 
             if (bestKnown is not null)
@@ -12593,14 +12621,15 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void RecordBufferedPathAwareDepthRow(
             PathAwareTargetDepthBuffer rows,
-            object? target,
+            int targetNodeId,
             int depth)
         {
-            rows.Add(target, depth);
+            rows.Add(targetNodeId, depth);
         }
 
         private static void MaterializePathAwareDepthRows(
             object? seed,
+            IReadOnlyList<object?> nodeValues,
             PathAwareTargetDepthBuffer rows,
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
@@ -12611,22 +12640,22 @@ namespace UnifyWeaver.QueryRuntime
                 var baseIndex = outputList.Count;
                 CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
                 var span = CollectionsMarshal.AsSpan(outputList);
-                var targets = CollectionsMarshal.AsSpan(rows.Targets);
+                var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
                 var depths = CollectionsMarshal.AsSpan(rows.Depths);
                 for (var i = 0; i < rows.Count; i++)
                 {
-                    span[baseIndex + i] = new object[] { seed!, targets[i]!, depths[i] };
+                    span[baseIndex + i] = new object[] { seed!, nodeValues[targetNodeIds[i]]!, depths[i] };
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
                 return;
             }
 
-            var fallbackTargets = rows.Targets;
+            var fallbackTargetNodeIds = rows.TargetNodeIds;
             var fallbackDepths = rows.Depths;
             for (var i = 0; i < rows.Count; i++)
             {
-                output.Add(new object[] { seed!, fallbackTargets[i]!, fallbackDepths[i] });
+                output.Add(new object[] { seed!, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
                 metrics?.RecordOutputRow();
             }
 
@@ -14025,21 +14054,21 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class PathAwareTargetDepthBuffer
         {
-            public List<object?> Targets { get; } = new();
+            public List<int> TargetNodeIds { get; } = new();
 
             public List<int> Depths { get; } = new();
 
-            public int Count => Targets.Count;
+            public int Count => TargetNodeIds.Count;
 
-            public void Add(object? target, int depth)
+            public void Add(int targetNodeId, int depth)
             {
-                Targets.Add(target);
+                TargetNodeIds.Add(targetNodeId);
                 Depths.Add(depth);
             }
         }
 
         private readonly record struct PathAwareTraversalFrame(
-            object? Node,
+            int NodeId,
             int Depth,
             CompactVisitedPath Visited);
 
