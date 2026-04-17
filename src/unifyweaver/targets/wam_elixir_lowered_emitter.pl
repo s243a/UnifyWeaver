@@ -6,10 +6,6 @@
 %
 % Compiles WAM instructions directly to Elixir function calls/expressions
 % instead of instruction-array interpretation.
-%
-% Note: Many instructions are now fully lowered (head unification, term construction,
-% control flow, choice points). Some remain as stubs (e.g., switch_on_constant)
-% to guide future progressive implementation.
 
 :- module(wam_elixir_lowered_emitter, [
     lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -Code
@@ -25,14 +21,13 @@
 % ============================================================================
 
 %% lower_predicate_to_elixir(+PredIndicator, +WamCode, +Options, -Code)
-%  Compiles a WAM predicate into a lowered Elixir module with one function
-%  per clause and try/catch for backtracking.
 lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
     split_into_segments(Lines, 1, Segments),
-    generate_all_segments(Segments, Labels, FuncCodes),
+    generate_all_segments(Segments, Labels, MapAttrCodes, FuncCodes),
+    atomic_list_concat(MapAttrCodes, '\n', MapAttrsBody),
     atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
@@ -44,13 +39,13 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
 
+~w
+
   def run(%WamRuntime.WamState{} = state) do
     try do
       ~w(state)
     catch
-      :fail -> 
-        # IO.puts("Predicate failed")
-        :fail
+      :fail -> :fail
       {:return, result} -> result
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
@@ -68,7 +63,7 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
   end
 
 ~w
-end', [CamelMod, CamelPred, PredStr, Arity, FirstFunc, CamelPred, FuncsBody]).
+end', [CamelMod, CamelPred, PredStr, Arity, MapAttrsBody, FirstFunc, CamelPred, FuncsBody]).
 
 % ============================================================================
 % LABEL COLLECTION
@@ -92,8 +87,6 @@ collect_labels([Line|Rest], PC, OutLabels) :-
 % SEGMENTATION & CODE GENERATION
 % ============================================================================
 
-%% split_into_segments(+Lines, +PC, -Segments)
-%  Partitions WAM instructions into segments starting at labels.
 split_into_segments([], _, []).
 split_into_segments([Line|Rest], PC, Segments) :-
     split_string(Line, " \t,", " \t,", Parts),
@@ -122,43 +115,41 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
         extract_segment_body(Rest, PC1, RestBody, Next, NPC)
     ).
 
-generate_all_segments([], _, []).
-generate_all_segments([Name-Instrs | Rest], Labels, [Code | RestCodes]) :-
+generate_all_segments([], _, [], []).
+generate_all_segments([Name-Instrs | Rest], Labels, [MapAttr | RestAttrs], [Code | RestCodes]) :-
     segment_func_name(Name, FuncName),
-    classify_segment_head(Instrs, HeadType, BodyInstrs),  % strip CP ops
-    lower_instr_list(BodyInstrs, Labels, FuncName, BodyExprs), % use stripped list
+    classify_segment_head(Instrs, HeadType, BodyInstrs),
+    lower_instr_list(BodyInstrs, Labels, FuncName, BodyExprs),
     atomic_list_concat(BodyExprs, '\n', BodyCode),
-    % Pre-extract any switch maps to module attributes
-    extract_switch_maps(BodyInstrs, FuncName, MapAttrBody),
-    wrap_segment(FuncName, HeadType, BodyCode, SegmentCode),
-    atomic_list_concat([MapAttrBody, SegmentCode], Code),
-    generate_all_segments(Rest, Labels, RestCodes).
+    extract_switch_maps(BodyInstrs, FuncName, MapAttr),
+    wrap_segment(FuncName, HeadType, BodyCode, Code),
+    generate_all_segments(Rest, Labels, RestAttrs, RestCodes).
 
 extract_switch_maps(Instrs, FuncName, AttrBody) :-
     (   (member(_PC-switch_on_constant(Entries), Instrs) ; member(_PC-switch_on_constant_a2(Entries), Instrs))
     ->  maplist(switch_entry_pair, Entries, Pairs),
         atomic_list_concat(Pairs, ', ', PairsStr),
-        format(string(AttrBody), '  @switch_map_~w Map.new([~w])\n', [FuncName, PairsStr])
+        format(string(AttrBody), '  @switch_map_~w Map.new([~w])', [FuncName, PairsStr])
     ;   AttrBody = ""
     ).
 
 switch_entry_pair(Entry, Pair) :-
-    % entry is "key:label"
+    split_last_colon(Entry, Key, Label),
+    format(string(Pair), '{"~w", "~w"}', [Key, Label]).
+
+split_last_colon(Entry, Key, Label) :-
     atom_string(E, Entry),
     (   sub_atom(E, Before, 1, After, ':'), \+ sub_atom(E, _, 1, After, ':')
     ->  sub_atom(E, 0, Before, _, Key),
         sub_atom(E, _, After, 0, Label)
     ;   Key = Entry, Label = "default"
-    ),
-    format(string(Pair), '{"~w", "~w"}', [Key, Label]).
+    ).
 
 segment_func_name("clause_start", "clause_main") :- !.
 segment_func_name(Label, Name) :- 
     camel_case(Label, Camel),
     format(string(Name), "clause_~w", [Camel]).
 
-%% classify_segment_head(+Instrs, -HeadType, -BodyInstrs)
-%  Identifies and strips choice point instructions from segment head.
 classify_segment_head(Instrs, HeadType, BodyInstrs) :-
     (   select(_PC-try_me_else(L), Instrs, BodyInstrs) -> HeadType = try_me_else(L)
     ;   select(_PC-retry_me_else(L), Instrs, BodyInstrs) -> HeadType = retry_me_else(L)
@@ -166,8 +157,6 @@ classify_segment_head(Instrs, HeadType, BodyInstrs) :-
     ;   HeadType = none, BodyInstrs = Instrs
     ), !.
 
-%% wrap_segment(+FuncName, +HeadType, +BodyCode, -Code)
-%  Wraps segment body in appropriate control structure.
 wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
     segment_func_name(L, FallbackFunc),
     format(string(Code),
@@ -204,7 +193,6 @@ wrap_segment(FuncName, none, BodyCode, Code) :-
 ~w
   end', [FuncName, BodyCode]).
 
-%% lower_instr_list(+PCInstrs, +Labels, +FuncName, -Exprs)
 lower_instr_list([], _, _, []).
 lower_instr_list([PC-Instr|Rest], Labels, FuncName, [Expr|Exprs]) :-
     wam_elixir_lower_instr(Instr, PC, Labels, FuncName, Expr),
@@ -248,7 +236,6 @@ instr_from_parts(Parts, raw(Combined)) :-
 % INSTRUCTION LOWERING
 % ============================================================================
 
-%% wam_elixir_lower_instr(+Instr, +PC, +Labels, +FuncName, -Code)
 wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
@@ -482,7 +469,6 @@ wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
 
 %% pred_to_module(+PredStr, -ModuleName)
-%  Converts "pred_name/arity" to WamPredLow.PredName
 pred_to_module(PredStr, ModName) :-
     (   sub_string(PredStr, Before, _, _, "/")
     ->  sub_string(PredStr, 0, Before, _, Name)

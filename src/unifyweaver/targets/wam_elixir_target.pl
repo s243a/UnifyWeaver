@@ -569,6 +569,8 @@ compile_utility_helpers_to_elixir(Code) :-
         end
       {neg_op, 1} when neg_op in ["\\\\+/1", "\\+/1"] ->
         # Negation: \\+ Goal
+        # Note: Ground atoms as goals (e.g. \\+ true) always fail negation check 
+        # in this implementation as they are not runnable without arity.
         goal_val = deref_var(state, get_reg(state, 1))
         # Isolated state for negation check
         temp_state = %{state | choice_points: [], stack: []}
@@ -578,31 +580,24 @@ compile_utility_helpers_to_elixir(Code) :-
           {:ref, addr} ->
             case Enum.at(state.heap, addr) do
               {:str, pred_arity} ->
-                # This is a bit of a hack: we need a dispatcher that can take 
-                # a Pred/Arity and a state. WamDispatcher.call/2 works for 
-                # predicates, but builtins need execute_builtin.
                 arity = parse_functor_arity(pred_arity)
                 args = Enum.slice(state.heap, addr + 1, arity)
-                # Map args to registers for the call
                 call_state = Enum.with_index(args, 1)
                 |> Enum.reduce(temp_state, fn {arg, i}, s -> %{s | regs: Map.put(s.regs, i, arg)} end)
 
-                # Try to run via dispatcher (for predicates) or builtin
                 try do
                   case WamDispatcher.call(pred_arity, call_state) do
                     {:ok, _} -> :success
                     :fail -> :fail
                   end
                 catch
-                  _ -> # If dispatcher fails, maybe it is a builtin?
-                    case execute_builtin(call_state, pred_arity, arity) do
-                      :fail -> :fail
-                      _ -> :success
-                    end
+                  :fail -> :fail
+                  {:return, _} -> :success
+                  # Let other exceptions propagate for easier debugging
                 end
-              _ -> :fail # Not a runnable term
+              _ -> :fail
             end
-          _ -> :fail # Ground values fail as goals
+          _ -> :fail
         end
 
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
