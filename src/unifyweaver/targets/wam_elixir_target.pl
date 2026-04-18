@@ -29,7 +29,7 @@
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
-:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2]).
+:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
 :- discontiguous wam_elixir_case/2.
 
@@ -97,13 +97,12 @@ wam_elixir_case(get_value,
         end').
 
 wam_elixir_case(get_structure,
-'      {:get_structure, fn_name, ai} ->
+'      {:get_structure, fn_name, arity, ai} ->
         val = Map.get(state.regs, ai)
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
             new_heap = Map.put(state.heap, addr, {:str, fn_name})
-            arity = parse_functor_arity(fn_name)
             state
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
@@ -113,7 +112,7 @@ wam_elixir_case(get_structure,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, fn_name, addr)
+            step_get_structure_ref(state, fn_name, arity, addr)
           true -> :fail
         end').
 
@@ -133,7 +132,7 @@ wam_elixir_case(get_list,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, "./2", addr)
+            step_get_structure_ref(state, "./2", 2, addr)
           is_list(val) ->
             %{state | stack: [{:unify_ctx, val} | state.stack], pc: state.pc + 1}
           true -> :fail
@@ -163,7 +162,7 @@ wam_elixir_case(put_value,
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_structure,
-'      {:put_structure, fn_name, ai} ->
+'      {:put_structure, fn_name, arity, ai} ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, fn_name})
         state
@@ -171,7 +170,7 @@ wam_elixir_case(put_structure,
         |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
         |> Map.put(:heap, new_heap)
         |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, parse_functor_arity(fn_name)} | state.stack])
+        |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_list,
@@ -225,18 +224,22 @@ wam_elixir_case(unify_constant,
 % --- Control Flow Instructions ---
 
 wam_elixir_case(call,
-'      {:call, p, _n} ->
-        # Note: Interpreter mode currently only supports intra-module calls via labels.
-        # Dynamic cross-module dispatch requires the lowered emitter and WamDispatcher.
-        new_cp = state.pc + 1
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:call, target_pc, _n} when is_integer(target_pc) ->
+        %{state | pc: target_pc, cp: state.pc + 1}
+      # Fallback: unresolved string label (cross-module/orphan).
+      {:call, p, _n} when is_binary(p) ->
         case Map.get(state.labels, p) do
           nil -> :fail
-          target_pc -> %{state | pc: target_pc, cp: new_cp}
+          target_pc -> %{state | pc: target_pc, cp: state.pc + 1}
         end').
 
 wam_elixir_case(execute,
-'      {:execute, p} ->
-        # Note: Interpreter mode currently only supports intra-module calls via labels.
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:execute, target_pc} when is_integer(target_pc) ->
+        %{state | pc: target_pc}
+      # Fallback: unresolved string label.
+      {:execute, p} when is_binary(p) ->
         case Map.get(state.labels, p) do
           nil -> :fail
           target_pc -> %{state | pc: target_pc}
@@ -261,14 +264,30 @@ wam_elixir_case(deallocate,
 % --- Choice Point Instructions ---
 
 wam_elixir_case(try_me_else,
-'      {:try_me_else, label} ->
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:try_me_else, target} when is_integer(target) ->
+        cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+               cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+        %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}
+      # Fallback: unresolved string label.
+      {:try_me_else, label} when is_binary(label) ->
         target = resolve_label(state, label)
         cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}').
 
 wam_elixir_case(retry_me_else,
-'      {:retry_me_else, label} ->
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:retry_me_else, target} when is_integer(target) ->
+        case state.choice_points do
+          [_old | rest] ->
+            cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+                   cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+            %{state | choice_points: [cp | rest], pc: state.pc + 1}
+          _ -> %{state | pc: state.pc + 1}
+        end
+      # Fallback: unresolved string label.
+      {:retry_me_else, label} when is_binary(label) ->
         target = resolve_label(state, label)
         case state.choice_points do
           [_old | rest] ->
@@ -321,7 +340,7 @@ compile_run_loop_to_elixir(Code) :-
           :fail ->
             case backtrack(state) do
               :fail -> :fail
-              new_state -> run(new_state)
+              {:ok, new_state} -> run(new_state)
             end
           new_state -> run(new_state)
         end
@@ -448,11 +467,10 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   def deref_var(_state, val), do: val
 
-  def step_get_structure_ref(state, fn_name, addr) do
+  def step_get_structure_ref(state, fn_name, arity, addr) do
     entry = Map.get(state.heap, addr)
     cond do
       entry == {:str, fn_name} ->
-        arity = parse_functor_arity(fn_name)
         args = heap_slice(state, addr + 1, arity)
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
@@ -730,105 +748,151 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
 end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
 
 %% wam_code_to_elixir_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
+%  Two-pass: pass 1 collects labels → PC map; pass 2 emits instructions
+%  with label references pre-resolved to integer PCs where possible.
 wam_code_to_elixir_instructions(WamCode, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_elixir(Lines, 1, InstrParts, LabelParts),
+    collect_labels_pass(Lines, 1, LabelsList),
+    wam_lines_to_elixir(Lines, 1, LabelsList, InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, ', ', LabelLiterals).
 
-wam_lines_to_elixir([], _, [], []).
-wam_lines_to_elixir([Line|Rest], PC, Instrs, Labels) :-
+%% collect_labels_pass(+Lines, +StartPC, -LabelsList)
+%  Returns a list of LabelName-PC pairs (strings and integers).
+collect_labels_pass([], _, []).
+collect_labels_pass([Line|Rest], PC, Labels) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == [] -> collect_labels_pass(Rest, PC, Labels)
+    ;   CleanParts = [First|_], is_label_part(First)
+    ->  sub_string(First, 0, _, 1, LabelName),
+        Labels = [LabelName-PC | RestLabels],
+        collect_labels_pass(Rest, PC, RestLabels)
+    ;   NPC is PC + 1,
+        collect_labels_pass(Rest, NPC, Labels)
+    ).
+
+wam_lines_to_elixir([], _, _, [], []).
+wam_lines_to_elixir([Line|Rest], PC, LabelsList, Instrs, Labels) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_elixir(Rest, PC, Instrs, Labels)
+    ->  wam_lines_to_elixir(Rest, PC, LabelsList, Instrs, Labels)
     ;   CleanParts = [First|_],
         (   is_label_part(First)
         ->  sub_string(First, 0, _, 1, LabelName),
             format(string(LabelInsert), '"~w" => ~w', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
-            wam_lines_to_elixir(Rest, PC, Instrs, RestLabels)
-        ;   wam_line_to_elixir_instr(CleanParts, ElixirInstr),
+            wam_lines_to_elixir(Rest, PC, LabelsList, Instrs, RestLabels)
+        ;   wam_line_to_elixir_instr(CleanParts, LabelsList, ElixirInstr),
             format(string(InstrEntry), '      ~w,', [ElixirInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
-            wam_lines_to_elixir(Rest, NPC, RestInstrs, Labels)
+            wam_lines_to_elixir(Rest, NPC, LabelsList, RestInstrs, Labels)
         )
     ).
 
-wam_line_to_elixir_instr(["try_me_else", L], Instr) :-
+%% resolve_label(+LabelStr, +LabelsList, -Resolved)
+%  Finds the PC for LabelStr in LabelsList. On hit, Resolved is an integer.
+%  On miss (cross-module / orphan), Resolved is the original string — the
+%  runtime path through state.labels handles those.
+resolve_label(LabelStr, LabelsList, Resolved) :-
+    (   member(LabelStr-PC, LabelsList)
+    ->  Resolved = PC
+    ;   Resolved = LabelStr
+    ).
+
+wam_line_to_elixir_instr(["try_me_else", L], LabelsList, Instr) :-
     clean_comma(L, CL),
-    format(string(Instr), '{:try_me_else, "~w"}', [CL]).
-wam_line_to_elixir_instr(["retry_me_else", L], Instr) :-
+    resolve_label(CL, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:try_me_else, ~w}', [R])
+    ;   format(string(Instr), '{:try_me_else, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["retry_me_else", L], LabelsList, Instr) :-
     clean_comma(L, CL),
-    format(string(Instr), '{:retry_me_else, "~w"}', [CL]).
-wam_line_to_elixir_instr(["trust_me"], ':trust_me').
-wam_line_to_elixir_instr(["put_structure", F, Ai], Instr) :-
+    resolve_label(CL, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:retry_me_else, ~w}', [R])
+    ;   format(string(Instr), '{:retry_me_else, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["trust_me"], _, ':trust_me').
+wam_line_to_elixir_instr(["put_structure", F, Ai], _, Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:put_structure, "~w", ~w}', [CF, AiId]).
-wam_line_to_elixir_instr(["get_structure", F, Ai], Instr) :-
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:put_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
+wam_line_to_elixir_instr(["get_structure", F, Ai], _, Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:get_structure, "~w", ~w}', [CF, AiId]).
-wam_line_to_elixir_instr(["unify_variable", Xn], Instr) :-
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:get_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
+wam_line_to_elixir_instr(["unify_variable", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:unify_variable, ~w}', [XnId]).
-wam_line_to_elixir_instr(["unify_value", Xn], Instr) :-
+wam_line_to_elixir_instr(["unify_value", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:unify_value, ~w}', [XnId]).
-wam_line_to_elixir_instr(["unify_constant", C], Instr) :-
+wam_line_to_elixir_instr(["unify_constant", C], _, Instr) :-
     clean_comma(C, CC),
     format(string(Instr), '{:unify_constant, "~w"}', [CC]).
-wam_line_to_elixir_instr(["set_variable", Xn], Instr) :-
+wam_line_to_elixir_instr(["set_variable", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:set_variable, ~w}', [XnId]).
-wam_line_to_elixir_instr(["set_value", Xn], Instr) :-
+wam_line_to_elixir_instr(["set_value", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:set_value, ~w}', [XnId]).
-wam_line_to_elixir_instr(["set_constant", C], Instr) :-
+wam_line_to_elixir_instr(["set_constant", C], _, Instr) :-
     clean_comma(C, CC),
     format(string(Instr), '{:set_constant, "~w"}', [CC]).
-wam_line_to_elixir_instr(["get_constant", C, Ai], Instr) :-
+wam_line_to_elixir_instr(["get_constant", C, Ai], _, Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:get_constant, "~w", ~w}', [CC, AiId]).
-wam_line_to_elixir_instr(["get_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["get_variable", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_variable, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["get_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["get_value", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_value, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["put_constant", C, Ai], Instr) :-
+wam_line_to_elixir_instr(["put_constant", C, Ai], _, Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:put_constant, "~w", ~w}', [CC, AiId]).
-wam_line_to_elixir_instr(["put_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["put_variable", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_variable, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["put_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["put_value", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_value, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["proceed"], ':proceed').
-wam_line_to_elixir_instr(["call", P, N], Instr) :-
+wam_line_to_elixir_instr(["proceed"], _, ':proceed').
+wam_line_to_elixir_instr(["call", P, N], LabelsList, Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
-    format(string(Instr), '{:call, "~w", ~w}', [CP, CN]).
-wam_line_to_elixir_instr(["execute", P], Instr) :-
+    resolve_label(CP, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:call, ~w, ~w}', [R, CN])
+    ;   format(string(Instr), '{:call, "~w", ~w}', [R, CN])
+    ).
+wam_line_to_elixir_instr(["execute", P], LabelsList, Instr) :-
     clean_comma(P, CP),
-    format(string(Instr), '{:execute, "~w"}', [CP]).
-wam_line_to_elixir_instr(["allocate", N], Instr) :-
+    resolve_label(CP, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:execute, ~w}', [R])
+    ;   format(string(Instr), '{:execute, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["allocate", N], _, Instr) :-
     clean_comma(N, CN),
     format(string(Instr), '{:allocate, ~w}', [CN]).
-wam_line_to_elixir_instr(["deallocate"], ':deallocate').
-wam_line_to_elixir_instr(["builtin_call", Op, Ar], Instr) :-
+wam_line_to_elixir_instr(["deallocate"], _, ':deallocate').
+wam_line_to_elixir_instr(["builtin_call", Op, Ar], _, Instr) :-
     clean_comma(Op, COp), clean_comma(Ar, CAr),
     (   sub_atom(COp, 0, 1, _, '\\') % Handle \+ / 1
     ->  sub_atom(COp, 1, _, 0, Rest),
         format(string(Instr), '{:builtin_call, "\\\\~w", ~w}', [Rest, CAr])
     ;   format(string(Instr), '{:builtin_call, "~w", ~w}', [COp, CAr])
     ).
-wam_line_to_elixir_instr(Parts, Instr) :-
+wam_line_to_elixir_instr(Parts, _, Instr) :-
     atomic_list_concat(Parts, ' ', Combined),
     format(string(Instr), '{:raw, "~w"}', [Combined]).
 

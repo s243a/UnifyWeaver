@@ -14,7 +14,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
-:- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2]).
+:- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
 % ============================================================================
 % MAIN ENTRY POINT
@@ -272,40 +272,40 @@ wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
 
 wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
+    parse_arity(F, Arity),
     format(string(Code),
 '    addr = state.heap_len
     new_heap = Map.put(state.heap, addr, {:str, "~w"})
-    arity = WamRuntime.parse_functor_arity("~w")
     state = state
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
     |> Map.put(:heap, new_heap)
     |> Map.put(:heap_len, addr + 1)
-    |> Map.put(:stack, [{:write_ctx, arity} | state.stack])', [F, F, Ai, Ai]).
+    |> Map.put(:stack, [{:write_ctx, ~w} | state.stack])', [F, Ai, Ai, Arity]).
 
 wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
+    parse_arity(F, Arity),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = cond do
       match?({:unbound, _}, val) ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, "~w"})
-        arity = WamRuntime.parse_functor_arity("~w")
         state
         |> WamRuntime.trail_binding(~w)
         |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
         |> Map.put(:heap, new_heap)
         |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
+        |> Map.put(:stack, [{:write_ctx, ~w} | state.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
-        case WamRuntime.step_get_structure_ref(state, "~w", addr) do
+        case WamRuntime.step_get_structure_ref(state, "~w", ~w, addr) do
           :fail -> throw(:fail)
           s -> s
         end
       true -> throw(:fail)
-    end', [Ai, F, F, Ai, Ai, F]).
+    end', [Ai, F, Ai, Ai, Arity, F, Arity]).
 
 wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, _FuncName, Code) :-
     reg_id(XnName, Xn),
@@ -417,7 +417,7 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
         |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
       match?({:ref, _}, val) ->
         {:ref, addr} = val
-        case WamRuntime.step_get_structure_ref(state, "./2", addr) do
+        case WamRuntime.step_get_structure_ref(state, "./2", 2, addr) do
           :fail -> throw(:fail)
           s -> s
         end

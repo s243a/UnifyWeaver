@@ -8,7 +8,8 @@
     reg_id/2,       % +Reg, -Id
     clean_comma/2,  % +String, -CleanString
     is_label_part/1, % +String
-    camel_case/2    % +String, -CamelString
+    camel_case/2,   % +String, -CamelString
+    parse_arity/2   % +Functor, -Arity
 ]).
 
 %% is_label_part(+String)
@@ -48,4 +49,16 @@ clean_comma(S, Clean) :-
     (   sub_string(S, _, 1, 0, ",")
     ->  sub_string(S, 0, _, 1, Clean)
     ;   Clean = S
+    ).
+
+%% parse_arity(+Functor, -Arity)
+%  Extracts the integer arity from a "name/arity" functor string.
+%  Falls back to 0 for malformed or arity-less functors. Matches the
+%  semantics of the generated Elixir parse_functor_arity/1 exactly so
+%  codegen-time pre-computation gives the same result as runtime parse.
+parse_arity(Functor, Arity) :-
+    (   split_string(Functor, "/", "", [_, ArityStr]),
+        catch(number_string(Arity, ArityStr), _, false)
+    ->  true
+    ;   Arity = 0
     ).
