@@ -72,9 +72,11 @@ class Environment:
 class WamState:
     def __init__(self):
         self.regs: List = [None] * 512   # A1->1, X1->101, Y1->201 (1-indexed, same as all targets)
-        self.heap: List = []
+        self.heap: Dict[int, Term] = {}  # O(1) put/get/trim via dict keyed by int addr
+        self.heap_len: int = 0           # cached length — avoids len() on hot path
         self.stack: List = []            # environments + choice points (typed)
         self.trail: List[int] = []       # heap addresses to unbind
+        self.trail_len: int = 0          # cached trail length
         self.pdl: List = []              # unification push-down list
         self.mode: str = 'write'
         self.s: int = 0                  # structure pointer (read mode)
@@ -120,12 +122,20 @@ def set_reg(state: WamState, n: int, val: Term) -> None:
 # -- Heap helpers -----------------------------------------------------------
 
 def heap_put(state: WamState, term: Term) -> int:
-    addr = len(state.heap)
-    state.heap.append(term)
+    addr = state.heap_len
+    state.heap[addr] = term
+    state.heap_len += 1
     return addr
 
 def heap_get(state: WamState, addr: int) -> Term:
     return state.heap[addr]
+
+
+def heap_trim(state: WamState, mark: int) -> None:
+    """Trim heap back to mark — O(k) where k = entries removed."""
+    for i in range(mark, state.heap_len):
+        state.heap.pop(i, None)
+    state.heap_len = mark
 
 
 # -- Trail ------------------------------------------------------------------
@@ -134,12 +144,14 @@ def trail_if_needed(addr: int, state: WamState) -> None:
     """Trail a heap address if it might need to be undone on backtrack."""
     if addr < state.b_heap_top() or addr < state.b_trail_top():
         state.trail.append(addr)
+        state.trail_len += 1
 
 def undo_trail(state: WamState, mark: int) -> None:
     """Unbind all trailed variables since mark."""
-    while len(state.trail) > mark:
+    while state.trail_len > mark:
         addr = state.trail.pop()
-        v = state.heap[addr]
+        state.trail_len -= 1
+        v = state.heap.get(addr)
         if isinstance(v, Var):
             v.ref[0] = None
 
@@ -151,8 +163,9 @@ def deref(term: Term, state: WamState) -> Term:
     while isinstance(term, Var) and term.ref[0] is not None:
         term = term.ref[0]
     if isinstance(term, Ref):
-        h = state.heap[term.addr]
-        return deref(h, state)
+        h = state.heap.get(term.addr)
+        if h is not None:
+            return deref(h, state)
     return term
 
 def bind(v: Var, val: Term, state: WamState) -> None:
@@ -222,8 +235,8 @@ def push_choice_point(state: WamState, n_args: int, next_clause: Any) -> None:
         saved_e=state.e,
         saved_cp=state.cp,
         next_clause=next_clause,
-        trail_top=len(state.trail),
-        heap_top=len(state.heap),
+        trail_top=state.trail_len,
+        heap_top=state.heap_len,
         saved_b=state.b,
     )
     state.stack.append(cp)
@@ -235,8 +248,8 @@ def restore_choice_point(state: WamState, next_clause: Any = None) -> None:
     assert isinstance(cp, ChoicePoint)
     # Undo trail
     undo_trail(state, cp.trail_top)
-    # Trim heap
-    del state.heap[cp.heap_top:]
+    # Trim heap (dict-based — remove entries >= mark, reset heap_len)
+    heap_trim(state, cp.heap_top)
     # Restore registers
     state.regs[:cp.n_args] = cp.saved_regs.copy()
     state.e = cp.saved_e
@@ -343,6 +356,13 @@ def execute_foreign(functor: str, arity: int, args: List[Term], state: WamState)
         raise WAMError(f"Unknown foreign predicate: {functor}/{arity}")
     fn = _foreign_predicates[key]
     return fn(args, state)
+
+
+# -- Program loading --------------------------------------------------------
+
+def load_program(program: dict) -> dict:
+    """Pre-process program dict: convert instruction lists to tuples."""
+    return {label: tuple(instrs) for label, instrs in program.items()}
 
 
 # -- Main WAM interpreter loop ---------------------------------------------

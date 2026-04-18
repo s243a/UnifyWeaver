@@ -625,8 +625,8 @@ compile_backtrack_method_to_python(Code) :-
                 return False
             # Undo trail bindings
             unwind_trail(self, cp.trail_top)
-            # Truncate heap
-            del self.heap[cp.heap_top:]
+            # Trim heap (dict-based)
+            heap_trim(self, cp.heap_top)
             # Restore registers
             for i in range(len(cp.saved_regs)):
                 self.regs[i] = cp.saved_regs[i]
@@ -1126,9 +1126,9 @@ compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
     # Labels
 ~w
     # Instructions
-    state.code = [
+    state.code = (
 ~w
-    ]
+    )
     return state.run()
 ', [PredStr, ArgList, PredStr, Arity, ArgSetup, LabelLiterals, InstrLiterals]).
 
