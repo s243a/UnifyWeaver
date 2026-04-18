@@ -7,7 +7,7 @@ import (
 )
 
 type TrailEntry struct {
-	Var string
+	Addr int
 }
 
 type AtomPair struct {
@@ -25,13 +25,13 @@ type ChoicePoint struct {
 	NextPC    int
 	ResumePC  int
 	CP        int
-	Regs      map[string]Value
+	SavedRegs []Value
 	Stack     []StackEntry
 	HeapTop   int
 	TrailMark int
 	IndexedClausePCs []int
 	ForeignPredKey   string
-	ForeignResultRegs []string
+	ForeignResultRegs []int
 	ForeignResults   []Value
 }
 
@@ -56,33 +56,50 @@ func (e *EnvFrame) stackTag() {}
 func (e *UnifyCtx) stackTag() {}
 func (e *WriteCtx) stackTag() {}
 
-type WamState struct {
+// WamContext holds cold, shared read-only data across parallel seeds.
+type WamContext struct {
 	Code         []Instruction
 	Labels       map[string]int
+	ForeignNativeKinds        map[string]string
+	ForeignResultLayouts      map[string]string
+	ForeignResultModes        map[string]string
+	ForeignStringConfigs      map[string]map[string]string
+	ForeignUsizeConfigs       map[string]map[string]int
+	IndexedAtomFactPairs      map[string][]AtomPair
+	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
+	AtomIntern                map[string]int
+	InternedFacts             map[string][][]int
+	InternedWeightedFacts     map[string][]InternedWeightedEdge
+}
+
+// InternedWeightedEdge stores interned atom IDs + weight for weighted edges.
+type InternedWeightedEdge struct {
+	Left   int
+	Right  int
+	Weight float64
+}
+
+// WamState holds hot, per-seed mutable state.
+type WamState struct {
+	Ctx          *WamContext
 	PC           int
 	CP           int
-	Regs         map[string]Value
+	Regs         [512]Value
 	Heap         []Value
+	HeapLen      int
 	Stack        []StackEntry
 	Trail        []TrailEntry
+	TrailLen     int
 	ChoicePoints []ChoicePoint
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
-	ForeignNativeKinds   map[string]string
-	ForeignResultLayouts map[string]string
-	ForeignResultModes   map[string]string
-	ForeignStringConfigs map[string]map[string]string
-	ForeignUsizeConfigs  map[string]map[string]int
-	IndexedAtomFactPairs map[string][]AtomPair
-	IndexedWeightedEdgeTriples map[string][]WeightedEdgeTriple
 }
 
-func NewWamState(code []Instruction, labels map[string]int) *WamState {
-	return &WamState{
+func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
+	return &WamContext{
 		Code:   code,
 		Labels: labels,
-		Regs:   make(map[string]Value),
 		ForeignNativeKinds:   make(map[string]string),
 		ForeignResultLayouts: make(map[string]string),
 		ForeignResultModes:   make(map[string]string),
@@ -90,39 +107,71 @@ func NewWamState(code []Instruction, labels map[string]int) *WamState {
 		ForeignUsizeConfigs:  make(map[string]map[string]int),
 		IndexedAtomFactPairs: make(map[string][]AtomPair),
 		IndexedWeightedEdgeTriples: make(map[string][]WeightedEdgeTriple),
+		AtomIntern:           make(map[string]int),
+		InternedFacts:        make(map[string][][]int),
+		InternedWeightedFacts: make(map[string][]InternedWeightedEdge),
 	}
 }
 
-func (vm *WamState) putReg(name string, val Value) {
-	vm.Regs[name] = val
+func NewWamState(code []Instruction, labels map[string]int) *WamState {
+	ctx := NewWamContext(code, labels)
+	return &WamState{Ctx: ctx}
 }
 
-func (vm *WamState) getReg(name string) Value {
-	return vm.Regs[name]
+func (vm *WamState) putReg(idx int, val Value) {
+	vm.Regs[idx] = val
 }
 
-func (vm *WamState) trailBinding(name string) {
-	vm.Trail = append(vm.Trail, TrailEntry{Var: name})
+func (vm *WamState) getReg(idx int) Value {
+	return vm.Regs[idx]
 }
 
-func (vm *WamState) pushChoicePoint(nextPC int) {
+func (vm *WamState) trailBinding(addr int) {
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr})
+	vm.TrailLen++
+}
+
+func (vm *WamState) heapPush(v Value) int {
+	addr := vm.HeapLen
+	vm.Heap = append(vm.Heap, v)
+	vm.HeapLen++
+	return addr
+}
+
+func (vm *WamState) heapTrimTo(mark int) {
+	vm.Heap = vm.Heap[:mark]
+	vm.HeapLen = mark
+}
+
+func (vm *WamState) trailTrimTo(mark int) {
+	vm.Trail = vm.Trail[:mark]
+	vm.TrailLen = mark
+}
+
+func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
+	saved := make([]Value, arity)
+	copy(saved, vm.Regs[:arity])
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
-		Regs:      copyMap(vm.Regs),
+		SavedRegs: saved,
 		Stack:     copyStack(vm.Stack),
-		HeapTop:   len(vm.Heap),
-		TrailMark: len(vm.Trail),
+		HeapTop:   vm.HeapLen,
+		TrailMark: vm.TrailLen,
 	})
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int) {
+	// Save all A-regs (0..99) that are non-nil — use a reasonable default arity
+	arity := 100
+	saved := make([]Value, arity)
+	copy(saved, vm.Regs[:arity])
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		CP:        vm.CP,
-		Regs:      copyMap(vm.Regs),
+		SavedRegs: saved,
 		Stack:     copyStack(vm.Stack),
-		HeapTop:   len(vm.Heap),
-		TrailMark: len(vm.Trail),
+		HeapTop:   vm.HeapLen,
+		TrailMark: vm.TrailLen,
 		IndexedClausePCs: append([]int(nil), pcs...),
 	})
 }
@@ -169,32 +218,26 @@ func (vm *WamState) popStack() {
 }
 
 func (vm *WamState) heapSubargs(start, n int) []Value {
-	if start+n > len(vm.Heap) { return nil }
+	if start+n > vm.HeapLen { return nil }
 	return vm.Heap[start : start+n]
 }
 
 func (vm *WamState) Clone() *WamState {
 	newState := &WamState{
-		Code:         vm.Code,
-		Labels:       vm.Labels,
+		Ctx:          vm.Ctx,
 		PC:           vm.PC,
 		CP:           vm.CP,
-		Regs:         copyMap(vm.Regs),
-		Heap:         make([]Value, len(vm.Heap)),
+		Heap:         make([]Value, vm.HeapLen),
+		HeapLen:      vm.HeapLen,
 		Stack:        make([]StackEntry, len(vm.Stack)),
-		Trail:        make([]TrailEntry, len(vm.Trail)),
+		Trail:        make([]TrailEntry, vm.TrailLen),
+		TrailLen:     vm.TrailLen,
 		ChoicePoints: make([]ChoicePoint, len(vm.ChoicePoints)),
 		Halted:       vm.Halted,
 		CurrentStruct: vm.CurrentStruct,
 		CurrentList:   vm.CurrentList,
-		ForeignNativeKinds:   vm.ForeignNativeKinds,
-		ForeignResultLayouts: vm.ForeignResultLayouts,
-		ForeignResultModes:   vm.ForeignResultModes,
-		ForeignStringConfigs: vm.ForeignStringConfigs,
-		ForeignUsizeConfigs:  vm.ForeignUsizeConfigs,
-		IndexedAtomFactPairs: vm.IndexedAtomFactPairs,
-		IndexedWeightedEdgeTriples: vm.IndexedWeightedEdgeTriples,
 	}
+	newState.Regs = vm.Regs
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
@@ -212,14 +255,6 @@ func (vm *WamState) ForkAtChoicePoint() *WamState {
 		return clone
 	}
 	return nil
-}
-
-func copyMap(m map[string]Value) map[string]Value {
-	m2 := make(map[string]Value)
-	for k, v := range m {
-		m2[k] = v
-	}
-	return m2
 }
 
 func copyStack(stack []StackEntry) []StackEntry {
@@ -350,7 +385,7 @@ func (vm *WamState) deref(v Value) Value {
 			if next == v { return v }
 			v = next
 		} else if u, ok := v.(*Unbound); ok {
-			if boundVal, exists := vm.Regs[u.Name]; exists && boundVal != v {
+			if boundVal := vm.Regs[u.Idx]; boundVal != nil && boundVal != v {
 				v = boundVal
 			} else {
 				return v
@@ -370,7 +405,7 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 	case *Float:
 		return t.Val, true
 	}
-	
+
 	f, args := decompose(v)
 	if len(args) == 2 {
 		a, okA := vm.evalArithmetic(args[0])
@@ -400,10 +435,10 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 }
 
 func (vm *WamState) executeBuiltin(op string, arity int) bool {
-	arg1 := vm.getReg("A1")
+	arg1 := vm.getReg(0) // A1
 	var arg2, arg3 Value
-	if arity >= 2 { arg2 = vm.getReg("A2") }
-	if arity >= 3 { arg3 = vm.getReg("A3") }
+	if arity >= 2 { arg2 = vm.getReg(1) } // A2
+	if arity >= 3 { arg3 = vm.getReg(2) } // A3
 
 	switch op {
 	case "write/1":
@@ -476,17 +511,19 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		goal := vm.deref(arg1)
 		f, args := decompose(goal)
 		if f != "" {
-			oldA1, hasA1 := vm.Regs["A1"]
-			oldA2, hasA2 := vm.Regs["A2"]
-			oldA3, hasA3 := vm.Regs["A3"]
-			if len(args) > 0 { vm.Regs["A1"] = args[0] }
-			if len(args) > 1 { vm.Regs["A2"] = args[1] }
-			if len(args) > 2 { vm.Regs["A3"] = args[2] }
+			// Save A-regs temporarily
+			var oldRegs [3]Value
+			for idx := 0; idx < 3; idx++ {
+				oldRegs[idx] = vm.Regs[idx]
+			}
+			if len(args) > 0 { vm.Regs[0] = args[0] }
+			if len(args) > 1 { vm.Regs[1] = args[1] }
+			if len(args) > 2 { vm.Regs[2] = args[2] }
 			opName := fmt.Sprintf("%s/%d", f, len(args))
 			res := vm.executeBuiltin(opName, len(args))
-			if hasA1 { vm.Regs["A1"] = oldA1 } else { delete(vm.Regs, "A1") }
-			if hasA2 { vm.Regs["A2"] = oldA2 } else { delete(vm.Regs, "A2") }
-			if hasA3 { vm.Regs["A3"] = oldA3 } else { delete(vm.Regs, "A3") }
+			for idx := 0; idx < 3; idx++ {
+				vm.Regs[idx] = oldRegs[idx]
+			}
 			return !res
 		}
 		return false
@@ -519,13 +556,13 @@ func (vm *WamState) Unify(v1, v2 Value) bool {
 	v2 = vm.deref(v2)
 
 	if u1, ok := v1.(*Unbound); ok {
-		vm.trailBinding(u1.Name)
-		vm.putReg(u1.Name, v2)
+		vm.trailBinding(u1.Idx)
+		vm.putReg(u1.Idx, v2)
 		return true
 	}
 	if u2, ok := v2.(*Unbound); ok {
-		vm.trailBinding(u2.Name)
-		vm.putReg(u2.Name, v1)
+		vm.trailBinding(u2.Idx)
+		vm.putReg(u2.Idx, v1)
 		return true
 	}
 
@@ -555,10 +592,10 @@ func (vm *WamState) backtrack() bool {
     cp := vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrail(cp.TrailMark)
-        vm.Regs = copyMap(cp.Regs)
+        copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
         vm.Stack = copyStack(cp.Stack)
-        if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
-            vm.Heap = vm.Heap[:cp.HeapTop]
+        if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
+            vm.heapTrimTo(cp.HeapTop)
         }
         vm.CP = cp.CP
         vm.Halted = false
@@ -577,10 +614,10 @@ func (vm *WamState) backtrack() bool {
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {
             vm.unwindTrail(cp.TrailMark)
-            vm.Regs = copyMap(cp.Regs)
+            copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
             vm.Stack = copyStack(cp.Stack)
-            if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
-                vm.Heap = vm.Heap[:cp.HeapTop]
+            if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
+                vm.heapTrimTo(cp.HeapTop)
             }
             vm.CP = cp.CP
             vm.Halted = false
@@ -602,10 +639,10 @@ func (vm *WamState) backtrack() bool {
         return false
     }
     vm.unwindTrail(cp.TrailMark)
-    vm.Regs = copyMap(cp.Regs)
+    copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
     vm.Stack = copyStack(cp.Stack)
-    if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
-        vm.Heap = vm.Heap[:cp.HeapTop]
+    if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
+        vm.heapTrimTo(cp.HeapTop)
     }
     vm.PC = cp.NextPC
     vm.CP = cp.CP
@@ -616,9 +653,48 @@ func (vm *WamState) backtrack() bool {
 }
 
 func (vm *WamState) unwindTrail(mark int) {
-    for len(vm.Trail) > mark {
-        entry := vm.Trail[len(vm.Trail)-1]
-        vm.Trail = vm.Trail[:len(vm.Trail)-1]
-        delete(vm.Regs, entry.Var)
+    for vm.TrailLen > mark {
+        vm.TrailLen--
+        entry := vm.Trail[vm.TrailLen]
+        vm.Regs[entry.Addr] = nil
+    }
+    vm.trailTrimTo(mark)
+}
+
+// buildAtomInternTable interns all atom strings from fact pairs and weighted
+// edge triples into integer IDs for fast comparison in kernel loops.
+func (ctx *WamContext) buildAtomInternTable() {
+    ctx.AtomIntern = make(map[string]int)
+    ctx.InternedFacts = make(map[string][][]int)
+    ctx.InternedWeightedFacts = make(map[string][]InternedWeightedEdge)
+    nextId := 0
+
+    internAtom := func(s string) int {
+        if id, ok := ctx.AtomIntern[s]; ok {
+            return id
+        }
+        ctx.AtomIntern[s] = nextId
+        nextId++
+        return nextId - 1
+    }
+
+    for predKey, pairs := range ctx.IndexedAtomFactPairs {
+        rows := make([][]int, len(pairs))
+        for i, p := range pairs {
+            rows[i] = []int{internAtom(p.Left), internAtom(p.Right)}
+        }
+        ctx.InternedFacts[predKey] = rows
+    }
+
+    for predKey, triples := range ctx.IndexedWeightedEdgeTriples {
+        rows := make([]InternedWeightedEdge, len(triples))
+        for i, t := range triples {
+            rows[i] = InternedWeightedEdge{
+                Left:   internAtom(t.Left),
+                Right:  internAtom(t.Right),
+                Weight: t.Weight,
+            }
+        }
+        ctx.InternedWeightedFacts[predKey] = rows
     }
 }

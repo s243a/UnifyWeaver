@@ -22,15 +22,15 @@ wam_only_caller(X, Z) :- wam_only_inner(X, Y), wam_only_inner(Y, Z).
 
 test(wam_get_constant) :-
     wam_instruction_to_go_literal(get_constant(atom(john), 'A1'), Literal),
-    assertion(Literal == '&GetConstant{C: &Atom{Name: "john"}, Ai: "A1"}').
+    assertion(Literal == '&GetConstant{C: &Atom{Name: "john"}, Ai: 0}').
 
 test(wam_get_variable) :-
     wam_instruction_to_go_literal(get_variable('X1', 'A1'), Literal),
-    assertion(Literal == '&GetVariable{Xn: "X1", Ai: "A1"}').
+    assertion(Literal == '&GetVariable{Xn: 100, Ai: 0}').
 
 test(wam_put_structure) :-
     wam_instruction_to_go_literal(put_structure('f/2', 'A1'), Literal),
-    assertion(Literal == '&PutStructure{Functor: "f/2", Ai: "A1"}').
+    assertion(Literal == '&PutStructure{Functor: "f/2", Ai: 0}').
 
 test(wam_switch_on_constant) :-
     Table = [john-default, jane-'L1'],
@@ -47,7 +47,7 @@ test(parse_wam_line_label) :-
 test(parse_wam_line_instruction) :-
     WamCode = "    get_constant john, A1",
     compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
-    assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: &Atom{Name: "john"}, Ai: "A1"}')).
+    assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: &Atom{Name: "john"}, Ai: 0}')).
 
 test(parse_wam_line_switch) :-
     WamCode = "    switch_on_constant john:default, jane:L1",

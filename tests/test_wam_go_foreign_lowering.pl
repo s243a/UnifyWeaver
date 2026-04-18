@@ -180,9 +180,9 @@ func TestForeignCountdownSum(t *testing.T) {
     vm.registerForeignNativeKind("test_tri_sum/2", "countdown_sum2")
     vm.registerForeignResultLayout("test_tri_sum/2", "tuple:1")
     vm.registerForeignResultMode("test_tri_sum/2", "deterministic")
-    out := &Unbound{Name: "SUM"}
-    vm.Regs["A1"] = &Integer{Val: 4}
-    vm.Regs["A2"] = out
+    out := &Unbound{Name: "SUM", Idx: 1}
+    vm.Regs[0] = &Integer{Val: 4}
+    vm.Regs[1] = out
     if !vm.executeForeignPredicate("test_tri_sum", 2) {
         t.Fatalf("executeForeignPredicate failed")
     }
@@ -197,12 +197,12 @@ func TestForeignListSuffixStream(t *testing.T) {
     vm.registerForeignNativeKind("test_tail_suffix/2", "list_suffix2")
     vm.registerForeignResultLayout("test_tail_suffix/2", "tuple:1")
     vm.registerForeignResultMode("test_tail_suffix/2", "stream")
-    out := &Unbound{Name: "SUF"}
-    vm.Regs["A1"] = &List{Elements: []Value{
+    out := &Unbound{Name: "SUF", Idx: 1}
+    vm.Regs[0] = &List{Elements: []Value{
         &Atom{Name: "a"},
         &Atom{Name: "b"},
     }}
-    vm.Regs["A2"] = out
+    vm.Regs[1] = out
     if !vm.executeForeignPredicate("test_tail_suffix", 2) {
         t.Fatalf("executeForeignPredicate failed")
     }
@@ -263,11 +263,11 @@ func TestForeignGraphKernels(t *testing.T) {
         {Left: "b", Right: "c"},
         {Left: "c", Right: "d"},
     })
-    target := &Unbound{Name: "TARGET"}
-    dist := &Unbound{Name: "DIST"}
-    vm.Regs["A1"] = &Atom{Name: "a"}
-    vm.Regs["A2"] = target
-    vm.Regs["A3"] = dist
+    target := &Unbound{Name: "TARGET", Idx: 1}
+    dist := &Unbound{Name: "DIST", Idx: 2}
+    vm.Regs[0] = &Atom{Name: "a"}
+    vm.Regs[1] = target
+    vm.Regs[2] = dist
     if !vm.executeForeignPredicate("test_reaches_dist", 3) {
         t.Fatalf("transitive_distance3 failed")
     }
@@ -297,13 +297,13 @@ func TestForeignGraphKernels(t *testing.T) {
         {Left: "b", Right: "c"},
         {Left: "c", Right: "d"},
     })
-    pTarget := &Unbound{Name: "PTARGET"}
-    pParent := &Unbound{Name: "PPARENT"}
-    pDist := &Unbound{Name: "PDIST"}
-    vm2.Regs["A1"] = &Atom{Name: "a"}
-    vm2.Regs["A2"] = pTarget
-    vm2.Regs["A3"] = pParent
-    vm2.Regs["A4"] = pDist
+    pTarget := &Unbound{Name: "PTARGET", Idx: 1}
+    pParent := &Unbound{Name: "PPARENT", Idx: 2}
+    pDist := &Unbound{Name: "PDIST", Idx: 3}
+    vm2.Regs[0] = &Atom{Name: "a"}
+    vm2.Regs[1] = pTarget
+    vm2.Regs[2] = pParent
+    vm2.Regs[3] = pDist
     if !vm2.executeForeignPredicate("test_parent_distance", 4) {
         t.Fatalf("transitive_parent_distance4 failed")
     }
@@ -324,15 +324,15 @@ func TestForeignGraphKernels(t *testing.T) {
         {Left: "b", Right: "c"},
         {Left: "c", Right: "d"},
     })
-    sTarget := &Unbound{Name: "STARGET"}
-    sStep := &Unbound{Name: "SSTEP"}
-    sParent := &Unbound{Name: "SPARENT"}
-    sDist := &Unbound{Name: "SDIST"}
-    vm3.Regs["A1"] = &Atom{Name: "a"}
-    vm3.Regs["A2"] = sTarget
-    vm3.Regs["A3"] = sStep
-    vm3.Regs["A4"] = sParent
-    vm3.Regs["A5"] = sDist
+    sTarget := &Unbound{Name: "STARGET", Idx: 1}
+    sStep := &Unbound{Name: "SSTEP", Idx: 2}
+    sParent := &Unbound{Name: "SPARENT", Idx: 3}
+    sDist := &Unbound{Name: "SDIST", Idx: 4}
+    vm3.Regs[0] = &Atom{Name: "a"}
+    vm3.Regs[1] = sTarget
+    vm3.Regs[2] = sStep
+    vm3.Regs[3] = sParent
+    vm3.Regs[4] = sDist
     if !vm3.executeForeignPredicate("test_step_parent_distance", 5) {
         t.Fatalf("transitive_step_parent_distance5 failed")
     }
@@ -354,11 +354,11 @@ func TestForeignGraphKernels(t *testing.T) {
     vm4.registerForeignResultMode("test_weighted_path/3", "stream")
     vm4.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
     vm4.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
-    wTarget := &Unbound{Name: "WTARGET"}
-    wCost := &Unbound{Name: "WCOST"}
-    vm4.Regs["A1"] = &Atom{Name: "s"}
-    vm4.Regs["A2"] = wTarget
-    vm4.Regs["A3"] = wCost
+    wTarget := &Unbound{Name: "WTARGET", Idx: 1}
+    wCost := &Unbound{Name: "WCOST", Idx: 2}
+    vm4.Regs[0] = &Atom{Name: "s"}
+    vm4.Regs[1] = wTarget
+    vm4.Regs[2] = wCost
     if !vm4.executeForeignPredicate("test_weighted_path", 3) {
         t.Fatalf("weighted_shortest_path3 failed")
     }
@@ -396,9 +396,9 @@ func TestForeignGraphKernels(t *testing.T) {
     vm4Exact.registerForeignResultMode("test_weighted_path/3", "stream")
     vm4Exact.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
     vm4Exact.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
-    vm4Exact.Regs["A1"] = &Atom{Name: "s"}
-    vm4Exact.Regs["A2"] = &Atom{Name: "d"}
-    vm4Exact.Regs["A3"] = &Float{Val: 7.0}
+    vm4Exact.Regs[0] = &Atom{Name: "s"}
+    vm4Exact.Regs[1] = &Atom{Name: "d"}
+    vm4Exact.Regs[2] = &Float{Val: 7.0}
     if !vm4Exact.executeForeignPredicate("test_weighted_path", 3) {
         t.Fatalf("expected weighted exact match for s->d cost 7.0")
     }
@@ -409,9 +409,9 @@ func TestForeignGraphKernels(t *testing.T) {
     vm4Fail.registerForeignResultMode("test_weighted_path/3", "stream")
     vm4Fail.registerForeignStringConfig("test_weighted_path/3", "weight_pred", "weighted_edge/3")
     vm4Fail.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
-    vm4Fail.Regs["A1"] = &Atom{Name: "d"}
-    vm4Fail.Regs["A2"] = &Unbound{Name: "WTFAIL"}
-    vm4Fail.Regs["A3"] = &Unbound{Name: "WCFAIL"}
+    vm4Fail.Regs[0] = &Atom{Name: "d"}
+    vm4Fail.Regs[1] = &Unbound{Name: "WTFAIL", Idx: 1}
+    vm4Fail.Regs[2] = &Unbound{Name: "WCFAIL", Idx: 2}
     if vm4Fail.executeForeignPredicate("test_weighted_path", 3) {
         t.Fatalf("expected weighted path from d to fail")
     }
@@ -437,11 +437,11 @@ func TestForeignGraphKernels(t *testing.T) {
     vm5.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
     vm5.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
     vm5.registerIndexedWeightedEdgeTriples("direct_semantic_dist/3", heuristic)
-    aCost := &Unbound{Name: "ACOST"}
-    vm5.Regs["A1"] = &Atom{Name: "s"}
-    vm5.Regs["A2"] = &Atom{Name: "d"}
-    vm5.Regs["A3"] = &Integer{Val: 5}
-    vm5.Regs["A4"] = aCost
+    aCost := &Unbound{Name: "ACOST", Idx: 3}
+    vm5.Regs[0] = &Atom{Name: "s"}
+    vm5.Regs[1] = &Atom{Name: "d"}
+    vm5.Regs[2] = &Integer{Val: 5}
+    vm5.Regs[3] = aCost
     if !vm5.executeForeignPredicate("test_astar_weighted_path", 4) {
         t.Fatalf("astar_shortest_path4 failed")
     }
@@ -459,11 +459,11 @@ func TestForeignGraphKernels(t *testing.T) {
     vm5Fallback.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
     vm5Fallback.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
     vm5Fallback.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
-    fallbackCost := &Unbound{Name: "FALLBACK_COST"}
-    vm5Fallback.Regs["A1"] = &Atom{Name: "s"}
-    vm5Fallback.Regs["A2"] = &Atom{Name: "d"}
-    vm5Fallback.Regs["A3"] = &Integer{Val: 5}
-    vm5Fallback.Regs["A4"] = fallbackCost
+    fallbackCost := &Unbound{Name: "FALLBACK_COST", Idx: 3}
+    vm5Fallback.Regs[0] = &Atom{Name: "s"}
+    vm5Fallback.Regs[1] = &Atom{Name: "d"}
+    vm5Fallback.Regs[2] = &Integer{Val: 5}
+    vm5Fallback.Regs[3] = fallbackCost
     if !vm5Fallback.executeForeignPredicate("test_astar_weighted_path", 4) {
         t.Fatalf("expected astar fallback without heuristic to succeed")
     }
@@ -480,10 +480,10 @@ func TestForeignGraphKernels(t *testing.T) {
     vm5Exact.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
     vm5Exact.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
     vm5Exact.registerIndexedWeightedEdgeTriples("direct_semantic_dist/3", heuristic)
-    vm5Exact.Regs["A1"] = &Atom{Name: "s"}
-    vm5Exact.Regs["A2"] = &Atom{Name: "d"}
-    vm5Exact.Regs["A3"] = &Integer{Val: 5}
-    vm5Exact.Regs["A4"] = &Float{Val: 7.0}
+    vm5Exact.Regs[0] = &Atom{Name: "s"}
+    vm5Exact.Regs[1] = &Atom{Name: "d"}
+    vm5Exact.Regs[2] = &Integer{Val: 5}
+    vm5Exact.Regs[3] = &Float{Val: 7.0}
     if !vm5Exact.executeForeignPredicate("test_astar_weighted_path", 4) {
         t.Fatalf("expected exact astar match for s->d cost 7.0")
     }
@@ -495,10 +495,10 @@ func TestForeignGraphKernels(t *testing.T) {
     vm5Fail.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")
     vm5Fail.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)
     vm5Fail.registerIndexedWeightedEdgeTriples("weighted_edge/3", weighted)
-    vm5Fail.Regs["A1"] = &Atom{Name: "d"}
-    vm5Fail.Regs["A2"] = &Atom{Name: "s"}
-    vm5Fail.Regs["A3"] = &Integer{Val: 5}
-    vm5Fail.Regs["A4"] = &Unbound{Name: "NO_ASTAR"}
+    vm5Fail.Regs[0] = &Atom{Name: "d"}
+    vm5Fail.Regs[1] = &Atom{Name: "s"}
+    vm5Fail.Regs[2] = &Integer{Val: 5}
+    vm5Fail.Regs[3] = &Unbound{Name: "NO_ASTAR", Idx: 3}
     if vm5Fail.executeForeignPredicate("test_astar_weighted_path", 4) {
         t.Fatalf("expected astar path from d to s to fail")
     }
@@ -542,14 +542,14 @@ func TestForeignProjectAutoDetectWeightedAndAstar(t *testing.T) {
     if !Test_weighted_path(&Atom{Name: "s"}, &Atom{Name: "d"}, &Float{Val: 7.0}) {
         t.Fatalf("expected auto-detected weighted exact match to succeed")
     }
-    if Test_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Unbound{Name: "WEIGHTED_FAIL"}) {
+    if Test_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Unbound{Name: "WEIGHTED_FAIL", Idx: 2}) {
         t.Fatalf("expected weighted project reverse query to fail")
     }
 
     if !Test_astar_weighted_path(&Atom{Name: "s"}, &Atom{Name: "d"}, &Integer{Val: 5}, &Float{Val: 7.0}) {
         t.Fatalf("expected auto-detected astar exact match to succeed")
     }
-    if Test_astar_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Integer{Val: 5}, &Unbound{Name: "ASTAR_FAIL"}) {
+    if Test_astar_weighted_path(&Atom{Name: "d"}, &Atom{Name: "s"}, &Integer{Val: 5}, &Unbound{Name: "ASTAR_FAIL", Idx: 3}) {
         t.Fatalf("expected astar project reverse query to fail")
     }
 }
@@ -589,10 +589,10 @@ func TestMixedBoundaryWeightedBacktracking(t *testing.T) {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
     vm.PC = Test_mixed_weighted_filteredStartPC
-    target := &Unbound{Name: "TARGET"}
-    cost := &Unbound{Name: "COST"}
-    vm.Regs["A1"] = target
-    vm.Regs["A2"] = cost
+    target := &Unbound{Name: "TARGET", Idx: 0}
+    cost := &Unbound{Name: "COST", Idx: 1}
+    vm.Regs[0] = target
+    vm.Regs[1] = cost
     if !vm.Run() {
         t.Fatalf("expected mixed weighted caller to succeed")
     }

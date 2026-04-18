@@ -134,10 +134,25 @@ var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
     ;   format(atom(Code), '~w~n~w', [SharedCode, PredicatesCode])
     ).
 
+%% is_ffi_owned_fact(+Module, +Pred, +Arity, +Options)
+%  True if this predicate has a go_foreign_spec AND all its clauses are
+%  pure facts (head-only, body = true).  Such predicates are handled
+%  entirely by the FFI kernel path — compiling WAM code for them is
+%  wasted work (this was the -70% total win in Haskell).
+is_ffi_owned_fact(Module, Pred, Arity, Options) :-
+    go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _Entry/_EntryArity),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, clause(Module:Head, Body), Clauses),
+    Clauses \= [],
+    forall(member(_-Body, Clauses), Body == true).
+
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   option(prefer_wam(true), Options),
+    (   is_ffi_owned_fact(Module, Pred, Arity, Options)
+    ->  format(user_error, '  ~w/~w: FFI-owned fact (skipping WAM compilation)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, ffi_fact, '')
+    ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
@@ -197,6 +212,10 @@ collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
 
 generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries,
+                         [Code|RestCodes]) :-
+    format(atom(Code), '// ~w/~w: FFI-owned fact — WAM compilation skipped', [Pred, Arity]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: native~n~w', [PredCode]),
@@ -257,38 +276,52 @@ write_file(Path, Content) :-
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
-    format(atom(GoLiteral), '&GetConstant{C: ~w, Ai: "~w"}', [GoVal, Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&GetConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_instruction_to_go_literal(get_variable(Xn, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&GetVariable{Xn: "~w", Ai: "~w"}', [Xn, Ai]).
+    go_reg_index(Xn, XnIdx), go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&GetVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(get_value(Xn, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&GetValue{Xn: "~w", Ai: "~w"}', [Xn, Ai]).
+    go_reg_index(Xn, XnIdx), go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(get_structure(F, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: "~w"}', [F, Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&GetStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
 wam_instruction_to_go_literal(get_list(Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&GetList{Ai: "~w"}', [Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&GetList{Ai: ~w}', [AiIdx]).
 wam_instruction_to_go_literal(unify_variable(Xn), GoLiteral) :-
-    format(atom(GoLiteral), '&UnifyVariable{Xn: "~w"}', [Xn]).
+    go_reg_index(Xn, XnIdx),
+    format(atom(GoLiteral), '&UnifyVariable{Xn: ~w}', [XnIdx]).
 wam_instruction_to_go_literal(unify_value(Xn), GoLiteral) :-
-    format(atom(GoLiteral), '&UnifyValue{Xn: "~w"}', [Xn]).
+    go_reg_index(Xn, XnIdx),
+    format(atom(GoLiteral), '&UnifyValue{Xn: ~w}', [XnIdx]).
 wam_instruction_to_go_literal(unify_constant(C), GoLiteral) :-
     go_value_literal(C, GoVal),
     format(atom(GoLiteral), '&UnifyConstant{C: ~w}', [GoVal]).
 
 wam_instruction_to_go_literal(put_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
-    format(atom(GoLiteral), '&PutConstant{C: ~w, Ai: "~w"}', [GoVal, Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&PutConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_instruction_to_go_literal(put_variable(Xn, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&PutVariable{Xn: "~w", Ai: "~w"}', [Xn, Ai]).
+    go_reg_index(Xn, XnIdx), go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&PutVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(put_value(Xn, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&PutValue{Xn: "~w", Ai: "~w"}', [Xn, Ai]).
+    go_reg_index(Xn, XnIdx), go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&PutValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_instruction_to_go_literal(put_structure(F, Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: "~w"}', [F, Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&PutStructure{Functor: "~w", Ai: ~w}', [F, AiIdx]).
 wam_instruction_to_go_literal(put_list(Ai), GoLiteral) :-
-    format(atom(GoLiteral), '&PutList{Ai: "~w"}', [Ai]).
+    go_reg_index(Ai, AiIdx),
+    format(atom(GoLiteral), '&PutList{Ai: ~w}', [AiIdx]).
 wam_instruction_to_go_literal(set_variable(Xn), GoLiteral) :-
-    format(atom(GoLiteral), '&SetVariable{Xn: "~w"}', [Xn]).
+    go_reg_index(Xn, XnIdx),
+    format(atom(GoLiteral), '&SetVariable{Xn: ~w}', [XnIdx]).
 wam_instruction_to_go_literal(set_value(Xn), GoLiteral) :-
-    format(atom(GoLiteral), '&SetValue{Xn: "~w"}', [Xn]).
+    go_reg_index(Xn, XnIdx),
+    format(atom(GoLiteral), '&SetValue{Xn: ~w}', [XnIdx]).
 wam_instruction_to_go_literal(set_constant(C), GoLiteral) :-
     go_value_literal(C, GoVal),
     format(atom(GoLiteral), '&SetConstant{C: ~w}', [GoVal]).
@@ -421,7 +454,7 @@ build_go_wam_arg_list(Arity, ArgList) :-
 build_go_wam_arg_setup(0, "") :- !.
 build_go_wam_arg_setup(Arity, Setup) :-
     numlist(1, Arity, Indices),
-    maplist([I, S]>>format(atom(S), '    vm.Regs["A~w"] = a~w', [I, I]), Indices, Lines),
+    maplist([I, S]>>(Idx is I - 1, format(atom(S), '    vm.Regs[~w] = a~w', [Idx, I])), Indices, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
 foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
@@ -786,34 +819,44 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     clean_comma(AggType, CAggType),
     clean_comma(ValueReg, CValueReg),
     clean_comma(ResultReg, CResultReg),
-    format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: "~w", ResultReg: "~w"}',
-        [CAggType, CValueReg, CResultReg]).
+    go_reg_string_to_index(CValueReg, ValueRegIdx),
+    go_reg_string_to_index(CResultReg, ResultRegIdx),
+    format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
+        [CAggType, ValueRegIdx, ResultRegIdx]).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
-    format(atom(GoLit), '&EndAggregate{ValueReg: "~w"}', [CValueReg]).
+    go_reg_string_to_index(CValueReg, ValueRegIdx),
+    format(atom(GoLit), '&EndAggregate{ValueReg: ~w}', [ValueRegIdx]).
 
 wam_line_to_go_literal(["get_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     parse_string_to_go_val(CC, GoVal),
-    format(atom(GoLit), '&GetConstant{C: ~w, Ai: "~w"}', [GoVal, CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&GetConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_line_to_go_literal(["get_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&GetVariable{Xn: "~w", Ai: "~w"}', [CXn, CAi]).
+    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&GetVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["get_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&GetValue{Xn: "~w", Ai: "~w"}', [CXn, CAi]).
+    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["get_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: "~w"}', [CFN, CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
 wam_line_to_go_literal(["get_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
-    format(atom(GoLit), '&GetList{Ai: "~w"}', [CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&GetList{Ai: ~w}', [AiIdx]).
 wam_line_to_go_literal(["unify_variable", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    format(atom(GoLit), '&UnifyVariable{Xn: "~w"}', [CXn]).
+    go_reg_string_to_index(CXn, XnIdx),
+    format(atom(GoLit), '&UnifyVariable{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["unify_value", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    format(atom(GoLit), '&UnifyValue{Xn: "~w"}', [CXn]).
+    go_reg_string_to_index(CXn, XnIdx),
+    format(atom(GoLit), '&UnifyValue{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["unify_constant", C], GoLit) :-
     clean_comma(C, CC),
     parse_string_to_go_val(CC, GoVal),
@@ -822,25 +865,32 @@ wam_line_to_go_literal(["unify_constant", C], GoLit) :-
 wam_line_to_go_literal(["put_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     parse_string_to_go_val(CC, GoVal),
-    format(atom(GoLit), '&PutConstant{C: ~w, Ai: "~w"}', [GoVal, CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&PutConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_line_to_go_literal(["put_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&PutVariable{Xn: "~w", Ai: "~w"}', [CXn, CAi]).
+    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&PutVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["put_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&PutValue{Xn: "~w", Ai: "~w"}', [CXn, CAi]).
+    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&PutValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["put_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: "~w"}', [CFN, CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
 wam_line_to_go_literal(["put_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
-    format(atom(GoLit), '&PutList{Ai: "~w"}', [CAi]).
+    go_reg_string_to_index(CAi, AiIdx),
+    format(atom(GoLit), '&PutList{Ai: ~w}', [AiIdx]).
 wam_line_to_go_literal(["set_variable", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    format(atom(GoLit), '&SetVariable{Xn: "~w"}', [CXn]).
+    go_reg_string_to_index(CXn, XnIdx),
+    format(atom(GoLit), '&SetVariable{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["set_value", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    format(atom(GoLit), '&SetValue{Xn: "~w"}', [CXn]).
+    go_reg_string_to_index(CXn, XnIdx),
+    format(atom(GoLit), '&SetValue{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["set_constant", C], GoLit) :-
     clean_comma(C, CC),
     parse_string_to_go_val(CC, GoVal),
@@ -925,6 +975,35 @@ format_switch_case(Entry, Case) :-
         format(atom(Case), '{Val: &Atom{Name: "malformed"}, Label: "~w"}', [Entry])
     ).
 
+% --- Register index encoding ---
+% A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
+go_reg_index(a(N), Idx) :- !, Idx is N - 1.
+go_reg_index(x(N), Idx) :- !, Idx is N + 99.
+go_reg_index(y(N), Idx) :- !, Idx is N + 199.
+go_reg_index(Atom, Idx) :-
+    atom(Atom), !,
+    atom_string(Atom, Str),
+    go_reg_string_to_index(Str, Idx).
+go_reg_index(Str, Idx) :-
+    string(Str), !,
+    go_reg_string_to_index(Str, Idx).
+
+go_reg_string_to_index(Str, Idx) :-
+    (   sub_string(Str, 0, 1, _, "A"),
+        sub_string(Str, 1, _, 0, NumStr),
+        number_string(N, NumStr)
+    ->  Idx is N - 1
+    ;   sub_string(Str, 0, 1, _, "X"),
+        sub_string(Str, 1, _, 0, NumStr),
+        number_string(N, NumStr)
+    ->  Idx is N + 99
+    ;   sub_string(Str, 0, 1, _, "Y"),
+        sub_string(Str, 1, _, 0, NumStr),
+        number_string(N, NumStr)
+    ->  Idx is N + 199
+    ;   Idx = 0
+    ).
+
 % --- Value literal helpers ---
 
 go_value_literal(atom(A), GoVal) :- !, format(atom(GoVal), '&Atom{Name: "~w"}', [A]).
@@ -960,12 +1039,12 @@ compile_go_step_case(CaseCode) :-
 
 % --- Head Unification Instructions ---
 
-wam_go_case('GetConstant', '        val, ok := vm.Regs[i.Ai]
-        if !ok { return false }
+wam_go_case('GetConstant', '        val := vm.Regs[i.Ai]
+        if val == nil { return false }
         if isUnbound(val) {
             u := val.(*Unbound)
-            vm.trailBinding(u.Name)
-            vm.Regs[u.Name] = i.C
+            vm.trailBinding(u.Idx)
+            vm.Regs[u.Idx] = i.C
             vm.PC++
             return true
         }
@@ -975,29 +1054,29 @@ wam_go_case('GetConstant', '        val, ok := vm.Regs[i.Ai]
         }
         return false').
 
-wam_go_case('GetVariable', '        val, ok := vm.Regs[i.Ai]
-        if !ok { return false }
+wam_go_case('GetVariable', '        val := vm.Regs[i.Ai]
+        if val == nil { return false }
         vm.trailBinding(i.Xn)
         vm.putReg(i.Xn, val)
         vm.PC++
         return true').
 
-wam_go_case('GetValue', '        valA, okA := vm.Regs[i.Ai]
+wam_go_case('GetValue', '        valA := vm.Regs[i.Ai]
         valX := vm.getReg(i.Xn)
-        if !okA { return false }
+        if valA == nil { return false }
         if vm.Unify(valA, valX) {
             vm.PC++
             return true
         }
         return false').
 
-wam_go_case('GetStructure', '        val, ok := vm.Regs[i.Ai]
-        if !ok { return false }
+wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
+        if val == nil { return false }
         if isUnbound(val) {
-            addr := len(vm.Heap)
+            addr := vm.heapPush(nil)
             arity := parseFunctorArity(i.Functor)
             s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
-            vm.Heap = append(vm.Heap, s)
+            vm.Heap[addr] = s
             vm.CurrentStruct = s
             vm.CurrentList = nil
             vm.trailBinding(i.Ai)
@@ -1016,12 +1095,12 @@ wam_go_case('GetStructure', '        val, ok := vm.Regs[i.Ai]
         }
         return false').
 
-wam_go_case('GetList', '        val, ok := vm.Regs[i.Ai]
-        if !ok { return false }
+wam_go_case('GetList', '        val := vm.Regs[i.Ai]
+        if val == nil { return false }
         if isUnbound(val) {
-            addr := len(vm.Heap)
+            addr := vm.heapPush(nil)
             l := &List{Elements: make([]Value, 2)}
-            vm.Heap = append(vm.Heap, l)
+            vm.Heap[addr] = l
             vm.CurrentList = l
             vm.CurrentStruct = nil
             vm.trailBinding(i.Ai)
@@ -1048,9 +1127,9 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             return true
         }
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
-            addr := len(vm.Heap)
-            v := &Unbound{Name: fmt.Sprintf("_H%d", addr)}
-            vm.Heap = append(vm.Heap, v)
+            addr := vm.HeapLen
+            v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: i.Xn}
+            vm.heapPush(v)
             if vm.CurrentStruct != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = v
@@ -1059,8 +1138,8 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
                 vm.CurrentList.Elements[idx] = v
             }
             wctx.N--
-            if wctx.N == 0 { 
-                vm.popStack() 
+            if wctx.N == 0 {
+                vm.popStack()
                 vm.CurrentStruct = nil
                 vm.CurrentList = nil
             }
@@ -1083,7 +1162,7 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
         }
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
             val := vm.getReg(i.Xn)
-            vm.Heap = append(vm.Heap, val)
+            vm.heapPush(val)
             if vm.CurrentStruct != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = val
@@ -1092,8 +1171,8 @@ wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && le
                 vm.CurrentList.Elements[idx] = val
             }
             wctx.N--
-            if wctx.N == 0 { 
-                vm.popStack() 
+            if wctx.N == 0 {
+                vm.popStack()
                 vm.CurrentStruct = nil
                 vm.CurrentList = nil
             }
@@ -1113,7 +1192,7 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
             return false
         }
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
-            vm.Heap = append(vm.Heap, i.C)
+            vm.heapPush(i.C)
             if vm.CurrentStruct != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = i.C
@@ -1122,8 +1201,8 @@ wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
                 vm.CurrentList.Elements[idx] = i.C
             }
             wctx.N--
-            if wctx.N == 0 { 
-                vm.popStack() 
+            if wctx.N == 0 {
+                vm.popStack()
                 vm.CurrentStruct = nil
                 vm.CurrentList = nil
             }
@@ -1138,7 +1217,7 @@ wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
         vm.PC++
         return true').
 
-wam_go_case('PutVariable', '        v := &Unbound{Name: i.Xn}
+wam_go_case('PutVariable', '        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: i.Xn}
         vm.putReg(i.Xn, v)
         vm.Regs[i.Ai] = v
         vm.PC++
@@ -1149,10 +1228,10 @@ wam_go_case('PutValue', '        val := vm.getReg(i.Xn)
         vm.PC++
         return true').
 
-wam_go_case('PutStructure', '        addr := len(vm.Heap)
+wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
         arity := parseFunctorArity(i.Functor)
         s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
-        vm.Heap = append(vm.Heap, s)
+        vm.Heap[addr] = s
         vm.CurrentStruct = s
         vm.CurrentList = nil
         vm.Regs[i.Ai] = &Ref{Addr: addr}
@@ -1160,9 +1239,9 @@ wam_go_case('PutStructure', '        addr := len(vm.Heap)
         vm.PC++
         return true').
 
-wam_go_case('PutList', '        addr := len(vm.Heap)
+wam_go_case('PutList', '        addr := vm.heapPush(nil)
         l := &List{Elements: make([]Value, 2)}
-        vm.Heap = append(vm.Heap, l)
+        vm.Heap[addr] = l
         vm.CurrentList = l
         vm.CurrentStruct = nil
         vm.Regs[i.Ai] = &Ref{Addr: addr}
@@ -1170,16 +1249,16 @@ wam_go_case('PutList', '        addr := len(vm.Heap)
         vm.PC++
         return true').
 
-wam_go_case('SetVariable', '        addr := len(vm.Heap)
-        v := &Unbound{Name: fmt.Sprintf("_H%d", addr)}
-        vm.Heap = append(vm.Heap, v)
+wam_go_case('SetVariable', '        addr := vm.HeapLen
+        v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: i.Xn}
+        vm.heapPush(v)
         if vm.CurrentStruct != nil {
             if wctx := vm.peekWriteCtx(); wctx != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = v
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentStruct = nil
                 }
             }
@@ -1188,8 +1267,8 @@ wam_go_case('SetVariable', '        addr := len(vm.Heap)
                 idx := 2 - wctx.N
                 vm.CurrentList.Elements[idx] = v
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentList = nil
                 }
             }
@@ -1199,14 +1278,14 @@ wam_go_case('SetVariable', '        addr := len(vm.Heap)
         return true').
 
 wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
-        vm.Heap = append(vm.Heap, val)
+        vm.heapPush(val)
         if vm.CurrentStruct != nil {
             if wctx := vm.peekWriteCtx(); wctx != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = val
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentStruct = nil
                 }
             }
@@ -1215,8 +1294,8 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
                 idx := 2 - wctx.N
                 vm.CurrentList.Elements[idx] = val
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentList = nil
                 }
             }
@@ -1224,14 +1303,14 @@ wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
         vm.PC++
         return true').
 
-wam_go_case('SetConstant', '        vm.Heap = append(vm.Heap, i.C)
+wam_go_case('SetConstant', '        vm.heapPush(i.C)
         if vm.CurrentStruct != nil {
             if wctx := vm.peekWriteCtx(); wctx != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
                 vm.CurrentStruct.Args[idx] = i.C
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentStruct = nil
                 }
             }
@@ -1240,8 +1319,8 @@ wam_go_case('SetConstant', '        vm.Heap = append(vm.Heap, i.C)
                 idx := 2 - wctx.N
                 vm.CurrentList.Elements[idx] = i.C
                 wctx.N--
-                if wctx.N == 0 { 
-                    vm.popStack() 
+                if wctx.N == 0 {
+                    vm.popStack()
                     vm.CurrentList = nil
                 }
             }
@@ -1262,7 +1341,7 @@ wam_go_case('Deallocate', '        if env := vm.popEnvFrame(); env != nil {
         return true').
 
 wam_go_case('Call', '        vm.CP = vm.PC + 1
-        if pc, ok := vm.Labels[i.Pred]; ok {
+        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
@@ -1274,7 +1353,7 @@ wam_go_case('CallPc', '        vm.CP = vm.PC + 1
         vm.PC = i.TargetPC
         return true').
 
-wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
+wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
             vm.PC = pc
             return true
         }
@@ -1283,7 +1362,7 @@ wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
 wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
         return true').
 
-wam_go_case('Jump', '        if pc, ok := vm.Labels[i.Label]; ok {
+wam_go_case('Jump', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
             vm.PC = pc
             return true
         }
@@ -1319,18 +1398,18 @@ wam_go_case('BuiltinCall', '        result := vm.executeBuiltin(i.Op, i.Arity)
 % --- Choice Point Instructions ---
 
 wam_go_case('TryMeElse', '        nextPC := 0
-        if pc, ok := vm.Labels[i.Label]; ok {
+        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
             nextPC = pc
         }
-        vm.pushChoicePoint(nextPC)
+        vm.pushChoicePoint(nextPC, 100)
         vm.PC++
         return true').
 
-wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC)
+wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC, 100)
         vm.PC++
         return true').
 
-wam_go_case('RetryMeElse', '        if pc, ok := vm.Labels[i.Label]; ok {
+wam_go_case('RetryMeElse', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
             if len(vm.ChoicePoints) > 0 {
                 vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = pc
             }
@@ -1352,7 +1431,7 @@ wam_go_case('TrustMe', '        if len(vm.ChoicePoints) > 0 {
 
 % --- Indexing Instructions ---
 
-wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+wam_go_case('SwitchOnConstant', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
             targets := make([]int, 0)
             for _, c := range i.Cases {
                 if !valueEquals(c.Val, val) {
@@ -1362,7 +1441,7 @@ wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isU
                     targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
                     continue
                 }
-                if pc, ok := vm.Labels[c.Label]; ok {
+                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
                 }
             }
@@ -1373,7 +1452,7 @@ wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isU
         vm.PC++
         return true').
 
-wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+wam_go_case('SwitchOnConstantPc', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
             targets := make([]int, 0)
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
@@ -1387,7 +1466,7 @@ wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !i
         vm.PC++
         return true').
 
-wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
+wam_go_case('SwitchOnStructure', '        if val := vm.Regs[0]; val != nil {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
                 targets := make([]int, 0)
@@ -1399,7 +1478,7 @@ wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
                         targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
                         continue
                     }
-                    if pc, ok := vm.Labels[c.Label]; ok {
+                    if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                         targets = append(targets, vm.indexedClauseBodyStart(pc))
                     }
                 }
@@ -1411,7 +1490,7 @@ wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
         vm.PC++
         return true').
 
-wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
+wam_go_case('SwitchOnStructurePc', '        if val := vm.Regs[0]; val != nil {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
                 targets := make([]int, 0)
@@ -1428,7 +1507,7 @@ wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
         vm.PC++
         return true').
 
-wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+wam_go_case('SwitchOnConstantA2', '        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
             targets := make([]int, 0)
             for _, c := range i.Cases {
                 if !valueEquals(c.Val, val) {
@@ -1438,7 +1517,7 @@ wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !i
                     targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
                     continue
                 }
-                if pc, ok := vm.Labels[c.Label]; ok {
+                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
                     targets = append(targets, vm.indexedClauseBodyStart(pc))
                 }
             }
@@ -1449,7 +1528,7 @@ wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !i
         vm.PC++
         return true').
 
-wam_go_case('SwitchOnConstantA2Pc', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
             targets := make([]int, 0)
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
@@ -1522,16 +1601,13 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 			if len(state.ChoicePoints) > 0 {
 				select {
 				case sem <- struct{}{}:
-					// We acquired a token, pass it to the child
 					if alt := state.ForkAtChoicePoint(); alt != nil {
 						wg.Add(1)
 						go explore(alt, true)
 					} else {
-						// Failed to fork
 						<-sem
 					}
 				default:
-					// No worker available, continue sequentially
 				}
 			}
 		}
@@ -1549,10 +1625,10 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 }
 
 func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
-    if targetPC < 0 || targetPC >= len(vm.Code) {
+    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
         return targetPC
     }
-    switch vm.Code[targetPC].(type) {
+    switch vm.Ctx.Code[targetPC].(type) {
     case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc, *TrustMe:
         return targetPC + 1
     default:
@@ -1575,13 +1651,12 @@ func (vm *WamState) enterIndexedClause(targetPC int) bool {
     return vm.enterIndexedAlternatives([]int{vm.indexedClauseBodyStart(targetPC)})
 }
 
-// CollectResults gathers values from A registers.
+// CollectResults gathers values from A registers (indices 0..N-1).
 func (vm *WamState) CollectResults() []Value {
 	results := make([]Value, 0)
-	for i := 1; ; i++ {
-		name := fmt.Sprintf("A%d", i)
-		val, ok := vm.Regs[name]
-		if !ok {
+	for i := 0; i < 100; i++ {
+		val := vm.Regs[i]
+		if val == nil {
 			break
 		}
 		results = append(results, vm.deref(val))
@@ -1591,8 +1666,8 @@ func (vm *WamState) CollectResults() []Value {
 
 // fetch retrieves the instruction at the current PC.
 func (vm *WamState) fetch() Instruction {
-    if vm.PC >= 0 && vm.PC < len(vm.Code) {
-        return vm.Code[vm.PC]
+    if vm.PC >= 0 && vm.PC < len(vm.Ctx.Code) {
+        return vm.Ctx.Code[vm.PC]
     }
     return nil
 }
@@ -1688,7 +1763,7 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
     return resolved
 }
 
-func (vm *WamState) executeAggregate(aggType string, valueReg string, resultReg string) bool {
+func (vm *WamState) executeAggregate(aggType string, valueReg int, resultReg int) bool {
     endPC, ok := vm.findMatchingAggregateEnd(vm.PC)
     if !ok {
         return false
@@ -1708,8 +1783,8 @@ func (vm *WamState) executeAggregate(aggType string, valueReg string, resultReg 
         }
         count++
         if aggType != "count" {
-            val, ok := sub.Regs[valueReg]
-            if !ok {
+            val := sub.Regs[valueReg]
+            if val == nil {
                 return false
             }
             values = append(values, sub.deref(val))
@@ -1732,8 +1807,8 @@ func (vm *WamState) executeAggregate(aggType string, valueReg string, resultReg 
 
 func (vm *WamState) findMatchingAggregateEnd(startPC int) (int, bool) {
     depth := 1
-    for pc := startPC + 1; pc < len(vm.Code); pc++ {
-        switch vm.Code[pc].(type) {
+    for pc := startPC + 1; pc < len(vm.Ctx.Code); pc++ {
+        switch vm.Ctx.Code[pc].(type) {
         case *BeginAggregate:
             depth++
         case *EndAggregate:
@@ -1773,9 +1848,9 @@ func (vm *WamState) backtrackAbove(limit int) bool {
     return vm.backtrack()
 }
 
-func (vm *WamState) bindOrUnifyReg(reg string, val Value) bool {
-    existing, ok := vm.Regs[reg]
-    if !ok {
+func (vm *WamState) bindOrUnifyReg(reg int, val Value) bool {
+    existing := vm.Regs[reg]
+    if existing == nil {
         vm.trailBinding(reg)
         vm.putReg(reg, val)
         return true
@@ -1852,53 +1927,53 @@ func aggregateNumericValue(value Value) (float64, bool) {
 }
 
 func (vm *WamState) registerForeignNativeKind(predKey string, kind string) {
-    vm.ForeignNativeKinds[predKey] = kind
+    vm.Ctx.ForeignNativeKinds[predKey] = kind
 }
 
 func (vm *WamState) registerForeignResultLayout(predKey string, layout string) {
-    vm.ForeignResultLayouts[predKey] = layout
+    vm.Ctx.ForeignResultLayouts[predKey] = layout
 }
 
 func (vm *WamState) registerForeignResultMode(predKey string, mode string) {
-    vm.ForeignResultModes[predKey] = mode
+    vm.Ctx.ForeignResultModes[predKey] = mode
 }
 
 func (vm *WamState) registerForeignStringConfig(predKey string, key string, value string) {
-    cfg, ok := vm.ForeignStringConfigs[predKey]
+    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
     if !ok {
         cfg = make(map[string]string)
-        vm.ForeignStringConfigs[predKey] = cfg
+        vm.Ctx.ForeignStringConfigs[predKey] = cfg
     }
     cfg[key] = value
 }
 
 func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value int) {
-    cfg, ok := vm.ForeignUsizeConfigs[predKey]
+    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
     if !ok {
         cfg = make(map[string]int)
-        vm.ForeignUsizeConfigs[predKey] = cfg
+        vm.Ctx.ForeignUsizeConfigs[predKey] = cfg
     }
     cfg[key] = value
 }
 
 func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
-    vm.IndexedAtomFactPairs[predKey] = pairs
+    vm.Ctx.IndexedAtomFactPairs[predKey] = pairs
 }
 
 func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
-    vm.IndexedWeightedEdgeTriples[predKey] = triples
+    vm.Ctx.IndexedWeightedEdgeTriples[predKey] = triples
 }
 
 func (vm *WamState) foreignResultLayout(predKey string) string {
-    return vm.ForeignResultLayouts[predKey]
+    return vm.Ctx.ForeignResultLayouts[predKey]
 }
 
 func (vm *WamState) foreignResultMode(predKey string) string {
-    return vm.ForeignResultModes[predKey]
+    return vm.Ctx.ForeignResultModes[predKey]
 }
 
 func (vm *WamState) foreignStringConfig(predKey string, key string) string {
-    cfg, ok := vm.ForeignStringConfigs[predKey]
+    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
     if !ok {
         return ""
     }
@@ -1906,7 +1981,7 @@ func (vm *WamState) foreignStringConfig(predKey string, key string) string {
 }
 
 func (vm *WamState) foreignUsizeConfig(predKey string, key string) int {
-    cfg, ok := vm.ForeignUsizeConfigs[predKey]
+    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
     if !ok {
         return 0
     }
@@ -1921,7 +1996,7 @@ func parseForeignTupleLayout(layout string) int {
     return 0
 }
 
-func (vm *WamState) applyForeignResult(predKey string, resultRegs []string, result Value) bool {
+func (vm *WamState) applyForeignResult(predKey string, resultRegs []int, result Value) bool {
     tupleArity := parseForeignTupleLayout(vm.foreignResultLayout(predKey))
     if tupleArity <= 1 {
         if len(resultRegs) < 1 {
@@ -1941,7 +2016,7 @@ func (vm *WamState) applyForeignResult(predKey string, resultRegs []string, resu
     return true
 }
 
-func (vm *WamState) finishForeignResults(predKey string, resultRegs []string, results []Value) bool {
+func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, results []Value) bool {
     if len(results) == 0 {
         return false
     }
@@ -1949,18 +2024,18 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []string, re
     mode := vm.foreignResultMode(predKey)
     switch mode {
     case "stream":
-        baseRegs := copyMap(vm.Regs)
+        var baseRegs [512]Value
+        baseRegs = vm.Regs
         baseStack := copyStack(vm.Stack)
-        trailMark := len(vm.Trail)
-        heapTop := len(vm.Heap)
+        trailMark := vm.TrailLen
+        heapTop := vm.HeapLen
         for idx, result := range results {
             vm.unwindTrail(trailMark)
-            vm.Regs = copyMap(baseRegs)
+            vm.Regs = baseRegs
             vm.Stack = copyStack(baseStack)
-            if heapTop >= 0 && heapTop <= len(vm.Heap) {
-                vm.Heap = vm.Heap[:heapTop]
+            if heapTop >= 0 && heapTop <= vm.HeapLen {
+                vm.heapTrimTo(heapTop)
             }
-            vm.CP = vm.CP
             vm.Halted = false
             vm.CurrentStruct = nil
             vm.CurrentList = nil
@@ -1969,16 +2044,18 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []string, re
             }
             if idx+1 < len(results) {
                 remaining := append([]Value(nil), results[idx+1:]...)
+                savedRegs := make([]Value, 100)
+                copy(savedRegs, baseRegs[:100])
                 vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
                     NextPC: resumePC,
                     ResumePC: resumePC,
                     CP: vm.CP,
-                    Regs: baseRegs,
+                    SavedRegs: savedRegs,
                     Stack: baseStack,
                     HeapTop: heapTop,
                     TrailMark: trailMark,
                     ForeignPredKey: predKey,
-                    ForeignResultRegs: append([]string(nil), resultRegs...),
+                    ForeignResultRegs: append([]int(nil), resultRegs...),
                     ForeignResults: remaining,
                 })
             }
@@ -2263,20 +2340,20 @@ func (vm *WamState) collectNativeAstarShortestPathResult(source string, target s
 
 func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
     predKey := fmt.Sprintf("%s/%d", pred, arity)
-    nativeKind, ok := vm.ForeignNativeKinds[predKey]
+    nativeKind, ok := vm.Ctx.ForeignNativeKinds[predKey]
     if !ok {
         return false
     }
     switch nativeKind {
     case "countdown_sum2":
-        n, ok := valueAsInteger(vm, vm.getReg("A1"))
+        n, ok := valueAsInteger(vm, vm.getReg(0))
         if !ok {
             return false
         }
         sum := n * (n + 1) / 2
-        return vm.finishForeignResults(predKey, []string{"A2"}, []Value{&Integer{Val: sum}})
+        return vm.finishForeignResults(predKey, []int{1}, []Value{&Integer{Val: sum}})
     case "list_suffix2":
-        items, ok := listAsSlice(vm, vm.getReg("A1"))
+        items, ok := listAsSlice(vm, vm.getReg(0))
         if !ok {
             return false
         }
@@ -2286,78 +2363,78 @@ func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
         for _, suffix := range suffixes {
             packed = append(packed, suffix)
         }
-        return vm.finishForeignResults(predKey, []string{"A2"}, packed)
+        return vm.finishForeignResults(predKey, []int{1}, packed)
     case "list_suffixes2":
-        items, ok := listAsSlice(vm, vm.getReg("A1"))
+        items, ok := listAsSlice(vm, vm.getReg(0))
         if !ok {
             return false
         }
         suffixes := make([]Value, 0, len(items)+1)
         vm.collectNativeListSuffixes(items, &suffixes)
-        return vm.finishForeignResults(predKey, []string{"A2"}, []Value{&List{Elements: suffixes}})
+        return vm.finishForeignResults(predKey, []int{1}, []Value{&List{Elements: suffixes}})
     case "transitive_closure2":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
         edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.IndexedAtomFactPairs[edgePred]
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
         results := vm.collectNativeTransitiveClosureResults(source, pairs)
-        return vm.finishForeignResults(predKey, []string{"A2"}, results)
+        return vm.finishForeignResults(predKey, []int{1}, results)
     case "transitive_distance3":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
         edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.IndexedAtomFactPairs[edgePred]
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
         results := vm.collectNativeTransitiveDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+        return vm.finishForeignResults(predKey, []int{1, 2}, results)
     case "transitive_parent_distance4":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
         edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.IndexedAtomFactPairs[edgePred]
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
         results := vm.collectNativeTransitiveParentDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4"}, results)
+        return vm.finishForeignResults(predKey, []int{1, 2, 3}, results)
     case "transitive_step_parent_distance5":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
         edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.IndexedAtomFactPairs[edgePred]
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
         results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []string{"A2", "A3", "A4", "A5"}, results)
+        return vm.finishForeignResults(predKey, []int{1, 2, 3, 4}, results)
     case "weighted_shortest_path3":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
         weightPred := vm.foreignStringConfig(predKey, "weight_pred")
-        triples := vm.IndexedWeightedEdgeTriples[weightPred]
+        triples := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
         results := vm.collectNativeWeightedShortestPathResults(source, triples)
-        return vm.finishForeignResults(predKey, []string{"A2", "A3"}, results)
+        return vm.finishForeignResults(predKey, []int{1, 2}, results)
     case "astar_shortest_path4":
-        source, ok := valueAsAtomString(vm, vm.getReg("A1"))
+        source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {
             return false
         }
-        target, ok := valueAsAtomString(vm, vm.getReg("A2"))
+        target, ok := valueAsAtomString(vm, vm.getReg(1))
         if !ok {
             return false
         }
-        if _, ok := valueAsFloat(vm, vm.getReg("A3")); !ok {
+        if _, ok := valueAsFloat(vm, vm.getReg(2)); !ok {
             return false
         }
         weightPred := vm.foreignStringConfig(predKey, "weight_pred")
         directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
-        weighted := vm.IndexedWeightedEdgeTriples[weightPred]
-        direct := vm.IndexedWeightedEdgeTriples[directPred]
+        weighted := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
+        direct := vm.Ctx.IndexedWeightedEdgeTriples[directPred]
         results := vm.collectNativeAstarShortestPathResult(source, target, weighted, direct)
-        return vm.finishForeignResults(predKey, []string{"A4"}, results)
+        return vm.finishForeignResults(predKey, []int{3}, results)
     default:
         return false
     }
