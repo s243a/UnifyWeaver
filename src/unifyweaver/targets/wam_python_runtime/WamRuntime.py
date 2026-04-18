@@ -785,3 +785,66 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             raise WAMError(f"Unknown WAM opcode: {op}")
 
     return True
+
+
+# -- Parallel execution ------------------------------------------------------
+
+def _run_single_seed(args):
+    """Worker function for parallel execution.
+
+    Receives (code, labels, entry, seed_regs) and runs a fresh WamState.
+    Returns a list of result values (registers 1..10) or None on failure.
+    """
+    code, labels, entry, seed_regs = args
+    state = WamState()
+    for i, val in enumerate(seed_regs):
+        set_reg(state, i, val)
+    if run_wam(code, labels, entry, state):
+        results = []
+        for i in range(1, 11):
+            val = get_reg(state, i)
+            if val is not None:
+                results.append(val)
+        return results
+    return None
+
+
+def run_parallel(code: list, labels: dict, entry: str,
+                 seeds: list, max_workers: int = 0) -> list:
+    """Execute multiple seeds in parallel, each with their own WamState.
+
+    code:        flat instruction list (from load_program)
+    labels:      label -> PC mapping (from load_program)
+    entry:       label name to start execution
+    seeds:       list of lists — each inner list is initial register values
+    max_workers: max parallelism (0 = cpu_count)
+
+    Returns list of result lists (one per seed), None for failed seeds.
+
+    Uses ProcessPoolExecutor to avoid GIL for CPU-bound WAM execution.
+    Falls back to ThreadPoolExecutor if pickling fails.
+    """
+    import os
+    if max_workers <= 0:
+        max_workers = os.cpu_count() or 1
+
+    tasks = [(code, labels, entry, seed) for seed in seeds]
+
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_run_single_seed, tasks))
+    except (TypeError, AttributeError):
+        # Pickling failed — fall back to threads (GIL-limited but functional)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_run_single_seed, tasks))
+
+    return results
+
+
+def run_parallel_query(raw_program: dict, entry: str,
+                       seeds: list, max_workers: int = 0) -> list:
+    """Convenience wrapper: load_program + run_parallel in one call."""
+    code, labels = load_program(raw_program)
+    return run_parallel(code, labels, entry, seeds, max_workers)
