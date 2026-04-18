@@ -1453,11 +1453,14 @@ wam_go_case('SwitchOnConstant', '        if val := vm.Regs[0]; val != nil && !is
         return true').
 
 wam_go_case('SwitchOnConstantPc', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
+            n := len(i.Cases)
+            idx := sort.Search(n, func(j int) bool {
+                return compareValues(i.Cases[j].Val, val) >= 0
+            })
             targets := make([]int, 0)
-            for _, c := range i.Cases {
-                if valueEquals(c.Val, val) {
-                    targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
-                }
+            for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
+                idx++
             }
             if len(targets) > 0 {
                 return vm.enterIndexedAlternatives(targets)
@@ -1529,11 +1532,14 @@ wam_go_case('SwitchOnConstantA2', '        if val := vm.Regs[1]; val != nil && !
         return true').
 
 wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
+            n := len(i.Cases)
+            idx := sort.Search(n, func(j int) bool {
+                return compareValues(i.Cases[j].Val, val) >= 0
+            })
             targets := make([]int, 0)
-            for _, c := range i.Cases {
-                if valueEquals(c.Val, val) {
-                    targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
-                }
+            for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
+                idx++
             }
             if len(targets) > 0 {
                 return vm.enterIndexedAlternatives(targets)
@@ -1726,6 +1732,9 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
                 cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
             }
             if complete {
+                sort.Slice(cases, func(a, b int) bool {
+                    return compareValues(cases[a].Val, cases[b].Val) < 0
+                })
                 resolved = append(resolved, &SwitchOnConstantPc{Cases: cases})
             } else {
                 resolved = append(resolved, instr)
@@ -1758,6 +1767,9 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
                 cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
             }
             if complete {
+                sort.Slice(cases, func(a, b int) bool {
+                    return compareValues(cases[a].Val, cases[b].Val) < 0
+                })
                 resolved = append(resolved, &SwitchOnConstantA2Pc{Cases: cases})
             } else {
                 resolved = append(resolved, instr)

@@ -2,6 +2,7 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"strconv"
 )
@@ -288,6 +289,39 @@ func parseFunctorName(f string) string {
 	return f
 }
 
+// compareValues returns <0, 0, or >0 for sort ordering of atoms/integers.
+func compareValues(a, b Value) int {
+	// Type ordering: Atom < Integer < Float < other
+	typeRank := func(v Value) int {
+		switch v.(type) {
+		case *Atom:    return 0
+		case *Integer: return 1
+		case *Float:   return 2
+		default:       return 3
+		}
+	}
+	ra, rb := typeRank(a), typeRank(b)
+	if ra != rb { return ra - rb }
+	switch ta := a.(type) {
+	case *Atom:
+		tb := b.(*Atom)
+		if ta.Name < tb.Name { return -1 }
+		if ta.Name > tb.Name { return 1 }
+		return 0
+	case *Integer:
+		tb := b.(*Integer)
+		if ta.Val < tb.Val { return -1 }
+		if ta.Val > tb.Val { return 1 }
+		return 0
+	case *Float:
+		tb := b.(*Float)
+		if ta.Val < tb.Val { return -1 }
+		if ta.Val > tb.Val { return 1 }
+		return 0
+	}
+	return 0
+}
+
 func isEmptyListValue(v Value) bool {
 	if atom, ok := v.(*Atom); ok {
 		return atom.Name == "[]"
@@ -404,6 +438,26 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 	}
 
 	f, args := decompose(v)
+	if len(args) == 1 {
+		a, okA := vm.evalArithmetic(args[0])
+		if !okA { return 0, false }
+		switch f {
+		case "-":
+			return -a, true
+		case "abs":
+			return math.Abs(a), true
+		case "sign":
+			if a > 0 { return 1, true }
+			if a < 0 { return -1, true }
+			return 0, true
+		case "float":
+			return a, true
+		case "truncate", "integer":
+			return float64(int64(a)), true
+		case "float_integer_part":
+			return math.Trunc(a), true
+		}
+	}
 	if len(args) == 2 {
 		a, okA := vm.evalArithmetic(args[0])
 		b, okB := vm.evalArithmetic(args[1])
@@ -426,6 +480,26 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 		case "mod":
 			if b == 0 { return 0, false }
 			return float64(int64(a) % int64(b)), true
+		case "abs":
+			return math.Abs(a), true
+		case "max":
+			if a > b { return a, true }
+			return b, true
+		case "min":
+			if a < b { return a, true }
+			return b, true
+		case "**", "^":
+			return math.Pow(a, b), true
+		case "/\\":
+			return float64(int64(a) & int64(b)), true
+		case "\\/":
+			return float64(int64(a) | int64(b)), true
+		case "xor":
+			return float64(int64(a) ^ int64(b)), true
+		case ">>":
+			return float64(int64(a) >> uint(int64(b))), true
+		case "<<":
+			return float64(int64(a) << uint(int64(b))), true
 		}
 	}
 	return 0, false
