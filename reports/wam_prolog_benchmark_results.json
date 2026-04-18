@@ -3,8 +3,8 @@
   "date": "2026-04-18",
   "scale": 300,
   "facts": {
-    "category_parent": 6004,
-    "article_category": 757,
+    "category_parent": 6008,
+    "article_category": 770,
     "root_category": "Physics"
   },
   "effective_distance": {
@@ -27,21 +27,32 @@
       "total_ms": 75,
       "notes": "Parallel, 3.3x speedup over 1-core"
     },
-    "rust_wam_native_dfs": {
-      "reps_ms": [3, 3, 4],
-      "median_ms": 3,
-      "result_count": 3210,
-      "notes": "Native hash-indexed DFS"
+    "go_wam_bytecode": {
+      "status": "runtime_incomplete",
+      "failure": "Y-register clobbering: callee category_ancestor/4 overwrites caller power_sum_bound/3 Y2 (reg 201), causing is/2 to fail in aggregate body",
+      "notes": "Fact lookup and arithmetic work; aggregate collects 0 solutions due to register conflict"
     },
-    "python_wam_native_dfs": {
-      "reps_ms": [2.6, 2.3, 2.3],
-      "median_ms": 2.3,
-      "result_count": 3210,
-      "notes": "Native dict-indexed DFS"
+    "rust_wam_lowered": {
+      "status": "runtime_incomplete",
+      "failure": "Y-register clobbering (same as Go) + missing predicate dispatch (lowered fns cannot call each other or fact tables via labels)",
+      "notes": "Fact table registration works; predicate calls fail at label lookup"
     },
-    "go_wam": {
-      "status": "build_ok_runtime_incomplete",
-      "notes": "Build succeeds after SharedWamCode fix, but fact loading not wired up"
+    "python_wam": {
+      "status": "runtime_incomplete",
+      "failure": "begin_aggregate/end_aggregate not implemented in interpreter + Y-register clobbering",
+      "notes": "Basic WAM instructions work but aggregate-dependent predicates cannot execute"
+    }
+  },
+  "errata": {
+    "removed_invalid_results": {
+      "rust_native_dfs": {
+        "previously_reported_median_ms": 3,
+        "reason": "Hand-written native hash-indexed DFS, not WAM execution. Bypassed WAM instruction dispatch, unification, trail, and choice points entirely."
+      },
+      "python_native_dfs": {
+        "previously_reported_median_ms": 2.3,
+        "reason": "Hand-written native dict-indexed DFS, not WAM execution. Same bypass as Rust."
+      }
     }
   },
   "shortest_path": {
@@ -53,18 +64,6 @@
     "haskell_ffi_4core": {
       "median_ms": 70,
       "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
-    },
-    "rust_wam_native_dfs": {
-      "reps_ms": [0, 0, 0],
-      "median_ms": 0,
-      "result_count": 42,
-      "notes": "42 reachable nodes via transitive closure"
-    },
-    "python_wam_native_dfs": {
-      "reps_ms": [0, 0, 0],
-      "median_ms": 0,
-      "result_count": 42,
-      "notes": "42 reachable nodes via transitive closure"
     }
   },
   "weighted_shortest_path": {
@@ -102,10 +101,20 @@
     "bfs_shortest_4core_10k": {"total_ms": 420},
     "dijkstra_4core_10k": {"total_ms": 441}
   },
+  "root_cause": {
+    "description": "Y-register clobbering: all three transpiled runtimes store Y-registers in a flat global array (Y1=reg[200], Y2=reg[201], ...) instead of per-environment stack frames. When a callee writes to Y2, it overwrites the caller's Y2.",
+    "affected_targets": ["go_wam_bytecode", "rust_wam_lowered", "python_wam"],
+    "fix_options": [
+      "Emit per-predicate Y-register offset ranges in the transpiler",
+      "Implement proper environment-frame Y-register storage in all runtimes",
+      "Use the WAM stack: allocate saves Y-regs to frame, deallocate restores"
+    ]
+  },
   "bug_fixes": [
     "Go emitter: added SharedWamCode/SharedWamLabels exported aliases in wam_go_target.pl",
     "Rust lowered emitter: added escape_rust_string for builtin_call ops in wam_rust_lowered_emitter.pl",
     "Go lowered emitter: added escape_go_string for builtin_call ops in wam_go_lowered_emitter.pl",
-    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl"
+    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl",
+    "Go runtime: added callIndexedAtomFact2 with first-argument indexed HashMap and choice-point backtracking"
   ]
 }
