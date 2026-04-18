@@ -70,7 +70,9 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
          package_name(main),
          prefer_wam(true),
          wam_fallback(true),
-         foreign_lowering(true)],
+         foreign_lowering(true),
+         emit_mode(functions),
+         parallel(true)],
         KernelOptions
     ], Options),
     write_wam_go_project(Predicates, Options, OutputDir),
