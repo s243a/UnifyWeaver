@@ -337,10 +337,14 @@ wam_instruction_to_go_literal(builtin_call(Op, N), GoLiteral) :-
     escape_go_string(Op, EscapedOp),
     format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedOp, N]).
 
+wam_instruction_to_go_literal(try_me_else(Label, Arity), GoLiteral) :-
+    format(atom(GoLiteral), '&TryMeElse{Label: "~w", Arity: ~w}', [Label, Arity]).
 wam_instruction_to_go_literal(try_me_else(Label), GoLiteral) :-
-    format(atom(GoLiteral), '&TryMeElse{Label: "~w"}', [Label]).
+    format(atom(GoLiteral), '&TryMeElse{Label: "~w", Arity: 100}', [Label]).
+wam_instruction_to_go_literal(retry_me_else(Label, Arity), GoLiteral) :-
+    format(atom(GoLiteral), '&RetryMeElse{Label: "~w", Arity: ~w}', [Label, Arity]).
 wam_instruction_to_go_literal(retry_me_else(Label), GoLiteral) :-
-    format(atom(GoLiteral), '&RetryMeElse{Label: "~w"}', [Label]).
+    format(atom(GoLiteral), '&RetryMeElse{Label: "~w", Arity: 100}', [Label]).
 wam_instruction_to_go_literal(trust_me, '&TrustMe{}').
 
 wam_instruction_to_go_literal(switch_on_constant(Table), GoLiteral) :-
@@ -556,6 +560,10 @@ go_ident_code(Code, Safe) :-
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
+
+predicate_indicator_arity(_Module:_Pred/Arity, Arity) :- !.
+predicate_indicator_arity(_Pred/Arity, Arity) :- !.
+predicate_indicator_arity(_, 100).  % fallback
 
 go_foreign_lowering_spec(PredIndicator, SetupOps, RewriteCalls, EntryPred/EntryArity) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
@@ -906,10 +914,10 @@ wam_line_to_go_literal(["builtin_call", Op, N], GoLit) :-
 
 wam_line_to_go_literal(["try_me_else", L], GoLit) :-
     clean_comma(L, CL),
-    format(atom(GoLit), '&TryMeElse{Label: "~w"}', [CL]).
+    format(atom(GoLit), '&TryMeElse{Label: "~w", Arity: 100}', [CL]).
 wam_line_to_go_literal(["retry_me_else", L], GoLit) :-
     clean_comma(L, CL),
-    format(atom(GoLit), '&RetryMeElse{Label: "~w"}', [CL]).
+    format(atom(GoLit), '&RetryMeElse{Label: "~w", Arity: 100}', [CL]).
 wam_line_to_go_literal(["trust_me"], '&TrustMe{}').
 
 wam_line_to_go_literal(["switch_on_constant" | Table], GoLit) :-
@@ -950,6 +958,14 @@ target_predicate_parts(TargetPredArity, Pred, Arity) :-
     atom_string(Pred, PredStr),
     number_string(Arity, ArityStr).
 
+wam_line_to_go_literal(["try_me_else", L], PredIndicator, _Options, GoLit) :-
+    clean_comma(L, CL),
+    predicate_indicator_arity(PredIndicator, Arity),
+    format(atom(GoLit), '&TryMeElse{Label: "~w", Arity: ~w}', [CL, Arity]).
+wam_line_to_go_literal(["retry_me_else", L], PredIndicator, _Options, GoLit) :-
+    clean_comma(L, CL),
+    predicate_indicator_arity(PredIndicator, Arity),
+    format(atom(GoLit), '&RetryMeElse{Label: "~w", Arity: ~w}', [CL, Arity]).
 wam_line_to_go_literal(Parts, _PredIndicator, _Options, GoLit) :-
     wam_line_to_go_literal(Parts, GoLit).
 
@@ -1401,11 +1417,11 @@ wam_go_case('TryMeElse', '        nextPC := 0
         if pc, ok := vm.Ctx.Labels[i.Label]; ok {
             nextPC = pc
         }
-        vm.pushChoicePoint(nextPC, 100)
+        vm.pushChoicePoint(nextPC, i.Arity)
         vm.PC++
         return true').
 
-wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC, 100)
+wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC, i.Arity)
         vm.PC++
         return true').
 
@@ -1710,13 +1726,13 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
             }
         case *TryMeElse:
             if pc, ok := labels[i.Label]; ok {
-                resolved = append(resolved, &TryMeElsePc{NextPC: pc})
+                resolved = append(resolved, &TryMeElsePc{NextPC: pc, Arity: i.Arity})
             } else {
                 resolved = append(resolved, instr)
             }
         case *RetryMeElse:
             if pc, ok := labels[i.Label]; ok {
-                resolved = append(resolved, &RetryMeElsePc{NextPC: pc})
+                resolved = append(resolved, &RetryMeElsePc{NextPC: pc, Arity: i.Arity})
             } else {
                 resolved = append(resolved, instr)
             }
