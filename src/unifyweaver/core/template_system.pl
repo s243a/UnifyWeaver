@@ -359,9 +359,9 @@ template(bfs_init, '
     local start="$1"
     declare -A visited
     declare -A output_seen
-    local queue_file="/tmp/{{prefix}}_queue_$$"
-    local next_queue="/tmp/{{prefix}}_next_$$"
-    trap "rm -f $queue_file $next_queue" EXIT
+    local queue_file="/tmp/{{prefix}}_queue_{{tmp_suffix}}"
+    local next_queue="/tmp/{{prefix}}_next_{{tmp_suffix}}"
+    trap "rm -f $queue_file $next_queue" {{trap_signals}}
     echo "$start" > "$queue_file"
     visited["$start"]=1').
 
@@ -420,7 +420,58 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
     atom_string(PredName, PredStr),
     atom_string(BaseName, BaseStr),
     constraint_analyzer:get_dedup_strategy(Options, Strategy),
-    
+
+    % Determine shell capabilities for portable code generation.
+    % Options can include shell_env([no_syscalls, no_processes, ...]) to
+    % declare missing capabilities. On WASM (auto-detected via
+    % shell_capabilities module), these default to the restricted set.
+    (   member(shell_env(EnvList), Options), is_list(EnvList)
+    ->  true
+    ;   detect_shell_env(EnvList)
+    ),
+
+    % When syscalls are unavailable, avoid $$ (getpid hangs on WASM).
+    (   member(no_syscalls, EnvList)
+    ->  TempSuffix = "$RANDOM",
+        TrapSignals = "EXIT"
+    ;   TempSuffix = "$$",
+        TrapSignals = "EXIT"
+    ),
+
+    % When process features are limited, avoid tee >(cmd) and use
+    % a sequential pipeline instead.
+    (   member(no_processes, EnvList)
+    ->  UseSequentialCheck = true
+    ;   UseSequentialCheck = false
+    ),
+
+    % Build the _check() function body based on capabilities.
+    atom_string(TempSuffix, TempSuffixStr),
+    atom_string(TrapSignals, TrapSignalsStr),
+    (   UseSequentialCheck = true
+    ->  CheckBody = '
+    local _result="/tmp/{{pred}}_result_{{tmp_suffix}}"
+    {{pred}}_all "$start" 2>/dev/null > "$_result"
+    if grep -q "^$start:$target$" "$_result"; then
+        rm -f "$_result"
+        return 0
+    else
+        rm -f "$_result"
+        return 1
+    fi'
+    ;   CheckBody = '
+    local tmpflag="/tmp/{{pred}}_found_{{tmp_suffix}}"
+    {{pred}}_all "$start" 2>/dev/null |
+    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
+    if [[ -f "$tmpflag" ]]; then
+        rm -f "$tmpflag"
+        return 0
+    else
+        rm -f "$tmpflag"
+        return 1
+    fi'
+    ),
+
     Template = '#!/bin/bash
 # {{pred}} - transitive closure of {{base}}
 
@@ -440,17 +491,17 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
 {{pred}}_all() {
     local start="$1"
     declare -A visited
-    local queue_file="/tmp/{{pred}}_queue_$$"
-    local next_queue="/tmp/{{pred}}_next_$$"
-    
-    trap "rm -f $queue_file $next_queue" EXIT PIPE
-    
+    local queue_file="/tmp/{{pred}}_queue_{{tmp_suffix}}"
+    local next_queue="/tmp/{{pred}}_next_{{tmp_suffix}}"
+
+    trap "rm -f $queue_file $next_queue" {{trap_signals}}
+
     echo "$start" > "$queue_file"
     visited["$start"]=1
-    
+
     while [[ -s "$queue_file" ]]; do
         > "$next_queue"
-        
+
         while IFS= read -r current; do
             while IFS=":" read -r from to; do
                 if [[ "$from" == "$current" && -z "${visited[$to]}" ]]; then
@@ -460,10 +511,10 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
                 fi
             done < <({{base}}_get_stream | grep "^$current:")
         done < "$queue_file"
-        
+
         mv "$next_queue" "$queue_file"
     done
-    
+
     rm -f "$queue_file" "$next_queue"
 }
 
@@ -471,19 +522,7 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
 {{pred}}_check() {
     local start="$1"
     local target="$2"
-    local tmpflag="/tmp/{{pred}}_found_$$"
-    
-    # Use tee to prevent SIGPIPE when grep exits early (suppress all errors)
-    {{pred}}_all "$start" 2>/dev/null | 
-    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
-    
-    if [[ -f "$tmpflag" ]]; then
-        rm -f "$tmpflag"
-        return 0
-    else
-        rm -f "$tmpflag"
-        return 1
-    fi
+{{check_body}}
 }
 
 # Main entry point
@@ -520,7 +559,10 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
     render_template(Template, [
         pred = PredStr,
         base = BaseStr,
-        strategy = Strategy
+        strategy = Strategy,
+        tmp_suffix = TempSuffixStr,
+        trap_signals = TrapSignalsStr,
+        check_body = CheckBody
     ], Code).
 
 %% Deduplication wrapper template
@@ -709,3 +751,33 @@ test_template_system :-
     clear_template_cache(test_cached),
 
     writeln('=== Template System Tests Complete ===').
+
+% ============================================================================
+% SHELL CAPABILITY DETECTION
+% ============================================================================
+
+%% detect_shell_env(-EnvList) is det.
+%
+%  Auto-detect shell environment limitations. Returns a list of atoms
+%  like [no_syscalls, no_processes, no_signals] describing what the
+%  target shell lacks. Empty list means full bash capabilities.
+%
+%  Detection order:
+%    1. If shell_capabilities module is loaded, query it.
+%    2. Otherwise assume full capabilities (native).
+%
+detect_shell_env(EnvList) :-
+    (   catch(
+            ( shell_capabilities:shell_lacks(syscalls) -> L1 = [no_syscalls] ; L1 = [] ),
+            _, L1 = []
+        ),
+        catch(
+            ( shell_capabilities:shell_lacks(processes) -> L2 = [no_processes] ; L2 = [] ),
+            _, L2 = []
+        ),
+        catch(
+            ( shell_capabilities:shell_lacks(signals) -> L3 = [no_signals] ; L3 = [] ),
+            _, L3 = []
+        ),
+        append([L1, L2, L3], EnvList)
+    ).
