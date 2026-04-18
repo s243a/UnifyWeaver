@@ -2,6 +2,7 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"strconv"
 )
@@ -161,9 +162,7 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	})
 }
 
-func (vm *WamState) pushIndexedChoicePoint(pcs []int) {
-	// Save all A-regs (0..99) that are non-nil — use a reasonable default arity
-	arity := 100
+func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 	saved := make([]Value, arity)
 	copy(saved, vm.Regs[:arity])
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
@@ -290,6 +289,39 @@ func parseFunctorName(f string) string {
 	return f
 }
 
+// compareValues returns <0, 0, or >0 for sort ordering of atoms/integers.
+func compareValues(a, b Value) int {
+	// Type ordering: Atom < Integer < Float < other
+	typeRank := func(v Value) int {
+		switch v.(type) {
+		case *Atom:    return 0
+		case *Integer: return 1
+		case *Float:   return 2
+		default:       return 3
+		}
+	}
+	ra, rb := typeRank(a), typeRank(b)
+	if ra != rb { return ra - rb }
+	switch ta := a.(type) {
+	case *Atom:
+		tb := b.(*Atom)
+		if ta.Name < tb.Name { return -1 }
+		if ta.Name > tb.Name { return 1 }
+		return 0
+	case *Integer:
+		tb := b.(*Integer)
+		if ta.Val < tb.Val { return -1 }
+		if ta.Val > tb.Val { return 1 }
+		return 0
+	case *Float:
+		tb := b.(*Float)
+		if ta.Val < tb.Val { return -1 }
+		if ta.Val > tb.Val { return 1 }
+		return 0
+	}
+	return 0
+}
+
 func isEmptyListValue(v Value) bool {
 	if atom, ok := v.(*Atom); ok {
 		return atom.Name == "[]"
@@ -378,23 +410,22 @@ func (vm *WamState) Deref(v Value) Value {
 }
 
 func (vm *WamState) deref(v Value) Value {
-	// Depth limit guards against circular ref chains from bugs.
-	for i := 0; i < 10000; i++ {
-		if r, ok := v.(*Ref); ok {
-			next := vm.Heap[r.Addr]
+	for {
+		switch t := v.(type) {
+		case *Ref:
+			next := vm.Heap[t.Addr]
 			if next == v { return v }
 			v = next
-		} else if u, ok := v.(*Unbound); ok {
-			if boundVal := vm.Regs[u.Idx]; boundVal != nil && boundVal != v {
-				v = boundVal
+		case *Unbound:
+			if bound := vm.Regs[t.Idx]; bound != nil && bound != v {
+				v = bound
 			} else {
 				return v
 			}
-		} else {
+		default:
 			return v
 		}
 	}
-	return v
 }
 
 func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
@@ -407,6 +438,26 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 	}
 
 	f, args := decompose(v)
+	if len(args) == 1 {
+		a, okA := vm.evalArithmetic(args[0])
+		if !okA { return 0, false }
+		switch f {
+		case "-":
+			return -a, true
+		case "abs":
+			return math.Abs(a), true
+		case "sign":
+			if a > 0 { return 1, true }
+			if a < 0 { return -1, true }
+			return 0, true
+		case "float":
+			return a, true
+		case "truncate", "integer":
+			return float64(int64(a)), true
+		case "float_integer_part":
+			return math.Trunc(a), true
+		}
+	}
 	if len(args) == 2 {
 		a, okA := vm.evalArithmetic(args[0])
 		b, okB := vm.evalArithmetic(args[1])
@@ -429,6 +480,26 @@ func (vm *WamState) evalArithmetic(v Value) (float64, bool) {
 		case "mod":
 			if b == 0 { return 0, false }
 			return float64(int64(a) % int64(b)), true
+		case "abs":
+			return math.Abs(a), true
+		case "max":
+			if a > b { return a, true }
+			return b, true
+		case "min":
+			if a < b { return a, true }
+			return b, true
+		case "**", "^":
+			return math.Pow(a, b), true
+		case "/\\":
+			return float64(int64(a) & int64(b)), true
+		case "\\/":
+			return float64(int64(a) | int64(b)), true
+		case "xor":
+			return float64(int64(a) ^ int64(b)), true
+		case ">>":
+			return float64(int64(a) >> uint(int64(b))), true
+		case "<<":
+			return float64(int64(a) << uint(int64(b))), true
 		}
 	}
 	return 0, false
@@ -591,7 +662,7 @@ func (vm *WamState) backtrack() bool {
     topIdx := len(vm.ChoicePoints) - 1
     cp := vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
-        vm.unwindTrail(cp.TrailMark)
+        vm.unwindTrailTo(cp.TrailMark)
         copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
         vm.Stack = copyStack(cp.Stack)
         if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
@@ -613,7 +684,7 @@ func (vm *WamState) backtrack() bool {
     }
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {
-            vm.unwindTrail(cp.TrailMark)
+            vm.unwindTrailTo(cp.TrailMark)
             copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
             vm.Stack = copyStack(cp.Stack)
             if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
@@ -638,7 +709,7 @@ func (vm *WamState) backtrack() bool {
         }
         return false
     }
-    vm.unwindTrail(cp.TrailMark)
+    vm.unwindTrailTo(cp.TrailMark)
     copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
     vm.Stack = copyStack(cp.Stack)
     if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
@@ -652,13 +723,12 @@ func (vm *WamState) backtrack() bool {
     return true
 }
 
-func (vm *WamState) unwindTrail(mark int) {
-    for vm.TrailLen > mark {
-        vm.TrailLen--
-        entry := vm.Trail[vm.TrailLen]
-        vm.Regs[entry.Addr] = nil
+func (vm *WamState) unwindTrailTo(mark int) {
+    for i := vm.TrailLen - 1; i >= mark; i-- {
+        vm.Regs[vm.Trail[i].Addr] = nil
     }
-    vm.trailTrimTo(mark)
+    vm.Trail = vm.Trail[:mark]
+    vm.TrailLen = mark
 }
 
 // buildAtomInternTable interns all atom strings from fact pairs and weighted
