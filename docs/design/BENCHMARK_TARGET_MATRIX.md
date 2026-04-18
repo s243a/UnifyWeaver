@@ -60,9 +60,24 @@ So Rust already has both:
 
 ### Go
 
-The current effective-distance benchmark surface for Go is the direct pipeline path from `generate_pipeline.py`.
+Go now has two effective-distance benchmark paths.
 
-That is useful for comparison, but it is not yet the same kind of optimized-Prolog-to-hybrid-WAM benchmark path that exists for Haskell and WAM Rust.
+Direct pipeline path:
+
+1. `generate_pipeline.py`
+2. Emit a direct Go executable
+
+Hybrid WAM Go path:
+
+1. Load the workload Prolog and benchmark facts.
+2. Run `prolog_target` optimization passes.
+3. Force the selected predicates through the shared Go WAM path.
+4. Emit a Go benchmark driver that queries the compiled VM directly.
+
+That means Go can now participate in:
+
+- `direct-pipeline`
+- `hybrid-wam`
 
 ### C#
 
@@ -81,6 +96,7 @@ The new matrix script uses these categories:
 
 The default presets are:
 
+- `termux-smoke`
 - `portable-default`
 - `desktop-default`
 - `optimized-prolog`
@@ -91,15 +107,24 @@ The default presets are:
 
 ## Termux Rule
 
-On Termux, the default set excludes C#.
+On Termux, the default local mode is intentionally smaller:
+
+- default target set: `termux-smoke`
+- default scales: `dev,10x`
 
 Reason:
 
+- larger effective-distance runs can destabilize the Termux session
 - running C# through `proot` Debian adds an environment penalty
 - that penalty is not part of the query engine itself
 - including it in default local comparisons would bias the numbers
 
-C# stays available in the harness as an explicit opt-in target for environments where it can run natively.
+So:
+
+- C# stays available as an explicit opt-in target for native desktop environments
+- larger benchmark scales should be run outside Termux
+- Termux should be treated as a smoke-test environment for benchmark correctness, not the primary profiling environment
+- the matrix script rejects larger Termux scales unless `--allow-large-termux-scales` is passed explicitly
 
 ## Scripts
 
@@ -107,6 +132,7 @@ New scripts:
 
 - `examples/benchmark/benchmark_effective_distance_matrix.py`
 - `examples/benchmark/generate_wam_haskell_matrix_benchmark.pl`
+- `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
 
 Examples:
 
