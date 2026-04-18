@@ -448,6 +448,30 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
+  @doc """
+  Rematerialise output A-registers from the caller\'s saved unbound vars.
+  Call after run(args) and after each next_solution/1 to get correct
+  values in state.regs — during a clause the A-regs are used as scratch
+  and may hold intermediate heap refs or foreign temporaries.
+  """
+  def materialise_args(state) do
+    Enum.reduce(state.arg_vars, state, fn {i, v}, s ->
+      %{s | regs: Map.put(s.regs, i, deref_var(s, v))}
+    end)
+  end
+
+  @doc """
+  Driver-facing next-solution helper: backtracks, then rematerialises
+  the A-regs for caller-supplied unbound args. Returns {:ok, state} or
+  :fail — matches the run/1 contract.
+  """
+  def next_solution(state) do
+    case backtrack(state) do
+      {:ok, s} -> {:ok, materialise_args(s)}
+      other -> other
+    end
+  end
+
   @doc "Read `len` consecutive heap cells starting at `start`."
   def heap_slice(_state, _start, 0), do: []
   def heap_slice(state, start, len) when len > 0 do
@@ -722,7 +746,12 @@ compile_wam_runtime_to_elixir(Options, Code) :-
     # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
     defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0,
               trail: [], trail_len: 0,
-              choice_points: [], stack: [], code: {}, labels: %{}
+              choice_points: [], stack: [], code: {}, labels: %{},
+              # arg_vars is the list of {reg_id, unbound_tuple} for each
+              # caller-supplied unbound arg. Set by run(args) at entry so
+              # next_solution/1 can rematerialise output regs on every
+              # solution (A-regs get clobbered as scratch during clauses).
+              arg_vars: []
   end
 
 ~w
@@ -755,11 +784,23 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
 
   def run(args) do
     state = %WamRuntime.WamState{code: code(), labels: labels(), pc: 1}
-    state = Enum.with_index(args, 1)
-    |> Enum.reduce(state, fn {arg, i}, s ->
-      %{s | regs: Map.put(s.regs, i, arg)}
+    # Rewrite caller unbounds to fresh refs + track them in state.arg_vars
+    # (see lowered emitter run(args) for the full rationale).
+    {state, arg_vars} = Enum.with_index(args, 1)
+    |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+      case arg do
+        {:unbound, _} ->
+          v = {:unbound, make_ref()}
+          {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+        other ->
+          {%{s | regs: Map.put(s.regs, i, other)}, vars}
+      end
     end)
-    WamRuntime.run(state)
+    state = %{state | arg_vars: arg_vars}
+    case WamRuntime.run(state) do
+      {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+      other -> other
+    end
   end
 end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
 
