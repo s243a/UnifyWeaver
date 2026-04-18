@@ -2,6 +2,7 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
 :- use_module('../../src/unifyweaver/targets/wam_go_target').
+:- use_module('../../src/unifyweaver/targets/wam_python_target').
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module(library(option)).
@@ -9,8 +10,8 @@
 
 %% gen_prof_matrix.pl
 %%
-%% Generates 4 Haskell + 4 Go WAM profiling configurations from optimized
-%% Prolog:
+%% Generates 4 Haskell + 4 Go + 4 Python WAM profiling configurations
+%% from optimized Prolog:
 %%
 %%   Haskell:
 %%     A: pure-interp    — emit_mode(interpreter), no_kernels(true)
@@ -24,8 +25,15 @@
 %%     G: go-lowered-only — emit_mode(functions),   no_kernels(true)
 %%     H: go-lowered-ffi  — emit_mode(functions),   kernels enabled
 %%
+%%   Python:
+%%     I: py-pure-interp  — emit_mode(interpreter), no_kernels(true)
+%%     J: py-interp-ffi   — emit_mode(interpreter), kernels enabled
+%%     K: py-lowered-only — emit_mode(functions),   no_kernels(true)
+%%     L: py-lowered-ffi  — emit_mode(functions),   kernels enabled
+%%
 %% Haskell configurations use GHC profiling (-prof -fprof-auto -rtsopts).
 %% Go configurations are profiled via `go tool pprof` (CPU profiling).
+%% Python configurations are profiled via cProfile / py-spy.
 %%
 %% Usage:
 %%   swipl -q -s gen_prof_matrix.pl -- <facts.pl> <output-base-dir>
@@ -39,6 +47,10 @@
 %%   <output-base-dir>/F-go-interp-ffi/     (Go)
 %%   <output-base-dir>/G-go-lowered-only/   (Go)
 %%   <output-base-dir>/H-go-lowered-ffi/    (Go)
+%%   <output-base-dir>/I-py-pure-interp/    (Python)
+%%   <output-base-dir>/J-py-interp-ffi/     (Python)
+%%   <output-base-dir>/K-py-lowered-only/   (Python)
+%%   <output-base-dir>/L-py-lowered-ffi/    (Python)
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -82,7 +94,7 @@ generate_all(OutputBase) :-
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
 
-    % Step 4: Generate all 8 configurations (4 Haskell + 4 Go)
+    % Step 4: Generate all 12 configurations (4 Haskell + 4 Go + 4 Python)
     Predicates = [
         user:dimension_n/1,
         user:max_depth/1,
@@ -105,7 +117,13 @@ generate_all(OutputBase) :-
         member(config(Label, EmitMode, NoKernels), GoConfigs),
         generate_go_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
     ),
-    format(user_error, '~n[prof-matrix] All 8 configurations generated under ~w~n', [OutputBase]).
+
+    python_configs(PythonConfigs),
+    forall(
+        member(config(Label, EmitMode, NoKernels), PythonConfigs),
+        generate_python_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
+    ),
+    format(user_error, '~n[prof-matrix] All 12 configurations generated under ~w~n', [OutputBase]).
 
 haskell_configs([
     config('A-pure-interp',  interpreter, true),
@@ -159,4 +177,31 @@ generate_go_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
     format(user_error, '[prof-matrix] Generating Go ~w (emit_mode=~w, no_kernels=~w)~n',
            [Label, EmitMode, NoKernels]),
     write_wam_go_project(Predicates, Options, OutputDir),
+    format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
+
+python_configs([
+    config('I-py-pure-interp',  interpreter, true),
+    config('J-py-interp-ffi',   interpreter, false),
+    config('K-py-lowered-only', functions,   true),
+    config('L-py-lowered-ffi',  functions,   false)
+]).
+
+generate_python_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
+    format(atom(OutputDir), '~w/~w', [OutputBase, Label]),
+    format(atom(ModName), 'wam-prof-~w', [Label]),
+    BaseOpts = [
+        module_name(ModName),
+        prefer_wam(true),
+        wam_fallback(true),
+        emit_mode(EmitMode),
+        parallel(true)
+    ],
+    (   NoKernels == true
+    ->  KernelOpts = [no_kernels(true)]
+    ;   KernelOpts = []
+    ),
+    append(BaseOpts, KernelOpts, Options),
+    format(user_error, '[prof-matrix] Generating Python ~w (emit_mode=~w, no_kernels=~w)~n',
+           [Label, EmitMode, NoKernels]),
+    write_wam_python_project(Predicates, Options, OutputDir),
     format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
