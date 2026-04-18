@@ -14,6 +14,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
 % ============================================================================
@@ -136,19 +137,29 @@ split_last_colon(Entry, Key, Label) :-
     ).
 
 %% build_switch_arms(+Entries, -ArmsStr)
-%  Builds inline Elixir case arms for switch_on_constant.
-%  "default" labels fall through (:ok); real labels call the local segment
-%  function directly (local labels, not WamDispatcher predicates).
+%  Builds inline Elixir case arms for switch_on_constant. Groups entries by
+%  key first, because the WAM emitter may produce multiple entries for the
+%  same first-arg constant (when multiple clauses share a first arg) — and
+%  Elixir would then warn that later case-arms are unreachable.
+%
+%  For a key with a single non-"default" entry: dispatch directly to the
+%  labeled clause (the switch's whole reason for existing — skip the
+%  try_me_else chain). For any key with multiple entries OR a single
+%  "default" entry: fall through to :ok, letting the surrounding
+%  try_me_else / retry_me_else chain handle the choice non-deterministically.
 build_switch_arms(Entries, ArmsStr) :-
-    maplist(build_switch_arm, Entries, Arms),
+    maplist([E,K-L]>>split_last_colon(E, K, L), Entries, Pairs),
+    keysort(Pairs, SortedPairs),
+    group_pairs_by_key(SortedPairs, Groups),
+    maplist(build_switch_arm_group, Groups, Arms),
     atomic_list_concat(Arms, '\n          ', ArmsStr).
 
-build_switch_arm(Entry, Arm) :-
-    split_last_colon(Entry, Key, Label),
-    (   Label == "default"
-    ->  format(string(Arm), '"~w" -> :ok', [Key])
-    ;   segment_func_name(Label, LocalFunc),
+build_switch_arm_group(Key-Labels, Arm) :-
+    (   Labels = [OnlyLabel],
+        OnlyLabel \== "default"
+    ->  segment_func_name(OnlyLabel, LocalFunc),
         format(string(Arm), '"~w" -> throw({:return, ~w(state)})', [Key, LocalFunc])
+    ;   format(string(Arm), '"~w" -> :ok', [Key])
     ).
 
 segment_func_name("clause_start", "clause_main") :- !.
