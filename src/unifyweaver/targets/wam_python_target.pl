@@ -36,6 +36,11 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/python_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_python_lowered_emitter', [
+	emit_lowered_python/4,
+	is_deterministic_pred_py/1,
+	python_func_name/2
+]).
 
 % ============================================================================
 % TOP-LEVEL ENTRY POINT
