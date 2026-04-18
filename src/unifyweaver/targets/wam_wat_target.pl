@@ -112,6 +112,8 @@ instr_tag(fused_is_sub,    37).
 instr_tag(fused_is_mul,    38).
 instr_tag(fused_is_add_const, 39).
 instr_tag(fused_is_mul_const, 40).
+instr_tag(arg_direct,      41).
+instr_tag(functor_direct,  42).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -416,6 +418,17 @@ wam_instruction_to_wat_bytes(fused_is_mul_const(DestReg, SrcReg, Const),
     reg_name_to_index(SrcReg, SrcIdx),
     Op1 is DestIdx \/ (SrcIdx << 8),
     encode_instr_hex(Tag, Op1, Const, Hex).
+
+%% arg_direct and functor_direct: zero-operand instructions that
+%% bypass the $execute_builtin br_table by invoking $builtin_arg /
+%% $builtin_functor directly. Fires on `builtin_call(arg/3, 3)` and
+%% `builtin_call(functor/3, 3)` respectively.
+wam_instruction_to_wat_bytes(arg_direct, _Labels, Hex) :-
+    instr_tag(arg_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(functor_direct, _Labels, Hex) :-
+    instr_tag(functor_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
 wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
@@ -1596,6 +1609,19 @@ wam_wat_case(fused_is_mul_const,
     (i64.mul (local.get $a) (local.get $op2)))
   (call $inc_pc)
   (i32.const 1)').
+
+wam_wat_case(arg_direct,
+'  ;; Direct arg/3 call, bypassing the $execute_builtin br_table.
+  ;; Emitted by the peephole in place of `builtin_call(arg/3, 3)`.
+  (if (result i32) (call $builtin_arg)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(functor_direct,
+'  ;; Direct functor/3 call, bypassing the $execute_builtin br_table.
+  (if (result i32) (call $builtin_functor)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -3620,7 +3646,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         wam_lines_to_instrs_with_labels(Lines, 0, InstrsWithLabels),
         %% Run peephole optimizer (may remove instructions, changing PCs)
         peephole_neck_cut(InstrsWithLabels, NeckCutOptimized),
-        peephole_fused_arith(NeckCutOptimized, OptimizedWithLabels),
+        peephole_fused_arith(NeckCutOptimized, ArithOptimized),
+        peephole_direct_builtins(ArithOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -3776,6 +3803,23 @@ peephole_fused_arith([put_value(Dest, 'A1'),
     peephole_fused_arith(Rest, Out).
 peephole_fused_arith([H|T], [H|Out]) :-
     peephole_fused_arith(T, Out).
+
+%% peephole_direct_builtins(+Instrs, -Optimized)
+%  Rewrites `builtin_call(arg/3, 3)` → arg_direct and
+%  `builtin_call(functor/3, 3)` → functor_direct. Skips one br_table
+%  dispatch and one function-call boundary per call; meaningful on
+%  term-walking hot loops (bench_sum_*, bench_term_depth).
+peephole_direct_builtins([], []).
+peephole_direct_builtins([builtin_call('arg/3', 3) | Rest],
+                         [arg_direct | Out]) :-
+    !,
+    peephole_direct_builtins(Rest, Out).
+peephole_direct_builtins([builtin_call('functor/3', 3) | Rest],
+                         [functor_direct | Out]) :-
+    !,
+    peephole_direct_builtins(Rest, Out).
+peephole_direct_builtins([H|T], [H|Out]) :-
+    peephole_direct_builtins(T, Out).
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
