@@ -372,7 +372,16 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:choice_points, rest)
 
         if is_function(cp.pc) do
-          cp.pc.(state)
+          # The retried clause may throw :fail (its own guards failed) or
+          # {:return, result} (it succeeded). Translate back into the
+          # {:ok, state} | :fail contract so the caller does not need to
+          # know about clause-local control flow.
+          try do
+            cp.pc.(state)
+          catch
+            :fail -> backtrack(state)
+            {:return, result} -> result
+          end
         else
           {:ok, state}
         end
@@ -656,6 +665,13 @@ compile_utility_helpers_to_elixir(Code) :-
             if item in list, do: %{state | pc: new_pc}, else: :fail
           true -> :fail
         end
+      {"!/0", 0} ->
+        # Cut: discard all choice points accumulated in this clause.
+        # Conservative (prunes more than strict WAM cut-barrier semantics
+        # would) but matches green-cut usage — the only form currently
+        # emitted by the compiler.
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | choice_points: [], pc: new_pc}
       _ -> :fail
     end
   end
@@ -973,5 +989,15 @@ generate_elixir_dispatcher(Predicates, Options, Code) :-
   @moduledoc "Global dispatcher for dynamic WAM calls"
 
 ~w
-  def call(pred, _state), do: throw({:undefined_predicate, pred})
+  # Fallback: meta-calls (e.g. \\+ Goal) may target builtins whose
+  # module the compiler didn\'t register. Try the builtin table before
+  # declaring the predicate undefined.
+  def call(pred, state) do
+    arity = WamRuntime.parse_functor_arity(pred)
+    case WamRuntime.execute_builtin(state, pred, arity) do
+      :fail -> :fail
+      new_state when is_map(new_state) -> {:ok, new_state}
+      _ -> throw({:undefined_predicate, pred})
+    end
+  end
 end', [CasesStr]).

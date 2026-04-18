@@ -283,7 +283,6 @@ wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
 
 wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
-    parse_arity(F, Arity),
     format(string(Code),
 '    addr = state.heap_len
     new_heap = Map.put(state.heap, addr, {:str, "~w"})
@@ -291,8 +290,7 @@ wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) 
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
     |> Map.put(:heap, new_heap)
-    |> Map.put(:heap_len, addr + 1)
-    |> Map.put(:stack, [{:write_ctx, ~w} | state.stack])', [F, Ai, Ai, Arity]).
+    |> Map.put(:heap_len, addr + 1)', [F, Ai, Ai]).
 
 wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),
@@ -409,8 +407,7 @@ wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, Code) :-
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
     |> Map.put(:heap, new_heap)
-    |> Map.put(:heap_len, addr + 1)
-    |> Map.put(:stack, [{:write_ctx, 2} | state.stack])', [Ai, Ai]).
+    |> Map.put(:heap_len, addr + 1)', [Ai, Ai]).
 
 wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
     reg_id(AiName, Ai),

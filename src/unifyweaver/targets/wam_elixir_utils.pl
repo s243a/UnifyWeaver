@@ -35,12 +35,19 @@ capitalize_string(Str, Cap) :-
 
 %% reg_id(+Reg, -Id)
 % Maps string/atom WAM register names to integer IDs for Elixir.
-% Y-registers are offset by 100 to avoid collision with X/A registers (1-99).
+% Each register bank gets its own integer range to avoid aliasing:
+%   A1..A99 -> 1..99     (argument registers, callee-visible)
+%   X1..X99 -> 101..199  (temporary registers, clause-local)
+%   Y1..Y99 -> 201..299  (permanent registers, environment-local)
+% A and X must be in distinct ranges because the WAM compiler freely
+% emits instructions like `get_variable X3, A1` while A3 is still live —
+% if both mapped to id 3 the store would clobber A3 before the next A3
+% read. Matches the Haskell target's reg_name_to_int convention.
 reg_id(Reg, Id) :-
     (atom(Reg) -> RegAtom = Reg ; atom_string(RegAtom, Reg)),
     (   sub_atom(RegAtom, 0, 1, _, 'A') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(RegAtom, 0, 1, _, 'X') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, Id)
-    ;   sub_atom(RegAtom, 0, 1, _, 'Y') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
+    ;   sub_atom(RegAtom, 0, 1, _, 'X') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, N), Id is N + 100
+    ;   sub_atom(RegAtom, 0, 1, _, 'Y') -> sub_atom(RegAtom, 1, _, 0, Num), atom_number(Num, N), Id is N + 200
     ;   Id = Reg
     ).
 
