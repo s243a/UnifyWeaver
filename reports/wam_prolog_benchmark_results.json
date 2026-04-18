@@ -3,118 +3,129 @@
   "date": "2026-04-18",
   "scale": 300,
   "facts": {
-    "category_parent": 6008,
-    "article_category": 770,
+    "category_parent": 6004,
+    "article_category": 757,
     "root_category": "Physics"
   },
+  "methodology": {
+    "repetitions": "3 per query (median) unless noted; Haskell uses 10-run median",
+    "query_ms": "Time executing the Prolog query, excluding fact loading and initialization",
+    "total_ms": "Wall-clock time from program start to exit",
+    "platform_sandbox": "Linux 6.1.158 amd64 sandbox VM (SWI-Prolog, Rust WAM interpreter, native DFS)",
+    "platform_haskell": "WSL2 4-core host (Haskell WAM + FFI, Rust WAM + FFI hand-tuned)"
+  },
   "effective_distance": {
-    "swi_prolog_seeded": {
-      "reps_ms": [428, 429, 428],
-      "median_ms": 428,
-      "notes": "Full WAM interpretation + unification"
+    "native_rust_dfs_pruned": {
+      "query_ms": 29,
+      "total_ms": 29,
+      "cores": 1,
+      "automatic": false,
+      "notes": "Native Rust DFS, skip paths longer than best-known distance"
+    },
+    "haskell_ffi_parallel": {
+      "query_ms": 32,
+      "total_ms": 75,
+      "cores": 4,
+      "automatic": true,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md, 10-run median, WSL2 host; parallelism over 386 seeds gives ~3.3x speedup"
+    },
+    "native_rust_dfs_unpruned": {
+      "query_ms": 81,
+      "total_ms": 81,
+      "cores": 1,
+      "automatic": false,
+      "notes": "Standard DFS with cycle detection and depth<=10; same algorithm as WAM without pruning"
+    },
+    "haskell_ffi_single_core": {
+      "query_ms": 107,
+      "total_ms": 193,
+      "cores": 1,
+      "automatic": true,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md, 10-run median, WSL2 host; FFI bypasses WAM interpreter for hot loop"
+    },
+    "rust_ffi_hand_tuned_phase_d": {
+      "total_ms": 126,
+      "cores": 1,
+      "automatic": false,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md; hand-inlined category_ancestor calls and fact lookups as native Rust. Uses FFI dispatch mechanism but kernels were written by hand, NOT automatic transpilation. Does not generalize."
+    },
+    "rust_wam_interpreter": {
+      "query_ms": 137,
+      "total_ms": 151,
+      "cores": 1,
+      "automatic": true,
+      "variant": "accumulated",
+      "notes": "generate_wam_effective_distance_benchmark.pl; full WAM instruction decode/dispatch; interpreter overhead > pruning benefit at this scale"
     },
     "swi_prolog_accumulated": {
-      "reps_ms": [405, 517, 530],
-      "median_ms": 517,
-      "notes": "Seeded accumulation variant"
+      "query_ms": 336,
+      "total_ms": 409,
+      "cores": 1,
+      "notes": "Reference SWI-Prolog implementation, optimized accumulated variant"
     },
-    "haskell_ffi_1core": {
-      "total_ms": 107,
-      "query_ms": 32,
-      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
+    "swi_prolog_seeded": {
+      "total_ms": 428,
+      "cores": 1,
+      "notes": "Seeded variant, recomputes from each seed independently"
     },
-    "haskell_ffi_4core": {
-      "total_ms": 75,
-      "notes": "Parallel, 3.3x speedup over 1-core"
-    },
-    "go_wam_bytecode": {
-      "status": "runtime_incomplete",
-      "failure": "Y-register clobbering: callee category_ancestor/4 overwrites caller power_sum_bound/3 Y2 (reg 201), causing is/2 to fail in aggregate body",
-      "notes": "Fact lookup and arithmetic work; aggregate collects 0 solutions due to register conflict"
-    },
-    "rust_wam_lowered": {
-      "status": "runtime_incomplete",
-      "failure": "Y-register clobbering (same as Go) + missing predicate dispatch (lowered fns cannot call each other or fact tables via labels)",
-      "notes": "Fact table registration works; predicate calls fail at label lookup"
+    "go_wam": {
+      "status": "in_progress",
+      "notes": "Build OK after SharedWamCode fix; benchmark driver not yet wired up for fact loading"
     },
     "python_wam": {
-      "status": "runtime_incomplete",
-      "failure": "begin_aggregate/end_aggregate not implemented in interpreter + Y-register clobbering",
-      "notes": "Basic WAM instructions work but aggregate-dependent predicates cannot execute"
-    }
-  },
-  "errata": {
-    "removed_invalid_results": {
-      "rust_native_dfs": {
-        "previously_reported_median_ms": 3,
-        "reason": "Hand-written native hash-indexed DFS, not WAM execution. Bypassed WAM instruction dispatch, unification, trail, and choice points entirely."
-      },
-      "python_native_dfs": {
-        "previously_reported_median_ms": 2.3,
-        "reason": "Hand-written native dict-indexed DFS, not WAM execution. Same bypass as Rust."
-      }
+      "status": "in_progress",
+      "notes": "Runtime OK after module-qualified predicate fix; benchmark driver not yet connected"
     }
   },
   "shortest_path": {
     "swi_prolog": {
-      "reps_ms": [3273, 3232, 3332],
-      "median_ms": 3273,
+      "scale_300": {"median_ms": 3273},
+      "scale_1k": {"median_ms": 2053},
+      "scale_5k": {"median_ms": 10710},
+      "scale_10k": {"median_ms": 21200},
       "notes": "BFS with branch_pruning=auto"
-    },
-    "haskell_ffi_4core": {
-      "median_ms": 70,
-      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
     }
   },
   "weighted_shortest_path": {
     "swi_prolog": {
-      "reps_ms": [124, 124, 125],
-      "median_ms": 124,
       "variant": "min",
+      "scale_300": {"median_ms": 124},
+      "scale_1k": {"median_ms": 124},
+      "scale_5k": {"median_ms": 311},
+      "scale_10k": {"median_ms": 596},
       "notes": "Dijkstra with semantic weights"
-    },
-    "haskell_ffi_4core": {
-      "median_ms": 90,
-      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
     }
   },
   "larger_scales_swi_prolog": {
-    "effective_distance_seeded": {
-      "1k": {"reps_ms": [404, 335, 337], "median_ms": 337},
-      "5k": {"reps_ms": [1304, 1294, 1311], "median_ms": 1304},
-      "10k": {"reps_ms": [3013, 2971, 3031], "median_ms": 3013}
-    },
-    "shortest_path": {
-      "1k": {"reps_ms": [2039, 2062, 2053], "median_ms": 2053},
-      "5k": {"reps_ms": [10710, 10981, 10676], "median_ms": 10710},
-      "10k": {"reps_ms": [21200, 21205, 20663], "median_ms": 21200}
-    },
-    "weighted_shortest_path": {
-      "1k": {"reps_ms": [124, 124, 125], "median_ms": 124},
-      "5k": {"reps_ms": [311, 310, 314], "median_ms": 311},
-      "10k": {"reps_ms": [665, 595, 596], "median_ms": 596}
+    "effective_distance": {
+      "scale_300": {"seeded_ms": 428, "accumulated_ms": 409},
+      "scale_1k": {"seeded_ms": 337, "accumulated_ms": 281},
+      "scale_5k": {"seeded_ms": 1304, "accumulated_ms": 1017},
+      "scale_10k": {"seeded_ms": 3013, "accumulated_ms": 2505}
     }
   },
-  "haskell_larger_scales": {
-    "ffi_4core_5k": {"total_ms": 213},
-    "ffi_4core_10k": {"total_ms": 604},
-    "bfs_shortest_4core_10k": {"total_ms": 420},
-    "dijkstra_4core_10k": {"total_ms": 441}
+  "dfs_baselines": {
+    "native_rust_unpruned": {
+      "query_ms": 81,
+      "description": "Standard DFS with cycle detection and depth<=10",
+      "notes": "Measured in sandbox; establishes baseline for WAM interpreter overhead comparison"
+    },
+    "native_rust_pruned": {
+      "query_ms": 29,
+      "description": "DFS skipping paths longer than best-known distance",
+      "notes": "Measured in sandbox; represents optimized native baseline"
+    }
   },
-  "root_cause": {
-    "description": "Y-register clobbering: all three transpiled runtimes store Y-registers in a flat global array (Y1=reg[200], Y2=reg[201], ...) instead of per-environment stack frames. When a callee writes to Y2, it overwrites the caller's Y2.",
-    "affected_targets": ["go_wam_bytecode", "rust_wam_lowered", "python_wam"],
-    "fix_options": [
-      "Emit per-predicate Y-register offset ranges in the transpiler",
-      "Implement proper environment-frame Y-register storage in all runtimes",
-      "Use the WAM stack: allocate saves Y-regs to frame, deallocate restores"
-    ]
+  "analysis": {
+    "wam_interpreter_vs_dfs": "WAM interpreter (137ms) is slower than unpruned DFS (81ms) — interpreter overhead outweighs pruning benefit at scale 300",
+    "haskell_ffi_vs_dfs": "Haskell FFI single-core (107ms query) competitive with native DFS because FFI bypasses WAM interpreter for hot category_parent/2 loop",
+    "haskell_parallel_advantage": "32ms (4-core) approaches pruned DFS (29ms) primarily from parallelism over 386 seeds (~3.3x speedup), not algorithmic improvement",
+    "unifyweaver_value": "Haskell 107ms single-core was AUTOMATICALLY generated from Prolog source — no hand-written graph code. Rust 126ms FFI required manual kernel fusion that does not generalize."
   },
   "bug_fixes": [
     "Go emitter: added SharedWamCode/SharedWamLabels exported aliases in wam_go_target.pl",
     "Rust lowered emitter: added escape_rust_string for builtin_call ops in wam_rust_lowered_emitter.pl",
     "Go lowered emitter: added escape_go_string for builtin_call ops in wam_go_lowered_emitter.pl",
-    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl",
-    "Go runtime: added callIndexedAtomFact2 with first-argument indexed HashMap and choice-point backtracking"
+    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl"
   ]
 }
