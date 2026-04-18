@@ -107,6 +107,7 @@ instr_tag(switch_entry,    32).
 instr_tag(switch_on_struct,     33).
 instr_tag(switch_struct_entry,  34).
 instr_tag(switch_on_term_hdr,   35).
+instr_tag(fused_is_add,    36).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -358,6 +359,21 @@ wam_instruction_to_wat_bytes(end_aggregate(ValReg), _Labels, Hex) :-
 wam_instruction_to_wat_bytes(nop, _Labels, Hex) :-
     instr_tag(nop, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
+
+%% fused_is_add(Dest, Src1, Src2): Dest := deref(Src1) + deref(Src2).
+%% Emitted by peephole_fused_is_add when the body is `Dest is Src1+Src2`
+%% with all three being registers (matches the sum_ints-style leaf
+%% accumulator pattern). Bypasses +/2 compound allocation and the
+%% $eval_arith recursive walk.
+%% op1 layout: Dest (low 8) | Src1 (bits 8-15) | Src2 (bits 16-23).
+wam_instruction_to_wat_bytes(fused_is_add(DestReg, Src1Reg, Src2Reg),
+                             _Labels, Hex) :-
+    instr_tag(fused_is_add, Tag),
+    reg_name_to_index(DestReg, DestIdx),
+    reg_name_to_index(Src1Reg, Src1Idx),
+    reg_name_to_index(Src2Reg, Src2Idx),
+    Op1 is DestIdx \/ (Src1Idx << 8) \/ (Src2Idx << 16),
+    encode_instr_hex(Tag, Op1, 0, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
 wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
@@ -1418,6 +1434,37 @@ wam_wat_case(end_aggregate,
 wam_wat_case(nop,
 '  ;; No-op: placeholder for unimplemented indexing instructions.
   ;; Just advance PC and continue.
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(fused_is_add,
+'  ;; Dest := deref(Src1) + deref(Src2), where all three are registers.
+  ;; op1 layout: Dest (low 8), Src1 (bits 8-15), Src2 (bits 16-23).
+  ;; Both source registers must deref to integers (tag=1); on any
+  ;; other tag the instruction fails (returns 0) and the run_loop
+  ;; triggers backtrack. This specialized form skips the +/2 compound
+  ;; allocation + $eval_arith recursion that `is/2` would otherwise
+  ;; perform — a meaningful win on the sum_ints-style recursive
+  ;; accumulator pattern.
+  (local $op1i i32) (local $dest i32) (local $src1 i32) (local $src2 i32)
+  (local $a_addr i32) (local $b_addr i32)
+  (local $a i64) (local $b i64)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $dest (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $src1
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $src2
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
+  (local.set $a_addr (call $deref_reg_addr (local.get $src1)))
+  (local.set $b_addr (call $deref_reg_addr (local.get $src2)))
+  (if (i32.or
+        (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
+        (i32.ne (call $val_tag (local.get $b_addr)) (i32.const 1)))
+    (then (return (i32.const 0))))
+  (local.set $a (call $val_payload (local.get $a_addr)))
+  (local.set $b (call $val_payload (local.get $b_addr)))
+  (call $bind_reg_deref (local.get $dest) (i32.const 1)
+    (i64.add (local.get $a) (local.get $b)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -3443,7 +3490,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         %% Parse with label markers interspersed in the instruction list
         wam_lines_to_instrs_with_labels(Lines, 0, InstrsWithLabels),
         %% Run peephole optimizer (may remove instructions, changing PCs)
-        peephole_neck_cut(InstrsWithLabels, OptimizedWithLabels),
+        peephole_neck_cut(InstrsWithLabels, NeckCutOptimized),
+        peephole_fused_is_add(NeckCutOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -3502,6 +3550,39 @@ encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
 %  Output:  allocate, ...get/put..., neck_cut_test(Guard, N, L),
 %           ...body1 (without cut)...,
 %           L:allocate (trust_me removed), ...body2...
+%% peephole_fused_is_add(+Instrs, -Optimized)
+%  Detects `Dest is Src1 + Src2` with all three being registers and
+%  rewrites to a single fused_is_add instruction. The canonical WAM
+%  layer emits:
+%    put_value(Dest, A1), put_structure('+/2', A2),
+%    set_value(Src1), set_value(Src2), [deallocate,] builtin_call(is/2, 2)
+%  The put_value puts the output var slot in A1; put_structure +
+%  set_value × 2 build a freshly-allocated +/2 compound in A2; is/2
+%  evaluates A2 and binds A1. fused_is_add skips the compound alloc
+%  and the $eval_arith recursion, writing the sum directly to Dest.
+%  Matches both with and without the intervening deallocate; preserves
+%  the deallocate if present so stack semantics don't change.
+peephole_fused_is_add([], []).
+peephole_fused_is_add([put_value(Dest, 'A1'),
+                       put_structure('+/2', 'A2'),
+                       set_value(Src1),
+                       set_value(Src2),
+                       deallocate,
+                       builtin_call('is/2', 2) | Rest],
+                      [fused_is_add(Dest, Src1, Src2), deallocate | Out]) :-
+    !,
+    peephole_fused_is_add(Rest, Out).
+peephole_fused_is_add([put_value(Dest, 'A1'),
+                       put_structure('+/2', 'A2'),
+                       set_value(Src1),
+                       set_value(Src2),
+                       builtin_call('is/2', 2) | Rest],
+                      [fused_is_add(Dest, Src1, Src2) | Out]) :-
+    !,
+    peephole_fused_is_add(Rest, Out).
+peephole_fused_is_add([H|T], [H|Out]) :-
+    peephole_fused_is_add(T, Out).
+
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
     remove_label_trust_me(AfterCut, L, Cleaned),
