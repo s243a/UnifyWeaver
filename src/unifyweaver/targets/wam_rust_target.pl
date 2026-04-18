@@ -1302,8 +1302,20 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(limit) => limit,
                     None => return false,
                 };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let cat_id = self.intern_atom(&cat);
+                let root_id = self.intern_atom(&root);
+                let visited_ids: Vec<u32> = visited.iter().filter_map(|item| {
+                    match self.deref_var(item) {
+                        Value::Atom(s) => Some(self.intern_atom(&s)),
+                        _ => None,
+                    }
+                }).collect();
                 let mut hops: Vec<i64> = Vec::new();
-                self.collect_native_category_ancestor_hops(&cat, &root, &visited, max_depth, &mut hops);
+                self.collect_native_category_ancestor_hops(cat_id, root_id, &visited_ids, max_depth, &edge_pred, &mut hops);
                 if hops.is_empty() {
                     return false;
                 }
@@ -1705,19 +1717,18 @@ compile_parse_foreign_tuple_layout_to_rust(Code) :-
 compile_collect_native_category_ancestor_to_rust(Code) :-
     Code = '    pub fn collect_native_category_ancestor_hops(
         &self,
-        cat: &str,
-        root: &str,
-        visited: &[Value],
+        cat_id: u32,
+        root_id: u32,
+        visited: &[u32],
         max_depth: usize,
+        edge_pred: &str,
         out: &mut Vec<i64>,
     ) {
-        let root_val = Value::Atom(root.to_string());
-        let root_seen = visited.iter().any(|item| self.deref_var(item) == root_val);
+        let ffi_table = self.ffi_facts.get(edge_pred);
+        let root_seen = visited.contains(&root_id);
         if !root_seen {
-            if let Some(values) = self.indexed_atom_fact2
-                .get("category_parent/2")
-                .and_then(|table| table.get(cat)) {
-                if values.iter().any(|parent| parent == root) {
+            if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
+                if values.contains(&root_id) {
                     out.push(1);
                 }
             }
@@ -1727,19 +1738,17 @@ compile_collect_native_category_ancestor_to_rust(Code) :-
             return;
         }
 
-        if let Some(values) = self.indexed_atom_fact2
-            .get("category_parent/2")
-            .and_then(|table| table.get(cat)) {
-            for parent in values {
-                let parent_val = Value::Atom(parent.clone());
-                if visited.iter().any(|item| self.deref_var(item) == parent_val) {
+        if let Some(values) = ffi_table.and_then(|table| table.get(&cat_id)) {
+            let values = values.clone();
+            for parent_id in &values {
+                if visited.contains(parent_id) {
                     continue;
                 }
-                let mut next_visited: Vec<Value> = Vec::with_capacity(visited.len() + 1);
-                next_visited.push(parent_val);
-                next_visited.extend(visited.iter().cloned());
+                let mut next_visited: Vec<u32> = Vec::with_capacity(visited.len() + 1);
+                next_visited.push(*parent_id);
+                next_visited.extend_from_slice(visited);
                 let before = out.len();
-                self.collect_native_category_ancestor_hops(parent, root, &next_visited, max_depth, out);
+                self.collect_native_category_ancestor_hops(*parent_id, root_id, &next_visited, max_depth, edge_pred, out);
                 for hop in out.iter_mut().skip(before) {
                     *hop += 1;
                 }
