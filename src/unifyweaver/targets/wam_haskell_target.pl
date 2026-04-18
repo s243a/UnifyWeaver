@@ -1155,7 +1155,17 @@ enumerateParBranches ctx parPC elsePC =
 -- the outer level.
 runBranchForFork :: WamContext -> WamState -> Int -> [Value]
 runBranchForFork !ctx !parent !branchPC =
-    let branchInit = parent { wsPC = branchPC, wsAggAccum = [] }
+    let branchInit = parent
+          { wsPC = branchPC
+          , wsAggAccum = []
+          -- Protect parent CPs from being removed by !/0 inside the
+          -- branch. The branch''s wsCutBar is set to the parent''s
+          -- current CP depth so only CPs the branch itself creates
+          -- can be cut. Without this, a clause like
+          --   p(…) :- max_depth(M), length(V,D), D<M, !, …
+          -- would pop the parent''s aggregate-frame CP.
+          , wsCutBar = wsCPsLen parent
+          }
     in runBranchLoop branchInit
   where
     runBranchLoop !s
@@ -1176,11 +1186,25 @@ runBranchForFork !ctx !parent !branchPC =
                  in case backtrackInner (wsPC s + 1) s1 of
                       Just s2 -> runBranchLoop s2
                       Nothing -> wsAggAccum s1
-               _ -> case step ctx s instr of
-                      Just s2 -> runBranchLoop s2
-                      Nothing -> case backtrack s of
-                        Just s3 -> runBranchLoop s3
-                        Nothing -> wsAggAccum s
+               -- Suppress nested forks: redirect Par* to sequential
+               -- equivalents inside a branch. Only the OUTERMOST
+               -- ParTryMeElse (the one that triggered forkParBranches)
+               -- actually forks; inner recursive calls to the same
+               -- predicate use sequential choice points. Without this,
+               -- recursion depth D with branching factor B creates
+               -- B^D nested parMap sparks — exponential explosion.
+               _ -> let seqInstr = case instr of
+                         ParTryMeElse lbl   -> TryMeElse lbl
+                         ParTryMeElsePc p   -> TryMeElsePc p
+                         ParRetryMeElse lbl -> RetryMeElse lbl
+                         ParRetryMeElsePc p -> RetryMeElsePc p
+                         ParTrustMe         -> TrustMe
+                         other              -> other
+                    in case step ctx s seqInstr of
+                         Just s2 -> runBranchLoop s2
+                         Nothing -> case backtrack s of
+                           Just s3 -> runBranchLoop s3
+                           Nothing -> wsAggAccum s
 
 -- | Fork every branch of a Par* chain and merge their aggregate
 -- contributions via the outer aggregate''s strategy. Returns the
