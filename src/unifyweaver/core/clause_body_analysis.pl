@@ -213,6 +213,14 @@ comparison_op(=\=).
 comparison_op(==).
 comparison_op(\==).
 comparison_op(\=).
+%% Standard-order comparison operators. Prolog defines these over all
+%% terms; WAM-WAT implements them with a caveat — atom ordering uses
+%% the DJB2 hash, not the lexicographic atom name (atoms are stored
+%% as hashes in linear memory, not names).
+comparison_op(@<).
+comparison_op(@>).
+comparison_op(@=<).
+comparison_op(@>=).
 
 %% type_check_pred(+Pred)
 %  Prolog type check predicates that act as guards.
