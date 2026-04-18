@@ -28,8 +28,8 @@
 %%       <facts.pl> <output-dir> [seeded|accumulated]
 %%
 %% Variants:
-%%   seeded      — base category_ancestor + host-side Rust accumulation
-%%   accumulated — Prolog-generated effective_distance_sum helpers compiled into WAM
+%%   seeded      - base category_ancestor + host-side Rust accumulation
+%%   accumulated - Prolog-generated effective_distance_sum helpers compiled into WAM
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -222,7 +222,7 @@ write_runtime_files(SrcDir) :-
 
 write_file(Path, Content) :-
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         format(Stream, "~w", [Content]),
         close(Stream)
     ).
@@ -315,7 +315,7 @@ fn append_fact2(
     // Build dispatch table entries (will be filled with labels after emitting groups)
     let mut dispatch: Vec<(Value, String)> = Vec::new();
     let switch_idx = code.len();
-    code.push(Instruction::Proceed); // placeholder — replaced below
+    code.push(Instruction::Proceed); // placeholder -- replaced below
 
     // Emit per-group fact chains
     for (key, values) in &groups {
@@ -769,7 +769,7 @@ fn main() {
         .unwrap_or(1_000_000);
 
     // For each seed category, run category_ancestor(Cat, Root, Hops, [Cat])
-    // through the WAM VM and compute weight_sum = Σ (Hops+1)^(-n)
+    // through the WAM VM and compute weight_sum = Sum (Hops+1)^(-n)
     let mut seed_weight_sums: HashMap<String, f64> = HashMap::new();
     let mut seed_profiles: Vec<SeedProfile> = Vec::new();
     let mut total_steps: u64 = 0;
@@ -848,7 +848,7 @@ fn main() {
                 // A3 gets overwritten by recursive calls, but the original
                 // Unbound("Hops") variable is bound via bind_var.
                 if let Some(hops_val) = vm.bindings.get("Hops").cloned()
-                    .or_else(|| vm.regs.get("A3").cloned().map(|v| vm.deref_var(&v))) {
+                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v))) {
                     let hops = match &hops_val {
                         Value::Integer(h) => *h as f64,
                         Value::Float(h) => *h,
@@ -971,7 +971,7 @@ fn main() {
 }
 ', [MergedInstrCode, MergedLabelCode, Variant]),
     setup_call_cleanup(
-        open(Path, write, Stream),
+        open(Path, write, Stream, [encoding(utf8)]),
         format(Stream, '~w', [Code]),
         close(Stream)
     ).

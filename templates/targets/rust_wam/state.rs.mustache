@@ -13,7 +13,7 @@ pub struct TrailEntry {
     pub old_value: Option<Value>,
 }
 
-/// Maximum register count — matches Go's [512]Value + padding for X/Y regs.
+/// Maximum register count -- matches Go's [512]Value + padding for X/Y regs.
 pub const MAX_REGS: usize = 600;
 
 /// Choice point: saves state for backtracking.
@@ -25,9 +25,9 @@ pub struct ChoicePoint {
     pub cp: usize,
     /// Saved stack snapshot (Arc clone = O(1), copy-on-write on mutation).
     pub stack: Arc<Vec<StackEntry>>,
-    /// Saved trail depth — backtrack unwinds + truncates to this point.
+    /// Saved trail depth -- backtrack unwinds + truncates to this point.
     pub trail_len: usize,
-    /// Saved heap depth — backtrack truncates to this point.
+    /// Saved heap depth -- backtrack truncates to this point.
     pub heap_len: usize,
     /// Optional state for non-deterministic builtins
     pub builtin_state: Option<BuiltinState>,
@@ -61,8 +61,8 @@ pub enum StackEntry {
 pub struct WamState {
     /// Program counter (1-indexed, 0 = halt).
     pub pc: usize,
-    /// Register file: Ai (argument), Xi (temporary) — O(1) indexed Vec.
-    /// Encoding: A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
+    /// Register file: Ai (argument), Xi (temporary) -- O(1) indexed Vec.
+    /// Encoding: A1->0, A2->1, ...; X1->100, X2->101, ...; Y1->200, Y2->201, ...
     pub regs: Vec<Value>,
     /// Stack: environment frames and unification contexts.
     /// Wrapped in Arc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
@@ -79,7 +79,7 @@ pub struct WamState {
     pub choice_points: Vec<ChoicePoint>,
     /// Compiled instruction sequence.
     pub code: Vec<Instruction>,
-    /// Label → PC mapping.
+    /// Label -> PC mapping.
     pub labels: HashMap<String, usize>,
     /// Pre-indexed 2-column atom facts keyed by predicate then first argument.
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
@@ -158,7 +158,7 @@ impl WamState {
     }
 
     /// Parse a register name ("A1", "X3", "Y2") to a Vec index.
-    /// A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
+    /// A1->0, A2->1, ...; X1->100, X2->101, ...; Y1->200, Y2->201, ...
     #[inline]
     pub fn reg_index(name: &str) -> usize {
         let bytes = name.as_bytes();
@@ -167,9 +167,9 @@ impl WamState {
         let num_str = &name[1..];
         let num: usize = num_str.parse().unwrap_or(0);
         match prefix {
-            b'A' => num.wrapping_sub(1),          // A1→0, A2→1
-            b'X' => num.wrapping_add(99),          // X1→100, X2→101
-            b'Y' => num.wrapping_add(199),         // Y1→200, Y2→201
+            b'A' => num.wrapping_sub(1),          // A1->0, A2->1
+            b'X' => num.wrapping_add(99),          // X1->100, X2->101
+            b'Y' => num.wrapping_add(199),         // Y1->200, Y2->201
             _ => 0,
         }
     }
@@ -292,7 +292,7 @@ impl WamState {
     }
 
     /// Dereference an Unbound variable through the binding table.
-    /// Follows chains: if Unbound("X") → Unbound("Y") → Atom("hello"), returns Atom("hello").
+    /// Follows chains: if Unbound("X") -> Unbound("Y") -> Atom("hello"), returns Atom("hello").
     pub fn deref_var(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
@@ -383,7 +383,7 @@ impl WamState {
                     return;
                 }
                 Value::Atom(s) if s != "__list_head__" && s != "__list_tail__" && s != "__struct_arg__" => {
-                    // Head already filled (not a placeholder) — fill tail
+                    // Head already filled (not a placeholder) -- fill tail
                     if let Value::Atom(ref ts) = self.heap[marker + 1] {
                         if ts == "__list_tail__" {
                             self.heap[marker + 1] = val;
@@ -453,7 +453,7 @@ impl WamState {
     }
 
     /// Restore argument registers and clear stale temporaries from failed paths.
-    /// Only clears A (0..99) and X (100..199) registers — Y registers (200+) are
+    /// Only clears A (0..99) and X (100..199) registers -- Y registers (200+) are
     /// NOT cleared here because they live in stack Env frames, not in the register
     /// Vec. Y-register state is restored via the ChoicePoint's stack snapshot.
     fn restore_regs(&mut self, saved: &[(usize, Value)]) {
@@ -581,7 +581,7 @@ impl WamState {
     /// Initialize argument registers from a list of values.
     pub fn init_args(&mut self, args: &[Value]) {
         for (i, arg) in args.iter().enumerate() {
-            // A1→0, A2→1, ... (i is 0-indexed, register index = i)
+            // A1->0, A2->1, ... (i is 0-indexed, register index = i)
             if i < self.regs.len() {
                 self.regs[i] = arg.clone();
             }
