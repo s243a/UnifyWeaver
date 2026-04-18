@@ -741,6 +741,26 @@ fn main() {
     let mut vm = WamState::new(all_code, all_labels);
     vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
 
+    // Build atom intern table and interned ffi_facts from indexed_atom_fact2
+    for (_pred, table) in &vm.indexed_atom_fact2.clone() {
+        for (key, vals) in table {
+            vm.intern_atom(key);
+            for v in vals {
+                vm.intern_atom(v);
+            }
+        }
+    }
+    for (pred, table) in &vm.indexed_atom_fact2.clone() {
+        let pred_name = pred.split(''/'').next().unwrap_or(pred);
+        let mut interned_table: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (key, vals) in table {
+            let kid = vm.intern_atom(key);
+            let vids: Vec<u32> = vals.iter().map(|v| vm.intern_atom(v)).collect();
+            interned_table.insert(kid, vids);
+        }
+        vm.ffi_facts.insert(pred_name.to_string(), interned_table);
+    }
+
     let query_start = Instant::now();
 
     // Collect unique seed categories (categories that articles belong to)
@@ -821,9 +841,11 @@ fn main() {
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
             vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
-            let visited = vec![Value::Atom(cat.clone())];
+            let cat_id = vm.intern_atom(cat);
+            let root_id = vm.intern_atom(&root);
+            let visited_ids = vec![cat_id];
             let mut hops: Vec<i64> = Vec::new();
-            vm.collect_native_category_ancestor_hops(cat, &root, &visited, max_depth_limit, &mut hops);
+            vm.collect_native_category_ancestor_hops(cat_id, root_id, &visited_ids, max_depth_limit, "category_parent", &mut hops);
             for hop in hops.iter().take(10001) {
                 let idx = (*hop + 1) as usize;
                 let d = (*hop as f64) + 1.0;

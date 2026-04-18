@@ -85,6 +85,12 @@ pub struct WamState {
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Pre-indexed weighted 3-column edge facts keyed by predicate then source node.
     pub indexed_weighted_edge: HashMap<String, HashMap<String, Vec<(String, f64)>>>,
+    /// Atom interning: string → u32 ID.
+    pub atom_intern: HashMap<String, u32>,
+    /// Atom de-interning: u32 ID → string.
+    pub atom_deintern: Vec<String>,
+    /// Pre-indexed interned fact tables keyed by predicate name then interned first argument.
+    pub ffi_facts: HashMap<String, HashMap<u32, Vec<u32>>>,
     /// Registered foreign predicates keyed by "name/arity".
     pub foreign_predicates: HashSet<String>,
     /// Native foreign handler kinds keyed by "name/arity".
@@ -134,6 +140,9 @@ impl WamState {
             labels,
             indexed_atom_fact2: HashMap::new(),
             indexed_weighted_edge: HashMap::new(),
+            atom_intern: HashMap::new(),
+            atom_deintern: Vec::new(),
+            ffi_facts: HashMap::new(),
             foreign_predicates: HashSet::new(),
             foreign_native_kinds: HashMap::new(),
             foreign_string_configs: HashMap::new(),
@@ -229,6 +238,18 @@ impl WamState {
                 .push(((*to).to_string(), *weight));
         }
         self.indexed_weighted_edge.insert(pred.to_string(), index);
+    }
+
+    /// Intern an atom string, returning its u32 ID.
+    /// If the string is already interned, returns the existing ID.
+    pub fn intern_atom(&mut self, s: &str) -> u32 {
+        if let Some(&id) = self.atom_intern.get(s) {
+            return id;
+        }
+        let id = self.atom_deintern.len() as u32;
+        self.atom_intern.insert(s.to_string(), id);
+        self.atom_deintern.push(s.to_string());
+        id
     }
 
     /// Register a foreign predicate implementation by "name/arity".
