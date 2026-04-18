@@ -241,10 +241,23 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
-    (   length(Goals, N), N > 1
+    % Force permanent variable allocation when the body contains a
+    % Call (including aggregate_all/findall whose inner goals contain
+    % Calls). Without this, a single-goal clause like
+    %   p(X,Y) :- aggregate_all(sum(W), q(X,…), Y).
+    % assigns X/Y to X-registers (< 200) which get clobbered by the
+    % inner Call to q.
+    % Expand aggregates so pre_assign_permanent_vars sees the inner
+    % goals. Variables shared between the head and the aggregate body
+    % must be permanent (Y-registers) because the inner Call clobbers
+    % X-registers.
+    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
+    (   ( length(ExpandedGoals, N), N > 1
+        ; goals_contain_call_or_aggregate(Goals)
+        )
     ->  % Pre-assign Yi registers, emit allocate before head so Yi
         % registers can be stored in the environment frame immediately.
-        pre_assign_permanent_vars(Goals, V0, V0a),
+        pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode),
         compile_goals(Goals, V1, yes, _, GoalsCode),
         format(string(Code), "    allocate~n~w~n~w", [HeadCode, GoalsCode])
@@ -255,6 +268,58 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
         ),
         format(string(Code), "~w~n~w", [HeadCode, BodyCode])
     ).
+
+%% goals_contain_call_or_aggregate(+Goals)
+%  True if any goal in the list is a Call to a user predicate or an
+%  aggregate_all/findall that internally produces Call instructions.
+%  Used to force permanent variable allocation in single-goal clauses
+%  that would otherwise skip it (since length(Goals) == 1).
+goals_contain_call_or_aggregate(Goals) :-
+    member(G, Goals),
+    ( G = aggregate_all(_, _, _)
+    ; G = findall(_, _, _)
+    ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
+    ),
+    !.
+
+is_builtin_goal(is).
+is_builtin_goal(=).
+is_builtin_goal(\=).
+is_builtin_goal(>).
+is_builtin_goal(<).
+is_builtin_goal(>=).
+is_builtin_goal(=<).
+is_builtin_goal(=:=).
+is_builtin_goal(=\=).
+is_builtin_goal(true).
+is_builtin_goal(fail).
+is_builtin_goal(write).
+is_builtin_goal(nl).
+is_builtin_goal(format).
+is_builtin_goal(member).
+is_builtin_goal(length).
+is_builtin_goal(append).
+is_builtin_goal((\+)).
+
+%% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
+%  For permanent-variable detection, expand aggregate_all/findall into
+%  their inner goals + a synthetic "result" goal. This ensures
+%  variables shared between the clause head and the aggregate body
+%  are detected as permanent (appear in >1 "goal").
+expand_aggregate_goals_for_perm_vars([], []).
+expand_aggregate_goals_for_perm_vars([G|Rest], Expanded) :-
+    (   G = aggregate_all(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        % Add the aggregate itself as a separate "goal" so that
+        % variables appearing in the aggregate arguments AND in the
+        % inner body register as permanent (cross-goal).
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   G = findall(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   Expanded = [G|RestExpanded]
+    ),
+    expand_aggregate_goals_for_perm_vars(Rest, RestExpanded).
 
 %% compile_multi_clause_wam(+Pred, +Arity, +Clauses, +Options, -Code)
 compile_multi_clause_wam(Pred, Arity, Clauses, Options, Code) :-
@@ -571,7 +636,13 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % Flatten the InnerGoal conjunction into a list of goals
     flatten_conjunction(InnerGoal, GoalList),
     % Compile each inner goal as a call (never TCO/execute) so control
-    % returns to end_aggregate after each solution
+    % returns to end_aggregate after each solution.
+    % Note: permanent variable allocation for inner-goal variables that
+    % survive across Calls is handled by the OUTER clause''s
+    % pre_assign_permanent_vars (via expand_aggregate_goals_for_perm_vars
+    % in compile_single_clause_wam). Do NOT add a second
+    % pre_assign_permanent_vars call here — it would reassign variables
+    % that already have Y-register slots from the outer pass.
     compile_inner_call_goals(GoalList, V2, Vf, InnerCode),
     (   InitValueCode \= ""
     ->  format(string(Code),
