@@ -114,6 +114,9 @@ instr_tag(fused_is_add_const, 39).
 instr_tag(fused_is_mul_const, 40).
 instr_tag(arg_direct,      41).
 instr_tag(functor_direct,  42).
+instr_tag(copy_term_direct, 43).
+instr_tag(univ_direct,      44).
+instr_tag(is_list_direct,   45).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -428,6 +431,15 @@ wam_instruction_to_wat_bytes(arg_direct, _Labels, Hex) :-
     encode_instr_hex(Tag, 0, 0, Hex).
 wam_instruction_to_wat_bytes(functor_direct, _Labels, Hex) :-
     instr_tag(functor_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(copy_term_direct, _Labels, Hex) :-
+    instr_tag(copy_term_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(univ_direct, _Labels, Hex) :-
+    instr_tag(univ_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(is_list_direct, _Labels, Hex) :-
+    instr_tag(is_list_direct, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
@@ -1620,6 +1632,24 @@ wam_wat_case(arg_direct,
 wam_wat_case(functor_direct,
 '  ;; Direct functor/3 call, bypassing the $execute_builtin br_table.
   (if (result i32) (call $builtin_functor)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(copy_term_direct,
+'  ;; Direct copy_term/2 call, bypassing the $execute_builtin br_table.
+  (if (result i32) (call $builtin_copy_term)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(univ_direct,
+'  ;; Direct =../2 call, bypassing the $execute_builtin br_table.
+  (if (result i32) (call $builtin_univ)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(is_list_direct,
+'  ;; Direct is_list/1 call, bypassing the $execute_builtin br_table.
+  (if (result i32) (call $builtin_is_list)
     (then (call $inc_pc) (i32.const 1))
     (else (i32.const 0)))').
 
@@ -3646,7 +3676,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         wam_lines_to_instrs_with_labels(Lines, 0, InstrsWithLabels),
         %% Run peephole optimizer (may remove instructions, changing PCs)
         peephole_neck_cut(InstrsWithLabels, NeckCutOptimized),
-        peephole_fused_arith(NeckCutOptimized, ArithOptimized),
+        peephole_nested_arith(NeckCutOptimized, NestedArithOptimized),
+        peephole_fused_arith(NestedArithOptimized, ArithOptimized),
         peephole_direct_builtins(ArithOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
@@ -3804,22 +3835,190 @@ peephole_fused_arith([put_value(Dest, 'A1'),
 peephole_fused_arith([H|T], [H|Out]) :-
     peephole_fused_arith(T, Out).
 
+%% peephole_nested_arith(+Instrs, -Optimized)
+%  Handles one level of arithmetic nesting (3-operand expressions
+%  like `X is A + B + C` or `X is (A - B) * C`). Deeper nesting is
+%  left to future work.
+%
+%  Left-associative pattern (WAM default for `A OP1 B OP2 C`):
+%
+%    put_value Dest, A1
+%    put_structure OuterFn, A2
+%    set_variable Tmp           -- outer arg 1 is the inner compound
+%    put_structure InnerFn, Tmp
+%    <set_value|set_constant>    -- inner arg 1
+%    <set_value|set_constant>    -- inner arg 2
+%    <set_value|set_constant>    -- outer arg 2
+%    [deallocate]
+%    builtin_call is/2, 2
+%
+%  Right-associative pattern (WAM for `A OP1 (B OP2 C)`):
+%
+%    put_value Dest, A1
+%    put_structure OuterFn, A2
+%    <set_value|set_constant>    -- outer arg 1
+%    set_variable Tmp            -- outer arg 2 is the inner compound
+%    put_structure InnerFn, Tmp
+%    <set_value|set_constant>    -- inner arg 1
+%    <set_value|set_constant>    -- inner arg 2
+%    [deallocate]
+%    builtin_call is/2, 2
+%
+%  Both rewrite to two fused_is_* instructions via the scratch reg
+%  Tmp, which after the first fused_is_* holds an integer
+%  (integer-tagged via $bind_reg_deref) — exactly what the second
+%  fused_is_* needs as an operand. No further uses of Tmp are
+%  possible (the WAM compiler allocates Tmp fresh per `is/2` site).
+
+peephole_nested_arith([], []).
+%% Left-assoc with optional deallocate.
+peephole_nested_arith([put_value(Dest, 'A1'),
+                       put_structure(OuterFn, 'A2'),
+                       set_variable(Tmp),
+                       put_structure(InnerFn, Tmp),
+                       InnerArg1, InnerArg2,
+                       OuterArg2,
+                       deallocate,
+                       builtin_call('is/2', 2) | Rest],
+                      Out) :-
+    build_nested_left(OuterFn, InnerFn,
+                      Dest, Tmp,
+                      InnerArg1, InnerArg2, OuterArg2,
+                      [deallocate], Fused),
+    !,
+    append(Fused, Tail, Out),
+    peephole_nested_arith(Rest, Tail).
+peephole_nested_arith([put_value(Dest, 'A1'),
+                       put_structure(OuterFn, 'A2'),
+                       set_variable(Tmp),
+                       put_structure(InnerFn, Tmp),
+                       InnerArg1, InnerArg2,
+                       OuterArg2,
+                       builtin_call('is/2', 2) | Rest],
+                      Out) :-
+    build_nested_left(OuterFn, InnerFn,
+                      Dest, Tmp,
+                      InnerArg1, InnerArg2, OuterArg2,
+                      [], Fused),
+    !,
+    append(Fused, Tail, Out),
+    peephole_nested_arith(Rest, Tail).
+%% Right-assoc with optional deallocate.
+peephole_nested_arith([put_value(Dest, 'A1'),
+                       put_structure(OuterFn, 'A2'),
+                       OuterArg1,
+                       set_variable(Tmp),
+                       put_structure(InnerFn, Tmp),
+                       InnerArg1, InnerArg2,
+                       deallocate,
+                       builtin_call('is/2', 2) | Rest],
+                      Out) :-
+    build_nested_right(OuterFn, InnerFn,
+                       Dest, Tmp,
+                       OuterArg1, InnerArg1, InnerArg2,
+                       [deallocate], Fused),
+    !,
+    append(Fused, Tail, Out),
+    peephole_nested_arith(Rest, Tail).
+peephole_nested_arith([put_value(Dest, 'A1'),
+                       put_structure(OuterFn, 'A2'),
+                       OuterArg1,
+                       set_variable(Tmp),
+                       put_structure(InnerFn, Tmp),
+                       InnerArg1, InnerArg2,
+                       builtin_call('is/2', 2) | Rest],
+                      Out) :-
+    build_nested_right(OuterFn, InnerFn,
+                       Dest, Tmp,
+                       OuterArg1, InnerArg1, InnerArg2,
+                       [], Fused),
+    !,
+    append(Fused, Tail, Out),
+    peephole_nested_arith(Rest, Tail).
+peephole_nested_arith([H|T], [H|Out]) :-
+    peephole_nested_arith(T, Out).
+
+%% build_nested_left(+OuterFn, +InnerFn, +Dest, +Tmp,
+%%                   +InnerArg1, +InnerArg2, +OuterArg2,
+%%                   +Tail, -Instrs)
+%% Builds [InnerFused, OuterFused | Tail] for left-associative case.
+%% Inner arg2 and outer arg2 may each be set_value(R) or
+%% set_constant(K). Fails if the operator+arg-shape combination
+%% isn't supported (falls through to the general is/2 path).
+build_nested_left(OuterFn, InnerFn, Dest, Tmp,
+                  InnerArg1, InnerArg2, OuterArg2,
+                  Tail, Instrs) :-
+    fused_reg_reg(InnerFn, InnerArg1, InnerArg2, Tmp, InnerInstr),
+    fused_with_outer2(OuterFn, Tmp, OuterArg2, Dest, OuterInstr),
+    Instrs = [InnerInstr, OuterInstr | Tail].
+
+build_nested_right(OuterFn, InnerFn, Dest, Tmp,
+                   OuterArg1, InnerArg1, InnerArg2,
+                   Tail, Instrs) :-
+    fused_reg_reg(InnerFn, InnerArg1, InnerArg2, Tmp, InnerInstr),
+    fused_with_outer1(OuterFn, OuterArg1, Tmp, Dest, OuterInstr),
+    Instrs = [InnerInstr, OuterInstr | Tail].
+
+%% fused_reg_reg(+Fn, +Arg1, +Arg2, +Dest, -Instr)
+%% Arg1 and Arg2 are set_value(R) or set_constant(K). Builds the
+%% appropriate fused_is_<op>[_const] instruction. Only the forms
+%% the downstream fused instructions can represent are supported.
+fused_reg_reg(Fn, set_value(R1), set_value(R2), Dest, Instr) :-
+    fused_arith_op(Fn, Name),
+    Instr =.. [Name, Dest, R1, R2].
+fused_reg_reg(Fn, set_value(R), set_constant(K), Dest, Instr) :-
+    integer(K),
+    fused_arith_const_op(Fn, Name),
+    Instr =.. [Name, Dest, R, K].
+fused_reg_reg(Fn, set_constant(K), set_value(R), Dest, Instr) :-
+    integer(K),
+    fused_arith_const_op(Fn, Name),
+    Instr =.. [Name, Dest, R, K].
+
+%% fused_with_outer2(+Fn, +Tmp, +OuterArg2, +Dest, -Instr)
+%% Outer slot 1 is the Tmp (reg), outer slot 2 is set_value/const.
+fused_with_outer2(Fn, Tmp, set_value(R), Dest, Instr) :-
+    fused_arith_op(Fn, Name),
+    Instr =.. [Name, Dest, Tmp, R].
+fused_with_outer2(Fn, Tmp, set_constant(K), Dest, Instr) :-
+    integer(K),
+    fused_arith_const_op(Fn, Name),
+    Instr =.. [Name, Dest, Tmp, K].
+
+%% fused_with_outer1(+Fn, +OuterArg1, +Tmp, +Dest, -Instr)
+%% Outer slot 1 is set_value/const, outer slot 2 is the Tmp (reg).
+fused_with_outer1(Fn, set_value(R), Tmp, Dest, Instr) :-
+    fused_arith_op(Fn, Name),
+    Instr =.. [Name, Dest, R, Tmp].
+fused_with_outer1(Fn, set_constant(K), Tmp, Dest, Instr) :-
+    integer(K),
+    fused_arith_const_op(Fn, Name),
+    Instr =.. [Name, Dest, Tmp, K].
+
 %% peephole_direct_builtins(+Instrs, -Optimized)
 %  Rewrites `builtin_call(arg/3, 3)` → arg_direct and
 %  `builtin_call(functor/3, 3)` → functor_direct. Skips one br_table
 %  dispatch and one function-call boundary per call; meaningful on
 %  term-walking hot loops (bench_sum_*, bench_term_depth).
 peephole_direct_builtins([], []).
-peephole_direct_builtins([builtin_call('arg/3', 3) | Rest],
-                         [arg_direct | Out]) :-
-    !,
-    peephole_direct_builtins(Rest, Out).
-peephole_direct_builtins([builtin_call('functor/3', 3) | Rest],
-                         [functor_direct | Out]) :-
+peephole_direct_builtins([builtin_call(Op, Arity) | Rest],
+                         [DirectInstr | Out]) :-
+    direct_builtin_map(Op, Arity, DirectInstr),
     !,
     peephole_direct_builtins(Rest, Out).
 peephole_direct_builtins([H|T], [H|Out]) :-
     peephole_direct_builtins(T, Out).
+
+%% direct_builtin_map(+Op, +Arity, -DirectInstr)
+%  Table of builtin_call forms that have a direct-dispatch
+%  specialization. Each direct instruction is zero-operand and
+%  invokes the underlying $builtin_* helper directly, skipping the
+%  $execute_builtin br_table hop.
+direct_builtin_map('arg/3',       3, arg_direct).
+direct_builtin_map('functor/3',   3, functor_direct).
+direct_builtin_map('copy_term/2', 2, copy_term_direct).
+direct_builtin_map('=../2',       2, univ_direct).
+direct_builtin_map('is_list/1',   1, is_list_direct).
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
