@@ -392,3 +392,113 @@ test(is_ffi_predicate_multiple, [nondet]) :-
 	\+ wam_python_target:is_ffi_predicate(pred_b, 1, Options).
 
 :- end_tests(wam_python_phase_d).
+
+% ============================================================================
+% ITE (if/then/else) block detection and emission tests
+% ============================================================================
+
+:- begin_tests(wam_python_ite).
+
+test(is_match_get_constant) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_constant(a, 1)).
+
+test(is_match_get_nil) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_nil(1)).
+
+test(is_match_get_structure) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_structure(f, 2)).
+
+test(is_match_get_integer) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_integer(42, 1)).
+
+test(is_match_get_float) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_float(3.14, 1)).
+
+test(is_match_get_list) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_list(1)).
+
+test(is_match_get_value) :-
+	wam_python_lowered_emitter:is_match_instr_py(get_value(1, 2)).
+
+test(is_not_match_put_constant) :-
+	\+ wam_python_lowered_emitter:is_match_instr_py(put_constant(a, 1)).
+
+test(is_not_match_proceed) :-
+	\+ wam_python_lowered_emitter:is_match_instr_py(proceed).
+
+test(is_not_match_call) :-
+	\+ wam_python_lowered_emitter:is_match_instr_py(call(foo, 2)).
+
+test(ite_block_detected) :-
+	% Two-clause ITE: foo(a) and foo(b)
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	length(Blocks, 2).
+
+test(ite_block_three_clauses) :-
+	% Three-clause ITE: foo(a), foo(b), foo(c)
+	Instrs = [get_constant(a, "1"), proceed,
+	          get_constant(b, "1"), proceed,
+	          get_constant(c, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	length(Blocks, 3).
+
+test(ite_block_not_detected_single_clause) :-
+	% Single clause with no branching is NOT an ITE block
+	Instrs = [get_constant(a, "1"), proceed],
+	\+ wam_python_lowered_emitter:is_ite_block_py(Instrs, _).
+
+test(ite_block_with_fail_fallthrough) :-
+	% Two clauses plus fail fallthrough
+	Instrs = [get_constant(a, "1"), proceed,
+	          get_constant(b, "1"), proceed,
+	          fail],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	length(Blocks, 3).
+
+test(emit_ite_generates_if, [nondet]) :-
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	wam_python_lowered_emitter:emit_ite_block_py('pred_foo_1', Blocks, 4, [], Lines),
+	Lines \= [],
+	atomic_list_concat(Lines, '\n', AllText),
+	sub_string(AllText, _, _, _, "if ").
+
+test(emit_ite_generates_elif, [nondet]) :-
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	wam_python_lowered_emitter:emit_ite_block_py('pred_foo_1', Blocks, 4, [], Lines),
+	atomic_list_concat(Lines, '\n', AllText),
+	sub_string(AllText, _, _, _, "elif ").
+
+test(emit_ite_generates_else, [nondet]) :-
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	wam_python_lowered_emitter:emit_ite_block_py('pred_foo_1', Blocks, 4, [], Lines),
+	atomic_list_concat(Lines, '\n', AllText),
+	sub_string(AllText, _, _, _, "else:").
+
+test(emit_ite_generates_return_true, [nondet]) :-
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	wam_python_lowered_emitter:emit_ite_block_py('pred_foo_1', Blocks, 4, [], Lines),
+	atomic_list_concat(Lines, '\n', AllText),
+	sub_string(AllText, _, _, _, "return True").
+
+test(emit_lowered_ite_full, [nondet]) :-
+	% Full round-trip: emit_lowered_python detects ITE and emits if/elif/else
+	Instrs = [get_constant(a, "1"), proceed, get_constant(b, "1"), proceed],
+	wam_python_lowered_emitter:emit_lowered_python(foo/1, Instrs, [], Code),
+	sub_string(Code, _, _, _, "def pred_foo_1"),
+	sub_string(Code, _, _, _, "if "),
+	sub_string(Code, _, _, _, "elif "),
+	sub_string(Code, _, _, _, "else:").
+
+test(emit_ite_integer_condition, [nondet]) :-
+	Instrs = [get_integer("1", "1"), proceed, get_integer("2", "1"), proceed],
+	wam_python_lowered_emitter:is_ite_block_py(Instrs, Blocks),
+	wam_python_lowered_emitter:emit_ite_block_py('pred_num_1', Blocks, 4, [], Lines),
+	atomic_list_concat(Lines, '\n', AllText),
+	sub_string(AllText, _, _, _, "Int").
+
+:- end_tests(wam_python_ite).

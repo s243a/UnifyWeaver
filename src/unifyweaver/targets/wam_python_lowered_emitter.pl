@@ -23,7 +23,10 @@
 :- module(wam_python_lowered_emitter, [
 	emit_lowered_python/4,           % +FunctorArity, +Instrs, +Options, -Lines
 	is_deterministic_pred_py/1,      % +Instrs
-	python_func_name/2               % +Functor/Arity, -PythonName
+	python_func_name/2,              % +Functor/Arity, -PythonName
+	is_match_instr_py/1,             % +Instr
+	is_ite_block_py/2,               % +Instrs, -Blocks
+	emit_ite_block_py/5              % +FuncName, +Blocks, +Indent, +Opts, -Lines
 ]).
 
 :- use_module(library(lists)).
@@ -146,6 +149,277 @@ instr_from_parts_py(["get_level", Yn], get_level(Yn)).
 instr_from_parts_py(["cut", Yn], cut(Yn)).
 
 % ============================================================================
+% ITE (if/then/else) block detection
+% ============================================================================
+
+%% is_match_instr_py(+Instr)
+%  True if the instruction is a match/test instruction that can serve as
+%  the head of an ITE branch (analogous to is_match_instr_fs/1 in the
+%  F# lowered emitter).
+is_match_instr_py(get_constant(_, _)).
+is_match_instr_py(get_integer(_, _)).
+is_match_instr_py(get_float(_, _)).
+is_match_instr_py(get_nil(_)).
+is_match_instr_py(get_structure(_, _)).
+is_match_instr_py(get_list(_)).
+is_match_instr_py(get_value(_, _)).
+is_match_instr_py(switch_on_term(_, _, _, _)).
+is_match_instr_py(switch_on_constant(_, _)).
+is_match_instr_py(switch_on_structure(_, _)).
+
+%% is_ite_block_py(+Instrs, -Blocks)
+%  Detects if Instrs contains a multi-clause ITE pattern: a sequence of
+%  [match_instrs..., proceed/execute] pairs that can be rendered as
+%  if/elif/else chains.
+%
+%  Blocks = list of clause_block(MatchInstrs, BodyInstrs).
+%  Requires at least 2 blocks to qualify as an ITE pattern.
+is_ite_block_py(Instrs, Blocks) :-
+	split_ite_clauses_py(Instrs, Blocks),
+	length(Blocks, N),
+	N >= 2.
+
+%% split_ite_clauses_py(+Instrs, -Blocks)
+%  Split a flat instruction list into clause_block(Match, Body) entries.
+%  Each clause is: zero or more match instructions followed by a terminator
+%  (proceed, execute(_), or fail).
+split_ite_clauses_py([], []).
+split_ite_clauses_py(Instrs, [clause_block(MatchInstrs, BodyInstrs)|Rest]) :-
+	Instrs \= [],
+	take_clause_py(Instrs, MatchInstrs, BodyInstrs, Remaining),
+	split_ite_clauses_py(Remaining, Rest).
+
+%% take_clause_py(+Instrs, -MatchInstrs, -BodyInstrs, -Remaining)
+%  Extract one clause: match instructions up to (and including) the
+%  first terminator instruction (proceed, execute/1, fail).
+take_clause_py([proceed|Rest], [], [proceed], Rest) :- !.
+take_clause_py([execute(P)|Rest], [], [execute(P)], Rest) :- !.
+take_clause_py([fail|Rest], [], [fail], Rest) :- !.
+take_clause_py([Instr|Rest], [Instr|MatchRest], BodyInstrs, Remaining) :-
+	is_match_instr_py(Instr),
+	take_clause_py(Rest, MatchRest, BodyInstrs, Remaining).
+% Non-match, non-terminator instructions go into body
+take_clause_py([Instr|Rest], [], [Instr|BodyRest], Remaining) :-
+	\+ is_match_instr_py(Instr),
+	Instr \= proceed,
+	Instr \= fail,
+	\+ (Instr = execute(_)),
+	take_body_to_terminator_py(Rest, BodyRest, Remaining).
+
+%% take_body_to_terminator_py(+Instrs, -BodyInstrs, -Remaining)
+take_body_to_terminator_py([proceed|Rest], [proceed], Rest) :- !.
+take_body_to_terminator_py([execute(P)|Rest], [execute(P)], Rest) :- !.
+take_body_to_terminator_py([fail|Rest], [fail], Rest) :- !.
+take_body_to_terminator_py([I|Rest], [I|BodyRest], Remaining) :-
+	take_body_to_terminator_py(Rest, BodyRest, Remaining).
+take_body_to_terminator_py([], [], []).
+
+% ============================================================================
+% ITE emission — if/elif/else Python code generation
+% ============================================================================
+
+%% emit_ite_block_py(+FuncName, +Blocks, +Indent, +Opts, -Lines)
+%  Emits an if/elif/else chain for the detected ITE blocks.
+%  Indent is an integer (number of spaces).
+emit_ite_block_py(FuncName, Blocks, Indent, _Opts, Lines) :-
+	emit_ite_branches_py(Blocks, FuncName, Indent, first, BranchLines),
+	% Add else fallthrough
+	indent_str(Indent, Pad),
+	format(string(ElseLine), "~welse:~n~w    return False", [Pad, Pad]),
+	append(BranchLines, [ElseLine], Lines).
+
+%% emit_ite_branches_py(+Blocks, +FuncName, +Indent, +Position, -Lines)
+%  Position is 'first' for the first block (emits 'if'),
+%  or 'rest' for subsequent blocks (emits 'elif').
+emit_ite_branches_py([], _, _, _, []).
+emit_ite_branches_py([clause_block(MatchInstrs, BodyInstrs)|Rest], FuncName, Indent, Pos, Lines) :-
+	indent_str(Indent, Pad),
+	(   Pos = first -> Keyword = "if"
+	;   Keyword = "elif"
+	),
+	% Generate the condition from match instructions
+	match_instrs_to_condition_py(MatchInstrs, Condition),
+	% Generate the body
+	match_instrs_to_binding_py(MatchInstrs, Indent, BindingLines),
+	body_instrs_to_code_py(BodyInstrs, Indent, BodyCodeLines),
+	append(BindingLines, BodyCodeLines, InnerLines),
+	format(string(BranchHeader), "~w~w ~w:", [Pad, Keyword, Condition]),
+	(   InnerLines = []
+	->  format(string(BranchBody), "~w    pass", [Pad]),
+	    BranchAll = [BranchHeader, BranchBody]
+	;   BranchAll = [BranchHeader|InnerLines]
+	),
+	emit_ite_branches_py(Rest, FuncName, Indent, rest, RestLines),
+	append(BranchAll, RestLines, Lines).
+
+%% match_instrs_to_condition_py(+MatchInstrs, -Condition)
+%  Generate a Python condition expression from match instructions.
+match_instrs_to_condition_py([], "True").
+match_instrs_to_condition_py([Instr], Cond) :-
+	single_match_condition_py(Instr, Cond).
+match_instrs_to_condition_py([Instr|Rest], Cond) :-
+	Rest \= [],
+	single_match_condition_py(Instr, C1),
+	match_instrs_to_condition_py(Rest, C2),
+	format(string(Cond), "(~w) and (~w)", [C1, C2]).
+
+%% single_match_condition_py(+Instr, -Condition)
+%  Generate a Python condition for a single match instruction.
+single_match_condition_py(get_constant(C, AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	escape_py(C, EC),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Atom) and _a~w.name == "~w")',
+		[Ai, Ai, Ai, EC]).
+single_match_condition_py(get_integer(NStr, AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Int) and _a~w.n == ~w)',
+		[Ai, Ai, Ai, NStr]).
+single_match_condition_py(get_float(FStr, AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Float) and _a~w.f == ~w)',
+		[Ai, Ai, Ai, FStr]).
+single_match_condition_py(get_nil(AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Atom) and _a~w.name == "[]")',
+		[Ai, Ai, Ai]).
+single_match_condition_py(get_structure(FStr, AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	parse_functor_arity_py(FStr, FuncName, Arity),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Compound) and _a~w.functor == "~w" and len(_a~w.args) == ~w)',
+		[Ai, Ai, Ai, FuncName, Ai, Arity]).
+single_match_condition_py(get_list(AiStr), Cond) :-
+	reg_int_py(AiStr, Ai),
+	format(string(Cond),
+		'isinstance(_a~w, Var) or (isinstance(_a~w, Compound) and _a~w.functor == ".")',
+		[Ai, Ai, Ai]).
+single_match_condition_py(get_value(XnStr, AiStr), Cond) :-
+	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
+	format(string(Cond),
+		'unify(deref(state.regs[~w], state), deref(state.regs[~w], state), state)',
+		[Ai, Xn]).
+% Default fallback for unknown match instructions
+single_match_condition_py(_, "True").
+
+%% match_instrs_to_binding_py(+MatchInstrs, +Indent, -Lines)
+%  Generate Python binding code for variables encountered during matching.
+match_instrs_to_binding_py([], _, []).
+match_instrs_to_binding_py([Instr|Rest], Indent, Lines) :-
+	single_match_binding_py(Instr, Indent, BindLines),
+	match_instrs_to_binding_py(Rest, Indent, RestLines),
+	append(BindLines, RestLines, Lines).
+
+%% single_match_binding_py(+Instr, +Indent, -Lines)
+single_match_binding_py(get_constant(C, AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	escape_py(C, EC),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Atom(\"~w\"), state)",
+		[Pad, Ai, Ai, EC]),
+	Lines = [DerefLine, BindLine].
+single_match_binding_py(get_integer(NStr, AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Int(~w), state)",
+		[Pad, Ai, Ai, NStr]),
+	Lines = [DerefLine, BindLine].
+single_match_binding_py(get_float(FStr, AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Float(~w), state)",
+		[Pad, Ai, Ai, FStr]),
+	Lines = [DerefLine, BindLine].
+single_match_binding_py(get_nil(AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Atom(\"[]\"), state)",
+		[Pad, Ai, Ai]),
+	Lines = [DerefLine, BindLine].
+single_match_binding_py(get_structure(FStr, AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	parse_functor_arity_py(FStr, FuncName, Arity),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Compound(\"~w\", [None]*~w), state)",
+		[Pad, Ai, Ai, FuncName, Arity]),
+	Lines = [DerefLine, BindLine].
+single_match_binding_py(get_list(AiStr), Indent, Lines) :-
+	reg_int_py(AiStr, Ai),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Compound(\".\", [None, None]), state)",
+		[Pad, Ai, Ai]),
+	Lines = [DerefLine, BindLine].
+% get_value — no binding needed beyond what's in the condition
+single_match_binding_py(get_value(_, _), _, []).
+% Default fallback
+single_match_binding_py(_, _, []).
+
+%% body_instrs_to_code_py(+BodyInstrs, +Indent, -Lines)
+%  Emit the body instructions as Python code inside an ITE branch.
+body_instrs_to_code_py([], _, []).
+body_instrs_to_code_py([proceed], Indent, [Line]) :-
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(Line), "~wreturn True", [Pad]).
+body_instrs_to_code_py([fail], Indent, [Line]) :-
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(Line), "~wreturn False", [Pad]).
+body_instrs_to_code_py([execute(PStr)], Indent, [Line]) :-
+	pred_to_func_name_py(PStr, FN),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	format(string(Line), "~wreturn ~w(state)", [Pad, FN]).
+body_instrs_to_code_py([Instr|Rest], Indent, [Line|Lines]) :-
+	Instr \= proceed,
+	Instr \= fail,
+	\+ (Instr = execute(_)),
+	emit_instr_py(Instr, Code),
+	Indent1 is Indent + 4,
+	indent_str(Indent1, Pad),
+	% Re-indent the emitted code to the ITE body level
+	split_string(Code, "\n", "", CodeLines),
+	reindent_lines(CodeLines, Pad, ReindentedStr),
+	Line = ReindentedStr,
+	body_instrs_to_code_py(Rest, Indent, Lines).
+
+%% reindent_lines(+Lines, +Pad, -Result)
+%  Strip leading whitespace from each line and prepend Pad.
+reindent_lines([], _, "").
+reindent_lines([L], Pad, Result) :-
+	split_string(L, "", " \t", [Trimmed]),
+	format(string(Result), "~w~w", [Pad, Trimmed]).
+reindent_lines([L|Rest], Pad, Result) :-
+	Rest \= [],
+	split_string(L, "", " \t", [Trimmed]),
+	reindent_lines(Rest, Pad, RestResult),
+	format(string(Result), "~w~w\n~w", [Pad, Trimmed, RestResult]).
+
+%% indent_str(+N, -Str)
+%  Generate a string of N spaces.
+indent_str(0, "") :- !.
+indent_str(N, Str) :-
+	N > 0,
+	length(Codes, N),
+	maplist(=(0' ), Codes),
+	string_codes(Str, Codes).
+
+% ============================================================================
 % Main entry point
 % ============================================================================
 
@@ -155,7 +429,25 @@ instr_from_parts_py(["cut", Yn], cut(Yn)).
 %  Instrs: list of WAM instruction terms (parsed)
 %  Options: option list
 %  Lines: string containing the Python function definition
+%
+%  If the instructions form an ITE block (multi-clause pattern),
+%  emit if/elif/else chains instead of instruction-by-instruction code.
+emit_lowered_python(FunctorArity, Instrs, Options, Lines) :-
+	is_list(Instrs),
+	is_ite_block_py(Instrs, Blocks),
+	!,
+	python_func_name(FunctorArity, FuncName),
+	FunctorArity = Functor/Arity,
+	atom_string(Functor, FStr),
+	emit_ite_block_py(FuncName, Blocks, 4, Options, BodyLines),
+	atomic_list_concat(BodyLines, '\n', Body),
+	format(string(Lines),
+'def ~w(state):
+    """Lowered predicate: ~w/~w (ITE)"""
+~w', [FuncName, FStr, Arity, Body]).
+
 emit_lowered_python(FunctorArity, Instrs, _Options, Lines) :-
+	is_list(Instrs),
 	python_func_name(FunctorArity, FuncName),
 	FunctorArity = Functor/Arity,
 	atom_string(Functor, FStr),
