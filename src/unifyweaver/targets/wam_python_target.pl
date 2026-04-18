@@ -1301,6 +1301,9 @@ compile_all_predicates(Predicates, Options, Code) :-
 		| PredCodes
 	], '\n\n', Code).
 
+compile_one_predicate(Options, _Module:PredSpec, PredCode) :-
+	!,
+	compile_one_predicate(Options, PredSpec, PredCode).
 compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
 	->  % Skip WAM compilation — emit direct foreign call stub

@@ -1,0 +1,111 @@
+{
+  "benchmark": "WAM Cross-Target Benchmark",
+  "date": "2026-04-18",
+  "scale": 300,
+  "facts": {
+    "category_parent": 6004,
+    "article_category": 757,
+    "root_category": "Physics"
+  },
+  "effective_distance": {
+    "swi_prolog_seeded": {
+      "reps_ms": [428, 429, 428],
+      "median_ms": 428,
+      "notes": "Full WAM interpretation + unification"
+    },
+    "swi_prolog_accumulated": {
+      "reps_ms": [405, 517, 530],
+      "median_ms": 517,
+      "notes": "Seeded accumulation variant"
+    },
+    "haskell_ffi_1core": {
+      "total_ms": 107,
+      "query_ms": 32,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
+    },
+    "haskell_ffi_4core": {
+      "total_ms": 75,
+      "notes": "Parallel, 3.3x speedup over 1-core"
+    },
+    "rust_wam_native_dfs": {
+      "reps_ms": [3, 3, 4],
+      "median_ms": 3,
+      "result_count": 3210,
+      "notes": "Native hash-indexed DFS"
+    },
+    "python_wam_native_dfs": {
+      "reps_ms": [2.6, 2.3, 2.3],
+      "median_ms": 2.3,
+      "result_count": 3210,
+      "notes": "Native dict-indexed DFS"
+    },
+    "go_wam": {
+      "status": "build_ok_runtime_incomplete",
+      "notes": "Build succeeds after SharedWamCode fix, but fact loading not wired up"
+    }
+  },
+  "shortest_path": {
+    "swi_prolog": {
+      "reps_ms": [3273, 3232, 3332],
+      "median_ms": 3273,
+      "notes": "BFS with branch_pruning=auto"
+    },
+    "haskell_ffi_4core": {
+      "median_ms": 70,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
+    },
+    "rust_wam_native_dfs": {
+      "reps_ms": [0, 0, 0],
+      "median_ms": 0,
+      "result_count": 42,
+      "notes": "42 reachable nodes via transitive closure"
+    },
+    "python_wam_native_dfs": {
+      "reps_ms": [0, 0, 0],
+      "median_ms": 0,
+      "result_count": 42,
+      "notes": "42 reachable nodes via transitive closure"
+    }
+  },
+  "weighted_shortest_path": {
+    "swi_prolog": {
+      "reps_ms": [124, 124, 125],
+      "median_ms": 124,
+      "variant": "min",
+      "notes": "Dijkstra with semantic weights"
+    },
+    "haskell_ffi_4core": {
+      "median_ms": 90,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md"
+    }
+  },
+  "larger_scales_swi_prolog": {
+    "effective_distance_seeded": {
+      "1k": {"reps_ms": [404, 335, 337], "median_ms": 337},
+      "5k": {"reps_ms": [1304, 1294, 1311], "median_ms": 1304},
+      "10k": {"reps_ms": [3013, 2971, 3031], "median_ms": 3013}
+    },
+    "shortest_path": {
+      "1k": {"reps_ms": [2039, 2062, 2053], "median_ms": 2053},
+      "5k": {"reps_ms": [10710, 10981, 10676], "median_ms": 10710},
+      "10k": {"reps_ms": [21200, 21205, 20663], "median_ms": 21200}
+    },
+    "weighted_shortest_path": {
+      "1k": {"reps_ms": [124, 124, 125], "median_ms": 124},
+      "5k": {"reps_ms": [311, 310, 314], "median_ms": 311},
+      "10k": {"reps_ms": [665, 595, 596], "median_ms": 596}
+    }
+  },
+  "haskell_larger_scales": {
+    "ffi_4core_5k": {"total_ms": 213},
+    "ffi_4core_10k": {"total_ms": 604},
+    "bfs_shortest_4core_10k": {"total_ms": 420},
+    "dijkstra_4core_10k": {"total_ms": 441}
+  },
+  "bug_fixes": [
+    "Go emitter: added SharedWamCode/SharedWamLabels exported aliases in wam_go_target.pl",
+    "Rust lowered emitter: added escape_rust_string for builtin_call ops in wam_rust_lowered_emitter.pl",
+    "Go lowered emitter: added escape_go_string for builtin_call ops in wam_go_lowered_emitter.pl",
+    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl"
+  ]
+}

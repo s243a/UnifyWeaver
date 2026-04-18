@@ -195,6 +195,10 @@ var sharedWamLabels = map[string]int{
 }
 
 var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
+
+// Exported aliases for main.go / parallel runner
+var SharedWamCode = sharedWamCode
+var SharedWamLabels = sharedWamLabels
 ', [SharedForeignSetup, AllInstrs, AllLabels])
     ;   SharedCode = ""
     ),

@@ -22,6 +22,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_go_target, [escape_go_string/2]).
 
 % =====================================================================
 % Parsing
@@ -400,7 +401,8 @@ emit_one(execute(PredStr), I) :-
 
 emit_one(builtin_call(OpStr, NStr), I) :-
     format("~w// builtin_call ~w ~w~n", [I, OpStr, NStr]),
-    format("~wif !vm.executeBuiltin(\"~w\", ~w) {~n", [I, OpStr, NStr]),
+    escape_go_string(OpStr, EscOp),
+    format("~wif !vm.executeBuiltin(\"~w\", ~w) {~n", [I, EscOp, NStr]),
     format("~w    return false~n", [I]),
     format("~w}~n", [I]).
 

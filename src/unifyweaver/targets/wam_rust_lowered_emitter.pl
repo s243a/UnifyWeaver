@@ -22,6 +22,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(wam_rust_target, [escape_rust_string/2]).
 
 % =====================================================================
 % Parsing
@@ -374,7 +375,8 @@ emit_one(execute(PredStr), I) :-
 
 emit_one(builtin_call(OpStr, NStr), I) :-
     format("~w// builtin_call ~w ~w~n", [I, OpStr, NStr]),
-    format("~wif !vm.step(&Instruction::BuiltinCall(\"~w\".to_string(), ~w)) { return false; }~n", [I, OpStr, NStr]).
+    escape_rust_string(OpStr, EscOp),
+    format("~wif !vm.step(&Instruction::BuiltinCall(\"~w\".to_string(), ~w)) { return false; }~n", [I, EscOp, NStr]).
 
 emit_one(call_foreign(PredStr, ArStr), I) :-
     format("~w// call_foreign ~w ~w~n", [I, PredStr, ArStr]),
