@@ -453,8 +453,12 @@ impl WamState {
     }
 
     /// Restore argument registers and clear stale temporaries from failed paths.
+    /// Only clears A (0..99) and X (100..199) registers — Y registers (200+) are
+    /// NOT cleared here because they live in stack Env frames, not in the register
+    /// Vec. Y-register state is restored via the ChoicePoint's stack snapshot.
     fn restore_regs(&mut self, saved: &[(usize, Value)]) {
-        // Clear A registers (0..99) and X registers (100..199)
+        // Clear A registers (0..99) and X registers (100..199) only.
+        // Y registers are stack-frame local (see get_reg/put_reg Y routing).
         for i in 0..200 {
             if i < self.regs.len() {
                 self.regs[i] = Value::Uninit;
