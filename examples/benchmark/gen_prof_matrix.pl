@@ -1,6 +1,7 @@
 :- initialization(main, main).
 
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../../src/unifyweaver/targets/wam_go_target').
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module(library(option)).
@@ -8,24 +9,36 @@
 
 %% gen_prof_matrix.pl
 %%
-%% Generates 4 Haskell WAM profiling configurations from optimized Prolog:
+%% Generates 4 Haskell + 4 Go WAM profiling configurations from optimized
+%% Prolog:
 %%
-%%   A: pure-interp    — emit_mode(interpreter), no_kernels(true)
-%%   B: interp-ffi     — emit_mode(interpreter), kernels enabled
-%%   C: lowered-only   — emit_mode(functions),   no_kernels(true)
-%%   D: lowered-ffi    — emit_mode(functions),   kernels enabled
+%%   Haskell:
+%%     A: pure-interp    — emit_mode(interpreter), no_kernels(true)
+%%     B: interp-ffi     — emit_mode(interpreter), kernels enabled
+%%     C: lowered-only   — emit_mode(functions),   no_kernels(true)
+%%     D: lowered-ffi    — emit_mode(functions),   kernels enabled
 %%
-%% All configurations use GHC profiling (-prof -fprof-auto -rtsopts)
-%% so you can run with +RTS -p to get cost-centre profiling output.
+%%   Go:
+%%     E: go-pure-interp  — emit_mode(interpreter), no_kernels(true)
+%%     F: go-interp-ffi   — emit_mode(interpreter), kernels enabled
+%%     G: go-lowered-only — emit_mode(functions),   no_kernels(true)
+%%     H: go-lowered-ffi  — emit_mode(functions),   kernels enabled
+%%
+%% Haskell configurations use GHC profiling (-prof -fprof-auto -rtsopts).
+%% Go configurations are profiled via `go tool pprof` (CPU profiling).
 %%
 %% Usage:
 %%   swipl -q -s gen_prof_matrix.pl -- <facts.pl> <output-base-dir>
 %%
 %% Generates:
-%%   <output-base-dir>/A-pure-interp/
-%%   <output-base-dir>/B-interp-ffi/
-%%   <output-base-dir>/C-lowered-only/
-%%   <output-base-dir>/D-lowered-ffi/
+%%   <output-base-dir>/A-pure-interp/       (Haskell)
+%%   <output-base-dir>/B-interp-ffi/        (Haskell)
+%%   <output-base-dir>/C-lowered-only/      (Haskell)
+%%   <output-base-dir>/D-lowered-ffi/       (Haskell)
+%%   <output-base-dir>/E-go-pure-interp/    (Go)
+%%   <output-base-dir>/F-go-interp-ffi/     (Go)
+%%   <output-base-dir>/G-go-lowered-only/   (Go)
+%%   <output-base-dir>/H-go-lowered-ffi/    (Go)
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -69,7 +82,7 @@ generate_all(OutputBase) :-
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
 
-    % Step 4: Generate all 4 configurations
+    % Step 4: Generate all 8 configurations (4 Haskell + 4 Go)
     Predicates = [
         user:dimension_n/1,
         user:max_depth/1,
@@ -81,21 +94,34 @@ generate_all(OutputBase) :-
     ],
     QueryPredOpts = [query_pred('category_ancestor$effective_distance_sum_selected/3')],
 
-    configs(Configs),
+    haskell_configs(HaskellConfigs),
     forall(
-        member(config(Label, EmitMode, NoKernels), Configs),
-        generate_config(OutputBase, Label, EmitMode, NoKernels, Predicates, QueryPredOpts)
+        member(config(Label, EmitMode, NoKernels), HaskellConfigs),
+        generate_haskell_config(OutputBase, Label, EmitMode, NoKernels, Predicates, QueryPredOpts)
     ),
-    format(user_error, '~n[prof-matrix] All 4 configurations generated under ~w~n', [OutputBase]).
 
-configs([
+    go_configs(GoConfigs),
+    forall(
+        member(config(Label, EmitMode, NoKernels), GoConfigs),
+        generate_go_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
+    ),
+    format(user_error, '~n[prof-matrix] All 8 configurations generated under ~w~n', [OutputBase]).
+
+haskell_configs([
     config('A-pure-interp',  interpreter, true),
     config('B-interp-ffi',   interpreter, false),
     config('C-lowered-only', functions,   true),
     config('D-lowered-ffi',  functions,   false)
 ]).
 
-generate_config(OutputBase, Label, EmitMode, NoKernels, Predicates, QueryPredOpts) :-
+go_configs([
+    config('E-go-pure-interp',  interpreter, true),
+    config('F-go-interp-ffi',   interpreter, false),
+    config('G-go-lowered-only', functions,   true),
+    config('H-go-lowered-ffi',  functions,   false)
+]).
+
+generate_haskell_config(OutputBase, Label, EmitMode, NoKernels, Predicates, QueryPredOpts) :-
     format(atom(OutputDir), '~w/~w', [OutputBase, Label]),
     format(atom(ModName), 'wam-prof-~w', [Label]),
     BaseOpts = [
@@ -108,7 +134,29 @@ generate_config(OutputBase, Label, EmitMode, NoKernels, Predicates, QueryPredOpt
     ;   KernelOpts = []
     ),
     append([BaseOpts, KernelOpts, QueryPredOpts], Options),
-    format(user_error, '[prof-matrix] Generating ~w (emit_mode=~w, no_kernels=~w)~n',
+    format(user_error, '[prof-matrix] Generating Haskell ~w (emit_mode=~w, no_kernels=~w)~n',
            [Label, EmitMode, NoKernels]),
     write_wam_haskell_project(Predicates, Options, OutputDir),
+    format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
+
+generate_go_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
+    format(atom(OutputDir), '~w/~w', [OutputBase, Label]),
+    format(atom(ModName), 'wam-prof-~w', [Label]),
+    BaseOpts = [
+        module_name(ModName),
+        package_name(main),
+        prefer_wam(true),
+        wam_fallback(true),
+        foreign_lowering(true),
+        emit_mode(EmitMode),
+        parallel(true)
+    ],
+    (   NoKernels == true
+    ->  KernelOpts = [no_kernels(true)]
+    ;   KernelOpts = []
+    ),
+    append(BaseOpts, KernelOpts, Options),
+    format(user_error, '[prof-matrix] Generating Go ~w (emit_mode=~w, no_kernels=~w)~n',
+           [Label, EmitMode, NoKernels]),
+    write_wam_go_project(Predicates, Options, OutputDir),
     format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
