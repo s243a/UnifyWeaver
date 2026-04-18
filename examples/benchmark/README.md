@@ -1045,6 +1045,11 @@ Additional path-state observations:
   per-seed traversal/discovery order during replay rather than target-sorting
   rows; that contract is documented explicitly before any larger replay
   simplification work.
+- counted-path `All` now reports replay-shape survey phases and metrics:
+  `path_state_result_replay_setup`, `path_state_result_replay_write`,
+  `path_state_result_replay_batch_count`, and
+  `path_state_result_replay_max_batch_size`, so replay tuning can target the
+  dominant write cost without violating the documented ordering contract.
 - counted-path replay/materialization now uses the concrete `object?[]`
   node-value table directly instead of an `IReadOnlyList<object?>` view, which
   trims lookup overhead on the hot replay path without changing output rows.

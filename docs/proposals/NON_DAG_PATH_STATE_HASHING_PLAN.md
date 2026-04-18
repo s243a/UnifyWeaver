@@ -202,6 +202,12 @@ Interpretation:
 - the counted-path `All` staging buffer now stores targets and depths in
   parallel packed lists instead of shuttling a tiny struct per row, reducing
   replay overhead on the final materialization path
+- counted-path `All` now reports replay-shape survey phases and metrics:
+  `path_state_result_replay_setup`, `path_state_result_replay_write`,
+  `path_state_result_replay_batch_count`, and
+  `path_state_result_replay_max_batch_size`; on the current benchmark shape,
+  replay setup is small while replay writes dominate the remaining
+  materialization cost
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
