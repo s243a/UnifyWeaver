@@ -84,6 +84,21 @@ func (i *Execute) instrTag() {}
 type ExecutePc struct { TargetPC int }
 func (i *ExecutePc) instrTag() {}
 
+type Jump struct { Label string }
+func (i *Jump) instrTag() {}
+
+type JumpPc struct { TargetPC int }
+func (i *JumpPc) instrTag() {}
+
+type CutIte struct{}
+func (i *CutIte) instrTag() {}
+
+type BeginAggregate struct { AggType string; ValueReg string; ResultReg string }
+func (i *BeginAggregate) instrTag() {}
+
+type EndAggregate struct { ValueReg string }
+func (i *EndAggregate) instrTag() {}
+
 type Proceed struct{}
 func (i *Proceed) instrTag() {}
 

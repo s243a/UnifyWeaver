@@ -29,6 +29,7 @@ type ChoicePoint struct {
 	Stack     []StackEntry
 	HeapTop   int
 	TrailMark int
+	IndexedClausePCs []int
 	ForeignPredKey   string
 	ForeignResultRegs []string
 	ForeignResults   []Value
@@ -36,6 +37,7 @@ type ChoicePoint struct {
 
 type EnvFrame struct {
 	CP int
+	B0 int
 }
 
 type UnifyCtx struct {
@@ -114,6 +116,17 @@ func (vm *WamState) pushChoicePoint(nextPC int) {
 	})
 }
 
+func (vm *WamState) pushIndexedChoicePoint(pcs []int) {
+	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
+		CP:        vm.CP,
+		Regs:      copyMap(vm.Regs),
+		Stack:     copyStack(vm.Stack),
+		HeapTop:   len(vm.Heap),
+		TrailMark: len(vm.Trail),
+		IndexedClausePCs: append([]int(nil), pcs...),
+	})
+}
+
 func (vm *WamState) popEnvFrame() *EnvFrame {
 	for i := len(vm.Stack) - 1; i >= 0; i-- {
 		if f, ok := vm.Stack[i].(*EnvFrame); ok {
@@ -136,6 +149,15 @@ func (vm *WamState) peekWriteCtx() *WriteCtx {
 	if len(vm.Stack) == 0 { return nil }
 	if ctx, ok := vm.Stack[len(vm.Stack)-1].(*WriteCtx); ok {
 		return ctx
+	}
+	return nil
+}
+
+func (vm *WamState) peekEnvFrame() *EnvFrame {
+	for i := len(vm.Stack) - 1; i >= 0; i-- {
+		if f, ok := vm.Stack[i].(*EnvFrame); ok {
+			return f
+		}
 	}
 	return nil
 }
@@ -233,6 +255,72 @@ func parseFunctorName(f string) string {
 	return f
 }
 
+func isEmptyListValue(v Value) bool {
+	if atom, ok := v.(*Atom); ok {
+		return atom.Name == "[]"
+	}
+	if list, ok := v.(*List); ok {
+		return len(list.Elements) == 0
+	}
+	return false
+}
+
+func rawListHeadTail(list *List) (Value, Value, bool) {
+	switch len(list.Elements) {
+	case 0:
+		return nil, nil, false
+	case 1:
+		return list.Elements[0], &Atom{Name: "[]"}, true
+	case 2:
+		tail := list.Elements[1]
+		if _, ok := tail.(*List); ok {
+			return list.Elements[0], tail, true
+		}
+		if isEmptyListValue(tail) {
+			return list.Elements[0], &Atom{Name: "[]"}, true
+		}
+	}
+	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
+}
+
+func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
+	switch len(list.Elements) {
+	case 0:
+		return nil, nil, false
+	case 1:
+		return list.Elements[0], &Atom{Name: "[]"}, true
+	case 2:
+		tail := vm.deref(list.Elements[1])
+		if _, ok := tail.(*List); ok {
+			return list.Elements[0], tail, true
+		}
+		if isEmptyListValue(tail) {
+			return list.Elements[0], &Atom{Name: "[]"}, true
+		}
+	}
+	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
+}
+
+func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
+	v = vm.deref(v)
+	if isEmptyListValue(v) {
+		return []Value{}, true
+	}
+	list, ok := v.(*List)
+	if !ok {
+		return nil, false
+	}
+	head, tail, ok := vm.listHeadTail(list)
+	if !ok {
+		return []Value{}, true
+	}
+	rest, ok := vm.listToSlice(tail)
+	if !ok {
+		return nil, false
+	}
+	return append([]Value{head}, rest...), true
+}
+
 func decompose(v Value) (string, []Value) {
 	switch t := v.(type) {
 	case *Atom:
@@ -242,9 +330,7 @@ func decompose(v Value) (string, []Value) {
 	case *Structure:
 		return parseFunctorName(t.Functor), t.Args
 	case *List:
-		if len(t.Elements) > 0 {
-			head := t.Elements[0]
-			tail := &List{Elements: t.Elements[1:]}
+		if head, tail, ok := rawListHeadTail(t); ok {
 			return ".", []Value{head, tail}
 		}
 		return "[]", nil
@@ -331,7 +417,16 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 	case "fail/0":
 		return false
 	case "!/0":
-		vm.ChoicePoints = nil
+		limit := 0
+		if env := vm.peekEnvFrame(); env != nil {
+			limit = env.B0
+		}
+		if limit < 0 {
+			limit = 0
+		}
+		if limit < len(vm.ChoicePoints) {
+			vm.ChoicePoints = vm.ChoicePoints[:limit]
+		}
 		return true
 	case "is/2":
 		val, ok := vm.evalArithmetic(arg2)
@@ -397,23 +492,21 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return false
 
 	case "length/2":
-		l, ok := vm.deref(arg2).(*Integer)
+		elements, ok := vm.listToSlice(arg1)
 		if !ok { return false }
-		list, ok := vm.deref(arg1).(*List)
-		if !ok { return false }
-		return int64(len(list.Elements)) == l.Val
+		return vm.Unify(arg2, &Integer{Val: int64(len(elements))})
 	case "member/2":
-		list, ok := vm.deref(arg2).(*List)
+		elements, ok := vm.listToSlice(arg2)
 		if !ok { return false }
-		for _, e := range list.Elements {
+		for _, e := range elements {
 			if vm.Unify(arg1, e) { return true }
 		}
 		return false
 	case "append/3":
-		l1, ok1 := vm.deref(arg1).(*List)
-		l2, ok2 := vm.deref(arg2).(*List)
+		l1, ok1 := vm.listToSlice(arg1)
+		l2, ok2 := vm.listToSlice(arg2)
 		if !ok1 || !ok2 { return false }
-		combined := &List{Elements: append(l1.Elements, l2.Elements...)}
+		combined := &List{Elements: append(append([]Value{}, l1...), l2...)}
 		return vm.Unify(arg3, combined)
 	}
 	return false
@@ -460,6 +553,27 @@ func (vm *WamState) backtrack() bool {
     }
     topIdx := len(vm.ChoicePoints) - 1
     cp := vm.ChoicePoints[topIdx]
+    if len(cp.IndexedClausePCs) > 0 {
+        vm.unwindTrail(cp.TrailMark)
+        vm.Regs = copyMap(cp.Regs)
+        vm.Stack = copyStack(cp.Stack)
+        if cp.HeapTop >= 0 && cp.HeapTop <= len(vm.Heap) {
+            vm.Heap = vm.Heap[:cp.HeapTop]
+        }
+        vm.CP = cp.CP
+        vm.Halted = false
+        vm.CurrentStruct = nil
+        vm.CurrentList = nil
+        nextPC := cp.IndexedClausePCs[0]
+        cp.IndexedClausePCs = cp.IndexedClausePCs[1:]
+        if len(cp.IndexedClausePCs) == 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:topIdx]
+        } else {
+            vm.ChoicePoints[topIdx] = cp
+        }
+        vm.PC = nextPC
+        return true
+    }
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {
             vm.unwindTrail(cp.TrailMark)
@@ -487,7 +601,6 @@ func (vm *WamState) backtrack() bool {
         }
         return false
     }
-    vm.ChoicePoints = vm.ChoicePoints[:topIdx]
     vm.unwindTrail(cp.TrailMark)
     vm.Regs = copyMap(cp.Regs)
     vm.Stack = copyStack(cp.Stack)

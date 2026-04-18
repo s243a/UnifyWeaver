@@ -54,6 +54,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Rust benchmark with optimized accumulated helpers",
     ),
+    "go-wam-accumulated": TargetInfo(
+        "go-wam-accumulated",
+        "hybrid-wam",
+        "Hybrid WAM Go benchmark with optimized accumulated helpers and kernels enabled",
+    ),
+    "go-wam-accumulated-no-kernels": TargetInfo(
+        "go-wam-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Go benchmark with optimized accumulated helpers and no_kernels(true)",
+    ),
     "haskell-pure-interp": TargetInfo(
         "haskell-pure-interp",
         "hybrid-wam",
@@ -78,6 +88,11 @@ TARGETS: dict[str, TargetInfo] = {
 
 
 TARGET_SETS: dict[str, list[str]] = {
+    "termux-smoke": [
+        "prolog-accumulated",
+        "go-wam-accumulated-no-kernels",
+        "go-dfs",
+    ],
     "optimized-prolog": [
         "prolog-seeded",
         "prolog-accumulated",
@@ -87,6 +102,8 @@ TARGET_SETS: dict[str, list[str]] = {
     "hybrid-wam": [
         "wam-rust-seeded",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
+        "go-wam-accumulated-no-kernels",
         "haskell-pure-interp",
         "haskell-interp-ffi",
         "haskell-lowered-only",
@@ -103,6 +120,7 @@ TARGET_SETS: dict[str, list[str]] = {
     "portable-default": [
         "prolog-accumulated",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
         "haskell-lowered-ffi",
         "rust-dfs",
         "go-dfs",
@@ -110,6 +128,7 @@ TARGET_SETS: dict[str, list[str]] = {
     "desktop-default": [
         "prolog-accumulated",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
         "haskell-lowered-ffi",
         "rust-dfs",
         "go-dfs",
@@ -122,7 +141,7 @@ TARGET_SETS["all"] = list(TARGETS.keys())
 
 
 def default_target_set_name() -> str:
-    return "portable-default" if is_termux_environment() else "desktop-default"
+    return "termux-smoke" if is_termux_environment() else "desktop-default"
 
 
 def parse_csv(value: str) -> list[str]:

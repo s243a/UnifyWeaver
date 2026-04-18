@@ -137,7 +137,21 @@ var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
+    (   option(prefer_wam(true), Options),
+        option(wam_fallback(WamFB0), Options, true),
+        WamFB0 \== false,
+        go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode0)
+    ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
+        format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
+    ;   option(prefer_wam(true), Options),
+        option(wam_fallback(WamFB1), Options, true),
+        WamFB1 \== false,
+        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode1)
+    ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam, WamCode1)
+    ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
         wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode)
@@ -333,7 +347,7 @@ go_struct_case(Functor-Label, Case) :-
 compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
-    capitalize_atom(Pred, CapPred),
+    predicate_go_name(Pred, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
@@ -377,7 +391,7 @@ func ~w(~w) bool {
 
 compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
     atom_string(Pred, PredStr),
-    capitalize_atom(Pred, CapPred),
+    predicate_go_name(Pred, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     format(atom(GoCode),
@@ -490,6 +504,22 @@ capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
     code_type(FirstUpper, to_upper(First)),
     atom_codes(Cap, [FirstUpper|Rest]).
+
+predicate_go_name(Pred, Name) :-
+    atom_codes(Pred, Codes),
+    maplist(go_ident_code, Codes, SafeCodes0),
+    (   SafeCodes0 = [First|Rest]
+    ->  code_type(UpperFirst, to_upper(First)),
+        SafeCodes = [UpperFirst|Rest]
+    ;   SafeCodes = [0'P]
+    ),
+    atom_codes(Name, SafeCodes).
+
+go_ident_code(Code, Safe) :-
+    (   code_type(Code, alnum)
+    ->  Safe = Code
+    ;   Safe = 0'_
+    ).
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
@@ -748,6 +778,19 @@ wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
+wam_line_to_go_literal(["jump", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Jump{Label: "~w"}', [CL]).
+wam_line_to_go_literal(["cut_ite"], '&CutIte{}').
+wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit) :-
+    clean_comma(AggType, CAggType),
+    clean_comma(ValueReg, CValueReg),
+    clean_comma(ResultReg, CResultReg),
+    format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: "~w", ResultReg: "~w"}',
+        [CAggType, CValueReg, CResultReg]).
+wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
+    clean_comma(ValueReg, CValueReg),
+    format(atom(GoLit), '&EndAggregate{ValueReg: "~w"}', [CValueReg]).
 
 wam_line_to_go_literal(["get_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
@@ -1208,7 +1251,7 @@ wam_go_case('SetConstant', '        vm.Heap = append(vm.Heap, i.C)
 
 % --- Control Instructions ---
 
-wam_go_case('Allocate', '        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP})
+wam_go_case('Allocate', '        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
         vm.PC++
         return true').
 
@@ -1238,6 +1281,26 @@ wam_go_case('Execute', '        if pc, ok := vm.Labels[i.Pred]; ok {
         return false').
 
 wam_go_case('ExecutePc', '        vm.PC = i.TargetPC
+        return true').
+
+wam_go_case('Jump', '        if pc, ok := vm.Labels[i.Label]; ok {
+            vm.PC = pc
+            return true
+        }
+        return false').
+
+wam_go_case('JumpPc', '        vm.PC = i.TargetPC
+        return true').
+
+wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
+            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
+        }
+        vm.PC++
+        return true').
+
+wam_go_case('BeginAggregate', '        return vm.executeAggregate(i.AggType, i.ValueReg, i.ResultReg)').
+
+wam_go_case('EndAggregate', '        vm.PC++
         return true').
 
 wam_go_case('Proceed', '        if vm.CP > 0 {
@@ -1290,24 +1353,35 @@ wam_go_case('TrustMe', '        if len(vm.ChoicePoints) > 0 {
 % --- Indexing Instructions ---
 
 wam_go_case('SwitchOnConstant', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+            targets := make([]int, 0)
             for _, c := range i.Cases {
-                if valueEquals(c.Val, val) {
-                    if pc, ok := vm.Labels[c.Label]; ok {
-                        vm.PC = pc
-                        return true
-                    }
+                if !valueEquals(c.Val, val) {
+                    continue
                 }
+                if c.Label == "default" {
+                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
+                    continue
+                }
+                if pc, ok := vm.Labels[c.Label]; ok {
+                    targets = append(targets, vm.indexedClauseBodyStart(pc))
+                }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
             }
         }
         vm.PC++
         return true').
 
 wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !isUnbound(val) {
+            targets := make([]int, 0)
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
-                    vm.PC = c.TargetPC
-                    return true
+                    targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
                 }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
             }
         }
         vm.PC++
@@ -1316,13 +1390,21 @@ wam_go_case('SwitchOnConstantPc', '        if val, ok := vm.Regs["A1"]; ok && !i
 wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
+                targets := make([]int, 0)
                 for _, c := range i.Cases {
-                    if c.Functor == key {
-                        if pc, ok := vm.Labels[c.Label]; ok {
-                            vm.PC = pc
-                            return true
-                        }
+                    if c.Functor != key {
+                        continue
                     }
+                    if c.Label == "default" {
+                        targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
+                        continue
+                    }
+                    if pc, ok := vm.Labels[c.Label]; ok {
+                        targets = append(targets, vm.indexedClauseBodyStart(pc))
+                    }
+                }
+                if len(targets) > 0 {
+                    return vm.enterIndexedAlternatives(targets)
                 }
             }
         }
@@ -1332,11 +1414,14 @@ wam_go_case('SwitchOnStructure', '        if val, ok := vm.Regs["A1"]; ok {
 wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
             if f, args := decompose(val); f != "" {
                 key := fmt.Sprintf("%s/%d", f, len(args))
+                targets := make([]int, 0)
                 for _, c := range i.Cases {
                     if c.Functor == key {
-                        vm.PC = c.TargetPC
-                        return true
+                        targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
                     }
+                }
+                if len(targets) > 0 {
+                    return vm.enterIndexedAlternatives(targets)
                 }
             }
         }
@@ -1344,24 +1429,35 @@ wam_go_case('SwitchOnStructurePc', '        if val, ok := vm.Regs["A1"]; ok {
         return true').
 
 wam_go_case('SwitchOnConstantA2', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+            targets := make([]int, 0)
             for _, c := range i.Cases {
-                if valueEquals(c.Val, val) {
-                    if pc, ok := vm.Labels[c.Label]; ok {
-                        vm.PC = pc
-                        return true
-                    }
+                if !valueEquals(c.Val, val) {
+                    continue
                 }
+                if c.Label == "default" {
+                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
+                    continue
+                }
+                if pc, ok := vm.Labels[c.Label]; ok {
+                    targets = append(targets, vm.indexedClauseBodyStart(pc))
+                }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
             }
         }
         vm.PC++
         return true').
 
 wam_go_case('SwitchOnConstantA2Pc', '        if val, ok := vm.Regs["A2"]; ok && !isUnbound(val) {
+            targets := make([]int, 0)
             for _, c := range i.Cases {
                 if valueEquals(c.Val, val) {
-                    vm.PC = c.TargetPC
-                    return true
+                    targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
                 }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
             }
         }
         vm.PC++
@@ -1452,6 +1548,33 @@ func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
 	return results
 }
 
+func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
+    if targetPC < 0 || targetPC >= len(vm.Code) {
+        return targetPC
+    }
+    switch vm.Code[targetPC].(type) {
+    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc, *TrustMe:
+        return targetPC + 1
+    default:
+        return targetPC
+    }
+}
+
+func (vm *WamState) enterIndexedAlternatives(targets []int) bool {
+    if len(targets) == 0 {
+        return false
+    }
+    if len(targets) > 1 {
+        vm.pushIndexedChoicePoint(targets[1:])
+    }
+    vm.PC = targets[0]
+    return true
+}
+
+func (vm *WamState) enterIndexedClause(targetPC int) bool {
+    return vm.enterIndexedAlternatives([]int{vm.indexedClauseBodyStart(targetPC)})
+}
+
 // CollectResults gathers values from A registers.
 func (vm *WamState) CollectResults() []Value {
 	results := make([]Value, 0)
@@ -1489,6 +1612,12 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
         case *Execute:
             if pc, ok := labels[i.Pred]; ok {
                 resolved = append(resolved, &ExecutePc{TargetPC: pc})
+            } else {
+                resolved = append(resolved, instr)
+            }
+        case *Jump:
+            if pc, ok := labels[i.Label]; ok {
+                resolved = append(resolved, &JumpPc{TargetPC: pc})
             } else {
                 resolved = append(resolved, instr)
             }
@@ -1557,6 +1686,169 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
         }
     }
     return resolved
+}
+
+func (vm *WamState) executeAggregate(aggType string, valueReg string, resultReg string) bool {
+    endPC, ok := vm.findMatchingAggregateEnd(vm.PC)
+    if !ok {
+        return false
+    }
+    sub := vm.Clone()
+    baseChoicePoints := len(sub.ChoicePoints)
+    sub.PC = vm.PC + 1
+    sub.Halted = false
+    sub.CurrentStruct = nil
+    sub.CurrentList = nil
+
+    values := make([]Value, 0)
+    count := 0
+    for {
+        if !sub.runUntilPC(endPC, baseChoicePoints) {
+            break
+        }
+        count++
+        if aggType != "count" {
+            val, ok := sub.Regs[valueReg]
+            if !ok {
+                return false
+            }
+            values = append(values, sub.deref(val))
+        }
+        if !sub.backtrackAbove(baseChoicePoints) {
+            break
+        }
+    }
+
+    result, ok := aggregateResultValue(aggType, values, count)
+    if !ok {
+        return false
+    }
+    if !vm.bindOrUnifyReg(resultReg, result) {
+        return false
+    }
+    vm.PC = endPC + 1
+    return true
+}
+
+func (vm *WamState) findMatchingAggregateEnd(startPC int) (int, bool) {
+    depth := 1
+    for pc := startPC + 1; pc < len(vm.Code); pc++ {
+        switch vm.Code[pc].(type) {
+        case *BeginAggregate:
+            depth++
+        case *EndAggregate:
+            depth--
+            if depth == 0 {
+                return pc, true
+            }
+        }
+    }
+    return 0, false
+}
+
+func (vm *WamState) runUntilPC(targetPC int, baseChoicePoints int) bool {
+    for {
+        if vm.Halted {
+            return false
+        }
+        if vm.PC == targetPC {
+            return true
+        }
+        instr := vm.fetch()
+        if instr == nil {
+            return false
+        }
+        if !vm.Step(instr) {
+            if !vm.backtrackAbove(baseChoicePoints) {
+                return false
+            }
+        }
+    }
+}
+
+func (vm *WamState) backtrackAbove(limit int) bool {
+    if len(vm.ChoicePoints) <= limit {
+        return false
+    }
+    return vm.backtrack()
+}
+
+func (vm *WamState) bindOrUnifyReg(reg string, val Value) bool {
+    existing, ok := vm.Regs[reg]
+    if !ok {
+        vm.trailBinding(reg)
+        vm.putReg(reg, val)
+        return true
+    }
+    return vm.Unify(existing, val)
+}
+
+func aggregateResultValue(aggType string, values []Value, count int) (Value, bool) {
+    switch aggType {
+    case "count":
+        return &Integer{Val: int64(count)}, true
+    case "collect":
+        return &List{Elements: append([]Value(nil), values...)}, true
+    case "sum":
+        total := 0.0
+        for _, value := range values {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            total += number
+        }
+        return &Float{Val: total}, true
+    case "max":
+        if len(values) == 0 {
+            return nil, false
+        }
+        best, ok := aggregateNumericValue(values[0])
+        if !ok {
+            return nil, false
+        }
+        for _, value := range values[1:] {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            if number > best {
+                best = number
+            }
+        }
+        return &Float{Val: best}, true
+    case "min":
+        if len(values) == 0 {
+            return nil, false
+        }
+        best, ok := aggregateNumericValue(values[0])
+        if !ok {
+            return nil, false
+        }
+        for _, value := range values[1:] {
+            number, ok := aggregateNumericValue(value)
+            if !ok {
+                return nil, false
+            }
+            if number < best {
+                best = number
+            }
+        }
+        return &Float{Val: best}, true
+    default:
+        return nil, false
+    }
+}
+
+func aggregateNumericValue(value Value) (float64, bool) {
+    switch t := value.(type) {
+    case *Integer:
+        return float64(t.Val), true
+    case *Float:
+        return t.Val, true
+    default:
+        return 0, false
+    }
 }
 
 func (vm *WamState) registerForeignNativeKind(predKey string, kind string) {
