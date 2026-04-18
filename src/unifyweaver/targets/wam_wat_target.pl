@@ -101,6 +101,9 @@ instr_tag(end_aggregate,   29).
 instr_tag(nop,             30).
 instr_tag(switch_on_const, 31).
 instr_tag(switch_entry,    32).
+instr_tag(switch_on_struct,     33).
+instr_tag(switch_struct_entry,  34).
+instr_tag(switch_on_term_hdr,   35).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -362,6 +365,28 @@ wam_instruction_to_wat_bytes(switch_entry(CTag, CPayload, Label), Labels, Hex) :
     Op2 is (CTag << 32) \/ (TargetPC /\ 0xFFFFFFFF),
     encode_instr_hex(Tag, CPayload, Op2, Hex).
 
+%% switch_on_struct header: op1 = (count << 32) | reg_idx.
+wam_instruction_to_wat_bytes(switch_on_struct(RegIdx, Count), _Labels, Hex) :-
+    instr_tag(switch_on_struct, Tag),
+    Op1 is (Count << 32) \/ RegIdx,
+    encode_instr_hex(Tag, Op1, 0, Hex).
+
+%% switch_struct_entry: op1 = functor_hash (DJB2 of "Functor/Arity" atom),
+%% op2 = (arity << 32) | target_pc. Scanned by switch_on_struct.
+wam_instruction_to_wat_bytes(switch_struct_entry(FHash, Arity, Label), Labels, Hex) :-
+    instr_tag(switch_struct_entry, Tag),
+    resolve_label(Label, Labels, TargetPC),
+    Op2 is (Arity << 32) \/ (TargetPC /\ 0xFFFFFFFF),
+    encode_instr_hex(Tag, FHash, Op2, Hex).
+
+%% switch_on_term_hdr: op1 = (const_count << 32) | reg_idx,
+%% op2 = struct_count. The CC following switch_entry records are const
+%% cases; the SC after those are switch_struct_entry records.
+wam_instruction_to_wat_bytes(switch_on_term_hdr(RegIdx, CC, SC), _Labels, Hex) :-
+    instr_tag(switch_on_term_hdr, Tag),
+    Op1 is (CC << 32) \/ RegIdx,
+    encode_instr_hex(Tag, Op1, SC, Hex).
+
 %% parse_switch_entries(+Parts, -Entries)
 %  Parts is a list of strings like ["10:default,", "20:L_my_fact_1_2,",
 %  "30:L_my_fact_1_3"]. Each entry strips the trailing comma and splits
@@ -404,6 +429,117 @@ is_default_entry(_-default).
 entry_to_instr(int(V)-Label, switch_entry(1, V, Label)).
 entry_to_instr(atom(A)-Label, switch_entry(0, H, Label)) :-
     atom_hash_i64(A, H).
+
+%% parse_struct_entries(+Parts, -Entries)
+%  Parts is a list of strings like ["bar/1:default,", "baz/2:L_X,",
+%  "qux/3:L_Y"]. Each entry splits on the LAST ':' (functor names may
+%  themselves contain '/', but labels don''t contain ':'). The key is
+%  an atom ''Functor/Arity'' (matching atom_hash_i64 output).
+parse_struct_entries([], []).
+parse_struct_entries([Part|Rest], [struct(FA, Arity)-Label|Entries]) :-
+    clean_comma(Part, Clean),
+    split_struct_entry(Clean, FAStr, LabelStr),
+    string_to_atom(LabelStr, Label),
+    atom_string(FA, FAStr),
+    %% Extract arity from functor/arity string (last '/' token).
+    split_string(FAStr, "/", "", SParts),
+    last(SParts, ArityStr),
+    number_string(Arity, ArityStr),
+    parse_struct_entries(Rest, Entries).
+
+%% split_struct_entry(+Str, -FunctorArity, -Label)
+%  Splits "functor/arity:label" on the LAST ':' — functor names never
+%  contain ':' but labels may contain '/', so we can't use split_string
+%  naively.
+split_struct_entry(Str, FA, Label) :-
+    string_length(Str, Len),
+    last_colon(Str, Len, Pos),
+    sub_string(Str, 0, Pos, _, FA),
+    Pos1 is Pos + 1,
+    sub_string(Str, Pos1, _, 0, Label).
+
+last_colon(Str, Len, Pos) :-
+    Len > 0,
+    Idx is Len - 1,
+    sub_string(Str, Idx, 1, _, C),
+    (   C == ":" -> Pos = Idx
+    ;   last_colon(Str, Idx, Pos)
+    ).
+
+%% build_switch_struct_instrs(+RegIdx, +Entries, -MultiResult)
+%  Same shape as build_switch_instrs but for structure entries.
+%  Entries are struct(FunctorArityAtom, Arity)-Label pairs.
+build_switch_struct_instrs(RegIdx, AllEntries, multi([Header|EntryInstrs])) :-
+    exclude(is_default_entry, AllEntries, Entries),
+    length(Entries, Count),
+    Header = switch_on_struct(RegIdx, Count),
+    maplist(struct_entry_to_instr, Entries, EntryInstrs).
+
+struct_entry_to_instr(struct(FA, Arity)-Label,
+                      switch_struct_entry(H, Arity, Label)) :-
+    atom_hash_i64(FA, H).
+
+%% parse_term_entries(+Parts, -ConstEntries, -StructEntries)
+%  Parts is like ["constant:0:default,", "1:L_2,", "nil:L_3,",
+%  "structure:leaf/1:L_4,", "tree/2:L_5"]. The "constant:" and
+%  "structure:" prefixes switch sections. Section is "none" when the
+%  canonical emitter has no entries of that type.
+parse_term_entries(Parts, ConstEntries, StructEntries) :-
+    parse_term_entries_(Parts, const, [], [], CRev, SRev),
+    reverse(CRev, ConstEntries),
+    reverse(SRev, StructEntries).
+
+parse_term_entries_([], _, CAcc, SAcc, CAcc, SAcc).
+parse_term_entries_([P|Rest], Section, CAcc, SAcc, COut, SOut) :-
+    clean_comma(P, Clean),
+    (   string_concat("constant:", Body, Clean)
+    ->  NewSection = const,
+        parse_term_section_entry(Body, NewSection, E),
+        add_term_entry(NewSection, E, CAcc, SAcc, C1, S1),
+        parse_term_entries_(Rest, NewSection, C1, S1, COut, SOut)
+    ;   string_concat("structure:", Body, Clean)
+    ->  NewSection = struct,
+        parse_term_section_entry(Body, NewSection, E),
+        add_term_entry(NewSection, E, CAcc, SAcc, C1, S1),
+        parse_term_entries_(Rest, NewSection, C1, S1, COut, SOut)
+    ;   Clean == "none"
+    ->  parse_term_entries_(Rest, Section, CAcc, SAcc, COut, SOut)
+    ;   parse_term_section_entry(Clean, Section, E),
+        add_term_entry(Section, E, CAcc, SAcc, C1, S1),
+        parse_term_entries_(Rest, Section, C1, S1, COut, SOut)
+    ).
+
+parse_term_section_entry(Body, const, Const-Label) :-
+    split_string(Body, ":", "", [KeyStr, LabelStr]),
+    string_to_atom(LabelStr, Label),
+    parse_switch_const(KeyStr, Const).
+parse_term_section_entry(Body, struct, struct(FA, Arity)-Label) :-
+    split_struct_entry(Body, FAStr, LabelStr),
+    string_to_atom(LabelStr, Label),
+    atom_string(FA, FAStr),
+    split_string(FAStr, "/", "", SParts),
+    last(SParts, ArityStr),
+    number_string(Arity, ArityStr).
+
+add_term_entry(const, E, CAcc, SAcc, [E|CAcc], SAcc).
+add_term_entry(struct, E, CAcc, SAcc, CAcc, [E|SAcc]).
+
+%% build_switch_term_instrs(+RegIdx, +ConstEntries, +StructEntries, -Multi)
+%  Encodes switch_on_term as:
+%    [header, const_entries..., struct_entries...]
+%  Header: switch_on_term_hdr(reg_idx, const_count, struct_count)
+%  Const entries: switch_entry (tag 32, reused from switch_on_const)
+%  Struct entries: switch_struct_entry (tag 34)
+build_switch_term_instrs(RegIdx, AllConsts, AllStructs,
+                         multi([Header|AllEntries])) :-
+    exclude(is_default_entry, AllConsts, Consts),
+    exclude(is_default_entry, AllStructs, Structs),
+    length(Consts, CC),
+    length(Structs, SC),
+    Header = switch_on_term_hdr(RegIdx, CC, SC),
+    maplist(entry_to_instr, Consts, CInstrs),
+    maplist(struct_entry_to_instr, Structs, SInstrs),
+    append(CInstrs, SInstrs, AllEntries).
 
 agg_type_id(sum, 0).
 agg_type_id(count, 1).
@@ -661,8 +797,12 @@ wam_parts_to_instr(["switch_on_constant"|Rest], Result) :- !,
 wam_parts_to_instr(["switch_on_constant_a2"|Rest], Result) :- !,
     parse_switch_entries(Rest, Entries),
     build_switch_instrs(1, Entries, Result).
-wam_parts_to_instr(["switch_on_structure"|_], nop) :- !.
-wam_parts_to_instr(["switch_on_term"|_], nop) :- !.
+wam_parts_to_instr(["switch_on_structure"|Rest], Result) :- !,
+    parse_struct_entries(Rest, Entries),
+    build_switch_struct_instrs(0, Entries, Result).
+wam_parts_to_instr(["switch_on_term"|Rest], Result) :- !,
+    parse_term_entries(Rest, ConstEntries, StructEntries),
+    build_switch_term_instrs(0, ConstEntries, StructEntries, Result).
 
 wam_parts_to_instr(["begin_aggregate", Type, ValReg, ResReg],
                    begin_aggregate(CType, CValReg, CResReg)) :-
@@ -1314,6 +1454,207 @@ wam_wat_case(switch_entry,
   ;; flow — switch_on_const always jumps over this slot via $set_pc.
   ;; If reached (e.g. via an unusual backtrack target), behave as nop.
   (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(switch_on_struct,
+'  ;; First-argument structure indexing header.
+  ;; op1 layout: low 32 bits = reg_idx, high 32 bits = entry_count.
+  ;; The following `entry_count` instructions are switch_struct_entry
+  ;; records:
+  ;;   op1 = functor_hash (DJB2 of "Functor/Arity" atom),
+  ;;   op2 = (arity << 32) | target_pc.
+  ;; Semantics: deref target reg. If tag=3 (compound), read the header
+  ;; payload for arity + functor_hash and scan entries for a match.
+  ;; If tag=4 (cons list), synthesize (arity=2, functor_hash=hash("[|]/2"))
+  ;; and scan. On match, jump to that clause. Else fall through past
+  ;; entries into the linear dispatch chain.
+  (local $reg_idx i32) (local $count i32) (local $cur_pc i32)
+  (local $code_base i32) (local $d_addr i32) (local $d_tag i32)
+  (local $d_payload i64)
+  (local $d_arity i32) (local $d_fhash i32)
+  (local $i i32) (local $entry_pc i32)
+  (local $entry_op1 i64) (local $entry_op2 i64)
+  (local $entry_fhash i32) (local $entry_arity i32) (local $entry_target i32)
+  (local.set $reg_idx (i32.wrap_i64 (local.get $op1)))
+  (local.set $count (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
+  (local.set $cur_pc (call $get_pc))
+  (local.set $code_base (global.get $wam_code_base))
+  (local.set $d_addr (call $deref_reg_addr (local.get $reg_idx)))
+  (local.set $d_tag (call $val_tag (local.get $d_addr)))
+  (local.set $d_payload (call $val_payload (local.get $d_addr)))
+  ;; Extract arity + functor_hash from the dereffed cell. Only tag=3
+  ;; (compound) and tag=4 (cons) are indexable; other tags fall through.
+  (if (i32.eq (local.get $d_tag) (i32.const 3))
+    (then
+      (local.set $d_arity
+        (i32.wrap_i64 (i64.shr_u (local.get $d_payload) (i64.const 32))))
+      (local.set $d_fhash
+        (i32.wrap_i64 (i64.and (local.get $d_payload) (i64.const 0xFFFFFFFF))))
+      (local.set $i (i32.const 0))
+      (block $scan_done
+        (loop $scan
+          (br_if $scan_done (i32.ge_u (local.get $i) (local.get $count)))
+          (local.set $entry_pc
+            (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+                     (local.get $i)))
+          (local.set $entry_op1
+            (call $fetch_instr_op1 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_op2
+            (call $fetch_instr_op2 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_fhash (i32.wrap_i64 (local.get $entry_op1)))
+          (local.set $entry_arity
+            (i32.wrap_i64 (i64.shr_u (local.get $entry_op2) (i64.const 32))))
+          (local.set $entry_target
+            (i32.wrap_i64 (i64.and (local.get $entry_op2)
+                                   (i64.const 0xFFFFFFFF))))
+          (if (i32.and
+                (i32.eq (local.get $entry_fhash) (local.get $d_fhash))
+                (i32.eq (local.get $entry_arity) (local.get $d_arity)))
+            (then
+              (call $set_pc (local.get $entry_target))
+              (return (i32.const 1))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $scan)))))
+  ;; Cons list: synthesize (arity=2, fhash=hash("[|]/2")=87825375).
+  (if (i32.eq (local.get $d_tag) (i32.const 4))
+    (then
+      (local.set $d_arity (i32.const 2))
+      (local.set $d_fhash (i32.const 87825375))
+      (local.set $i (i32.const 0))
+      (block $scan_done2
+        (loop $scan2
+          (br_if $scan_done2 (i32.ge_u (local.get $i) (local.get $count)))
+          (local.set $entry_pc
+            (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+                     (local.get $i)))
+          (local.set $entry_op1
+            (call $fetch_instr_op1 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_op2
+            (call $fetch_instr_op2 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $entry_fhash (i32.wrap_i64 (local.get $entry_op1)))
+          (local.set $entry_arity
+            (i32.wrap_i64 (i64.shr_u (local.get $entry_op2) (i64.const 32))))
+          (local.set $entry_target
+            (i32.wrap_i64 (i64.and (local.get $entry_op2)
+                                   (i64.const 0xFFFFFFFF))))
+          (if (i32.and
+                (i32.eq (local.get $entry_fhash) (local.get $d_fhash))
+                (i32.eq (local.get $entry_arity) (local.get $d_arity)))
+            (then
+              (call $set_pc (local.get $entry_target))
+              (return (i32.const 1))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $scan2)))))
+  ;; Fall through past entries.
+  (call $set_pc
+    (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+             (local.get $count)))
+  (i32.const 1)').
+
+wam_wat_case(switch_struct_entry,
+'  ;; Record scanned by switch_on_struct / switch_on_term_hdr. Never
+  ;; executed directly; behave as nop if reached.
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(switch_on_term_hdr,
+'  ;; Mixed constant + structure indexing header.
+  ;; op1 layout: low 32 = reg_idx, high 32 = const_count.
+  ;; op2 = struct_count.
+  ;; Layout in the instruction stream: header, then const_count
+  ;; switch_entry records, then struct_count switch_struct_entry records.
+  ;; Dispatch: deref reg. If tag <= 2 (atom/int/float), scan the
+  ;; constant section. If tag = 3 (compound) or 4 (cons), scan the
+  ;; structure section. Else fall through past both sections.
+  (local $reg_idx i32) (local $cc i32) (local $sc i32)
+  (local $cur_pc i32) (local $code_base i32)
+  (local $d_addr i32) (local $d_tag i32) (local $d_payload i64)
+  (local $d_arity i32) (local $d_fhash i32)
+  (local $i i32) (local $entry_pc i32)
+  (local $e1 i64) (local $e2 i64)
+  (local $et i32) (local $ea i32) (local $etarget i32)
+  (local.set $reg_idx (i32.wrap_i64 (local.get $op1)))
+  (local.set $cc (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
+  (local.set $sc (i32.wrap_i64 (local.get $op2)))
+  (local.set $cur_pc (call $get_pc))
+  (local.set $code_base (global.get $wam_code_base))
+  (local.set $d_addr (call $deref_reg_addr (local.get $reg_idx)))
+  (local.set $d_tag (call $val_tag (local.get $d_addr)))
+  (local.set $d_payload (call $val_payload (local.get $d_addr)))
+  ;; --- Constant section (tags 0..2) ---
+  (if (i32.le_u (local.get $d_tag) (i32.const 2))
+    (then
+      (local.set $i (i32.const 0))
+      (block $cdone
+        (loop $cscan
+          (br_if $cdone (i32.ge_u (local.get $i) (local.get $cc)))
+          (local.set $entry_pc
+            (i32.add (i32.add (local.get $cur_pc) (i32.const 1))
+                     (local.get $i)))
+          (local.set $e1
+            (call $fetch_instr_op1 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $e2
+            (call $fetch_instr_op2 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $et
+            (i32.wrap_i64 (i64.shr_u (local.get $e2) (i64.const 32))))
+          (local.set $etarget
+            (i32.wrap_i64 (i64.and (local.get $e2)
+                                   (i64.const 0xFFFFFFFF))))
+          (if (i32.and
+                (i32.eq (local.get $et) (local.get $d_tag))
+                (i64.eq (local.get $e1) (local.get $d_payload)))
+            (then
+              (call $set_pc (local.get $etarget))
+              (return (i32.const 1))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $cscan)))))
+  ;; --- Structure section (tags 3, 4) ---
+  (if (i32.or (i32.eq (local.get $d_tag) (i32.const 3))
+              (i32.eq (local.get $d_tag) (i32.const 4)))
+    (then
+      (if (i32.eq (local.get $d_tag) (i32.const 4))
+        (then
+          (local.set $d_arity (i32.const 2))
+          (local.set $d_fhash (i32.const 87825375)))
+        (else
+          (local.set $d_arity
+            (i32.wrap_i64 (i64.shr_u (local.get $d_payload) (i64.const 32))))
+          (local.set $d_fhash
+            (i32.wrap_i64 (i64.and (local.get $d_payload)
+                                   (i64.const 0xFFFFFFFF))))))
+      (local.set $i (i32.const 0))
+      (block $sdone
+        (loop $sscan
+          (br_if $sdone (i32.ge_u (local.get $i) (local.get $sc)))
+          (local.set $entry_pc
+            (i32.add (i32.add
+                      (i32.add (local.get $cur_pc) (i32.const 1))
+                      (local.get $cc))
+                     (local.get $i)))
+          (local.set $e1
+            (call $fetch_instr_op1 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $e2
+            (call $fetch_instr_op2 (local.get $code_base) (local.get $entry_pc)))
+          (local.set $ea
+            (i32.wrap_i64 (i64.shr_u (local.get $e2) (i64.const 32))))
+          (local.set $etarget
+            (i32.wrap_i64 (i64.and (local.get $e2)
+                                   (i64.const 0xFFFFFFFF))))
+          (if (i32.and
+                (i64.eq (local.get $e1)
+                        (i64.extend_i32_u (local.get $d_fhash)))
+                (i32.eq (local.get $ea) (local.get $d_arity)))
+            (then
+              (call $set_pc (local.get $etarget))
+              (return (i32.const 1))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $sscan)))))
+  ;; Fall through past all entries (const + struct).
+  (call $set_pc
+    (i32.add (i32.add
+              (i32.add (local.get $cur_pc) (i32.const 1))
+              (local.get $cc))
+             (local.get $sc)))
   (i32.const 1)').
 
 wam_wat_case(trust_me,
