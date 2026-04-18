@@ -208,6 +208,10 @@ Interpretation:
   `path_state_result_replay_max_batch_size`; on the current benchmark shape,
   replay setup is small while replay writes dominate the remaining
   materialization cost
+- counted-path `All` replay write is now further split into
+  `path_state_result_replay_value_lookup` and
+  `path_state_result_replay_row_alloc`; on the current benchmark shape, row
+  allocation is the larger write-side cost, with value lookup still visible
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final

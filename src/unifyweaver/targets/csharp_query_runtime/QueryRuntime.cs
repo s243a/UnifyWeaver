@@ -11463,6 +11463,8 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordPhase(node, "path_state_result_materialization", metrics.ResultMaterializationElapsed);
             trace?.RecordPhase(node, "path_state_result_replay_setup", metrics.ResultReplaySetupElapsed);
             trace?.RecordPhase(node, "path_state_result_replay_write", metrics.ResultReplayWriteElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_value_lookup", metrics.ResultReplayValueLookupElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_row_alloc", metrics.ResultReplayRowAllocElapsed);
             trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
             trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
             trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
@@ -12767,11 +12769,22 @@ namespace UnifyWeaver.QueryRuntime
                 var depths = CollectionsMarshal.AsSpan(rows.Depths);
                 metrics?.AddResultReplaySetupElapsed(Stopwatch.GetElapsedTime(setupStarted));
                 var writeStarted = Stopwatch.GetTimestamp();
+                var valueLookupStarted = Stopwatch.GetTimestamp();
+                var targetValues = new object?[rows.Count];
+                var boxedDepths = new object[rows.Count];
                 for (var i = 0; i < rows.Count; i++)
                 {
-                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, BoxCountedPathDepth(depths[i]) };
+                    targetValues[i] = nodeValues[targetNodeIds[i]]!;
+                    boxedDepths[i] = BoxCountedPathDepth(depths[i]);
+                }
+                metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(valueLookupStarted));
+                var rowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    span[baseIndex + i] = new object[] { seedValue, targetValues[i], boxedDepths[i] };
                     metrics?.RecordOutputRow();
                 }
+                metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(rowAllocStarted));
                 metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(writeStarted));
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
                 return;
@@ -12780,11 +12793,22 @@ namespace UnifyWeaver.QueryRuntime
             var fallbackTargetNodeIds = rows.TargetNodeIds;
             var fallbackDepths = rows.Depths;
             var fallbackWriteStarted = Stopwatch.GetTimestamp();
+            var fallbackValueLookupStarted = Stopwatch.GetTimestamp();
+            var fallbackTargetValues = new object?[rows.Count];
+            var fallbackBoxedDepths = new object[rows.Count];
             for (var i = 0; i < rows.Count; i++)
             {
-                output.Add(new object[] { seedValue, nodeValues[fallbackTargetNodeIds[i]]!, BoxCountedPathDepth(fallbackDepths[i]) });
+                fallbackTargetValues[i] = nodeValues[fallbackTargetNodeIds[i]]!;
+                fallbackBoxedDepths[i] = BoxCountedPathDepth(fallbackDepths[i]);
+            }
+            metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(fallbackValueLookupStarted));
+            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
+            for (var i = 0; i < rows.Count; i++)
+            {
+                output.Add(new object[] { seedValue, fallbackTargetValues[i], fallbackBoxedDepths[i] });
                 metrics?.RecordOutputRow();
             }
+            metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
             metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(fallbackWriteStarted));
 
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
@@ -14119,6 +14143,10 @@ namespace UnifyWeaver.QueryRuntime
 
             public TimeSpan ResultReplayWriteElapsed { get; private set; }
 
+            public TimeSpan ResultReplayValueLookupElapsed { get; private set; }
+
+            public TimeSpan ResultReplayRowAllocElapsed { get; private set; }
+
             public long SeedCount { get; private set; }
 
             public long StackPopCount { get; private set; }
@@ -14154,6 +14182,10 @@ namespace UnifyWeaver.QueryRuntime
             public void AddResultReplaySetupElapsed(TimeSpan elapsed) => ResultReplaySetupElapsed += elapsed;
 
             public void AddResultReplayWriteElapsed(TimeSpan elapsed) => ResultReplayWriteElapsed += elapsed;
+
+            public void AddResultReplayValueLookupElapsed(TimeSpan elapsed) => ResultReplayValueLookupElapsed += elapsed;
+
+            public void AddResultReplayRowAllocElapsed(TimeSpan elapsed) => ResultReplayRowAllocElapsed += elapsed;
 
             public void RecordSeed() => SeedCount++;
 

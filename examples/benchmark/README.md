@@ -1050,6 +1050,10 @@ Additional path-state observations:
   `path_state_result_replay_batch_count`, and
   `path_state_result_replay_max_batch_size`, so replay tuning can target the
   dominant write cost without violating the documented ordering contract.
+- counted-path `All` now also splits replay write into
+  `path_state_result_replay_value_lookup` and
+  `path_state_result_replay_row_alloc`; on the current benchmark shape, row
+  allocation is the larger share of replay write cost.
 - counted-path replay/materialization now uses the concrete `object?[]`
   node-value table directly instead of an `IReadOnlyList<object?>` view, which
   trims lookup overhead on the hot replay path without changing output rows.
