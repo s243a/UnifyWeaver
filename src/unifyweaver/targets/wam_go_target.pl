@@ -1660,63 +1660,6 @@ func (vm *WamState) Run() bool {
     }
 }
 
-// RunParallel executes the WAM search in parallel using goroutines.
-func (vm *WamState) RunParallel(maxWorkers int) <-chan []Value {
-	results := make(chan []Value, 100)
-	sem := make(chan struct{}, maxWorkers)
-	var wg sync.WaitGroup
-
-	var explore func(state *WamState, hasToken bool)
-	explore = func(state *WamState, hasToken bool) {
-		defer wg.Done()
-		if !hasToken {
-			sem <- struct{}{}
-		}
-		defer func() { <-sem }()
-
-		for {
-			if state.Halted {
-				results <- state.CollectResults()
-				return
-			}
-			instr := state.fetch()
-			if instr == nil {
-				return
-			}
-
-			if !state.Step(instr) {
-				if !state.backtrack() {
-					return
-				}
-			}
-
-			// Fork choice points if we have workers available
-			if len(state.ChoicePoints) > 0 {
-				select {
-				case sem <- struct{}{}:
-					if alt := state.ForkAtChoicePoint(); alt != nil {
-						wg.Add(1)
-						go explore(alt, true)
-					} else {
-						<-sem
-					}
-				default:
-				}
-			}
-		}
-	}
-
-	wg.Add(1)
-	go explore(vm, false)
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	return results
-}
-
 func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
     if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
         return targetPC
