@@ -9,12 +9,13 @@
 % Design mirrors the Haskell WAM target closely (use Haskell as primary
 % reference, Rust as secondary — see PR #1378 perf log for lessons applied):
 %
-%   - Map<int,Value> for registers/bindings → O(1) structural-sharing
-%     snapshots for choice points (same insight as Haskell Phase-A)
+%   - Value array for registers → O(1) array access with Array.copy snapshots
+%     for choice points (same insight as Go's [512]Value)
 %   - WamContext separated from WamState (hot/cold split — Haskell Phase-B)
 %   - Labels pre-resolved to int PCs at load time (Phase-C win: -47%)
 %   - Skip WAM-compilation of FFI-owned fact predicates (Phase-D: -70%)
 %   - Atom interning at FFI boundary (Phase-D: -48% query time)
+%     Implemented via buildAtomInternTable in generated Program.fs
 %
 % Key F# idioms vs Haskell:
 %   - `match x with | Pat -> ...` instead of `case x of`
@@ -146,6 +147,31 @@ wam_fsharp_predicate_wamcode(PI, WamCode) :-
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
 
 % ============================================================================
+% FFI-owned fact detection (Phase D: skip WAM-compilation for pure FFI facts)
+%
+% A predicate is FFI-owned if:
+%   1. It was detected as a recursive kernel (has FFI bindings)
+%   2. All its clauses are pure facts (body = true)
+%
+% Skipping WAM compilation of these predicates was the -70% total query
+% time win in Haskell/Go — the FFI kernel path handles them directly.
+% ============================================================================
+
+%% is_ffi_owned_fact_fs(+PredIndicator, +DetectedKernels)
+is_ffi_owned_fact_fs(PI, DetectedKernels) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    member(Key-_, DetectedKernels),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    forall(member(_-Body, Clauses), Body == true).
+
+%% ffi_owned_fact_filter_fs(+DetectedKernels, +PI) — exclude/3 callback
+ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
+    is_ffi_owned_fact_fs(PI, DetectedKernels).
+
+% ============================================================================
 % Kernel detection (shared with Haskell target pattern)
 % ============================================================================
 
@@ -226,13 +252,15 @@ lower_all_fs([P|Rest], BasePCMap, DetectedKernels, [Entry|RestEntries]) :-
 
 wam_to_fsharp(get_constant(C, Ai), Code) :-
     format(string(Code),
-'    let valOpt = Map.tryFind ~w s.WsRegs |> Option.map (derefVar s.WsBindings)
+'    let valOpt = getReg ~w s
     match valOpt with
     | Some v when v = ~w -> Some { s with WsPC = s.WsPC + 1 }
     | Some (Unbound vid) ->
+        let r = Array.copy s.WsRegs
+        r.[~w] <- ~w
         Some { s with
                  WsPC      = s.WsPC + 1
-                 WsRegs    = Map.add ~w ~w s.WsRegs
+                 WsRegs    = r
                  WsBindings= Map.add vid ~w s.WsBindings
                  WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                  WsTrailLen= s.WsTrailLen + 1 }
@@ -240,22 +268,22 @@ wam_to_fsharp(get_constant(C, Ai), Code) :-
 
 wam_to_fsharp(get_variable(Xn, Ai), Code) :-
     format(string(Code),
-'    match Map.tryFind ~w s.WsRegs with
-    | Some v ->
-        let dv = derefVar s.WsBindings v
-        Some (putReg ~w dv { s with WsPC = s.WsPC + 1 })
-    | None -> None', [Ai, Xn]).
+'    match getReg ~w s with
+    | Some dv -> Some (putReg ~w dv { s with WsPC = s.WsPC + 1 })
+    | None    -> None', [Ai, Xn]).
 
 wam_to_fsharp(get_value(Xn, Ai), Code) :-
     format(string(Code),
-'    let va = Map.tryFind ~w s.WsRegs |> Option.map (derefVar s.WsBindings)
+'    let va = getReg ~w s
     let vx = getReg ~w s
     match va, vx with
     | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
     | Some (Unbound vid), Some x ->
+        let r = Array.copy s.WsRegs
+        r.[~w] <- x
         Some { s with
                  WsPC      = s.WsPC + 1
-                 WsRegs    = Map.add ~w x s.WsRegs
+                 WsRegs    = r
                  WsBindings= Map.add vid x s.WsBindings
                  WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                  WsTrailLen= s.WsTrailLen + 1 }
@@ -263,22 +291,29 @@ wam_to_fsharp(get_value(Xn, Ai), Code) :-
 
 wam_to_fsharp(put_constant(C, Ai), Code) :-
     format(string(Code),
-'    Some { s with WsPC = s.WsPC + 1; WsRegs = Map.add ~w ~w s.WsRegs }', [Ai, C]).
+'    let r = Array.copy s.WsRegs
+    r.[~w] <- ~w
+    Some { s with WsPC = s.WsPC + 1; WsRegs = r }', [Ai, C]).
 
 wam_to_fsharp(put_variable(Xn, Ai), Code) :-
     format(string(Code),
 '    let vid = s.WsVarCounter
     let var = Unbound vid
     let s1  = putReg ~w var s
+    let r   = Array.copy s1.WsRegs
+    r.[~w] <- var
     Some { s1 with
              WsPC       = s.WsPC + 1
-             WsRegs     = Map.add ~w var s1.WsRegs
+             WsRegs     = r
              WsVarCounter= s.WsVarCounter + 1 }', [Xn, Ai]).
 
 wam_to_fsharp(put_value(Xn, Ai), Code) :-
     format(string(Code),
 '    match getReg ~w s with
-    | Some v -> Some { s with WsPC = s.WsPC + 1; WsRegs = Map.add ~w v s.WsRegs }
+    | Some v ->
+        let r = Array.copy s.WsRegs
+        r.[~w] <- v
+        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
     | None   -> None', [Xn, Ai]).
 
 wam_to_fsharp(call(Pred, _Arity), Code) :-
@@ -306,7 +341,7 @@ wam_to_fsharp(try_me_else(Label), Code) :-
     format(string(Code),
 '    let nextPC = lookupLabel "~w" ctx
     let cp = { CpNextPC   = nextPC
-               CpRegs     = s.WsRegs
+               CpRegs     = Array.copy s.WsRegs
                CpStack    = s.WsStack
                CpCP       = s.WsCP
                CpTrailLen = s.WsTrailLen
@@ -337,15 +372,17 @@ wam_to_fsharp(builtin_call('!/0', 0), Code) :-
                          WsCPsLen = s.WsCutBar }'.
 
 wam_to_fsharp(builtin_call('is/2', 2), Code) :-
-    Code = '    let expr   = Map.tryFind 2 s.WsRegs |> Option.defaultValue (Integer 0) |> derefVar s.WsBindings
+    Code = '    let expr   = s.WsRegs.[2] |> derefVar s.WsBindings
     let result = evalArith s.WsBindings expr
-    let lhs    = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings)
+    let lhs    = getReg 1 s
     match lhs, result with
     | Some (Unbound vid), Some r ->
         let v = if float (int r) = r then Integer (int r) else Float r
+        let regs = Array.copy s.WsRegs
+        regs.[1] <- v
         Some { s with
                  WsPC      = s.WsPC + 1
-                 WsRegs    = Map.add 1 v s.WsRegs
+                 WsRegs    = regs
                  WsBindings= Map.add vid v s.WsBindings
                  WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                  WsTrailLen= s.WsTrailLen + 1 }
@@ -354,21 +391,21 @@ wam_to_fsharp(builtin_call('is/2', 2), Code) :-
     | _ -> None'.
 
 wam_to_fsharp(builtin_call('</2', 2), Code) :-
-    Code = '    let v1 = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
-    let v2 = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
+    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
     match v1, v2 with
     | Some a, Some b when a < b -> Some { s with WsPC = s.WsPC + 1 }
     | _ -> None'.
 
 wam_to_fsharp(builtin_call('>/2', 2), Code) :-
-    Code = '    let v1 = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
-    let v2 = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
+    Code = '    let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+    let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
     match v1, v2 with
     | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
     | _ -> None'.
 
 wam_to_fsharp(builtin_call('\\+/1', 1), Code) :-
-    Code = '    let goal = Map.tryFind 1 s.WsRegs |> Option.bind (derefHeap s.WsHeap)
+    Code = '    let goal = Some s.WsRegs.[1] |> Option.bind (derefHeap s.WsHeap)
     match goal with
     | Some (Str ("member", [needle; haystack])) ->
         let n = derefVar s.WsBindings needle
@@ -380,17 +417,19 @@ wam_to_fsharp(builtin_call('\\+/1', 1), Code) :-
     | _ -> None'.
 
 wam_to_fsharp(builtin_call('length/2', 2), Code) :-
-    Code = '    let listVal = Map.tryFind 1 s.WsRegs |> Option.defaultValue (VList []) |> derefVar s.WsBindings
+    Code = '    let listVal = s.WsRegs.[1] |> derefVar s.WsBindings
     match listVal with
     | VList items ->
         let len = List.length items
-        let lhs = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let lhs = getReg 2 s
         match lhs with
         | Some (Unbound vid) ->
             let v = Integer len
+            let regs = Array.copy s.WsRegs
+            regs.[2] <- v
             Some { s with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = Map.add 2 v s.WsRegs
+                     WsRegs    = regs
                      WsBindings= Map.add vid v s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen= s.WsTrailLen + 1 }
@@ -439,7 +478,8 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | FactRetry (vid, v :: vs, retPC) ->
         let newBindings = Map.add vid (Atom v) cp.CpBindings
-        let newRegs     = Map.add 2 (Atom v) cp.CpRegs
+        let newRegs     = Array.copy cp.CpRegs
+        newRegs.[2]    <- Atom v
         let newCPs      = match vs with
                           | [] -> rest
                           | _  -> { cp with CpBuiltin = Some (FactRetry (vid, vs, retPC)) } :: rest
@@ -461,7 +501,8 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | HopsRetry (vid, h :: hs, retPC) ->
         let newBindings = Map.add vid (Integer h) cp.CpBindings
-        let newRegs     = Map.add 3 (Integer h) cp.CpRegs
+        let newRegs     = Array.copy cp.CpRegs
+        newRegs.[3]    <- Integer h
         let newCPs      = match hs with
                           | [] -> rest
                           | _  -> { cp with CpBuiltin = Some (HopsRetry (vid, hs, retPC)) } :: rest
@@ -482,7 +523,8 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
     | FFIStreamRetry (_, _, [], _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
     | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
-        let newRegs     = List.fold2 (fun m rN v -> Map.add rN v m) cp.CpRegs outRegs tuple
+        let newRegs     = Array.copy cp.CpRegs
+        List.iter2 (fun rN v -> newRegs.[rN] <- v) outRegs tuple
         let newBindings = List.fold2
                             (fun m vid v -> if vid = -1 then m else Map.add vid v m)
                             cp.CpBindings outVars tuple
@@ -525,7 +567,9 @@ and finalizeAggregate (returnPC: int) (s: WamState) : WamState option =
                 let finalRegs, finalBindings, finalTrail, finalTrailLen =
                     match resVal with
                     | Some (Unbound vid) ->
-                        ( Map.add af.AggResReg result cp.CpRegs
+                        let r = Array.copy cp.CpRegs
+                        r.[af.AggResReg] <- result
+                        ( r
                         , Map.add vid result cp.CpBindings
                         , { TrailVarId = vid; TrailOldVal = Map.tryFind vid cp.CpBindings } :: restoredTrail
                         , cp.CpTrailLen + 1 )
@@ -566,53 +610,63 @@ step_function_fsharp(Code) :-
 let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState option =
     match instr with
     | GetConstant (c, ai) ->
-        let valOpt = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let valOpt = getReg ai s
         match valOpt with
         | Some v when v = c -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Unbound vid) ->
+            let r = Array.copy s.WsRegs
+            r.[ai] <- c
             Some { s with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = Map.add ai c s.WsRegs
+                     WsRegs    = r
                      WsBindings= Map.add vid c s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen= s.WsTrailLen + 1 }
         | _ -> None
 
     | GetVariable (xn, ai) ->
-        match Map.tryFind ai s.WsRegs with
-        | Some v -> let dv = derefVar s.WsBindings v
-                    Some (putReg xn dv { s with WsPC = s.WsPC + 1 })
-        | None   -> None
+        match getReg ai s with
+        | Some dv -> Some (putReg xn dv { s with WsPC = s.WsPC + 1 })
+        | None    -> None
 
     | GetValue (xn, ai) ->
-        let va = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let va = getReg ai s
         let vx = getReg xn s
         match va, vx with
         | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Unbound vid), Some x ->
+            let r = Array.copy s.WsRegs
+            r.[ai] <- x
             Some { s with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = Map.add ai x s.WsRegs
+                     WsRegs    = r
                      WsBindings= Map.add vid x s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen= s.WsTrailLen + 1 }
         | _ -> None
 
     | PutConstant (c, ai) ->
-        Some { s with WsPC = s.WsPC + 1; WsRegs = Map.add ai c s.WsRegs }
+        let r = Array.copy s.WsRegs
+        r.[ai] <- c
+        Some { s with WsPC = s.WsPC + 1; WsRegs = r }
 
     | PutVariable (xn, ai) ->
         let vid = s.WsVarCounter
         let var = Unbound vid
         let s1  = putReg xn var s
+        let r   = Array.copy s1.WsRegs
+        r.[ai] <- var
         Some { s1 with
                  WsPC        = s.WsPC + 1
-                 WsRegs      = Map.add ai var s1.WsRegs
+                 WsRegs      = r
                  WsVarCounter= s.WsVarCounter + 1 }
 
     | PutValue (xn, ai) ->
         match getReg xn s with
-        | Some v -> Some { s with WsPC = s.WsPC + 1; WsRegs = Map.add ai v s.WsRegs }
+        | Some v ->
+            let r = Array.copy s.WsRegs
+            r.[ai] <- v
+            Some { s with WsPC = s.WsPC + 1; WsRegs = r }
         | None   -> None
 
     | PutStructure (fn, ai, arity) ->
@@ -686,7 +740,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | TryMeElse label ->
         let nextPC = Map.tryFind label ctx.WcLabels |> Option.defaultValue 0
         let cp = { CpNextPC   = nextPC
-                   CpRegs     = s.WsRegs
+                   CpRegs     = Array.copy s.WsRegs
                    CpStack    = s.WsStack
                    CpCP       = s.WsCP
                    CpTrailLen = s.WsTrailLen
@@ -699,7 +753,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
 
     | TryMeElsePc nextPC ->
         let cp = { CpNextPC   = nextPC
-                   CpRegs     = s.WsRegs
+                   CpRegs     = Array.copy s.WsRegs
                    CpStack    = s.WsStack
                    CpCP       = s.WsCP
                    CpTrailLen = s.WsTrailLen
@@ -735,21 +789,21 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
     | ParRetryMeElsePc pc   -> step ctx s (RetryMeElsePc pc)
 
     | SwitchOnConstantPc table ->
-        let valOpt = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let valOpt = getReg 1 s
         match valOpt with
         | Some (Unbound _) -> Some { s with WsPC = s.WsPC + 1 }
         | Some (Atom key) ->
-            match Map.tryFind key table with
+            match binarySearchStr table key with
             | Some pc -> Some { s with WsPC = pc }
             | None    -> None
         | Some (Integer n) ->
-            match Map.tryFind (string n) table with
+            match binarySearchStr table (string n) with
             | Some pc -> Some { s with WsPC = pc }
             | None    -> None
         | _ -> None
 
     | SwitchOnConstant table ->
-        let valOpt = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let valOpt = getReg 1 s
         match valOpt with
         | Some (Unbound _) -> Some { s with WsPC = s.WsPC + 1 }
         | Some v ->
@@ -773,41 +827,43 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | []        -> Some { s with WsPC = s.WsPC + 1 }
 
     | BuiltinCall ("nonvar/1", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some (Unbound _) -> None
         | Some _           -> Some { s with WsPC = s.WsPC + 1 }
         | None             -> None
 
     | BuiltinCall ("var/1", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some (Unbound _) -> Some { s with WsPC = s.WsPC + 1 }
         | _                -> None
 
     | BuiltinCall ("atom/1", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some (Atom _) -> Some { s with WsPC = s.WsPC + 1 }
         | _             -> None
 
     | BuiltinCall ("integer/1", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some (Integer _) -> Some { s with WsPC = s.WsPC + 1 }
         | _                -> None
 
     | BuiltinCall ("number/1", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some (Integer _) | Some (Float _) -> Some { s with WsPC = s.WsPC + 1 }
         | _                                  -> None
 
     | BuiltinCall ("is/2", _) ->
-        let expr   = Map.tryFind 2 s.WsRegs |> Option.defaultValue (Integer 0) |> derefVar s.WsBindings
+        let expr   = s.WsRegs.[2] |> derefVar s.WsBindings
         let result = evalArith s.WsBindings expr
-        let lhs    = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let lhs    = getReg 1 s
         match lhs, result with
         | Some (Unbound vid), Some r ->
             let v = if float (int r) = r then Integer (int r) else Float r
+            let regs = Array.copy s.WsRegs
+            regs.[1] <- v
             Some { s with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = Map.add 1 v s.WsRegs
+                     WsRegs    = regs
                      WsBindings= Map.add vid v s.WsBindings
                      WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen= s.WsTrailLen + 1 }
@@ -815,16 +871,18 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("length/2", _) ->
-        let listVal = Map.tryFind 1 s.WsRegs |> Option.defaultValue (VList []) |> derefVar s.WsBindings
+        let listVal = s.WsRegs.[1] |> derefVar s.WsBindings
         match listVal with
         | VList items ->
             let len = List.length items
-            match Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+            match getReg 2 s with
             | Some (Unbound vid) ->
                 let v = Integer len
+                let regs = Array.copy s.WsRegs
+                regs.[2] <- v
                 Some { s with
                          WsPC      = s.WsPC + 1
-                         WsRegs    = Map.add 2 v s.WsRegs
+                         WsRegs    = regs
                          WsBindings= Map.add vid v s.WsBindings
                          WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                          WsTrailLen= s.WsTrailLen + 1 }
@@ -833,29 +891,29 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> None
 
     | BuiltinCall ("</2", _) ->
-        let v1 = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
-        let v2 = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when a < b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
     | BuiltinCall (">/2", _) ->
-        let v1 = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
-        let v2 = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings) |> Option.bind (evalArith s.WsBindings)
+        let v1 = getReg 1 s |> Option.bind (evalArith s.WsBindings)
+        let v2 = getReg 2 s |> Option.bind (evalArith s.WsBindings)
         match v1, v2 with
         | Some a, Some b when a > b -> Some { s with WsPC = s.WsPC + 1 }
         | _ -> None
 
     | BuiltinCall ("member/2", _) ->
-        let elem_ = Map.tryFind 1 s.WsRegs |> Option.defaultValue (Unbound -1) |> derefVar s.WsBindings
-        let list_ = Map.tryFind 2 s.WsRegs |> Option.defaultValue (VList []) |> derefVar s.WsBindings
+        let elem_ = s.WsRegs.[1] |> derefVar s.WsBindings
+        let list_ = s.WsRegs.[2] |> derefVar s.WsBindings
         match list_ with
         | VList (x :: _) -> unifyVal elem_ x s
         | _              -> None
 
     | BeginAggregate (aggType, valReg, resReg) ->
         let cp = { CpNextPC   = s.WsPC
-                   CpRegs     = s.WsRegs
+                   CpRegs     = Array.copy s.WsRegs
                    CpStack    = s.WsStack
                    CpCP       = s.WsCP
                    CpTrailLen = s.WsTrailLen
@@ -881,11 +939,11 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None    -> finalizeAggregate returnPC s1
 
     | BuiltinCall ("functor/3", _) ->
-        let t = Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings)
+        let t = getReg 1 s
         match t with
         | Some (Unbound vid) ->
-            let nArg = Map.tryFind 2 s.WsRegs |> Option.map (derefVar s.WsBindings)
-            let aArg = Map.tryFind 3 s.WsRegs |> Option.map (derefVar s.WsBindings)
+            let nArg = getReg 2 s
+            let aArg = getReg 3 s
             match nArg, aArg with
             | Some nameVal, Some (Integer arity) when arity >= 0 ->
                 let mBuilt =
@@ -899,9 +957,11 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                 match mBuilt with
                 | None -> None
                 | Some (built, newCtr) ->
+                    let regs = Array.copy s.WsRegs
+                    regs.[1] <- built
                     Some { s with
                              WsPC        = s.WsPC + 1
-                             WsRegs      = Map.add 1 built s.WsRegs
+                             WsRegs      = regs
                              WsBindings  = Map.add vid built s.WsBindings
                              WsTrail     = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                              WsTrailLen  = s.WsTrailLen + 1
@@ -928,7 +988,7 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None -> None
 
     | BuiltinCall ("copy_term/2", _) ->
-        match Map.tryFind 1 s.WsRegs |> Option.map (derefVar s.WsBindings) with
+        match getReg 1 s with
         | Some tVal ->
             let copy, newCtr, _ = copyTermWalk s.WsVarCounter Map.empty tVal
             let s0 = { s with WsVarCounter = newCtr }
@@ -982,6 +1042,15 @@ let rec run (ctx: WamContext) (s: WamState) : WamState option =
             | Some s2 -> run ctx s2
             | None    -> None
 
+/// Run multiple seed states in parallel using TPL (System.Threading.Tasks.Parallel).
+/// WamContext is read-only and safely shared across threads.
+/// Each seed gets its own WamState copy — no shared mutable state.
+let runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list =
+    seeds
+    |> List.toArray
+    |> Array.Parallel.map (fun seed -> run ctx seed)
+    |> Array.toList
+
 /// Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 /// O(1) Map lookup; first match returned, FactRetry CP for the rest.
 and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState option =
@@ -990,15 +1059,16 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
     match Map.tryFind basePred ctx.WcForeignFacts with
     | None -> None
     | Some factIndex ->
-        let a1 = Map.tryFind 1 s.WsRegs |> Option.defaultValue (Atom "") |> derefVar s.WsBindings
-        let a2 = Map.tryFind 2 s.WsRegs |> Option.defaultValue (Unbound -1) |> derefVar s.WsBindings
+        let a1 = s.WsRegs.[1] |> derefVar s.WsBindings
+        let a2 = s.WsRegs.[2] |> derefVar s.WsBindings
         match a1 with
         | Atom key ->
             match Map.tryFind key factIndex with
             | Some (v :: rest) ->
                 match a2 with
                 | Unbound vid ->
-                    let newRegs     = Map.add 2 (Atom v) s.WsRegs
+                    let newRegs     = Array.copy s.WsRegs
+                    newRegs.[2]    <- Atom v
                     let newBindings = Map.add vid (Atom v) s.WsBindings
                     let newTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                     let newCPs, newCPsLen =
@@ -1006,7 +1076,7 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
                         | [] -> s.WsCPs, s.WsCPsLen
                         | _  ->
                             let cp = { CpNextPC   = retPC
-                                       CpRegs     = s.WsRegs
+                                       CpRegs     = Array.copy s.WsRegs
                                        CpStack    = s.WsStack
                                        CpCP       = s.WsCP
                                        CpTrailLen = s.WsTrailLen
@@ -1096,7 +1166,8 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
                 table |> Map.toList
                       |> List.choose (fun (v, label) ->
                             Map.tryFind label labels |> Option.map (fun pc -> (extractKey v, pc)))
-                      |> Map.ofList
+                      |> List.sortBy fst
+                      |> List.toArray
             SwitchOnConstantPc pcTable
         | i -> i)'.
 
@@ -1221,7 +1292,7 @@ emit_input_let_bindings_fs([input(RegN, Type)|Rest], Pos) :-
     reg_var_name_fs(RegN, VarName),
     fsharp_wam_reg_default(Type, Default),
     (   Pos = first -> true ; format('        let ') ),
-    format('~w = Map.tryFind ~w s.WsRegs |> Option.defaultValue (~w) |> derefVar s.WsBindings~n',
+    format('~w = (let rv = s.WsRegs.[~w] in match rv with Unbound -1 -> ~w | _ -> rv) |> derefVar s.WsBindings~n',
            [VarName, RegN, Default]),
     emit_input_let_bindings_fs(Rest, rest).
 
@@ -1345,7 +1416,7 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     emit_multi_wrap_list_fs(OutputRegs, 1),
     format('])~n', []),
     format('~w        let cp = { CpNextPC   = retPC~n', [Indent]),
-    format('~w                   CpRegs     = s.WsRegs~n', [Indent]),
+    format('~w                   CpRegs     = Array.copy s.WsRegs~n', [Indent]),
     format('~w                   CpStack    = s.WsStack~n', [Indent]),
     format('~w                   CpCP       = s.WsCP~n', [Indent]),
     format('~w                   CpTrailLen = s.WsTrailLen~n', [Indent]),
@@ -1360,7 +1431,7 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
 
 emit_multi_out_derefs_fs([], _).
 emit_multi_out_derefs_fs([output(RegN, _)|Rest], Indent) :-
-    format('~w    let outReg_~w = Map.tryFind ~w s.WsRegs |> Option.defaultValue (Unbound -1) |> derefVar s.WsBindings~n',
+    format('~w    let outReg_~w = s.WsRegs.[~w] |> derefVar s.WsBindings~n',
            [Indent, RegN, RegN]),
     emit_multi_out_derefs_fs(Rest, Indent).
 
@@ -1388,16 +1459,15 @@ emit_multi_wrap_bindings_fs([output(_, Type)|Rest], I) :-
     emit_multi_wrap_bindings_fs(Rest, I1).
 
 emit_multi_reg_updates_fs(OutputRegs, Indent) :-
-    format('~w                 WsRegs = ', [Indent]),
-    emit_reg_add_chain_fs(OutputRegs, 1),
-    format('s.WsRegs~n', []).
+    format('~w                 WsRegs = (let r = Array.copy s.WsRegs in ', [Indent]),
+    emit_reg_set_chain_fs(OutputRegs, 1),
+    format('r)~n', []).
 
-emit_reg_add_chain_fs([], _).
-emit_reg_add_chain_fs([output(RegN, _)|Rest], I) :-
-    format('Map.add ~w w_~w (', [RegN, I]),
+emit_reg_set_chain_fs([], _).
+emit_reg_set_chain_fs([output(RegN, _)|Rest], I) :-
+    format('r.[~w] <- w_~w; ', [RegN, I]),
     I1 is I + 1,
-    emit_reg_add_chain_fs(Rest, I1),
-    format(')', []).
+    emit_reg_set_chain_fs(Rest, I1).
 
 emit_multi_binding_updates_fs(OutputRegs, Indent) :-
     format('~w                 WsBindings = ', [Indent]),
@@ -1537,8 +1607,8 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, 'WamRuntime.fs', RuntimePath),
     write_fs_file(RuntimePath, RuntimeCode),
 
-    % Generate Predicates.fs
-    compile_predicates_to_fsharp(Predicates, Options, PredsCode),
+    % Generate Predicates.fs (skip FFI-owned facts — Phase D: -70%)
+    compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, PredsCode),
     directory_file_path(ProjectDir, 'Predicates.fs', PredsPath),
     write_fs_file(PredsPath, PredsCode),
 
@@ -1569,12 +1639,19 @@ write_fs_file(Path, Content) :-
     write(Stream, Content),
     close(Stream).
 
-%% compile_predicates_to_fsharp(+Predicates, +Options, -Code)
-compile_predicates_to_fsharp(Predicates, Options, Code) :-
-    maplist(compile_one_predicate_fs(Options), Predicates, PredCodes),
+%% compile_predicates_to_fsharp(+Predicates, +Options, +DetectedKernels, -Code)
+compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, Code) :-
+    % Phase D: skip FFI-owned facts (predicates handled entirely by FFI kernel path)
+    exclude(ffi_owned_fact_filter_fs(DetectedKernels), Predicates, WamPredicates),
+    (   length(Predicates, NAll), length(WamPredicates, NWam), NSkipped is NAll - NWam,
+        NSkipped > 0
+    ->  format(user_error, '[WAM-FSharp] skipped ~w FFI-owned fact predicates~n', [NSkipped])
+    ;   true
+    ),
+    maplist(compile_one_predicate_fs(Options), WamPredicates, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', AllPredCode),
     % Build merged code list and label map
-    maplist(pred_func_name_fs, Predicates, FuncNames),
+    maplist(pred_func_name_fs, WamPredicates, FuncNames),
     emit_merged_code_build_fs(FuncNames, MergedCodeBuild),
     format(string(Code),
 'module Predicates
@@ -1653,6 +1730,26 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     pairs_keys(DetectedKernels, ForeignKeys),
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     option(module_name(_ModName), Options, 'wam-fsharp-bench'),
+    (   option(parallel(true), Options)
+    ->  ParallelDriver =
+'    // Parallel execution via TPL (Array.Parallel.map)
+    let seeds = [
+        { emptyState with WsPC = startPC }
+    ]
+    let results = runParallel ctx seeds
+    results |> List.iteri (fun i r ->
+        match r with
+        | Some sf -> printfn "Seed %d: succeeded. PC=%d" i sf.WsPC
+        | None    -> printfn "Seed %d: failed." i)
+    0'
+    ;   ParallelDriver =
+'    // Sequential execution
+    let s0 = { emptyState with WsPC = startPC }
+    match run ctx s0 with
+    | Some sf -> printfn "Query succeeded. PC=%d" sf.WsPC
+    | None    -> printfn "Query failed."
+    0'
+    ),
     format(string(Code),
 'module Program
 
@@ -1668,20 +1765,36 @@ let main _argv =
     let foreignPreds = [ ~w ]
     let resolvedCode = resolveCallInstrs allLabels foreignPreds (Array.toList allCode) |> List.toArray
 
+    // Phase D: build atom intern tables from instruction atoms.
+    // Eliminates Map<string,_> hashing inside kernel recursive hot loops.
+    let buildAtomInternTable (code: Instruction array) : Map<string, int> * Map<int, string> =
+        let atoms = System.Collections.Generic.HashSet<string>()
+        for instr in code do
+            match instr with
+            | GetConstant (Atom a, _) -> atoms.Add(a) |> ignore
+            | PutConstant (Atom a, _) -> atoms.Add(a) |> ignore
+            | SwitchOnConstantPc table -> for (k, _) in table do atoms.Add(k) |> ignore
+            | _ -> ()
+        let sorted = atoms |> Seq.sort |> Seq.toArray
+        let intern   = sorted |> Array.mapi (fun i a -> (a, i)) |> Map.ofArray
+        let deintern = sorted |> Array.mapi (fun i a -> (i, a)) |> Map.ofArray
+        intern, deintern
+    let atomIntern, atomDeintern = buildAtomInternTable resolvedCode
+
     let ctx =
         { WcCode             = resolvedCode
           WcLabels            = allLabels
           WcForeignFacts      = Map.empty   // populate from your dataset
           WcFfiFacts          = Map.empty
           WcFfiWeightedFacts  = Map.empty
-          WcAtomIntern        = Map.empty
-          WcAtomDeintern      = Map.empty
+          WcAtomIntern        = atomIntern
+          WcAtomDeintern      = atomDeintern
           WcForeignConfig     = Map.empty
           WcLoweredPredicates = loweredPredicates }
 
     let emptyState =
         { WsPC         = 0
-          WsRegs       = Map.empty
+          WsRegs       = Array.create MaxRegs (Unbound -1)
           WsStack      = []
           WsHeap       = []
           WsHeapLen    = 0
@@ -1696,14 +1809,9 @@ let main _argv =
           WsBuilder    = None
           WsAggAccum   = [] }
 
-    // Example: run a query. Adapt startPC and initial registers to your predicate.
     let startPC = Map.tryFind "main/0" allLabels |> Option.defaultValue 1
-    let s0 = { emptyState with WsPC = startPC }
-    match run ctx s0 with
-    | Some sf -> printfn "Query succeeded. PC=%d" sf.WsPC
-    | None    -> printfn "Query failed."
-    0
-', [ForeignPredsStr]).
+~w
+', [ForeignPredsStr, ParallelDriver]).
 
 format_foreign_preds_fs([], '').
 format_foreign_preds_fs(Keys, Str) :-

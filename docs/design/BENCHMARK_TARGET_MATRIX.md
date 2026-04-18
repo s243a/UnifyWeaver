@@ -132,6 +132,55 @@ That means Python can now participate in:
 
 - `hybrid-wam`
 
+### F#
+
+F# now has a hybrid WAM benchmark path with full support for the lowered emitter
+(`emit_mode(functions)`) and TPL-based parallel execution (`parallel(true)`)
+via `runParallel` using `Array.Parallel.map`.
+
+Performance optimizations (closing gaps vs Haskell/Go/Rust):
+
+- Register array: `Value array` (O(1) access) instead of `Map<int,Value>`
+- Binary search for `SwitchOnConstantPc`: sorted `(string * int) array` with binary search
+- FFI-owned fact skip: predicates handled entirely by FFI kernel path are excluded from WAM compilation
+- Atom interning: `buildAtomInternTable` populates `WcAtomIntern`/`WcAtomDeintern` at startup
+- Real parallel execution: `Array.Parallel.map` (TPL) for intra-query parallelism
+
+Hybrid WAM F# path:
+
+1. Load the workload Prolog and benchmark facts.
+2. Run `prolog_target` optimization passes.
+3. Force the selected predicates through the shared F# WAM path.
+4. Emit an F# benchmark driver that queries the compiled VM directly.
+
+The relevant modes are (mirroring Haskell/Go):
+
+- `interpreter + no_kernels(true)` -> pure interpreter baseline
+- `interpreter + kernels enabled` -> hybrid WAM + FFI
+- `functions + no_kernels(true)` -> lowered-only (deterministic predicate-as-function)
+- `functions + kernels enabled` -> lowered functions with WAM fallback + FFI
+
+Optimized benchmark pipeline (mirrors Go and Haskell):
+
+1. Load the workload Prolog.
+2. Run `prolog_target` optimization passes (seeded accumulation).
+3. Load the generated optimized predicates back into Prolog.
+4. Emit a WAM F# project with `write_wam_fsharp_project/3` using
+   `emit_mode(functions)` and `parallel(true)`.
+
+Script: `examples/benchmark/generate_wam_fsharp_optimized_benchmark.pl`
+
+Profiling matrix configs (M-P) in `gen_prof_matrix.pl`:
+
+- M: `fsharp-pure-interp` — interpreter + no_kernels
+- N: `fsharp-interp-ffi` — interpreter + kernels
+- O: `fsharp-lowered-only` — functions + no_kernels
+- P: `fsharp-lowered-ffi` — functions + kernels
+
+That means F# can now participate in:
+
+- `hybrid-wam`
+
 ### C#
 
 The C# query runtime is still a useful comparison point because it is heavily optimized, but it belongs in its own category.
@@ -188,7 +237,9 @@ New scripts:
 - `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
 - `examples/benchmark/generate_wam_go_optimized_benchmark.pl`
 - `examples/benchmark/generate_wam_python_optimized_benchmark.pl`
-- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python profiling configs)
+- `examples/benchmark/generate_wam_fsharp_optimized_benchmark.pl`
+- `tests/bench_wam_fsharp.pl` (F# compilation throughput benchmarks)
+- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python + 4 F# profiling configs)
 
 Examples:
 

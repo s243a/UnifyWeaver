@@ -3,6 +3,7 @@
 :- use_module('../../src/unifyweaver/targets/wam_haskell_target').
 :- use_module('../../src/unifyweaver/targets/wam_go_target').
 :- use_module('../../src/unifyweaver/targets/wam_python_target').
+:- use_module('../../src/unifyweaver/targets/wam_fsharp_target').
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module(library(option)).
@@ -10,7 +11,7 @@
 
 %% gen_prof_matrix.pl
 %%
-%% Generates 4 Haskell + 4 Go + 4 Python WAM profiling configurations
+%% Generates 4 Haskell + 4 Go + 4 Python + 4 F# WAM profiling configurations
 %% from optimized Prolog:
 %%
 %%   Haskell:
@@ -31,9 +32,16 @@
 %%     K: py-lowered-only — emit_mode(functions),   no_kernels(true)
 %%     L: py-lowered-ffi  — emit_mode(functions),   kernels enabled
 %%
+%%   F#:
+%%     M: fsharp-pure-interp  — emit_mode(interpreter), no_kernels(true)
+%%     N: fsharp-interp-ffi   — emit_mode(interpreter), kernels enabled
+%%     O: fsharp-lowered-only — emit_mode(functions),   no_kernels(true)
+%%     P: fsharp-lowered-ffi  — emit_mode(functions),   kernels enabled
+%%
 %% Haskell configurations use GHC profiling (-prof -fprof-auto -rtsopts).
 %% Go configurations are profiled via `go tool pprof` (CPU profiling).
 %% Python configurations are profiled via cProfile / py-spy.
+%% F# configurations are profiled via dotnet-trace / PerfView.
 %%
 %% Usage:
 %%   swipl -q -s gen_prof_matrix.pl -- <facts.pl> <output-base-dir>
@@ -51,6 +59,10 @@
 %%   <output-base-dir>/J-py-interp-ffi/     (Python)
 %%   <output-base-dir>/K-py-lowered-only/   (Python)
 %%   <output-base-dir>/L-py-lowered-ffi/    (Python)
+%%   <output-base-dir>/M-fsharp-pure-interp/  (F#)
+%%   <output-base-dir>/N-fsharp-interp-ffi/   (F#)
+%%   <output-base-dir>/O-fsharp-lowered-only/ (F#)
+%%   <output-base-dir>/P-fsharp-lowered-ffi/  (F#)
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -94,7 +106,7 @@ generate_all(OutputBase) :-
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
 
-    % Step 4: Generate all 12 configurations (4 Haskell + 4 Go + 4 Python)
+    % Step 4: Generate all 16 configurations (4 Haskell + 4 Go + 4 Python + 4 F#)
     Predicates = [
         user:dimension_n/1,
         user:max_depth/1,
@@ -123,7 +135,13 @@ generate_all(OutputBase) :-
         member(config(Label, EmitMode, NoKernels), PythonConfigs),
         generate_python_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
     ),
-    format(user_error, '~n[prof-matrix] All 12 configurations generated under ~w~n', [OutputBase]).
+
+    fsharp_configs(FSharpConfigs),
+    forall(
+        member(config(Label, EmitMode, NoKernels), FSharpConfigs),
+        generate_fsharp_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
+    ),
+    format(user_error, '~n[prof-matrix] All 16 configurations generated under ~w~n', [OutputBase]).
 
 haskell_configs([
     config('A-pure-interp',  interpreter, true),
@@ -204,4 +222,29 @@ generate_python_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
     format(user_error, '[prof-matrix] Generating Python ~w (emit_mode=~w, no_kernels=~w)~n',
            [Label, EmitMode, NoKernels]),
     write_wam_python_project(Predicates, Options, OutputDir),
+    format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
+
+fsharp_configs([
+    config('M-fsharp-pure-interp',  interpreter, true),
+    config('N-fsharp-interp-ffi',   interpreter, false),
+    config('O-fsharp-lowered-only', functions,   true),
+    config('P-fsharp-lowered-ffi',  functions,   false)
+]).
+
+generate_fsharp_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
+    format(atom(OutputDir), '~w/~w', [OutputBase, Label]),
+    format(atom(ModName), 'wam-prof-~w', [Label]),
+    BaseOpts = [
+        module_name(ModName),
+        emit_mode(EmitMode),
+        parallel(true)
+    ],
+    (   NoKernels == true
+    ->  KernelOpts = [no_kernels(true)]
+    ;   KernelOpts = []
+    ),
+    append(BaseOpts, KernelOpts, Options),
+    format(user_error, '[prof-matrix] Generating F# ~w (emit_mode=~w, no_kernels=~w)~n',
+           [Label, EmitMode, NoKernels]),
+    write_wam_fsharp_project(Predicates, Options, OutputDir),
     format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
