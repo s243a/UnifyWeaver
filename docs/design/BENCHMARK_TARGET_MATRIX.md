@@ -98,6 +98,40 @@ That means Go can now participate in:
 - `direct-pipeline`
 - `hybrid-wam`
 
+### Python
+
+Python now has a hybrid WAM benchmark path with support for the lowered emitter
+(`emit_mode(functions)`) and process-based parallel execution (`parallel(true)`)
+via `run_parallel` in `WamRuntime.py` (using `ProcessPoolExecutor` to bypass the GIL).
+
+Hybrid WAM Python path:
+
+1. Load the workload Prolog and benchmark facts.
+2. Run `prolog_target` optimization passes.
+3. Force the selected predicates through the shared Python WAM path.
+4. Emit a Python benchmark driver that queries the compiled VM directly.
+
+The relevant modes are (mirroring Haskell/Go):
+
+- `interpreter + no_kernels(true)` -> pure interpreter baseline
+- `interpreter + kernels enabled` -> hybrid WAM + FFI
+- `functions + no_kernels(true)` -> lowered-only (deterministic predicate-as-function)
+- `functions + kernels enabled` -> lowered functions with WAM fallback + FFI
+
+Optimized benchmark pipeline (mirrors Go and Haskell):
+
+1. Load the workload Prolog.
+2. Run `prolog_target` optimization passes (seeded accumulation).
+3. Load the generated optimized predicates back into Prolog.
+4. Emit a WAM Python project with `write_wam_python_project/3` using
+   `emit_mode(functions)` and `parallel(true)`.
+
+Script: `examples/benchmark/generate_wam_python_optimized_benchmark.pl`
+
+That means Python can now participate in:
+
+- `hybrid-wam`
+
 ### C#
 
 The C# query runtime is still a useful comparison point because it is heavily optimized, but it belongs in its own category.
@@ -153,7 +187,8 @@ New scripts:
 - `examples/benchmark/generate_wam_haskell_matrix_benchmark.pl`
 - `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
 - `examples/benchmark/generate_wam_go_optimized_benchmark.pl`
-- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go profiling configs)
+- `examples/benchmark/generate_wam_python_optimized_benchmark.pl`
+- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python profiling configs)
 
 Examples:
 
