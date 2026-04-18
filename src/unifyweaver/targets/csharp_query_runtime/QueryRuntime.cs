@@ -11461,6 +11461,8 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordPhase(node, "path_state_row_creation", metrics.RowCreationElapsed);
             trace?.RecordPhase(node, "path_state_best_known_flush_sort", metrics.BestKnownFlushSortElapsed);
             trace?.RecordPhase(node, "path_state_result_materialization", metrics.ResultMaterializationElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_setup", metrics.ResultReplaySetupElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_write", metrics.ResultReplayWriteElapsed);
             trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
             trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
             trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
@@ -11469,8 +11471,10 @@ namespace UnifyWeaver.QueryRuntime
             trace?.AddMetric(node, "path_state_best_known_prune_count", metrics.BestKnownPruneCount);
             trace?.AddMetric(node, "path_state_enqueued_state_count", metrics.EnqueuedStateCount);
             trace?.AddMetric(node, "path_state_output_row_count", metrics.OutputRowCount);
+            trace?.AddMetric(node, "path_state_result_replay_batch_count", metrics.ResultReplayBatchCount);
             trace?.RecordMetric(node, "path_state_max_stack_size", metrics.MaxStackSize);
             trace?.RecordMetric(node, "path_state_max_path_length", metrics.MaxPathLength);
+            trace?.RecordMetric(node, "path_state_result_replay_max_batch_size", metrics.ResultReplayMaxBatchSize);
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
@@ -12750,31 +12754,38 @@ namespace UnifyWeaver.QueryRuntime
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
         {
+            metrics?.RecordResultReplayBatch(rows.Count);
             var started = Stopwatch.GetTimestamp();
             var seedValue = seed!;
             if (output is List<object[]> outputList)
             {
+                var setupStarted = Stopwatch.GetTimestamp();
                 var baseIndex = outputList.Count;
                 CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
                 var span = CollectionsMarshal.AsSpan(outputList);
                 var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
                 var depths = CollectionsMarshal.AsSpan(rows.Depths);
+                metrics?.AddResultReplaySetupElapsed(Stopwatch.GetElapsedTime(setupStarted));
+                var writeStarted = Stopwatch.GetTimestamp();
                 for (var i = 0; i < rows.Count; i++)
                 {
                     span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, BoxCountedPathDepth(depths[i]) };
                     metrics?.RecordOutputRow();
                 }
+                metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(writeStarted));
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
                 return;
             }
 
             var fallbackTargetNodeIds = rows.TargetNodeIds;
             var fallbackDepths = rows.Depths;
+            var fallbackWriteStarted = Stopwatch.GetTimestamp();
             for (var i = 0; i < rows.Count; i++)
             {
                 output.Add(new object[] { seedValue, nodeValues[fallbackTargetNodeIds[i]]!, BoxCountedPathDepth(fallbackDepths[i]) });
                 metrics?.RecordOutputRow();
             }
+            metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(fallbackWriteStarted));
 
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
@@ -14104,6 +14115,10 @@ namespace UnifyWeaver.QueryRuntime
 
             public TimeSpan ResultMaterializationElapsed { get; private set; }
 
+            public TimeSpan ResultReplaySetupElapsed { get; private set; }
+
+            public TimeSpan ResultReplayWriteElapsed { get; private set; }
+
             public long SeedCount { get; private set; }
 
             public long StackPopCount { get; private set; }
@@ -14120,9 +14135,13 @@ namespace UnifyWeaver.QueryRuntime
 
             public long OutputRowCount { get; private set; }
 
+            public long ResultReplayBatchCount { get; private set; }
+
             public int MaxStackSize { get; private set; }
 
             public int MaxPathLength { get; private set; }
+
+            public int ResultReplayMaxBatchSize { get; private set; }
 
             public void AddTraversalElapsed(TimeSpan elapsed) => TraversalElapsed += elapsed;
 
@@ -14131,6 +14150,10 @@ namespace UnifyWeaver.QueryRuntime
             public void AddBestKnownFlushSortElapsed(TimeSpan elapsed) => BestKnownFlushSortElapsed += elapsed;
 
             public void AddResultMaterializationElapsed(TimeSpan elapsed) => ResultMaterializationElapsed += elapsed;
+
+            public void AddResultReplaySetupElapsed(TimeSpan elapsed) => ResultReplaySetupElapsed += elapsed;
+
+            public void AddResultReplayWriteElapsed(TimeSpan elapsed) => ResultReplayWriteElapsed += elapsed;
 
             public void RecordSeed() => SeedCount++;
 
@@ -14149,6 +14172,15 @@ namespace UnifyWeaver.QueryRuntime
             public void RecordBestKnownPrune() => BestKnownPruneCount++;
 
             public void RecordOutputRow() => OutputRowCount++;
+
+            public void RecordResultReplayBatch(int size)
+            {
+                ResultReplayBatchCount++;
+                if (size > ResultReplayMaxBatchSize)
+                {
+                    ResultReplayMaxBatchSize = size;
+                }
+            }
 
             public void RecordEnqueuedState(int pathLength)
             {
