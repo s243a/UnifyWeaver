@@ -29,7 +29,7 @@
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
-:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2]).
+:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
 :- discontiguous wam_elixir_case/2.
 
@@ -97,13 +97,12 @@ wam_elixir_case(get_value,
         end').
 
 wam_elixir_case(get_structure,
-'      {:get_structure, fn_name, ai} ->
+'      {:get_structure, fn_name, arity, ai} ->
         val = Map.get(state.regs, ai)
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
             new_heap = Map.put(state.heap, addr, {:str, fn_name})
-            arity = parse_functor_arity(fn_name)
             state
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
@@ -113,7 +112,7 @@ wam_elixir_case(get_structure,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, fn_name, addr)
+            step_get_structure_ref(state, fn_name, arity, addr)
           true -> :fail
         end').
 
@@ -133,7 +132,7 @@ wam_elixir_case(get_list,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, "./2", addr)
+            step_get_structure_ref(state, "./2", 2, addr)
           is_list(val) ->
             %{state | stack: [{:unify_ctx, val} | state.stack], pc: state.pc + 1}
           true -> :fail
@@ -163,7 +162,7 @@ wam_elixir_case(put_value,
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_structure,
-'      {:put_structure, fn_name, ai} ->
+'      {:put_structure, fn_name, arity, ai} ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, fn_name})
         state
@@ -171,7 +170,7 @@ wam_elixir_case(put_structure,
         |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
         |> Map.put(:heap, new_heap)
         |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, parse_functor_arity(fn_name)} | state.stack])
+        |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_list,
@@ -448,11 +447,10 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   def deref_var(_state, val), do: val
 
-  def step_get_structure_ref(state, fn_name, addr) do
+  def step_get_structure_ref(state, fn_name, arity, addr) do
     entry = Map.get(state.heap, addr)
     cond do
       entry == {:str, fn_name} ->
-        arity = parse_functor_arity(fn_name)
         args = heap_slice(state, addr + 1, arity)
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
@@ -766,10 +764,12 @@ wam_line_to_elixir_instr(["retry_me_else", L], Instr) :-
 wam_line_to_elixir_instr(["trust_me"], ':trust_me').
 wam_line_to_elixir_instr(["put_structure", F, Ai], Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:put_structure, "~w", ~w}', [CF, AiId]).
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:put_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
 wam_line_to_elixir_instr(["get_structure", F, Ai], Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:get_structure, "~w", ~w}', [CF, AiId]).
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:get_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
 wam_line_to_elixir_instr(["unify_variable", Xn], Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:unify_variable, ~w}', [XnId]).
