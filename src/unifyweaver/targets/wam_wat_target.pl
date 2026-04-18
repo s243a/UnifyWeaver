@@ -45,8 +45,11 @@ wam_heap_base(131072).    % page 2
 % Register and choice point geometry (derived from register count)
 wam_num_regs(64).
 wam_val_size(12).         % bytes per tagged value
-%% wam_cp_size = 20 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top
-%%               + saved_env_base) + CP_SAVE_REGS A registers * val_size.
+%% wam_cp_size = 24 (metadata: next_pc + trail_mark + saved_cp + saved_heap_top
+%%               + saved_env_base + retry_n) + CP_SAVE_REGS A registers * val_size.
+%% The retry_n slot at +20 carries builtin iteration state (currently used
+%% by nondeterministic arg/3 to track the next argument index to try on
+%% backtrack). A value of 0 means the CP was not pushed by arg/3.
 %% Only the first CP_SAVE_REGS argument registers (A1..A_N) are saved in choice
 %% points. Y registers live in environment frames and are NOT saved. X temporaries
 %% above CP_SAVE_REGS are also NOT saved — they are dead across choice point
@@ -55,7 +58,7 @@ wam_val_size(12).         % bytes per tagged value
 %% 384 bytes to 96 bytes — a 4x reduction that directly impacts recursive
 %% predicates like sum_ints which create/restore CPs on every clause entry.
 wam_cp_save_regs(8).
-wam_cp_size(Size) :- wam_cp_save_regs(N), wam_val_size(V), Size is 20 + N * V.
+wam_cp_size(Size) :- wam_cp_save_regs(N), wam_val_size(V), Size is 24 + N * V.
 
 % Tag constants
 tag_atom(0).
@@ -134,6 +137,12 @@ builtin_id('copy_term/2', 21).
 builtin_id('=/2',         22).
 builtin_id('compound/1',  23).
 builtin_id('is_list/1',   24).
+builtin_id('==/2',        25).
+builtin_id('\\==/2',      26).
+builtin_id('@</2',        27).
+builtin_id('@>/2',        28).
+builtin_id('@=</2',       29).
+builtin_id('@>=/2',       30).
 
 % ============================================================================
 % Register name -> index mapping
@@ -1798,7 +1807,12 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 
 ;; --- Choice point management ---
 ;; Choice points stored in a dedicated area starting at offset 98304 (page 1.5)
-;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8][heap_top:i32 +12][env_base:i32 +16][32 A/X regs: 384 bytes +20] = ~w bytes
+;; Each CP: [next_pc:i32 +0][trail_mark:i32 +4][saved_cp:i32 +8]
+;;         [heap_top:i32 +12][env_base:i32 +16][retry_n:i32 +20]
+;;         [8 A regs: 96 bytes +24] = ~w bytes.
+;; retry_n is nonzero only when the CP was pushed by nondeterministic
+;; arg/3; it stores the N most recently returned by the iterator so the
+;; next retry can increment it. All other push paths initialize it to 0.
 
 (func $cp_base_offset (result i32) (i32.const 98304))
 
@@ -1809,24 +1823,20 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $n i32) (local $off i32) (local $i i32)
   (local.set $n (call $get_cp_count))
   (local.set $off (call $cp_offset (local.get $n)))
-  ;; Save next_pc, trail mark, CP, heap_top, env_base
+  ;; Save next_pc, trail mark, CP, heap_top, env_base, retry_n=0.
   (i32.store (local.get $off) (local.get $next_pc))
   (i32.store (i32.add (local.get $off) (i32.const 4)) (call $get_trail_top))
   (i32.store (i32.add (local.get $off) (i32.const 8)) (call $get_cp))
   (i32.store (i32.add (local.get $off) (i32.const 12)) (call $get_heap_top))
   (i32.store (i32.add (local.get $off) (i32.const 16)) (global.get $env_base))
-  ;; Save first ~w argument registers at +20. Only A1..A_N carry
-  ;; meaningful state across choice point alternatives (N = CP_SAVE_REGS,
-  ;; currently 8, covering predicates up to arity 8). Saving fewer
-  ;; registers reduces the per-CP memcpy from 384 bytes (32 regs) to
-  ;; 96 bytes (8 regs) — a 4x reduction that directly impacts
-  ;; recursive predicates like sum_ints.
+  (i32.store (i32.add (local.get $off) (i32.const 20)) (i32.const 0))
+  ;; Save first ~w argument registers at +24 (metadata ends at +24).
   (local.set $i (i32.const 0))
   (block $done
     (loop $save
       (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_from_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 20))
+        (i32.add (i32.add (local.get $off) (i32.const 24))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $save)))
@@ -1874,10 +1884,23 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (loop $restore
       (br_if $done (i32.ge_u (local.get $i) (i32.const ~w)))
       (call $copy_to_reg (local.get $i)
-        (i32.add (i32.add (local.get $off) (i32.const 20))
+        (i32.add (i32.add (local.get $off) (i32.const 24))
                  (i32.mul (local.get $i) (i32.const 12))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $restore))))
+
+;; Read/write the retry_n slot (+20) on the top choice point. Used by
+;; nondeterministic arg/3 to track iteration state per-CP so nested
+;; unbound-N calls do not clobber each other''s state.
+(func $cp_get_retry_n (result i32)
+  (local $off i32)
+  (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
+  (i32.load (i32.add (local.get $off) (i32.const 20))))
+
+(func $cp_set_retry_n (param $n i32)
+  (local $off i32)
+  (local.set $off (call $cp_offset (i32.sub (call $get_cp_count) (i32.const 1))))
+  (i32.store (i32.add (local.get $off) (i32.const 20)) (local.get $n)))
 
 ;; --- Unification ---
 ;; Unify two registers. Follows Ref chains via $deref_reg_addr so
@@ -1924,6 +1947,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; indirect branch.
 (func $execute_builtin (param $id i32) (param $arity i32) (result i32)
   (block $default
+    (block $tge (block $tle (block $tgt (block $tlt
+    (block $tne (block $teq
     (block $is_list_b
     (block $compound_b
     (block $eq
@@ -1940,6 +1965,7 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
                 $functor $arg $univ $copy_term
                 $eq
                 $compound_b $is_list_b
+                $teq $tne $tlt $tgt $tle $tge
                 $default (local.get $id))
     ) ;; write
     (call $print_i64 (call $deref_reg_payload (i32.const 0)))
@@ -1996,6 +2022,30 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (call $builtin_compound))
     ) ;; is_list/1 (ID 24): A1 dereferences to a proper list (terminates at empty-list atom)
     (return (call $builtin_is_list))
+    ) ;; ==/2 (ID 25): structural equality
+    (return (call $term_equal
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1))))
+    ) ;; \\==/2 (ID 26): structural non-equality
+    (return (i32.eqz (call $term_equal
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1)))))
+    ) ;; @</2 (ID 27): standard-order less-than
+    (return (i32.lt_s (call $term_compare
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1))) (i32.const 0)))
+    ) ;; @>/2 (ID 28): standard-order greater-than
+    (return (i32.gt_s (call $term_compare
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1))) (i32.const 0)))
+    ) ;; @=</2 (ID 29): standard-order less-or-equal
+    (return (i32.le_s (call $term_compare
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1))) (i32.const 0)))
+    ) ;; @>=/2 (ID 30): standard-order greater-or-equal
+    (return (i32.ge_s (call $term_compare
+              (call $deref_reg_addr (i32.const 0))
+              (call $deref_reg_addr (i32.const 1))) (i32.const 0)))
   )
   ;; $default fall-through: unknown builtin ID
   (i32.const 0)
@@ -2166,6 +2216,215 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
     (return (i32.const 0)))
   (unreachable))
 
+;; --- Deref an arbitrary memory cell through Ref chains ---
+;; Follows tag=5 (Ref) indirections to the final cell and returns its
+;; memory address. Shares semantics with $deref_reg_addr but starts
+;; from a cell offset rather than a register index. Used by the term
+;; equality and term-order helpers to walk compound/cons argument
+;; slots which may hold Ref(H) after put_variable aliasing.
+(func $deref_cell (param $off i32) (result i32)
+  (block $done
+    (loop $d
+      (br_if $done (i32.ne (call $val_tag (local.get $off)) (i32.const 5)))
+      (local.set $off (i32.wrap_i64 (call $val_payload (local.get $off))))
+      (br $d)))
+  (local.get $off))
+
+;; --- Structural equality (==/2, \\==/2) ---
+;; Compares two terms for structural identity WITHOUT unification.
+;; Takes cell memory addresses. Derefs Ref chains at each level.
+;; Compound terms compare header (arity + functor_hash) then recurse
+;; on each argument. Cons cells (tag=4) compare head and tail.
+;; Mixed representations (tag=3 [|]/2 vs tag=4 cons) return NOT equal;
+;; this matches what the WAM-WAT compiler emits for a given source
+;; but is more restrictive than SWI Prolog''s == (which normalizes).
+(func $term_equal (param $a i32) (param $b i32) (result i32)
+  (local $aa i32) (local $bb i32)
+  (local $ta i32) (local $tb i32)
+  (local $pa i64) (local $pb i64)
+  (local $arity i32) (local $i i32)
+  (local.set $aa (call $deref_cell (local.get $a)))
+  (local.set $bb (call $deref_cell (local.get $b)))
+  (local.set $ta (call $val_tag (local.get $aa)))
+  (local.set $tb (call $val_tag (local.get $bb)))
+  (if (i32.ne (local.get $ta) (local.get $tb))
+    (then (return (i32.const 0))))
+  (local.set $pa (call $val_payload (local.get $aa)))
+  (local.set $pb (call $val_payload (local.get $bb)))
+  ;; Tag 0/1/2 (atom/int/float): payload comparison is sufficient.
+  (if (i32.le_u (local.get $ta) (i32.const 2))
+    (then (return (i64.eq (local.get $pa) (local.get $pb)))))
+  ;; Tag 6 (unbound): identity comparison (same cell address).
+  (if (i32.eq (local.get $ta) (i32.const 6))
+    (then (return (i32.eq (local.get $aa) (local.get $bb)))))
+  ;; Tag 3 (compound): header equal + each arg equal.
+  (if (i32.eq (local.get $ta) (i32.const 3))
+    (then
+      (if (i64.ne (local.get $pa) (local.get $pb))
+        (then (return (i32.const 0))))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u (local.get $pa) (i64.const 32))))
+      (local.set $i (i32.const 1))
+      (block $cdone
+        (loop $cloop
+          (br_if $cdone (i32.gt_s (local.get $i) (local.get $arity)))
+          (if (i32.eqz (call $term_equal
+                (i32.add (local.get $aa)
+                  (i32.mul (local.get $i) (i32.const 12)))
+                (i32.add (local.get $bb)
+                  (i32.mul (local.get $i) (i32.const 12)))))
+            (then (return (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $cloop)))
+      (return (i32.const 1))))
+  ;; Tag 4 (cons list): head (+12) and tail (+24).
+  (if (i32.eq (local.get $ta) (i32.const 4))
+    (then
+      (if (i32.eqz (call $term_equal
+            (i32.add (local.get $aa) (i32.const 12))
+            (i32.add (local.get $bb) (i32.const 12))))
+        (then (return (i32.const 0))))
+      (return (call $term_equal
+            (i32.add (local.get $aa) (i32.const 24))
+            (i32.add (local.get $bb) (i32.const 24))))))
+  ;; Tag 5 should not survive $deref_cell; reach here only for unknown tags.
+  (i32.const 0))
+
+;; --- Standard-order comparison (@</2, @>/2, @=</2, @>=/2) ---
+;; Returns -1 if a < b, 0 if equal, 1 if a > b per Prolog standard
+;; term order: Var < Number < Atom < Compound. CAVEAT: atoms are
+;; stored as DJB2 hashes in linear memory, not names, so atom-vs-atom
+;; comparison uses hash order — deterministic but NOT lexicographic.
+;; Numeric order within tag 1 (int) and tag 2 (float) is correct.
+;; Compounds order by arity, then functor_hash, then args left-to-right.
+(func $tag_order (param $tag i32) (result i32)
+  ;; Map raw tag to category order: 6→0, 1/2→1, 0→2, 3/4→3, else→4.
+  (if (i32.eq (local.get $tag) (i32.const 6))
+    (then (return (i32.const 0))))
+  (if (i32.or (i32.eq (local.get $tag) (i32.const 1))
+              (i32.eq (local.get $tag) (i32.const 2)))
+    (then (return (i32.const 1))))
+  (if (i32.eq (local.get $tag) (i32.const 0))
+    (then (return (i32.const 2))))
+  (if (i32.or (i32.eq (local.get $tag) (i32.const 3))
+              (i32.eq (local.get $tag) (i32.const 4)))
+    (then (return (i32.const 3))))
+  (i32.const 4))
+
+(func $term_compare (param $a i32) (param $b i32) (result i32)
+  (local $aa i32) (local $bb i32)
+  (local $ta i32) (local $tb i32)
+  (local $oa i32) (local $ob i32)
+  (local $pa i64) (local $pb i64)
+  (local $arity_a i32) (local $arity_b i32)
+  (local $fa i64) (local $fb i64)
+  (local $i i32) (local $c i32)
+  (local.set $aa (call $deref_cell (local.get $a)))
+  (local.set $bb (call $deref_cell (local.get $b)))
+  (local.set $ta (call $val_tag (local.get $aa)))
+  (local.set $tb (call $val_tag (local.get $bb)))
+  (local.set $oa (call $tag_order (local.get $ta)))
+  (local.set $ob (call $tag_order (local.get $tb)))
+  (if (i32.ne (local.get $oa) (local.get $ob))
+    (then
+      (if (i32.lt_s (local.get $oa) (local.get $ob))
+        (then (return (i32.const -1))))
+      (return (i32.const 1))))
+  (local.set $pa (call $val_payload (local.get $aa)))
+  (local.set $pb (call $val_payload (local.get $bb)))
+  ;; Same tag-order. Branch by tag.
+  ;; Tag 6 (unbound): compare addresses.
+  (if (i32.eq (local.get $ta) (i32.const 6))
+    (then
+      (if (i32.lt_s (local.get $aa) (local.get $bb))
+        (then (return (i32.const -1))))
+      (if (i32.gt_s (local.get $aa) (local.get $bb))
+        (then (return (i32.const 1))))
+      (return (i32.const 0))))
+  ;; Tag 1 (int): signed i64 comparison.
+  (if (i32.eq (local.get $ta) (i32.const 1))
+    (then
+      (if (i64.lt_s (local.get $pa) (local.get $pb))
+        (then (return (i32.const -1))))
+      (if (i64.gt_s (local.get $pa) (local.get $pb))
+        (then (return (i32.const 1))))
+      (return (i32.const 0))))
+  ;; Tag 2 (float): reinterpret payload bits to f64, compare.
+  (if (i32.eq (local.get $ta) (i32.const 2))
+    (then
+      (if (f64.lt (f64.reinterpret_i64 (local.get $pa))
+                  (f64.reinterpret_i64 (local.get $pb)))
+        (then (return (i32.const -1))))
+      (if (f64.gt (f64.reinterpret_i64 (local.get $pa))
+                  (f64.reinterpret_i64 (local.get $pb)))
+        (then (return (i32.const 1))))
+      (return (i32.const 0))))
+  ;; Tag 0 (atom): compare hash payloads (non-lexicographic caveat).
+  (if (i32.eq (local.get $ta) (i32.const 0))
+    (then
+      (if (i64.lt_u (local.get $pa) (local.get $pb))
+        (then (return (i32.const -1))))
+      (if (i64.gt_u (local.get $pa) (local.get $pb))
+        (then (return (i32.const 1))))
+      (return (i32.const 0))))
+  ;; Tag 3 (compound): arity, then functor_hash, then args.
+  (if (i32.eq (local.get $ta) (i32.const 3))
+    (then
+      ;; If b is tag 4 (cons), treat as arity=2 functor=[|]/2.
+      (local.set $arity_a
+        (i32.wrap_i64 (i64.shr_u (local.get $pa) (i64.const 32))))
+      (local.set $fa (i64.and (local.get $pa) (i64.const 0xFFFFFFFF)))
+      (if (i32.eq (local.get $tb) (i32.const 4))
+        (then
+          (local.set $arity_b (i32.const 2))
+          (local.set $fb (i64.const 87825375)))
+        (else
+          (local.set $arity_b
+            (i32.wrap_i64 (i64.shr_u (local.get $pb) (i64.const 32))))
+          (local.set $fb (i64.and (local.get $pb) (i64.const 0xFFFFFFFF)))))
+      (if (i32.lt_s (local.get $arity_a) (local.get $arity_b))
+        (then (return (i32.const -1))))
+      (if (i32.gt_s (local.get $arity_a) (local.get $arity_b))
+        (then (return (i32.const 1))))
+      (if (i64.lt_u (local.get $fa) (local.get $fb))
+        (then (return (i32.const -1))))
+      (if (i64.gt_u (local.get $fa) (local.get $fb))
+        (then (return (i32.const 1))))
+      ;; Same header: recurse on args.
+      (local.set $i (i32.const 1))
+      (block $cdone
+        (loop $cloop
+          (br_if $cdone (i32.gt_s (local.get $i) (local.get $arity_a)))
+          (local.set $c (call $term_compare
+                (i32.add (local.get $aa)
+                  (i32.mul (local.get $i) (i32.const 12)))
+                (i32.add (local.get $bb)
+                  (i32.mul (local.get $i) (i32.const 12)))))
+          (if (i32.ne (local.get $c) (i32.const 0))
+            (then (return (local.get $c))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $cloop)))
+      (return (i32.const 0))))
+  ;; Tag 4 (cons) at a; b might also be tag 4 or tag 3. If tag 3,
+  ;; the symmetric case above handled it by the $oa == $ob check
+  ;; (tag 3 and 4 both map to order 3). Here both are tag 4 or
+  ;; a=tag4 b=tag3. Handle a=tag4 b=tag3 by swapping-and-negating.
+  (if (i32.eq (local.get $ta) (i32.const 4))
+    (then
+      (if (i32.eq (local.get $tb) (i32.const 3))
+        (then (return (i32.sub (i32.const 0)
+                       (call $term_compare (local.get $bb) (local.get $aa))))))
+      ;; Both cons. Arity 2, same functor — just recurse on head and tail.
+      (local.set $c (call $term_compare
+            (i32.add (local.get $aa) (i32.const 12))
+            (i32.add (local.get $bb) (i32.const 12))))
+      (if (i32.ne (local.get $c) (i32.const 0))
+        (then (return (local.get $c))))
+      (return (call $term_compare
+            (i32.add (local.get $aa) (i32.const 24))
+            (i32.add (local.get $bb) (i32.const 24))))))
+  (i32.const 0))
+
 ;; --- Arithmetic comparison: 0==eq, 1==ne, 2==lt, 3==gt, 4==le, 5==ge ---
 ;; Nested-block br_table dispatch. Each case line has the form
 ;;   ) (return (i64.XX ...))
@@ -2197,13 +2456,15 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
 ;; Two modes based on A1:
 ;;   Ground N: deterministic — unify A3 with the Nth arg cell of T.
 ;;   Unbound N: nondeterministic — enumerate N = 1..arity on backtrack.
-;;     The generator form pushes a choice point at the builtin_call PC
-;;     on the first entry (if arity >= 2) and tracks iteration state in
-;;     the $arg_iter_* globals. On backtrack, control returns to the
-;;     builtin_call instruction; re-entry detects the active iteration
-;;     (same T address) and advances N. Limitation: only one active
-;;     nondeterministic arg/3 at a time — a nested unbound-N call with
-;;     a different T clobbers the outer iteration state.
+;;     Iteration state lives in the CP frame''s retry_n slot (+20) —
+;;     NOT in globals — so nested unbound-N calls each carry their own
+;;     state on their own CP and cannot clobber each other. Detection
+;;     of retry vs fresh entry: if cp_count > 0 AND top CP''s next_pc
+;;     equals the current builtin_call PC AND its retry_n > 0, it''s a
+;;     retry from our own CP; otherwise start fresh. Fresh entry with
+;;     arity >= 1 always pushes a CP so the retry path has somewhere
+;;     to write state; arity=1 exhausts on the immediate next retry
+;;     and pops the CP.
 ;; Argument cells are laid out contiguously after the compound header,
 ;; each cell 12 bytes. Arity is the high 32 bits of the compound header
 ;; payload (see encode_structure_op1).
@@ -2217,6 +2478,8 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local $arg_tag i32)
   (local $arg_payload i64)
   (local $a3_tag i32)
+  (local $cur_pc i32)
+  (local $retry_n i32)
   ;; Dereference A2 first — both modes need T to be a compound.
   (local.set $t_tag (call $deref_reg_tag (i32.const 1)))
   (if (i32.ne (local.get $t_tag) (i32.const 3))
@@ -2229,35 +2492,35 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   (local.set $a1_tag (call $deref_reg_tag (i32.const 0)))
   (if (i32.eq (local.get $a1_tag) (i32.const 6))
     (then
-      ;; --- Nondeterministic mode ---
-      ;; Re-entry via backtrack: same T address, iteration active. Advance.
-      ;; Otherwise start a fresh iteration at N=1.
-      (if (i32.and
-            (i32.eq (global.get $arg_iter_active) (i32.const 1))
-            (i32.eq (global.get $arg_iter_t_addr) (local.get $comp_addr)))
+      (local.set $cur_pc (call $get_pc))
+      ;; Retry detection: cp_count>0 AND top CP''s next_pc matches our
+      ;; current PC AND its retry_n slot is populated. If so, advance
+      ;; N from the slot. Otherwise push a fresh CP and start at N=1.
+      (local.set $retry_n (i32.const 0))
+      (if (i32.gt_s (call $get_cp_count) (i32.const 0))
         (then
-          (global.set $arg_iter_n
-            (i32.add (global.get $arg_iter_n) (i32.const 1))))
-        (else
-          (global.set $arg_iter_active (i32.const 1))
-          (global.set $arg_iter_t_addr (local.get $comp_addr))
-          (global.set $arg_iter_arity (local.get $arity))
-          (global.set $arg_iter_n (i32.const 1))
-          ;; On fresh entry, push a choice point for N >= 2 alternatives.
-          ;; The CP''s next_pc is this builtin_call itself; on backtrack
-          ;; control returns here with registers restored to pre-bind
-          ;; state (unbound A1 and original A3).
-          (if (i32.ge_s (local.get $arity) (i32.const 2))
+          (if (i32.and
+                (i32.eq (call $cp_get_next_pc) (local.get $cur_pc))
+                (i32.gt_s (call $cp_get_retry_n) (i32.const 0)))
             (then
-              (call $push_choice_point (call $get_pc))))))
-      ;; Exhausted: clear state, pop the CP we pushed, fail.
-      (if (i32.gt_s (global.get $arg_iter_n) (local.get $arity))
+              (local.set $retry_n (call $cp_get_retry_n))))))
+      (if (i32.eqz (local.get $retry_n))
         (then
-          (global.set $arg_iter_active (i32.const 0))
-          (if (i32.gt_s (call $get_cp_count) (i32.const 0))
-            (then (call $pop_choice_point_no_restore)))
-          (return (i32.const 0))))
-      (local.set $n (global.get $arg_iter_n))
+          ;; Fresh entry: push CP (always, so arity=1 still has a slot
+          ;; to exhaust against on retry), write retry_n=1.
+          (if (i32.lt_s (local.get $arity) (i32.const 1))
+            (then (return (i32.const 0))))
+          (call $push_choice_point (local.get $cur_pc))
+          (call $cp_set_retry_n (i32.const 1))
+          (local.set $n (i32.const 1)))
+        (else
+          ;; Retry: N = retry_n + 1. If > arity, pop CP and fail.
+          (local.set $n (i32.add (local.get $retry_n) (i32.const 1)))
+          (if (i32.gt_s (local.get $n) (local.get $arity))
+            (then
+              (call $pop_choice_point_no_restore)
+              (return (i32.const 0))))
+          (call $cp_set_retry_n (local.get $n))))
       ;; Bind A1 to N (trailed).
       (call $bind_reg_deref (i32.const 0) (i32.const 1)
         (i64.extend_i32_u (local.get $n)))
