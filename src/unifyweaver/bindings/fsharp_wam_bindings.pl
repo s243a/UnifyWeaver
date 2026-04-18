@@ -17,8 +17,8 @@
 %     See docs/design/WAM_PERF_OPTIMIZATION_LOG.md for the full timeline.
 %
 % Key differences from the Haskell target:
-%   - F# uses `Map<int,Value>` instead of `Data.IntMap` for registers
-%     (F# stdlib has no IntMap; Map<int,_> is the idiomatic equivalent)
+%   - F# uses `Value array` (fixed-size 600) for registers — O(1) access
+%     with Array.copy snapshots for choice points (matches Go's [512]Value)
 %   - Choice points use `{ ... with field = v }` record update syntax
 %   - Pattern matching is `match x with | Pat -> ...` not `case x of`
 %   - Immutability is the default — no need for Bang patterns / UNPACK
@@ -132,7 +132,7 @@ fsharp_wam_choicepoint_type :-
     writeln(
 "type ChoicePoint =
     { CpNextPC   : int
-      CpRegs     : Map<int, Value>
+      CpRegs     : Value array        // O(1) snapshot via Array.copy
       CpStack    : EnvFrame list
       CpCP       : int
       CpTrailLen : int
@@ -154,9 +154,13 @@ fsharp_wam_choicepoint_type :-
 
 fsharp_wam_state_type :-
     writeln(
-"type WamState =
+"/// Register array size — matches Go's [512]Value + padding for X/Y regs.
+[<Literal>]
+let MaxRegs = 600
+
+type WamState =
     { WsPC        : int
-      WsRegs      : Map<int, Value>      // A/X registers (Int-keyed)
+      WsRegs      : Value array          // A/X/Y registers — O(1) array access
       WsStack     : EnvFrame list        // environment frames
       WsHeap      : Value list           // term construction
       WsHeapLen   : int                  // cached List.length WsHeap
@@ -251,7 +255,7 @@ fsharp_wam_instruction_type :-
     | ParTrustMe
     // Indexing
     | SwitchOnConstant   of table: Map<Value, string>
-    | SwitchOnConstantPc of table: Map<string, int>
+    | SwitchOnConstantPc of table: (string * int) array  // sorted by key, binary search
     // Builtins
     | BuiltinCall    of name: string * arity: int
     | CutIte
@@ -280,11 +284,23 @@ let rec derefVar (bindings: Map<int, Value>) (v: Value) : Value =
 
 /// Look up a register (A/X register), dereference through bindings.
 let getReg (n: int) (s: WamState) : Value option =
-    Map.tryFind n s.WsRegs |> Option.map (derefVar s.WsBindings)
+    if n >= 0 && n < s.WsRegs.Length then
+        match s.WsRegs.[n] with
+        | Unbound -1 -> None   // sentinel = uninitialized
+        | v -> Some (derefVar s.WsBindings v)
+    else None
 
-/// Set a register value.
+/// Set a register value (copy-on-write for snapshot semantics).
 let putReg (n: int) (v: Value) (s: WamState) : WamState =
-    { s with WsRegs = Map.add n v s.WsRegs }
+    let r = Array.copy s.WsRegs
+    r.[n] <- v
+    { s with WsRegs = r }
+
+/// Set a register value in-place (use only when no snapshot is needed).
+let setReg (n: int) (v: Value) (regs: Value array) : Value array =
+    let r = Array.copy regs
+    r.[n] <- v
+    r
 
 /// Dereference a heap pointer.
 let derefHeap (heap: Value list) (v: Value) : Value option =
@@ -297,16 +313,23 @@ let derefHeap (heap: Value list) (v: Value) : Value option =
 /// Bind an output register without advancing PC.
 /// Succeeds if register is unbound or already equals val.
 let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
-    match Map.tryFind reg s.WsRegs |> Option.map (derefVar s.WsBindings) with
-    | Some (Unbound vid) ->
-        Some { s with
-                 WsRegs     = Map.add reg value s.WsRegs
-                 WsBindings = Map.add vid value s.WsBindings
-                 WsTrail    = { TrailVarId = vid
-                                TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                 WsTrailLen = s.WsTrailLen + 1 }
-    | Some existing when existing = value -> Some s
-    | _ -> None
+    let regVal = if reg >= 0 && reg < s.WsRegs.Length then s.WsRegs.[reg] else Unbound -1
+    match regVal with
+    | Unbound -1 -> None
+    | v ->
+        let dv = derefVar s.WsBindings v
+        match dv with
+        | Unbound vid ->
+            let r = Array.copy s.WsRegs
+            r.[reg] <- value
+            Some { s with
+                     WsRegs     = r
+                     WsBindings = Map.add vid value s.WsBindings
+                     WsTrail    = { TrailVarId = vid
+                                    TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
+                     WsTrailLen = s.WsTrailLen + 1 }
+        | existing when existing = value -> Some s
+        | _ -> None
 
 /// Append a value to the current builder (PutStructure / PutList).
 let addToBuilder (value: Value) (s: WamState) : WamState option =
@@ -316,9 +339,11 @@ let addToBuilder (value: Value) (s: WamState) : WamState option =
         let args' = args @ [value]
         if List.length args' = arity then
             let str = Str (fn, args')
+            let r = Array.copy s.WsRegs
+            r.[reg] <- str
             Some { s with
                      WsPC      = s.WsPC + 1
-                     WsRegs    = Map.add reg str s.WsRegs
+                     WsRegs    = r
                      WsBuilder = None }
         else
             Some { s with WsBuilder = Some (BuildStruct (fn, reg, arity, args')) }
@@ -346,6 +371,19 @@ let rec evalArith (bindings: Map<int, Value>) (v: Value) : float option =
         | Some x, Some y when y <> 0.0 -> Some (float (int x % int y))
         | _ -> None
     | _ -> None
+
+/// Binary search on a sorted (string * int) array. Returns Some pc or None.
+let binarySearchStr (arr: (string * int) array) (key: string) : int option =
+    let mutable lo = 0
+    let mutable hi = arr.Length - 1
+    let mutable result = -1
+    while lo <= hi && result = -1 do
+        let mid = (lo + hi) / 2
+        let cmp = System.String.Compare(fst arr.[mid], key, System.StringComparison.Ordinal)
+        if cmp = 0 then result <- mid
+        elif cmp < 0 then lo <- mid + 1
+        else hi <- mid - 1
+    if result >= 0 then Some (snd arr.[result]) else None
 
 /// Undo a single trail entry during backtrack.
 let undoBinding (bindings: Map<int, Value>) (e: TrailEntry) : Map<int, Value> =

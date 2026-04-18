@@ -67,7 +67,7 @@ type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value> }
 
 type ChoicePoint =
     { CpNextPC   : int
-      CpRegs     : Map<int, Value>
+      CpRegs     : Value array            // O(1) snapshot via Array.copy
       CpStack    : EnvFrame list
       CpCP       : int
       CpTrailLen : int
@@ -81,9 +81,13 @@ type ChoicePoint =
 // WamState — hot per-step record (updated with { s with Field = v })
 // ============================================================================
 
+/// Register array size — matches Go's [512]Value + padding for X/Y regs.
+[<Literal>]
+let MaxRegs = 600
+
 type WamState =
     { WsPC        : int
-      WsRegs      : Map<int, Value>      // A/X registers (int-keyed)
+      WsRegs      : Value array           // A/X/Y registers — O(1) array access
       WsStack     : EnvFrame list        // environment frames
       WsHeap      : Value list           // term construction heap
       WsHeapLen   : int                  // cached — never call List.length in hot loop
@@ -164,7 +168,7 @@ and Instruction =
     | ParTrustMe
     // Indexing
     | SwitchOnConstant   of table: Map<Value, string>
-    | SwitchOnConstantPc of table: Map<string, int>
+    | SwitchOnConstantPc of table: (string * int) array  // sorted by key, binary search
     // Builtins
     | BuiltinCall    of name: string * arity: int
     | CutIte
