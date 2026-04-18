@@ -23,7 +23,7 @@ pub enum Value {
     Unbound(String),
     /// Boolean value
     Bool(bool),
-    /// Uninitialized register slot — zero-cost sentinel for the register file.
+    /// Uninitialized register slot -- zero-cost sentinel for the register file.
     /// Never appears in Prolog terms; only used internally by WamState.
     Uninit,
 }
