@@ -24,6 +24,11 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_rust_lowered_emitter', [
+    wam_rust_lowerable/3,
+    lower_predicate_to_rust/4,
+    rust_lowered_func_name/2
+]).
 
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
@@ -2883,6 +2888,13 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
             compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   % Try lowered emitter when emit_mode(functions)
+            option(emit_mode(functions), Options),
+            wam_rust_lowerable(Pred/Arity, WamCode, Reason)
+        ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
+            atomic_list_concat(RustLines, '\n', PredCode),
+            format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
+            Entry = classified(Module, Pred, Arity, lowered, PredCode)
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -2923,6 +2935,10 @@ generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
 generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, PredCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest],
                          WamEntries, [Code|RestCodes]) :-
