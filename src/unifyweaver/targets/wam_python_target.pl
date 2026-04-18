@@ -1303,17 +1303,21 @@ from predicates import *
 
 def main():
     state = WamState()
-    # Run the first predicate or a user-specified query
+    # Build a raw program dict from predicates, then flatten + pre-resolve
+    raw_program = {}  # populated by predicate modules
+    code, labels = load_program(raw_program)
+    # Run a user-specified query
     if len(sys.argv) > 1:
         query = sys.argv[1]
-        target_pc = state.labels.get(query)
-        if target_pc is not None:
-            state._pc = target_pc
-            if state.run():
-                results = state.collect_results(10)
-                for i, r in enumerate(results):
-                    if r is not None:
-                        print(f"A{i+1} = {_format_value(r)}")
+        if query in labels:
+            if run_wam(code, labels, query, state):
+                results = []
+                for i in range(1, 11):
+                    val = get_reg(state, i)
+                    if val is not None:
+                        results.append((i, val))
+                for i, r in results:
+                    print(f"A{i} = {_format_value(r)}")
             else:
                 print("false.")
         else:

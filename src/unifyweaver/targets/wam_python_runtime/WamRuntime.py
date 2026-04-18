@@ -360,44 +360,93 @@ def execute_foreign(functor: str, arity: int, args: List[Term], state: WamState)
 
 # -- Program loading --------------------------------------------------------
 
-def load_program(program: dict) -> dict:
-    """Pre-process program dict: convert instruction lists to tuples."""
-    return {label: tuple(instrs) for label, instrs in program.items()}
+def load_program(raw_program: dict) -> Tuple[List[tuple], Dict[str, int]]:
+    """
+    Flatten program dict into a code array + label index.
+    Pre-resolves all label references in call/execute/try_me_else/retry_me_else/
+    switch_on_term instructions so the hot loop never does string lookups.
+
+    Returns (code: list[tuple], labels: dict[str, int])
+    """
+    code = []
+    labels = {}
+    for label, instrs in raw_program.items():
+        labels[label] = len(code)
+        if isinstance(instrs, (list, tuple)):
+            code.extend(instrs)
+        else:
+            code.append(instrs)
+    # Pre-resolve label references
+    resolved = []
+    for instr in code:
+        resolved.append(_resolve_instr(instr, labels))
+    return resolved, labels
+
+
+def _resolve_instr(instr: tuple, labels: Dict[str, int]) -> tuple:
+    """Replace string labels with PC indices in branch/call instructions."""
+    op = instr[0]
+    if op == 'call':
+        _, label, arity = instr
+        pc = labels.get(label, -1)
+        return ('call_pc', pc, arity, label)
+    if op == 'execute':
+        _, label = instr
+        pc = labels.get(label, -1)
+        return ('execute_pc', pc, label)
+    if op == 'try_me_else':
+        _, next_label, n_args = instr
+        pc = labels.get(next_label, -1)
+        return ('try_me_else_pc', pc, n_args)
+    if op == 'retry_me_else':
+        _, next_label = instr
+        pc = labels.get(next_label, -1)
+        return ('retry_me_else_pc', pc)
+    if op == 'switch_on_term':
+        _, lv, lc, ll, ls = instr
+        return ('switch_on_term_pc',
+                labels.get(lv, -1), labels.get(lc, -1),
+                labels.get(ll, -1), labels.get(ls, -1))
+    return instr
 
 
 # -- Main WAM interpreter loop ---------------------------------------------
 
-def run_wam(program: dict, entry: str, state: WamState) -> bool:
+def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
     """
-    Execute WAM instructions.
+    Execute WAM instructions from a flat code array.
 
-    program: dict mapping label -> list of (opcode, *args) tuples
+    code:    flat list of (opcode, *args) tuples (pre-resolved by load_program)
+    labels:  dict mapping label string -> index into code array
     entry:   label to start execution
     state:   WamState instance
 
     Returns True if query succeeded, False if failed.
     """
-    pc = program.get(entry)
-    if pc is None:
+    ip = labels.get(entry, -1)
+    if ip < 0:
         return False
-    ip = 0
+    code_len = len(code)
 
     def fail():
-        nonlocal pc, ip
+        nonlocal ip
         if state.b < 0:
-            return False   # no more choice points -- definite failure
+            return False
         cp = state.stack[state.b]
         restore_choice_point(state)
-        pc = program.get(cp.next_clause)
-        ip = 0
-        if pc is None:
-            return False
+        # next_clause is now a pre-resolved PC int
+        next_ip = cp.next_clause
+        if isinstance(next_ip, int) and next_ip >= 0:
+            ip = next_ip
+        else:
+            # Fallback: try string label resolution
+            ip = labels.get(cp.next_clause, -1)
+            if ip < 0:
+                return False
         return True
 
-    while True:
-        if ip >= len(pc):
-            break
-        instr = pc[ip]
+    while ip < code_len:
+        instr = code[ip]
         op = instr[0]
         ip += 1
 
@@ -527,7 +576,7 @@ def run_wam(program: dict, entry: str, state: WamState) -> bool:
                 h = state.heap[state.s]
                 if isinstance(h, Compound):
                     set_reg(state, reg, h.args[0])
-                    state.s += 1  # simplified; real impl tracks sub-arg index
+                    state.s += 1
                 else:
                     set_reg(state, reg, h)
             else:
@@ -575,29 +624,53 @@ def run_wam(program: dict, entry: str, state: WamState) -> bool:
                     v = state.fresh_var()
                     heap_put(state, v)
 
+        elif op == 'call_pc':
+            _, target_ip, _arity, _label = instr
+            state.cp = ip   # save continuation (current ip = next instr)
+            if target_ip >= 0:
+                ip = target_ip
+            else:
+                if not fail(): return False
+                continue
+
+        elif op == 'execute_pc':
+            _, target_ip, _label = instr
+            if target_ip >= 0:
+                ip = target_ip
+            else:
+                if not fail(): return False
+                continue
+
         elif op == 'call':
+            # Legacy unresolved call (fallback)
             _, label, _arity = instr
-            state.cp = (pc, ip)   # save continuation
-            pc = program.get(label)
-            ip = 0
-            if pc is None:
+            state.cp = ip
+            target = labels.get(label, -1)
+            if target >= 0:
+                ip = target
+            else:
                 if not fail(): return False
                 continue
 
         elif op == 'execute':
+            # Legacy unresolved execute (fallback)
             _, label = instr
-            # tail call -- don't save cp
-            pc = program.get(label)
-            ip = 0
-            if pc is None:
+            target = labels.get(label, -1)
+            if target >= 0:
+                ip = target
+            else:
                 if not fail(): return False
                 continue
 
         elif op == 'proceed':
             if state.cp is None:
-                return True   # top-level success
-            pc, ip = state.cp
-            state.cp = None
+                return True
+            if isinstance(state.cp, int):
+                ip = state.cp
+                state.cp = None
+            else:
+                # Legacy tuple-based cp from old-style run_wam
+                return True
 
         elif op == 'fail':
             if not fail(): return False
@@ -606,13 +679,23 @@ def run_wam(program: dict, entry: str, state: WamState) -> bool:
         elif op == 'halt':
             return True
 
+        elif op == 'try_me_else_pc':
+            _, next_pc, n_args = instr
+            push_choice_point(state, n_args, next_pc)
+
+        elif op == 'retry_me_else_pc':
+            _, next_pc = instr
+            restore_choice_point(state, next_clause=next_pc)
+
         elif op == 'try_me_else':
+            # Legacy unresolved
             _, next_label, n_args = instr
-            push_choice_point(state, n_args, next_label)
+            push_choice_point(state, n_args, labels.get(next_label, -1))
 
         elif op == 'retry_me_else':
+            # Legacy unresolved
             _, next_label = instr
-            restore_choice_point(state, next_clause=next_label)
+            restore_choice_point(state, next_clause=labels.get(next_label, -1))
 
         elif op == 'trust_me':
             pop_choice_point(state)
@@ -660,7 +743,26 @@ def run_wam(program: dict, entry: str, state: WamState) -> bool:
                 if not fail(): return False
                 continue
 
+        elif op == 'switch_on_term_pc':
+            _, lv_pc, lc_pc, ll_pc, ls_pc = instr
+            val = deref(get_reg(state, 1), state)
+            if isinstance(val, Var):
+                target = lv_pc
+            elif isinstance(val, Atom) and val.name == '[]':
+                target = ll_pc
+            elif isinstance(val, Atom):
+                target = lc_pc
+            elif isinstance(val, Int) or isinstance(val, Float):
+                target = lc_pc
+            elif isinstance(val, Compound) and val.functor == '.':
+                target = ll_pc
+            else:
+                target = ls_pc
+            if target >= 0:
+                ip = target
+
         elif op == 'switch_on_term':
+            # Legacy unresolved
             _, lv, lc, ll, ls = instr
             val = deref(get_reg(state, 1), state)
             if isinstance(val, Var):
@@ -675,8 +777,9 @@ def run_wam(program: dict, entry: str, state: WamState) -> bool:
                 label = ll
             else:
                 label = ls
-            pc = program.get(label, pc)
-            ip = 0
+            target = labels.get(label, -1)
+            if target >= 0:
+                ip = target
 
         else:
             raise WAMError(f"Unknown WAM opcode: {op}")
