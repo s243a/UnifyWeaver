@@ -47,6 +47,20 @@ class Ref:
 
 Term = Atom | Compound | Var | Int | Float | Ref
 
+# -- Atom interning cache -----------------------------------------------------
+# Ensures `make_atom("foo") is make_atom("foo")` — pointer-equality for equal
+# atom names, eliminating redundant string hashing in hot loops (unify, deref).
+
+_atom_cache: Dict[str, Atom] = {}
+
+def make_atom(name: str) -> Atom:
+    """Return a cached Atom instance for the given name."""
+    a = _atom_cache.get(name)
+    if a is None:
+        a = Atom(name)
+        _atom_cache[name] = a
+    return a
+
 
 # -- WAM State --------------------------------------------------------------
 
@@ -407,6 +421,14 @@ def _resolve_instr(instr: tuple, labels: Dict[str, int]) -> tuple:
         return ('switch_on_term_pc',
                 labels.get(lv, -1), labels.get(lc, -1),
                 labels.get(ll, -1), labels.get(ls, -1))
+    if op == 'switch_on_constant':
+        _, table = instr
+        # table is a dict {key: label_str, ...} — resolve labels to PCs
+        resolved_table = {}
+        for k, lbl in (table.items() if isinstance(table, dict) else table):
+            pc = labels.get(lbl, -1)
+            resolved_table[str(k) if not isinstance(k, str) else k] = pc
+        return ('switch_on_constant_pc', resolved_table)
     return instr
 
 
@@ -463,11 +485,11 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'put_constant':
             _, atom, reg = instr
-            set_reg(state, reg, Atom(atom))
+            set_reg(state, reg, make_atom(atom))
 
         elif op == 'put_nil':
             _, reg = instr
-            set_reg(state, reg, Atom('[]'))
+            set_reg(state, reg, make_atom('[]'))
 
         elif op == 'put_integer':
             _, n, reg = instr
@@ -505,7 +527,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             _, atom, reg = instr
             val = deref(get_reg(state, reg), state)
             if isinstance(val, Var):
-                bind(val, Atom(atom), state)
+                bind(val, make_atom(atom), state)
             elif not (isinstance(val, Atom) and val.name == atom):
                 if not fail(): return False
                 continue
@@ -514,7 +536,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             _, reg = instr
             val = deref(get_reg(state, reg), state)
             if isinstance(val, Var):
-                bind(val, Atom('[]'), state)
+                bind(val, make_atom('[]'), state)
             elif not (isinstance(val, Atom) and val.name == '[]'):
                 if not fail(): return False
                 continue
@@ -599,23 +621,23 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if state.mode == 'read':
                 h = deref(state.heap[state.s], state)
                 if isinstance(h, Var):
-                    bind(h, Atom(atom), state)
+                    bind(h, make_atom(atom), state)
                 elif not (isinstance(h, Atom) and h.name == atom):
                     if not fail(): return False
                     continue
             else:
-                heap_put(state, Atom(atom))
+                heap_put(state, make_atom(atom))
 
         elif op == 'unify_nil':
             if state.mode == 'read':
                 h = deref(state.heap[state.s], state)
                 if isinstance(h, Var):
-                    bind(h, Atom('[]'), state)
+                    bind(h, make_atom('[]'), state)
                 elif not (isinstance(h, Atom) and h.name == '[]'):
                     if not fail(): return False
                     continue
             else:
-                heap_put(state, Atom('[]'))
+                heap_put(state, make_atom('[]'))
 
         elif op == 'unify_void':
             _, n = instr
@@ -780,6 +802,61 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             target = labels.get(label, -1)
             if target >= 0:
                 ip = target
+
+        elif op == 'switch_on_constant_pc':
+            # instr: ('switch_on_constant_pc', table_dict)
+            # table_dict maps string keys to pre-resolved PC ints
+            _, table = instr
+            val = deref(get_reg(state, 1), state)
+            if isinstance(val, Var):
+                pass  # unbound — fall through, let retry handle it
+            else:
+                if isinstance(val, Atom):
+                    key = val.name
+                elif isinstance(val, Int):
+                    key = str(val.n)
+                elif isinstance(val, Float):
+                    key = str(val.f)
+                else:
+                    if not fail(): return False
+                    continue
+                target = table.get(key, -1)
+                if target >= 0:
+                    ip = target
+                else:
+                    if not fail(): return False
+                    continue
+
+        elif op == 'switch_on_constant':
+            # Legacy unresolved label-based version
+            _, table = instr
+            val = deref(get_reg(state, 1), state)
+            if isinstance(val, Var):
+                pass  # unbound — fall through
+            else:
+                if isinstance(val, Atom):
+                    key = val.name
+                elif isinstance(val, Int):
+                    key = str(val.n)
+                elif isinstance(val, Float):
+                    key = str(val.f)
+                else:
+                    if not fail(): return False
+                    continue
+                if isinstance(table, dict):
+                    label = table.get(key)
+                else:
+                    label = next((lbl for k, lbl in table if str(k) == key), None)
+                if label is not None:
+                    target = labels.get(label, -1)
+                    if target >= 0:
+                        ip = target
+                    else:
+                        if not fail(): return False
+                        continue
+                else:
+                    if not fail(): return False
+                    continue
 
         else:
             raise WAMError(f"Unknown WAM opcode: {op}")
