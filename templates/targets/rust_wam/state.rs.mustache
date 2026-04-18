@@ -2,7 +2,7 @@
 // Date: {{date}}
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -23,8 +23,8 @@ pub struct ChoicePoint {
     /// Saved argument registers (indices + values).
     pub saved_args: Vec<(usize, Value)>,
     pub cp: usize,
-    /// Saved stack snapshot (Rc clone = O(1), copy-on-write on mutation).
-    pub stack: Rc<Vec<StackEntry>>,
+    /// Saved stack snapshot (Arc clone = O(1), copy-on-write on mutation).
+    pub stack: Arc<Vec<StackEntry>>,
     /// Saved trail depth — backtrack unwinds + truncates to this point.
     pub trail_len: usize,
     /// Saved heap depth — backtrack truncates to this point.
@@ -65,9 +65,10 @@ pub struct WamState {
     /// Encoding: A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
     pub regs: Vec<Value>,
     /// Stack: environment frames and unification contexts.
-    /// Wrapped in Rc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
-    pub stack: Rc<Vec<StackEntry>>,
-    // Note: use self.smut() for mutable stack access (Rc::make_mut).
+    /// Wrapped in Arc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
+    /// Arc (not Rc) so that WamState: Send, which is required by Rayon par_iter.
+    pub stack: Arc<Vec<StackEntry>>,
+    // Note: use self.smut() for mutable stack access (Arc::make_mut).
     /// Heap: term construction area.
     pub heap: Vec<Value>,
     /// Trail: binding history for backtracking.
@@ -124,7 +125,7 @@ impl WamState {
         WamState {
             pc: 1,
             regs: vec![Value::Unbound("__uninit__".to_string()); MAX_REGS],
-            stack: Rc::new(Vec::new()),
+            stack: Arc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
             cp: 0, // 0 = halt
@@ -153,7 +154,7 @@ impl WamState {
     /// Mutable access to stack (triggers copy-on-write if shared).
     #[inline]
     fn smut(&mut self) -> &mut Vec<StackEntry> {
-        Rc::make_mut(&mut self.stack)
+        Arc::make_mut(&mut self.stack)
     }
 
     /// Parse a register name ("A1", "X3", "Y2") to a Vec index.
@@ -319,7 +320,7 @@ impl WamState {
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
         self.regs.fill(Value::Unbound("__uninit__".to_string()));
-        self.stack = Rc::new(Vec::new());
+        self.stack = Arc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
         self.heap.clear();
