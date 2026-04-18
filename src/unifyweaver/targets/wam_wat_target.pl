@@ -108,6 +108,12 @@ instr_tag(switch_on_struct,     33).
 instr_tag(switch_struct_entry,  34).
 instr_tag(switch_on_term_hdr,   35).
 instr_tag(fused_is_add,    36).
+instr_tag(fused_is_sub,    37).
+instr_tag(fused_is_mul,    38).
+instr_tag(fused_is_add_const, 39).
+instr_tag(fused_is_mul_const, 40).
+instr_tag(arg_direct,      41).
+instr_tag(functor_direct,  42).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -374,6 +380,55 @@ wam_instruction_to_wat_bytes(fused_is_add(DestReg, Src1Reg, Src2Reg),
     reg_name_to_index(Src2Reg, Src2Idx),
     Op1 is DestIdx \/ (Src1Idx << 8) \/ (Src2Idx << 16),
     encode_instr_hex(Tag, Op1, 0, Hex).
+
+%% fused_is_sub / fused_is_mul: same op1 layout as fused_is_add.
+wam_instruction_to_wat_bytes(fused_is_sub(DestReg, Src1Reg, Src2Reg),
+                             _Labels, Hex) :-
+    instr_tag(fused_is_sub, Tag),
+    reg_name_to_index(DestReg, DestIdx),
+    reg_name_to_index(Src1Reg, Src1Idx),
+    reg_name_to_index(Src2Reg, Src2Idx),
+    Op1 is DestIdx \/ (Src1Idx << 8) \/ (Src2Idx << 16),
+    encode_instr_hex(Tag, Op1, 0, Hex).
+wam_instruction_to_wat_bytes(fused_is_mul(DestReg, Src1Reg, Src2Reg),
+                             _Labels, Hex) :-
+    instr_tag(fused_is_mul, Tag),
+    reg_name_to_index(DestReg, DestIdx),
+    reg_name_to_index(Src1Reg, Src1Idx),
+    reg_name_to_index(Src2Reg, Src2Idx),
+    Op1 is DestIdx \/ (Src1Idx << 8) \/ (Src2Idx << 16),
+    encode_instr_hex(Tag, Op1, 0, Hex).
+
+%% fused_is_add_const(Dest, Src, Const) and fused_is_mul_const:
+%% Dest := deref(Src) <op> Const, where Const is a signed integer
+%% literal. op1 layout: Dest (low 8) | Src (bits 8-15). op2 = Const.
+%% Used for sequences like `N1 is N - 1` which WAM compiles as
+%% `put_structure +/2; set_value N; set_constant -1; is/2`.
+wam_instruction_to_wat_bytes(fused_is_add_const(DestReg, SrcReg, Const),
+                             _Labels, Hex) :-
+    instr_tag(fused_is_add_const, Tag),
+    reg_name_to_index(DestReg, DestIdx),
+    reg_name_to_index(SrcReg, SrcIdx),
+    Op1 is DestIdx \/ (SrcIdx << 8),
+    encode_instr_hex(Tag, Op1, Const, Hex).
+wam_instruction_to_wat_bytes(fused_is_mul_const(DestReg, SrcReg, Const),
+                             _Labels, Hex) :-
+    instr_tag(fused_is_mul_const, Tag),
+    reg_name_to_index(DestReg, DestIdx),
+    reg_name_to_index(SrcReg, SrcIdx),
+    Op1 is DestIdx \/ (SrcIdx << 8),
+    encode_instr_hex(Tag, Op1, Const, Hex).
+
+%% arg_direct and functor_direct: zero-operand instructions that
+%% bypass the $execute_builtin br_table by invoking $builtin_arg /
+%% $builtin_functor directly. Fires on `builtin_call(arg/3, 3)` and
+%% `builtin_call(functor/3, 3)` respectively.
+wam_instruction_to_wat_bytes(arg_direct, _Labels, Hex) :-
+    instr_tag(arg_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(functor_direct, _Labels, Hex) :-
+    instr_tag(functor_direct, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
 wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
@@ -1467,6 +1522,106 @@ wam_wat_case(fused_is_add,
     (i64.add (local.get $a) (local.get $b)))
   (call $inc_pc)
   (i32.const 1)').
+
+wam_wat_case(fused_is_sub,
+'  ;; Dest := deref(Src1) - deref(Src2). Same layout and semantics as
+  ;; fused_is_add; see that case for details.
+  (local $op1i i32) (local $dest i32) (local $src1 i32) (local $src2 i32)
+  (local $a_addr i32) (local $b_addr i32)
+  (local $a i64) (local $b i64)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $dest (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $src1
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $src2
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
+  (local.set $a_addr (call $deref_reg_addr (local.get $src1)))
+  (local.set $b_addr (call $deref_reg_addr (local.get $src2)))
+  (if (i32.or
+        (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
+        (i32.ne (call $val_tag (local.get $b_addr)) (i32.const 1)))
+    (then (return (i32.const 0))))
+  (local.set $a (call $val_payload (local.get $a_addr)))
+  (local.set $b (call $val_payload (local.get $b_addr)))
+  (call $bind_reg_deref (local.get $dest) (i32.const 1)
+    (i64.sub (local.get $a) (local.get $b)))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(fused_is_mul,
+'  ;; Dest := deref(Src1) * deref(Src2). Same layout and semantics as
+  ;; fused_is_add; see that case for details.
+  (local $op1i i32) (local $dest i32) (local $src1 i32) (local $src2 i32)
+  (local $a_addr i32) (local $b_addr i32)
+  (local $a i64) (local $b i64)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $dest (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $src1
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $src2
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
+  (local.set $a_addr (call $deref_reg_addr (local.get $src1)))
+  (local.set $b_addr (call $deref_reg_addr (local.get $src2)))
+  (if (i32.or
+        (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
+        (i32.ne (call $val_tag (local.get $b_addr)) (i32.const 1)))
+    (then (return (i32.const 0))))
+  (local.set $a (call $val_payload (local.get $a_addr)))
+  (local.set $b (call $val_payload (local.get $b_addr)))
+  (call $bind_reg_deref (local.get $dest) (i32.const 1)
+    (i64.mul (local.get $a) (local.get $b)))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(fused_is_add_const,
+'  ;; Dest := deref(Src) + Const. op1 layout: Dest (low 8), Src (bits
+  ;; 8-15); op2 holds the signed constant as i64. Fires on the
+  ;; `N1 is N - 1` pattern which the WAM layer lowers to +/2 with a
+  ;; negated constant.
+  (local $op1i i32) (local $dest i32) (local $src i32)
+  (local $a_addr i32) (local $a i64)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $dest (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $src
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $a_addr (call $deref_reg_addr (local.get $src)))
+  (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
+    (then (return (i32.const 0))))
+  (local.set $a (call $val_payload (local.get $a_addr)))
+  (call $bind_reg_deref (local.get $dest) (i32.const 1)
+    (i64.add (local.get $a) (local.get $op2)))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(fused_is_mul_const,
+'  ;; Dest := deref(Src) * Const. Same layout as fused_is_add_const.
+  (local $op1i i32) (local $dest i32) (local $src i32)
+  (local $a_addr i32) (local $a i64)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $dest (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $src
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $a_addr (call $deref_reg_addr (local.get $src)))
+  (if (i32.ne (call $val_tag (local.get $a_addr)) (i32.const 1))
+    (then (return (i32.const 0))))
+  (local.set $a (call $val_payload (local.get $a_addr)))
+  (call $bind_reg_deref (local.get $dest) (i32.const 1)
+    (i64.mul (local.get $a) (local.get $op2)))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(arg_direct,
+'  ;; Direct arg/3 call, bypassing the $execute_builtin br_table.
+  ;; Emitted by the peephole in place of `builtin_call(arg/3, 3)`.
+  (if (result i32) (call $builtin_arg)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(functor_direct,
+'  ;; Direct functor/3 call, bypassing the $execute_builtin br_table.
+  (if (result i32) (call $builtin_functor)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -3491,7 +3646,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         wam_lines_to_instrs_with_labels(Lines, 0, InstrsWithLabels),
         %% Run peephole optimizer (may remove instructions, changing PCs)
         peephole_neck_cut(InstrsWithLabels, NeckCutOptimized),
-        peephole_fused_is_add(NeckCutOptimized, OptimizedWithLabels),
+        peephole_fused_arith(NeckCutOptimized, ArithOptimized),
+        peephole_direct_builtins(ArithOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -3550,38 +3706,120 @@ encode_all_predicates([pred_data(_, Instrs, _, _, _)|Rest],
 %  Output:  allocate, ...get/put..., neck_cut_test(Guard, N, L),
 %           ...body1 (without cut)...,
 %           L:allocate (trust_me removed), ...body2...
-%% peephole_fused_is_add(+Instrs, -Optimized)
-%  Detects `Dest is Src1 + Src2` with all three being registers and
-%  rewrites to a single fused_is_add instruction. The canonical WAM
-%  layer emits:
-%    put_value(Dest, A1), put_structure('+/2', A2),
+%% peephole_fused_arith(+Instrs, -Optimized)
+%  Detects `Dest is Src1 OP Src2` for OP in {+, -, *} with all three
+%  being registers and rewrites to a single fused_is_<op> instruction.
+%  The canonical WAM layer emits:
+%    put_value(Dest, A1), put_structure('OP/2', A2),
 %    set_value(Src1), set_value(Src2), [deallocate,] builtin_call(is/2, 2)
 %  The put_value puts the output var slot in A1; put_structure +
-%  set_value × 2 build a freshly-allocated +/2 compound in A2; is/2
-%  evaluates A2 and binds A1. fused_is_add skips the compound alloc
-%  and the $eval_arith recursion, writing the sum directly to Dest.
+%  set_value × 2 build a freshly-allocated OP/2 compound in A2; is/2
+%  evaluates A2 and binds A1. The fused form skips the compound alloc
+%  and the $eval_arith recursion, writing the result directly to Dest.
 %  Matches both with and without the intervening deallocate; preserves
 %  the deallocate if present so stack semantics don't change.
-peephole_fused_is_add([], []).
-peephole_fused_is_add([put_value(Dest, 'A1'),
-                       put_structure('+/2', 'A2'),
-                       set_value(Src1),
-                       set_value(Src2),
-                       deallocate,
-                       builtin_call('is/2', 2) | Rest],
-                      [fused_is_add(Dest, Src1, Src2), deallocate | Out]) :-
+fused_arith_op('+/2', fused_is_add).
+fused_arith_op('-/2', fused_is_sub).
+fused_arith_op('*/2', fused_is_mul).
+
+%% Const-variant names: +/2 with a constant operand fuses to
+%% fused_is_add_const, */2 fuses to fused_is_mul_const. -/2 doesn't
+%% appear with const-on-right in practice — WAM normalizes `N - K`
+%% to `N + (-K)` using +/2, so the -/2 const variant would be dead.
+fused_arith_const_op('+/2', fused_is_add_const).
+fused_arith_const_op('*/2', fused_is_mul_const).
+
+peephole_fused_arith([], []).
+%% Reg-Reg variants (with and without deallocate).
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_value(Src1),
+                      set_value(Src2),
+                      deallocate,
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr, deallocate | Out]) :-
+    fused_arith_op(OpFunctor, FusedName),
     !,
-    peephole_fused_is_add(Rest, Out).
-peephole_fused_is_add([put_value(Dest, 'A1'),
-                       put_structure('+/2', 'A2'),
-                       set_value(Src1),
-                       set_value(Src2),
-                       builtin_call('is/2', 2) | Rest],
-                      [fused_is_add(Dest, Src1, Src2) | Out]) :-
+    FusedInstr =.. [FusedName, Dest, Src1, Src2],
+    peephole_fused_arith(Rest, Out).
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_value(Src1),
+                      set_value(Src2),
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr | Out]) :-
+    fused_arith_op(OpFunctor, FusedName),
     !,
-    peephole_fused_is_add(Rest, Out).
-peephole_fused_is_add([H|T], [H|Out]) :-
-    peephole_fused_is_add(T, Out).
+    FusedInstr =.. [FusedName, Dest, Src1, Src2],
+    peephole_fused_arith(Rest, Out).
+%% Reg-Const and Const-Reg variants. For +/2 and */2 the operation
+%% is commutative, so either operand-order fuses to the same
+%% _const instruction.
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_value(Src),
+                      set_constant(K),
+                      deallocate,
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr, deallocate | Out]) :-
+    fused_arith_const_op(OpFunctor, FusedName),
+    integer(K),
+    !,
+    FusedInstr =.. [FusedName, Dest, Src, K],
+    peephole_fused_arith(Rest, Out).
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_value(Src),
+                      set_constant(K),
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr | Out]) :-
+    fused_arith_const_op(OpFunctor, FusedName),
+    integer(K),
+    !,
+    FusedInstr =.. [FusedName, Dest, Src, K],
+    peephole_fused_arith(Rest, Out).
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_constant(K),
+                      set_value(Src),
+                      deallocate,
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr, deallocate | Out]) :-
+    fused_arith_const_op(OpFunctor, FusedName),
+    integer(K),
+    !,
+    FusedInstr =.. [FusedName, Dest, Src, K],
+    peephole_fused_arith(Rest, Out).
+peephole_fused_arith([put_value(Dest, 'A1'),
+                      put_structure(OpFunctor, 'A2'),
+                      set_constant(K),
+                      set_value(Src),
+                      builtin_call('is/2', 2) | Rest],
+                     [FusedInstr | Out]) :-
+    fused_arith_const_op(OpFunctor, FusedName),
+    integer(K),
+    !,
+    FusedInstr =.. [FusedName, Dest, Src, K],
+    peephole_fused_arith(Rest, Out).
+peephole_fused_arith([H|T], [H|Out]) :-
+    peephole_fused_arith(T, Out).
+
+%% peephole_direct_builtins(+Instrs, -Optimized)
+%  Rewrites `builtin_call(arg/3, 3)` → arg_direct and
+%  `builtin_call(functor/3, 3)` → functor_direct. Skips one br_table
+%  dispatch and one function-call boundary per call; meaningful on
+%  term-walking hot loops (bench_sum_*, bench_term_depth).
+peephole_direct_builtins([], []).
+peephole_direct_builtins([builtin_call('arg/3', 3) | Rest],
+                         [arg_direct | Out]) :-
+    !,
+    peephole_direct_builtins(Rest, Out).
+peephole_direct_builtins([builtin_call('functor/3', 3) | Rest],
+                         [functor_direct | Out]) :-
+    !,
+    peephole_direct_builtins(Rest, Out).
+peephole_direct_builtins([H|T], [H|Out]) :-
+    peephole_direct_builtins(T, Out).
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
