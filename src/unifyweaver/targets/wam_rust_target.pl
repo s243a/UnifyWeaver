@@ -2773,6 +2773,8 @@ build_rust_wam_arg_setup(Arity, Setup) :-
 %    module_name(Name)   — crate/module name (default: 'wam_generated')
 %    wam_fallback(Bool)  — enable/disable WAM fallback (default: true)
 %    include_runtime(Bool) — include transpiled WAM runtime (default: true)
+%    emit_mode(Mode)     — interpreter | functions (default: interpreter)
+%    parallel(Bool)      — enable Rayon parallel execution (default: false)
 write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),

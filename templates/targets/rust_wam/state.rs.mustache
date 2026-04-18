@@ -839,3 +839,35 @@ impl WamState {
         }
     }
 }
+
+// ============================================================================
+// Parallel execution (optional, behind "parallel" feature flag)
+// ============================================================================
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+/// Run multiple seeds in parallel, each with their own WamState clone.
+/// Returns vec of Option<bool> (Some(true) = success, Some(false) = failure, None = no result).
+/// With the "parallel" feature enabled, uses Rayon's par_iter for data parallelism.
+/// Without it, falls back to sequential iteration.
+pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
+    #[cfg(feature = "parallel")]
+    {
+        seeds.into_par_iter()
+            .map(|mut s| {
+                let result = s.run();
+                Some(result)
+            })
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        seeds.into_iter()
+            .map(|mut s| {
+                let result = s.run();
+                Some(result)
+            })
+            .collect()
+    }
+}
