@@ -114,6 +114,34 @@ import "fmt"
     ;   true
     ),
 
+    % Generate main.go with RunParallel when parallel(true)
+    (   option(parallel(true), Options)
+    ->  format(atom(MainContent),
+'package main
+
+import (
+	"fmt"
+	"~w"
+)
+
+func main() {
+	ctx := ~w.NewWamContext(~w.SharedWamCode, ~w.SharedWamLabels)
+	seeds := [][]~w.Value{
+		{&~w.Atom{Name: "query"}},
+	}
+	results := ~w.RunParallel(ctx, seeds, 0)
+	for i, res := range results {
+		if res != nil {
+			fmt.Printf("Seed %%d: %%v\\n", i, res)
+		}
+	}
+}
+', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
+        directory_file_path(ProjectDir, 'main.go', MainPath),
+        write_file(MainPath, MainContent)
+    ;   true
+    ),
+
     format('WAM Go project created at: ~w~n', [ProjectDir]).
 
 %% compile_lowered_predicates(+Predicates, +Options, -Code)

@@ -3,8 +3,10 @@ package {{package_name}}
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"strconv"
+	"sync"
 )
 
 type TrailEntry struct {
@@ -117,6 +119,42 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
 	return &WamState{Ctx: ctx}
+}
+
+func NewWamStateFromCtx(ctx *WamContext) *WamState {
+	return &WamState{Ctx: ctx}
+}
+
+// RunParallel executes multiple seeds in parallel, each with their own
+// WamState sharing the read-only WamContext.
+func RunParallel(ctx *WamContext, seeds [][]Value, maxWorkers int) [][]Value {
+	if maxWorkers <= 0 {
+		maxWorkers = runtime.NumCPU()
+	}
+
+	results := make([][]Value, len(seeds))
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
+	for idx, seed := range seeds {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, seedArgs []Value) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			state := NewWamStateFromCtx(ctx)
+			for j, arg := range seedArgs {
+				state.Regs[j] = arg
+			}
+			if state.Run() {
+				results[i] = state.CollectResults()
+			}
+		}(idx, seed)
+	}
+
+	wg.Wait()
+	return results
 }
 
 func (vm *WamState) putReg(idx int, val Value) {
