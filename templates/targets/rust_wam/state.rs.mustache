@@ -13,12 +13,15 @@ pub struct TrailEntry {
     pub old_value: Option<Value>,
 }
 
+/// Maximum register count — matches Go's [512]Value + padding for X/Y regs.
+pub const MAX_REGS: usize = 600;
+
 /// Choice point: saves state for backtracking.
 #[derive(Clone, Debug)]
 pub struct ChoicePoint {
     pub next_pc: usize,
-    /// Saved argument registers (A1..An).
-    pub saved_args: Vec<(String, Value)>,
+    /// Saved argument registers (indices + values).
+    pub saved_args: Vec<(usize, Value)>,
     pub cp: usize,
     /// Saved stack snapshot (Rc clone = O(1), copy-on-write on mutation).
     pub stack: Rc<Vec<StackEntry>>,
@@ -58,8 +61,9 @@ pub enum StackEntry {
 pub struct WamState {
     /// Program counter (1-indexed, 0 = halt).
     pub pc: usize,
-    /// Register file: Ai (argument), Xi (temporary), mapped by name.
-    pub regs: HashMap<String, Value>,
+    /// Register file: Ai (argument), Xi (temporary) — O(1) indexed Vec.
+    /// Encoding: A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
+    pub regs: Vec<Value>,
     /// Stack: environment frames and unification contexts.
     /// Wrapped in Rc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
     pub stack: Rc<Vec<StackEntry>>,
@@ -119,7 +123,7 @@ impl WamState {
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
         WamState {
             pc: 1,
-            regs: HashMap::new(),
+            regs: vec![Value::Unbound("__uninit__".to_string()); MAX_REGS],
             stack: Rc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
@@ -152,9 +156,51 @@ impl WamState {
         Rc::make_mut(&mut self.stack)
     }
 
-    /// Set an argument register.
+    /// Parse a register name ("A1", "X3", "Y2") to a Vec index.
+    /// A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
+    #[inline]
+    pub fn reg_index(name: &str) -> usize {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() { return 0; }
+        let prefix = bytes[0];
+        let num_str = &name[1..];
+        let num: usize = num_str.parse().unwrap_or(0);
+        match prefix {
+            b'A' => num.wrapping_sub(1),          // A1→0, A2→1
+            b'X' => num.wrapping_add(99),          // X1→100, X2→101
+            b'Y' => num.wrapping_add(199),         // Y1→200, Y2→201
+            _ => 0,
+        }
+    }
+
+    /// Set an argument register by name.
     pub fn set_reg(&mut self, name: &str, val: Value) {
-        self.regs.insert(name.to_string(), val);
+        let idx = Self::reg_index(name);
+        if idx < self.regs.len() {
+            self.regs[idx] = val;
+        }
+    }
+
+    /// Get a register value by name without dereferencing (raw access).
+    /// Returns None for uninitialized registers (__uninit__ sentinel).
+    pub fn get_reg_raw(&self, name: &str) -> Option<Value> {
+        let idx = Self::reg_index(name);
+        if idx < self.regs.len() {
+            match &self.regs[idx] {
+                Value::Unbound(s) if s == "__uninit__" => None,
+                v => Some(v.clone()),
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Set a register value by name (raw access, no Y-register routing).
+    pub fn set_reg_str(&mut self, name: &str, val: Value) {
+        let idx = Self::reg_index(name);
+        if idx < self.regs.len() {
+            self.regs[idx] = val;
+        }
     }
 
     /// Register an indexed atom/atom fact table for benchmark fast paths.
@@ -272,7 +318,7 @@ impl WamState {
 
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
-        self.regs.clear();
+        self.regs.fill(Value::Unbound("__uninit__".to_string()));
         self.stack = Rc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
@@ -301,7 +347,7 @@ impl WamState {
             }
             found
         } else {
-            self.regs.get(name).cloned()
+            self.get_reg_raw(name)
         };
         // Dereference through the binding table
         raw.map(|v| self.deref_var(&v))
@@ -317,7 +363,7 @@ impl WamState {
                 }
             }
         } else {
-            self.regs.insert(name.to_string(), val);
+            self.set_reg_str(name, val);
         }
     }
 
@@ -349,10 +395,9 @@ impl WamState {
                             // Update the register holding Ref(marker) or Integer(marker)
                             let ref_val = Value::Ref(marker);
                             let int_val = Value::Integer(marker as i64);
-                            let reg_key = self.regs.iter()
-                                .find(|(_, v)| **v == ref_val || **v == int_val)
-                                .map(|(k, _)| k.clone());
-                            if let Some(key) = reg_key { self.regs.insert(key, list); }
+                            if let Some(idx) = self.regs.iter().position(|v| *v == ref_val || *v == int_val) {
+                                self.regs[idx] = list;
+                            }
                             self.smut().pop();
                             return;
                         }
@@ -380,11 +425,8 @@ impl WamState {
                                     self.heap[marker] = Value::Str(functor.clone(), args.clone());
                                     // Update register holding Ref(marker)
                                     let ref_val = Value::Ref(marker);
-                                    let reg_key = self.regs.iter()
-                                        .find(|(_, v)| **v == ref_val)
-                                        .map(|(k, _)| k.clone());
-                                    if let Some(key) = reg_key {
-                                        self.regs.insert(key, Value::Str(functor.clone(), args));
+                                    if let Some(idx) = self.regs.iter().position(|v| *v == ref_val) {
+                                        self.regs[idx] = Value::Str(functor.clone(), args);
                                     }
                                     self.smut().pop();
                                 }
@@ -400,19 +442,27 @@ impl WamState {
         self.heap.push(val);
     }
 
-    /// Save only argument registers (A*) for choice-point restoration.
-    fn save_regs(&self) -> Vec<(String, Value)> {
-        self.regs.iter()
-            .filter(|(k, _)| k.starts_with('A'))
-            .map(|(k, v)| (k.clone(), v.clone()))
+    /// Save only argument registers (A* = indices 0..99) for choice-point restoration.
+    fn save_regs(&self) -> Vec<(usize, Value)> {
+        self.regs.iter().enumerate()
+            .take(100) // A registers are indices 0..99
+            .filter(|(_, v)| !matches!(v, Value::Unbound(s) if s == "__uninit__"))
+            .map(|(i, v)| (i, v.clone()))
             .collect()
     }
 
     /// Restore argument registers and clear stale temporaries from failed paths.
-    fn restore_regs(&mut self, saved: &[(String, Value)]) {
-        self.regs.retain(|k, _| !k.starts_with('A') && !k.starts_with('X'));
-        for (k, v) in saved {
-            self.regs.insert(k.clone(), v.clone());
+    fn restore_regs(&mut self, saved: &[(usize, Value)]) {
+        // Clear A registers (0..99) and X registers (100..199)
+        for i in 0..200 {
+            if i < self.regs.len() {
+                self.regs[i] = Value::Unbound("__uninit__".to_string());
+            }
+        }
+        for (i, v) in saved {
+            if *i < self.regs.len() {
+                self.regs[*i] = v.clone();
+            }
         }
     }
 
@@ -526,7 +576,10 @@ impl WamState {
     /// Initialize argument registers from a list of values.
     pub fn init_args(&mut self, args: &[Value]) {
         for (i, arg) in args.iter().enumerate() {
-            self.set_reg(&format!("A{}", i + 1), arg.clone());
+            // A1→0, A2→1, ... (i is 0-indexed, register index = i)
+            if i < self.regs.len() {
+                self.regs[i] = arg.clone();
+            }
         }
     }
 
@@ -784,5 +837,37 @@ impl WamState {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Parallel execution (optional, behind "parallel" feature flag)
+// ============================================================================
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+/// Run multiple seeds in parallel, each with their own WamState clone.
+/// Returns vec of Option<bool> (Some(true) = success, Some(false) = failure, None = no result).
+/// With the "parallel" feature enabled, uses Rayon's par_iter for data parallelism.
+/// Without it, falls back to sequential iteration.
+pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
+    #[cfg(feature = "parallel")]
+    {
+        seeds.into_par_iter()
+            .map(|mut s| {
+                let result = s.run();
+                Some(result)
+            })
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        seeds.into_iter()
+            .map(|mut s| {
+                let result = s.run();
+                Some(result)
+            })
+            .collect()
     }
 }

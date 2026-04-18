@@ -24,6 +24,11 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/rust_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_rust_lowered_emitter', [
+    wam_rust_lowerable/3,
+    lower_predicate_to_rust/4,
+    rust_lowered_func_name/2
+]).
 
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
@@ -53,13 +58,13 @@ compile_step_arm(ArmCode) :-
 % --- Head Unification Instructions ---
 
 wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
-    Body = '                let raw_val = self.regs.get(ai).cloned();
+    Body = '                let raw_val = self.get_reg_raw(ai);
                 let val = raw_val.map(|v| self.deref_var(&v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(ai);
-                        self.regs.insert(ai.clone(), c.clone());
+                        self.set_reg_str(ai, c.clone());
                         self.bind_var(var_name, c.clone());
                         self.pc += 1;
                         true
@@ -68,7 +73,7 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
-    Body = '                if let Some(raw) = self.regs.get(ai).cloned() {
+    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
                     let val = self.deref_var(&raw);
                     self.trail_binding(xn);
                     self.put_reg(xn, val);
@@ -77,20 +82,20 @@ wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
-    Body = '                let val_a = self.regs.get(ai).cloned();
+    Body = '                let val_a = self.get_reg_raw(ai);
                 let val_x = self.get_reg(xn);
                 match (val_a, val_x) {
                     (Some(a), Some(x)) if a == x => { self.pc += 1; true }
                     (Some(a), _) if a.is_unbound() => {
                         self.trail_binding(ai);
                         if let Some(x) = self.get_reg(xn) {
-                            self.regs.insert(ai.clone(), x);
+                            self.set_reg_str(ai, x);
                         }
                         self.pc += 1; true
                     }
                     (_, Some(x)) if x.is_unbound() => {
                         self.trail_binding(xn);
-                        if let Some(a) = self.regs.get(ai).cloned() {
+                        if let Some(a) = self.get_reg_raw(ai) {
                             self.put_reg(xn, a);
                         }
                         self.pc += 1; true
@@ -99,13 +104,13 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
-    Body = '                if let Some(val) = self.regs.get(ai).cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw(ai) {
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
                         self.heap.push(Value::Str(format!("str({})", fn_str), vec![]));
                         self.trail_binding(ai);
-                        self.regs.insert(ai.clone(), Value::Ref(addr));
+                        self.set_reg_str(ai, Value::Ref(addr));
                         let arity = fn_str.split(\'/\').nth(1)
                             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
                         self.smut().push(StackEntry::WriteCtx(arity));
@@ -132,12 +137,12 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(val) = self.regs.get(ai).cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw(ai) {
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::Str("str(./2)".to_string(), vec![]));
                         self.trail_binding(ai);
-                        self.regs.insert(ai.clone(), Value::Ref(addr));
+                        self.set_reg_str(ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(2));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
@@ -240,7 +245,7 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
 
 wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
     Body = '                self.trail_binding(ai);
-                self.regs.insert(ai.clone(), c.clone());
+                self.set_reg_str(ai, c.clone());
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
@@ -249,13 +254,13 @@ wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
                 self.trail_binding(xn);
                 self.trail_binding(ai);
                 self.put_reg(xn, var.clone());
-                self.regs.insert(ai.clone(), var);
+                self.set_reg_str(ai, var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
     Body = '                if let Some(val) = self.get_reg(xn) {
                     self.trail_binding(ai);
-                    self.regs.insert(ai.clone(), val);
+                    self.set_reg_str(ai, val);
                     self.pc += 1; true
                 } else { false }'.
 
@@ -271,7 +276,7 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
-                self.regs.insert(ai.clone(), Value::Ref(addr));
+                self.set_reg_str(ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
@@ -283,7 +288,7 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 let marker = self.heap.len();
                 self.heap.push(Value::Atom("__list_head__".to_string()));
                 self.heap.push(Value::Atom("__list_tail__".to_string()));
-                self.regs.insert(ai.clone(), Value::Integer(marker as i64));
+                self.set_reg_str(ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
@@ -317,7 +322,7 @@ wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body
                         Value::List(mut items) => { items.insert(0, head); Value::List(items) }
                         tail_val => Value::List(vec![head, tail_val]),
                     };
-                    self.regs.insert(out_reg.clone(), list);
+                    self.set_reg_str(&out_reg, list);
                     self.pc += *skip; true
                 } else { false }'.
 
@@ -439,10 +444,10 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                 self.trail_binding("A3");
                 self.trail_binding("A4");
                 self.put_reg(child_hops_reg, child_hops.clone());
-                self.regs.insert("A1".to_string(), mid);
-                self.regs.insert("A2".to_string(), root);
-                self.regs.insert("A3".to_string(), child_hops);
-                self.regs.insert("A4".to_string(), next_visited);
+                self.set_reg_str("A1", mid);
+                self.set_reg_str("A2", root);
+                self.set_reg_str("A3", child_hops);
+                self.set_reg_str("A4", next_visited);
                 self.cp = self.pc + *skip;
                 self.pc = *target_pc;
                 true'.
@@ -526,11 +531,11 @@ wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
-    Body = '                let key = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+    Body = '                let key = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(s)) => s,
                     _ => return false,
                 };
-                let a2 = match self.regs.get("A2").cloned() {
+                let a2 = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -657,7 +662,7 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
 % --- Indexing Instructions ---
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Binary search for Atom keys (table is sorted from BTreeMap)
@@ -689,7 +694,7 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
-    Body = '                let raw = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         if let Value::Atom(ref needle) = val {
@@ -716,7 +721,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw("A1") {
                     if let Some((f, args)) = val.univ() {
                         let key = format!("{}/{}", f, args.len());
                         for (k, label) in table {
@@ -731,7 +736,7 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A1").cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw("A1") {
                     if let Some((f, args)) = val.univ() {
                         let key = format!("{}/{}", f, args.len());
                         for (k, target_pc) in table {
@@ -744,7 +749,7 @@ wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A2").cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw("A2") {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
@@ -758,7 +763,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
-    Body = '                if let Some(val) = self.regs.get("A2").cloned() {
+    Body = '                if let Some(val) = self.get_reg_raw("A2") {
                     if !val.is_unbound() {
                         for (key, target_pc) in table {
                             if *key == val {
@@ -914,9 +919,9 @@ compile_execute_arith_builtin_to_rust(Code) :-
     Code = '    fn execute_arith_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "is/2" => {
-                let expr = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
+                let expr = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Integer(0));
                 if let Some(result) = self.eval_arith(&expr) {
-                    let lhs = self.regs.get("A1").cloned().map(|v| self.deref_var(&v));
+                    let lhs = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
                     // Bind as integer if result is very close to a whole number
                     let final_val = if (result.round() - result).abs() < f64::EPSILON {
                         Value::Integer(result.round() as i64)
@@ -926,7 +931,7 @@ compile_execute_arith_builtin_to_rust(Code) :-
                     match lhs {
                         Some(Value::Unbound(ref var_name)) => {
                             self.trail_binding("A1");
-                            self.regs.insert("A1".to_string(), final_val.clone());
+                            self.set_reg_str("A1", final_val.clone());
                             self.bind_var(var_name, final_val);
                             self.pc += 1; true
                         }
@@ -941,8 +946,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             ">/2" | "</2" | ">=/2" | "=</2" | "=:=/2" | "=\\\\=/2" => {
-                let v1 = self.regs.get("A1").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
-                let v2 = self.regs.get("A2").cloned().map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
+                let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
+                let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).and_then(|v| self.eval_arith(&v));
                 if let (Some(n1), Some(n2)) = (v1, v2) {
                     let ok = match op {
                         ">/2" => n1 > n2,
@@ -957,8 +962,8 @@ compile_execute_arith_builtin_to_rust(Code) :-
                 } else { false }
             }
             "==/2" => {
-                let v1 = self.regs.get("A1").cloned();
-                let v2 = self.regs.get("A2").cloned();
+                let v1 = self.get_reg_raw("A1");
+                let v2 = self.get_reg_raw("A2");
                 if v1 == v2 { self.pc += 1; true } else { false }
             }
             _ => false,
@@ -971,7 +976,7 @@ compile_execute_io_builtin_to_rust(Code) :-
             "write/1" | "display/1" => {
                 // Both use Display for now. Standard Prolog differentiates them:
                 // write/1 suppresses quoting, display/1 uses functional notation.
-                if let Some(val) = self.regs.get("A1").cloned() {
+                if let Some(val) = self.get_reg_raw("A1") {
                     let derefed = self.deref_heap(&val);
                     print!("{}", derefed);
                     self.pc += 1; true
@@ -984,7 +989,7 @@ compile_execute_io_builtin_to_rust(Code) :-
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
-        if let Some(val) = self.regs.get("A1").cloned() {
+        if let Some(val) = self.get_reg_raw("A1") {
             let ok = match op {
                 "atom/1" => matches!(val, Value::Atom(_)),
                 "integer/1" => matches!(val, Value::Integer(_)),
@@ -1004,7 +1009,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     Code = '    fn execute_term_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "member/2" => {
-                if let (Some(val1), Some(val2)) = (self.regs.get("A1").cloned(), self.regs.get("A2").cloned()) {
+                if let (Some(val1), Some(val2)) = (self.get_reg_raw("A1"), self.get_reg_raw("A2")) {
                     if let Value::List(items) = self.deref_heap(&val2) {
                         if items.is_empty() { return false; }
                         
@@ -1034,18 +1039,18 @@ compile_execute_term_builtin_to_rust(Code) :-
                 } else { false }
             }
             "length/2" => {
-                let list_val = self.regs.get("A1").cloned().unwrap_or(Value::List(vec![]));
+                let list_val = self.get_reg_raw("A1").unwrap_or(Value::List(vec![]));
                 let derefed = self.deref_heap(&list_val);
                 let len = match &derefed {
                     Value::List(items) => items.len() as i64,
                     _ => return false,
                 };
                 let len_val = Value::Integer(len);
-                let lhs = self.regs.get("A2").cloned().map(|v| self.deref_var(&v));
+                let lhs = self.get_reg_raw("A2").map(|v| self.deref_var(&v));
                 match lhs {
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding("A2");
-                        self.regs.insert("A2".to_string(), len_val.clone());
+                        self.set_reg_str("A2", len_val.clone());
                         self.bind_var(var_name, len_val);
                         self.pc += 1; true
                     }
@@ -1060,14 +1065,14 @@ compile_execute_term_builtin_to_rust(Code) :-
                 false
             }
             "functor/3" => {
-                let t = self.regs.get("A1").cloned()
+                let t = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)));
                 match t {
                     Some(Value::Unbound(ref var_name)) => {
                         // Construct mode: read N (atom) and A (integer).
-                        let n = self.regs.get("A2").cloned()
+                        let n = self.get_reg_raw("A2")
                             .map(|v| self.deref_heap(&self.deref_var(&v)));
-                        let a = self.regs.get("A3").cloned()
+                        let a = self.get_reg_raw("A3")
                             .map(|v| self.deref_heap(&self.deref_var(&v)));
                         match (n, a) {
                             (Some(name_val), Some(Value::Integer(arity))) if arity >= 0 => {
@@ -1081,7 +1086,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                     Value::Str(fname, args)
                                 } else { return false; };
                                 self.trail_binding("A1");
-                                self.regs.insert("A1".to_string(), built.clone());
+                                self.set_reg_str("A1", built.clone());
                                 self.bind_var(var_name, built);
                                 self.pc += 1; true
                             }
@@ -1100,11 +1105,11 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 (t_val.clone(), 0),
                             _ => return false,
                         };
-                        if let Some(a2) = self.regs.get("A2").cloned() {
+                        if let Some(a2) = self.get_reg_raw("A2") {
                             let derefed = self.deref_var(&self.deref_heap(&a2));
                             if !self.unify(&derefed, &name) { return false; }
                         }
-                        if let Some(a3) = self.regs.get("A3").cloned() {
+                        if let Some(a3) = self.get_reg_raw("A3") {
                             let derefed = self.deref_var(&self.deref_heap(&a3));
                             if !self.unify(&derefed, &Value::Integer(arity)) { return false; }
                         }
@@ -1114,9 +1119,9 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "arg/3" => {
-                let n_val = self.regs.get("A1").cloned()
+                let n_val = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)));
-                let t_val = self.regs.get("A2").cloned()
+                let t_val = self.get_reg_raw("A2")
                     .map(|v| self.deref_heap(&self.deref_var(&v)));
                 match (n_val, t_val) {
                     (Some(Value::Integer(n)), Some(t)) if n >= 1 => {
@@ -1131,7 +1136,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         };
                         match arg {
                             Some(a) => {
-                                if let Some(a3) = self.regs.get("A3").cloned() {
+                                if let Some(a3) = self.get_reg_raw("A3") {
                                     let derefed = self.deref_var(&self.deref_heap(&a3));
                                     if self.unify(&derefed, &a) { self.pc += 1; true }
                                     else { false }
@@ -1144,12 +1149,12 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "=../2" => {
-                let t_val = self.regs.get("A1").cloned()
+                let t_val = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)));
                 match t_val {
                     Some(Value::Unbound(ref var_name)) => {
                         // Compose mode: build T from list in A2.
-                        let l_val = self.regs.get("A2").cloned()
+                        let l_val = self.get_reg_raw("A2")
                             .map(|v| self.deref_heap(&self.deref_var(&v)));
                         if let Some(Value::List(items)) = l_val {
                             if items.is_empty() { return false; }
@@ -1159,7 +1164,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 Value::Str(fname.clone(), items[1..].to_vec())
                             } else { return false; };
                             self.trail_binding("A1");
-                            self.regs.insert("A1".to_string(), built.clone());
+                            self.set_reg_str("A1", built.clone());
                             self.bind_var(var_name, built);
                             self.pc += 1; true
                         } else { false }
@@ -1186,7 +1191,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                             ]),
                             _ => return false,
                         };
-                        if let Some(a2) = self.regs.get("A2").cloned() {
+                        if let Some(a2) = self.get_reg_raw("A2") {
                             let derefed = self.deref_var(&self.deref_heap(&a2));
                             if self.unify(&derefed, &list) { self.pc += 1; true }
                             else { false }
@@ -1196,7 +1201,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 }
             }
             "copy_term/2" => {
-                let t_val = self.regs.get("A1").cloned()
+                let t_val = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)));
                 if let Some(t) = t_val {
                     // Sharing is preserved via a var_map from source
@@ -1207,7 +1212,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                         = std::collections::HashMap::new();
                     let copy = Self::copy_term_walk(
                         &mut self.var_counter, &mut var_map, &t);
-                    if let Some(a2) = self.regs.get("A2").cloned() {
+                    if let Some(a2) = self.get_reg_raw("A2") {
                         let derefed = self.deref_var(&self.deref_heap(&a2));
                         if self.unify(&derefed, &copy) { self.pc += 1; true }
                         else { false }
@@ -1267,19 +1272,19 @@ compile_execute_foreign_predicate_to_rust(Code) :-
         };
         match native_kind {
             "category_ancestor" => {
-                let cat = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let cat = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(cat)) => cat,
                     _ => return false,
                 };
-                let root = match self.regs.get("A2").cloned().map(|v| self.deref_var(&v)) {
+                let root = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(root)) => root,
                     _ => return false,
                 };
-                let hops_reg = match self.regs.get("A3").cloned() {
+                let hops_reg = match self.get_reg_raw("A3") {
                     Some(val) => val,
                     None => return false,
                 };
-                let visited = match self.regs.get("A4").cloned().map(|v| self.deref_var(&v)) {
+                let visited = match self.get_reg_raw("A4").map(|v| self.deref_var(&v)) {
                     Some(Value::List(items)) => items,
                     Some(_) => return false,
                     None => return false,
@@ -1299,11 +1304,11 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![hops_reg], results)
             }
             "countdown_sum2" => {
-                let n = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let n = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Integer(n)) => n,
                     _ => return false,
                 };
-                let sum_reg = match self.regs.get("A2").cloned() {
+                let sum_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1316,11 +1321,11 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 ])
             }
             "list_suffix2" => {
-                let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let items = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let suffix_reg = match self.regs.get("A2").cloned() {
+                let suffix_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1343,11 +1348,11 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![suffix_reg], results)
             }
             "list_suffixes2" => {
-                let items = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let items = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
-                let suffixes_reg = match self.regs.get("A2").cloned() {
+                let suffixes_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1357,11 +1362,11 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![suffixes_reg], vec![result])
             }
             "transitive_closure2" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1388,15 +1393,15 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg], results)
             }
             "transitive_distance3" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                let dist_reg = match self.regs.get("A3").cloned() {
+                let dist_reg = match self.get_reg_raw("A3") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1426,19 +1431,19 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
             "transitive_parent_distance4" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                let parent_reg = match self.regs.get("A3").cloned() {
+                let parent_reg = match self.get_reg_raw("A3") {
                     Some(val) => val,
                     None => return false,
                 };
-                let dist_reg = match self.regs.get("A4").cloned() {
+                let dist_reg = match self.get_reg_raw("A4") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1469,23 +1474,23 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg, parent_reg, dist_reg], packed_results)
             }
             "transitive_step_parent_distance5" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                let step_reg = match self.regs.get("A3").cloned() {
+                let step_reg = match self.get_reg_raw("A3") {
                     Some(val) => val,
                     None => return false,
                 };
-                let parent_reg = match self.regs.get("A4").cloned() {
+                let parent_reg = match self.get_reg_raw("A4") {
                     Some(val) => val,
                     None => return false,
                 };
-                let dist_reg = match self.regs.get("A5").cloned() {
+                let dist_reg = match self.get_reg_raw("A5") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1517,15 +1522,15 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg, step_reg, parent_reg, dist_reg], packed_results)
             }
             "weighted_shortest_path3" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                let dist_reg = match self.regs.get("A3").cloned() {
+                let dist_reg = match self.get_reg_raw("A3") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -1555,20 +1560,20 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
             "astar_shortest_path4" => {
-                let start = match self.regs.get("A1").cloned().map(|v| self.deref_var(&v)) {
+                let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.regs.get("A2").cloned() {
+                let target_reg = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
-                let dim_val = match self.regs.get("A3").cloned().map(|v| self.deref_var(&v)) {
+                let dim_val = match self.get_reg_raw("A3").map(|v| self.deref_var(&v)) {
                     Some(Value::Integer(d)) => d as f64,
                     Some(Value::Float(d)) => d,
                     _ => 5.0,  // default dimensionality
                 };
-                let dist_reg = match self.regs.get("A4").cloned() {
+                let dist_reg = match self.get_reg_raw("A4") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -2086,17 +2091,17 @@ compile_resume_builtin_to_rust(Code) :-
                 };
 
                 self.aggregate_acc.clear();
-                let lhs = self.regs.get(&result_reg).cloned().map(|v| self.deref_var(&v));
+                let lhs = self.get_reg_raw(&result_reg).map(|v| self.deref_var(&v));
                 match lhs {
                     Some(Value::Unbound(ref var_name)) => {
                         self.trail_binding(&result_reg);
-                        self.regs.insert(result_reg.clone(), result.clone());
+                        self.set_reg_str(&result_reg, result.clone());
                         self.bind_var(var_name, result);
                     }
                     Some(existing) if existing == result => {}
                     Some(_) => return false,
                     None => {
-                        self.regs.insert(result_reg.clone(), result);
+                        self.set_reg_str(&result_reg, result);
                     }
                 }
                 self.pc = self.aggregate_return_pc;
@@ -2171,7 +2176,7 @@ compile_resume_builtin_to_rust(Code) :-
                         cut_barrier: self.cut_barrier,
                     });
                 }
-                let a2 = match self.regs.get("A2").cloned() {
+                let a2 = match self.get_reg_raw("A2") {
                     Some(val) => val,
                     None => return false,
                 };
@@ -2221,7 +2226,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // Negation-as-failure using WAM choice point mechanism.
                 // Push a choice point that will succeed if the goal fails.
                 // If the goal succeeds, cut and fail (negation).
-                let goal = self.regs.get("A1").cloned();
+                let goal = self.get_reg_raw("A1");
                 let goal = goal.map(|v| self.deref_heap(&v));
                 match goal {
                     Some(Value::Str(functor, args)) if functor == "member/2" && args.len() == 2 => {
@@ -2768,6 +2773,8 @@ build_rust_wam_arg_setup(Arity, Setup) :-
 %    module_name(Name)   — crate/module name (default: 'wam_generated')
 %    wam_fallback(Bool)  — enable/disable WAM fallback (default: true)
 %    include_runtime(Bool) — include transpiled WAM runtime (default: true)
+%    emit_mode(Mode)     — interpreter | functions (default: interpreter)
+%    parallel(Bool)      — enable Rayon parallel execution (default: false)
 write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
@@ -2883,6 +2890,13 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
             compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
+        ;   % Try lowered emitter when emit_mode(functions)
+            option(emit_mode(functions), Options),
+            wam_rust_lowerable(Pred/Arity, WamCode, Reason)
+        ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
+            atomic_list_concat(RustLines, '\n', PredCode),
+            format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
+            Entry = classified(Module, Pred, Arity, lowered, PredCode)
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -2923,6 +2937,10 @@ generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
 generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, PredCode)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
 generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest],
                          WamEntries, [Code|RestCodes]) :-

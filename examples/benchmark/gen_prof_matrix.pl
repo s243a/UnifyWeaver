@@ -4,6 +4,7 @@
 :- use_module('../../src/unifyweaver/targets/wam_go_target').
 :- use_module('../../src/unifyweaver/targets/wam_python_target').
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target').
+:- use_module('../../src/unifyweaver/targets/wam_rust_target').
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module(library(option)).
@@ -11,8 +12,8 @@
 
 %% gen_prof_matrix.pl
 %%
-%% Generates 4 Haskell + 4 Go + 4 Python + 4 F# WAM profiling configurations
-%% from optimized Prolog:
+%% Generates 4 Haskell + 4 Go + 4 Python + 4 F# + 4 Rust WAM profiling
+%% configurations from optimized Prolog:
 %%
 %%   Haskell:
 %%     A: pure-interp    — emit_mode(interpreter), no_kernels(true)
@@ -38,10 +39,17 @@
 %%     O: fsharp-lowered-only — emit_mode(functions),   no_kernels(true)
 %%     P: fsharp-lowered-ffi  — emit_mode(functions),   kernels enabled
 %%
+%%   Rust:
+%%     Q: rust-pure-interp  — emit_mode(interpreter), no_kernels(true)
+%%     R: rust-interp-ffi   — emit_mode(interpreter), kernels enabled
+%%     S: rust-lowered-only — emit_mode(functions),   no_kernels(true)
+%%     T: rust-lowered-ffi  — emit_mode(functions),   kernels enabled
+%%
 %% Haskell configurations use GHC profiling (-prof -fprof-auto -rtsopts).
 %% Go configurations are profiled via `go tool pprof` (CPU profiling).
 %% Python configurations are profiled via cProfile / py-spy.
 %% F# configurations are profiled via dotnet-trace / PerfView.
+%% Rust configurations are profiled via `cargo flamegraph` / `perf`.
 %%
 %% Usage:
 %%   swipl -q -s gen_prof_matrix.pl -- <facts.pl> <output-base-dir>
@@ -63,6 +71,10 @@
 %%   <output-base-dir>/N-fsharp-interp-ffi/   (F#)
 %%   <output-base-dir>/O-fsharp-lowered-only/ (F#)
 %%   <output-base-dir>/P-fsharp-lowered-ffi/  (F#)
+%%   <output-base-dir>/Q-rust-pure-interp/    (Rust)
+%%   <output-base-dir>/R-rust-interp-ffi/     (Rust)
+%%   <output-base-dir>/S-rust-lowered-only/   (Rust)
+%%   <output-base-dir>/T-rust-lowered-ffi/    (Rust)
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -106,7 +118,7 @@ generate_all(OutputBase) :-
     load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
 
-    % Step 4: Generate all 16 configurations (4 Haskell + 4 Go + 4 Python + 4 F#)
+    % Step 4: Generate all 20 configurations (4 Haskell + 4 Go + 4 Python + 4 F# + 4 Rust)
     Predicates = [
         user:dimension_n/1,
         user:max_depth/1,
@@ -141,7 +153,13 @@ generate_all(OutputBase) :-
         member(config(Label, EmitMode, NoKernels), FSharpConfigs),
         generate_fsharp_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
     ),
-    format(user_error, '~n[prof-matrix] All 16 configurations generated under ~w~n', [OutputBase]).
+
+    rust_configs(RustConfigs),
+    forall(
+        member(config(Label, EmitMode, NoKernels), RustConfigs),
+        generate_rust_config(OutputBase, Label, EmitMode, NoKernels, Predicates)
+    ),
+    format(user_error, '~n[prof-matrix] All 20 configurations generated under ~w~n', [OutputBase]).
 
 haskell_configs([
     config('A-pure-interp',  interpreter, true),
@@ -247,4 +265,30 @@ generate_fsharp_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
     format(user_error, '[prof-matrix] Generating F# ~w (emit_mode=~w, no_kernels=~w)~n',
            [Label, EmitMode, NoKernels]),
     write_wam_fsharp_project(Predicates, Options, OutputDir),
+    format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
+
+rust_configs([
+    config('Q-rust-pure-interp',  interpreter, true),
+    config('R-rust-interp-ffi',   interpreter, false),
+    config('S-rust-lowered-only', functions,   true),
+    config('T-rust-lowered-ffi',  functions,   false)
+]).
+
+generate_rust_config(OutputBase, Label, EmitMode, NoKernels, Predicates) :-
+    format(atom(OutputDir), '~w/~w', [OutputBase, Label]),
+    format(atom(ModName), 'wam-prof-~w', [Label]),
+    BaseOpts = [
+        module_name(ModName),
+        wam_fallback(true),
+        emit_mode(EmitMode),
+        parallel(true)
+    ],
+    (   NoKernels == true
+    ->  KernelOpts = [no_kernels(true)]
+    ;   KernelOpts = []
+    ),
+    append(BaseOpts, KernelOpts, Options),
+    format(user_error, '[prof-matrix] Generating Rust ~w (emit_mode=~w, no_kernels=~w)~n',
+           [Label, EmitMode, NoKernels]),
+    write_wam_rust_project(Predicates, Options, OutputDir),
     format(user_error, '[prof-matrix] ~w -> ~w~n', [Label, OutputDir]).
