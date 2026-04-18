@@ -37,7 +37,15 @@ The relevant modes are:
 
 ### Rust
 
-There are two materially different Rust benchmark paths today.
+Rust now has a hybrid WAM benchmark path with full support for the lowered emitter
+(`emit_mode(functions)`) and Rayon-based parallel execution (`parallel(true)`)
+via `run_parallel` using `rayon::par_iter` (behind `#[cfg(feature = "parallel")]`).
+
+Performance optimizations:
+
+- Register Vec: `Vec<Value>` with encoded indices (A1→0, X1→100, Y1→200) instead of `HashMap<String, Value>`
+- Lowered emitter: deterministic predicates compiled to plain Rust functions
+- Rayon parallel: `par_iter` for intra-query parallelism (optional feature gate)
 
 Direct pipeline path:
 
@@ -48,15 +56,39 @@ This is not the same thing as compiling optimized Prolog into a WAM Rust project
 
 Hybrid WAM Rust path:
 
+1. Load the workload Prolog and benchmark facts.
+2. Run `prolog_target` optimization passes.
+3. Force the selected predicates through the shared Rust WAM path.
+4. Emit a Rust benchmark driver that queries the compiled VM directly.
+
+The relevant modes are (mirroring Haskell/Go/Python/F#):
+
+- `interpreter + no_kernels(true)` -> pure interpreter baseline
+- `interpreter + kernels enabled` -> hybrid WAM + FFI
+- `functions + no_kernels(true)` -> lowered-only (deterministic predicate-as-function)
+- `functions + kernels enabled` -> lowered functions with WAM fallback + FFI
+
+Optimized benchmark pipeline (mirrors Go, Haskell, Python, F#):
+
 1. Load the workload Prolog.
-2. Optionally run `prolog_target` optimization passes.
-3. Compile selected predicates to WAM.
-4. Emit a merged-code Rust WAM benchmark project.
+2. Run `prolog_target` optimization passes (seeded accumulation).
+3. Load the generated optimized predicates back into Prolog.
+4. Emit a WAM Rust project with `write_wam_rust_project/3` using
+   `emit_mode(functions)` and `parallel(true)`.
 
-So Rust already has both:
+Script: `examples/benchmark/generate_wam_rust_optimized_benchmark.pl`
 
-- a direct pipeline benchmark path
-- a hybrid WAM benchmark path
+Profiling matrix configs (Q-T) in `gen_prof_matrix.pl`:
+
+- Q: `rust-pure-interp` — interpreter + no_kernels
+- R: `rust-interp-ffi` — interpreter + kernels
+- S: `rust-lowered-only` — functions + no_kernels
+- T: `rust-lowered-ffi` — functions + kernels
+
+That means Rust can now participate in:
+
+- `direct-pipeline`
+- `hybrid-wam`
 
 ### Go
 
@@ -238,8 +270,10 @@ New scripts:
 - `examples/benchmark/generate_wam_go_optimized_benchmark.pl`
 - `examples/benchmark/generate_wam_python_optimized_benchmark.pl`
 - `examples/benchmark/generate_wam_fsharp_optimized_benchmark.pl`
+- `examples/benchmark/generate_wam_rust_optimized_benchmark.pl`
 - `tests/bench_wam_fsharp.pl` (F# compilation throughput benchmarks)
-- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python + 4 F# profiling configs)
+- `tests/bench_wam_rust.pl` (Rust compilation throughput benchmarks)
+- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python + 4 F# + 4 Rust profiling configs)
 
 Examples:
 
