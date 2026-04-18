@@ -398,10 +398,11 @@ wam_instruction_branch('elif instr[0] == \"deallocate\"', Body) :-
 
 wam_instruction_branch('elif instr[0] == \"try_me_else\"', Body) :-
 	Body = '            label = instr[1]
+            n_args = instr[2] if len(instr) > 2 else 20
             next_pc = self.labels.get(label)
             if next_pc is None:
                 return False
-            push_choice_point(self, len([r for r in self.regs[:20] if r is not None]), next_pc)
+            push_choice_point(self, n_args, next_pc)
             return True'.
 
 wam_instruction_branch('elif instr[0] == \"retry_me_else\"', Body) :-
@@ -429,10 +430,11 @@ wam_instruction_branch('elif instr[0] == \"trust_me\"', Body) :-
 
 wam_instruction_branch('elif instr[0] == \"try\"', Body) :-
 	Body = '            label = instr[1]
+            n_args = instr[2] if len(instr) > 2 else 20
             target_pc = self.labels.get(label)
             if target_pc is None:
                 return False
-            push_choice_point(self, len([r for r in self.regs[:20] if r is not None]), self._pc + 1)
+            push_choice_point(self, n_args, self._pc + 1)
             self._pc = target_pc - 1
             return True'.
 
@@ -1275,8 +1277,16 @@ copy_static_runtime(ProjectDir) :-
 		write_file(DestPath, RuntimeCode)
 	).
 
+%% is_ffi_predicate(+Functor, +Arity, +Options)
+%  True if this predicate is handled by a registered foreign predicate,
+%  meaning we can skip WAM compilation and emit a direct execute_foreign call.
+is_ffi_predicate(Functor, Arity, Options) :-
+	option(foreign_predicates(FPs), Options, []),
+	member(Functor/Arity, FPs).
+
 %% compile_all_predicates(+Predicates, +Options, -Code)
 %  Compile all predicates into Python code.
+%  FFI-owned fact predicates are skipped (emit a direct foreign call stub).
 compile_all_predicates([], _Options, "# No predicates compiled\n").
 compile_all_predicates(Predicates, Options, Code) :-
 	Predicates \= [],
@@ -1288,13 +1298,34 @@ compile_all_predicates(Predicates, Options, Code) :-
 	], '\n\n', Code).
 
 compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
-	compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode).
-compile_one_predicate(Options, Pred/Arity, PredCode) :-
-	(   compile_predicate_to_wam(Pred/Arity, [], WamCode)
-	->  compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
-	;   atom_string(Pred, PredStr),
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  % Skip WAM compilation — emit direct foreign call stub
+		atom_string(Pred, PredStr),
+		python_func_name(Pred/Arity, FuncName),
 		format(string(PredCode),
-			'# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
+'def ~w(state):
+    """FFI-owned predicate: ~w/~w — dispatched to foreign."""
+    _args = [deref(state.regs[i+1], state) for i in range(~w)]
+    return execute_foreign("~w", ~w, _args, state)
+', [FuncName, PredStr, Arity, Arity, PredStr, Arity])
+	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+	).
+compile_one_predicate(Options, Pred/Arity, PredCode) :-
+	(   is_ffi_predicate(Pred, Arity, Options)
+	->  atom_string(Pred, PredStr),
+		python_func_name(Pred/Arity, FuncName),
+		format(string(PredCode),
+'def ~w(state):
+    """FFI-owned predicate: ~w/~w — dispatched to foreign."""
+    _args = [deref(state.regs[i+1], state) for i in range(~w)]
+    return execute_foreign("~w", ~w, _args, state)
+', [FuncName, PredStr, Arity, Arity, PredStr, Arity])
+	;   (   compile_predicate_to_wam(Pred/Arity, [], WamCode)
+		->  compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
+		;   atom_string(Pred, PredStr),
+			format(string(PredCode),
+				'# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
+		)
 	).
 
 %% generate_main_py(+Predicates, +ModuleName, -Code)
