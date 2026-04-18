@@ -819,43 +819,43 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     clean_comma(AggType, CAggType),
     clean_comma(ValueReg, CValueReg),
     clean_comma(ResultReg, CResultReg),
-    go_reg_string_to_index(CValueReg, ValueRegIdx),
-    go_reg_string_to_index(CResultReg, ResultRegIdx),
+    go_reg_index(CValueReg, ValueRegIdx),
+    go_reg_index(CResultReg, ResultRegIdx),
     format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
         [CAggType, ValueRegIdx, ResultRegIdx]).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
-    go_reg_string_to_index(CValueReg, ValueRegIdx),
+    go_reg_index(CValueReg, ValueRegIdx),
     format(atom(GoLit), '&EndAggregate{ValueReg: ~w}', [ValueRegIdx]).
 
 wam_line_to_go_literal(["get_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     parse_string_to_go_val(CC, GoVal),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_line_to_go_literal(["get_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["get_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["get_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
 wam_line_to_go_literal(["get_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&GetList{Ai: ~w}', [AiIdx]).
 wam_line_to_go_literal(["unify_variable", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    go_reg_string_to_index(CXn, XnIdx),
+    go_reg_index(CXn, XnIdx),
     format(atom(GoLit), '&UnifyVariable{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["unify_value", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    go_reg_string_to_index(CXn, XnIdx),
+    go_reg_index(CXn, XnIdx),
     format(atom(GoLit), '&UnifyValue{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["unify_constant", C], GoLit) :-
     clean_comma(C, CC),
@@ -865,31 +865,31 @@ wam_line_to_go_literal(["unify_constant", C], GoLit) :-
 wam_line_to_go_literal(["put_constant", C, Ai], GoLit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     parse_string_to_go_val(CC, GoVal),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&PutConstant{C: ~w, Ai: ~w}', [GoVal, AiIdx]).
 wam_line_to_go_literal(["put_variable", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&PutVariable{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["put_value", Xn, Ai], GoLit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CXn, XnIdx), go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CXn, XnIdx), go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&PutValue{Xn: ~w, Ai: ~w}', [XnIdx, AiIdx]).
 wam_line_to_go_literal(["put_structure", FN, Ai], GoLit) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&PutStructure{Functor: "~w", Ai: ~w}', [CFN, AiIdx]).
 wam_line_to_go_literal(["put_list", Ai], GoLit) :-
     clean_comma(Ai, CAi),
-    go_reg_string_to_index(CAi, AiIdx),
+    go_reg_index(CAi, AiIdx),
     format(atom(GoLit), '&PutList{Ai: ~w}', [AiIdx]).
 wam_line_to_go_literal(["set_variable", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    go_reg_string_to_index(CXn, XnIdx),
+    go_reg_index(CXn, XnIdx),
     format(atom(GoLit), '&SetVariable{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["set_value", Xn], GoLit) :-
     clean_comma(Xn, CXn),
-    go_reg_string_to_index(CXn, XnIdx),
+    go_reg_index(CXn, XnIdx),
     format(atom(GoLit), '&SetValue{Xn: ~w}', [XnIdx]).
 wam_line_to_go_literal(["set_constant", C], GoLit) :-
     clean_comma(C, CC),
@@ -983,12 +983,12 @@ go_reg_index(y(N), Idx) :- !, Idx is N + 199.
 go_reg_index(Atom, Idx) :-
     atom(Atom), !,
     atom_string(Atom, Str),
-    go_reg_string_to_index(Str, Idx).
+    go_reg_index_str(Str, Idx).
 go_reg_index(Str, Idx) :-
     string(Str), !,
-    go_reg_string_to_index(Str, Idx).
+    go_reg_index_str(Str, Idx).
 
-go_reg_string_to_index(Str, Idx) :-
+go_reg_index_str(Str, Idx) :-
     (   sub_string(Str, 0, 1, _, "A"),
         sub_string(Str, 1, _, 0, NumStr),
         number_string(N, NumStr)
@@ -1641,7 +1641,13 @@ func (vm *WamState) enterIndexedAlternatives(targets []int) bool {
         return false
     }
     if len(targets) > 1 {
-        vm.pushIndexedChoicePoint(targets[1:])
+        // count non-nil A-regs as arity approximation when not statically known
+        arity := 0
+        for i := 0; i < 32; i++ {
+            if vm.Regs[i] != nil { arity = i + 1 }
+        }
+        if arity < 1 { arity = 1 }
+        vm.pushIndexedChoicePoint(targets[1:], arity)
     }
     vm.PC = targets[0]
     return true
@@ -2030,7 +2036,7 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
         trailMark := vm.TrailLen
         heapTop := vm.HeapLen
         for idx, result := range results {
-            vm.unwindTrail(trailMark)
+            vm.unwindTrailTo(trailMark)
             vm.Regs = baseRegs
             vm.Stack = copyStack(baseStack)
             if heapTop >= 0 && heapTop <= vm.HeapLen {
