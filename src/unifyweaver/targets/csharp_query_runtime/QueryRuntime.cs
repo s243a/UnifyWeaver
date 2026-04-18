@@ -12639,6 +12639,8 @@ namespace UnifyWeaver.QueryRuntime
                             continue;
                         }
 
+                        // Counted-path All preserves current per-seed traversal
+                        // discovery order during replay, including duplicates.
                         RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
 
                         var nextVisited = visited.Extend(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId], nodeFingerprints[nextId]);
