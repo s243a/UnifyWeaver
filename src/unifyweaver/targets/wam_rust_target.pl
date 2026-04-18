@@ -16,7 +16,9 @@
     compile_wam_runtime_to_rust/2,       % +Options, -RustCode
     compile_wam_predicate_to_rust/4,     % +Pred/Arity, +WamCode, +Options, -RustCode
     write_wam_rust_project/3,            % +Predicates, +Options, +ProjectDir
-    cargo_check_project/2                % +ProjectDir, -Result
+    cargo_check_project/2,               % +ProjectDir, -Result
+    detect_kernels/2,                    % +Predicates, -DetectedKernels
+    generate_setup_foreign_predicates_rust/2  % +DetectedKernels, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -28,6 +30,13 @@
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
     rust_lowered_func_name/2
+]).
+:- use_module('../core/recursive_kernel_detection', [
+    detect_recursive_kernel/4,
+    kernel_metadata/4,
+    kernel_config/2,
+    kernel_register_layout/2,
+    kernel_native_call/2
 ]).
 
 % ============================================================================
@@ -2754,6 +2763,83 @@ build_rust_wam_arg_setup(Arity, Setup) :-
     atomic_list_concat(Lines, '\n', Setup).
 
 % ============================================================================
+% FFI KERNEL DETECTION AND RUST REGISTRATION CODE GENERATION
+% ============================================================================
+
+%% detect_kernels(+Predicates, -DetectedKernels)
+%  Run shared kernel detection on each predicate. Returns a list of
+%  Key-Kernel pairs where Key is 'pred/arity' atom and Kernel is the
+%  full recursive_kernel(Kind, Pred/Arity, ConfigOps) term.
+detect_kernels([], []).
+detect_kernels([PI|Rest], Kernels) :-
+    (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   Clauses \= [],
+        detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
+    ->  format(atom(Key), '~w/~w', [Pred, Arity]),
+        Kernels = [Key-Kernel|RestKernels]
+    ;   Kernels = RestKernels
+    ),
+    detect_kernels(Rest, RestKernels).
+
+%% generate_setup_foreign_predicates_rust(+DetectedKernels, -RustCode)
+%  Generates a Rust function that registers all detected FFI kernels with
+%  the WamState at startup. Uses kernel_metadata/4 and kernel_config/2 to
+%  produce the correct register_foreign_* calls for each kernel.
+generate_setup_foreign_predicates_rust([], Code) :- !,
+    Code = "pub fn setup_foreign_predicates(_vm: &mut WamState) {\n    // No kernels detected\n}\n\npub fn foreign_pred_keys() -> HashSet<String> {\n    HashSet::new()\n}".
+generate_setup_foreign_predicates_rust(DetectedKernels, Code) :-
+    pairs_keys(DetectedKernels, Keys),
+    with_output_to(string(Body), (
+        format('pub fn setup_foreign_predicates(vm: &mut WamState) {~n'),
+        forall(member(KV, DetectedKernels), emit_kernel_registration(KV)),
+        format('}~n~n'),
+        format('pub fn foreign_pred_keys() -> HashSet<String> {~n'),
+        format('    let mut s = HashSet::new();~n'),
+        forall(member(K, Keys),
+               format('    s.insert("~w".to_string());~n', [K])),
+        format('    s~n'),
+        format('}~n')
+    )),
+    Code = Body.
+
+%% emit_kernel_registration(+Key-Kernel)
+%  Emit Rust registration statements for a single detected kernel.
+emit_kernel_registration(Key-Kernel) :-
+    kernel_metadata(Kernel, NativeKind, ResultLayout, ResultMode),
+    kernel_config(Kernel, ConfigOps),
+    format('    vm.register_foreign_predicate("~w");~n', [Key]),
+    format('    vm.register_foreign_native_kind("~w", "~w");~n', [Key, NativeKind]),
+    ResultLayout =.. [tuple, N],
+    format('    vm.register_foreign_result_layout("~w", "tuple(~w)");~n', [Key, N]),
+    format('    vm.register_foreign_result_mode("~w", "~w");~n', [Key, ResultMode]),
+    emit_kernel_config_ops(Key, ConfigOps).
+
+%% emit_kernel_config_ops(+Key, +ConfigOps)
+%  Emit register_foreign_usize_config / register_foreign_string_config
+%  calls for each config operation extracted from the kernel.
+emit_kernel_config_ops(_, []).
+emit_kernel_config_ops(Key, [Op|Rest]) :-
+    Op =.. [ConfigKey, RawValue],
+    (   RawValue = EdgePred/_ ->
+        % edge_pred(foo/2) -> register string config "edge_pred" = "foo"
+        format('    vm.register_foreign_string_config("~w", "~w", "~w");~n',
+               [Key, ConfigKey, EdgePred])
+    ;   integer(RawValue) ->
+        format('    vm.register_foreign_usize_config("~w", "~w", ~w);~n',
+               [Key, ConfigKey, RawValue])
+    ;   float(RawValue) ->
+        format('    vm.register_foreign_string_config("~w", "~w", "~w");~n',
+               [Key, ConfigKey, RawValue])
+    ;   atom(RawValue) ->
+        format('    vm.register_foreign_string_config("~w", "~w", "~w");~n',
+               [Key, ConfigKey, RawValue])
+    ;   true  % skip unknown config types
+    ),
+    emit_kernel_config_ops(Key, Rest).
+
+% ============================================================================
 % CARGO PROJECT GENERATION
 % ============================================================================
 
@@ -2779,6 +2865,21 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
+
+    % Detect recursive kernels in the predicate list. Detected kernels
+    % are handled by the FFI (execute_foreign_predicate) at runtime and
+    % are excluded from WAM compilation. The detected kernel list is used
+    % to auto-generate setup_foreign_predicates() in lib.rs.
+    (   option(no_kernels(true), Options)
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-Rust] kernel detection suppressed~n', [])
+    ;   detect_kernels(Predicates, DetectedKernels),
+        (   DetectedKernels \= []
+        ->  pairs_keys(DetectedKernels, DetectedKeys),
+            format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
+        ;   true
+        )
+    ),
 
     % Create directory structure
     make_directory_path(ProjectDir),
@@ -2815,10 +2916,14 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     directory_file_path(SrcDir, 'state.rs', StatePath),
     write_file(StatePath, StateCode),
 
+    % Generate setup_foreign_predicates function for detected kernels
+    generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
+
     % Compile predicates and generate lib.rs
     compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
-        [module_name=ModuleName, date=Date, predicates_code=PredicatesCode],
+        [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode],
         LibContent),
     directory_file_path(SrcDir, 'lib.rs', LibPath),
     write_file(LibPath, LibContent),
@@ -2872,7 +2977,15 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    (   % Try native Rust lowering first (disable WAM fallback inside rust_target
+    (   % Check for auto-detectable FFI kernel FIRST (unless suppressed)
+        \+ option(no_kernels(true), Options),
+        functor(KHead, Pred, Arity),
+        findall(KHead-KBody, Module:clause(KHead, KBody), KClauses),
+        KClauses \= [],
+        detect_recursive_kernel(Pred, Arity, KClauses, Kernel)
+    ->  format(user_error, '  ~w/~w: ffi kernel (~w)~n', [Pred, Arity, Kernel]),
+        Entry = classified(Module, Pred, Arity, ffi_kernel, Kernel)
+    ;   % Try native Rust lowering (disable WAM fallback inside rust_target
         % so we can distinguish truly-native from WAM-needing predicates)
         catch(
             rust_target:compile_predicate_to_rust(Module:Pred/Arity,
@@ -2930,6 +3043,15 @@ collect_wam_entries([_|Rest], PC, Entries, Instrs, Labels) :-
 %% generate_predicate_codes(+Classified, +WamEntries, -PredCodes)
 %  Generates Rust code for each classified predicate.
 generate_predicate_codes([], _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_kernel, Kernel)|Rest],
+                         WamEntries, [Code|RestCodes]) :-
+    % FFI kernel — no WAM code needed; handled by setup_foreign_predicates
+    % and execute_foreign_predicate at runtime via CallForeign dispatch.
+    Kernel = recursive_kernel(Kind, _, _),
+    format(string(Code),
+        "// Strategy: ffi_kernel (~w)\n// ~w/~w dispatched via CallForeign → execute_foreign_predicate",
+        [Kind, Pred, Arity]),
+    generate_predicate_codes(Rest, WamEntries, RestCodes).
 generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: native\n~w", [PredCode]),

@@ -3,6 +3,8 @@
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module('../../src/unifyweaver/targets/wam_target').
 :- use_module('../../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../../src/unifyweaver/core/recursive_kernel_detection',
+             [detect_recursive_kernel/4, kernel_metadata/4, kernel_config/2]).
 :- use_module(library(option)).
 :- use_module(library(lists)).
 
@@ -67,6 +69,16 @@ generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
     format(user_error, '[WAM-Rust] variant=~w predicates=~w~n',
            [VariantAtom, WamPredicates]),
 
+    % Auto-detect FFI kernels from predicate clauses
+    wam_rust_target:detect_kernels(WamPredicates, DetectedKernels),
+    (   DetectedKernels \= []
+    ->  pairs_keys(DetectedKernels, DetectedKeys),
+        format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
+    ;   true
+    ),
+    % Generate setup_foreign_predicates() Rust function
+    wam_rust_target:generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
+
     compile_predicates_to_merged_rust(WamPredicates, MergedInstrCode, MergedLabelCode),
 
     % Generate project
@@ -83,7 +95,7 @@ generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
 
     % Write main.rs with merged WAM instructions and benchmark driver
     directory_file_path(SrcDir, 'main.rs', MainPath),
-    write_main_rs(MainPath, VariantAtom, MergedInstrCode, MergedLabelCode),
+    write_main_rs(MainPath, VariantAtom, MergedInstrCode, MergedLabelCode, SetupForeignCode),
 
     format(user_error, '[WAM-Rust] Generated benchmark project at: ~w~n', [OutputDir]).
 
@@ -227,8 +239,8 @@ write_file(Path, Content) :-
         close(Stream)
     ).
 
-%% write_main_rs(+Path, +Variant, +MergedInstrCode, +MergedLabelCode)
-write_main_rs(Path, Variant, MergedInstrCode, MergedLabelCode) :-
+%% write_main_rs(+Path, +Variant, +MergedInstrCode, +MergedLabelCode, +SetupForeignCode)
+write_main_rs(Path, Variant, MergedInstrCode, MergedLabelCode, SetupForeignCode) :-
     format(string(Code),
 '// Generated WAM-Rust effective-distance benchmark driver
 // Compiled predicates: category_ancestor/4, dimension_n/1, max_depth/1
@@ -420,11 +432,12 @@ fn append_fact1(
 }
 
 fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>) {
+    let foreign_preds = foreign_pred_keys();
     optimize_benchmark_code(code);
     for instr in code.iter_mut() {
         let replacement = match instr {
             Instruction::Call(pred, arity) => {
-                if pred == "category_ancestor/4" && *arity == 4 {
+                if foreign_preds.contains(pred) {
                     Some(Instruction::CallForeign(pred.clone(), *arity))
                 } else if pred == "category_parent/2" && *arity == 2 {
                     Some(Instruction::CallIndexedAtomFact2(pred.clone()))
@@ -688,6 +701,8 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
     }
 }
 
+~w
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -747,12 +762,7 @@ fn main() {
 
     let root = roots[0].clone();
     let max_depth_limit = 10usize;
-    vm.register_foreign_predicate("category_ancestor/4");
-    vm.register_foreign_native_kind("category_ancestor/4", "category_ancestor");
-    vm.register_foreign_usize_config("category_ancestor/4", "max_depth", max_depth_limit);
-    vm.register_foreign_string_config("category_ancestor/4", "edge_pred", "category_parent");
-    vm.register_foreign_result_layout("category_ancestor/4", "tuple(1)");
-    vm.register_foreign_result_mode("category_ancestor/4", "stream");
+    setup_foreign_predicates(&mut vm);
     let reverse_category_parents = build_reverse_fact2(&category_parents);
     let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
@@ -969,7 +979,7 @@ fn main() {
         }
     }
 }
-', [MergedInstrCode, MergedLabelCode, Variant]),
+', [SetupForeignCode, MergedInstrCode, MergedLabelCode, Variant]),
     setup_call_cleanup(
         open(Path, write, Stream, [encoding(utf8)]),
         format(Stream, '~w', [Code]),
