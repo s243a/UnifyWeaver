@@ -20,11 +20,15 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 | Python WAM | -- | -- | -- | Yes | Runtime OK; benchmark driver in progress |
 
-**Key takeaway:** The Haskell 107 ms single-core result was generated
-**automatically** from the same Prolog source — no hand-written graph traversal.
-The user writes Prolog; UnifyWeaver transpiles it to an efficient Haskell WAM
-with FFI kernels automatically recognized. The 126 ms Rust+FFI result required
-manual kernel fusion that does not generalize to other workloads.
+**Key takeaway:** Both Haskell and Rust results come from transpiling
+**optimized Prolog** — the same source goes through UnifyWeaver's Prolog
+optimization passes before WAM compilation. The difference is in the final
+mile: the Haskell target **automatically recognizes** recursive fact-lookup
+patterns and emits FFI kernels without manual intervention. The Rust+FFI
+126 ms result required hand-written kernel rewrites (Phase D benchmark
+fusion) that do not generalize to other workloads. The automatically-
+generated Rust WAM interpreter (137 ms) is the fair apples-to-apples
+comparison with the automatically-generated Haskell FFI (107 ms single-core).
 
 ## Test Environment
 
@@ -133,10 +137,14 @@ From `WAM_PERF_OPTIMIZATION_LOG.md`, measured on WSL2 4-core host.
 | FFI single-core | 107 | 193 | 1 |
 | FFI parallel | 32 | 75 | 4 |
 
-The Haskell target is **automatically generated** from Prolog source by
-UnifyWeaver. The FFI kernels for `category_parent/2` lookup are recognized
-and generated without manual intervention. This is the primary demonstration
-of UnifyWeaver's value: write Prolog, get competitive native performance.
+Both Haskell and Rust results start from the same pipeline: optimized Prolog
+source → UnifyWeaver optimization passes → WAM compilation → target emission.
+The Haskell target goes one step further: it **automatically recognizes**
+recursive `category_parent/2` fact-lookup patterns at compile time and emits
+native FFI kernels, bypassing the WAM interpreter for the hot loop. No
+manual kernel code is required. This automatic FFI recognition is what
+UnifyWeaver's value proposition rests on — the user writes Prolog, and the
+compiler finds and exploits the fast path.
 
 ### Rust WAM Interpreter
 
@@ -163,11 +171,15 @@ pipeline.**
 | total_ms | 126 |
 | Cores | 1 |
 
-This result used Phase D "benchmark fusion" — hand-inlining the recursive
-`category_ancestor` calls and fact lookups as native Rust code. It is labeled
-"FFI" because it uses the foreign predicate dispatch mechanism, but **the
-kernels were written by hand, not generated automatically**. This approach
-does not generalize to other workloads and is included only for reference.
+Both Haskell and Rust start from transpiled optimized Prolog. The Rust+FFI
+126 ms result was reached via Phase D "benchmark fusion" — **hand-rewriting**
+the recursive `category_ancestor` calls and fact lookups as native Rust
+kernels. It uses the FFI dispatch mechanism but the kernels were not generated
+automatically. This is a one-off optimization for this specific workload and
+does not carry over to other queries. It is included for reference to show
+what the Rust target can reach with manual effort — and to set the target for
+what automatic FFI kernel recognition (not yet implemented for Rust) should
+eventually achieve automatically.
 
 ### Go WAM (In Progress)
 
