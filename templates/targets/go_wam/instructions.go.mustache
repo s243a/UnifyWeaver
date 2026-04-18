@@ -105,16 +105,16 @@ func (i *Proceed) instrTag() {}
 type BuiltinCall struct { Op string; Arity int }
 func (i *BuiltinCall) instrTag() {}
 
-type TryMeElse struct { Label string }
+type TryMeElse struct { Label string; Arity int }
 func (i *TryMeElse) instrTag() {}
 
-type TryMeElsePc struct { NextPC int }
+type TryMeElsePc struct { NextPC int; Arity int }
 func (i *TryMeElsePc) instrTag() {}
 
-type RetryMeElse struct { Label string }
+type RetryMeElse struct { Label string; Arity int }
 func (i *RetryMeElse) instrTag() {}
 
-type RetryMeElsePc struct { NextPC int }
+type RetryMeElsePc struct { NextPC int; Arity int }
 func (i *RetryMeElsePc) instrTag() {}
 
 type TrustMe struct{}
