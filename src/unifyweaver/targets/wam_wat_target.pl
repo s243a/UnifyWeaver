@@ -437,7 +437,8 @@ is_default_entry(_-default).
 
 entry_to_instr(int(V)-Label, switch_entry(1, V, Label)).
 entry_to_instr(atom(A)-Label, switch_entry(0, H, Label)) :-
-    atom_hash_i64(A, H).
+    atom_hash_i64(A, H),
+    record_atom(A).
 
 %% parse_struct_entries(+Parts, -Entries)
 %  Parts is a list of strings like ["bar/1:default,", "baz/2:L_X,",
@@ -486,7 +487,8 @@ build_switch_struct_instrs(RegIdx, AllEntries, multi([Header|EntryInstrs])) :-
 
 struct_entry_to_instr(struct(FA, Arity)-Label,
                       switch_struct_entry(H, Arity, Label)) :-
-    atom_hash_i64(FA, H).
+    atom_hash_i64(FA, H),
+    record_atom(FA).
 
 %% parse_term_entries(+Parts, -ConstEntries, -StructEntries)
 %  Parts is like ["constant:0:default,", "1:L_2,", "nil:L_3,",
@@ -572,6 +574,21 @@ wam_instruction_to_wat_bytes(neck_cut_test(GuardOp, GuardArity, ElseLabel), Labe
 %  For atoms: the hash. For integers: the raw value.
 encode_constant(C, Val) :- encode_constant_with_tag(C, _Tag, Val).
 
+%% Atom collection for the lexicographic atom name table. Atoms used
+%% anywhere in the compiled module are accumulated here during
+%% encoding; assemble_atom_table/3 then emits a sorted table with
+%% (hash, name_offset, name_length) triples plus a concatenated string
+%% pool. The runtime's $atom_compare uses the table so @</2 on atoms
+%% orders by lexicographic name rather than DJB2 hash (the previous
+%% behavior, which was deterministic but non-standard).
+:- dynamic seen_atom/1.
+
+record_atom(A) :-
+    (   atom(A)
+    ->  (seen_atom(A) -> true ; assertz(seen_atom(A)))
+    ;   true
+    ).
+
 %% encode_constant_with_tag(+C, -Tag, -I64Val)
 %  Encodes a Prolog constant as (Tag, Value) where Tag is the runtime
 %  value-cell tag (0 = atom, 1 = integer, 2 = float) and I64Val is the
@@ -585,17 +602,22 @@ encode_constant(C, Val) :- encode_constant_with_tag(C, _Tag, Val).
 %  tag at the A_i register. Prior to this change, all constants
 %  unconditionally stored tag=0 (atom), which made integer/1 always
 %  fail and atom/1 always "succeed" — including on integer constants.
-encode_constant_with_tag(atom(A), 0, Hash) :- !, atom_hash_i64(A, Hash).
+encode_constant_with_tag(atom(A), 0, Hash) :- !,
+    atom_hash_i64(A, Hash),
+    record_atom(A).
 encode_constant_with_tag(integer(I), 1, I) :- !.
 encode_constant_with_tag(I, 1, I) :- integer(I), !.
 encode_constant_with_tag(F, 2, Bits) :- float(F), !, Bits is float_integer_part(F).
-encode_constant_with_tag(A, 0, Hash) :- atom(A), !, atom_hash_i64(A, Hash).
+encode_constant_with_tag(A, 0, Hash) :- atom(A), !,
+    atom_hash_i64(A, Hash),
+    record_atom(A).
 encode_constant_with_tag(S, Tag, Val) :-
     string(S), !,
     (   number_string(I, S), integer(I)
     ->  Tag = 1, Val = I
     ;   atom_string(A, S),
         atom_hash_i64(A, Hash),
+        record_atom(A),
         Tag = 0, Val = Hash
     ).
 encode_constant_with_tag(_, 0, 0).
@@ -611,6 +633,7 @@ encode_constant_with_tag(_, 0, 0).
 encode_structure_op1(FSlashArity, Op1) :-
     atom_hash_i64(FSlashArity, Hash),
     functor_arity_of(FSlashArity, Arity),
+    record_atom(FSlashArity),
     Op1 is (Arity << 32) \/ (Hash /\ 0xFFFFFFFF).
 
 %% functor_arity_of(+FSlashArity, -Arity)
@@ -2290,11 +2313,87 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
   ;; Tag 5 should not survive $deref_cell; reach here only for unknown tags.
   (i32.const 0))
 
+;; --- Atom name table lookup + lexicographic compare ---
+;; Table layout (at 327680):
+;;   [count:i32][entries × 16 bytes: hash:i64, name_off:i32, name_len:i32]
+;;   [string_pool: concatenated atom name bytes]
+;; Entries are sorted by hash at compile time so the runtime could
+;; binary-search; we linear-scan here for simplicity.
+
+(func $atom_table_base (result i32) (i32.const 327680))
+
+;; Find the entry for a given atom hash. Returns the absolute memory
+;; offset of the entry (pointing at the hash field) or -1 if not found.
+(func $atom_lookup (param $hash i64) (result i32)
+  (local $base i32) (local $count i32) (local $i i32) (local $off i32)
+  (local.set $base (call $atom_table_base))
+  (local.set $count (i32.load (local.get $base)))
+  (local.set $i (i32.const 0))
+  (block $done
+    (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $count)))
+      (local.set $off
+        (i32.add (i32.add (local.get $base) (i32.const 4))
+                 (i32.mul (local.get $i) (i32.const 16))))
+      (if (i64.eq (i64.load (local.get $off)) (local.get $hash))
+        (then (return (local.get $off))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+  (i32.const -1))
+
+;; Lexicographic byte comparison of two atom names, given their hashes.
+;; Returns -1 / 0 / +1. Falls back to hash comparison if either atom
+;; is missing from the table (defensive — should not happen for atoms
+;; reached by the compiler). Identical hashes short-circuit to 0
+;; without a lookup.
+(func $atom_compare (param $ha i64) (param $hb i64) (result i32)
+  (local $ea i32) (local $eb i32)
+  (local $oa i32) (local $la i32) (local $ob i32) (local $lb i32)
+  (local $i i32) (local $minlen i32)
+  (local $ca i32) (local $cb i32)
+  (if (i64.eq (local.get $ha) (local.get $hb))
+    (then (return (i32.const 0))))
+  (local.set $ea (call $atom_lookup (local.get $ha)))
+  (local.set $eb (call $atom_lookup (local.get $hb)))
+  (if (i32.or (i32.eq (local.get $ea) (i32.const -1))
+              (i32.eq (local.get $eb) (i32.const -1)))
+    (then
+      ;; Fallback: hash order (deterministic if table incomplete).
+      (if (i64.lt_u (local.get $ha) (local.get $hb))
+        (then (return (i32.const -1))))
+      (return (i32.const 1))))
+  (local.set $oa (i32.load (i32.add (local.get $ea) (i32.const 8))))
+  (local.set $la (i32.load (i32.add (local.get $ea) (i32.const 12))))
+  (local.set $ob (i32.load (i32.add (local.get $eb) (i32.const 8))))
+  (local.set $lb (i32.load (i32.add (local.get $eb) (i32.const 12))))
+  (if (i32.lt_s (local.get $la) (local.get $lb))
+    (then (local.set $minlen (local.get $la)))
+    (else (local.set $minlen (local.get $lb))))
+  (local.set $i (i32.const 0))
+  (block $eq_prefix
+    (loop $bytecmp
+      (br_if $eq_prefix (i32.ge_u (local.get $i) (local.get $minlen)))
+      (local.set $ca
+        (i32.load8_u (i32.add (local.get $oa) (local.get $i))))
+      (local.set $cb
+        (i32.load8_u (i32.add (local.get $ob) (local.get $i))))
+      (if (i32.lt_u (local.get $ca) (local.get $cb))
+        (then (return (i32.const -1))))
+      (if (i32.gt_u (local.get $ca) (local.get $cb))
+        (then (return (i32.const 1))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $bytecmp)))
+  ;; Prefix bytes equal; shorter atom is less.
+  (if (i32.lt_s (local.get $la) (local.get $lb))
+    (then (return (i32.const -1))))
+  (if (i32.gt_s (local.get $la) (local.get $lb))
+    (then (return (i32.const 1))))
+  (i32.const 0))
+
 ;; --- Standard-order comparison (@</2, @>/2, @=</2, @>=/2) ---
 ;; Returns -1 if a < b, 0 if equal, 1 if a > b per Prolog standard
-;; term order: Var < Number < Atom < Compound. CAVEAT: atoms are
-;; stored as DJB2 hashes in linear memory, not names, so atom-vs-atom
-;; comparison uses hash order — deterministic but NOT lexicographic.
+;; term order: Var < Number < Atom < Compound. Atom-vs-atom order is
+;; lexicographic via $atom_compare (PR integrating a name table).
 ;; Numeric order within tag 1 (int) and tag 2 (float) is correct.
 ;; Compounds order by arity, then functor_hash, then args left-to-right.
 (func $tag_order (param $tag i32) (result i32)
@@ -2359,14 +2458,13 @@ compile_wam_helpers_to_wat(_Options, WatCode) :-
                   (f64.reinterpret_i64 (local.get $pb)))
         (then (return (i32.const 1))))
       (return (i32.const 0))))
-  ;; Tag 0 (atom): compare hash payloads (non-lexicographic caveat).
+  ;; Tag 0 (atom): look up the atom name table and do a lexicographic
+  ;; byte comparison on the stored names. Falls back to hash
+  ;; comparison if either atom is missing from the table (should not
+  ;; happen for atoms seen by the compiler, but defensive).
   (if (i32.eq (local.get $ta) (i32.const 0))
     (then
-      (if (i64.lt_u (local.get $pa) (local.get $pb))
-        (then (return (i32.const -1))))
-      (if (i64.gt_u (local.get $pa) (local.get $pb))
-        (then (return (i32.const 1))))
-      (return (i32.const 0))))
+      (return (call $atom_compare (local.get $pa) (local.get $pb)))))
   ;; Tag 3 (compound): arity, then functor_hash, then args.
   (if (i32.eq (local.get $ta) (i32.const 3))
     (then
@@ -3171,11 +3269,13 @@ write_wam_wat_project(Predicates, Options, OutputFile) :-
 
     %% Memory pages: 0=native WAT strings/memo; 1=WAM state (regs, trail,
     %% env/choice stack); 2=code (instruction data segments); 3=WAM heap;
-    %% 4=copy_term scratch (var map + work stack, fixed offsets at 262144).
-    %% See $builtin_copy_term for the scratch layout. The scratch lives
-    %% outside the heap so deep copy_term calls don''t permanently bloat
-    %% heap_top with unreclaimable bookkeeping.
-    MemPages = 5,
+    %% 4=copy_term scratch (var map + work stack, fixed offsets at 262144);
+    %% 5=atom name table (count + fixed-size entries + variable-length
+    %% string pool, fixed offset at 327680). The atom table is built at
+    %% compile time from every atom reached by encode_*; the runtime
+    %% $atom_compare uses it so @</2 on atoms orders lexicographically
+    %% rather than by DJB2 hash.
+    MemPages = 6,
 
     %% Assemble module
     read_template_file('templates/targets/wat_wam/module.wat.mustache', ModuleTemplate),
@@ -3226,23 +3326,100 @@ write_wam_wat_project(Predicates, Options, OutputFile) :-
 %  fix unifies the label namespace across all predicates in a
 %  project, making multi-predicate WAM programs runnable end-to-end.
 compile_wat_predicates(Predicates, Options, CodeBase, DataSegs, Funcs, Exports) :-
+    %% Reset atom accumulator before compiling this project.
+    retractall(seen_atom(_)),
+    %% The empty-list atom [] is used by is_list/1 and list cons
+    %% cells; seed it so it always has an entry in the atom table
+    %% regardless of source-code occurrence.
+    record_atom('[]'),
     %% Pass 1: parse + collect per-predicate data with cumulative PCs.
     pass1_parse_predicates(Predicates, Options, 0, PredData, TotalInstrs),
     %% Build global label table (shift each predicate's local labels).
     build_global_labels(PredData, [], GlobalLabels),
     %% Pass 2: re-encode each predicate's instructions against global
-    %% labels and concatenate the byte sequences.
+    %% labels and concatenate the byte sequences. Encoding paths also
+    %% call record_atom/1, populating seen_atom/1 as a side effect.
     encode_all_predicates(PredData, GlobalLabels, AllHex),
     (   AllHex == ''
-    ->  DataSegs = ''
-    ;   format(atom(DataSegs),
+    ->  CodeSeg = ''
+    ;   format(atom(CodeSeg),
             '(data (i32.const ~w) "~w")', [CodeBase, AllHex])
+    ),
+    %% Emit the atom name table as a second data segment.
+    assemble_atom_table(AtomTableSeg),
+    (   AtomTableSeg == ''
+    ->  DataSegs = CodeSeg
+    ;   atomic_list_concat([CodeSeg, '\n  ', AtomTableSeg], DataSegs)
     ),
     %% Entry functions: one per predicate, each setting its own
     %% start PC before invoking the shared run loop.
     option(wam_heap_start(HeapStart), Options, 196608),
     gen_all_entry_funcs(PredData, HeapStart, CodeBase, TotalInstrs,
                         Funcs, Exports).
+
+%% wam_atom_table_base(-Offset)
+%  Fixed start address of the atom name table. Lives on page 5
+%  (offset 327680) — past copy_term scratch at page 4 (262144) and
+%  the WAM heap which bump-allocates from page 3 (196608).
+%  One memory page holds up to 4096 16-byte entries plus a string
+%  pool; the current module bumps memory_pages from 5 to 6 to
+%  cover this region.
+wam_atom_table_base(327680).
+
+%% assemble_atom_table(-DataSegHex)
+%  After encoding has recorded every atom reached via encode_*
+%  helpers, emit a data segment at wam_atom_table_base containing:
+%    [count:i32][entries × 16 bytes][string_pool]
+%  Each entry: (hash:i64, name_offset:i32, name_length:i32). Sorted
+%  by hash so the runtime can binary-search (linear scan works too
+%  for small counts). name_offset is absolute within linear memory
+%  and points into the string_pool region immediately following the
+%  entries array.
+assemble_atom_table(Seg) :-
+    findall(A, seen_atom(A), AtomsRaw),
+    sort(AtomsRaw, Atoms),
+    (   Atoms == []
+    ->  Seg = ''
+    ;   wam_atom_table_base(Base),
+        length(Atoms, Count),
+        StringBase is Base + 4 + Count * 16,
+        build_atom_entries(Atoms, StringBase, HashOffsetPairs, PoolBytesList),
+        %% Sort entries by hash for binary-searchable table.
+        sort(1, @=<, HashOffsetPairs, SortedPairs),
+        i32_to_le_hex(Count, CountHex),
+        maplist(atom_entry_to_hex, SortedPairs, EntryHexes),
+        atomic_list_concat(PoolBytesList, PoolHex),
+        atomic_list_concat([CountHex | EntryHexes], EntriesHex),
+        atomic_list_concat([EntriesHex, PoolHex], AllHex),
+        format(atom(Seg),
+            '(data (i32.const ~w) "~w")', [Base, AllHex])
+    ).
+
+%% build_atom_entries(+Atoms, +StringBase, -HashOffsetPairs, -PoolHexParts)
+%  For each atom assign its name a region in the string pool; build
+%  parallel lists of (Hash, Offset, Length) tuples and hex bytes.
+build_atom_entries([], _, [], []).
+build_atom_entries([A|Rest], Off0, [entry(Hash, Off0, Len, A)|RestPairs],
+                   [NameHex|RestPool]) :-
+    atom_hash_i64(A, Hash),
+    atom_codes(A, Codes),
+    length(Codes, Len),
+    maplist(code_to_byte_hex, Codes, CodeHexes),
+    atomic_list_concat(CodeHexes, NameHex),
+    Off1 is Off0 + Len,
+    build_atom_entries(Rest, Off1, RestPairs, RestPool).
+
+%% atom_entry_to_hex(+entry(Hash, Off, Len, Name), -Hex)
+%  Encode one 16-byte entry: hash (i64), offset (i32), length (i32).
+atom_entry_to_hex(entry(Hash, Off, Len, _A), Hex) :-
+    i64_to_le_hex(Hash, HashHex),
+    i32_to_le_hex(Off, OffHex),
+    i32_to_le_hex(Len, LenHex),
+    atomic_list_concat([HashHex, OffHex, LenHex], Hex).
+
+code_to_byte_hex(C, Hex) :-
+    B is C /\ 0xFF,
+    format(atom(Hex), "\\~|~`0t~16r~2+", [B]).
 
 %% pass1_parse_predicates(+Preds, +Opts, +StartPC, -PredData, -TotalInstrs)
 %
