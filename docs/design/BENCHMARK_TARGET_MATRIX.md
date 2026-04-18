@@ -60,7 +60,9 @@ So Rust already has both:
 
 ### Go
 
-Go now has two effective-distance benchmark paths.
+Go now has two effective-distance benchmark paths, with full support for the
+lowered emitter (`emit_mode(functions)`) and goroutine-based parallel execution
+(`parallel(true)`) via the package-level `RunParallel` on `WamContext`.
 
 Direct pipeline path:
 
@@ -73,6 +75,23 @@ Hybrid WAM Go path:
 2. Run `prolog_target` optimization passes.
 3. Force the selected predicates through the shared Go WAM path.
 4. Emit a Go benchmark driver that queries the compiled VM directly.
+
+The relevant modes are (mirroring Haskell):
+
+- `interpreter + no_kernels(true)` -> pure interpreter baseline
+- `interpreter + kernels enabled` -> hybrid WAM + FFI
+- `functions + no_kernels(true)` -> lowered-only (deterministic predicate-as-function)
+- `functions + kernels enabled` -> lowered functions with WAM fallback + FFI
+
+Optimized benchmark pipeline (mirrors `generate_wam_haskell_optimized_benchmark.pl`):
+
+1. Load the workload Prolog.
+2. Run `prolog_target` optimization passes (seeded accumulation).
+3. Load the generated optimized predicates back into Prolog.
+4. Emit a WAM Go project with `write_wam_go_project/3` using
+   `emit_mode(functions)` and `parallel(true)`.
+
+Script: `examples/benchmark/generate_wam_go_optimized_benchmark.pl`
 
 That means Go can now participate in:
 
@@ -133,6 +152,8 @@ New scripts:
 - `examples/benchmark/benchmark_effective_distance_matrix.py`
 - `examples/benchmark/generate_wam_haskell_matrix_benchmark.pl`
 - `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
+- `examples/benchmark/generate_wam_go_optimized_benchmark.pl`
+- `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go profiling configs)
 
 Examples:
 
