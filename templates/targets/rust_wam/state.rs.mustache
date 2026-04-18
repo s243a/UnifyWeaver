@@ -124,7 +124,7 @@ impl WamState {
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
         WamState {
             pc: 1,
-            regs: vec![Value::Unbound("__uninit__".to_string()); MAX_REGS],
+            regs: vec![Value::Uninit; MAX_REGS],
             stack: Arc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
@@ -183,12 +183,12 @@ impl WamState {
     }
 
     /// Get a register value by name without dereferencing (raw access).
-    /// Returns None for uninitialized registers (__uninit__ sentinel).
+    /// Returns None for uninitialized registers (Uninit sentinel).
     pub fn get_reg_raw(&self, name: &str) -> Option<Value> {
         let idx = Self::reg_index(name);
         if idx < self.regs.len() {
             match &self.regs[idx] {
-                Value::Unbound(s) if s == "__uninit__" => None,
+                Value::Uninit => None,
                 v => Some(v.clone()),
             }
         } else {
@@ -319,7 +319,7 @@ impl WamState {
 
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
-        self.regs.fill(Value::Unbound("__uninit__".to_string()));
+        self.regs.fill(Value::Uninit);
         self.stack = Arc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
@@ -447,7 +447,7 @@ impl WamState {
     fn save_regs(&self) -> Vec<(usize, Value)> {
         self.regs.iter().enumerate()
             .take(100) // A registers are indices 0..99
-            .filter(|(_, v)| !matches!(v, Value::Unbound(s) if s == "__uninit__"))
+            .filter(|(_, v)| !matches!(v, Value::Uninit))
             .map(|(i, v)| (i, v.clone()))
             .collect()
     }
@@ -457,7 +457,7 @@ impl WamState {
         // Clear A registers (0..99) and X registers (100..199)
         for i in 0..200 {
             if i < self.regs.len() {
-                self.regs[i] = Value::Unbound("__uninit__".to_string());
+                self.regs[i] = Value::Uninit;
             }
         }
         for (i, v) in saved {
