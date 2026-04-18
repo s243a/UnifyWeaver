@@ -53,11 +53,27 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
 
   def run(args) when is_list(args) do
     state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
-    state = Enum.with_index(args, 1)
-    |> Enum.reduce(state, fn {arg, i}, s ->
-      %{s | regs: Map.put(s.regs, i, arg)}
+    # Rewrite each caller-supplied unbound to a fresh make_ref so the id
+    # cannot collide with any register slot — subsequent put_variable on
+    # the same A-reg would otherwise corrupt the binding chain. Remember
+    # the refs in state.arg_vars so run/1 and next_solution/1 can read
+    # the correct bound value even after body code has used the A-reg as
+    # scratch.
+    {state, arg_vars} = Enum.with_index(args, 1)
+    |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+      case arg do
+        {:unbound, _} ->
+          v = {:unbound, make_ref()}
+          {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+        other ->
+          {%{s | regs: Map.put(s.regs, i, other)}, vars}
+      end
     end)
-    run(state)
+    state = %{state | arg_vars: arg_vars}
+    case run(state) do
+      {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+      other -> other
+    end
   end
 
 ~w
