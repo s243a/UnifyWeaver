@@ -443,7 +443,7 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
     local queue_file="/tmp/{{pred}}_queue_$$"
     local next_queue="/tmp/{{pred}}_next_$$"
     
-    trap "rm -f $queue_file $next_queue" EXIT PIPE
+    trap "rm -f $queue_file $next_queue" EXIT
     
     echo "$start" > "$queue_file"
     visited["$start"]=1
