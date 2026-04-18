@@ -214,3 +214,181 @@ test(step_contains_is_branch) :-
 	assertion(sub_string(S, _, _, _, "\"is\"")).
 
 :- end_tests(wam_python_step_dispatch).
+
+% ============================================================================
+% Phase A: WamState layout — heap as dict, heap_len, trail_len
+% ============================================================================
+
+:- begin_tests(wam_python_phase_a).
+
+test(wamstate_has_heap_len, [nondet]) :-
+	% WamState bindings emit heap_len field
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	sub_string(Code, _, _, _, "heap_len").
+
+test(wamstate_has_trail_len, [nondet]) :-
+	% WamState bindings emit trail_len field
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	sub_string(Code, _, _, _, "trail_len").
+
+test(wamstate_heap_is_dict, [nondet]) :-
+	% Heap is initialised as dict, not list
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	sub_string(Code, _, _, _, "self.heap = {}").
+
+test(heap_put_uses_heap_len, [nondet]) :-
+	% heap_put helper uses heap_len as the address counter
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	sub_string(Code, _, _, _, "heap_len").
+
+test(heap_trim_emitted, [nondet]) :-
+	% heap_trim helper is emitted (dict-based trimming)
+	wam_python_target:compile_wam_runtime_to_python([], Code),
+	sub_string(Code, _, _, _, "heap_trim").
+
+:- end_tests(wam_python_phase_a).
+
+% ============================================================================
+% Phase B: Label pre-resolution — load_program, call_pc, run_wam(code, labels, ...)
+% ============================================================================
+
+:- begin_tests(wam_python_phase_b).
+
+test(load_program_in_main, [nondet]) :-
+	% generate_main_py emits a load_program call in main.py
+	wam_python_target:generate_main_py([], test_mod, Code),
+	sub_string(Code, _, _, _, "load_program").
+
+test(run_wam_four_arg_in_main, [nondet]) :-
+	% main.py calls run_wam(code, labels, query, state)
+	wam_python_target:generate_main_py([], test_mod, Code),
+	sub_string(Code, _, _, _, "run_wam(code, labels").
+
+test(static_runtime_has_load_program, [nondet]) :-
+	% The static WamRuntime.py defines the load_program function
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "def load_program").
+
+test(static_runtime_has_resolve_instr, [nondet]) :-
+	% The static WamRuntime.py defines the _resolve_instr helper
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "_resolve_instr").
+
+test(static_runtime_has_call_pc, [nondet]) :-
+	% The static WamRuntime.py handles call_pc opcode
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "call_pc").
+
+test(static_runtime_run_wam_four_args, [nondet]) :-
+	% run_wam takes (code, labels, entry, state)
+	source_file(wam_python_target:compile_step_wam_to_python(_,_), ThisFile),
+	file_directory_name(ThisFile, ThisDir),
+	directory_file_path(ThisDir, 'wam_python_runtime/WamRuntime.py', SrcPath),
+	read_file_to_string(SrcPath, Content, []),
+	sub_string(Content, _, _, _, "def run_wam(code").
+
+:- end_tests(wam_python_phase_b).
+
+% ============================================================================
+% Phase C: Lowered emitter — deterministic detection, func naming, emit
+% ============================================================================
+
+:- use_module('../src/unifyweaver/targets/wam_python_lowered_emitter').
+
+:- begin_tests(wam_python_lowered_emitter).
+
+test(is_deterministic_fact) :-
+	% A simple fact with get_constant + proceed is deterministic
+	Instrs = [get_constant(a, "1"), proceed],
+	wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
+
+test(is_not_deterministic_with_try) :-
+	% Predicates with try_me_else are NOT deterministic
+	Instrs = [try_me_else(lbl), get_constant(a, "1"), proceed],
+	\+ wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
+
+test(is_not_deterministic_with_retry) :-
+	% Predicates with retry_me_else are NOT deterministic
+	Instrs = [retry_me_else(lbl), proceed],
+	\+ wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
+
+test(is_not_deterministic_with_trust_me) :-
+	% Predicates with trust_me are NOT deterministic
+	Instrs = [trust_me, proceed],
+	\+ wam_python_lowered_emitter:is_deterministic_pred_py(Instrs).
+
+test(python_func_name_basic) :-
+	wam_python_lowered_emitter:python_func_name(foo/2, Name),
+	Name = 'pred_foo_2'.
+
+test(python_func_name_special_chars, [nondet]) :-
+	% Functors with - get sanitised to underscores
+	wam_python_lowered_emitter:python_func_name('foo-bar'/1, Name),
+	atom_string(Name, NameStr),
+	sub_string(NameStr, _, _, _, "pred_foo_bar_1").
+
+test(python_func_name_zero_arity) :-
+	wam_python_lowered_emitter:python_func_name(hello/0, Name),
+	Name = 'pred_hello_0'.
+
+test(emit_lowered_proceed, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python('simple'/0, [proceed], [], Lines),
+	Lines \= "",
+	sub_string(Lines, _, _, _, "return True").
+
+test(emit_lowered_get_constant, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python('foo'/1, [get_constant(a, "1"), proceed], [], Lines),
+	Lines \= "",
+	sub_string(Lines, _, _, _, "def pred_foo_1"),
+	sub_string(Lines, _, _, _, "Atom").
+
+test(emit_lowered_def_line, [nondet]) :-
+	% The emitted function starts with a proper def line
+	wam_python_lowered_emitter:emit_lowered_python('bar'/2, [proceed], [], Lines),
+	sub_string(Lines, _, _, _, "def pred_bar_2(state)").
+
+test(emit_lowered_fail, [nondet]) :-
+	wam_python_lowered_emitter:emit_lowered_python('nope'/0, [fail], [], Lines),
+	sub_string(Lines, _, _, _, "return False").
+
+:- end_tests(wam_python_lowered_emitter).
+
+% ============================================================================
+% Phase D: FFI skip — is_ffi_predicate/3
+% ============================================================================
+
+:- begin_tests(wam_python_phase_d).
+
+test(is_ffi_predicate_detected) :-
+	Options = [foreign_predicates([my_pred/2])],
+	wam_python_target:is_ffi_predicate(my_pred, 2, Options).
+
+test(is_not_ffi_predicate) :-
+	Options = [foreign_predicates([my_pred/2])],
+	\+ wam_python_target:is_ffi_predicate(other_pred, 1, Options).
+
+test(is_ffi_predicate_empty_list) :-
+	Options = [foreign_predicates([])],
+	\+ wam_python_target:is_ffi_predicate(anything, 1, Options).
+
+test(is_ffi_predicate_no_option) :-
+	% When no foreign_predicates option is given, nothing is FFI
+	Options = [],
+	\+ wam_python_target:is_ffi_predicate(foo, 1, Options).
+
+test(is_ffi_predicate_multiple, [nondet]) :-
+	% Multiple predicates in the foreign list
+	Options = [foreign_predicates([pred_a/1, pred_b/2, pred_c/3])],
+	wam_python_target:is_ffi_predicate(pred_b, 2, Options),
+	\+ wam_python_target:is_ffi_predicate(pred_b, 1, Options).
+
+:- end_tests(wam_python_phase_d).
