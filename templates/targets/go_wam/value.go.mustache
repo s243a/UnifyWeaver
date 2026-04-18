@@ -91,12 +91,12 @@ func (v *Ref) Equals(other Value) bool {
 	return ok && v.Addr == o.Addr
 }
 
-type Unbound struct { Name string }
+type Unbound struct { Name string; Idx int }
 func (v *Unbound) valueTag() {}
 func (v *Unbound) String() string { return "_" + v.Name }
 func (v *Unbound) Equals(other Value) bool {
 	o, ok := other.(*Unbound)
-	return ok && v.Name == o.Name
+	return ok && v.Idx == o.Idx
 }
 
 func isUnbound(v Value) bool {

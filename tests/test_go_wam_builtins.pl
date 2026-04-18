@@ -43,8 +43,8 @@ func main() {
 	vm := wam.NewWamState(wam.Test_builtinsCode, wam.Test_builtinsLabels)
 	vm.PC = wam.Test_builtinsStartPC
 	// A1 will hold X — use named unbound so we can deref after execution
-	x := &wam.Unbound{Name: "X"}
-	vm.Regs["A1"] = x
+	x := &wam.Unbound{Name: "X", Idx: 0}
+	vm.Regs[0] = x
 
 	if vm.Run() {
 		fmt.Printf("SUCCESS: X=%v\\n", vm.Deref(x))
