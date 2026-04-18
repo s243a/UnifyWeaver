@@ -332,6 +332,7 @@ test_csharp_query_target :-
         verify_path_aware_transitive_closure_plan,
         verify_parameterized_path_aware_transitive_closure_plan,
         verify_path_aware_transitive_closure_preserves_path_multiplicity,
+        verify_path_aware_transitive_closure_all_mode_order_plan,
         verify_path_aware_transitive_closure_metrics_runtime,
         verify_path_aware_transitive_closure_min_mode_plan,
         verify_path_aware_accumulation_plan,
@@ -3777,6 +3778,35 @@ verify_path_aware_transitive_closure_preserves_path_multiplicity :-
         ['MATCH_COUNT:2'],
         [[a]],
         HarnessSource).
+
+verify_path_aware_transitive_closure_all_mode_order_plan :-
+    % The expected rows are intentionally in current traversal/discovery order
+    % for counted-path All mode. This guards the runtime contract that All
+    % preserves per-seed replay order, including duplicates, rather than
+    % target-sorting rows like Min mode does.
+    csharp_target:build_query_plan(
+        test_pathaware_multi_reach/3,
+        [target(csharp_query)],
+        [input, output, output],
+        Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, path_aware_transitive_closure{type:path_aware_transitive_closure,
+        head:predicate{name:test_pathaware_multi_reach, arity:3},
+        edge:predicate{name:test_pathaware_multi_edge, arity:2},
+        base_depth:1,
+        depth_increment:1,
+        max_depth:10,
+        table_modes:[lattice, lattice, lattice],
+        width:3
+    }),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'PathAwareTransitiveClosureNode'),
+    maybe_run_query_runtime(Plan,
+        ['a,c,1',
+         'a,b,1',
+         'a,d,2',
+         'a,d,2'],
+        [[a]]).
 
 verify_path_aware_transitive_closure_metrics_runtime :-
     csharp_target:build_query_plan(

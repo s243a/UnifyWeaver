@@ -1041,6 +1041,10 @@ Additional path-state observations:
   node id until the final target-sorted flush, cutting object-key hashing and
   reducing `best_known_flush_sort` plus final `Min` materialization cost while
   preserving the deterministic ordering contract.
+- counted-path `All` keeps sorted-seed grouping but currently preserves
+  per-seed traversal/discovery order during replay rather than target-sorting
+  rows; that contract is documented explicitly before any larger replay
+  simplification work.
 - counted-path replay/materialization now uses the concrete `object?[]`
   node-value table directly instead of an `IReadOnlyList<object?>` view, which
   trims lookup overhead on the hot replay path without changing output rows.
