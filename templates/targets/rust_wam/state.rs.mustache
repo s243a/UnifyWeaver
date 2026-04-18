@@ -2,7 +2,7 @@
 // Date: {{date}}
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 use crate::value::Value;
 use crate::instructions::Instruction;
 
@@ -23,8 +23,8 @@ pub struct ChoicePoint {
     /// Saved argument registers (indices + values).
     pub saved_args: Vec<(usize, Value)>,
     pub cp: usize,
-    /// Saved stack snapshot (Rc clone = O(1), copy-on-write on mutation).
-    pub stack: Rc<Vec<StackEntry>>,
+    /// Saved stack snapshot (Arc clone = O(1), copy-on-write on mutation).
+    pub stack: Arc<Vec<StackEntry>>,
     /// Saved trail depth — backtrack unwinds + truncates to this point.
     pub trail_len: usize,
     /// Saved heap depth — backtrack truncates to this point.
@@ -65,9 +65,10 @@ pub struct WamState {
     /// Encoding: A1→0, A2→1, ...; X1→100, X2→101, ...; Y1→200, Y2→201, ...
     pub regs: Vec<Value>,
     /// Stack: environment frames and unification contexts.
-    /// Wrapped in Rc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
-    pub stack: Rc<Vec<StackEntry>>,
-    // Note: use self.smut() for mutable stack access (Rc::make_mut).
+    /// Wrapped in Arc for O(1) clone in ChoicePoints (copy-on-write via make_mut).
+    /// Arc (not Rc) so that WamState: Send, which is required by Rayon par_iter.
+    pub stack: Arc<Vec<StackEntry>>,
+    // Note: use self.smut() for mutable stack access (Arc::make_mut).
     /// Heap: term construction area.
     pub heap: Vec<Value>,
     /// Trail: binding history for backtracking.
@@ -123,8 +124,8 @@ impl WamState {
     pub fn new(code: Vec<Instruction>, labels: HashMap<String, usize>) -> Self {
         WamState {
             pc: 1,
-            regs: vec![Value::Unbound("__uninit__".to_string()); MAX_REGS],
-            stack: Rc::new(Vec::new()),
+            regs: vec![Value::Uninit; MAX_REGS],
+            stack: Arc::new(Vec::new()),
             heap: Vec::new(),
             trail: Vec::new(),
             cp: 0, // 0 = halt
@@ -153,7 +154,7 @@ impl WamState {
     /// Mutable access to stack (triggers copy-on-write if shared).
     #[inline]
     fn smut(&mut self) -> &mut Vec<StackEntry> {
-        Rc::make_mut(&mut self.stack)
+        Arc::make_mut(&mut self.stack)
     }
 
     /// Parse a register name ("A1", "X3", "Y2") to a Vec index.
@@ -182,12 +183,12 @@ impl WamState {
     }
 
     /// Get a register value by name without dereferencing (raw access).
-    /// Returns None for uninitialized registers (__uninit__ sentinel).
+    /// Returns None for uninitialized registers (Uninit sentinel).
     pub fn get_reg_raw(&self, name: &str) -> Option<Value> {
         let idx = Self::reg_index(name);
         if idx < self.regs.len() {
             match &self.regs[idx] {
-                Value::Unbound(s) if s == "__uninit__" => None,
+                Value::Uninit => None,
                 v => Some(v.clone()),
             }
         } else {
@@ -318,8 +319,8 @@ impl WamState {
 
     /// Reset mutable query state without cloning code/labels.
     pub fn reset_query(&mut self) {
-        self.regs.fill(Value::Unbound("__uninit__".to_string()));
-        self.stack = Rc::new(Vec::new());
+        self.regs.fill(Value::Uninit);
+        self.stack = Arc::new(Vec::new());
         self.trail.clear();
         self.choice_points.clear();
         self.heap.clear();
@@ -446,17 +447,21 @@ impl WamState {
     fn save_regs(&self) -> Vec<(usize, Value)> {
         self.regs.iter().enumerate()
             .take(100) // A registers are indices 0..99
-            .filter(|(_, v)| !matches!(v, Value::Unbound(s) if s == "__uninit__"))
+            .filter(|(_, v)| !matches!(v, Value::Uninit))
             .map(|(i, v)| (i, v.clone()))
             .collect()
     }
 
     /// Restore argument registers and clear stale temporaries from failed paths.
+    /// Only clears A (0..99) and X (100..199) registers — Y registers (200+) are
+    /// NOT cleared here because they live in stack Env frames, not in the register
+    /// Vec. Y-register state is restored via the ChoicePoint's stack snapshot.
     fn restore_regs(&mut self, saved: &[(usize, Value)]) {
-        // Clear A registers (0..99) and X registers (100..199)
+        // Clear A registers (0..99) and X registers (100..199) only.
+        // Y registers are stack-frame local (see get_reg/put_reg Y routing).
         for i in 0..200 {
             if i < self.regs.len() {
-                self.regs[i] = Value::Unbound("__uninit__".to_string());
+                self.regs[i] = Value::Uninit;
             }
         }
         for (i, v) in saved {
