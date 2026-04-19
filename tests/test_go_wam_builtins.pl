@@ -74,25 +74,6 @@ func main() {
 
 :- end_tests(go_wam_builtins).
 
-delete_directory_and_contents(Dir) :-
-    (   exists_directory(Dir)
-    ->  delete_directory_contents(Dir),
-        delete_directory(Dir)
-    ;   true
-    ).
-
-delete_directory_contents(Dir) :-
-    directory_files(Dir, Files),
-    member(File, Files),
-    File \== '.', File \== '..',
-    directory_file_path(Dir, File, Path),
-    (   exists_directory(Path)
-    ->  delete_directory_and_contents(Path)
-    ;   delete_file(Path)
-    ),
-    fail.
-delete_directory_contents(_).
-
 write_file(Path, Content) :-
     setup_call_cleanup(
         open(Path, write, Stream),

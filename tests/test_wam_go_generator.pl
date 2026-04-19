@@ -33,11 +33,13 @@ test(wam_put_structure) :-
     assertion(Literal == '&PutStructure{Functor: "f/2", Ai: 0}').
 
 test(wam_switch_on_constant) :-
-    Table = [john-default, jane-'L1'],
-    wam_instruction_to_go_literal(switch_on_constant(Table), Literal),
-    assertion(sub_string(Literal, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{')),
-    assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "john"}, Label: "default"}')),
-    assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "jane"}, Label: "L1"}')).
+    once((
+        Table = [john-default, jane-'L1'],
+        wam_instruction_to_go_literal(switch_on_constant(Table), Literal),
+        assertion(sub_string(Literal, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{')),
+        assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "john"}, Label: "default"}')),
+        assertion(sub_string(Literal, _, _, _, '{Val: &Atom{Name: "jane"}, Label: "L1"}'))
+    )).
 
 test(parse_wam_line_label) :-
     WamCode = "L_parent_2_2:",
@@ -50,56 +52,44 @@ test(parse_wam_line_instruction) :-
     assertion(sub_string(GoCode, _, _, _, '&GetConstant{C: &Atom{Name: "john"}, Ai: 0}')).
 
 test(parse_wam_line_switch) :-
-    WamCode = "    switch_on_constant john:default, jane:L1",
-    compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
-    assertion(sub_string(GoCode, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{')).
+    once((
+        WamCode = "    switch_on_constant john:default, jane:L1",
+        compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
+        assertion(sub_string(GoCode, _, _, _, '&SwitchOnConstant{Cases: []ConstCase{'))
+    )).
 
 test(compiled_predicate_emits_resolved_code_and_wrapper) :-
-    WamCode = "test/1:\n    call helper/1, 1\n    execute done/1\n    try_me_else L1\n    retry_me_else L2\n    switch_on_constant john:L1\n",
-    compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
-    assertion(sub_string(GoCode, _, _, _, 'var TestResolvedCode = resolveInstructions(TestCode, TestLabels)')),
-    assertion(sub_string(GoCode, _, _, _, 'func Test(a1 Value) bool {')),
-    assertion(sub_string(GoCode, _, _, _, 'vm := NewWamState(TestResolvedCode, TestLabels)')).
+    once((
+        WamCode = "test/1:\n    call helper/1, 1\n    execute done/1\n    try_me_else L1\n    retry_me_else L2\n    switch_on_constant john:L1\n",
+        compile_wam_predicate_to_go(test/1, WamCode, [], GoCode),
+        assertion(sub_string(GoCode, _, _, _, 'var TestResolvedCode = resolveInstructions(TestCode, TestLabels)')),
+        assertion(sub_string(GoCode, _, _, _, 'func Test(a1 Value) bool {')),
+        assertion(sub_string(GoCode, _, _, _, 'vm := NewWamState(TestResolvedCode, TestLabels)'))
+    )).
 
 test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
-    get_time(T),
-    format(atom(TmpDir), 'tmp_wam_go_shared_~w', [T]),
-    write_wam_go_project([plunit_wam_go_generator:wam_only_caller/2,
-                          plunit_wam_go_generator:wam_only_inner/2],
-                         [module_name(go_shared_test)], TmpDir),
-    directory_file_path(TmpDir, 'lib.go', LibPath),
-    read_file_to_string(LibPath, LibCode, []),
-    assertion(sub_string(LibCode, _, _, _, 'var sharedWamCodeRaw = []Instruction{')),
-    assertion(sub_string(LibCode, _, _, _, 'var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)')),
-    assertion(sub_string(LibCode, _, _, _, 'var Wam_only_callerCode = sharedWamCode')),
-    assertion(sub_string(LibCode, _, _, _, 'func Wam_only_caller(a1 Value, a2 Value) bool {')),
-    assertion(sub_string(LibCode, _, _, _, 'vm := NewWamState(sharedWamCode, sharedWamLabels)')),
-    assertion(sub_string(LibCode, _, _, _, 'vm.PC = ')),
-    delete_directory_and_contents(TmpDir).
+    once((
+        get_time(T),
+        format(atom(TmpDir), 'tmp_wam_go_shared_~w', [T]),
+        write_wam_go_project([plunit_wam_go_generator:wam_only_caller/2,
+                              plunit_wam_go_generator:wam_only_inner/2],
+                             [module_name(go_shared_test)], TmpDir),
+        directory_file_path(TmpDir, 'lib.go', LibPath),
+        read_file_to_string(LibPath, LibCode, []),
+        assertion(sub_string(LibCode, _, _, _, 'var sharedWamCodeRaw = []Instruction{')),
+        assertion(sub_string(LibCode, _, _, _, 'var sharedWamCode = resolveInstructions(sharedWamCodeRaw, sharedWamLabels)')),
+        assertion(sub_string(LibCode, _, _, _, 'var Wam_only_callerCode = sharedWamCode')),
+        assertion(sub_string(LibCode, _, _, _, 'func Wam_only_caller(a1 Value, a2 Value) bool {')),
+        assertion(sub_string(LibCode, _, _, _, 'vm := NewWamState(sharedWamCode, sharedWamLabels)')),
+        assertion(sub_string(LibCode, _, _, _, 'vm.PC = ')),
+        delete_directory_and_contents(TmpDir)
+    )).
 
 test(robust_switch_parsing) :-
-    % Test malformed input robustness
-    wam_line_to_go_literal(["switch_on_constant", "john"], Literal),
-    assertion(sub_string(Literal, _, _, _, '&Atom{Name: "malformed"}')).
+    once((
+        % Test malformed input robustness
+        wam_line_to_go_literal(["switch_on_constant", "john"], Literal),
+        assertion(sub_string(Literal, _, _, _, '&Atom{Name: "malformed"}'))
+    )).
 
 :- end_tests(wam_go_generator).
-
-delete_directory_and_contents(Dir) :-
-    (   exists_directory(Dir)
-    ->  delete_directory_contents(Dir),
-        delete_directory(Dir)
-    ;   true
-    ).
-
-delete_directory_contents(Dir) :-
-    directory_files(Dir, Files),
-    member(File, Files),
-    File \== '.',
-    File \== '..',
-    directory_file_path(Dir, File, Path),
-    (   exists_directory(Path)
-    ->  delete_directory_and_contents(Path)
-    ;   delete_file(Path)
-    ),
-    fail.
-delete_directory_contents(_).
