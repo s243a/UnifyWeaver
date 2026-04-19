@@ -1687,14 +1687,24 @@ wam_wat_case(is_list_direct,
 wam_wat_case(arg_reg_direct,
 '  ;; arg/3 specialized for `put_value N, A1; put_value T, A2;
   ;; put_variable Dest, A3; builtin_call arg/3, 3`.
-  ;; Sets up A1/A2/A3 from the source regs + a fresh heap cell,
-  ;; calls the proven $builtin_arg, and copies A3 back into Dest.
-  ;; Saves four instruction dispatches (one arg_reg_direct vs four
-  ;; separate put/builtin instructions); the arg body itself is
-  ;; unchanged so all mode handling + nondet state stays identical.
+  ;;
+  ;; Fast path (~98% of calls in term-walking code): N is a bound
+  ;; integer, T is a bound compound, arg index in range. Reads the
+  ;; arg cell directly from the compound and writes it into Dest
+  ;; via set_reg (no deref, no trail — matches put_variable
+  ;; semantics of writing a fresh env-frame slot; on backtrack the
+  ;; env frame is abandoned via stack_top replay).
+  ;;
+  ;; Fallback: sets up A1/A2/A3 the way put_value/put_value/put_variable
+  ;; would and invokes builtin_arg. Covers the nondet mode (A1
+  ;; unbound, triggers arity-enumeration via the CP retry slot) and
+  ;; any non-hot-path tag/bounds failure.
+  ;;
   ;; op1: NIdx (low 8), TIdx (bits 8-15), DestIdx (bits 16-23).
   (local $op1i i32)
   (local $n_idx i32) (local $t_idx i32) (local $dest_idx i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
   (local $fresh_addr i32)
   (local.set $op1i (i32.wrap_i64 (local.get $op1)))
   (local.set $n_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
@@ -1702,11 +1712,31 @@ wam_wat_case(arg_reg_direct,
     (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
   (local.set $dest_idx
     (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
-  ;; A1 := contents of N reg (put_value semantics — 12-byte copy).
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u
+          (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (call $set_reg (local.get $dest_idx)
+            (call $val_tag (local.get $arg_off))
+            (call $val_payload (local.get $arg_off)))
+          (call $inc_pc)
+          (return (i32.const 1))))))
+  ;; Fallback: reconstruct A1/A2/A3 and call $builtin_arg.
   (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
-  ;; A2 := contents of T reg.
   (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
-  ;; A3 := Ref(fresh_unbound), and Dest := same (put_variable semantics).
   (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
   (call $set_reg (i32.const 2) (i32.const 5)
     (i64.extend_i32_u (local.get $fresh_addr)))
@@ -1718,20 +1748,41 @@ wam_wat_case(arg_reg_direct,
 
 wam_wat_case(arg_lit_direct,
 '  ;; arg/3 specialized for `put_constant N, A1; put_value T, A2;
-  ;; put_variable Dest, A3; builtin_call arg/3, 3`. Same structure
-  ;; as arg_reg_direct but A1 is set from a literal N.
+  ;; put_variable Dest, A3; builtin_call arg/3, 3`.
+  ;; Same fast-path / fallback structure as arg_reg_direct, but
+  ;; skips the N deref + integer-tag check entirely since N is an
+  ;; i64 literal carried in op2.
   ;; op1: TIdx (low 8), DestIdx (bits 8-15).  op2: N (i64 signed).
   (local $op1i i32)
-  (local $t_idx i32) (local $dest_idx i32) (local $fresh_addr i32)
+  (local $t_idx i32) (local $dest_idx i32)
+  (local $t_addr i32) (local $n i32) (local $arity i32)
+  (local $arg_off i32) (local $fresh_addr i32)
   (local.set $op1i (i32.wrap_i64 (local.get $op1)))
   (local.set $t_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
   (local.set $dest_idx
     (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
-  ;; A1 := integer(op2)
+  (local.set $n (i32.wrap_i64 (local.get $op2)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u
+          (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (call $set_reg (local.get $dest_idx)
+            (call $val_tag (local.get $arg_off))
+            (call $val_payload (local.get $arg_off)))
+          (call $inc_pc)
+          (return (i32.const 1))))))
+  ;; Fallback: same reconstruction as arg_reg_direct.
   (call $set_reg (i32.const 0) (i32.const 1) (local.get $op2))
-  ;; A2 := contents of T reg.
   (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
-  ;; A3 / Dest := Ref(fresh_unbound).
   (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
   (call $set_reg (i32.const 2) (i32.const 5)
     (i64.extend_i32_u (local.get $fresh_addr)))
