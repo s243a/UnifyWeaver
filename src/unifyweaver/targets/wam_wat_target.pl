@@ -119,6 +119,8 @@ instr_tag(univ_direct,      44).
 instr_tag(is_list_direct,   45).
 instr_tag(arg_reg_direct,   46).
 instr_tag(arg_lit_direct,   47).
+instr_tag(arg_to_a1_reg,    48).
+instr_tag(arg_to_a1_lit,    49).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -468,6 +470,30 @@ wam_instruction_to_wat_bytes(arg_reg_direct(NReg, TReg, DestReg),
 wam_instruction_to_wat_bytes(arg_lit_direct(N, TReg, DestReg),
                              _Labels, Hex) :-
     instr_tag(arg_lit_direct, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(DestReg, DIdx),
+    Op1 is TIdx \/ (DIdx << 8),
+    encode_instr_hex(Tag, Op1, N, Hex).
+
+%% arg_to_a1_reg / arg_to_a1_lit: fusion of arg_reg_direct +
+%% put_value(Dest, A1). The next call's A1 always needs the arg
+%% value, so fold the put_value into the arg instruction — saves
+%% one instruction dispatch + one 12-byte reg-to-reg copy per call.
+%% Dest is still written (the WAM reg may be read again later or
+%% referenced via the env frame), but A1 is written in the same
+%% pass using the cached arg tag/payload.
+%% Same op1 layout as arg_reg_direct / arg_lit_direct.
+wam_instruction_to_wat_bytes(arg_to_a1_reg(NReg, TReg, DestReg),
+                             _Labels, Hex) :-
+    instr_tag(arg_to_a1_reg, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(DestReg, DIdx),
+    Op1 is NIdx \/ (TIdx << 8) \/ (DIdx << 16),
+    encode_instr_hex(Tag, Op1, 0, Hex).
+wam_instruction_to_wat_bytes(arg_to_a1_lit(N, TReg, DestReg),
+                             _Labels, Hex) :-
+    instr_tag(arg_to_a1_lit, Tag),
     reg_name_to_index(TReg, TIdx),
     reg_name_to_index(DestReg, DIdx),
     Op1 is TIdx \/ (DIdx << 8),
@@ -1791,6 +1817,114 @@ wam_wat_case(arg_lit_direct,
   (if (result i32) (call $builtin_arg)
     (then (call $inc_pc) (i32.const 1))
     (else (i32.const 0)))').
+
+wam_wat_case(arg_to_a1_reg,
+'  ;; arg_reg_direct fused with put_value(Dest, A1). Fast path reads
+  ;; the arg cell once and writes it to BOTH Dest (env-frame slot,
+  ;; for any subsequent reads) AND A1 (argument register, for the
+  ;; next call). Saves one instruction dispatch + one 12-byte
+  ;; reg-to-reg copy per arg/3-call-to-Prolog transition.
+  ;; op1: NIdx (low 8), TIdx (bits 8-15), DestIdx (bits 16-23).
+  (local $op1i i32)
+  (local $n_idx i32) (local $t_idx i32) (local $dest_idx i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $n_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $t_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $dest_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u
+          (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (local.get $dest_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $inc_pc)
+          (return (i32.const 1))))))
+  ;; Fallback: emulate the original 5-instr sequence (put_value N A1;
+  ;; put_value T A2; put_variable Dest A3; arg_direct; put_value Dest A1).
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $dest_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  ;; After $builtin_arg binds A3 (= the fresh cell), also move the
+  ;; bound value into A1 (the put_value A1 that would have followed).
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $dest_idx)))
+  (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(arg_to_a1_lit,
+'  ;; arg_lit_direct fused with put_value(Dest, A1). Same structure
+  ;; as arg_to_a1_reg but N is an i64 literal in op2.
+  ;; op1: TIdx (low 8), DestIdx (bits 8-15).  op2: N (i64 signed).
+  (local $op1i i32)
+  (local $t_idx i32) (local $dest_idx i32)
+  (local $t_addr i32) (local $n i32) (local $arity i32)
+  (local $arg_off i32) (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $t_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $dest_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $n (i32.wrap_i64 (local.get $op2)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity
+        (i32.wrap_i64 (i64.shr_u
+          (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (local.get $dest_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $inc_pc)
+          (return (i32.const 1))))))
+  ;; Fallback: same reconstruction as arg_lit_direct + post-call A1 copy.
+  (call $set_reg (i32.const 0) (i32.const 1) (local.get $op2))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $dest_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $dest_idx)))
+  (call $inc_pc)
+  (i32.const 1)').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -3817,7 +3951,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         peephole_neck_cut(InstrsWithLabels, NeckCutOptimized),
         peephole_nested_arith(NeckCutOptimized, NestedArithOptimized),
         peephole_fused_arith(NestedArithOptimized, ArithOptimized),
-        peephole_direct_builtins(ArithOptimized, OptimizedWithLabels),
+        peephole_direct_builtins(ArithOptimized, DirectBuiltinsOptimized),
+        peephole_arg_to_a1(DirectBuiltinsOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -4175,6 +4310,32 @@ direct_builtin_map('functor/3',   3, functor_direct).
 direct_builtin_map('copy_term/2', 2, copy_term_direct).
 direct_builtin_map('=../2',       2, univ_direct).
 direct_builtin_map('is_list/1',   1, is_list_direct).
+
+%% peephole_arg_to_a1(+Instrs, -Optimized)
+%  Fuses arg_reg_direct(N, T, Dest) + put_value(Dest, A1) into a
+%  single arg_to_a1_reg(N, T, Dest) instruction (and analogously
+%  for arg_lit_direct → arg_to_a1_lit). Runs AFTER
+%  peephole_direct_builtins so it sees the direct-dispatch form
+%  rather than the raw builtin_call sequence.
+%
+%  This fires in sum_ints_args / term_depth_args where arg/3's
+%  result is immediately put_value'd into A1 for the next call.
+%  Saves one instruction dispatch + one 12-byte reg-to-reg copy.
+peephole_arg_to_a1([], []).
+peephole_arg_to_a1([arg_reg_direct(N, T, Dest),
+                    put_value(Dest2, 'A1') | Rest],
+                   [arg_to_a1_reg(N, T, Dest) | Out]) :-
+    Dest == Dest2,
+    !,
+    peephole_arg_to_a1(Rest, Out).
+peephole_arg_to_a1([arg_lit_direct(N, T, Dest),
+                    put_value(Dest2, 'A1') | Rest],
+                   [arg_to_a1_lit(N, T, Dest) | Out]) :-
+    Dest == Dest2,
+    !,
+    peephole_arg_to_a1(Rest, Out).
+peephole_arg_to_a1([H|T], [H|Out]) :-
+    peephole_arg_to_a1(T, Out).
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
