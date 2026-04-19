@@ -62,6 +62,7 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(CoreCode, _, _, _, '(defn wam-execute-caller [a1]')),
         assertion(sub_string(CoreCode, _, _, _, '(defn wam-call-caller [a1]')),
         assertion(sub_string(CoreCode, _, _, _, 'runtime/run-wam-predicate shared-wam-code shared-wam-labels wam-execute-caller-start-pc')),
+        assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers')),
         assertion(sub_string(CoreCode, _, _, _, '(def predicate-dispatch {')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_execute_caller/1" wam-execute-caller')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_call_caller/1" wam-call-caller')),
@@ -109,6 +110,24 @@ test(foreign_predicates_emit_call_foreign_stub) :-
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "wam_fact" :arity 1}')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" 0')),
         assertion(\+ sub_string(CoreCode, _, _, _, '{:op :get-constant :constant "a" :reg "A1"}')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_foreign_handlers_emit_handler_map) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_foreign_handler', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [ namespace('generated.wam_foreign_handler_test'),
+                                    foreign_predicates([wam_fact/1]),
+                                    clojure_foreign_handlers([
+                                        handler(wam_fact/1, "(fn [args] (= (first args) \"a\"))")
+                                    ])
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_foreign_handler_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" (fn [args] (= (first args) "a"))')),
+        assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers)')),
         delete_directory_and_contents(TmpDir)
     )).
 

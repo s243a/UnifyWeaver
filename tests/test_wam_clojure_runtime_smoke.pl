@@ -100,7 +100,11 @@ run_smoke :-
           user:wam_hard_cut_outer_ok/1
         ],
         [ namespace('generated.wam_exec_test'),
-          module_name('wam-clojure-exec-test')
+          module_name('wam-clojure-exec-test'),
+          foreign_predicates([wam_fact/1]),
+          clojure_foreign_handlers([
+              handler(wam_fact/1, "(fn [args] (= (first args) \"a\"))")
+          ])
         ],
         TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),

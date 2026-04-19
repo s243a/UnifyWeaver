@@ -237,7 +237,7 @@ for further optimization work.
 | Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
 | One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
 | Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
-| FFI controls | Scaffolded | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Runtime foreign handlers/kernels remain future work |
+| FFI controls | Scaffolded | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic Clojure handlers can be registered; native graph kernels remain future work |
 | Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
 | Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
@@ -267,12 +267,13 @@ for further optimization work.
 6. Clojure now has the same basic control vocabulary used by benchmark
    matrices in other WAM targets: explicit foreign predicates can be marked,
    and `no_kernels(true)` / `foreign_lowering(false)` force the pure WAM path.
-   Full Clojure kernel execution is still not implemented.
+   Deterministic handlers can be wired through `clojure_foreign_handlers/1`;
+   full Clojure graph kernels are still not implemented.
 
 ### Highest-value remaining work
 
-1. Implement Clojure foreign handler registration and native graph kernels
-   behind the existing `call-foreign` stub/control surface.
+1. Implement native Clojure graph kernels behind the existing `call-foreign`
+   handler surface.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once

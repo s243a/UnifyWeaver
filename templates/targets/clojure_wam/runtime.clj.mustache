@@ -68,11 +68,15 @@
 (defn resolve-instructions [code labels]
   (mapv #(resolve-instruction labels %) code))
 
-(defn new-state [code labels start-pc regs]
+(defn new-state
+  ([code labels start-pc regs]
+   (new-state code labels start-pc regs {}))
+  ([code labels start-pc regs foreign-handlers]
   {:code code
    :labels labels
    :pc start-pc
    :regs regs
+   :foreign-handlers foreign-handlers
    :env-stack []
    :bindings {}
    :stack []
@@ -83,7 +87,7 @@
    :choice-points []
    :cut-bar 0
    :next-var-id 0
-   :status :running})
+   :status :running}))
 
 (defn fail-state [state]
   (assoc state :status :failed))
@@ -309,6 +313,24 @@
       :else
       (backtrack state))))
 
+(defn foreign-key [pred arity]
+  (str pred "/" arity))
+
+(defn foreign-args [state arity]
+  (mapv (fn [idx]
+          (deref-value (:bindings state)
+                       (reg-get-raw state (str "A" idx))))
+        (range 1 (inc arity))))
+
+(defn execute-foreign [state instr]
+  (let [key (foreign-key (:pred instr) (:arity instr))
+        handler (get (:foreign-handlers state) key)]
+    (if handler
+      (if (boolean (handler (foreign-args state (:arity instr))))
+        (advance state)
+        (backtrack state))
+      (backtrack state))))
+
 (defn step [state]
   (let [instr (fetch-instr state)]
     (if-not instr
@@ -510,10 +532,7 @@
           (backtrack state))
 
         :call-foreign
-        ;; Foreign handlers are introduced by target-specific kernels.
-        ;; Until a handler is registered, foreign calls fail cleanly rather
-        ;; than falling through to a missing WAM body.
-        (backtrack state)
+        (execute-foreign state instr)
 
         :cut-ite
         (-> state
@@ -535,5 +554,8 @@
       :failed false
       (recur (step s)))))
 
-(defn run-wam-predicate [code labels start-pc regs]
-  (run-wam (new-state code labels start-pc regs)))
+(defn run-wam-predicate
+  ([code labels start-pc regs]
+   (run-wam-predicate code labels start-pc regs {}))
+  ([code labels start-pc regs foreign-handlers]
+   (run-wam (new-state code labels start-pc regs foreign-handlers))))
