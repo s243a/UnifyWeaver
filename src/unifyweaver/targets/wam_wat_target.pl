@@ -5487,38 +5487,51 @@ a2_setup(put_value(A2Src, 'A2'), A2Src, 0).
 a2_setup(put_variable(A2Dst, 'A2'), A2Dst, 1).
 
 %% reg_used_before_clause_end(+Reg, +Instrs)
-%  Conservative liveness check: succeeds if Reg appears as an operand
-%  in any instruction before a clause-ending instruction (proceed or
-%  execute). Fails (= Reg is dead) if the clause ends without a
-%  reference. An unexpected jump/branch aborts with "used" to stay
-%  correct under control-flow uncertainty.
-reg_used_before_clause_end(_, []) :- !, fail.
-reg_used_before_clause_end(Reg, [Instr|_]) :-
+%  Liveness check: succeeds if Reg is referenced on any reachable
+%  path from here to the end of the current clause body. Fails
+%  (= Reg is dead) if no such reference exists.
+%
+%  The scan is a linear walk that tracks `try_me_else` / `trust_me`
+%  nesting via a depth counter:
+%    - Outside any nested try_me_else (depth 0): proceed/execute
+%      marks the end of the current clause → stop.
+%    - Inside a nested try_me_else…trust_me block (depth > 0): the
+%      proceed in the then-branch of an in-clause disjunction or
+%      if-then-else is NOT the clause end — the else-branch still
+%      lies ahead in the linear stream → keep scanning.
+%
+%  This handles the two common in-clause control-flow shapes:
+%    (guard -> then ; else)   — try_me_else ... trust_me
+%    (a ; b ; c)              — try_me_else ... retry_me_else ... trust_me
+%  and their nested variants. Forward jumps / cut_ite / switch_* /
+%  label markers are transparent: the scan walks past them because
+%  every reachable target within the clause is also in the linear
+%  stream later.
+%
+%  A reference in an unreachable tail (e.g., after an unconditional
+%  jump, in dead code) would be counted as live — harmless over-
+%  approximation; the correctness direction is "never call dead on
+%  something live".
+reg_used_before_clause_end(Reg, Instrs) :-
+    reg_used_scan(Reg, Instrs, 0).
+
+reg_used_scan(_, [], _) :- !, fail.
+reg_used_scan(Reg, [Instr|_], _) :-
     instr_references_reg(Instr, Reg), !.
-reg_used_before_clause_end(_, [Instr|_]) :-
+reg_used_scan(_, [Instr|_], 0) :-
     clause_end_instr(Instr), !, fail.
-reg_used_before_clause_end(_, [Instr|_]) :-
-    control_flow_instr(Instr), !.           % conservative: assume used
-reg_used_before_clause_end(Reg, [_|Rest]) :-
-    reg_used_before_clause_end(Reg, Rest).
+reg_used_scan(Reg, [try_me_else(_)|Rest], Depth) :- !,
+    D1 is Depth + 1,
+    reg_used_scan(Reg, Rest, D1).
+reg_used_scan(Reg, [trust_me|Rest], Depth) :-
+    Depth > 0, !,
+    D1 is Depth - 1,
+    reg_used_scan(Reg, Rest, D1).
+reg_used_scan(Reg, [_|Rest], Depth) :-
+    reg_used_scan(Reg, Rest, Depth).
 
 clause_end_instr(proceed).
 clause_end_instr(execute(_)).
-
-%% control_flow_instr(+Instr)
-%  Non-terminal control flow we don't trace through in the liveness
-%  scan. Conservatively treated as "Reg might be used at target".
-control_flow_instr(jump(_)).
-control_flow_instr(neck_cut_test(_, _, _)).
-control_flow_instr(cut_ite).
-control_flow_instr(try_me_else(_)).
-control_flow_instr(retry_me_else(_)).
-control_flow_instr(trust_me).
-control_flow_instr(switch_on_const(_, _)).
-control_flow_instr(switch_on_struct(_, _)).
-control_flow_instr(switch_on_term_hdr(_)).
-control_flow_instr(switch_entry(_, _, _)).
-control_flow_instr(switch_struct_entry(_, _)).
 
 %% instr_references_reg(+Instr, +Reg)
 %  True if Reg appears as any operand of Instr. Uniform term-walking
