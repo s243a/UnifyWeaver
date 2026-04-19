@@ -58,6 +58,10 @@ traces, with focused validation available in
 grouped edge source, produces non-empty grouped rows, and reports
 `best_effective_plan`, `auto_strategy_select_ms`, and `auto_probe_ms` so
 override-label fallbacks and probe overhead do not distort the comparison.
+Seeded closure cache-hit timing is isolated by
+`benchmark_seeded_cache_hits.py`, which warms source/target seeded closure
+caches once and then reports in-process cache-hit latencies without the
+generation/build overhead of the smoke sequence.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
