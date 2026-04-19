@@ -199,6 +199,7 @@ register_builtin_targets :-
     register_target(java, jvm, [compiled, streaming, enterprise]),
     register_target(scala, jvm, [compiled, streaming, functional]),
     register_target(clojure, jvm, [compiled, streaming, functional, lisp]),
+    register_target(wam_clojure, jvm, [compiled, streaming, functional, lisp, wam, choice_points, hybrid]),
     register_target(jython, jvm, [scripting, jvm_interop]),
     register_target(kotlin, jvm, [compiled, streaming, android, coroutines]),
     register_target(jamaica, jvm, [assembly, bytecode, macros, native_lowering, recursion, bindings, components]),
@@ -249,6 +250,7 @@ target_module(java, java_target).
 target_module(scala, scala_target).
 target_module(kotlin, kotlin_target).
 target_module(clojure, clojure_target).
+target_module(wam_clojure, wam_clojure_target).
 target_module(jython, jython_target).
 target_module(jamaica, jamaica_target).
 target_module(krakatau, krakatau_target).
