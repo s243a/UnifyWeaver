@@ -111,3 +111,9 @@ boundary layers, most likely:
 
 Without that broader move, counted-path `All` remains boxed in by the current
 `object[]` runtime boundary.
+
+The follow-up
+[`ROW_CONTAINER_ABSTRACTION_SURVEY.md`](./ROW_CONTAINER_ABSTRACTION_SURVEY.md)
+narrows this to a recommended first prototype seam: cached result containers,
+because that layer is broad enough to matter but smaller than a full
+row-wrapper/index rewrite.
