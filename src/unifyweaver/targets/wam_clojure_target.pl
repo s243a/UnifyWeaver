@@ -80,6 +80,7 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
 (def shared-wam-code-raw [])
 (def shared-wam-labels {})
 (def shared-wam-code (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+(def foreign-handlers {})
 
 (def predicate-dispatch {})
 
@@ -91,6 +92,7 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
 ', [CoreNamespace, CoreNamespace, RuntimeNamespace]).
 compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, Code) :-
     collect_wam_entries(Predicates, Options, 0, WamEntries, RawEntries, LabelEntries, DispatchEntries),
+    clojure_foreign_handlers_code(Options, ForeignHandlersCode),
     atomic_list_concat(RawEntries, '\n  ', RawBody0),
     atomic_list_concat(LabelEntries, '\n  ', LabelBody0),
     atomic_list_concat(WamEntries, '\n\n', WrapperCode),
@@ -117,6 +119,10 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
 (def shared-wam-code
   (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
 
+(def foreign-handlers {
+~w
+})
+
 ~w
 
 (def predicate-dispatch {
@@ -132,7 +138,7 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
   (let [[pred-key & pred-args] args]
     (println (invoke-predicate pred-key (mapv edn/read-string pred-args)))))
 
-', [CoreNamespace, CoreNamespace, RuntimeNamespace, RawBody, LabelBody, WrapperCode, DispatchBody]).
+', [CoreNamespace, CoreNamespace, RuntimeNamespace, RawBody, LabelBody, ForeignHandlersCode, WrapperCode, DispatchBody]).
 
 collect_wam_entries([], _, _, [], [], [], []).
 collect_wam_entries([PredIndicator|Rest], Options, PC,
@@ -175,6 +181,26 @@ clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
     LabelPairs = [PredKeyLit-PC],
     NextPC is PC + 2.
 
+clojure_foreign_handlers_code(Options, Code) :-
+    option(clojure_foreign_handlers(Handlers), Options, []),
+    maplist(clojure_foreign_handler_entry, Handlers, Entries),
+    atomic_list_concat(Entries, '\n  ', Body),
+    (Body == "" -> Code = "" ; format(atom(Code), '  ~w', [Body])).
+
+clojure_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :- !,
+    clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry).
+clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry) :-
+    format(atom(PredKey), '~w/~w', [Pred, Arity]),
+    clj_string_literal(PredKey, PredKeyLit),
+    clojure_handler_code_text(HandlerCode, HandlerText),
+    format(atom(Entry), '~w ~s', [PredKeyLit, HandlerText]).
+
+clojure_handler_code_text(HandlerCode, HandlerCode) :-
+    string(HandlerCode), !.
+clojure_handler_code_text(HandlerCode, HandlerText) :-
+    atom(HandlerCode),
+    atom_string(HandlerCode, HandlerText).
+
 compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     wam_code_to_clojure_data(WamCode, 0, RawEntries, LabelPairs, _),
@@ -195,6 +221,8 @@ compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) 
 (def shared-wam-code
   (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
 
+(def foreign-handlers {})
+
 ~w
 ', [RawBody, LabelBody, WrapperCode]).
 
@@ -206,7 +234,7 @@ compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
 '(def ~w-start-pc ~w)
 
 (defn ~w [~w]
-  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w))
+  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers))
 ', [CljName, StartPC, CljName, ArgList, CljName, RegMap]).
 
 wam_code_to_clojure_data(WamCode, BasePC, Entries, LabelPairs, NextPC) :-
