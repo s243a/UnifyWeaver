@@ -85,6 +85,8 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(RuntimeCode, _, _, _, ':unify-variable')),
         assertion(sub_string(RuntimeCode, _, _, _, ':retry-me-else-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':trust-me')),
+        assertion(sub_string(RuntimeCode, _, _, _, ':regs (:regs state)')),
+        assertion(\+ sub_string(RuntimeCode, _, _, _, 'snapshot-choice-regs')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn step [state]')),
         assertion(sub_string(DepsCode, _, _, _, '"-m" "generated.wam_test.core"')),
         assertion(sub_string(ProjectCode, _, _, _, ':main generated.wam_test.core')),

@@ -237,7 +237,7 @@ for further optimization work.
 | Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
 | One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
 | Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
-| Choice points | Partial | Saves `A`/`X` regs plus env stack, bindings, and var counter; still heavier than Haskell/Rust |
+| Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
 | Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
 | Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
@@ -251,12 +251,18 @@ for further optimization work.
    string lookup costs.
 2. Choice-point snapshots cannot be reduced to `A` registers in the current
    Clojure runtime. `X` registers are still needed across retry paths such as
-   generated if-then-else code.
+   generated if-then-else code. Because Clojure maps/vectors are persistent,
+   saving the full register map is cheaper than rebuilding a filtered `A`/`X`
+   snapshot at every choice point.
 3. Treating `!/0` and `cut_ite` as "clear all choice points" is incorrect.
    The runtime now distinguishes clause-level cuts from soft cuts.
 4. The current runtime is still a bindings-centric approximation, not a full
    heap/trail WAM. That keeps the implementation moving, but it also defines
    the next real parity boundary.
+5. The standalone smoke suite now covers structure and list construction
+   across failing branches, including an env-mediated retry path. Nested
+   disjunction/cut shapes remain a generator-level gap rather than a runtime
+   optimization target.
 
 ### Highest-value remaining work
 
