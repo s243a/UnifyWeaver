@@ -117,6 +117,8 @@ instr_tag(functor_direct,  42).
 instr_tag(copy_term_direct, 43).
 instr_tag(univ_direct,      44).
 instr_tag(is_list_direct,   45).
+instr_tag(arg_reg_direct,   46).
+instr_tag(arg_lit_direct,   47).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -441,6 +443,35 @@ wam_instruction_to_wat_bytes(univ_direct, _Labels, Hex) :-
 wam_instruction_to_wat_bytes(is_list_direct, _Labels, Hex) :-
     instr_tag(is_list_direct, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
+
+%% arg_reg_direct(NReg, TReg, DestReg): specialized arg/3 for the
+%% pattern `put_value N, A1; put_value T, A2; put_variable Dest, A3;
+%% arg_direct`. Reads N and T directly from their source registers
+%% and writes the result straight to Dest, skipping the A1/A2/A3
+%% intermediate bindings (and their trail pushes on backtrack-safe
+%% write-once regs).
+%% op1 layout: NIdx (low 8) | TIdx (bits 8-15) | DestIdx (bits 16-23).
+wam_instruction_to_wat_bytes(arg_reg_direct(NReg, TReg, DestReg),
+                             _Labels, Hex) :-
+    instr_tag(arg_reg_direct, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(DestReg, DIdx),
+    Op1 is NIdx \/ (TIdx << 8) \/ (DIdx << 16),
+    encode_instr_hex(Tag, Op1, 0, Hex).
+
+%% arg_lit_direct(NLiteral, TReg, DestReg): specialized arg/3 for the
+%% pattern `put_constant N, A1; put_value T, A2; put_variable Dest, A3;
+%% arg_direct`. Same as arg_reg_direct but N is a compile-time integer
+%% literal (no deref needed for it, no tag check).
+%% op1 layout: TIdx (low 8) | DestIdx (bits 8-15).  op2 = N.
+wam_instruction_to_wat_bytes(arg_lit_direct(N, TReg, DestReg),
+                             _Labels, Hex) :-
+    instr_tag(arg_lit_direct, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(DestReg, DIdx),
+    Op1 is TIdx \/ (DIdx << 8),
+    encode_instr_hex(Tag, Op1, N, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
 wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
@@ -1650,6 +1681,63 @@ wam_wat_case(univ_direct,
 wam_wat_case(is_list_direct,
 '  ;; Direct is_list/1 call, bypassing the $execute_builtin br_table.
   (if (result i32) (call $builtin_is_list)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(arg_reg_direct,
+'  ;; arg/3 specialized for `put_value N, A1; put_value T, A2;
+  ;; put_variable Dest, A3; builtin_call arg/3, 3`.
+  ;; Sets up A1/A2/A3 from the source regs + a fresh heap cell,
+  ;; calls the proven $builtin_arg, and copies A3 back into Dest.
+  ;; Saves four instruction dispatches (one arg_reg_direct vs four
+  ;; separate put/builtin instructions); the arg body itself is
+  ;; unchanged so all mode handling + nondet state stays identical.
+  ;; op1: NIdx (low 8), TIdx (bits 8-15), DestIdx (bits 16-23).
+  (local $op1i i32)
+  (local $n_idx i32) (local $t_idx i32) (local $dest_idx i32)
+  (local $fresh_addr i32)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $n_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $t_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  (local.set $dest_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 16)) (i32.const 0xFF)))
+  ;; A1 := contents of N reg (put_value semantics — 12-byte copy).
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  ;; A2 := contents of T reg.
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  ;; A3 := Ref(fresh_unbound), and Dest := same (put_variable semantics).
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $dest_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (result i32) (call $builtin_arg)
+    (then (call $inc_pc) (i32.const 1))
+    (else (i32.const 0)))').
+
+wam_wat_case(arg_lit_direct,
+'  ;; arg/3 specialized for `put_constant N, A1; put_value T, A2;
+  ;; put_variable Dest, A3; builtin_call arg/3, 3`. Same structure
+  ;; as arg_reg_direct but A1 is set from a literal N.
+  ;; op1: TIdx (low 8), DestIdx (bits 8-15).  op2: N (i64 signed).
+  (local $op1i i32)
+  (local $t_idx i32) (local $dest_idx i32) (local $fresh_addr i32)
+  (local.set $op1i (i32.wrap_i64 (local.get $op1)))
+  (local.set $t_idx (i32.and (local.get $op1i) (i32.const 0xFF)))
+  (local.set $dest_idx
+    (i32.and (i32.shr_u (local.get $op1i) (i32.const 8)) (i32.const 0xFF)))
+  ;; A1 := integer(op2)
+  (call $set_reg (i32.const 0) (i32.const 1) (local.get $op2))
+  ;; A2 := contents of T reg.
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  ;; A3 / Dest := Ref(fresh_unbound).
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $dest_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (result i32) (call $builtin_arg)
     (then (call $inc_pc) (i32.const 1))
     (else (i32.const 0)))').
 
@@ -4001,6 +4089,23 @@ fused_with_outer1(Fn, set_constant(K), Tmp, Dest, Instr) :-
 %  dispatch and one function-call boundary per call; meaningful on
 %  term-walking hot loops (bench_sum_*, bench_term_depth).
 peephole_direct_builtins([], []).
+%% arg/3 specialization — 4-instr pattern with register N.
+peephole_direct_builtins([put_value(NReg, 'A1'),
+                          put_value(TReg, 'A2'),
+                          put_variable(Dest, 'A3'),
+                          builtin_call('arg/3', 3) | Rest],
+                         [arg_reg_direct(NReg, TReg, Dest) | Out]) :-
+    !,
+    peephole_direct_builtins(Rest, Out).
+%% arg/3 specialization — 4-instr pattern with integer-literal N.
+peephole_direct_builtins([put_constant(N, 'A1'),
+                          put_value(TReg, 'A2'),
+                          put_variable(Dest, 'A3'),
+                          builtin_call('arg/3', 3) | Rest],
+                         [arg_lit_direct(N, TReg, Dest) | Out]) :-
+    integer(N),
+    !,
+    peephole_direct_builtins(Rest, Out).
 peephole_direct_builtins([builtin_call(Op, Arity) | Rest],
                          [DirectInstr | Out]) :-
     direct_builtin_map(Op, Arity, DirectInstr),
