@@ -212,6 +212,9 @@ Interpretation:
   `path_state_result_replay_value_lookup` and
   `path_state_result_replay_row_alloc`; on the current benchmark shape, row
   allocation is the larger write-side cost, with value lookup still visible
+- counted-path `All` row allocation is now documented as a broader runtime
+  boundary rather than a purely local replay-loop choice, because execution
+  surfaces, caches, wrappers, and tests all currently expect `object[]` rows
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
