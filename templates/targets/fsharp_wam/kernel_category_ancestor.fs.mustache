@@ -1,0 +1,19 @@
+/// Native depth-bounded DFS for the category_ancestor kernel.
+/// Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+/// Atoms are interned at the FFI boundary so the hot loop uses Map<int,int list>
+/// with integer comparison instead of string hashing.
+let rec nativeKernel_category_ancestor
+    (parents: Map<int, int list>)
+    (cat: int) (root: int) (maxDepth: int)
+    (depth: int) (visited: int list) : int list =
+    let directParents = Map.tryFind cat parents |> Option.defaultValue []
+    let baseHits = directParents |> List.choose (fun p -> if p = root then Some 1 else None)
+    let recHits =
+        if depth >= maxDepth then []
+        else
+            directParents |> List.collect (fun mid ->
+                if List.contains mid visited then []
+                else
+                    nativeKernel_category_ancestor parents mid root maxDepth (depth + 1) (mid :: visited)
+                    |> List.map (fun h -> h + 1))
+    baseHits @ recHits

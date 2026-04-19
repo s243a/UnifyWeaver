@@ -444,7 +444,7 @@ wam_to_fsharp(builtin_call('length/2', 2), Code) :-
 backtrack_fsharp(Code) :-
     Code = '/// Restore state from the top choice point.
 /// Dispatches: aggregate frame → finalizeAggregate, builtin → resumeBuiltin, normal → restore.
-let rec backtrack (s: WamState) : WamState option =
+and backtrack (s: WamState) : WamState option =
     match s.WsCPs with
     | [] -> None
     | cp :: rest ->
@@ -1031,7 +1031,7 @@ and unifyVal (a: Value) (b: Value) (s: WamState) : WamState option =
 run_loop_fsharp(Code) :-
     Code = '/// Main execution loop. Runs until halt (pc=0) or failure.
 /// WamContext is read-only. Tail-recursive via use of trampolining.
-let rec run (ctx: WamContext) (s: WamState) : WamState option =
+and run (ctx: WamContext) (s: WamState) : WamState option =
     if s.WsPC = 0 then Some s
     else
         let instr = ctx.WcCode.[s.WsPC]
@@ -1045,7 +1045,7 @@ let rec run (ctx: WamContext) (s: WamState) : WamState option =
 /// Run multiple seed states in parallel using TPL (System.Threading.Tasks.Parallel).
 /// WamContext is read-only and safely shared across threads.
 /// Each seed gets its own WamState copy — no shared mutable state.
-let runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list =
+and runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list =
     seeds
     |> List.toArray
     |> Array.Parallel.map (fun seed -> run ctx seed)
@@ -1054,7 +1054,7 @@ let runParallel (ctx: WamContext) (seeds: WamState list) : WamState option list 
 /// Indexed fact dispatch for 2-arg facts via BuiltinState CP.
 /// O(1) Map lookup; first match returned, FactRetry CP for the rest.
 and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState option =
-    let basePred = pred |> Seq.takeWhile ((<>) '"'"'/'"'"') |> System.String.Concat
+    let basePred = pred |> Seq.takeWhile ((<>) ''/'') |> System.String.Concat
     let retPC    = s.WsCP
     match Map.tryFind basePred ctx.WcForeignFacts with
     | None -> None
@@ -1184,15 +1184,8 @@ compile_wam_runtime_to_fsharp(_Options, DetectedKernels, Code) :-
     render_template(RunLoopTemplate,
                     [execute_foreign=ExecuteForeignCode],
                     RunLoopCode),
-    fsharp_wam_type_header(TypeHeader),
     format(string(Code),
-'~w
-
-// ============================================================================
-// WAM Runtime
-// ============================================================================
-
-module WamRuntime
+'module WamRuntime
 
 open WamTypes
 
@@ -1201,7 +1194,9 @@ open WamTypes
 ~w
 
 ~w
-', [TypeHeader, StepCode, BacktrackCode, RunLoopCode]).
+
+~w
+', [KernelFunctionsCode, StepCode, BacktrackCode, RunLoopCode]).
 
 % ============================================================================
 % Kernel code generation — F# analogs of the Haskell kernel helpers
@@ -1217,7 +1212,10 @@ generate_kernel_fsharp(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode)
 
 render_kernel_function_fs(Key-Kernel, Code) :-
     Kernel = recursive_kernel(Kind, _, ConfigOps),
-    (   kernel_template_file(Kind, TemplateFile)
+    (   kernel_template_file(Kind, HsTemplateFile),
+        % Replace .hs.mustache with .fs.mustache for F# target
+        atom_concat(Base, '.hs.mustache', HsTemplateFile),
+        atom_concat(Base, '.fs.mustache', TemplateFile)
     ->  atom_concat('templates/targets/fsharp_wam/', TemplateFile, RelPath),
         (   source_file(wam_fsharp_target, SrcFile)
         ->  file_directory_name(SrcFile, SrcDir),
@@ -1392,46 +1390,46 @@ emit_reg_extraction_fs(VarName, integer) :-
 
 emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     length(OutputRegs, NOuts),
-    format('~w    let retPC = s.WsCP~n', [Indent]),
+    format('~wlet retPC = s.WsCP~n', [Indent]),
     emit_multi_out_derefs_fs(OutputRegs, Indent),
-    format('~w    let bindResult ', [Indent]),
+    format('~wlet bindResult ', [Indent]),
     emit_tuple_pattern_fs(NOuts),
     format(' =~n', []),
-    format('~w        let ', [Indent]),
+    format('~w    let ', [Indent]),
     emit_multi_wrap_bindings_fs(OutputRegs, 1),
-    format('~w        { s with WsPC = retPC~n', [Indent]),
+    format('~w    { s with WsPC = retPC~n', [Indent]),
     emit_multi_reg_updates_fs(OutputRegs, Indent),
     emit_multi_binding_updates_fs(OutputRegs, Indent),
     emit_multi_trail_updates_fs(OutputRegs, Indent),
-    format('~w                 WsTrailLen = s.WsTrailLen + ~w }~n', [Indent, NOuts]),
-    format('~w    match results with~n', [Indent]),
-    format('~w    | [] -> None~n', [Indent]),
-    format('~w    | [h] -> Some (bindResult h)~n', [Indent]),
-    format('~w    | h :: restResults ->~n', [Indent]),
-    format('~w        let s1 = bindResult h~n', [Indent]),
+    format('~w             WsTrailLen = s.WsTrailLen + ~w }~n', [Indent, NOuts]),
+    format('~wmatch results with~n', [Indent]),
+    format('~w| [] -> None~n', [Indent]),
+    format('~w| [h] -> Some (bindResult h)~n', [Indent]),
+    format('~w| h :: restResults ->~n', [Indent]),
+    format('~w    let s1 = bindResult h~n', [Indent]),
     emit_multi_outvars_fs(OutputRegs, Indent),
-    format('~w        let restWrapped = restResults |> List.map (fun ', [Indent]),
+    format('~w    let restWrapped = restResults |> List.map (fun ', [Indent]),
     emit_tuple_pattern_fs(NOuts),
     format(' -> [', []),
     emit_multi_wrap_list_fs(OutputRegs, 1),
     format('])~n', []),
-    format('~w        let cp = { CpNextPC   = retPC~n', [Indent]),
-    format('~w                   CpRegs     = Array.copy s.WsRegs~n', [Indent]),
-    format('~w                   CpStack    = s.WsStack~n', [Indent]),
-    format('~w                   CpCP       = s.WsCP~n', [Indent]),
-    format('~w                   CpTrailLen = s.WsTrailLen~n', [Indent]),
-    format('~w                   CpHeapLen  = s.WsHeapLen~n', [Indent]),
-    format('~w                   CpBindings = s.WsBindings~n', [Indent]),
-    format('~w                   CpCutBar   = s.WsCutBar~n', [Indent]),
-    format('~w                   CpAggFrame = None~n', [Indent]),
-    format('~w                   CpBuiltin  = Some (FFIStreamRetry ', [Indent]),
+    format('~w    let cp = { CpNextPC   = retPC~n', [Indent]),
+    format('~w               CpRegs     = Array.copy s.WsRegs~n', [Indent]),
+    format('~w               CpStack    = s.WsStack~n', [Indent]),
+    format('~w               CpCP       = s.WsCP~n', [Indent]),
+    format('~w               CpTrailLen = s.WsTrailLen~n', [Indent]),
+    format('~w               CpHeapLen  = s.WsHeapLen~n', [Indent]),
+    format('~w               CpBindings = s.WsBindings~n', [Indent]),
+    format('~w               CpCutBar   = s.WsCutBar~n', [Indent]),
+    format('~w               CpAggFrame = None~n', [Indent]),
+    format('~w               CpBuiltin  = Some (FFIStreamRetry (', [Indent]),
     emit_outregs_list_fs(OutputRegs),
-    format(' outVars restWrapped retPC) }~n', []),
-    format('~w        Some { s1 with WsCPs = cp :: s1.WsCPs; WsCPsLen = s1.WsCPsLen + 1 }~n', [Indent]).
+    format(', outVars, restWrapped, retPC)) }~n', []),
+    format('~w    Some { s1 with WsCPs = cp :: s1.WsCPs; WsCPsLen = s1.WsCPsLen + 1 }~n', [Indent]).
 
 emit_multi_out_derefs_fs([], _).
 emit_multi_out_derefs_fs([output(RegN, _)|Rest], Indent) :-
-    format('~w    let outReg_~w = s.WsRegs.[~w] |> derefVar s.WsBindings~n',
+    format('~wlet outReg_~w = s.WsRegs.[~w] |> derefVar s.WsBindings~n',
            [Indent, RegN, RegN]),
     emit_multi_out_derefs_fs(Rest, Indent).
 
@@ -1459,7 +1457,7 @@ emit_multi_wrap_bindings_fs([output(_, Type)|Rest], I) :-
     emit_multi_wrap_bindings_fs(Rest, I1).
 
 emit_multi_reg_updates_fs(OutputRegs, Indent) :-
-    format('~w                 WsRegs = (let r = Array.copy s.WsRegs in ', [Indent]),
+    format('~w             WsRegs = (let r = Array.copy s.WsRegs in ', [Indent]),
     emit_reg_set_chain_fs(OutputRegs, 1),
     format('r)~n', []).
 
@@ -1470,31 +1468,39 @@ emit_reg_set_chain_fs([output(RegN, _)|Rest], I) :-
     emit_reg_set_chain_fs(Rest, I1).
 
 emit_multi_binding_updates_fs(OutputRegs, Indent) :-
-    format('~w                 WsBindings = ', [Indent]),
+    format('~w             WsBindings = ', [Indent]),
     emit_binding_add_chain_fs(OutputRegs, 1),
     format('s.WsBindings~n', []).
 
 emit_binding_add_chain_fs([], _).
 emit_binding_add_chain_fs([output(RegN, _)|Rest], I) :-
-    format('(match outReg_~w with | Unbound v -> Map.add v w_~w | _ -> id) (', [RegN, I]),
+    format('(match outReg_~w with | Unbound v -> Map.add v w_~w | _ -> id) ', [RegN, I]),
     I1 is I + 1,
-    emit_binding_add_chain_fs(Rest, I1),
-    format(')', []).
+    (   Rest = []
+    ->  true
+    ;   format('(', []),
+        emit_binding_add_chain_fs(Rest, I1),
+        format(')', [])
+    ).
 
 emit_multi_trail_updates_fs(OutputRegs, Indent) :-
-    format('~w                 WsTrail = ', [Indent]),
+    format('~w             WsTrail = ', [Indent]),
     emit_trail_entry_chain_fs(OutputRegs, 1),
     format('s.WsTrail~n', []).
 
 emit_trail_entry_chain_fs([], _).
 emit_trail_entry_chain_fs([output(RegN, _)|Rest], I) :-
-    format('(match outReg_~w of | Unbound v -> List.cons { TrailVarId = v; TrailOldVal = Map.tryFind v s.WsBindings } | _ -> id) (', [RegN]),
+    format('(match outReg_~w with | Unbound v -> (fun tl -> { TrailVarId = v; TrailOldVal = Map.tryFind v s.WsBindings } :: tl) | _ -> id) ', [RegN]),
     I1 is I + 1,
-    emit_trail_entry_chain_fs(Rest, I1),
-    format(')', []).
+    (   Rest = []
+    ->  true
+    ;   format('(', []),
+        emit_trail_entry_chain_fs(Rest, I1),
+        format(')', [])
+    ).
 
 emit_multi_outvars_fs(OutputRegs, Indent) :-
-    format('~w        let outVars = [', [Indent]),
+    format('~w    let outVars = [', [Indent]),
     emit_outvars_list_fs(OutputRegs, 1),
     format(']~n', []).
 
@@ -1530,42 +1536,216 @@ emit_multi_wrap_list_fs([output(_, Type)|Rest], I) :-
 % ============================================================================
 
 %% compile_wam_predicate_to_fsharp(+PredIndicator, +WamCode, +Options, -Code)
-compile_wam_predicate_to_fsharp(PredIndicator, WamCode, _Options, Code) :-
+%  Converts WAM assembly text for a single predicate into F# source defining
+%  an Instruction list and a labels map.  Mirrors wam_haskell_target's
+%  compile_wam_predicate_to_haskell/4 but emits F# discriminated-union syntax.
+compile_wam_predicate_to_fsharp(PredIndicator, WamCode, Options, Code) :-
     (   PredIndicator = _M:Pred/Arity -> true ; PredIndicator = Pred/Arity ),
-    format(atom(FuncName), '~w_~w', [Pred, Arity]),
-    % Split WamCode into instruction lines and translate each
-    atom_string(WamCode, WamStr),
+    (   string(WamCode) -> WamStr = WamCode ; atom_string(WamCode, WamStr) ),
+    (   member(base_pc(BasePC), Options) -> true ; BasePC = 1 ),
     split_string(WamStr, "\n", "", Lines),
-    maplist(translate_wam_line_fs, Lines, FsLines),
-    atomic_list_concat(FsLines, '\n', InstrBody),
+    wam_lines_to_fsharp(Lines, BasePC, InstrExprs, LabelExprs),
+    atomic_list_concat(InstrExprs, '\n      ; ', InstrCode),
+    atomic_list_concat(LabelExprs, '; ', LabelCode),
+    atom_string(Pred, PredStr),
+    atomic_list_concat(PredParts, '$', PredStr),
+    atomic_list_concat(PredParts, '_', PredSafe),
+    format(atom(FuncName), '~w_~w', [PredSafe, Arity]),
     format(string(Code),
 '// ~w/~w
 let ~w_code : Instruction list =
-    [ ~w ]
+    [ ~w
+    ]
 
 let ~w_labels : Map<string, int> =
-    Map.ofList [ ("~w/~w", 1) ]
-', [Pred, Arity, FuncName, InstrBody, FuncName, Pred, Arity]).
+    Map.ofList [ ~w ]
+', [Pred, Arity, FuncName, InstrCode, FuncName, LabelCode]).
 
-translate_wam_line_fs(Line, FsLine) :-
-    (   wam_line_to_fsharp_instr(Line, Instr)
-    ->  FsLine = Instr
-    ;   format(atom(FsLine), '// ~w', [Line])
+%% wam_lines_to_fsharp(+Lines, +PC, -InstrExprs, -LabelExprs)
+wam_lines_to_fsharp([], _, [], []).
+wam_lines_to_fsharp([Line|Rest], PC, Instrs, Labels) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_lines_to_fsharp(Rest, PC, Instrs, Labels)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelName),
+            format(string(LExpr), '("~w", ~w)', [LabelName, PC]),
+            Labels = [LExpr|LR],
+            wam_lines_to_fsharp(Rest, PC, Instrs, LR)
+        ;   wam_instr_to_fsharp(CleanParts, FsExpr),
+            NPC is PC + 1,
+            Instrs = [FsExpr|IR],
+            wam_lines_to_fsharp(Rest, NPC, IR, Labels)
+        )
     ).
 
-% Basic instruction string translations (sufficient for interpreter path)
-wam_line_to_fsharp_instr(Line, Instr) :-
-    string_concat("get_constant(", _, Line), !,
-    format(atom(Instr), 'GetConstant ~~parsed~~ (* ~w *)', [Line]).
-wam_line_to_fsharp_instr(Line, Instr) :-
-    string_concat("proceed", _, Line), !,
-    Instr = 'Proceed'.
-wam_line_to_fsharp_instr(Line, Instr) :-
-    string_concat("allocate", _, Line), !,
-    Instr = 'Allocate'.
-wam_line_to_fsharp_instr(Line, Instr) :-
-    string_concat("deallocate", _, Line), !,
-    Instr = 'Deallocate'.
+%% fs_reg_name_to_int(+RegName, -Int)
+%  A1-A99 → 1-99, X1-X99 → 101-199, Y1-Y99 → 201-299.
+fs_reg_name_to_int(Reg, Int) :-
+    atom_string(RegA, Reg),
+    sub_atom(RegA, 0, 1, _, Bank),
+    sub_atom(RegA, 1, _, 0, NumA),
+    atom_number(NumA, Num),
+    (   Bank == 'A' -> Int = Num
+    ;   Bank == 'X' -> Int is Num + 100
+    ;   Bank == 'Y' -> Int is Num + 200
+    ;   Int = 0
+    ).
+
+%% fs_clean_comma(+Str, -Clean) — strip trailing comma
+fs_clean_comma(Str, Clean) :-
+    (   sub_string(Str, _, 1, 0, ",")
+    ->  sub_string(Str, 0, _, 1, Clean)
+    ;   Clean = Str
+    ).
+
+%% fs_wam_value(+WamVal, -FsExpr)
+fs_wam_value(Val, Fs) :-
+    (   number_string(N, Val), integer(N)
+    ->  format(string(Fs), 'Integer ~w', [N])
+    ;   number_string(F, Val), float(F)
+    ->  format(string(Fs), 'Float ~w', [F])
+    ;   Val == "[]"
+    ->  Fs = "Atom \"[]\""
+    ;   format(string(Fs), 'Atom "~w"', [Val])
+    ).
+
+%% fs_parse_functor(+FunctorString, -Name, -Arity)
+%  Extract name and arity from "name/N" format.  E.g. "-/1" → ("-", 1).
+fs_parse_functor(FN, Name, Arity) :-
+    atom_string(FNA, FN),
+    (   sub_atom(FNA, Before, 1, _, '/'),
+        sub_atom(FNA, 0, Before, _, Name),
+        After is Before + 1,
+        sub_atom(FNA, After, _, 0, ArityStr),
+        atom_number(ArityStr, Arity)
+    ->  true
+    ;   Name = FNA, Arity = 0
+    ).
+
+%% fs_escape_string(+In, -Out) — escape backslashes for F# string literals
+fs_escape_string(In, Out) :-
+    atom_string(In, S),
+    split_string(S, "\\", "", Parts),
+    atomic_list_concat(Parts, "\\\\", Out).
+
+%% wam_instr_to_fsharp(+Parts, -FSharpExpr)
+wam_instr_to_fsharp(["get_constant", C, Ai], Fs) :-
+    fs_clean_comma(C, CC), fs_clean_comma(Ai, CAi),
+    fs_wam_value(CC, FsVal), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetConstant (~w, ~w)', [FsVal, AiI]).
+wam_instr_to_fsharp(["get_variable", Xn, Ai], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_clean_comma(Ai, CAi),
+    fs_reg_name_to_int(CXn, XnI), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetVariable (~w, ~w)', [XnI, AiI]).
+wam_instr_to_fsharp(["get_value", Xn, Ai], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_clean_comma(Ai, CAi),
+    fs_reg_name_to_int(CXn, XnI), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetValue (~w, ~w)', [XnI, AiI]).
+wam_instr_to_fsharp(["get_structure", FN, Arity, Ai], Fs) :-
+    fs_clean_comma(FN, CFN), fs_clean_comma(Arity, CA), fs_clean_comma(Ai, CAi),
+    (   number_string(ANum, CA) -> true ; ANum = 0 ),
+    fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetStructure ("~w", ~w, ~w)', [CFN, ANum, AiI]).
+wam_instr_to_fsharp(["get_list", Ai], Fs) :-
+    fs_clean_comma(Ai, CAi), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'GetList ~w', [AiI]).
+wam_instr_to_fsharp(["unify_variable", Xn], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_reg_name_to_int(CXn, XnI),
+    format(string(Fs), 'UnifyVariable ~w', [XnI]).
+wam_instr_to_fsharp(["unify_value", Xn], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_reg_name_to_int(CXn, XnI),
+    format(string(Fs), 'UnifyValue ~w', [XnI]).
+wam_instr_to_fsharp(["unify_constant", C], Fs) :-
+    fs_wam_value(C, FsVal),
+    format(string(Fs), 'UnifyConstant (~w)', [FsVal]).
+wam_instr_to_fsharp(["put_constant", C, Ai], Fs) :-
+    fs_clean_comma(C, CC), fs_clean_comma(Ai, CAi),
+    fs_wam_value(CC, FsVal), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'PutConstant (~w, ~w)', [FsVal, AiI]).
+wam_instr_to_fsharp(["put_variable", Xn, Ai], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_clean_comma(Ai, CAi),
+    fs_reg_name_to_int(CXn, XnI), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'PutVariable (~w, ~w)', [XnI, AiI]).
+wam_instr_to_fsharp(["put_value", Xn, Ai], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_clean_comma(Ai, CAi),
+    fs_reg_name_to_int(CXn, XnI), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'PutValue (~w, ~w)', [XnI, AiI]).
+wam_instr_to_fsharp(["put_structure", FN, Ai], Fs) :-
+    fs_clean_comma(FN, CFN), fs_clean_comma(Ai, CAi),
+    fs_parse_functor(CFN, FuncName, FsArity),
+    fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'PutStructure ("~w", ~w, ~w)', [FuncName, AiI, FsArity]).
+wam_instr_to_fsharp(["put_list", Ai], Fs) :-
+    fs_clean_comma(Ai, CAi), fs_reg_name_to_int(CAi, AiI),
+    format(string(Fs), 'PutList ~w', [AiI]).
+wam_instr_to_fsharp(["set_value", Xn], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_reg_name_to_int(CXn, XnI),
+    format(string(Fs), 'SetValue ~w', [XnI]).
+wam_instr_to_fsharp(["set_variable", Xn], Fs) :-
+    fs_clean_comma(Xn, CXn), fs_reg_name_to_int(CXn, XnI),
+    format(string(Fs), 'SetVariable ~w', [XnI]).
+wam_instr_to_fsharp(["set_constant", C], Fs) :-
+    fs_wam_value(C, FsVal),
+    format(string(Fs), 'SetConstant (~w)', [FsVal]).
+wam_instr_to_fsharp(["allocate"], "Allocate").
+wam_instr_to_fsharp(["deallocate"], "Deallocate").
+wam_instr_to_fsharp(["call", P, N], Fs) :-
+    fs_clean_comma(P, CP), fs_clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    format(string(Fs), 'Call ("~w", ~w)', [CP, Num]).
+wam_instr_to_fsharp(["execute", P], Fs) :-
+    format(string(Fs), 'Execute "~w"', [P]).
+wam_instr_to_fsharp(["proceed"], "Proceed").
+wam_instr_to_fsharp(["jump", Label], Fs) :-
+    format(string(Fs), 'Jump "~w"', [Label]).
+wam_instr_to_fsharp(["cut_ite"], "CutIte").
+wam_instr_to_fsharp(["builtin_call", Op, N], Fs) :-
+    fs_clean_comma(Op, COp), fs_clean_comma(N, CN),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    fs_escape_string(COp, ECOp),
+    format(string(Fs), 'BuiltinCall ("~w", ~w)', [ECOp, Num]).
+wam_instr_to_fsharp(["try_me_else", Label], Fs) :-
+    format(string(Fs), 'TryMeElse "~w"', [Label]).
+wam_instr_to_fsharp(["retry_me_else", Label], Fs) :-
+    format(string(Fs), 'RetryMeElse "~w"', [Label]).
+wam_instr_to_fsharp(["trust_me"], "TrustMe").
+wam_instr_to_fsharp(["switch_on_constant"|Entries], Fs) :-
+    fs_parse_switch_entries(Entries, FsPairs),
+    atomic_list_concat(FsPairs, '; ', PairsStr),
+    format(string(Fs), 'SwitchOnConstant (Map.ofList [~w])', [PairsStr]).
+wam_instr_to_fsharp(["switch_on_constant_a2"|Entries], Fs) :-
+    fs_parse_switch_entries(Entries, FsPairs),
+    atomic_list_concat(FsPairs, '; ', PairsStr),
+    format(string(Fs), 'SwitchOnConstant (Map.ofList [~w])', [PairsStr]).
+wam_instr_to_fsharp(["begin_aggregate", Type, ValReg, ResReg], Fs) :-
+    fs_clean_comma(Type, CT), fs_clean_comma(ValReg, CV), fs_clean_comma(ResReg, CR),
+    fs_reg_name_to_int(CV, VI), fs_reg_name_to_int(CR, RI),
+    format(string(Fs), 'BeginAggregate ("~w", ~w, ~w)', [CT, VI, RI]).
+wam_instr_to_fsharp(["end_aggregate", ValReg], Fs) :-
+    fs_clean_comma(ValReg, CV),
+    fs_reg_name_to_int(CV, VI),
+    format(string(Fs), 'EndAggregate ~w', [VI]).
+% Fallback for unknown instructions
+wam_instr_to_fsharp(Parts, Fs) :-
+    atomic_list_concat(Parts, ' ', Joined),
+    format(string(Fs), '(* UNKNOWN: ~w *) Proceed', [Joined]).
+
+%% fs_parse_switch_entries(+Entries, -FSharpPairs)
+fs_parse_switch_entries([], []).
+fs_parse_switch_entries([Entry|Rest], [FsPair|FsRest]) :-
+    fs_clean_comma(Entry, CEntry),
+    (   sub_atom(CEntry, Before, 1, _, ':')
+    ->  sub_atom(CEntry, 0, Before, _, Key),
+        After is Before + 1,
+        sub_atom(CEntry, After, _, 0, Label),
+        fs_wam_value(Key, FsKey),
+        format(string(FsPair), '(~w, "~w")', [FsKey, Label])
+    ;   format(string(FsPair), '(Atom "~w", "default")', [CEntry])
+    ),
+    fs_parse_switch_entries(Rest, FsRest).
 
 % ============================================================================
 % write_wam_fsharp_project/3 — Project Generation
@@ -1602,18 +1782,25 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
     format(user_error, '[WAM-FSharp] emit_mode=~w  interpreted=~w  lowered=~w~n',
            [EmitMode, NInterp, NLower]),
 
-    % Generate WamRuntime.fs (includes types via fsharp_wam_type_header)
+    % Generate WamTypes.fs (separate module for types)
+    fsharp_wam_type_header(TypeHeader),
+    directory_file_path(ProjectDir, 'WamTypes.fs', TypesPath),
+    write_fs_file(TypesPath, TypeHeader),
+
+    % Generate WamRuntime.fs (runtime functions only)
     compile_wam_runtime_to_fsharp(Options, DetectedKernels, RuntimeCode),
     directory_file_path(ProjectDir, 'WamRuntime.fs', RuntimePath),
     write_fs_file(RuntimePath, RuntimeCode),
 
+    % Compute base PCs for all predicates (shared between Predicates.fs and Lowered.fs)
+    compute_base_pcs_fs(Predicates, BasePCMap),
+
     % Generate Predicates.fs (skip FFI-owned facts — Phase D: -70%)
-    compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, PredsCode),
+    compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, PredsCode),
     directory_file_path(ProjectDir, 'Predicates.fs', PredsPath),
     write_fs_file(PredsPath, PredsCode),
 
     % Generate Lowered.fs
-    compute_base_pcs_fs(Predicates, BasePCMap),
     lower_all_fs(LoweredList, BasePCMap, DetectedKernels, LoweredEntries),
     generate_lowered_fs(LoweredEntries, LoweredCode),
     directory_file_path(ProjectDir, 'Lowered.fs', LoweredPath),
@@ -1635,12 +1822,12 @@ write_wam_fsharp_project(Predicates, Options, ProjectDir) :-
 
 %% write_fs_file(+Path, +Content)
 write_fs_file(Path, Content) :-
-    open(Path, write, Stream),
+    open(Path, write, Stream, [encoding(utf8)]),
     write(Stream, Content),
     close(Stream).
 
-%% compile_predicates_to_fsharp(+Predicates, +Options, +DetectedKernels, -Code)
-compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, Code) :-
+%% compile_predicates_to_fsharp(+Predicates, +Options, +DetectedKernels, +BasePCMap, -Code)
+compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, Code) :-
     % Phase D: skip FFI-owned facts (predicates handled entirely by FFI kernel path)
     exclude(ffi_owned_fact_filter_fs(DetectedKernels), Predicates, WamPredicates),
     (   length(Predicates, NAll), length(WamPredicates, NWam), NSkipped is NAll - NWam,
@@ -1648,7 +1835,7 @@ compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, Code) :-
     ->  format(user_error, '[WAM-FSharp] skipped ~w FFI-owned fact predicates~n', [NSkipped])
     ;   true
     ),
-    maplist(compile_one_predicate_fs(Options), WamPredicates, PredCodes),
+    maplist(compile_one_predicate_fs(Options, BasePCMap), WamPredicates, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', AllPredCode),
     % Build merged code list and label map
     maplist(pred_func_name_fs, WamPredicates, FuncNames),
@@ -1664,14 +1851,18 @@ open WamRuntime
 ~w
 ', [AllPredCode, MergedCodeBuild]).
 
-compile_one_predicate_fs(Options, PredIndicator, Code) :-
+compile_one_predicate_fs(Options, BasePCMap, PredIndicator, Code) :-
     (   PredIndicator = _M:Pred/Arity -> true ; PredIndicator = Pred/Arity ),
     wam_fsharp_predicate_wamcode(PredIndicator, WamCode),
-    compile_wam_predicate_to_fsharp(PredIndicator, WamCode, Options, Code).
+    predicate_base_pc_fs(PredIndicator, BasePCMap, BasePC),
+    compile_wam_predicate_to_fsharp(PredIndicator, WamCode, [base_pc(BasePC)|Options], Code).
 
 pred_func_name_fs(PI, FN) :-
     (   PI = _M:P/A -> true ; PI = P/A ),
-    format(atom(FN), '~w_~w', [P, A]).
+    atom_string(P, PStr),
+    atomic_list_concat(Parts, '$', PStr),
+    atomic_list_concat(Parts, '_', PSafe),
+    format(atom(FN), '~w_~w', [PSafe, A]).
 
 emit_merged_code_build_fs([], Code) :-
     Code = 'let allCode : Instruction array = [||]\nlet allLabels : Map<string, int> = Map.empty'.
@@ -1680,7 +1871,7 @@ emit_merged_code_build_fs(FuncNames, Code) :-
     maplist([FN, Expr]>>(format(atom(Expr), '~w_code', [FN])), FuncNames, CodeExprs),
     atomic_list_concat(CodeExprs, ' @ ', CodeConcat),
     maplist([FN, Expr]>>(format(atom(Expr), '~w_labels', [FN])), FuncNames, LabelExprs),
-    atomic_list_concat(LabelExprs, ' |> Map.union ', LabelUnion),
+    atomic_list_concat(LabelExprs, ' |> mapUnion ', LabelUnion),
     format(string(Code),
 'let allCode : Instruction array = (~w) |> List.toArray
 let allLabels : Map<string, int> = ~w', [CodeConcat, LabelUnion]).
@@ -1730,66 +1921,117 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     pairs_keys(DetectedKernels, ForeignKeys),
     format_foreign_preds_fs(ForeignKeys, ForeignPredsStr),
     option(module_name(_ModName), Options, 'wam-fsharp-bench'),
-    (   option(parallel(true), Options)
-    ->  ParallelDriver =
-'    // Parallel execution via TPL (Array.Parallel.map)
-    let seeds = [
-        { emptyState with WsPC = startPC }
-    ]
-    let results = runParallel ctx seeds
-    results |> List.iteri (fun i r ->
-        match r with
-        | Some sf -> printfn "Seed %d: succeeded. PC=%d" i sf.WsPC
-        | None    -> printfn "Seed %d: failed." i)
-    0'
-    ;   ParallelDriver =
-'    // Sequential execution
-    let s0 = { emptyState with WsPC = startPC }
-    match run ctx s0 with
-    | Some sf -> printfn "Query succeeded. PC=%d" sf.WsPC
-    | None    -> printfn "Query failed."
-    0'
-    ),
     format(string(Code),
 'module Program
 
 open System
+open System.Diagnostics
 open WamTypes
 open WamRuntime
 open Predicates
 open Lowered
 
+// -- TSV loading helpers --------------------------------------------------
+
+let loadTsvPairs (path: string) : (string * string) array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.choose (fun l ->
+        let parts = l.Split(''\\t'')
+        if parts.Length >= 2 then Some (parts.[0].Trim(), parts.[1].Trim())
+        else None)
+
+let loadSingleColumn (path: string) : string array =
+    System.IO.File.ReadAllLines(path)
+    |> Array.skip 1
+    |> Array.filter (fun l -> l.Trim().Length > 0 && not (l.StartsWith("#")))
+    |> Array.map (fun l -> l.Trim())
+
+// -- Atom interning from all string sources --------------------------------
+
+let buildFullAtomInternTable (code: Instruction array) (extraAtoms: string seq) : Map<string, int> * Map<int, string> =
+    let atoms = System.Collections.Generic.HashSet<string>()
+    for instr in code do
+        match instr with
+        | GetConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | PutConstant (Atom a, _) -> atoms.Add(a) |> ignore
+        | SwitchOnConstantPc table -> for (k, _) in table do atoms.Add(k) |> ignore
+        | _ -> ()
+    for a in extraAtoms do atoms.Add(a) |> ignore
+    let sorted = atoms |> Seq.sort |> Seq.toArray
+    let intern   = sorted |> Array.mapi (fun i a -> (a, i)) |> Map.ofArray
+    let deintern = sorted |> Array.mapi (fun i a -> (i, a)) |> Map.ofArray
+    intern, deintern
+
+// -- Build interned FFI facts map -----------------------------------------
+
+let buildFfiFacts (pairs: (string * string) array) (intern: Map<string, int>) : Map<int, int list> =
+    let mutable m : Map<int, int list> = Map.empty
+    for (child, parent) in pairs do
+        match Map.tryFind child intern, Map.tryFind parent intern with
+        | Some cid, Some pid ->
+            let existing = Map.tryFind cid m |> Option.defaultValue []
+            m <- Map.add cid (pid :: existing) m
+        | _ -> ()
+    m
+
+// -- Extract double from WAM Value ----------------------------------------
+
+let extractDouble (v: Value) : float option =
+    match v with
+    | Float f   -> Some f
+    | Integer n -> Some (float n)
+    | _         -> None
+
 [<EntryPoint>]
-let main _argv =
-    // Resolve call instructions (pre-resolve labels to PCs at load time)
+let main argv =
+    let factsDir = if argv.Length > 0 then argv.[0] else "."
+    let numReps  = if argv.Length > 1 then (try int argv.[1] with _ -> 3) else 3
+
+    let sw = Stopwatch.StartNew()
+
+    // Load TSV facts
+    let categoryParents  = loadTsvPairs (System.IO.Path.Combine(factsDir, "category_parent.tsv"))
+    let articleCategories = loadTsvPairs (System.IO.Path.Combine(factsDir, "article_category.tsv"))
+    let roots            = loadSingleColumn (System.IO.Path.Combine(factsDir, "root_categories.tsv"))
+    let root = if roots.Length > 0 then roots.[0] else "Physics"
+
+    let loadMs = sw.ElapsedMilliseconds
+    eprintfn "load_ms=%d" loadMs
+
+    // Resolve call instructions
     let foreignPreds = [ ~w ]
     let resolvedCode = resolveCallInstrs allLabels foreignPreds (Array.toList allCode) |> List.toArray
 
-    // Phase D: build atom intern tables from instruction atoms.
-    // Eliminates Map<string,_> hashing inside kernel recursive hot loops.
-    let buildAtomInternTable (code: Instruction array) : Map<string, int> * Map<int, string> =
-        let atoms = System.Collections.Generic.HashSet<string>()
-        for instr in code do
-            match instr with
-            | GetConstant (Atom a, _) -> atoms.Add(a) |> ignore
-            | PutConstant (Atom a, _) -> atoms.Add(a) |> ignore
-            | SwitchOnConstantPc table -> for (k, _) in table do atoms.Add(k) |> ignore
-            | _ -> ()
-        let sorted = atoms |> Seq.sort |> Seq.toArray
-        let intern   = sorted |> Array.mapi (fun i a -> (a, i)) |> Map.ofArray
-        let deintern = sorted |> Array.mapi (fun i a -> (i, a)) |> Map.ofArray
-        intern, deintern
-    let atomIntern, atomDeintern = buildAtomInternTable resolvedCode
+    // Build atom intern table from instructions + all TSV atoms
+    let extraAtoms = seq {
+        for (c, p) in categoryParents do yield c; yield p
+        for (_, c) in articleCategories do yield c
+        for r in roots do yield r
+    }
+    let atomIntern, atomDeintern = buildFullAtomInternTable resolvedCode extraAtoms
 
+    // Build interned FFI facts: category_parent child -> [parent ids]
+    let parentsInterned = buildFfiFacts categoryParents atomIntern
+
+    // Seed categories (distinct second column of article_category)
+    let seedCats =
+        articleCategories
+        |> Array.map snd
+        |> Array.distinct
+        |> Array.sort
+
+    // Build WamContext
     let ctx =
         { WcCode             = resolvedCode
           WcLabels            = allLabels
-          WcForeignFacts      = Map.empty   // populate from your dataset
-          WcFfiFacts          = Map.empty
+          WcForeignFacts      = Map.empty
+          WcFfiFacts          = Map.ofList [ ("category_parent", parentsInterned) ]
           WcFfiWeightedFacts  = Map.empty
           WcAtomIntern        = atomIntern
           WcAtomDeintern      = atomDeintern
-          WcForeignConfig     = Map.empty
+          WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
           WcLoweredPredicates = loweredPredicates }
 
     let emptyState =
@@ -1809,9 +2051,57 @@ let main _argv =
           WsBuilder    = None
           WsAggAccum   = [] }
 
-    let startPC = Map.tryFind "main/0" allLabels |> Option.defaultValue 1
-~w
-', [ForeignPredsStr, ParallelDriver]).
+    // Find entry point: prefer lowered predicates, fall back to code array
+    let queryPred =
+        let candidates = [
+            "category_ancestor$effective_distance_sum_selected/3"
+            "category_ancestor$effective_distance_sum_bound/3"
+            "category_ancestor/4"
+        ]
+        candidates
+        |> List.tryFind (fun p ->
+            Map.containsKey p ctx.WcLoweredPredicates ||
+            Map.containsKey p ctx.WcLabels)
+        |> Option.defaultValue "category_ancestor/4"
+
+    let setupMs = sw.ElapsedMilliseconds
+    eprintfn "setup_ms=%d queryPred=%s" setupMs queryPred
+
+    // Benchmark loop: numReps repetitions
+    let mutable totalSolutions = 0
+    let mutable lastQueryMs = 0L
+
+    for rep = 1 to numReps do
+        let querySw = Stopwatch.StartNew()
+        let mutable repSolutions = 0
+
+        for cat in seedCats do
+            let varId = 1000000
+            let regs = Array.create MaxRegs (Unbound -1)
+            regs.[1] <- Atom cat
+            regs.[2] <- Atom root
+            regs.[3] <- Unbound varId
+            let s0 = { emptyState with WsPC = 0; WsRegs = regs; WsCP = 0 }
+            match dispatchCall ctx queryPred s0 with
+            | Some s1 ->
+                repSolutions <- repSolutions + 1
+            | None -> ()
+
+        querySw.Stop()
+        lastQueryMs <- querySw.ElapsedMilliseconds
+        totalSolutions <- totalSolutions + repSolutions
+        eprintfn "rep=%d query_ms=%d seeds=%d solutions=%d"
+            rep lastQueryMs seedCats.Length repSolutions
+
+    sw.Stop()
+    let totalMs = sw.ElapsedMilliseconds
+
+    // Summary output
+    printfn "query_ms=%d seeds=%d solutions=%d reps=%d"
+        lastQueryMs seedCats.Length (totalSolutions / numReps) numReps
+    printfn "total_ms=%d" totalMs
+    0
+', [ForeignPredsStr]).
 
 format_foreign_preds_fs([], '').
 format_foreign_preds_fs(Keys, Str) :-
@@ -1834,6 +2124,7 @@ generate_fsproj(ModName, _Options, Code) :-
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="WamTypes.fs" />
     <Compile Include="WamRuntime.fs" />
     <Compile Include="Predicates.fs" />
     <Compile Include="Lowered.fs" />

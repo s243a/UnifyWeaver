@@ -250,6 +250,7 @@ fsharp_wam_instruction_type :-
     | TrustMe
     // Parallel variants (Phase 4.1 stubs — alias to sequential at runtime)
     | ParTryMeElse     of label: string
+    | ParTryMeElsePc   of nextPC: int
     | ParRetryMeElsePc of nextPC: int
     | ParRetryMeElse   of label: string
     | ParTrustMe
@@ -272,6 +273,10 @@ fsharp_wam_helpers :-
 "// ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Merge two maps (right-biased: values from m2 overwrite m1).
+let mapUnion (m1: Map<'k, 'v>) (m2: Map<'k, 'v>) : Map<'k, 'v> =
+    Map.fold (fun acc k v -> Map.add k v acc) m1 m2
 
 /// Dereference a value through the binding chain.
 let rec derefVar (bindings: Map<int, Value>) (v: Value) : Value =
@@ -433,8 +438,8 @@ fsharp_wam_type_header(Code) :-
         fsharp_wam_env_frame_type,     nl,
         fsharp_wam_choicepoint_type,   nl,
         fsharp_wam_state_type,         nl,
-        fsharp_wam_context_type,       nl,
         fsharp_wam_instruction_type,   nl,
+        fsharp_wam_context_type,       nl,
         fsharp_wam_helpers
     )).
 
