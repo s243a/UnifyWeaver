@@ -1071,6 +1071,19 @@ finalizeAggregate returnPC s = go (wsCPs s)
 -- Accepts either a Left label (pre-resolution) or Right targetPC
 -- (post-resolution) for the else branch. The "this branch" always
 -- starts at wsPC + 1 regardless of which variant fired.
+-- | Phase 4.5: minimum branch count below which the fork is not worth
+-- the spark overhead. With fewer than this many branches, the fork
+-- falls back to sequential TryMeElse. Default 3: a 2-clause predicate
+-- (like category_ancestor base+recursive) stays sequential; a
+-- multi-clause predicate with 3+ alternatives forks.
+--
+-- Rationale: parMap rdeepseq has fixed overhead per spark (~5-10μs on
+-- GHC 9.x). With 2 branches where one is trivial, the overhead exceeds
+-- the benefit. With 3+ balanced branches, the amortized overhead per
+-- branch drops below the per-branch work.
+forkMinBranches :: Int
+forkMinBranches = 3
+
 forkOrSequential :: WamContext -> WamState -> Either String Int -> Maybe WamState
 forkOrSequential !ctx s elseTarget =
   case currentAggMergeStrategy s of
@@ -1079,7 +1092,10 @@ forkOrSequential !ctx s elseTarget =
             Right pc -> pc
             Left lbl -> fromMaybe (-1) (Map.lookup lbl (wcLabels ctx))
       in if elsePC > 0
-         then Just (forkParBranches ctx s ms elsePC)
+         then let branches = enumerateParBranches ctx (wsPC s) elsePC
+              in if length branches >= forkMinBranches
+                 then Just (forkParBranches ctx s ms elsePC)
+                 else fallback  -- too few branches; overhead > benefit
          else fallback
     _ -> fallback
   where
