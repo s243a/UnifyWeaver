@@ -121,6 +121,8 @@ instr_tag(arg_reg_direct,   46).
 instr_tag(arg_lit_direct,   47).
 instr_tag(arg_to_a1_reg,    48).
 instr_tag(arg_to_a1_lit,    49).
+instr_tag(arg_call_reg_3,   50).
+instr_tag(arg_call_lit_3,   51).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -498,6 +500,54 @@ wam_instruction_to_wat_bytes(arg_to_a1_lit(N, TReg, DestReg),
     reg_name_to_index(DestReg, DIdx),
     Op1 is TIdx \/ (DIdx << 8),
     encode_instr_hex(Tag, Op1, N, Hex).
+
+%% arg_call_reg_3 / arg_call_lit_3: fusion of arg_to_a1_{reg,lit} +
+%% put_value(A2_src, A2) + put_variable(RetDest, A3) + call(Pred, 3).
+%% Applies specifically to 3-arg calls (the common shape for
+%% sum_ints_args, term_depth_args, and similar recursive walkers).
+%% Saves three instruction dispatches per call.
+%%
+%% op1 layout:
+%%   bits  0-7:  NIdx  (source reg for the arg index; unused in lit variant)
+%%   bits  8-15: TIdx  (source reg for the compound)
+%%   bits 16-23: ArgDestIdx (receives arg value + goes to A1)
+%%   bits 24-31: A2SrcIdx (copied to A2)
+%%   bits 32-39: RetDestIdx (fresh var for A3)
+%% op2: target predicate PC (from resolve_label).
+%% For arg_call_lit_3, NIdx is 0xFF (sentinel) and op1 also carries
+%% the integer literal in bits 40-55 (16 bits — adequate for
+%% single-digit arg indices which is the only realistic literal case).
+wam_instruction_to_wat_bytes(
+    arg_call_reg_3(NReg, TReg, ArgDestReg, A2SrcReg, RetDestReg, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_reg_3, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2SrcReg, A2Idx),
+    reg_name_to_index(RetDestReg, RdIdx),
+    Op1 is NIdx
+        \/ (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (RdIdx << 32),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+wam_instruction_to_wat_bytes(
+    arg_call_lit_3(N, TReg, ArgDestReg, A2SrcReg, RetDestReg, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_lit_3, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2SrcReg, A2Idx),
+    reg_name_to_index(RetDestReg, RdIdx),
+    Op1 is (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (RdIdx << 32)
+        \/ ((N /\ 0xFFFF) << 40),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
 
 %% switch_on_const header: op1 layout = (count << 32) | reg_idx (0 or 1).
 wam_instruction_to_wat_bytes(switch_on_const(RegIdx, Count), _Labels, Hex) :-
@@ -1924,6 +1974,154 @@ wam_wat_case(arg_to_a1_lit,
   (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
   (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $dest_idx)))
   (call $inc_pc)
+  (i32.const 1)').
+
+wam_wat_case(arg_call_reg_3,
+'  ;; Fuses arg_to_a1_reg + put_value(A2_src, A2) + put_variable(RetDest, A3) +
+  ;; call(Pred, 3) into one instruction. On the fast path, reads the
+  ;; arg cell once, writes it to ArgDest and A1, copies A2_src to A2,
+  ;; allocates a fresh unbound cell for A3/RetDest, saves CP (= next
+  ;; PC after this instruction), and jumps to Pred.
+  ;; op1 packing: N (0-7), T (8-15), ArgDest (16-23), A2Src (24-31),
+  ;; RetDest (32-39).  op2 = target PC.
+  (local $op1i i64)
+  (local $n_idx i32) (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32) (local $rd_idx i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $n_idx (i32.wrap_i64 (i64.and (local.get $op1i) (i64.const 0xFF))))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $rd_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          ;; ArgDest := arg cell; A1 := arg cell.
+          (call $set_reg (local.get $ad_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          ;; A2 := A2Src.
+          (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+          ;; A3 / RetDest := Ref(fresh unbound heap cell).
+          (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+          (call $set_reg (i32.const 2) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_reg (local.get $rd_idx) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          ;; Save CP, jump to target PC.
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback: full emulation via $builtin_arg, then set up A2/A3 and call.
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  ;; Post-arg: set up A2/A3 for the pending call.
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $rd_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_lit_3,
+'  ;; Same fusion as arg_call_reg_3 but with literal N in bits 40-55 of op1.
+  (local $op1i i64)
+  (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32) (local $rd_idx i32)
+  (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $rd_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  (local.set $n (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 40)) (i64.const 0xFFFF))))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (local.get $ad_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+          (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+          (call $set_reg (i32.const 2) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_reg (local.get $rd_idx) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback.
+  (call $set_reg (i32.const 0) (i32.const 1) (i64.extend_i32_s (local.get $n)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $rd_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
 
 wam_wat_case(switch_on_const,
@@ -3952,7 +4150,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         peephole_nested_arith(NeckCutOptimized, NestedArithOptimized),
         peephole_fused_arith(NestedArithOptimized, ArithOptimized),
         peephole_direct_builtins(ArithOptimized, DirectBuiltinsOptimized),
-        peephole_arg_to_a1(DirectBuiltinsOptimized, OptimizedWithLabels),
+        peephole_arg_to_a1(DirectBuiltinsOptimized, ArgToA1Optimized),
+        peephole_arg_call_3(ArgToA1Optimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -4336,6 +4535,38 @@ peephole_arg_to_a1([arg_lit_direct(N, T, Dest),
     peephole_arg_to_a1(Rest, Out).
 peephole_arg_to_a1([H|T], [H|Out]) :-
     peephole_arg_to_a1(T, Out).
+
+%% peephole_arg_call_3(+Instrs, -Optimized)
+%  Fuses the 4-instruction call setup that follows arg_to_a1_reg
+%  (or arg_to_a1_lit) when the subsequent call has arity 3:
+%
+%    arg_to_a1_reg(N, T, ArgDest)
+%    put_value(A2Src, 'A2')
+%    put_variable(RetDest, 'A3')
+%    call(Pred, 3)
+%
+%  → arg_call_reg_3(N, T, ArgDest, A2Src, RetDest, Pred)
+%
+%  This is the sum_ints_args and term_depth_args inner-loop shape.
+%  Not applied for higher arities (arity-4+ calls in the inner loop
+%  would need a different fused opcode with more operand slots).
+peephole_arg_call_3([], []).
+peephole_arg_call_3([arg_to_a1_reg(N, T, ArgDest),
+                     put_value(A2Src, 'A2'),
+                     put_variable(RetDest, 'A3'),
+                     call(Pred, 3) | Rest],
+                    [arg_call_reg_3(N, T, ArgDest, A2Src, RetDest, Pred) | Out]) :-
+    !,
+    peephole_arg_call_3(Rest, Out).
+peephole_arg_call_3([arg_to_a1_lit(N, T, ArgDest),
+                     put_value(A2Src, 'A2'),
+                     put_variable(RetDest, 'A3'),
+                     call(Pred, 3) | Rest],
+                    [arg_call_lit_3(N, T, ArgDest, A2Src, RetDest, Pred) | Out]) :-
+    !,
+    peephole_arg_call_3(Rest, Out).
+peephole_arg_call_3([H|T], [H|Out]) :-
+    peephole_arg_call_3(T, Out).
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
