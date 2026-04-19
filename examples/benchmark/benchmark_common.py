@@ -70,6 +70,9 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("wam-") and (shutil.which("swipl") is None or shutil.which("cargo") is None):
             print(f"skip {target}: swipl or cargo not found", file=sys.stderr)
             continue
+        if target.startswith("go-wam-") and (shutil.which("swipl") is None or shutil.which("go") is None):
+            print(f"skip {target}: swipl or go not found", file=sys.stderr)
+            continue
         targets.append(target)
     return targets
 

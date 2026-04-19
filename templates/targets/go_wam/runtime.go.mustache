@@ -7,6 +7,12 @@ import (
 	"sync"
 )
 
+var (
+	_ = fmt.Sprintf
+	_ = runtime.GOMAXPROCS
+	_ sync.Locker = (*sync.Mutex)(nil)
+)
+
 {{step_method}}
 
 {{helper_methods}}

@@ -10,7 +10,9 @@ import (
 )
 
 type TrailEntry struct {
-	Addr int
+	Addr   int
+	Old    Value
+	HadOld bool
 }
 
 type AtomPair struct {
@@ -88,6 +90,7 @@ type WamState struct {
 	PC           int
 	CP           int
 	Regs         [512]Value
+	Bindings     map[int]Value
 	Heap         []Value
 	HeapLen      int
 	Stack        []StackEntry
@@ -118,11 +121,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx}
+	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx}
+	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -166,8 +169,23 @@ func (vm *WamState) getReg(idx int) Value {
 }
 
 func (vm *WamState) trailBinding(addr int) {
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr})
+	if vm.Bindings == nil {
+		vm.Bindings = make(map[int]Value)
+	}
+	old, hadOld := vm.Bindings[addr]
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: hadOld})
 	vm.TrailLen++
+}
+
+func (vm *WamState) bindUnbound(u *Unbound, val Value) {
+	vm.trailBinding(u.Idx)
+	vm.Bindings[u.Idx] = val
+	for idx, reg := range vm.Regs {
+		if reg == u {
+			vm.Regs[idx] = val
+		}
+	}
+	vm.putReg(u.Idx, val)
 }
 
 func (vm *WamState) heapPush(v Value) int {
@@ -264,6 +282,7 @@ func (vm *WamState) Clone() *WamState {
 		Ctx:          vm.Ctx,
 		PC:           vm.PC,
 		CP:           vm.CP,
+		Bindings:     make(map[int]Value, len(vm.Bindings)),
 		Heap:         make([]Value, vm.HeapLen),
 		HeapLen:      vm.HeapLen,
 		Stack:        make([]StackEntry, len(vm.Stack)),
@@ -275,6 +294,9 @@ func (vm *WamState) Clone() *WamState {
 		CurrentList:   vm.CurrentList,
 	}
 	newState.Regs = vm.Regs
+	for k, v := range vm.Bindings {
+		newState.Bindings[k] = v
+	}
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
@@ -455,7 +477,7 @@ func (vm *WamState) deref(v Value) Value {
 			if next == v { return v }
 			v = next
 		case *Unbound:
-			if bound := vm.Regs[t.Idx]; bound != nil && bound != v {
+			if bound := vm.Bindings[t.Idx]; bound != nil && bound != v {
 				v = bound
 			} else {
 				return v
@@ -665,13 +687,11 @@ func (vm *WamState) Unify(v1, v2 Value) bool {
 	v2 = vm.deref(v2)
 
 	if u1, ok := v1.(*Unbound); ok {
-		vm.trailBinding(u1.Idx)
-		vm.putReg(u1.Idx, v2)
+		vm.bindUnbound(u1, v2)
 		return true
 	}
 	if u2, ok := v2.(*Unbound); ok {
-		vm.trailBinding(u2.Idx)
-		vm.putReg(u2.Idx, v1)
+		vm.bindUnbound(u2, v1)
 		return true
 	}
 
@@ -763,7 +783,12 @@ func (vm *WamState) backtrack() bool {
 
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
-        vm.Regs[vm.Trail[i].Addr] = nil
+        entry := vm.Trail[i]
+        if entry.HadOld {
+            vm.Bindings[entry.Addr] = entry.Old
+        } else {
+            delete(vm.Bindings, entry.Addr)
+        }
     }
     vm.Trail = vm.Trail[:mark]
     vm.TrailLen = mark
