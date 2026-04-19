@@ -1534,6 +1534,8 @@ namespace UnifyWeaver.QueryRuntime
     internal sealed class CachedResultRows
     {
         private readonly IReadOnlyList<object[]>? _objectRows;
+        private readonly IReadOnlyList<object?>? _leftValues;
+        private readonly IReadOnlyList<object?>? _rightValues;
         private readonly object? _seedValue;
         private readonly object?[]? _nodeValues;
         private readonly IReadOnlyList<int>? _targetNodeIds;
@@ -1544,6 +1546,22 @@ namespace UnifyWeaver.QueryRuntime
         private CachedResultRows(IReadOnlyList<object[]> objectRows)
         {
             _objectRows = objectRows ?? throw new ArgumentNullException(nameof(objectRows));
+        }
+
+        private CachedResultRows(
+            IReadOnlyList<object?> leftValues,
+            IReadOnlyList<object?> rightValues)
+        {
+            if (leftValues is null) throw new ArgumentNullException(nameof(leftValues));
+            if (rightValues is null) throw new ArgumentNullException(nameof(rightValues));
+
+            if (leftValues.Count != rightValues.Count)
+            {
+                throw new ArgumentException("Binary row buffers must have the same row count.", nameof(rightValues));
+            }
+
+            _leftValues = leftValues;
+            _rightValues = rightValues;
         }
 
         private CachedResultRows(
@@ -1570,6 +1588,11 @@ namespace UnifyWeaver.QueryRuntime
 
         public static CachedResultRows FromObjectRows(IReadOnlyList<object[]> rows) => new(rows);
 
+        public static CachedResultRows FromBinaryRows(
+            IReadOnlyList<object?> leftValues,
+            IReadOnlyList<object?> rightValues) =>
+            new(leftValues, rightValues);
+
         public static CachedResultRows FromPathAwareDepthRows(
             object? seedValue,
             object?[] nodeValues,
@@ -1578,7 +1601,7 @@ namespace UnifyWeaver.QueryRuntime
             Func<int, object> boxDepth) =>
             new(seedValue, nodeValues, targetNodeIds, depths, boxDepth);
 
-        public int Count => _objectRows?.Count ?? _targetNodeIds?.Count ?? 0;
+        public int Count => _objectRows?.Count ?? _leftValues?.Count ?? _targetNodeIds?.Count ?? 0;
 
         public IReadOnlyList<object[]> AsObjectRows()
         {
@@ -1594,8 +1617,92 @@ namespace UnifyWeaver.QueryRuntime
 
             var rows = new List<object[]>(Count);
             AppendTo(rows);
-            _materializedRows = rows;
+            if (_leftValues is null)
+            {
+                _materializedRows = rows;
+            }
             return rows;
+        }
+
+        public IEnumerable<object[]> AsEnumerable()
+        {
+            if (_objectRows is not null)
+            {
+                return _objectRows;
+            }
+
+            if (_leftValues is not null)
+            {
+                return new BinaryRowsView(_leftValues, _rightValues!);
+            }
+
+            return AsObjectRows();
+        }
+
+        private sealed class BinaryRowsView :
+            IReadOnlyList<object[]>,
+            ICollection<object[]>
+        {
+            private readonly IReadOnlyList<object?> _leftValues;
+            private readonly IReadOnlyList<object?> _rightValues;
+
+            public BinaryRowsView(
+                IReadOnlyList<object?> leftValues,
+                IReadOnlyList<object?> rightValues)
+            {
+                _leftValues = leftValues;
+                _rightValues = rightValues;
+            }
+
+            public int Count => _leftValues.Count;
+
+            public bool IsReadOnly => true;
+
+            public object[] this[int index] => new object[] { _leftValues[index]!, _rightValues[index]! };
+
+            public IEnumerator<object[]> GetEnumerator()
+            {
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    yield return new object[] { _leftValues[i]!, _rightValues[i]! };
+                }
+            }
+
+            IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+            public void CopyTo(object[][] array, int arrayIndex)
+            {
+                if (array is null) throw new ArgumentNullException(nameof(array));
+
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    array[arrayIndex + i] = new object[] { _leftValues[i]!, _rightValues[i]! };
+                }
+            }
+
+            public bool Contains(object[] item)
+            {
+                if (item is null || item.Length < 2)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    if (Equals(_leftValues[i], item[0]) && Equals(_rightValues[i], item[1]))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public void Add(object[] item) => throw new NotSupportedException();
+
+            public void Clear() => throw new NotSupportedException();
+
+            public bool Remove(object[] item) => throw new NotSupportedException();
         }
 
         public void AppendTo(
@@ -1615,6 +1722,43 @@ namespace UnifyWeaver.QueryRuntime
                     recordOutputRow?.Invoke();
                 }
 
+                return;
+            }
+
+            if (_leftValues is not null)
+            {
+                var leftValues = _leftValues;
+                var rightValues = _rightValues!;
+
+                if (output is List<object[]> binaryOutputList)
+                {
+                    var setupStarted = Stopwatch.GetTimestamp();
+                    var baseIndex = binaryOutputList.Count;
+                    CollectionsMarshal.SetCount(binaryOutputList, baseIndex + leftValues.Count);
+                    var span = CollectionsMarshal.AsSpan(binaryOutputList);
+                    addSetupElapsed?.Invoke(Stopwatch.GetElapsedTime(setupStarted));
+
+                    var writeStarted = Stopwatch.GetTimestamp();
+                    var rowAllocStarted = Stopwatch.GetTimestamp();
+                    for (var i = 0; i < leftValues.Count; i++)
+                    {
+                        span[baseIndex + i] = new object[] { leftValues[i]!, rightValues[i]! };
+                        recordOutputRow?.Invoke();
+                    }
+                    addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(rowAllocStarted));
+                    addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(writeStarted));
+                    return;
+                }
+
+                var binaryFallbackWriteStarted = Stopwatch.GetTimestamp();
+                var binaryFallbackRowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < leftValues.Count; i++)
+                {
+                    output.Add(new object[] { leftValues[i]!, rightValues[i]! });
+                    recordOutputRow?.Invoke();
+                }
+                addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(binaryFallbackRowAllocStarted));
+                addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(binaryFallbackWriteStarted));
                 return;
             }
 
@@ -19295,10 +19439,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
+                TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: true, built: false);
-                    return cachedRows.AsObjectRows();
+                    return cachedRows.AsEnumerable();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
@@ -19347,7 +19491,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             dagStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CachedResultRows.FromObjectRows(dagRows),
+                            CacheBinaryRows(dagRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19393,7 +19537,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CachedResultRows.FromObjectRows(memoizedRows),
+                            CacheBinaryRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19483,7 +19627,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CachedResultRows.FromObjectRows(singleRows),
+                            CacheBinaryRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19575,7 +19719,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        CachedResultRows.FromObjectRows(totalRows),
+                        CacheBinaryRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19589,6 +19733,28 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private static CachedResultRows CacheBinaryRows(IReadOnlyList<object[]> rows)
+        {
+            if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+            var leftValues = new object?[rows.Count];
+            var rightValues = new object?[rows.Count];
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var row = rows[i];
+                if (row is null || row.Length < 2)
+                {
+                    return CachedResultRows.FromObjectRows(rows);
+                }
+
+                leftValues[i] = row[0];
+                rightValues[i] = row[1];
+            }
+
+            return CachedResultRows.FromBinaryRows(leftValues, rightValues);
         }
 
         private static bool TryBuildDagReachabilityBitsets(
@@ -19749,10 +19915,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
+                TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
-                    return cachedRows.AsObjectRows();
+                    return cachedRows.AsEnumerable();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
@@ -19792,7 +19958,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CachedResultRows.FromObjectRows(memoizedRows),
+                            CacheBinaryRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19882,7 +20048,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CachedResultRows.FromObjectRows(singleRows),
+                            CacheBinaryRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19974,7 +20140,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        CachedResultRows.FromObjectRows(totalRows),
+                        CacheBinaryRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
