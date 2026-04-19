@@ -14,6 +14,7 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
 :- use_module('../src/unifyweaver/core/purity_certificate').
 
@@ -379,6 +380,126 @@ test_haskell_runtime_imports_parallel :-
     ;   fail_test(Test, 'parallel/deepseq imports missing from WamRuntime')
     ).
 
+%% Phase 4.3: findall/bag/set merge strategies
+%% --------------------------------------------
+
+test_haskell_findall_bag_set_forkable :-
+    Test = 'WAM-Haskell: isForkableStrategy covers findall/bag/set',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "isForkableStrategy MergeFindall   = True"),
+        sub_string(S, _, _, _, "isForkableStrategy MergeBag       = True"),
+        sub_string(S, _, _, _, "isForkableStrategy MergeSet       = True")
+    ->  pass(Test)
+    ;   fail_test(Test, 'findall/bag/set not forkable')
+    ).
+
+test_haskell_infer_collect_maps_to_findall :-
+    Test = 'WAM-Haskell: inferMergeStrategy "collect" = MergeFindall',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "inferMergeStrategy \"collect\" = MergeFindall")
+    ->  pass(Test)
+    ;   fail_test(Test, 'collect -> MergeFindall mapping missing')
+    ).
+
+test_haskell_apply_aggregation_set_dedup :-
+    Test = 'WAM-Haskell: applyAggregation "set" uses nub for dedup',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "applyAggregation \"set\" vals = VList (nub vals)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set dedup via nub missing')
+    ).
+
+test_haskell_apply_aggregation_bag :-
+    Test = 'WAM-Haskell: applyAggregation "bag" returns VList vals',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "applyAggregation \"bag\" vals = VList vals")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bag applyAggregation missing')
+    ).
+
+test_haskell_nub_import :-
+    Test = 'WAM-Haskell: Data.List import includes nub',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "nub")
+    ->  pass(Test)
+    ;   fail_test(Test, 'nub not imported from Data.List')
+    ).
+
+test_wam_bag_template_compiles :-
+    Test = 'WAM: aggregate_all(bag(X), ...) emits begin_aggregate bag',
+    (   retractall(user:bag_demo(_, _)),
+        assertz((user:bag_demo(Xs, Y) :-
+            aggregate_all(bag(X), member(X, Y), Xs))),
+        wam_target:compile_single_clause_wam(
+            bag_demo(Xs, Y)-(aggregate_all(bag(X), member(X, Y), Xs)),
+            [], Code),
+        sub_string(Code, _, _, _, "begin_aggregate bag")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bag template did not compile to begin_aggregate bag')
+    ).
+
+test_wam_set_template_compiles :-
+    Test = 'WAM: aggregate_all(set(X), ...) emits begin_aggregate set',
+    (   retractall(user:set_demo(_, _)),
+        assertz((user:set_demo(Xs, Y) :-
+            aggregate_all(set(X), member(X, Y), Xs))),
+        wam_target:compile_single_clause_wam(
+            set_demo(Xs, Y)-(aggregate_all(set(X), member(X, Y), Xs)),
+            [], Code),
+        sub_string(Code, _, _, _, "begin_aggregate set")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set template did not compile to begin_aggregate set')
+    ).
+
+%% Phase 4.4: General negation + parallel negation
+%% --------------------------------------------
+
+test_haskell_negation_general_handler :-
+    Test = 'WAM-Haskell: general \\+/1 handler with run-based sub-execution',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        % General path: resolve goal key and call run ctx snapshot
+        sub_string(S, _, _, _, "goalKey = fn ++ \"/\" ++ show (length args)"),
+        sub_string(S, _, _, _, "case run ctx snapshot of")
+    ->  pass(Test)
+    ;   fail_test(Test, 'general \\+/1 handler missing run-based sub-execution')
+    ).
+
+test_haskell_negation_parallel_dispatch :-
+    Test = 'WAM-Haskell: \\+/1 dispatches to parallel for Par* goals',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runNegationParallel"),
+        sub_string(S, _, _, _, "ParTryMeElse elseLabel")
+    ->  pass(Test)
+    ;   fail_test(Test, '\\+/1 parallel dispatch for Par* missing')
+    ).
+
+test_haskell_negation_parallel_helper :-
+    Test = 'WAM-Haskell: runNegationParallel helper uses parMap rdeepseq',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool"),
+        sub_string(S, _, _, _, "parMap rdeepseq branchSucceeds branchPCs")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runNegationParallel helper missing or incomplete')
+    ).
+
+test_haskell_negation_true_fail_fast_paths :-
+    Test = 'WAM-Haskell: \\+/1 has fast paths for true and fail atoms',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Just (Atom \"true\") -> Nothing"),
+        sub_string(S, _, _, _, "Just (Atom \"fail\") -> Just (s { wsPC = wsPC s + 1 })")
+    ->  pass(Test)
+    ;   fail_test(Test, '\\+ true/fail fast paths missing')
+    ).
+
 %% Phase 4.1: Par* instructions — type, step handlers, resolveCallInstrs
 %% --------------------------------------------
 
@@ -556,6 +677,19 @@ run_tests :-
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
     test_haskell_runtime_imports_parallel,
+    %% Phase 4.3: findall/bag/set merge strategies
+    test_haskell_findall_bag_set_forkable,
+    test_haskell_infer_collect_maps_to_findall,
+    test_haskell_apply_aggregation_set_dedup,
+    test_haskell_apply_aggregation_bag,
+    test_haskell_nub_import,
+    test_wam_bag_template_compiles,
+    test_wam_set_template_compiles,
+    %% Phase 4.4: General negation + parallel negation
+    test_haskell_negation_general_handler,
+    test_haskell_negation_parallel_dispatch,
+    test_haskell_negation_parallel_helper,
+    test_haskell_negation_true_fail_fast_paths,
     %% Phase 4.1: Par* instructions + certificate-driven emission
     test_haskell_par_instructions_in_types,
     test_haskell_par_step_handlers_present,
