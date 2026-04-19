@@ -1113,12 +1113,16 @@ currentAggMergeStrategy s = go (wsCPs s)
       Just af -> Just (afMergeStrategy af)
       Nothing -> go rest
 
--- | Phase 4.2 scope: only sum and count merge strategies fork.
--- Findall/bag/set land in Phase 4.3; race/negation in 4.4.
+-- | Forkable merge strategies: sum/count (Phase 4.2) +
+-- findall/bag/set (Phase 4.3). Race/negation (4.4) are handled
+-- outside the aggregate path and do not appear here.
 isForkableStrategy :: MergeStrategy -> Bool
 isForkableStrategy MergeSumInt    = True
 isForkableStrategy MergeSumDouble = True
 isForkableStrategy MergeCount     = True
+isForkableStrategy MergeFindall   = True
+isForkableStrategy MergeBag       = True
+isForkableStrategy MergeSet       = True
 isForkableStrategy _              = False
 
 -- | Enumerate the entry PCs of every branch in a Par* choice-point
@@ -1272,6 +1276,27 @@ findOuterEndAggregate !ctx !startPC =
           EndAggregate _ -> pc + 1
           _              -> go (pc + 1) hi
 
+-- | Phase 4.4: parallel negation check. Run each branch of a Par*
+-- chain and return True if ANY branch produces a solution (meaning
+-- the negated goal succeeds, so \\+ fails). Uses parMap rdeepseq for
+-- the parallel evaluation — same strategy as aggregate fork. True
+-- race-to-cancel (async-based) is a future optimization.
+runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool
+runNegationParallel !ctx !s !entryPC !elsePC =
+    let branchPCs = enumerateParBranches ctx entryPC elsePC
+        branchSucceeds pc =
+          let snapshot = s { wsPC = pc + 1  -- skip past the Par* instruction
+                           , wsCP = 0
+                           , wsCutBar = 0 }
+          in case run ctx snapshot of
+               Just _  -> True
+               Nothing -> False
+    in if length branchPCs >= forkMinBranches
+       then or (parMap rdeepseq branchSucceeds branchPCs)
+       else case run ctx (s { wsPC = entryPC, wsCP = 0, wsCutBar = 0 }) of
+              Just _  -> True
+              Nothing -> False
+
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
 applyAggregation "sum" vals =
@@ -1282,6 +1307,8 @@ applyAggregation "sum" vals =
   in if fromIntegral (round s :: Int) == s then Integer (round s) else Float s
 applyAggregation "count" vals = Integer (length vals)
 applyAggregation "collect" vals = VList vals
+applyAggregation "bag" vals = VList vals
+applyAggregation "set" vals = VList (nub vals)
 applyAggregation _ vals = VList vals
 
 -- ============================================================================
@@ -1702,6 +1729,7 @@ step !ctx s (BuiltinCall "</2" _) =
 step !ctx s (BuiltinCall "\\\\+/1" _) =
   let goal = IM.lookup 1 (wsRegs s) >>= derefHeap (wsHeap s)
   in case goal of
+    -- Fast path: \\+ member(X, L)
     Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
       let n = derefVar (wsBindings s) needle
           h = derefVar (wsBindings s) haystack
@@ -1709,6 +1737,50 @@ step !ctx s (BuiltinCall "\\\\+/1" _) =
             VList items -> any (\\item -> derefVar (wsBindings s) item == n) items
             _ -> False
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
+    -- Fast path: \\+ true always fails, \\+ fail always succeeds
+    Just (Atom "true") -> Nothing
+    Just (Atom "fail") -> Just (s { wsPC = wsPC s + 1 })
+    -- General path: resolve the goal, snapshot-and-run.
+    -- Phase 4.4: if the goal''s entry instruction is ParTryMeElse,
+    -- fork branches in parallel via runNegationParallel.
+    Just (Str fn args) ->
+      let goalKey = fn ++ "/" ++ show (length args)
+          dArgs = map (derefVar (wsBindings s)) args
+      in case Map.lookup goalKey (wcLabels ctx) of
+           Just pc ->
+             let snap = s { wsRegs = IM.fromList (zip [1..] dArgs) }
+                 (lo, hi) = bounds (wcCode ctx)
+             in if pc >= lo && pc <= hi
+                then case wcCode ctx ! pc of
+                  ParTryMeElse elseLabel ->
+                    let elsePC = fromMaybe (-1) (Map.lookup elseLabel (wcLabels ctx))
+                    in if runNegationParallel ctx snap pc elsePC
+                       then Nothing
+                       else Just (s { wsPC = wsPC s + 1 })
+                  ParTryMeElsePc elsePC ->
+                    if runNegationParallel ctx snap pc elsePC
+                    then Nothing
+                    else Just (s { wsPC = wsPC s + 1 })
+                  _ -> -- Sequential: just run normally
+                    let snapshot = snap { wsPC = pc, wsCP = 0, wsCutBar = 0 }
+                    in case run ctx snapshot of
+                         Just _  -> Nothing
+                         Nothing -> Just (s { wsPC = wsPC s + 1 })
+                else Just (s { wsPC = wsPC s + 1 })
+           Nothing -> Just (s { wsPC = wsPC s + 1 })  -- unknown pred; treat as failing goal
+    -- Atom as 0-arity goal (e.g. \\+ some_pred)
+    Just (Atom fn) ->
+      let goalKey = fn ++ "/0"
+      in case Map.lookup goalKey (wcLabels ctx) of
+           Just pc ->
+             let snapshot = s { wsPC = pc
+                              , wsRegs = wsRegs s
+                              , wsCP = 0
+                              , wsCutBar = 0 }
+             in case run ctx snapshot of
+                  Just _  -> Nothing
+                  Nothing -> Just (s { wsPC = wsPC s + 1 })
+           Nothing -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 -- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
@@ -2263,7 +2335,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
-import Data.List (isPrefixOf, foldl'')
+import Data.List (isPrefixOf, foldl'', nub)
 import Data.Maybe (fromMaybe)
 -- Phase 4.2: intra-query parallelism. parMap/rdeepseq spark the
 -- alternative clauses of a forkable ParTryMeElse choice point; the
@@ -2539,6 +2611,7 @@ inferMergeStrategy "count" = MergeCount
 inferMergeStrategy "bag"   = MergeBag
 inferMergeStrategy "set"   = MergeSet
 inferMergeStrategy "findall" = MergeFindall
+inferMergeStrategy "collect" = MergeFindall
 inferMergeStrategy _       = MergeSequential
 
 -- | Phase 4.2: NFData instances so parMap rdeepseq can spark forked

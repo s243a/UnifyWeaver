@@ -641,6 +641,8 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = count       -> AggType = count, ValueVar = 1
     ;   Template = max(ValueVar) -> AggType = max
     ;   Template = min(ValueVar) -> AggType = min
+    ;   Template = bag(ValueVar) -> AggType = bag
+    ;   Template = set(ValueVar) -> AggType = set
     ;   AggType = collect, ValueVar = Template  % default: collect all values
     ),
     % Find or allocate the Result register (where output goes)
