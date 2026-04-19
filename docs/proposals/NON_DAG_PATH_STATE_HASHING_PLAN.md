@@ -215,6 +215,10 @@ Interpretation:
 - counted-path `All` row allocation is now documented as a broader runtime
   boundary rather than a purely local replay-loop choice, because execution
   surfaces, caches, wrappers, and tests all currently expect `object[]` rows
+- a late `object[]` materialization survey now maps the broader runtime
+  boundary layers where a narrower internal row shape would actually have to
+  land to matter: replayable sources, cached result containers, and row
+  wrapper/index abstractions
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
