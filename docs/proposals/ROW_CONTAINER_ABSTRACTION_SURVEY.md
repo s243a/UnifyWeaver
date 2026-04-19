@@ -99,6 +99,8 @@ The first prototype seam is `CachedResultRows`.
 It is intentionally narrow:
 
 - `TransitiveClosureResults` stores `CachedResultRows`
+- seeded transitive-closure source/target caches, including grouped variants,
+  store `CachedResultRows`
 - counted-path replay can construct `CachedResultRows` from compact
   path-aware target/depth buffers
 - existing consumers still call `AsObjectRows()` and receive
