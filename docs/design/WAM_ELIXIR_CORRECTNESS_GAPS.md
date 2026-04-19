@@ -51,77 +51,45 @@ Y-registers (ids 201-299) lived in the global `state.regs` map, so
 recursive calls to the same predicate overwrote each other's
 permanents. `allocate` now saves the current Y-reg subset into
 `env.y_regs_saved` and clears those slots; `deallocate` discards
-current Y-regs and merges the saved ones back. Correctness improvement
-but not observable in the current benchmark because of the
-non-tail-call continuation bug below.
+current Y-regs and merges the saved ones back.
 
-## Remaining: non-tail recursive calls lose the outer continuation in lowered mode
+### Non-tail recursive calls lost the outer continuation (CPS refactor)
 
-The lowered emitter represents each clause as a standalone Elixir
-function. `WamDispatcher.call` invokes a predicate's clause; the clause
-runs to completion and returns `{:ok, state}`. For a non-tail body like
-`body_goal(...), is/2` (`ancestor_h(X,Y,N) :- parent(X,Z), ancestor_h(Z,Y,N1), N is N1+1`):
+Fixed in `fix/wam-elixir-cps-continuations`. Each body call now
+terminates its sub-segment; subsequent instructions go into a fresh
+`defp BaseFunc_kN/1` continuation function. Before each call,
+`state.cp` is set to `&BaseFunc_kN/1`; `proceed` tail-calls
+`state.cp.(state)`. Top-level callers seed `state.cp =
+&WamRuntime.terminal_cp/1`. BEAM TCO collapses the stack across
+predicates, so deep recursion doesn't grow it. `backtrack` retries
+invoke the stored continuation, so outer post-call code runs on every
+solution. `examples/debug_wam_elixir_ancestor.pl` now reports 4/4
+correct solutions with bound `N` values across all three tests.
 
-- First solution works: outer's clause runs straight through, calls
-  inner, gets its return, runs outer's `is/2`, returns.
-- On backtrack: `backtrack/1` pops inner's CP and invokes
-  `&clause_LAncestorH32/1` directly with the restored state. Inner's
-  clause runs to completion — including its own `is/2` — and returns.
-  The result propagates through `backtrack` to `next_solution` and out
-  to the driver. **Outer's post-call code (reading Y3 for N, running
-  its own is/2) is never re-entered.**
+### Catch-snapshot hiding mid-body choice points
 
-Consequence: alternative solutions show the inner's `N` binding but
-not the outer's. In `examples/debug_wam_elixir_ancestor.pl` Test 3
-with a 4-level fact chain:
+The initial CPS wrapping used `catch :fail -> backtrack(state)` where
+`state` was the pre-try snapshot — any choice points pushed during the
+body were invisible to the catch, causing either lost CPs or infinite
+retry loops (seen as a hang). Fixed by threading state through the
+throw: every `throw(:fail)` is now `throw({:fail, state})`, and every
+catch pattern-matches on `{:fail, s}` and passes `s` to `backtrack`.
 
-```
-Y="b" N="1"                                (1st — base case, ok)
-Y="c" N=2.0                                (2nd — 1-hop recursion, ok)
-Y="d" N={:unbound, <caller's N ref>}      (3rd — 2-hop, N not bound)
-Y="e" N={:unbound, <caller's N ref>}      (4th — 3-hop, N not bound)
-```
+### `switch_on_constant` duplicated solutions
 
-Traces confirm: on the 3rd+ backtrack, inner's `is/2` binds inner's
-local `N` ref (~206372) but outer's caller-`N` ref (~206345) stays
-unbound because outer's `is/2` never runs.
+Inline dispatch from `switch_on_constant` into the target clause ran
+in the presence of the outer `try_me_else` CP (pushed just before the
+switch) — on backtrack, that CP retried the same clause, producing
+duplicates. The inline-dispatch arm now pops that outer CP before
+calling the target clause.
 
-### Fix shape
+## Remaining / follow-ups
 
-The lowered emitter needs to preserve the outer's continuation across
-a `call`. Options:
-
-1. **Continuation passing.** A clause takes a `k` (continuation)
-   parameter and tail-calls it with the final state. Every `call` in
-   the body captures the post-call code in a closure and passes it as
-   `k` to the callee. Backtrack's `cp.pc.(state, k)` would then invoke
-   the retry with the saved continuation.
-2. **State.cp as function ref.** Store the post-call function in
-   `state.cp` before each `call`; have `proceed` invoke `state.cp`.
-   Matches the interpreter-mode abstraction but requires the lowered
-   emitter to synthesise a fresh `defp` for each call-point's
-   continuation.
-3. **Interpreter fallback.** Detect non-tail recursive calls at
-   codegen time and emit interpreter-style dispatch for those
-   predicates.
-
-Option 2 is probably the cleanest given the existing `state.cp` field
-already exists. Option 3 is the smallest change but splits the
-generated code into two regimes.
-
-Fact-only predicates, plain tail-recursive predicates, and
-deterministic clauses work correctly today; only non-tail recursion is
-affected.
+Codegen time dominates benchmark runs at scale 300+ — emitting the
+lowered Elixir for six predicates on 300-row facts takes ~80s in the
+Prolog side. Not a correctness issue, but worth investigating before
+meaningful perf comparison on larger scales.
 
 ## Out of scope for this doc
 
-- `switch_on_constant` duplicate-key warnings — fixed in
-  `fix/wam-elixir-switch-dedup-arms`.
 - Phase A/B/C perf work is orthogonal.
-
-## Implication for benchmarking
-
-`effective_distance` at dev scale still produces 3 rows vs the 19-row
-reference because `category_ancestor/4` has non-tail recursion (cut
-and `H is H1 + 1` after the recursive call). Meaningful perf
-comparisons still require the continuation fix.

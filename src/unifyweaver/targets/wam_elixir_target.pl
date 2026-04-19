@@ -379,14 +379,15 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:choice_points, rest)
 
         if is_function(cp.pc) do
-          # The retried clause may throw :fail (its own guards failed) or
+          # The retried clause may throw {:fail, thrown_state} (its own
+          # guards failed, with CPs accumulated during its body) or
           # {:return, result} (it succeeded). Translate back into the
           # {:ok, state} | :fail contract so the caller does not need to
           # know about clause-local control flow.
           try do
             cp.pc.(state)
           catch
-            :fail -> backtrack(state)
+            {:fail, thrown_state} -> backtrack(thrown_state)
             {:return, result} -> result
           end
         else
@@ -495,6 +496,16 @@ compile_utility_helpers_to_elixir(Code) :-
       other -> other
     end
   end
+
+  @doc """
+  Terminal continuation for CPS-lowered predicates. When a clause\'s
+  `proceed` opcode runs, it tail-calls the continuation stored in
+  state.cp. At the top level of a driver-initiated call, state.cp is
+  this function — `run(args)` installs it before entering the clause
+  chain. All it does is wrap the final state in the run/1 success
+  contract.
+  """
+  def terminal_cp(state), do: {:ok, state}
 
   @doc "Read `len` consecutive heap cells starting at `start`."
   def heap_slice(_state, _start, 0), do: []
@@ -660,7 +671,7 @@ compile_utility_helpers_to_elixir(Code) :-
         if v1 < v2, do: %{state | pc: new_pc}, else: :fail
       {"length/2", 2} ->
         list = get_reg(state, 1)
-        len = if is_list(list), do: length(list), else: throw(:fail)
+        len = if is_list(list), do: length(list), else: throw({:fail, state})
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         case unify(state, len, get_reg(state, 2)) do
           {:ok, s} -> %{s | pc: new_pc}
