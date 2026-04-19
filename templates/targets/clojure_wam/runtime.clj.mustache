@@ -50,11 +50,18 @@
           (some (fn [entry]
                   (when (= "default" (:label entry))
                     (:target-pc entry)))
-                resolved-cases)]
+                resolved-cases)
+          default-fallthrough?
+          (boolean
+           (some (fn [entry]
+                   (and (= "default" (:label entry))
+                        (not (contains? entry :target-pc))))
+                 resolved-cases))]
       (assoc instr
              :cases resolved-cases
              :case-map case-map
-             :default-target-pc default-target-pc))
+             :default-target-pc default-target-pc
+             :default-fallthrough? default-fallthrough?))
 
     instr))
 
@@ -272,13 +279,17 @@
 (defn switch-target [state instr]
   (let [reg-val (deref-value (:bindings state) (reg-get-raw state "A1"))
         case-map (:case-map instr)
-        default-target-pc (:default-target-pc instr)]
+        default-target-pc (:default-target-pc instr)
+        default-fallthrough? (:default-fallthrough? instr)]
     (cond
       (contains? case-map reg-val)
       (assoc state :pc (get case-map reg-val))
 
       default-target-pc
       (assoc state :pc default-target-pc)
+
+      default-fallthrough?
+      (advance state)
 
       :else
       (backtrack state))))
