@@ -92,6 +92,22 @@ that can:
 3. make conversion points explicit and measurable
 4. preserve exact row order and row equality behavior
 
+## Prototype Status
+
+The first prototype seam is `CachedResultRows`.
+
+It is intentionally narrow:
+
+- `TransitiveClosureResults` stores `CachedResultRows`
+- existing consumers still call `AsObjectRows()` and receive
+  `IReadOnlyList<object[]>`
+- public execution APIs and row order are unchanged
+- no typed row representation is introduced yet
+
+This proves the cached-result-container boundary can be inserted without a
+full row-wrapper/index rewrite. The next step is to migrate one measured hot
+cache to a specialized internal representation behind the same container.
+
 ## Non-Goals
 
 The first abstraction should not change:

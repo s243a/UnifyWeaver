@@ -1531,6 +1531,20 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    internal sealed class CachedResultRows
+    {
+        private readonly IReadOnlyList<object[]> _objectRows;
+
+        private CachedResultRows(IReadOnlyList<object[]> objectRows)
+        {
+            _objectRows = objectRows ?? throw new ArgumentNullException(nameof(objectRows));
+        }
+
+        public static CachedResultRows FromObjectRows(IReadOnlyList<object[]> rows) => new(rows);
+
+        public IReadOnlyList<object[]> AsObjectRows() => _objectRows;
+    }
+
     internal sealed class PathAwareSuccessorBucket
     {
         public PathAwareSuccessorBucket(object? source, int sourceNodeId)
@@ -8803,7 +8817,7 @@ namespace UnifyWeaver.QueryRuntime
                 if (context.TransitiveClosureResults.TryGetValue(cacheKey, out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: false, built: true);
@@ -8869,7 +8883,7 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
-                context.TransitiveClosureResults[cacheKey] = totalRows;
+                context.TransitiveClosureResults[cacheKey] = CachedResultRows.FromObjectRows(totalRows);
                 return totalRows;
             }
             finally
@@ -21254,7 +21268,7 @@ namespace UnifyWeaver.QueryRuntime
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
                 TransitiveClosureResults = parent?.TransitiveClosureResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows>();
                 TransitiveClosureSeededResults = parent?.TransitiveClosureSeededResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
                 TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
@@ -21330,7 +21344,7 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>> TransitiveClosureResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows> TransitiveClosureResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededResults { get; }
 
