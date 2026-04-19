@@ -1533,16 +1533,127 @@ namespace UnifyWeaver.QueryRuntime
 
     internal sealed class CachedResultRows
     {
-        private readonly IReadOnlyList<object[]> _objectRows;
+        private readonly IReadOnlyList<object[]>? _objectRows;
+        private readonly object? _seedValue;
+        private readonly object?[]? _nodeValues;
+        private readonly IReadOnlyList<int>? _targetNodeIds;
+        private readonly IReadOnlyList<int>? _depths;
+        private readonly Func<int, object>? _boxDepth;
+        private IReadOnlyList<object[]>? _materializedRows;
 
         private CachedResultRows(IReadOnlyList<object[]> objectRows)
         {
             _objectRows = objectRows ?? throw new ArgumentNullException(nameof(objectRows));
         }
 
+        private CachedResultRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth)
+        {
+            if (targetNodeIds is null) throw new ArgumentNullException(nameof(targetNodeIds));
+            if (depths is null) throw new ArgumentNullException(nameof(depths));
+
+            if (targetNodeIds.Count != depths.Count)
+            {
+                throw new ArgumentException("Target and depth buffers must have the same row count.", nameof(depths));
+            }
+
+            _seedValue = seedValue;
+            _nodeValues = nodeValues ?? throw new ArgumentNullException(nameof(nodeValues));
+            _targetNodeIds = targetNodeIds;
+            _depths = depths;
+            _boxDepth = boxDepth ?? throw new ArgumentNullException(nameof(boxDepth));
+        }
+
         public static CachedResultRows FromObjectRows(IReadOnlyList<object[]> rows) => new(rows);
 
-        public IReadOnlyList<object[]> AsObjectRows() => _objectRows;
+        public static CachedResultRows FromPathAwareDepthRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth) =>
+            new(seedValue, nodeValues, targetNodeIds, depths, boxDepth);
+
+        public int Count => _objectRows?.Count ?? _targetNodeIds?.Count ?? 0;
+
+        public IReadOnlyList<object[]> AsObjectRows()
+        {
+            if (_objectRows is not null)
+            {
+                return _objectRows;
+            }
+
+            if (_materializedRows is not null)
+            {
+                return _materializedRows;
+            }
+
+            var rows = new List<object[]>(Count);
+            AppendTo(rows);
+            _materializedRows = rows;
+            return rows;
+        }
+
+        public void AppendTo(
+            ICollection<object[]> output,
+            Action? recordOutputRow = null,
+            Action<TimeSpan>? addSetupElapsed = null,
+            Action<TimeSpan>? addRowAllocElapsed = null,
+            Action<TimeSpan>? addWriteElapsed = null)
+        {
+            if (output is null) throw new ArgumentNullException(nameof(output));
+
+            if (_objectRows is not null)
+            {
+                foreach (var row in _objectRows)
+                {
+                    output.Add(row);
+                    recordOutputRow?.Invoke();
+                }
+
+                return;
+            }
+
+            var nodeValues = _nodeValues!;
+            var targetNodeIds = _targetNodeIds!;
+            var depths = _depths!;
+            var boxDepth = _boxDepth!;
+            var seedValue = _seedValue!;
+
+            if (output is List<object[]> outputList)
+            {
+                var setupStarted = Stopwatch.GetTimestamp();
+                var baseIndex = outputList.Count;
+                CollectionsMarshal.SetCount(outputList, baseIndex + targetNodeIds.Count);
+                var span = CollectionsMarshal.AsSpan(outputList);
+                addSetupElapsed?.Invoke(Stopwatch.GetElapsedTime(setupStarted));
+
+                var writeStarted = Stopwatch.GetTimestamp();
+                var rowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < targetNodeIds.Count; i++)
+                {
+                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) };
+                    recordOutputRow?.Invoke();
+                }
+                addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(rowAllocStarted));
+                addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(writeStarted));
+                return;
+            }
+
+            var fallbackWriteStarted = Stopwatch.GetTimestamp();
+            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
+            for (var i = 0; i < targetNodeIds.Count; i++)
+            {
+                output.Add(new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) });
+                recordOutputRow?.Invoke();
+            }
+            addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
+            addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackWriteStarted));
+        }
     }
 
     internal sealed class PathAwareSuccessorBucket
@@ -12772,60 +12883,18 @@ namespace UnifyWeaver.QueryRuntime
         {
             metrics?.RecordResultReplayBatch(rows.Count);
             var started = Stopwatch.GetTimestamp();
-            var seedValue = seed!;
-            if (output is List<object[]> outputList)
-            {
-                var setupStarted = Stopwatch.GetTimestamp();
-                var baseIndex = outputList.Count;
-                CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
-                var span = CollectionsMarshal.AsSpan(outputList);
-                var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
-                var depths = CollectionsMarshal.AsSpan(rows.Depths);
-                metrics?.AddResultReplaySetupElapsed(Stopwatch.GetElapsedTime(setupStarted));
-                var writeStarted = Stopwatch.GetTimestamp();
-                var valueLookupStarted = Stopwatch.GetTimestamp();
-                var targetValues = new object?[rows.Count];
-                var boxedDepths = new object[rows.Count];
-                for (var i = 0; i < rows.Count; i++)
-                {
-                    targetValues[i] = nodeValues[targetNodeIds[i]]!;
-                    boxedDepths[i] = BoxCountedPathDepth(depths[i]);
-                }
-                metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(valueLookupStarted));
-                var rowAllocStarted = Stopwatch.GetTimestamp();
-                for (var i = 0; i < rows.Count; i++)
-                {
-                    // The broader query runtime, caches, and test harnesses all
-                    // currently expect fresh object[] rows at this boundary.
-                    span[baseIndex + i] = new object[] { seedValue, targetValues[i], boxedDepths[i] };
-                    metrics?.RecordOutputRow();
-                }
-                metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(rowAllocStarted));
-                metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(writeStarted));
-                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
-                return;
-            }
-
-            var fallbackTargetNodeIds = rows.TargetNodeIds;
-            var fallbackDepths = rows.Depths;
-            var fallbackWriteStarted = Stopwatch.GetTimestamp();
-            var fallbackValueLookupStarted = Stopwatch.GetTimestamp();
-            var fallbackTargetValues = new object?[rows.Count];
-            var fallbackBoxedDepths = new object[rows.Count];
-            for (var i = 0; i < rows.Count; i++)
-            {
-                fallbackTargetValues[i] = nodeValues[fallbackTargetNodeIds[i]]!;
-                fallbackBoxedDepths[i] = BoxCountedPathDepth(fallbackDepths[i]);
-            }
-            metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(fallbackValueLookupStarted));
-            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
-            for (var i = 0; i < rows.Count; i++)
-            {
-                output.Add(new object[] { seedValue, fallbackTargetValues[i], fallbackBoxedDepths[i] });
-                metrics?.RecordOutputRow();
-            }
-            metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
-            metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(fallbackWriteStarted));
+            Action? recordOutputRow = metrics is null ? null : metrics.RecordOutputRow;
+            Action<TimeSpan>? addSetupElapsed = metrics is null ? null : metrics.AddResultReplaySetupElapsed;
+            Action<TimeSpan>? addRowAllocElapsed = metrics is null ? null : metrics.AddResultReplayRowAllocElapsed;
+            Action<TimeSpan>? addWriteElapsed = metrics is null ? null : metrics.AddResultReplayWriteElapsed;
+            CachedResultRows
+                .FromPathAwareDepthRows(seed, nodeValues, rows.TargetNodeIds, rows.Depths, BoxCountedPathDepth)
+                .AppendTo(
+                    output,
+                    recordOutputRow,
+                    addSetupElapsed,
+                    addRowAllocElapsed,
+                    addWriteElapsed);
 
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
