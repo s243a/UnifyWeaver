@@ -133,6 +133,7 @@ instr_tag(arg_call_reg_2,   58).
 instr_tag(arg_call_lit_2,   59).
 instr_tag(arg_call_reg_2_dead, 60).
 instr_tag(arg_call_lit_2_dead, 61).
+instr_tag(tail_call_5,      62).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -730,6 +731,33 @@ wam_instruction_to_wat_bytes(
         \/ (A2Idx << 24)
         \/ (IsVarBit << 32)
         \/ ((N /\ 0xFFFF) << 40),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% tail_call_5: fusion of a 5-arg tail-call setup window:
+%%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
+%%   put_value(R4,A4) put_value(R5,A5) deallocate execute(Pred)
+%% → tail_call_5(R1, R2, R3, R4, R5, Pred)
+%% Saves six instruction dispatches per recursive tail on 5-arity
+%% predicates (sum_ints_args/5 and term_depth_args/5 in the bench).
+%%
+%% op1 layout: R1Idx (0-7), R2Idx (8-15), R3Idx (16-23),
+%%             R4Idx (24-31), R5Idx (32-39).
+%% op2: target predicate PC.
+wam_instruction_to_wat_bytes(
+    tail_call_5(R1, R2, R3, R4, R5, Pred),
+    Labels, Hex) :-
+    instr_tag(tail_call_5, Tag),
+    reg_name_to_index(R1, I1),
+    reg_name_to_index(R2, I2),
+    reg_name_to_index(R3, I3),
+    reg_name_to_index(R4, I4),
+    reg_name_to_index(R5, I5),
+    Op1 is I1
+        \/ (I2 << 8)
+        \/ (I3 << 16)
+        \/ (I4 << 24)
+        \/ (I5 << 32),
     resolve_label(Pred, Labels, PC),
     encode_instr_hex(Tag, Op1, PC, Hex).
 
@@ -2979,6 +3007,45 @@ wam_wat_case(arg_call_lit_2_dead,
   (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
 
+wam_wat_case(tail_call_5,
+'  ;; Fuses the 7-instruction 5-arg tail-call-setup window into one
+  ;; dispatch: copy 5 source registers (typically Y slots from the
+  ;; current env frame) into A1-A5, deallocate the env frame, jump
+  ;; to target (tail call, no CP save).
+  ;; op1 packing: R1Idx (0-7), R2Idx (8-15), R3Idx (16-23),
+  ;;              R4Idx (24-31), R5Idx (32-39). op2 = target PC.
+  ;; Order matters: copy source values to A-regs BEFORE deallocate,
+  ;; since deallocate invalidates the Y-slot addresses.
+  (local $op1i i64)
+  (local $r1_idx i32) (local $r2_idx i32) (local $r3_idx i32)
+  (local $r4_idx i32) (local $r5_idx i32)
+  (local $frame i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $r1_idx (i32.wrap_i64 (i64.and (local.get $op1i) (i64.const 0xFF))))
+  (local.set $r2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $r3_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $r4_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $r5_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  ;; Copy Y/X values into A1-A5.
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $r1_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $r2_idx)))
+  (call $copy_to_reg (i32.const 2) (call $reg_offset (local.get $r3_idx)))
+  (call $copy_to_reg (i32.const 3) (call $reg_offset (local.get $r4_idx)))
+  (call $copy_to_reg (i32.const 4) (call $reg_offset (local.get $r5_idx)))
+  ;; Inline deallocate: restore CP + env_base from frame header,
+  ;; pop the frame by resetting stack_top.
+  (local.set $frame (global.get $env_base))
+  (call $set_cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  ;; Tail-call jump (no CP save — deallocate already restored CP).
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
   ;; op1 layout: low 32 bits = reg_idx (0 for A1, 1 for A2);
@@ -5006,7 +5073,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         peephole_fused_arith(NestedArithOptimized, ArithOptimized),
         peephole_direct_builtins(ArithOptimized, DirectBuiltinsOptimized),
         peephole_arg_to_a1(DirectBuiltinsOptimized, ArgToA1Optimized),
-        peephole_arg_call_k(ArgToA1Optimized, OptimizedWithLabels),
+        peephole_arg_call_k(ArgToA1Optimized, ArgCallKOptimized),
+        peephole_tail_call_k(ArgCallKOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -5478,6 +5546,29 @@ peephole_arg_call_k([arg_to_a1_lit(N, T, ArgDest),
     peephole_arg_call_k(Rest, Out).
 peephole_arg_call_k([H|T], [H|Out]) :-
     peephole_arg_call_k(T, Out).
+
+%% peephole_tail_call_k(+Instrs, -Optimized)
+%  Fuses the 5-arg tail-call-setup window:
+%     put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
+%     put_value(R4,A4) put_value(R5,A5) deallocate execute(Pred)
+%  → tail_call_5(R1, R2, R3, R4, R5, Pred)
+%
+%  Fires on sum_ints_args/5 and term_depth_args/5 in the bench —
+%  the 7-instruction window collapses to one dispatch, saving six
+%  $step iterations per recursion.
+peephole_tail_call_k([], []).
+peephole_tail_call_k([put_value(R1, 'A1'),
+                      put_value(R2, 'A2'),
+                      put_value(R3, 'A3'),
+                      put_value(R4, 'A4'),
+                      put_value(R5, 'A5'),
+                      deallocate,
+                      execute(Pred) | Rest],
+                     [tail_call_5(R1, R2, R3, R4, R5, Pred) | Out]) :-
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([H|T], [H|Out]) :-
+    peephole_tail_call_k(T, Out).
 
 %% a2_setup(+Instr, -A2Reg, -IsVar)
 %  Match the instruction that sets A2 in the K=2 fusion and extract
