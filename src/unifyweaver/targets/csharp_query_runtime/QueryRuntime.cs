@@ -1531,6 +1531,131 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    internal sealed class CachedResultRows
+    {
+        private readonly IReadOnlyList<object[]>? _objectRows;
+        private readonly object? _seedValue;
+        private readonly object?[]? _nodeValues;
+        private readonly IReadOnlyList<int>? _targetNodeIds;
+        private readonly IReadOnlyList<int>? _depths;
+        private readonly Func<int, object>? _boxDepth;
+        private IReadOnlyList<object[]>? _materializedRows;
+
+        private CachedResultRows(IReadOnlyList<object[]> objectRows)
+        {
+            _objectRows = objectRows ?? throw new ArgumentNullException(nameof(objectRows));
+        }
+
+        private CachedResultRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth)
+        {
+            if (targetNodeIds is null) throw new ArgumentNullException(nameof(targetNodeIds));
+            if (depths is null) throw new ArgumentNullException(nameof(depths));
+
+            if (targetNodeIds.Count != depths.Count)
+            {
+                throw new ArgumentException("Target and depth buffers must have the same row count.", nameof(depths));
+            }
+
+            _seedValue = seedValue;
+            _nodeValues = nodeValues ?? throw new ArgumentNullException(nameof(nodeValues));
+            _targetNodeIds = targetNodeIds;
+            _depths = depths;
+            _boxDepth = boxDepth ?? throw new ArgumentNullException(nameof(boxDepth));
+        }
+
+        public static CachedResultRows FromObjectRows(IReadOnlyList<object[]> rows) => new(rows);
+
+        public static CachedResultRows FromPathAwareDepthRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth) =>
+            new(seedValue, nodeValues, targetNodeIds, depths, boxDepth);
+
+        public int Count => _objectRows?.Count ?? _targetNodeIds?.Count ?? 0;
+
+        public IReadOnlyList<object[]> AsObjectRows()
+        {
+            if (_objectRows is not null)
+            {
+                return _objectRows;
+            }
+
+            if (_materializedRows is not null)
+            {
+                return _materializedRows;
+            }
+
+            var rows = new List<object[]>(Count);
+            AppendTo(rows);
+            _materializedRows = rows;
+            return rows;
+        }
+
+        public void AppendTo(
+            ICollection<object[]> output,
+            Action? recordOutputRow = null,
+            Action<TimeSpan>? addSetupElapsed = null,
+            Action<TimeSpan>? addRowAllocElapsed = null,
+            Action<TimeSpan>? addWriteElapsed = null)
+        {
+            if (output is null) throw new ArgumentNullException(nameof(output));
+
+            if (_objectRows is not null)
+            {
+                foreach (var row in _objectRows)
+                {
+                    output.Add(row);
+                    recordOutputRow?.Invoke();
+                }
+
+                return;
+            }
+
+            var nodeValues = _nodeValues!;
+            var targetNodeIds = _targetNodeIds!;
+            var depths = _depths!;
+            var boxDepth = _boxDepth!;
+            var seedValue = _seedValue!;
+
+            if (output is List<object[]> outputList)
+            {
+                var setupStarted = Stopwatch.GetTimestamp();
+                var baseIndex = outputList.Count;
+                CollectionsMarshal.SetCount(outputList, baseIndex + targetNodeIds.Count);
+                var span = CollectionsMarshal.AsSpan(outputList);
+                addSetupElapsed?.Invoke(Stopwatch.GetElapsedTime(setupStarted));
+
+                var writeStarted = Stopwatch.GetTimestamp();
+                var rowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < targetNodeIds.Count; i++)
+                {
+                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) };
+                    recordOutputRow?.Invoke();
+                }
+                addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(rowAllocStarted));
+                addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(writeStarted));
+                return;
+            }
+
+            var fallbackWriteStarted = Stopwatch.GetTimestamp();
+            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
+            for (var i = 0; i < targetNodeIds.Count; i++)
+            {
+                output.Add(new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) });
+                recordOutputRow?.Invoke();
+            }
+            addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
+            addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackWriteStarted));
+        }
+    }
+
     internal sealed class PathAwareSuccessorBucket
     {
         public PathAwareSuccessorBucket(object? source, int sourceNodeId)
@@ -8803,7 +8928,7 @@ namespace UnifyWeaver.QueryRuntime
                 if (context.TransitiveClosureResults.TryGetValue(cacheKey, out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: false, built: true);
@@ -8869,7 +8994,7 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
-                context.TransitiveClosureResults[cacheKey] = totalRows;
+                context.TransitiveClosureResults[cacheKey] = CachedResultRows.FromObjectRows(totalRows);
                 return totalRows;
             }
             finally
@@ -12758,60 +12883,18 @@ namespace UnifyWeaver.QueryRuntime
         {
             metrics?.RecordResultReplayBatch(rows.Count);
             var started = Stopwatch.GetTimestamp();
-            var seedValue = seed!;
-            if (output is List<object[]> outputList)
-            {
-                var setupStarted = Stopwatch.GetTimestamp();
-                var baseIndex = outputList.Count;
-                CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
-                var span = CollectionsMarshal.AsSpan(outputList);
-                var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
-                var depths = CollectionsMarshal.AsSpan(rows.Depths);
-                metrics?.AddResultReplaySetupElapsed(Stopwatch.GetElapsedTime(setupStarted));
-                var writeStarted = Stopwatch.GetTimestamp();
-                var valueLookupStarted = Stopwatch.GetTimestamp();
-                var targetValues = new object?[rows.Count];
-                var boxedDepths = new object[rows.Count];
-                for (var i = 0; i < rows.Count; i++)
-                {
-                    targetValues[i] = nodeValues[targetNodeIds[i]]!;
-                    boxedDepths[i] = BoxCountedPathDepth(depths[i]);
-                }
-                metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(valueLookupStarted));
-                var rowAllocStarted = Stopwatch.GetTimestamp();
-                for (var i = 0; i < rows.Count; i++)
-                {
-                    // The broader query runtime, caches, and test harnesses all
-                    // currently expect fresh object[] rows at this boundary.
-                    span[baseIndex + i] = new object[] { seedValue, targetValues[i], boxedDepths[i] };
-                    metrics?.RecordOutputRow();
-                }
-                metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(rowAllocStarted));
-                metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(writeStarted));
-                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
-                return;
-            }
-
-            var fallbackTargetNodeIds = rows.TargetNodeIds;
-            var fallbackDepths = rows.Depths;
-            var fallbackWriteStarted = Stopwatch.GetTimestamp();
-            var fallbackValueLookupStarted = Stopwatch.GetTimestamp();
-            var fallbackTargetValues = new object?[rows.Count];
-            var fallbackBoxedDepths = new object[rows.Count];
-            for (var i = 0; i < rows.Count; i++)
-            {
-                fallbackTargetValues[i] = nodeValues[fallbackTargetNodeIds[i]]!;
-                fallbackBoxedDepths[i] = BoxCountedPathDepth(fallbackDepths[i]);
-            }
-            metrics?.AddResultReplayValueLookupElapsed(Stopwatch.GetElapsedTime(fallbackValueLookupStarted));
-            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
-            for (var i = 0; i < rows.Count; i++)
-            {
-                output.Add(new object[] { seedValue, fallbackTargetValues[i], fallbackBoxedDepths[i] });
-                metrics?.RecordOutputRow();
-            }
-            metrics?.AddResultReplayRowAllocElapsed(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
-            metrics?.AddResultReplayWriteElapsed(Stopwatch.GetElapsedTime(fallbackWriteStarted));
+            Action? recordOutputRow = metrics is null ? null : metrics.RecordOutputRow;
+            Action<TimeSpan>? addSetupElapsed = metrics is null ? null : metrics.AddResultReplaySetupElapsed;
+            Action<TimeSpan>? addRowAllocElapsed = metrics is null ? null : metrics.AddResultReplayRowAllocElapsed;
+            Action<TimeSpan>? addWriteElapsed = metrics is null ? null : metrics.AddResultReplayWriteElapsed;
+            CachedResultRows
+                .FromPathAwareDepthRows(seed, nodeValues, rows.TargetNodeIds, rows.Depths, BoxCountedPathDepth)
+                .AppendTo(
+                    output,
+                    recordOutputRow,
+                    addSetupElapsed,
+                    addRowAllocElapsed,
+                    addWriteElapsed);
 
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
@@ -17334,7 +17417,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: false, built: true);
@@ -17368,7 +17451,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -17379,7 +17462,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17472,7 +17555,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -17483,7 +17566,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17544,7 +17627,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -17555,7 +17638,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -17752,7 +17835,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
@@ -17786,7 +17869,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -17797,7 +17880,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17893,7 +17976,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -17904,7 +17987,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17965,7 +18048,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -17976,7 +18059,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19215,7 +19298,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
@@ -19253,7 +19336,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var dagStoreBySeed))
                         {
-                            dagStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            dagStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, dagStoreBySeed);
                         }
 
@@ -19264,7 +19347,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             dagStoreBySeed,
                             new RowWrapper(seedsKey),
-                            dagRows,
+                            CachedResultRows.FromObjectRows(dagRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19299,7 +19382,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -19310,7 +19393,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19389,7 +19472,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -19400,7 +19483,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19481,7 +19564,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -19492,7 +19575,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19669,7 +19752,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
@@ -19698,7 +19781,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -19709,7 +19792,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19788,7 +19871,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -19799,7 +19882,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19880,7 +19963,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -19891,7 +19974,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -21254,11 +21337,11 @@ namespace UnifyWeaver.QueryRuntime
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
                 TransitiveClosureResults = parent?.TransitiveClosureResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows>();
                 TransitiveClosureSeededResults = parent?.TransitiveClosureSeededResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>>();
                 TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>>();
                 TransitiveClosurePairProbeResults = parent?.TransitiveClosurePairProbeResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>>();
                 GroupedTransitiveClosureResults = parent?.GroupedTransitiveClosureResults
@@ -21274,9 +21357,9 @@ namespace UnifyWeaver.QueryRuntime
                 SeedGroupedPathAwareAccumulationMinResults = parent?.SeedGroupedPathAwareAccumulationMinResults
                     ?? new Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>>();
                 GroupedTransitiveClosurePairProbeResults = parent?.GroupedTransitiveClosurePairProbeResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>>();
             }
@@ -21330,11 +21413,11 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>> TransitiveClosureResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows> TransitiveClosureResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>> TransitiveClosureSeededResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededByTargetResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>> TransitiveClosureSeededByTargetResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>> TransitiveClosurePairProbeResults { get; }
 
@@ -21350,9 +21433,9 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareAccumulationMinResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>> GroupedTransitiveClosureSeededResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededByTargetResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>> GroupedTransitiveClosureSeededByTargetResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>> GroupedTransitiveClosurePairProbeResults { get; }
         }

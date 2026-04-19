@@ -92,6 +92,28 @@ that can:
 3. make conversion points explicit and measurable
 4. preserve exact row order and row equality behavior
 
+## Prototype Status
+
+The first prototype seam is `CachedResultRows`.
+
+It is intentionally narrow:
+
+- `TransitiveClosureResults` stores `CachedResultRows`
+- seeded transitive-closure source/target caches, including grouped variants,
+  store `CachedResultRows`
+- counted-path replay can construct `CachedResultRows` from compact
+  path-aware target/depth buffers
+- existing consumers still call `AsObjectRows()` and receive
+  `IReadOnlyList<object[]>`
+- public execution APIs and row order are unchanged
+
+This proves the cached-result-container boundary can be inserted without a
+full row-wrapper/index rewrite. The compact counted-path replay prototype
+keeps final `object[]` row materialization at the boundary, but avoids the
+previous intermediate target-value and boxed-depth arrays. The next step is to
+decide whether to keep extending this seam toward cache storage or stop at the
+direct materialization win.
+
 ## Non-Goals
 
 The first abstraction should not change:
