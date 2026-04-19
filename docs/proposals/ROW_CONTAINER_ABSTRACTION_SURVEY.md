@@ -103,6 +103,8 @@ It is intentionally narrow:
   store `CachedResultRows`
 - counted-path replay can construct `CachedResultRows` from compact
   path-aware target/depth buffers
+- ungrouped seeded source/target closure caches can store two-column results
+  as parallel value buffers and materialize `object[]` rows on cache hits
 - existing consumers still call `AsObjectRows()` and receive
   `IReadOnlyList<object[]>`
 - public execution APIs and row order are unchanged
@@ -110,9 +112,13 @@ It is intentionally narrow:
 This proves the cached-result-container boundary can be inserted without a
 full row-wrapper/index rewrite. The compact counted-path replay prototype
 keeps final `object[]` row materialization at the boundary, but avoids the
-previous intermediate target-value and boxed-depth arrays. The next step is to
-decide whether to keep extending this seam toward cache storage or stop at the
-direct materialization win.
+previous intermediate target-value and boxed-depth arrays. The seeded closure
+cache prototype extends the same seam into cache storage for the simple
+two-column shape while leaving grouped and wider row shapes on object rows.
+This trades retained cache size and row-array isolation against hit-path
+latency, because compact cache hits must allocate fresh public `object[]` rows
+instead of reusing cached row arrays. The next step is to add retained-memory
+measurement before moving more cache families onto specialized buffers.
 
 ## Non-Goals
 
