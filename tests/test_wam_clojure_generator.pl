@@ -73,6 +73,7 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(RuntimeCode, _, _, _, ':execute-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':jump-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':builtin-call')),
+        assertion(sub_string(RuntimeCode, _, _, _, ':call-foreign')),
         assertion(sub_string(RuntimeCode, _, _, _, ':cut-ite')),
         assertion(sub_string(RuntimeCode, _, _, _, ':put-structure')),
         assertion(sub_string(RuntimeCode, _, _, _, ':put-list')),
@@ -90,6 +91,58 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(RuntimeCode, _, _, _, '(defn step [state]')),
         assertion(sub_string(DepsCode, _, _, _, '"-m" "generated.wam_test.core"')),
         assertion(sub_string(ProjectCode, _, _, _, ':main generated.wam_test.core')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(foreign_predicates_emit_call_foreign_stub) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_foreign', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1,
+                                   user:wam_execute_caller/1],
+                                  [ namespace('generated.wam_foreign_test'),
+                                    foreign_predicates([wam_fact/1])
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_foreign_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(wam_clojure_target:clojure_foreign_predicate(wam_fact, 1,
+                   [foreign_predicates([wam_fact/1])])),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "wam_fact" :arity 1}')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" 0')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '{:op :get-constant :constant "a" :reg "A1"}')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(no_kernels_suppresses_clojure_foreign_stub) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_no_kernels', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [ namespace('generated.wam_no_kernels_test'),
+                                    foreign_predicates([wam_fact/1]),
+                                    no_kernels(true)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_no_kernels_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(\+ wam_clojure_target:clojure_foreign_predicate(wam_fact, 1,
+                   [foreign_predicates([wam_fact/1]), no_kernels(true)])),
+        assertion(\+ sub_string(CoreCode, _, _, _, ':call-foreign')),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :get-constant :constant "a" :reg "A1"}')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(foreign_lowering_false_suppresses_clojure_foreign_stub) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_foreign_off', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [ namespace('generated.wam_foreign_off_test'),
+                                    foreign_predicates([wam_fact/1]),
+                                    foreign_lowering(false)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_foreign_off_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(\+ wam_clojure_target:clojure_foreign_predicate(wam_fact, 1,
+                   [foreign_predicates([wam_fact/1]), foreign_lowering(false)])),
+        assertion(\+ sub_string(CoreCode, _, _, _, ':call-foreign')),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :get-constant :constant "a" :reg "A1"}')),
         delete_directory_and_contents(TmpDir)
     )).
 

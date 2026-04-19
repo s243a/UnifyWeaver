@@ -237,6 +237,7 @@ for further optimization work.
 | Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
 | One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
 | Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
+| FFI controls | Scaffolded | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Runtime foreign handlers/kernels remain future work |
 | Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
 | Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
@@ -263,14 +264,20 @@ for further optimization work.
    across failing branches, including an env-mediated retry path. Nested
    disjunction/cut shapes remain a generator-level gap rather than a runtime
    optimization target.
+6. Clojure now has the same basic control vocabulary used by benchmark
+   matrices in other WAM targets: explicit foreign predicates can be marked,
+   and `no_kernels(true)` / `foreign_lowering(false)` force the pure WAM path.
+   Full Clojure kernel execution is still not implemented.
 
 ### Highest-value remaining work
 
-1. Add proper heap/trail semantics instead of relying primarily on the
+1. Implement Clojure foreign handler registration and native graph kernels
+   behind the existing `call-foreign` stub/control surface.
+2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
-2. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
    the remaining runtime state is better separated.
-3. Split hot runtime state from cold code/context data, following the same
+4. Split hot runtime state from cold code/context data, following the same
    optimization pattern that paid off heavily in Haskell.
 
 ---

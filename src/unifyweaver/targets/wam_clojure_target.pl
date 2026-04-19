@@ -15,7 +15,8 @@
 
 :- module(wam_clojure_target, [
     compile_wam_predicate_to_clojure/4,  % +Pred/Arity, +WamCode, +Options, -ClojureCode
-    write_wam_clojure_project/3          % +Predicates, +Options, +ProjectDir
+    write_wam_clojure_project/3,         % +Predicates, +Options, +ProjectDir
+    clojure_foreign_predicate/3          % +Pred, +Arity, +Options
 ]).
 
 :- use_module(library(lists)).
@@ -137,8 +138,11 @@ collect_wam_entries([], _, _, [], [], [], []).
 collect_wam_entries([PredIndicator|Rest], Options, PC,
                     [WrapperCode|RestWrappers], AllInstrs, AllLabels, [DispatchEntry|RestDispatch]) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
-    wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode),
-    wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
+    (   clojure_foreign_predicate(Pred, Arity, Options)
+    ->  clojure_foreign_stub_data(Pred, Arity, PC, GoLiterals, LabelPairs, NextPC)
+    ;   wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode),
+        wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC)
+    ),
     maplist([Lit, Entry]>>format(atom(Entry), '~w', [Lit]), GoLiterals, InstrEntries),
     maplist([Label-Idx, Entry]>>format(atom(Entry), '~w ~w', [Label, Idx]), LabelPairs, LabelRows),
     compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, WrapperCode),
@@ -147,6 +151,29 @@ collect_wam_entries([PredIndicator|Rest], Options, PC,
     collect_wam_entries(Rest, Options, NextPC, RestWrappers, RestInstrs, RestLabels, RestDispatch),
     append(InstrEntries, RestInstrs, AllInstrs),
     append(LabelRows, RestLabels, AllLabels).
+
+%% clojure_foreign_predicate(+Pred, +Arity, +Options) is semidet.
+%  True when a predicate should be represented by a Clojure WAM
+%  call-foreign stub instead of compiling its normal WAM body.
+%
+%  This first Clojure pass intentionally supports explicit controls only:
+%  - foreign_predicates([p/n, ...]) opts predicates into foreign stubs.
+%  - foreign_lowering(false) disables foreign stubs.
+%  - no_kernels(true) disables foreign stubs for benchmark parity.
+clojure_foreign_predicate(Pred, Arity, Options) :-
+    \+ option(no_kernels(true), Options),
+    \+ option(foreign_lowering(false), Options),
+    option(foreign_predicates(ForeignPreds), Options, []),
+    member(Pred/Arity, ForeignPreds).
+
+clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
+    format(atom(PredKey), '~w/~w', [Pred, Arity]),
+    clj_string_literal(PredKey, PredKeyLit),
+    clj_string_literal(Pred, PredLit),
+    format(atom(CallLit), '{:op :call-foreign :pred ~w :arity ~w}', [PredLit, Arity]),
+    Literals = [CallLit, '{:op :proceed}'],
+    LabelPairs = [PredKeyLit-PC],
+    NextPC is PC + 2.
 
 compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
@@ -225,6 +252,10 @@ wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     number_string(Arity, ArityStr),
     format(atom(Literal), '{:op :call :pred ~w :arity ~w}', [PredLit, Arity]).
+wam_op_to_clojure_literal("call_foreign", [Pred, ArityStr], _, Literal) :-
+    clj_string_literal(Pred, PredLit),
+    number_string(Arity, ArityStr),
+    format(atom(Literal), '{:op :call-foreign :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("execute", [Pred], _, Literal) :-
     clj_string_literal(Pred, PredLit),
     format(atom(Literal), '{:op :execute :pred ~w}', [PredLit]).

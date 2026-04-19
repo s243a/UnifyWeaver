@@ -509,6 +509,12 @@
 
           (backtrack state))
 
+        :call-foreign
+        ;; Foreign handlers are introduced by target-specific kernels.
+        ;; Until a handler is registered, foreign calls fail cleanly rather
+        ;; than falling through to a missing WAM body.
+        (backtrack state)
+
         :cut-ite
         (-> state
             (update :choice-points #(if (seq %) (pop %) %))
