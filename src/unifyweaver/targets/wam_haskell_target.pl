@@ -1276,15 +1276,18 @@ findOuterEndAggregate !ctx !startPC =
           EndAggregate _ -> pc + 1
           _              -> go (pc + 1) hi
 
--- | Phase 4.4: parallel negation check. Run each branch of a Par*
--- chain and return True if ANY branch produces a solution (meaning
--- the negated goal succeeds, so \\+ fails). Uses parMap rdeepseq for
--- the parallel evaluation — same strategy as aggregate fork. True
--- race-to-cancel (async-based) is a future optimization.
+-- | Phase 4.4: parallel negation check with race-to-cancel.
+-- Spawn each branch as an async action; the first to return True
+-- (goal succeeded → negation fails) wins and all others are cancelled.
+-- If all branches return False, negation succeeds. Uses
+-- unsafePerformIO to keep the WAM run loop pure — safe because the
+-- branches are purity-certified and the only IO effect is thread
+-- management.
+-- {-# NOINLINE runNegationParallel #-}
 runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool
 runNegationParallel !ctx !s !entryPC !elsePC =
     let branchPCs = enumerateParBranches ctx entryPC elsePC
-        branchSucceeds pc =
+        branchAction pc = evaluate $
           let snapshot = s { wsPC = pc + 1  -- skip past the Par* instruction
                            , wsCP = 0
                            , wsCutBar = 0 }
@@ -1292,10 +1295,29 @@ runNegationParallel !ctx !s !entryPC !elsePC =
                Just _  -> True
                Nothing -> False
     in if length branchPCs >= forkMinBranches
-       then or (parMap rdeepseq branchSucceeds branchPCs)
+       then unsafePerformIO (raceToTrue (map branchAction branchPCs))
        else case run ctx (s { wsPC = entryPC, wsCP = 0, wsCutBar = 0 }) of
               Just _  -> True
               Nothing -> False
+
+-- | Run a list of IO Bool actions concurrently. Returns True as soon
+-- as any action returns True, cancelling all others. If every action
+-- returns False, returns False. Uses waitAny to poll completed
+-- asyncs and cancel to clean up.
+raceToTrue :: [IO Bool] -> IO Bool
+raceToTrue [] = return False
+raceToTrue actions = do
+    asyncs <- mapM async actions
+    result <- go asyncs
+    mapM_ cancel asyncs
+    return result
+  where
+    go [] = return False
+    go as = do
+      (completed, val) <- waitAny as
+      if val
+        then return True
+        else go (filter (/= completed) as)
 
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
@@ -2342,6 +2364,11 @@ import Data.Maybe (fromMaybe)
 -- WamState NFData instance lives in WamTypes.
 import Control.Parallel.Strategies (parMap, rdeepseq)
 import Control.DeepSeq (NFData(..), deepseq)
+-- Phase 4.4: race-to-cancel for parallel negation. async/waitAny
+-- let us cancel remaining branches once one succeeds.
+import Control.Concurrent.Async (async, cancel, waitAny)
+import Control.Exception (evaluate)
+import System.IO.Unsafe (unsafePerformIO)
 import WamTypes
 
 ~w
@@ -2784,9 +2811,10 @@ emptyState = WamState
 %  Options: profiling(true) adds -prof -fprof-auto -rtsopts for GHC profiling.
 generate_cabal_file(Name, UseHM, Options, Code) :-
     % deepseq + parallel for seed-level parMap rdeepseq
+    % async for Phase 4.4 race-to-cancel negation
     (   UseHM == true
-    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2"
-    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2"
+    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.

@@ -49,6 +49,7 @@
 :- use_module('csharp_runtime/custom_csharp', []).
 
 :- use_module('../core/semantic_compiler').
+:- use_module('../core/purity_certificate', [analyze_goal_purity/2]).
 
 %% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 %  Target-specific implementation for semantic search.
@@ -2354,6 +2355,24 @@ order_free_join_role(Role) :-
     ;   Role = mutual(_, _)
     ).
 
+%% order_free_join_item(+Term, +Role) is semidet.
+%  Extends order_free_join_role/1 with purity-certificate oracle:
+%  a goal that is certified pure (confidence >= 0.85) can be freely
+%  reordered, even if its role is not a standard order-free role.
+%  Pure goals are side-effect-free, so evaluation order is
+%  semantically irrelevant — the optimizer can reorder them for
+%  better join plans (e.g., pushing selective filters earlier).
+order_free_join_item(_Term, Role) :-
+    order_free_join_role(Role), !.
+order_free_join_item(Term, _Role) :-
+    nonvar(Term),
+    catch(
+        analyze_goal_purity(Term, purity_cert(pure, _, Conf, _)),
+        _,
+        fail
+    ),
+    Conf >= 0.85.
+
 reorder_order_free_joins(BoundVars, Terms, Roles, OrderedTerms, OrderedRoles) :-
     terms_roles_pairs(Terms, Roles, Pairs),
     reorder_order_free_pairs(BoundVars, Pairs, OrderedPairs),
@@ -2373,7 +2392,7 @@ reorder_order_free_pairs(BoundVars0, Pairs, OrderedPairs) :-
 
 reorder_order_free_pairs_([], _BoundVars, Acc, Acc).
 reorder_order_free_pairs_([term_role(Term, Role)|Rest], BoundVars, Acc, Ordered) :-
-    (   order_free_join_role(Role)
+    (   order_free_join_item(Term, Role)
     ->  take_order_free_run([term_role(Term, Role)|Rest], Run, Remaining),
         reorder_order_free_run(Run, BoundVars, OrderedRun),
         run_vars(Run, RunVars),
@@ -2388,7 +2407,7 @@ reorder_order_free_pairs_([term_role(Term, Role)|Rest], BoundVars, Acc, Ordered)
 
 take_order_free_run([], [], []) :- !.
 take_order_free_run([term_role(Term, Role)|Rest], [term_role(Term, Role)|Run], Remaining) :-
-    order_free_join_role(Role),
+    order_free_join_item(Term, Role),
     !,
     take_order_free_run(Rest, Run, Remaining).
 take_order_free_run(Rest, [], Rest).

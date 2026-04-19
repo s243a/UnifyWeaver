@@ -481,13 +481,36 @@ test_haskell_negation_parallel_dispatch :-
     ).
 
 test_haskell_negation_parallel_helper :-
-    Test = 'WAM-Haskell: runNegationParallel helper uses parMap rdeepseq',
+    Test = 'WAM-Haskell: runNegationParallel uses async race-to-cancel',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool"),
-        sub_string(S, _, _, _, "parMap rdeepseq branchSucceeds branchPCs")
+        sub_string(S, _, _, _, "unsafePerformIO"),
+        sub_string(S, _, _, _, "raceToTrue")
     ->  pass(Test)
-    ;   fail_test(Test, 'runNegationParallel helper missing or incomplete')
+    ;   fail_test(Test, 'runNegationParallel race-to-cancel missing or incomplete')
+    ).
+
+test_haskell_race_to_true_helper :-
+    Test = 'WAM-Haskell: raceToTrue helper with async/waitAny/cancel',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "raceToTrue :: [IO Bool] -> IO Bool"),
+        sub_string(S, _, _, _, "waitAny"),
+        sub_string(S, _, _, _, "mapM_ cancel")
+    ->  pass(Test)
+    ;   fail_test(Test, 'raceToTrue helper missing')
+    ).
+
+test_haskell_async_imports :-
+    Test = 'WAM-Haskell: async/unsafePerformIO imports present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Control.Concurrent.Async"),
+        sub_string(S, _, _, _, "System.IO.Unsafe"),
+        sub_string(S, _, _, _, "Control.Exception (evaluate)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'async/unsafe imports missing')
     ).
 
 test_haskell_negation_true_fail_fast_paths :-
@@ -689,6 +712,8 @@ run_tests :-
     test_haskell_negation_general_handler,
     test_haskell_negation_parallel_dispatch,
     test_haskell_negation_parallel_helper,
+    test_haskell_race_to_true_helper,
+    test_haskell_async_imports,
     test_haskell_negation_true_fail_fast_paths,
     %% Phase 4.1: Par* instructions + certificate-driven emission
     test_haskell_par_instructions_in_types,

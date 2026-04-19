@@ -68,7 +68,12 @@
     % lower-priority `impure` verdict. Pure (no side effects by
     % default); callers decide how loud to be about findings.
     check_purity_contradictions/2,    % +PredIndicator, -Contradictions
-    warn_purity_contradictions/1      % +PredIndicator — prints to user_error
+    warn_purity_contradictions/1,     % +PredIndicator — prints to user_error
+
+    % Phase P5: JSON serialization for cross-language interop
+    cert_to_json/2,                   % +Cert, -JsonDict
+    cert_to_json/3,                   % +Cert, +Metadata, -JsonDict
+    cert_from_json/2                  % +JsonDict, -Cert
 ]).
 
 :- use_module(library(lists)).
@@ -664,6 +669,108 @@ collect_unknown_reasons(Certs, Reasons) :-
                        purity_certificate:user_annotation_analyzer,
                        [goal, predicate]),
        100).
+% ============================================================================
+% PHASE P5: JSON SERIALIZATION
+% ============================================================================
+
+%% cert_to_json(+Cert, -JsonDict) is det.
+%  Serialize a purity certificate to a SWI-Prolog dict suitable for
+%  json_write_dict/2. Convenience wrapper with empty metadata.
+cert_to_json(Cert, Json) :-
+    cert_to_json(Cert, _{}, Json).
+
+%% cert_to_json(+Cert, +Metadata, -JsonDict) is det.
+%  Serialize with optional metadata (subject, producer, producer_version).
+%  Metadata is a dict; unknown keys are passed through to the output.
+cert_to_json(purity_cert(Verdict, Proof, Confidence, Reasons), Metadata, Json) :-
+    verdict_to_json(Verdict, VerdictStr, ExtraReasons),
+    proof_to_json(Proof, ProofDict),
+    append(ExtraReasons, Reasons, AllReasons),
+    maplist(reason_to_string, AllReasons, ReasonStrs),
+    BaseDict = _{verdict: VerdictStr, proof: ProofDict,
+                 confidence: Confidence, reasons: ReasonStrs},
+    put_dict(Metadata, BaseDict, Json).
+
+verdict_to_json(pure, "pure", []).
+verdict_to_json(impure(ReasonList), "impure", ReasonList) :-
+    is_list(ReasonList), !.
+verdict_to_json(impure(_), "impure", []).
+verdict_to_json(unknown, "unknown", []).
+
+proof_to_json(declared, _{kind: "declared"}).
+proof_to_json(analyzed(Strategy), _{kind: "analyzed", strategy: StratStr}) :-
+    term_to_atom(Strategy, StratStr).
+proof_to_json(certified(Source), _{kind: "certified", source: SrcStr}) :-
+    term_to_atom(Source, SrcStr).
+proof_to_json(inferred, _{kind: "inferred"}).
+
+reason_to_string(R, S) :-
+    (   atom(R) -> atom_string(R, S)
+    ;   term_to_atom(R, A), atom_string(A, S)
+    ).
+
+%% cert_from_json(+JsonDict, -Cert) is det.
+%  Deserialize a JSON dict to a purity_cert/4 term. Unknown keys in
+%  the dict are silently ignored (forward-compat per spec §3.2).
+cert_from_json(Json, purity_cert(Verdict, Proof, Confidence, Reasons)) :-
+    (   get_dict(verdict, Json, VerdictStr) -> true
+    ;   throw(error(cert_json_error(missing_verdict), _))
+    ),
+    (   get_dict(confidence, Json, Confidence) -> true
+    ;   throw(error(cert_json_error(missing_confidence), _))
+    ),
+    (   number(Confidence), Confidence >= 0.0, Confidence =< 1.0 -> true
+    ;   throw(error(cert_json_error(confidence_out_of_range(Confidence)), _))
+    ),
+    (   get_dict(proof, Json, ProofDict) -> true
+    ;   throw(error(cert_json_error(missing_proof), _))
+    ),
+    json_to_verdict(VerdictStr, Json, Verdict),
+    json_to_proof(ProofDict, Proof),
+    json_to_reasons(Json, Reasons).
+
+json_to_verdict("pure", _, pure).
+json_to_verdict("impure", Json, impure(Reasons)) :-
+    json_to_reasons(Json, Reasons).
+json_to_verdict("unknown", _, unknown).
+json_to_verdict(Other, _, _) :-
+    throw(error(cert_json_error(unknown_verdict(Other)), _)).
+
+json_to_proof(ProofDict, Proof) :-
+    get_dict(kind, ProofDict, Kind),
+    json_to_proof_(Kind, ProofDict, Proof).
+json_to_proof_(Kind, _, _) :-
+    var(Kind),
+    throw(error(cert_json_error(missing_proof_kind), _)).
+json_to_proof_("declared", _, declared).
+json_to_proof_("analyzed", Dict, analyzed(Strategy)) :-
+    (   get_dict(strategy, Dict, StratStr)
+    ->  term_to_atom(Strategy, StratStr)
+    ;   Strategy = unknown
+    ).
+json_to_proof_("certified", Dict, certified(Source)) :-
+    (   get_dict(source, Dict, SrcStr)
+    ->  term_to_atom(Source, SrcStr)
+    ;   Source = unknown
+    ).
+json_to_proof_("inferred", _, inferred).
+json_to_proof_(Other, _, _) :-
+    \+ var(Other),
+    Other \= "declared", Other \= "analyzed",
+    Other \= "certified", Other \= "inferred",
+    throw(error(cert_json_error(unknown_proof_kind(Other)), _)).
+
+json_to_reasons(Json, Reasons) :-
+    (   get_dict(reasons, Json, RList), is_list(RList)
+    ->  maplist(string_to_reason, RList, Reasons)
+    ;   Reasons = []
+    ).
+
+string_to_reason(S, R) :-
+    (   atom_string(A, S), catch(term_to_atom(R, A), _, fail) -> true
+    ;   atom_string(R, S)
+    ).
+
 :- register_purity_producer(
        purity_producer(kernel_registry,
                        purity_certificate:kernel_analyzer,
