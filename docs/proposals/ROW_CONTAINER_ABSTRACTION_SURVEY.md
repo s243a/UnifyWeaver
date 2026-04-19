@@ -117,8 +117,13 @@ cache prototype extends the same seam into cache storage for the simple
 two-column shape while leaving grouped and wider row shapes on object rows.
 This trades retained cache size and row-array isolation against hit-path
 latency, because compact cache hits must allocate fresh public `object[]` rows
-instead of reusing cached row arrays. The next step is to add retained-memory
-measurement before moving more cache families onto specialized buffers.
+instead of reusing cached row arrays. `benchmark_seeded_cache_hits.py` now
+reports both coarse warm-cache GC deltas and a direct seeded-cache storage
+estimate. On the 300 and 1k category-parent slices with 16 seeds, compact
+two-column cache storage reduces estimated seeded-cache row storage from about
+204-883 KB to about 69-295 KB, while median cache-hit latency remains slower
+than object-row reuse. The next step is to decide whether this memory/row
+isolation tradeoff is valuable enough to expose behind a runtime option.
 
 ## Non-Goals
 

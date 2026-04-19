@@ -39,6 +39,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using UnifyWeaver.QueryRuntime;
 
 class Program
@@ -100,6 +101,141 @@ class Program
         };
     }
 
+    static long ForceFullCollectionAndGetMemory()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        return GC.GetTotalMemory(forceFullCollection: true);
+    }
+
+    static long EstimateCacheStorageBytes(QueryExecutor executor, string mode)
+    {
+        var executorType = typeof(QueryExecutor);
+        var cacheContextField = executorType.GetField("_cacheContext", BindingFlags.Instance | BindingFlags.NonPublic);
+        var cacheContext = cacheContextField?.GetValue(executor);
+        if (cacheContext is null)
+        {
+            return 0;
+        }
+
+        var cacheFieldName = mode == "source"
+            ? "TransitiveClosureSeededResults"
+            : "TransitiveClosureSeededByTargetResults";
+        var cacheField = cacheContext.GetType().GetProperty(cacheFieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        var outerCache = cacheField?.GetValue(cacheContext) as System.Collections.IEnumerable;
+        if (outerCache is null)
+        {
+            return 0;
+        }
+
+        long bytes = 0;
+        foreach (var outerEntry in outerCache)
+        {
+            var innerCache = outerEntry.GetType().GetProperty("Value")?.GetValue(outerEntry) as System.Collections.IEnumerable;
+            if (innerCache is null)
+            {
+                continue;
+            }
+
+            foreach (var innerEntry in innerCache)
+            {
+                var cachedRows = innerEntry.GetType().GetProperty("Value")?.GetValue(innerEntry);
+                if (cachedRows is not null)
+                {
+                    bytes += EstimateCachedResultRowsStorageBytes(cachedRows);
+                }
+            }
+        }
+
+        return bytes;
+    }
+
+    static long EstimateCachedResultRowsStorageBytes(object cachedRows)
+    {
+        var type = cachedRows.GetType();
+        var objectRows = type.GetField("_objectRows", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cachedRows);
+        if (objectRows is not null)
+        {
+            return EstimateObjectRowsStorageBytes(objectRows);
+        }
+
+        var leftValues = type.GetField("_leftValues", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cachedRows);
+        if (leftValues is not null)
+        {
+            var rightValues = type.GetField("_rightValues", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cachedRows);
+            return EstimateReferenceListStorageBytes(leftValues) + EstimateReferenceListStorageBytes(rightValues);
+        }
+
+        var targetNodeIds = type.GetField("_targetNodeIds", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cachedRows);
+        var depths = type.GetField("_depths", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cachedRows);
+        return EstimateIntListStorageBytes(targetNodeIds) + EstimateIntListStorageBytes(depths);
+    }
+
+    static long EstimateObjectRowsStorageBytes(object objectRows)
+    {
+        if (objectRows is not IReadOnlyCollection<object[]> rows)
+        {
+            return 0;
+        }
+
+        long bytes = EstimateReferenceListStorageBytes(objectRows);
+        foreach (var row in rows)
+        {
+            bytes += EstimateArrayStorageBytes(row?.Length ?? 0, IntPtr.Size);
+        }
+
+        return bytes;
+    }
+
+    static long EstimateReferenceListStorageBytes(object? values)
+    {
+        if (values is null)
+        {
+            return 0;
+        }
+
+        if (values is Array array)
+        {
+            return EstimateArrayStorageBytes(array.Length, IntPtr.Size);
+        }
+
+        if (values is System.Collections.ICollection collection)
+        {
+            return EstimateArrayStorageBytes(collection.Count, IntPtr.Size);
+        }
+
+        return 0;
+    }
+
+    static long EstimateIntListStorageBytes(object? values)
+    {
+        if (values is null)
+        {
+            return 0;
+        }
+
+        if (values is Array array)
+        {
+            return EstimateArrayStorageBytes(array.Length, sizeof(int));
+        }
+
+        if (values is System.Collections.ICollection collection)
+        {
+            return EstimateArrayStorageBytes(collection.Count, sizeof(int));
+        }
+
+        return 0;
+    }
+
+    static long EstimateArrayStorageBytes(int count, int elementSize)
+    {
+        var bytes = 24L + ((long)count * elementSize);
+        var alignment = IntPtr.Size;
+        var remainder = bytes % alignment;
+        return remainder == 0 ? bytes : bytes + alignment - remainder;
+    }
+
     static void Main(string[] args)
     {
         if (args.Length < 4)
@@ -138,8 +274,17 @@ class Program
             ? "TransitiveClosureSeeded"
             : "TransitiveClosureSeededByTarget";
 
+        var retainedBeforeWarm = ForceFullCollectionAndGetMemory();
+        var allocatedBeforeWarm = GC.GetTotalAllocatedBytes(precise: true);
         var warmTrace = new QueryExecutionTrace();
-        var warmRows = executor.Execute(plan, parameters, warmTrace).ToList();
+        List<object[]>? warmRows = executor.Execute(plan, parameters, warmTrace).ToList();
+        var warmRowCount = warmRows.Count;
+        var warmAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBeforeWarm;
+        warmRows = null;
+        warmTrace = null;
+        var retainedAfterWarm = ForceFullCollectionAndGetMemory();
+        var warmRetainedBytes = Math.Max(0, retainedAfterWarm - retainedBeforeWarm);
+        var cacheStorageEstimateBytes = EstimateCacheStorageBytes(executor, mode);
 
         var elapsedMs = new List<double>();
         long lastRows = 0;
@@ -166,13 +311,16 @@ class Program
             mode,
             parameters.Count.ToString(CultureInfo.InvariantCulture),
             repetitions.ToString(CultureInfo.InvariantCulture),
-            warmRows.Count.ToString(CultureInfo.InvariantCulture),
+            warmRowCount.ToString(CultureInfo.InvariantCulture),
             lastRows.ToString(CultureInfo.InvariantCulture),
             statistics(elapsedMs, values => values.Min()),
             statistics(elapsedMs, values => values.Max()),
             statistics(elapsedMs, values => Median(values)),
             totalHits.ToString(CultureInfo.InvariantCulture),
-            totalBuilds.ToString(CultureInfo.InvariantCulture)
+            totalBuilds.ToString(CultureInfo.InvariantCulture),
+            warmRetainedBytes.ToString(CultureInfo.InvariantCulture),
+            warmAllocatedBytes.ToString(CultureInfo.InvariantCulture),
+            cacheStorageEstimateBytes.ToString(CultureInfo.InvariantCulture)
         }));
     }
 
@@ -206,6 +354,9 @@ class BenchmarkResult:
     median_ms: float
     cache_hits: int
     cache_builds: int
+    warm_retained_bytes: int
+    warm_allocated_bytes: int
+    cache_storage_estimate_bytes: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -214,6 +365,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--modes", default="source,target")
     parser.add_argument("--seed-count", type=int, default=16)
     parser.add_argument("--repetitions", type=int, default=25)
+    parser.add_argument(
+        "--runtime-source",
+        type=Path,
+        default=QRY_RUNTIME,
+        help="QueryRuntime.cs to compile into the temporary benchmark harness",
+    )
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -222,14 +379,16 @@ def run(cmd: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProce
     return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True)
 
 
-def build_harness(root: Path) -> list[str]:
+def build_harness(root: Path, runtime_source: Path) -> list[str]:
     if shutil.which("dotnet") is None:
         raise RuntimeError("dotnet not found")
+    if not runtime_source.exists():
+        raise FileNotFoundError(runtime_source)
 
     project_dir = root / "seeded_cache_hits"
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "Program.cs").write_text(PROGRAM, encoding="utf-8")
-    (project_dir / "QueryRuntime.cs").write_text(QRY_RUNTIME.read_text(encoding="utf-8"), encoding="utf-8")
+    (project_dir / "QueryRuntime.cs").write_text(runtime_source.read_text(encoding="utf-8"), encoding="utf-8")
     (project_dir / "seeded_cache_hits.csproj").write_text(CSHARP_PROJECT, encoding="utf-8")
     run(["dotnet", "build", "seeded_cache_hits.csproj", "-c", "Release"], cwd=project_dir)
     return ["dotnet", str(project_dir / "bin" / "Release" / "net9.0" / "seeded_cache_hits.dll")]
@@ -242,7 +401,7 @@ def run_benchmark(command: list[str], scale: str, mode: str, seed_count: int, re
 
     result = run(command + [mode, str(edge_path), str(seed_count), str(repetitions)])
     fields = result.stdout.strip().split("\t")
-    if len(fields) != 10:
+    if len(fields) != 13:
         raise RuntimeError(f"Unexpected benchmark output: {result.stdout!r}\n{result.stderr}")
 
     return BenchmarkResult(
@@ -257,6 +416,9 @@ def run_benchmark(command: list[str], scale: str, mode: str, seed_count: int, re
         median_ms=float(fields[7]),
         cache_hits=int(fields[8]),
         cache_builds=int(fields[9]),
+        warm_retained_bytes=int(fields[10]),
+        warm_allocated_bytes=int(fields[11]),
+        cache_storage_estimate_bytes=int(fields[12]),
     )
 
 
@@ -267,8 +429,8 @@ def main() -> int:
 
     temp_root = Path(tempfile.mkdtemp(prefix="unifyweaver_seeded_cache_hits_"))
     try:
-        command = build_harness(temp_root)
-        print("scale\tmode\tseeds\trepetitions\twarm_rows\trows\tmedian_ms\tmin_ms\tmax_ms\tcache_hits\tcache_builds")
+        command = build_harness(temp_root, args.runtime_source)
+        print("scale\tmode\tseeds\trepetitions\twarm_rows\trows\tmedian_ms\tmin_ms\tmax_ms\tcache_hits\tcache_builds\twarm_retained_bytes\twarm_allocated_bytes\tcache_storage_estimate_bytes")
         for scale in scales:
             for mode in modes:
                 result = run_benchmark(command, scale, mode, args.seed_count, args.repetitions)
@@ -276,7 +438,9 @@ def main() -> int:
                     f"{result.scale}\t{result.mode}\t{result.seed_count}\t{result.repetitions}\t"
                     f"{result.warm_rows}\t{result.rows}\t{result.median_ms:.3f}\t"
                     f"{result.min_ms:.3f}\t{result.max_ms:.3f}\t"
-                    f"{result.cache_hits}\t{result.cache_builds}"
+                    f"{result.cache_hits}\t{result.cache_builds}\t"
+                    f"{result.warm_retained_bytes}\t{result.warm_allocated_bytes}\t"
+                    f"{result.cache_storage_estimate_bytes}"
                 )
     finally:
         if args.keep_temp:
