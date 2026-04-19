@@ -219,6 +219,9 @@ Interpretation:
   boundary layers where a narrower internal row shape would actually have to
   land to matter: replayable sources, cached result containers, and row
   wrapper/index abstractions
+- a row-container abstraction survey now identifies cached result containers
+  as the smallest useful prototype seam before attempting a broader
+  row-wrapper/index rewrite
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
