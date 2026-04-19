@@ -129,6 +129,10 @@ instr_tag(arg_call_reg_1,   54).
 instr_tag(arg_call_lit_1,   55).
 instr_tag(arg_call_reg_1_dead, 56).
 instr_tag(arg_call_lit_1_dead, 57).
+instr_tag(arg_call_reg_2,   58).
+instr_tag(arg_call_lit_2,   59).
+instr_tag(arg_call_reg_2_dead, 60).
+instr_tag(arg_call_lit_2_dead, 61).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -645,6 +649,87 @@ wam_instruction_to_wat_bytes(
     reg_name_to_index(TReg, TIdx),
     reg_name_to_index(ArgDestReg, AdIdx),
     Op1 is (TIdx << 8) \/ (AdIdx << 16) \/ ((N /\ 0xFFFF) << 40),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% arg_call_reg_2 / arg_call_lit_2: fusion for arity-2 calls. Handles
+%% two sub-patterns distinguished by an IsVar flag in op1 bit 32:
+%%   IsVar=0: arg_to_a1_* + put_value(A2Reg, 'A2') + call(Pred, 2)
+%%            → A2Reg is a source (copied to A2).
+%%   IsVar=1: arg_to_a1_* + put_variable(A2Reg, 'A2') + call(Pred, 2)
+%%            → A2Reg is a fresh-var destination (A2 and A2Reg both
+%%              receive a new heap ref cell).
+%%
+%% op1 layout:
+%%   bits  0-7:  NIdx (reg variant) / unused (lit variant)
+%%   bits  8-15: TIdx
+%%   bits 16-23: ArgDestIdx
+%%   bits 24-31: A2Idx
+%%   bit  32:    IsVar flag
+%%   bits 40-55: N (lit variant only)
+%% op2: target predicate PC.
+wam_instruction_to_wat_bytes(
+    arg_call_reg_2(NReg, TReg, ArgDestReg, A2Reg, IsVar, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_reg_2, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2Reg, A2Idx),
+    IsVarBit is IsVar /\ 1,
+    Op1 is NIdx
+        \/ (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (IsVarBit << 32),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+wam_instruction_to_wat_bytes(
+    arg_call_lit_2(N, TReg, ArgDestReg, A2Reg, IsVar, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_lit_2, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2Reg, A2Idx),
+    IsVarBit is IsVar /\ 1,
+    Op1 is (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (IsVarBit << 32)
+        \/ ((N /\ 0xFFFF) << 40),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% _dead variants: ArgDest write elided; same encoding otherwise.
+wam_instruction_to_wat_bytes(
+    arg_call_reg_2_dead(NReg, TReg, ArgDestReg, A2Reg, IsVar, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_reg_2_dead, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2Reg, A2Idx),
+    IsVarBit is IsVar /\ 1,
+    Op1 is NIdx
+        \/ (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (IsVarBit << 32),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+wam_instruction_to_wat_bytes(
+    arg_call_lit_2_dead(N, TReg, ArgDestReg, A2Reg, IsVar, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_lit_2_dead, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2Reg, A2Idx),
+    IsVarBit is IsVar /\ 1,
+    Op1 is (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (IsVarBit << 32)
+        \/ ((N /\ 0xFFFF) << 40),
     resolve_label(Pred, Labels, PC),
     encode_instr_hex(Tag, Op1, PC, Hex).
 
@@ -2569,6 +2654,327 @@ wam_wat_case(arg_call_lit_1_dead,
     (i64.extend_i32_u (local.get $fresh_addr)))
   (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
   (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_reg_2,
+'  ;; Fuses arg_to_a1_reg + (put_value|put_variable)(A2Reg, A2) +
+  ;; call(Pred, 2). IsVar bit in op1:32 selects between the two A2
+  ;; setup modes: 0 = copy A2Reg to A2 (put_value); 1 = allocate a
+  ;; fresh ref cell and bind both A2 and A2Reg to it (put_variable).
+  ;; op1 packing: N (0-7), T (8-15), ArgDest (16-23), A2Reg (24-31),
+  ;; IsVar (bit 32). op2 = target PC.
+  (local $op1i i64)
+  (local $n_idx i32) (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32)
+  (local $is_var i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $n_idx (i32.wrap_i64 (i64.and (local.get $op1i) (i64.const 0xFF))))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $is_var (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0x1))))
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (local.get $ad_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          ;; A2 setup: copy (IsVar=0) or fresh-bind (IsVar=1).
+          (if (i32.eqz (local.get $is_var))
+            (then
+              (call $copy_to_reg (i32.const 1)
+                (call $reg_offset (local.get $a2_idx))))
+            (else
+              (local.set $fresh_addr
+                (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (call $set_reg (i32.const 1) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))
+              (call $set_reg (local.get $a2_idx) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback: $builtin_arg then A2 setup.
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (if (i32.eqz (local.get $is_var))
+    (then
+      (call $copy_to_reg (i32.const 1)
+        (call $reg_offset (local.get $a2_idx))))
+    (else
+      (local.set $fresh_addr
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      (call $set_reg (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))
+      (call $set_reg (local.get $a2_idx) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_lit_2,
+'  ;; Same as arg_call_reg_2 but with literal N in bits 40-55 of op1.
+  (local $op1i i64)
+  (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32)
+  (local $is_var i32)
+  (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $is_var (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0x1))))
+  (local.set $n (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 40)) (i64.const 0xFFFF))))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (local.get $ad_idx)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (if (i32.eqz (local.get $is_var))
+            (then
+              (call $copy_to_reg (i32.const 1)
+                (call $reg_offset (local.get $a2_idx))))
+            (else
+              (local.set $fresh_addr
+                (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (call $set_reg (i32.const 1) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))
+              (call $set_reg (local.get $a2_idx) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback.
+  (call $set_reg (i32.const 0) (i32.const 1) (i64.extend_i32_s (local.get $n)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (if (i32.eqz (local.get $is_var))
+    (then
+      (call $copy_to_reg (i32.const 1)
+        (call $reg_offset (local.get $a2_idx))))
+    (else
+      (local.set $fresh_addr
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      (call $set_reg (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))
+      (call $set_reg (local.get $a2_idx) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_reg_2_dead,
+'  ;; Dead-ArgDest variant of arg_call_reg_2 — only A1 is written in
+  ;; the fast path.
+  (local $op1i i64)
+  (local $n_idx i32) (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32)
+  (local $is_var i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $n_idx (i32.wrap_i64 (i64.and (local.get $op1i) (i64.const 0xFF))))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $is_var (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0x1))))
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (if (i32.eqz (local.get $is_var))
+            (then
+              (call $copy_to_reg (i32.const 1)
+                (call $reg_offset (local.get $a2_idx))))
+            (else
+              (local.set $fresh_addr
+                (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (call $set_reg (i32.const 1) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))
+              (call $set_reg (local.get $a2_idx) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback.
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (if (i32.eqz (local.get $is_var))
+    (then
+      (call $copy_to_reg (i32.const 1)
+        (call $reg_offset (local.get $a2_idx))))
+    (else
+      (local.set $fresh_addr
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      (call $set_reg (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))
+      (call $set_reg (local.get $a2_idx) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_lit_2_dead,
+'  ;; Dead-ArgDest variant of arg_call_lit_2.
+  (local $op1i i64)
+  (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32)
+  (local $is_var i32)
+  (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $is_var (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0x1))))
+  (local.set $n (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 40)) (i64.const 0xFFFF))))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (if (i32.eqz (local.get $is_var))
+            (then
+              (call $copy_to_reg (i32.const 1)
+                (call $reg_offset (local.get $a2_idx))))
+            (else
+              (local.set $fresh_addr
+                (call $heap_push_val (i32.const 6) (i64.const 0)))
+              (call $set_reg (i32.const 1) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))
+              (call $set_reg (local.get $a2_idx) (i32.const 5)
+                (i64.extend_i32_u (local.get $fresh_addr)))))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback.
+  (call $set_reg (i32.const 0) (i32.const 1) (i64.extend_i32_s (local.get $n)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (if (i32.eqz (local.get $is_var))
+    (then
+      (call $copy_to_reg (i32.const 1)
+        (call $reg_offset (local.get $a2_idx))))
+    (else
+      (local.set $fresh_addr
+        (call $heap_push_val (i32.const 6) (i64.const 0)))
+      (call $set_reg (i32.const 1) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))
+      (call $set_reg (local.get $a2_idx) (i32.const 5)
+        (i64.extend_i32_u (local.get $fresh_addr)))))
   (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
   (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
@@ -5031,6 +5437,28 @@ peephole_arg_call_k([arg_to_a1_lit(N, T, ArgDest),
     ),
     peephole_arg_call_k(Rest, Out).
 peephole_arg_call_k([arg_to_a1_reg(N, T, ArgDest),
+                     PutA2,
+                     call(Pred, 2) | Rest],
+                    [Fused | Out]) :-
+    a2_setup(PutA2, A2Reg, IsVar),
+    !,
+    ( reg_used_before_clause_end(ArgDest, Rest)
+    ->  Fused = arg_call_reg_2(N, T, ArgDest, A2Reg, IsVar, Pred)
+    ;   Fused = arg_call_reg_2_dead(N, T, ArgDest, A2Reg, IsVar, Pred)
+    ),
+    peephole_arg_call_k(Rest, Out).
+peephole_arg_call_k([arg_to_a1_lit(N, T, ArgDest),
+                     PutA2,
+                     call(Pred, 2) | Rest],
+                    [Fused | Out]) :-
+    a2_setup(PutA2, A2Reg, IsVar),
+    !,
+    ( reg_used_before_clause_end(ArgDest, Rest)
+    ->  Fused = arg_call_lit_2(N, T, ArgDest, A2Reg, IsVar, Pred)
+    ;   Fused = arg_call_lit_2_dead(N, T, ArgDest, A2Reg, IsVar, Pred)
+    ),
+    peephole_arg_call_k(Rest, Out).
+peephole_arg_call_k([arg_to_a1_reg(N, T, ArgDest),
                      call(Pred, 1) | Rest],
                     [Fused | Out]) :-
     !,
@@ -5050,6 +5478,13 @@ peephole_arg_call_k([arg_to_a1_lit(N, T, ArgDest),
     peephole_arg_call_k(Rest, Out).
 peephole_arg_call_k([H|T], [H|Out]) :-
     peephole_arg_call_k(T, Out).
+
+%% a2_setup(+Instr, -A2Reg, -IsVar)
+%  Match the instruction that sets A2 in the K=2 fusion and extract
+%  the source/destination register and mode flag. Put_value is a
+%  source copy (IsVar=0); put_variable is a fresh-ref bind (IsVar=1).
+a2_setup(put_value(A2Src, 'A2'), A2Src, 0).
+a2_setup(put_variable(A2Dst, 'A2'), A2Dst, 1).
 
 %% reg_used_before_clause_end(+Reg, +Instrs)
 %  Conservative liveness check: succeeds if Reg appears as an operand
