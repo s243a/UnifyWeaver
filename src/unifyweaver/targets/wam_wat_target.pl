@@ -123,6 +123,8 @@ instr_tag(arg_to_a1_reg,    48).
 instr_tag(arg_to_a1_lit,    49).
 instr_tag(arg_call_reg_3,   50).
 instr_tag(arg_call_lit_3,   51).
+instr_tag(arg_call_reg_3_dead, 52).
+instr_tag(arg_call_lit_3_dead, 53).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -537,6 +539,44 @@ wam_instruction_to_wat_bytes(
     arg_call_lit_3(N, TReg, ArgDestReg, A2SrcReg, RetDestReg, Pred),
     Labels, Hex) :-
     instr_tag(arg_call_lit_3, Tag),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2SrcReg, A2Idx),
+    reg_name_to_index(RetDestReg, RdIdx),
+    Op1 is (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (RdIdx << 32)
+        \/ ((N /\ 0xFFFF) << 40),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% _dead variants: same as arg_call_{reg,lit}_3 but ArgDest is known
+%% to be dead after the call, so the instruction only writes to A1
+%% (skipping the 12-byte write to ArgDest's env-frame slot). Emitted
+%% by peephole_arg_call_3 when reg_used_before_clause_end/2 says no.
+%% Operand layout identical to the live variants (the ArgDestIdx field
+%% is still encoded but ignored at runtime).
+wam_instruction_to_wat_bytes(
+    arg_call_reg_3_dead(NReg, TReg, ArgDestReg, A2SrcReg, RetDestReg, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_reg_3_dead, Tag),
+    reg_name_to_index(NReg, NIdx),
+    reg_name_to_index(TReg, TIdx),
+    reg_name_to_index(ArgDestReg, AdIdx),
+    reg_name_to_index(A2SrcReg, A2Idx),
+    reg_name_to_index(RetDestReg, RdIdx),
+    Op1 is NIdx
+        \/ (TIdx << 8)
+        \/ (AdIdx << 16)
+        \/ (A2Idx << 24)
+        \/ (RdIdx << 32),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+wam_instruction_to_wat_bytes(
+    arg_call_lit_3_dead(N, TReg, ArgDestReg, A2SrcReg, RetDestReg, Pred),
+    Labels, Hex) :-
+    instr_tag(arg_call_lit_3_dead, Tag),
     reg_name_to_index(TReg, TIdx),
     reg_name_to_index(ArgDestReg, AdIdx),
     reg_name_to_index(A2SrcReg, A2Idx),
@@ -2093,6 +2133,147 @@ wam_wat_case(arg_call_lit_3,
           (local.set $arg_payload (call $val_payload (local.get $arg_off)))
           (call $set_reg (local.get $ad_idx)
             (local.get $arg_tag) (local.get $arg_payload))
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+          (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+          (call $set_reg (i32.const 2) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_reg (local.get $rd_idx) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback.
+  (call $set_reg (i32.const 0) (i32.const 1) (i64.extend_i32_s (local.get $n)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $rd_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_reg_3_dead,
+'  ;; Same as arg_call_reg_3 but the ArgDest write is elided —
+  ;; liveness analysis in peephole_arg_call_3 proved ArgDest is
+  ;; never read between here and the clause end. Saves one 12-byte
+  ;; reg write per recursive call (sum_ints_args / term_depth_args
+  ;; are the common hit sites since the call result comes back via
+  ;; the A3/RetDest slot, not via ArgDest).
+  (local $op1i i64)
+  (local $n_idx i32) (local $t_idx i32)
+  (local $a2_idx i32) (local $rd_idx i32)
+  (local $n_addr i32) (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $ad_idx i32)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $n_idx (i32.wrap_i64 (i64.and (local.get $op1i) (i64.const 0xFF))))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $rd_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  (local.set $n_addr (call $deref_reg_addr (local.get $n_idx)))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.and
+        (i32.eq (call $val_tag (local.get $n_addr)) (i32.const 1))
+        (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3)))
+    (then
+      (local.set $n (i32.wrap_i64 (call $val_payload (local.get $n_addr))))
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
+          ;; ElideD: only write A1 (ArgDest is dead).
+          (call $set_reg (i32.const 0)
+            (local.get $arg_tag) (local.get $arg_payload))
+          (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+          (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+          (call $set_reg (i32.const 2) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_reg (local.get $rd_idx) (i32.const 5)
+            (i64.extend_i32_u (local.get $fresh_addr)))
+          (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+          (call $set_pc (i32.wrap_i64 (local.get $op2)))
+          (return (i32.const 1))))))
+  ;; Fallback: same as arg_call_reg_3 fallback (writes to ad_idx;
+  ;; correctness-preserving since ArgDest just has a dead write).
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $n_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $t_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $ad_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (call $copy_to_reg (i32.const 0) (call $reg_offset (local.get $ad_idx)))
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
+  (local.set $fresh_addr (call $heap_push_val (i32.const 6) (i64.const 0)))
+  (call $set_reg (i32.const 2) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_reg (local.get $rd_idx) (i32.const 5)
+    (i64.extend_i32_u (local.get $fresh_addr)))
+  (call $set_cp (i32.add (call $get_pc) (i32.const 1)))
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(arg_call_lit_3_dead,
+'  ;; Dead-ArgDest variant of arg_call_lit_3. See arg_call_reg_3_dead.
+  (local $op1i i64)
+  (local $t_idx i32)
+  (local $ad_idx i32) (local $a2_idx i32) (local $rd_idx i32)
+  (local $t_addr i32)
+  (local $n i32) (local $arity i32) (local $arg_off i32)
+  (local $arg_tag i32) (local $arg_payload i64)
+  (local $fresh_addr i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $t_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $ad_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $a2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $rd_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  (local.set $n (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 40)) (i64.const 0xFFFF))))
+  (local.set $t_addr (call $deref_reg_addr (local.get $t_idx)))
+  (if (i32.eq (call $val_tag (local.get $t_addr)) (i32.const 3))
+    (then
+      (local.set $arity (i32.wrap_i64 (i64.shr_u
+        (call $val_payload (local.get $t_addr)) (i64.const 32))))
+      (if (i32.and
+            (i32.ge_s (local.get $n) (i32.const 1))
+            (i32.le_s (local.get $n) (local.get $arity)))
+        (then
+          (local.set $arg_off
+            (i32.add (local.get $t_addr)
+                     (i32.mul (local.get $n) (i32.const 12))))
+          (local.set $arg_tag (call $val_tag (local.get $arg_off)))
+          (local.set $arg_payload (call $val_payload (local.get $arg_off)))
           (call $set_reg (i32.const 0)
             (local.get $arg_tag) (local.get $arg_payload))
           (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $a2_idx)))
@@ -4555,18 +4736,72 @@ peephole_arg_call_3([arg_to_a1_reg(N, T, ArgDest),
                      put_value(A2Src, 'A2'),
                      put_variable(RetDest, 'A3'),
                      call(Pred, 3) | Rest],
-                    [arg_call_reg_3(N, T, ArgDest, A2Src, RetDest, Pred) | Out]) :-
+                    [Fused | Out]) :-
     !,
+    ( reg_used_before_clause_end(ArgDest, Rest)
+    ->  Fused = arg_call_reg_3(N, T, ArgDest, A2Src, RetDest, Pred)
+    ;   Fused = arg_call_reg_3_dead(N, T, ArgDest, A2Src, RetDest, Pred)
+    ),
     peephole_arg_call_3(Rest, Out).
 peephole_arg_call_3([arg_to_a1_lit(N, T, ArgDest),
                      put_value(A2Src, 'A2'),
                      put_variable(RetDest, 'A3'),
                      call(Pred, 3) | Rest],
-                    [arg_call_lit_3(N, T, ArgDest, A2Src, RetDest, Pred) | Out]) :-
+                    [Fused | Out]) :-
     !,
+    ( reg_used_before_clause_end(ArgDest, Rest)
+    ->  Fused = arg_call_lit_3(N, T, ArgDest, A2Src, RetDest, Pred)
+    ;   Fused = arg_call_lit_3_dead(N, T, ArgDest, A2Src, RetDest, Pred)
+    ),
     peephole_arg_call_3(Rest, Out).
 peephole_arg_call_3([H|T], [H|Out]) :-
     peephole_arg_call_3(T, Out).
+
+%% reg_used_before_clause_end(+Reg, +Instrs)
+%  Conservative liveness check: succeeds if Reg appears as an operand
+%  in any instruction before a clause-ending instruction (proceed or
+%  execute). Fails (= Reg is dead) if the clause ends without a
+%  reference. An unexpected jump/branch aborts with "used" to stay
+%  correct under control-flow uncertainty.
+reg_used_before_clause_end(_, []) :- !, fail.
+reg_used_before_clause_end(Reg, [Instr|_]) :-
+    instr_references_reg(Instr, Reg), !.
+reg_used_before_clause_end(_, [Instr|_]) :-
+    clause_end_instr(Instr), !, fail.
+reg_used_before_clause_end(_, [Instr|_]) :-
+    control_flow_instr(Instr), !.           % conservative: assume used
+reg_used_before_clause_end(Reg, [_|Rest]) :-
+    reg_used_before_clause_end(Reg, Rest).
+
+clause_end_instr(proceed).
+clause_end_instr(execute(_)).
+
+%% control_flow_instr(+Instr)
+%  Non-terminal control flow we don't trace through in the liveness
+%  scan. Conservatively treated as "Reg might be used at target".
+control_flow_instr(jump(_)).
+control_flow_instr(neck_cut_test(_, _, _)).
+control_flow_instr(cut_ite).
+control_flow_instr(try_me_else(_)).
+control_flow_instr(retry_me_else(_)).
+control_flow_instr(trust_me).
+control_flow_instr(switch_on_const(_, _)).
+control_flow_instr(switch_on_struct(_, _)).
+control_flow_instr(switch_on_term_hdr(_)).
+control_flow_instr(switch_entry(_, _, _)).
+control_flow_instr(switch_struct_entry(_, _)).
+
+%% instr_references_reg(+Instr, +Reg)
+%  True if Reg appears as any operand of Instr. Uniform term-walking
+%  check — since all register-bearing WAM instructions carry their
+%  regs as atomic arguments (e.g., put_value('Y1', 'A1')), a membership
+%  test finds them regardless of position. Integer operands, functors
+%  like '+/2', and label atoms don't collide because Reg is always a
+%  canonical atom like 'Y1'/'X2'/'A3' and == is strict equality.
+instr_references_reg(Instr, Reg) :-
+    Instr =.. [_|Args],
+    member(Arg, Args),
+    Arg == Reg, !.
 
 peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
