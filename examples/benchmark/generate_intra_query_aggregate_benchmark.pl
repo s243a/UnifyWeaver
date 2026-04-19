@@ -47,12 +47,7 @@ main :-
         emit_mode(interpreter),
         no_kernels(true),
         use_hashmap(false),
-        % Fork disabled for now: the WAM aggregate is correct in
-        % sequential mode (matching native SWI-Prolog exactly), but
-        % the fork's runBranchForFork doesn't collect recursive-clause
-        % solutions yet. See the commit message for the investigation
-        % trail. Re-enable once the fork correctness is resolved.
-        intra_query_parallel(false)
+        intra_query_parallel(true)
     ],
     write_wam_haskell_project(Predicates, Options, OutputDir),
 

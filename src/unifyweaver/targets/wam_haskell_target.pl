@@ -1202,9 +1202,21 @@ runBranchForFork !ctx !parent !branchPC =
                          other              -> other
                     in case step ctx s seqInstr of
                          Just s2 -> runBranchLoop s2
-                         Nothing -> case backtrack s of
-                           Just s3 -> runBranchLoop s3
-                           Nothing -> wsAggAccum s
+                         Nothing ->
+                           -- Custom backtrack: if the top CP has an
+                           -- aggregate frame, DON''T call finalizeAggregate
+                           -- (which would clear wsAggAccum). Instead,
+                           -- return our accumulated values — the branch
+                           -- is done. Without this, the standard
+                           -- backtrack function wipes wsAggAccum by
+                           -- calling finalizeAggregate when it hits the
+                           -- aggregate-frame CP.
+                           case wsCPs s of
+                             (cp : _) | Just _ <- cpAggFrame cp ->
+                               wsAggAccum s
+                             _ -> case backtrack s of
+                               Just s3 -> runBranchLoop s3
+                               Nothing -> wsAggAccum s
 
 -- | Fork every branch of a Par* chain and merge their aggregate
 -- contributions via the outer aggregate''s strategy. Returns the
