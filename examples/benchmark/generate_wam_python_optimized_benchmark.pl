@@ -74,12 +74,14 @@ generate(VariantAtom, OutputDir) :-
     format(user_error, '[WAM-Python-Optimized] variant=~w predicates=~w~n',
            [VariantAtom, Predicates]),
 
-    % Step 5: Generate Python WAM project with parallel support
+    % Step 5: Generate Python WAM project with benchmark driver
     Options = [module_name('wam-python-optimized-bench'),
                prefer_wam(true),
                wam_fallback(true),
                emit_mode(functions),
-               parallel(true)],
+               parallel(true),
+               benchmark(true),
+               foreign_predicates([category_parent/2])],
     write_wam_python_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-Python-Optimized] Generated project at ~w~n', [OutputDir]).
 
@@ -107,9 +109,13 @@ collect_wam_predicates(seeded, [
 collect_wam_predicates(accumulated, [
     user:dimension_n/1,
     user:max_depth/1,
+    user:category_parent/2,
     user:category_ancestor/4,
     user:'category_ancestor$power_sum_bound'/3,
     user:'category_ancestor$power_sum_selected'/3,
+    user:'category_ancestor$power_sum_grouped'/3,
+    user:'category_ancestor$power_sum_grouped$grouped'/2,
+    user:'category_ancestor$power_sum_grouped$grouped$sum_pairs'/2,
     user:'category_ancestor$effective_distance_sum_selected'/3,
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).

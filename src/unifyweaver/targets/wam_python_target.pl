@@ -1022,6 +1022,28 @@ wam_line_to_python_literal(["unify_nil"], Py) :-
 wam_line_to_python_literal(["unify_void", N], Py) :-
 	clean_comma(N, CN),
 	format(atom(Py), '("unify_void", ~w)', [CN]).
+% --- set_* instructions (always write mode, used after put_structure/put_list) ---
+wam_line_to_python_literal(["set_variable", Xn], Py) :-
+	clean_comma(Xn, CXn),
+	format(atom(Py), '("set_variable", ~w)', [CXn]).
+wam_line_to_python_literal(["set_value", Xn], Py) :-
+	clean_comma(Xn, CXn),
+	format(atom(Py), '("set_value", ~w)', [CXn]).
+wam_line_to_python_literal(["set_local_value", Xn], Py) :-
+	clean_comma(Xn, CXn),
+	format(atom(Py), '("set_local_value", ~w)', [CXn]).
+wam_line_to_python_literal(["set_constant", C], Py) :-
+	clean_comma(C, CC),
+	escape_python_string(CC, ECC),
+	format(atom(Py), '("set_constant", Atom("~w"))', [ECC]).
+wam_line_to_python_literal(["set_nil"], Py) :-
+	Py = '("set_nil",)'.
+wam_line_to_python_literal(["set_integer", N], Py) :-
+	clean_comma(N, CN),
+	format(atom(Py), '("set_integer", ~w)', [CN]).
+wam_line_to_python_literal(["set_void", N], Py) :-
+	clean_comma(N, CN),
+	format(atom(Py), '("set_void", ~w)', [CN]).
 wam_line_to_python_literal(["put_variable", Xn, Ai], Py) :-
 	clean_comma(Xn, CXn), clean_comma(Ai, CAi),
 	format(atom(Py), '("put_variable", ~w, ~w)', [CXn, CAi]).
@@ -1113,31 +1135,64 @@ wam_line_to_python_literal(["call_foreign", Pred, Arity], Py) :-
 	clean_comma(Pred, CP), clean_comma(Arity, CA),
 	escape_python_string(CP, EP),
 	format(atom(Py), '("call_foreign", "~w", ~w)', [EP, CA]).
+% --- aggregate instructions ---
+wam_line_to_python_literal(["begin_aggregate", AggType, ValueReg, ResultReg], Py) :-
+	clean_comma(AggType, CAT),
+	clean_comma(ValueReg, CVR),
+	clean_comma(ResultReg, CRR),
+	format(atom(Py), '("begin_aggregate", "~w", ~w, ~w)', [CAT, CVR, CRR]).
+wam_line_to_python_literal(["end_aggregate", ValueReg], Py) :-
+	clean_comma(ValueReg, CVR),
+	format(atom(Py), '("end_aggregate", ~w)', [CVR]).
+% --- cut_ite and jump ---
+wam_line_to_python_literal(["cut_ite"], Py) :-
+	Py = '("cut_ite",)'.
+wam_line_to_python_literal(["jump", Label], Py) :-
+	clean_comma(Label, CL),
+	escape_python_string(CL, EL),
+	format(atom(Py), '("jump", "~w")', [EL]).
 
 % ============================================================================
 % PHASE 5: Predicate Compilation
 % ============================================================================
 
+%% python_safe_id(+Atom, -SafeStr)
+%  Convert a Prolog atom to a valid Python identifier by replacing
+%  illegal characters: '$' -> '__dollar__', '-' -> '_', '\\+' -> 'not_'
+python_safe_id(Atom, SafeStr) :-
+	atom_string(Atom, Str),
+	sub_string_replace(Str, "$", "__", Str1),
+	sub_string_replace(Str1, "-", "_", Str2),
+	sub_string_replace(Str2, "\\+", "not_", SafeStr).
+
+%% sub_string_replace(+Str, +From, +To, -Result)
+sub_string_replace(Str, From, To, Result) :-
+	(   sub_string(Str, Before, _, After, From)
+	->  sub_string(Str, 0, Before, _, Prefix),
+	    sub_string(Str, _, After, 0, Suffix),
+	    sub_string_replace(Suffix, From, To, RestReplaced),
+	    string_concat(Prefix, To, PrefixTo),
+	    string_concat(PrefixTo, RestReplaced, Result)
+	;   Result = Str
+	).
+
 %% compile_wam_predicate_to_python(+Pred/Arity, +WamCode, +Options, -PythonCode)
 %  Converts WAM instruction output for a predicate to Python code.
+%  Emits a register_predicate(raw_program) call so the flat program can be
+%  built by load_program in main.py.
 compile_wam_predicate_to_python(Pred/Arity, WamCode, _Options, PythonCode) :-
 	atom_string(Pred, PredStr),
-	build_python_wam_arg_list(Arity, ArgList),
-	build_python_wam_arg_setup(Arity, ArgSetup),
-	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, LabelLiterals),
+	python_func_name(Pred/Arity, FuncName),
+	% Build the label key: "Pred/Arity"
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	wam_code_to_python_instructions(WamCode, Pred/Arity, InstrLiterals, _LabelLiterals),
 	format(string(PythonCode),
-'def wam_~w(~w):
-    """WAM-compiled predicate: ~w/~w"""
-    state = args_state
-~w
-    # Labels
-~w
-    # Instructions
-    state.code = (
+'def ~w(raw_program):
+    """Register WAM code for ~w/~w into raw_program dict."""
+    raw_program["~w"] = (
 ~w
     )
-    return state.run()
-', [PredStr, ArgList, PredStr, Arity, ArgSetup, LabelLiterals, InstrLiterals]).
+', [FuncName, PredStr, Arity, LabelKey, InstrLiterals]).
 
 %% build_python_wam_arg_list(+Arity, -ArgList)
 %  Build the Python function argument list.
@@ -1175,10 +1230,11 @@ wam_lines_to_python([Line|Rest], PC, Instrs, Labels) :-
 		(   % Label line: "pred/2:" or "L_label:"
 			sub_string(First, _, 1, 0, ":")
 		->  sub_string(First, 0, _, 1, LabelName),
-			format(string(LabelInsert),
-				'    state.labels["~w"] = ~w', [LabelName, PC]),
-			Labels = [LabelInsert|RestLabels],
-			wam_lines_to_python(Rest, PC, Instrs, RestLabels)
+			% Emit a __label__ pseudo-instruction so load_program can record the PC
+			format(string(LabelEntry), '        ("__label__", "~w"),', [LabelName]),
+			Labels = [LabelEntry|RestLabels],
+			Instrs = [LabelEntry|RestInstrs],
+			wam_lines_to_python(Rest, PC, RestInstrs, RestLabels)
 		;   % Instruction line
 			(   wam_line_to_python_literal(CleanParts, PyInstr)
 			->  format(string(InstrEntry), '        ~w,', [PyInstr]),
@@ -1254,8 +1310,10 @@ write_wam_python_project(Predicates, Options, ProjectDir) :-
 	directory_file_path(ProjectDir, 'predicates.py', PredPath),
 	write_file(PredPath, PredicatesCode),
 
-	% Generate main.py — parallel variant when parallel(true)
-	(   option(parallel(true), Options)
+	% Generate main.py — benchmark driver > parallel > plain
+	(   option(benchmark(true), Options)
+	->  generate_benchmark_main_py(Predicates, ModuleName, MainCode)
+	;   option(parallel(true), Options)
 	->  generate_parallel_main_py(Predicates, ModuleName, MainCode)
 	;   generate_main_py(Predicates, ModuleName, MainCode)
 	),
@@ -1295,38 +1353,54 @@ compile_all_predicates([], _Options, "# No predicates compiled\n").
 compile_all_predicates(Predicates, Options, Code) :-
 	Predicates \= [],
 	maplist(compile_one_predicate(Options), Predicates, PredCodes),
+	% Collect function names for build_program() registry
+	maplist(pred_func_name(Options), Predicates, FuncNames),
+	build_program_func(FuncNames, BuildProgramCode),
 	atomic_list_concat([
 		'"""WAM-compiled predicates — generated by UnifyWeaver"""\n',
-		'from wam_runtime import *\n\n'
+		'from wam_runtime import *\n',
+		'# WAM register index constants (A1..A8 = 1..8, X1..X20 = 1..20, Y1..Y20 = 201..220)\n',
+		'A1,A2,A3,A4,A5,A6,A7,A8 = 1,2,3,4,5,6,7,8\n',
+		'X1,X2,X3,X4,X5,X6,X7,X8,X9,X10 = 1,2,3,4,5,6,7,8,9,10\n',
+		'X11,X12,X13,X14,X15,X16,X17,X18,X19,X20 = 11,12,13,14,15,16,17,18,19,20\n',
+		'Y1,Y2,Y3,Y4,Y5,Y6,Y7,Y8,Y9,Y10 = 201,202,203,204,205,206,207,208,209,210\n',
+		'Y11,Y12,Y13,Y14,Y15,Y16,Y17,Y18,Y19,Y20 = 211,212,213,214,215,216,217,218,219,220\n\n'
 		| PredCodes
-	], '\n\n', Code).
+	], '\n\n', PredSection),
+	atomic_list_concat([PredSection, '\n\n', BuildProgramCode], Code).
+
+%% pred_func_name(+Options, +PredSpec, -FuncName)
+%  Get the Python function name for a predicate (for build_program registry).
+pred_func_name(_Options, _Module:Pred/Arity, FuncName) :- !,
+	python_func_name(Pred/Arity, FuncName).
+pred_func_name(_Options, _Module:Pred/Arity-_, FuncName) :- !,
+	python_func_name(Pred/Arity, FuncName).
+pred_func_name(_Options, Pred/Arity-_, FuncName) :- !,
+	python_func_name(Pred/Arity, FuncName).
+pred_func_name(_Options, Pred/Arity, FuncName) :-
+	python_func_name(Pred/Arity, FuncName).
+
+%% build_program_func(+FuncNames, -Code)
+%  Emit a build_program(raw_program) function that calls all pred_* registrars.
+build_program_func(FuncNames, Code) :-
+	maplist([N, Line]>>format(atom(Line), '    ~w(raw_program)', [N]),
+		FuncNames, Lines),
+	atomic_list_concat(Lines, '\n', Body),
+	format(string(Code),
+'def build_program(raw_program=None):\n    if raw_program is None:\n        raw_program = {}\n~w\n    return raw_program\n',
+	[Body]).
 
 compile_one_predicate(Options, _Module:PredSpec, PredCode) :-
 	!,
 	compile_one_predicate(Options, PredSpec, PredCode).
 compile_one_predicate(Options, Pred/Arity-WamCode, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  % Skip WAM compilation — emit direct foreign call stub
-		atom_string(Pred, PredStr),
-		python_func_name(Pred/Arity, FuncName),
-		format(string(PredCode),
-'def ~w(state):
-    """FFI-owned predicate: ~w/~w — dispatched to foreign."""
-    _args = [deref(state.regs[i+1], state) for i in range(~w)]
-    return execute_foreign("~w", ~w, _args, state)
-', [FuncName, PredStr, Arity, Arity, PredStr, Arity])
+	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
 	;   compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
 	).
 compile_one_predicate(Options, Pred/Arity, PredCode) :-
 	(   is_ffi_predicate(Pred, Arity, Options)
-	->  atom_string(Pred, PredStr),
-		python_func_name(Pred/Arity, FuncName),
-		format(string(PredCode),
-'def ~w(state):
-    """FFI-owned predicate: ~w/~w — dispatched to foreign."""
-    _args = [deref(state.regs[i+1], state) for i in range(~w)]
-    return execute_foreign("~w", ~w, _args, state)
-', [FuncName, PredStr, Arity, Arity, PredStr, Arity])
+	->  compile_ffi_stub_predicate(Pred, Arity, PredCode)
 	;   (   compile_predicate_to_wam(Pred/Arity, [], WamCode)
 		->  compile_wam_predicate_to_python(Pred/Arity, WamCode, Options, PredCode)
 		;   atom_string(Pred, PredStr),
@@ -1334,6 +1408,21 @@ compile_one_predicate(Options, Pred/Arity, PredCode) :-
 				'# Could not compile ~w/~w to WAM\n', [PredStr, Arity])
 		)
 	).
+
+%% compile_ffi_stub_predicate(+Pred, +Arity, -Code)
+%  Emit a registration function that inserts a call_foreign stub into raw_program.
+compile_ffi_stub_predicate(Pred, Arity, PredCode) :-
+	atom_string(Pred, PredStr),
+	python_func_name(Pred/Arity, FuncName),
+	format(atom(LabelKey), '~w/~w', [PredStr, Arity]),
+	format(string(PredCode),
+'def ~w(raw_program):
+    """Register FFI stub for ~w/~w — dispatches via call_foreign."""
+    raw_program["~w"] = (
+        ("call_foreign", "~w", ~w),
+        ("proceed",),
+    )
+', [FuncName, PredStr, Arity, LabelKey, PredStr, Arity]).
 
 %% generate_main_py(+Predicates, +ModuleName, -Code)
 %  Generate a main.py entry point.
@@ -1403,6 +1492,149 @@ def main():
             print(f"Seed {i}: false.")
 
 if __name__ == "__main__":
+    main()
+', [ModuleName]).
+
+%% generate_benchmark_main_py(+Predicates, +ModuleName, -Code)
+%  Generate a main.py benchmark driver that:
+%    1. Loads TSV facts from a data directory (argv[1])
+%    2. Registers category_parent/2 as a foreign predicate backed by the TSV dict
+%    3. Runs the effective_distance query with Stopwatch timing
+%    4. Outputs query_ms / total_ms compatible with the cross-target benchmark table
+generate_benchmark_main_py(_Predicates, ModuleName, Code) :-
+	format(string(Code),
+'"""~w — WAM benchmark driver (generated by UnifyWeaver)"""
+import sys
+import os
+import csv
+import time
+from wam_runtime import *
+from predicates import *
+
+
+def load_tsv_pairs(path):
+    """Load a two-column TSV (with header row) into dict: key -> [val, ...]"""
+    result = {}
+    if not os.path.exists(path):
+        return result
+    with open(path, newline=\'\', encoding=\'utf-8\') as f:
+        reader = csv.reader(f, delimiter=\'\t\')
+        next(reader, None)  # skip header row
+        for row in reader:
+            if len(row) >= 2:
+                k, v = row[0], row[1]
+                result.setdefault(k, []).append(v)
+    return result
+
+
+def load_single_column(path):
+    """Load a one-column TSV (with header row) into a list."""
+    result = []
+    if not os.path.exists(path):
+        return result
+    with open(path, newline=\'\', encoding=\'utf-8\') as f:
+        reader = csv.reader(f, delimiter=\'\t\')
+        next(reader, None)  # skip header row
+        for row in reader:
+            if row:
+                result.append(row[0])
+    return result
+
+
+def register_category_parent(category_parents):
+    """Register category_parent/2 as a foreign predicate backed by TSV dict."""
+    def category_parent_foreign(args, state, resume_ip=-1):
+        child = deref(args[0], state)
+        if not isinstance(child, Atom):
+            return False
+        parents = category_parents.get(child.name, [])
+        if not parents:
+            return False
+        # Push a choice point for each extra parent using closure-based continuations.
+        # Each closure unifies A2 with its parent and returns resume_ip.
+        for p in reversed(parents[1:]):
+            parent_atom = make_atom(p)
+            def make_cont(pa, rip):
+                def cont(s):
+                    v = deref(get_reg(s, 2), s)
+                    if unify(v, pa, s):
+                        return rip
+                    return -1
+                return cont
+            push_choice_point(state, 2, make_cont(parent_atom, resume_ip))
+        # Unify A2 with the first parent
+        return unify(get_reg(state, 2), make_atom(parents[0]), state)
+    register_foreign(\'category_parent\', 2, category_parent_foreign)
+
+
+def run_benchmark(data_dir, n_reps):
+    t0 = time.perf_counter()
+
+    # Load TSV facts
+    category_parents = load_tsv_pairs(os.path.join(data_dir, \'category_parent.tsv\'))
+    article_categories = load_tsv_pairs(os.path.join(data_dir, \'article_category.tsv\'))
+    roots = load_single_column(os.path.join(data_dir, \'root_categories.tsv\'))
+    root = roots[0] if roots else \'Physics\'
+
+    load_ms = int((time.perf_counter() - t0) * 1000)
+    print(f\'load_ms={load_ms}\', file=sys.stderr)
+
+    # Register foreign predicates
+    register_category_parent(category_parents)
+
+    # Build WAM program via predicates.build_program()
+    raw_program = build_program()
+    code, labels = load_program(raw_program)
+
+    # Collect seeds: all article -> category mappings
+    seeds = []
+    for article, cats in article_categories.items():
+        for cat in cats:
+            seeds.append((article, cat, root))
+    if not seeds:
+        seeds = [(\'test\', root, root)]
+
+    setup_ms = int((time.perf_counter() - t0) * 1000)
+    query_pred = \'category_ancestor$effective_distance_sum_selected/3\'
+    print(f\'setup_ms={setup_ms} queryPred={query_pred}\', file=sys.stderr)
+
+    best_query_ms = None
+    n_solutions = 0
+    for rep in range(1, n_reps + 1):
+        t_q = time.perf_counter()
+        rep_solutions = 0
+        for (article, cat, rt) in seeds:
+            state = WamState()
+            set_reg(state, 1, make_atom(cat))
+            set_reg(state, 2, make_atom(rt))
+            set_reg(state, 3, state.fresh_var())
+            try:
+                ok = run_wam(code, labels, query_pred, state)
+                if ok:
+                    rep_solutions += 1
+            except Exception:
+                pass
+        q_ms = int((time.perf_counter() - t_q) * 1000)
+        print(f\'rep={rep} query_ms={q_ms} seeds={len(seeds)} solutions={rep_solutions}\', file=sys.stderr)
+        if best_query_ms is None or q_ms < best_query_ms:
+            best_query_ms = q_ms
+        n_solutions = rep_solutions
+
+    total_ms = int((time.perf_counter() - t0) * 1000)
+    print(f\'query_ms={best_query_ms} seeds={len(seeds)} solutions={n_solutions} reps={n_reps}\')
+    print(f\'total_ms={total_ms}\')
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(\'Usage: python main.py <data_dir> [n_reps]\', file=sys.stderr)
+        sys.exit(1)
+    data_dir = sys.argv[1]
+    n_reps = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    run_benchmark(data_dir, n_reps)
+
+
+if __name__ == \'__main__\':
     main()
 ', [ModuleName]).
 

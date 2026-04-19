@@ -317,6 +317,27 @@ expand_aggregate_goals_for_perm_vars([G|Rest], Expanded) :-
     ;   G = findall(_Template, InnerGoal, _Result)
     ->  flatten_conjunction(InnerGoal, InnerGoals),
         append([G|InnerGoals], RestExpanded, Expanded)
+    ;   ( G = (_;_) ; G = (_->_) )
+    ->  % ITE / soft-cut: expose branch goals so variables shared
+        %  between the clause head and the ITE branches are detected as
+        %  permanent (they appear in the "later" expanded goals).
+        (   G = (If -> Then ; Else)
+        ->  flatten_conjunction(If,   IfGoals),
+            flatten_conjunction(Then, ThenGoals),
+            flatten_conjunction(Else, ElseGoals),
+            append(IfGoals, ThenGoals, IfThen),
+            append(IfThen,  ElseGoals, BranchGoals)
+        ;   G = (If -> Then)
+        ->  flatten_conjunction(If,  IfGoals),
+            flatten_conjunction(Then, ThenGoals),
+            append(IfGoals, ThenGoals, BranchGoals)
+        ;   G = (A ; B)
+        ->  flatten_conjunction(A, AGls),
+            flatten_conjunction(B, BGls),
+            append(AGls, BGls, BranchGoals)
+        ;   BranchGoals = [G]
+        ),
+        append([G|BranchGoals], RestExpanded, Expanded)
     ;   Expanded = [G|RestExpanded]
     ),
     expand_aggregate_goals_for_perm_vars(Rest, RestExpanded).
