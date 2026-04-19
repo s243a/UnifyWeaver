@@ -3000,9 +3000,17 @@ parse_functor_arity(FN, Arity) :-
 %  Converts a WAM constant to a Haskell Value constructor.
 wam_value_to_haskell(Val, Hs) :-
     (   number_string(N, Val), integer(N)
-    ->  format(string(Hs), 'Integer ~w', [N])
+    ->  % Wrap negative integers in parens so Haskell parses correctly:
+        % Integer (-5) not Integer -5
+        (   N < 0
+        ->  format(string(Hs), 'Integer (~w)', [N])
+        ;   format(string(Hs), 'Integer ~w', [N])
+        )
     ;   number_string(F, Val), float(F)
-    ->  format(string(Hs), 'Float ~w', [F])
+    ->  (   F < 0
+        ->  format(string(Hs), 'Float (~w)', [F])
+        ;   format(string(Hs), 'Float ~w', [F])
+        )
     ;   format(string(Hs), 'Atom "~w"', [Val])
     ).
 
