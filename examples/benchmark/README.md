@@ -1054,6 +1054,10 @@ Additional path-state observations:
   `path_state_result_replay_value_lookup` and
   `path_state_result_replay_row_alloc`; on the current benchmark shape, row
   allocation is the larger share of replay write cost.
+- counted-path `All` row allocation is now documented as a broader runtime
+  boundary, not just a local replay-loop choice, because execution surfaces,
+  caches, wrappers, and test harnesses all currently traffic in `object[]`
+  rows.
 - counted-path replay/materialization now uses the concrete `object?[]`
   node-value table directly instead of an `IReadOnlyList<object?>` view, which
   trims lookup overhead on the hot replay path without changing output rows.

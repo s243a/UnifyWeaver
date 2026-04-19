@@ -12781,6 +12781,8 @@ namespace UnifyWeaver.QueryRuntime
                 var rowAllocStarted = Stopwatch.GetTimestamp();
                 for (var i = 0; i < rows.Count; i++)
                 {
+                    // The broader query runtime, caches, and test harnesses all
+                    // currently expect fresh object[] rows at this boundary.
                     span[baseIndex + i] = new object[] { seedValue, targetValues[i], boxedDepths[i] };
                     metrics?.RecordOutputRow();
                 }
