@@ -20,6 +20,8 @@
 :- dynamic user:wam_make_struct/1.
 :- dynamic user:wam_make_list/1.
 :- dynamic user:wam_build_backtrack/1.
+:- dynamic user:wam_env_build_backtrack/1.
+:- dynamic user:wam_list_build_backtrack/1.
 :- dynamic user:wam_env1/1.
 :- dynamic user:wam_env2/1.
 :- dynamic user:wam_env3/1.
@@ -49,6 +51,8 @@ user:wam_use_list(X) :- user:wam_list_fact(X).
 user:wam_make_struct(X) :- X = f(a).
 user:wam_make_list(X) :- X = [a,b].
 user:wam_build_backtrack(X) :- (X = f(a), fail ; X = f(b)).
+user:wam_env_build_backtrack(X) :- (Y = f(a), fail ; Y = f(b)), X = Y.
+user:wam_list_build_backtrack(X) :- (X = [a,b], fail ; X = [a,c]).
 user:wam_env1(X) :- Y = X, Z = a, Y = Z.
 user:wam_env2(X) :- user:wam_fact(X), Y = X, user:wam_fact(Y).
 user:wam_env3(X) :- (X = a ; X = b), user:wam_fact(X).
@@ -84,6 +88,8 @@ run_smoke :-
           user:wam_make_struct/1,
           user:wam_make_list/1,
           user:wam_build_backtrack/1,
+          user:wam_env_build_backtrack/1,
+          user:wam_list_build_backtrack/1,
           user:wam_env1/1,
           user:wam_env2/1,
           user:wam_env3/1,
@@ -125,6 +131,10 @@ run_smoke :-
     verify_output(TmpDir, 'wam_make_list/1', '[a,b]', "true"),
     verify_output(TmpDir, 'wam_build_backtrack/1', 'f(a)', "false"),
     verify_output(TmpDir, 'wam_build_backtrack/1', 'f(b)', "true"),
+    verify_output(TmpDir, 'wam_env_build_backtrack/1', 'f(a)', "false"),
+    verify_output(TmpDir, 'wam_env_build_backtrack/1', 'f(b)', "true"),
+    verify_output(TmpDir, 'wam_list_build_backtrack/1', '[a,b]', "false"),
+    verify_output(TmpDir, 'wam_list_build_backtrack/1', '[a,c]', "true"),
     verify_output(TmpDir, 'wam_env1/1', a, "true"),
     verify_output(TmpDir, 'wam_env1/1', b, "false"),
     verify_output(TmpDir, 'wam_env2/1', a, "true"),

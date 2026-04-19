@@ -101,21 +101,13 @@
   (let [stk (:stack state)]
     [(peek stk) (assoc state :stack (pop stk))]))
 
-(defn query-reg? [reg]
-  (and (string? reg)
-       (or (.startsWith reg "A")
-           (.startsWith reg "X"))))
-
-(defn snapshot-choice-regs [regs]
-  (into {} (filter (fn [[reg _]] (query-reg? reg)) regs)))
-
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
 (defn push-choice-point [state target-pc]
   (update state :choice-points conj {:pc target-pc
                                      :stack (:stack state)
-                                     :regs (snapshot-choice-regs (:regs state))
+                                     :regs (:regs state)
                                      :env-stack (:env-stack state)
                                      :trail-len (count (:trail state))
                                      :heap-len (count (:heap state))
