@@ -108,6 +108,9 @@ collect_wam_predicates(accumulated, [
     user:category_ancestor/4,
     user:'category_ancestor$power_sum_bound'/3,
     user:'category_ancestor$power_sum_selected'/3,
+    user:'category_ancestor$power_sum_grouped'/3,
+    user:'category_ancestor$power_sum_grouped$grouped'/2,
+    user:'category_ancestor$power_sum_grouped$grouped$sum_pairs'/2,
     user:'category_ancestor$effective_distance_sum_selected'/3,
     user:'category_ancestor$effective_distance_sum_bound'/3
 ]).

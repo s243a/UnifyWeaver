@@ -19,6 +19,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | Rust WAM + FFI (automatic, no interning) | 134 | 147 | 1 | Yes | Auto-detected `category_ancestor` kernel |
 | Rust WAM interpreter (accumulated) | 137 | 151 | 1 | Yes | `generate_wam_effective_distance_benchmark.pl` |
 | SWI-Prolog (optimized, accumulated) | 336 | 409 | 1 | -- | Reference implementation |
+| **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 | Python WAM | -- | -- | -- | Yes | Runtime OK; benchmark driver in progress |
 
@@ -30,6 +31,10 @@ scale 300 (134 ms → 17 ms query). The Rust single-core result (17 ms query,
 from eliminating String hashing, cloning, and comparison in the hot
 `category_ancestor` DFS loop, replacing them with u32 integer operations.
 
+The **F# WAM** (functions mode, .NET 8) achieves **11 ms query** at scale 300,
+matching Rust FFI on raw query time. Total wall-clock (159 ms) is higher due
+to .NET startup overhead (~80–185 ms), which dominates at small scale.
+
 ## Test Environment
 
 - **Date**: 2026-04-18
@@ -37,6 +42,7 @@ from eliminating String hashing, cloning, and comparison in the hot
 - **SWI-Prolog**: 9.2.9
 - **Rust**: 1.95.0 (release build, `--release`)
 - **Haskell/GHC**: 9.6 (prior measurements on WSL2 4-core host)
+- **.NET**: 8.x (`/tmp/dotnet/dotnet`)
 - **Go**: 1.24.2
 - **Python**: 3.12.8 (CPython)
 - **Repetitions**: 3 per query (median) unless noted; Haskell uses 10-run median
@@ -227,6 +233,40 @@ the recursive `category_ancestor` calls and fact lookups as native Rust
 kernels. It uses the FFI dispatch mechanism but the kernels were not generated
 automatically. This result is now superseded by the automatic FFI pipeline
 which achieves comparable performance (134 ms) without manual intervention.
+
+### F# WAM + FFI (Functions Mode)
+
+Measured in this sandbox session using the accumulated variant of
+`generate_wam_fsharp_optimized_benchmark.pl` with automatic kernel detection
+(`.fs.mustache` kernel template for `category_ancestor/4`) and `functions`
+emit mode — lowered predicates compiled to direct F# functions in `Lowered.fs`.
+Build: `/tmp/dotnet/dotnet build -c Release`. .NET 8.x, single-core.
+
+| Scale | query_ms | total_ms | seeds | Cores |
+|-------|----------|----------|-------|-------|
+| 300 | 11 | 159 | 386 | 1 |
+| 1k | 2 | 126 | 89 | 1 |
+| 5k | 8 | 198 | 284 | 1 |
+| 10k | 26 | 319 | 888 | 1 |
+
+`total_ms` includes .NET startup + TSV fact loading + WAM initialization.
+`query_ms` is the best-of-3 repetition time for the effective-distance query.
+The high `total_ms` relative to `query_ms` reflects .NET startup overhead
+(~80–185 ms `setup_ms`). The query kernel itself is competitive with Rust
+FFI at small scale.
+
+#### Reproduction
+
+```bash
+cd /path/to/UnifyWeaver
+mkdir -p /tmp/wam-bench/fsharp-300
+swipl -q -s examples/benchmark/generate_wam_fsharp_optimized_benchmark.pl -- \
+    data/benchmark/300/facts.pl /tmp/wam-bench/fsharp-300 accumulated
+export DOTNET_ROOT=/tmp/dotnet
+cd /tmp/wam-bench/fsharp-300
+/tmp/dotnet/dotnet build -c Release
+/tmp/dotnet/dotnet run -c Release -- /path/to/UnifyWeaver/data/benchmark/300 3
+```
 
 ### Go WAM (In Progress)
 
