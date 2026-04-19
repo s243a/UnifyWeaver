@@ -345,10 +345,17 @@ expand_aggregate_goals_for_perm_vars([G|Rest], Expanded) :-
 %% compile_multi_clause_wam(+Pred, +Arity, +Clauses, +Options, -Code)
 compile_multi_clause_wam(Pred, Arity, Clauses, Options, Code) :-
     length(Clauses, N),
-    compile_clauses_with_choice_points(Clauses, 1, N, Pred, Arity, Options, Code).
+    % Build a list of per-clause fragment strings, then atomic_list_concat
+    % once at the end. The previous nested format/3 recursion rebuilt the
+    % growing accumulator at each step — O(N²) for fact-only predicates
+    % with thousands of clauses (6009-clause category_parent/2 took ~85s
+    % before; ~3s after).
+    compile_clauses_fragments(Clauses, 1, N, Pred, Arity, Options, Fragments),
+    atomic_list_concat(Fragments, '\n', Code).
 
-compile_clauses_with_choice_points([], _, _, _, _, _, "").
-compile_clauses_with_choice_points([Head-Body|Rest], I, N, Pred, Arity, Options, Code) :-
+compile_clauses_fragments([], _, _, _, _, _, []).
+compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
+                         [Choice, HeadCode, BodyCode | RestFragments]) :-
     (   I == 1
     ->  format(string(Choice), "    try_me_else L_~w_~w_~w", [Pred, Arity, 2])
     ;   I == N
@@ -373,11 +380,7 @@ compile_clauses_with_choice_points([Head-Body|Rest], I, N, Pred, Arity, Options,
         )
     ),
     NextI is I + 1,
-    compile_clauses_with_choice_points(Rest, NextI, N, Pred, Arity, Options, RestCode),
-    (   RestCode == ""
-    ->  format(string(Code), "~w~n~w~n~w", [Choice, HeadCode, BodyCode])
-    ;   format(string(Code), "~w~n~w~n~w~n~w", [Choice, HeadCode, BodyCode, RestCode])
-    ).
+    compile_clauses_fragments(Rest, NextI, N, Pred, Arity, Options, RestFragments).
 
 %% compile_head_arguments(+Args, +ArgIndex, +VIn, -VOut, -Code)
 compile_head_arguments([], _, V, V, "").
