@@ -115,6 +115,27 @@ python examples/benchmark/benchmark_effective_distance.py \
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
 
+### WAM-Clojure Benchmark Scaffold
+
+The Clojure hybrid-WAM target now has an optimized-project generator:
+
+```bash
+swipl -q -s examples/benchmark/generate_wam_clojure_optimized_benchmark.pl -- \
+  data/benchmark/dev/facts.pl /tmp/wam-clojure-bench seeded kernels_on
+```
+
+Supported modes:
+
+- `seeded` and `accumulated` select the same optimized Prolog predicate
+  generation path used by the mature WAM benchmark generators.
+- `kernels_on` emits a `category_parent/2` `call-foreign` stub and a
+  deterministic placeholder Clojure handler.
+- `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)`.
+
+This is intentionally a generated-project scaffold, not a large JVM benchmark
+runner. Native Clojure graph kernels and fact-backed handler loading are still
+future work.
+
 ### Why Seeded Closures Win
 
 The main advantage comes from **seed deduplication**: many articles
