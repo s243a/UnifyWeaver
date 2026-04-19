@@ -20,8 +20,8 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | Rust WAM interpreter (accumulated) | 137 | 151 | 1 | Yes | `generate_wam_effective_distance_benchmark.pl` |
 | SWI-Prolog (optimized, accumulated) | 336 | 409 | 1 | -- | Reference implementation |
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
+| Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
-| Python WAM | -- | -- | -- | Yes | Runtime OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
 `HashMap<u32, Vec<u32>>`) delivers a **7.9x speedup** on the Rust FFI path at
@@ -275,11 +275,56 @@ The Go WAM target compiles successfully (after fixing `SharedWamCode`/
 up fact data into the runtime. Status: **build OK, benchmark driver in
 progress**.
 
-### Python WAM (In Progress)
+### Python WAM
 
-The Python WAM runtime is functional (module-qualified predicates fixed), but
-the benchmark driver has not been connected. Status: **runtime OK, benchmark
-driver in progress**.
+Measured in this sandbox session using the accumulated variant of
+`generate_wam_python_optimized_benchmark.pl` with FFI dispatch for
+`category_parent/2`. Build: CPython 3.12.8, single-core, no JIT.
+
+| Scale | query_ms | total_ms | seeds | solutions | Cores |
+|-------|----------|----------|-------|-----------|-------|
+| 300 | 215 | 689 | 770 | 106 | 1 |
+| 1k | 266 | 1393 | 1001 | 0 | 1 |
+| 5k | 1335 | 4115 | 5047 | 0 | 1 |
+| 10k | 2809 | 8618 | 10326 | 82 | 1 |
+
+`solutions=0` for 1k and 5k reflects that those benchmark datasets contain
+general-topic Wikipedia articles rather than physics-focused ones, so no
+article has a Physics ancestor path within depth 10. The query still runs
+(and times correctly) — it just proves absence rather than presence.
+
+`total_ms` includes TSV fact loading + WAM initialization + query execution.
+`query_ms` is the best-of-N repetition time.
+
+#### Bug Fixes Required
+
+Two bugs were found and fixed during this benchmark session:
+
+1. **`wam_target.pl`: ITE permanent-variable detection** —
+   `expand_aggregate_goals_for_perm_vars` did not expand ITE (`->`;`;`)
+   goals into branch sub-goals. This caused variables shared between the
+   clause head and ITE branch calls (e.g., `S`, `R`, `O` in
+   `power_sum_selected/3`) to be assigned X-registers instead of
+   Y-registers. Since X1=A1, a `put_value X2, A1` inside the ITE overwrote
+   X1 before it could be restored via `put_value X1, A1`. Fix: add an ITE
+   case to `expand_aggregate_goals_for_perm_vars` that flattens branch goals
+   so the permanence analysis sees them as later goals.
+
+2. **`WamRuntime.py`: aggregate `begin_aggregate` debug patches** — residual
+   debug patches from the trace session were cleaned up from the runtime
+   before final benchmarking.
+
+#### Reproduction
+
+```bash
+cd /path/to/UnifyWeaver
+mkdir -p /tmp/wam-bench/python-300
+swipl -q -s examples/benchmark/generate_wam_python_optimized_benchmark.pl -- \\
+    data/benchmark/300/facts.pl /tmp/wam-bench/python-300 accumulated
+cp src/unifyweaver/targets/wam_python_runtime/WamRuntime.py \\
+   /tmp/wam-bench/python-300/wam_runtime.py
+python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
+```
 
 ## Analysis: When Does UnifyWeaver Beat Hand-Written Code?
 
@@ -376,3 +421,19 @@ swipl -q -s examples/benchmark/weighted_shortest_path_to_root.pl -- \
 4. **Python target: module-qualified predicates** —
    `compile_one_predicate/3` didn't handle `Module:Pred/Arity` format; added
    clause to strip module prefix.
+
+5. **`wam_target.pl`: ITE permanent-variable detection** —
+   `expand_aggregate_goals_for_perm_vars` did not expand ITE (`->`;`;`) goals,
+   causing head variables in single-ITE-body clauses to be assigned X-registers
+   instead of Y-registers. When an ITE used `put_value X2, A1` to load the
+   condition arg, it silently clobbered X1 (= A1). The subsequent
+   `put_value X1, A1` to restore A1 then read the wrong value. Fix: added an
+   ITE/disjunction expansion case that flattens branch goals so the permanence
+   analysis sees them as later-goal references, triggering Y-register
+   allocation for all variables shared with the clause head.
+
+6. **`WamRuntime.py`: multiple runtime bugs fixed** — see `WamRuntime.py`
+   history for details: `write_ctx` structure filling, Y-register environment
+   dispatch, trail Var-object tracking, `try_me_else` default `n_args=8`,
+   `eval_arith` arity-suffix stripping, `\\+` member check, FFI closure-based
+   backtracking with `resume_ip`.

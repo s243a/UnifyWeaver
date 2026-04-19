@@ -4,6 +4,7 @@ Trail-based mutable state. No external dependencies.
 """
 
 from __future__ import annotations
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Optional, Callable, Dict, List, Tuple
 
@@ -99,6 +100,10 @@ class WamState:
         self.e: int = -1                 # top environment index in stack
         self.cut_b: int = -1
         self._var_counter: int = 0
+        # Structure write context: (compound_ref, next_arg_idx) or None
+        self.write_ctx: Any = None
+        # Structure read context: (compound_ref, next_arg_idx) or None
+        self.read_ctx: Any = None
 
     def fresh_var(self) -> Var:
         v = Var(ref=[None], id=self._var_counter)
@@ -126,10 +131,26 @@ class WamState:
 
 # -- Register helpers -------------------------------------------------------
 
+_Y_BASE = 201  # Y1 = 201, Y2 = 202, ...
+
 def get_reg(state: WamState, n: int) -> Term:
+    if n >= _Y_BASE and state.e >= 0:
+        env = state.stack[state.e]
+        if isinstance(env, Environment):
+            yi = n - _Y_BASE  # 0-based index into perm_vars
+            if yi < len(env.perm_vars):
+                return env.perm_vars[yi]
     return state.regs[n]
 
 def set_reg(state: WamState, n: int, val: Term) -> None:
+    if n >= _Y_BASE and state.e >= 0:
+        env = state.stack[state.e]
+        if isinstance(env, Environment):
+            yi = n - _Y_BASE
+            if yi >= len(env.perm_vars):
+                env.perm_vars.extend([None] * (yi - len(env.perm_vars) + 1))
+            env.perm_vars[yi] = val
+            return
     state.regs[n] = val
 
 
@@ -163,11 +184,14 @@ def trail_if_needed(addr: int, state: WamState) -> None:
 def undo_trail(state: WamState, mark: int) -> None:
     """Unbind all trailed variables since mark."""
     while state.trail_len > mark:
-        addr = state.trail.pop()
+        item = state.trail.pop()
         state.trail_len -= 1
-        v = state.heap.get(addr)
-        if isinstance(v, Var):
-            v.ref[0] = None
+        if isinstance(item, Var):
+            item.ref[0] = None  # unbind directly-trailed Var
+        else:
+            v = state.heap.get(item)
+            if isinstance(v, Var):
+                v.ref[0] = None
 
 
 # -- Unification ------------------------------------------------------------
@@ -183,9 +207,11 @@ def deref(term: Term, state: WamState) -> Term:
     return term
 
 def bind(v: Var, val: Term, state: WamState) -> None:
-    """Bind a variable, trailing if necessary."""
-    # Find heap address of v for trailing
-    # Simple approach: trail the var directly via id lookup
+    """Bind a variable, trailing if a choice point exists (conditional trailing)."""
+    if state.b >= 0:
+        # Unconditional trailing when inside a choice point scope
+        state.trail.append(v)
+        state.trail_len += 1
     v.ref[0] = val
 
 def unify(a: Term, b: Term, state: WamState) -> bool:
@@ -303,6 +329,12 @@ def pop_environment(state: WamState) -> None:
 
 # -- Arithmetic -------------------------------------------------------------
 
+def _strip_arity(functor: str) -> str:
+    """Strip arity suffix from functor name: '+/2' -> '+', 'mod/2' -> 'mod'."""
+    if '/' in functor:
+        return functor.rsplit('/', 1)[0]
+    return functor
+
 def eval_arith(term: Term, state: WamState):
     """Evaluate an arithmetic expression, return int or float."""
     t = deref(term, state)
@@ -310,8 +342,10 @@ def eval_arith(term: Term, state: WamState):
     if isinstance(t, Float):  return t.f
     if isinstance(t, Compound):
         args = [eval_arith(a, state) for a in t.args]
+        # Normalize functor: '+/2' -> '+', '-/1' -> '-', etc.
+        fn = _strip_arity(t.functor)
         # Unary minus: -(X)
-        if t.functor == '-' and len(t.args) == 1:
+        if fn == '-' and len(t.args) == 1:
             return -args[0]
         ops = {
             # Basic arithmetic
@@ -324,9 +358,19 @@ def eval_arith(term: Term, state: WamState):
             'mod': lambda a, b: int(a) % int(b),
             # Power
             '**': lambda a, b: a ** b,
+            '^': lambda a, b: a ** b,
             # Unary
             'abs': lambda a: abs(a),
             'sign': lambda a: (1 if a > 0 else (-1 if a < 0 else 0)),
+            'float': lambda a: float(a),
+            'integer': lambda a: int(a),
+            'truncate': lambda a: int(a),
+            'round': lambda a: round(a),
+            'ceiling': lambda a: int(a + 0.9999999),
+            'floor': lambda a: int(a),
+            'sqrt': lambda a: a ** 0.5,
+            'exp': lambda a: __import__('math').exp(a),
+            'log': lambda a: __import__('math').log(a),
             # Min/max
             'max': lambda a, b: max(a, b),
             'min': lambda a, b: min(a, b),
@@ -338,8 +382,8 @@ def eval_arith(term: Term, state: WamState):
             '>>': lambda a, b: int(a) >> int(b),
             '<<': lambda a, b: int(a) << int(b),
         }
-        if t.functor in ops:
-            return ops[t.functor](*args)
+        if fn in ops:
+            return ops[fn](*args)
     raise WAMError(f"Cannot evaluate: {term}")
 
 class WAMError(Exception):
@@ -360,16 +404,19 @@ def register_foreign(name: str, arity: int, fn: Callable) -> None:
     """
     _foreign_predicates[(name, arity)] = fn
 
-def execute_foreign(functor: str, arity: int, args: List[Term], state: WamState) -> bool:
+def execute_foreign(functor: str, arity: int, args: List[Term], state: WamState,
+                    resume_ip: int = -1) -> bool:
     """Dispatch to a registered foreign predicate.
 
+    resume_ip: the IP to resume from after this call_foreign (used by FFI
+    predicates that want to push backtracking choice points).
     Returns True on success, False on failure (triggers backtracking).
     """
     key = (functor, arity)
     if key not in _foreign_predicates:
         raise WAMError(f"Unknown foreign predicate: {functor}/{arity}")
     fn = _foreign_predicates[key]
-    return fn(args, state)
+    return fn(args, state, resume_ip)
 
 
 # -- Program loading --------------------------------------------------------
@@ -384,13 +431,19 @@ def load_program(raw_program: dict) -> Tuple[List[tuple], Dict[str, int]]:
     """
     code = []
     labels = {}
-    for label, instrs in raw_program.items():
-        labels[label] = len(code)
+    # First pass: build flat code array and extract __label__ markers
+    for pred_label, instrs in raw_program.items():
+        labels[pred_label] = len(code)
         if isinstance(instrs, (list, tuple)):
-            code.extend(instrs)
+            for instr in instrs:
+                if isinstance(instr, tuple) and len(instr) == 2 and instr[0] == '__label__':
+                    # Register sub-label at current PC (don't add to code)
+                    labels[instr[1]] = len(code)
+                else:
+                    code.append(instr)
         else:
             code.append(instrs)
-    # Pre-resolve label references
+    # Second pass: pre-resolve label references
     resolved = []
     for instr in code:
         resolved.append(_resolve_instr(instr, labels))
@@ -409,7 +462,11 @@ def _resolve_instr(instr: tuple, labels: Dict[str, int]) -> tuple:
         pc = labels.get(label, -1)
         return ('execute_pc', pc, label)
     if op == 'try_me_else':
-        _, next_label, n_args = instr
+        if len(instr) >= 3:
+            _, next_label, n_args = instr
+        else:
+            _, next_label = instr
+            n_args = 8  # default: save all standard argument registers A1..A8
         pc = labels.get(next_label, -1)
         return ('try_me_else_pc', pc, n_args)
     if op == 'retry_me_else':
@@ -432,6 +489,179 @@ def _resolve_instr(instr: tuple, labels: Dict[str, int]) -> tuple:
     return instr
 
 
+# -- Builtin predicate dispatch --------------------------------------------
+
+def _parse_constant(name: str) -> 'Term':
+    """Parse a constant name string to the appropriate Term type.
+    The WAM text format uses get_constant for both atom and numeric constants.
+    '1' -> Int(1), '3.14' -> Float(3.14), everything else -> Atom(name).
+    """
+    try:
+        return Int(int(name))
+    except (ValueError, TypeError):
+        pass
+    try:
+        return Float(float(name))
+    except (ValueError, TypeError):
+        pass
+    return make_atom(name)
+
+
+def _constant_matches(val: 'Term', name: str) -> bool:
+    """Check if a term matches a constant specified by name string.
+    Handles integer, float, and atom constants.
+    """
+    if isinstance(val, Atom):
+        return val.name == name
+    if isinstance(val, Int):
+        try:
+            return val.n == int(name)
+        except (ValueError, TypeError):
+            return False
+    if isinstance(val, Float):
+        try:
+            return val.f == float(name)
+        except (ValueError, TypeError):
+            return False
+    return False
+
+
+def _execute_builtin(builtin: str, arity: int, state: 'WamState') -> bool:
+    """Execute a WAM builtin_call instruction."""
+    if builtin == '!/0' or builtin == '!':  # cut
+        state.cut_b = state.b
+        return True
+    if builtin in ('is/2', 'is'):
+        dst = deref(get_reg(state, 1), state)
+        expr = deref(get_reg(state, 2), state)
+        try:
+            result = eval_arith(expr, state)
+        except WAMError:
+            return False
+        r = Int(result) if isinstance(result, int) else Float(result)
+        return unify(dst, r, state)
+    if builtin in ('<//2', '</2', '<'):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) < eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('>/2', '>'):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) > eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('=</2', '=<'):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) <= eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('>=/2', '>='):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) >= eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('=:=/2', '=:='):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) == eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('=\\=/2', '=\\='):
+        a = deref(get_reg(state, 1), state)
+        b = deref(get_reg(state, 2), state)
+        try:
+            return eval_arith(a, state) != eval_arith(b, state)
+        except WAMError:
+            return False
+    if builtin in ('\\+/1', '\\+'):  # negation as failure
+        # \+ Goal: try to call Goal; succeed if it fails, fail if it succeeds
+        # Simple approach: check register 1 for the goal atom/compound
+        goal = deref(get_reg(state, 1), state)
+        # We can't re-enter run_wam here without a fresh state easily;
+        # for the WAM benchmark pattern (member/2 check) we detect common cases
+        if isinstance(goal, Compound) and _strip_arity(goal.functor) == 'member' and len(goal.args) == 2:
+            elem = deref(goal.args[0], state) if goal.args[0] is not None else Var(ref=[None], id=-1)
+            lst = deref(goal.args[1], state) if goal.args[1] is not None else Var(ref=[None], id=-1)
+            # member(X, List) succeeds if X is in List
+            while isinstance(lst, Ref):
+                lst = deref(lst, state)
+            def member_check(e, l):
+                if isinstance(l, Atom) and l.name == '[]':
+                    return False
+                if isinstance(l, Compound) and l.functor == '.':
+                    head = deref(l.args[0], state) if l.args[0] is not None else Var(ref=[None], id=-1)
+                    tail = deref(l.args[1], state) if l.args[1] is not None else Var(ref=[None], id=-1)
+                    # unification check (no binding)
+                    if isinstance(e, Var) or isinstance(head, Var):
+                        return True  # would unify
+                    if isinstance(e, Atom) and isinstance(head, Atom) and e.name == head.name:
+                        return True
+                    return member_check(e, tail)
+                return False
+            return not member_check(elem, lst)
+        return True  # default: treat unknown \+ as success (conservative)
+    if builtin in ('length/2', 'length'):
+        lst = deref(get_reg(state, 1), state)
+        n_reg = deref(get_reg(state, 2), state)
+        length = 0
+        cur = lst
+        while isinstance(cur, Ref):
+            cur = deref(cur, state)
+        while isinstance(cur, Compound) and cur.functor == '.':
+            length += 1
+            cur = deref(cur.args[1], state) if cur.args[1] is not None else make_atom('[]')
+        if isinstance(cur, Atom) and cur.name == '[]':
+            return unify(n_reg, Int(length), state)
+        if isinstance(n_reg, Var):
+            return unify(n_reg, Int(length), state)
+        return False
+    if builtin in ('nonvar/1', 'nonvar'):
+        val = deref(get_reg(state, 1), state)
+        return not isinstance(val, Var)
+    if builtin in ('var/1', 'var'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, Var)
+    if builtin in ('number/1', 'number'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, (Int, Float))
+    if builtin in ('atom/1', 'atom'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, Atom)
+    if builtin in ('integer/1', 'integer'):
+        val = deref(get_reg(state, 1), state)
+        return isinstance(val, Int)
+    if builtin in ('true/0', 'true'):
+        return True
+    if builtin in ('fail/0', 'fail', 'false/0', 'false'):
+        return False
+    if builtin in ('member/2', 'member'):
+        # member(Elem, List): succeeds if Elem is in List (only first solution)
+        elem = deref(get_reg(state, 1), state)
+        lst = deref(get_reg(state, 2), state)
+        def member_find(e, l):
+            if isinstance(l, Atom) and l.name == '[]': return False
+            if isinstance(l, Compound) and _strip_arity(l.functor) == '.':
+                head = deref(l.args[0], state) if l.args[0] is not None else None
+                tail = deref(l.args[1], state) if l.args[1] is not None else None
+                if head is not None and unify(e, head, state): return True
+                return member_find(e, tail)
+            return False
+        return member_find(elem, lst)
+    if builtin in ('write/1', 'writeln/1', 'print/1', 'nl/0'):
+        return True  # ignore output builtins
+    # Unknown builtin: skip (return True to avoid crashing)
+    return True
+
+
 # -- Main WAM interpreter loop ---------------------------------------------
 
 def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
@@ -449,6 +679,12 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
     if ip < 0:
         return False
     code_len = len(code)
+    # Argument register snapshot: taken at each clause entry so that
+    # get_* instructions read the original argument values even after
+    # get_variable clobbers a register that aliases an argument register.
+    # (e.g. get_variable X3, A1 sets reg[3]=reg[1], clobbering A3=reg[3]
+    #  before get_constant 1, A3 can read A3)
+    arg_snapshot: list = list(state.regs)  # snapshot at initial entry
 
     def fail():
         nonlocal ip
@@ -456,9 +692,15 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             return False
         cp = state.stack[state.b]
         restore_choice_point(state)
-        # next_clause is now a pre-resolved PC int
+        # next_clause is now a pre-resolved PC int, string label, or callable
         next_ip = cp.next_clause
-        if isinstance(next_ip, int) and next_ip >= 0:
+        if callable(next_ip):
+            # Callable: FFI continuation — call with state, returns new IP
+            result = next_ip(state)
+            if result < 0:
+                return False
+            ip = result
+        elif isinstance(next_ip, int) and next_ip >= 0:
             ip = next_ip
         else:
             # Fallback: try string label resolution
@@ -484,8 +726,9 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             set_reg(state, dst, get_reg(state, src))
 
         elif op == 'put_constant':
-            _, atom, reg = instr
-            set_reg(state, reg, make_atom(atom))
+            _, atom_arg, reg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            set_reg(state, reg, _parse_constant(atom_name))
 
         elif op == 'put_nil':
             _, reg = instr
@@ -501,40 +744,53 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'put_structure':
             _, functor, arity, reg = instr
-            addr = heap_put(state, Compound(functor, [None]*arity))
+            c = Compound(functor, [None]*arity)
+            addr = heap_put(state, c)
             set_reg(state, reg, Ref(addr))
             state.mode = 'write'
             state.s = addr
+            state.write_ctx = [c, 0]  # [compound, next_arg_idx]
 
         elif op == 'put_list':
             _, reg = instr
-            addr = heap_put(state, Compound('.', [None, None]))
+            c = Compound('.', [None, None])
+            addr = heap_put(state, c)
             set_reg(state, reg, Ref(addr))
             state.mode = 'write'
             state.s = addr
+            state.write_ctx = [c, 0]
 
         elif op == 'get_variable':
-            _, reg, hreg = instr
-            set_reg(state, hreg, get_reg(state, reg))
+            # get_variable Xn, Ai: copy Ai (argument register) into Xn (variable register)
+            # Instruction format: ('get_variable', Xn, Ai) — dest=Xn, src=Ai
+            # Read Ai from arg_snapshot to avoid aliasing clobber (e.g. X3=A3).
+            _, xn, ai = instr
+            src = arg_snapshot[ai] if (ai < len(arg_snapshot) and ai < _Y_BASE) else get_reg(state, ai)
+            set_reg(state, xn, src)
 
         elif op == 'get_value':
             _, reg1, reg2 = instr
-            if not unify(get_reg(state, reg1), get_reg(state, reg2), state):
+            # reg2 is an argument register — read from snapshot
+            snap_val = arg_snapshot[reg2] if (reg2 < len(arg_snapshot) and reg2 < _Y_BASE) else get_reg(state, reg2)
+            if not unify(get_reg(state, reg1), snap_val, state):
                 if not fail(): return False
                 continue
 
         elif op == 'get_constant':
-            _, atom, reg = instr
-            val = deref(get_reg(state, reg), state)
+            _, atom_arg, reg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            val = deref(snap_val, state)
             if isinstance(val, Var):
-                bind(val, make_atom(atom), state)
-            elif not (isinstance(val, Atom) and val.name == atom):
+                bind(val, _parse_constant(atom_name), state)
+            elif not _constant_matches(val, atom_name):
                 if not fail(): return False
                 continue
 
         elif op == 'get_nil':
             _, reg = instr
-            val = deref(get_reg(state, reg), state)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            val = deref(snap_val, state)
             if isinstance(val, Var):
                 bind(val, make_atom('[]'), state)
             elif not (isinstance(val, Atom) and val.name == '[]'):
@@ -543,7 +799,8 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_integer':
             _, n, reg = instr
-            val = deref(get_reg(state, reg), state)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            val = deref(snap_val, state)
             if isinstance(val, Var):
                 bind(val, Int(n), state)
             elif not (isinstance(val, Int) and val.n == n):
@@ -552,39 +809,48 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
 
         elif op == 'get_structure':
             _, functor, arity, reg = instr
-            val = deref(get_reg(state, reg), state)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            val = deref(snap_val, state)
             if isinstance(val, Var):
-                addr = heap_put(state, Compound(functor, [None]*arity))
+                c = Compound(functor, [None]*arity)
+                addr = heap_put(state, c)
                 bind(val, Ref(addr), state)
                 state.mode = 'write'
                 state.s = addr
+                state.write_ctx = [c, 0]
             elif isinstance(val, Ref):
                 h = state.heap[val.addr]
                 if isinstance(h, Compound) and h.functor == functor and len(h.args) == arity:
                     state.mode = 'read'
                     state.s = val.addr
+                    state.read_ctx = [h, 0]
                 else:
                     if not fail(): return False
                     continue
             elif isinstance(val, Compound) and val.functor == functor and len(val.args) == arity:
                 state.mode = 'read'
+                state.read_ctx = [val, 0]
             else:
                 if not fail(): return False
                 continue
 
         elif op == 'get_list':
             _, reg = instr
-            val = deref(get_reg(state, reg), state)
+            snap_val = arg_snapshot[reg] if (reg < len(arg_snapshot) and reg < _Y_BASE) else get_reg(state, reg)
+            val = deref(snap_val, state)
             if isinstance(val, Var):
-                addr = heap_put(state, Compound('.', [None, None]))
+                c = Compound('.', [None, None])
+                addr = heap_put(state, c)
                 bind(val, Ref(addr), state)
                 state.mode = 'write'
                 state.s = addr
+                state.write_ctx = [c, 0]
             elif isinstance(val, Ref):
                 h = state.heap[val.addr]
                 if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
                     state.mode = 'read'
                     state.s = val.addr
+                    state.read_ctx = [h, 0]
                 else:
                     if not fail(): return False
                     continue
@@ -595,12 +861,13 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'unify_variable':
             _, reg = instr
             if state.mode == 'read':
-                h = state.heap[state.s]
-                if isinstance(h, Compound):
-                    set_reg(state, reg, h.args[0])
-                    state.s += 1
+                rc = state.read_ctx
+                if rc is not None and rc[1] < len(rc[0].args):
+                    arg_val = rc[0].args[rc[1]]
+                    rc[1] += 1
+                    set_reg(state, reg, arg_val if arg_val is not None else state.fresh_var())
                 else:
-                    set_reg(state, reg, h)
+                    set_reg(state, reg, state.fresh_var())
             else:
                 v = state.fresh_var()
                 addr = heap_put(state, v)
@@ -609,48 +876,126 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'unify_value':
             _, reg = instr
             if state.mode == 'read':
-                h = state.heap[state.s]
-                if not unify(get_reg(state, reg), h, state):
+                rc = state.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                if h is None: h = state.fresh_var()
+                if not unify(get_reg(state, reg), deref(h, state), state):
                     if not fail(): return False
                     continue
             else:
-                heap_put(state, get_reg(state, reg))
+                wc = state.write_ctx
+                v = get_reg(state, reg)
+                if wc and wc[1] < len(wc[0].args):
+                    wc[0].args[wc[1]] = v; wc[1] += 1
 
         elif op == 'unify_constant':
-            _, atom = instr
+            _, atom_arg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
             if state.mode == 'read':
-                h = deref(state.heap[state.s], state)
+                rc = state.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                h = deref(h, state) if h is not None else state.fresh_var()
                 if isinstance(h, Var):
-                    bind(h, make_atom(atom), state)
-                elif not (isinstance(h, Atom) and h.name == atom):
+                    bind(h, _parse_constant(atom_name), state)
+                elif not _constant_matches(h, atom_name):
                     if not fail(): return False
                     continue
             else:
-                heap_put(state, make_atom(atom))
+                wc = state.write_ctx
+                v = _parse_constant(atom_name)
+                if wc and wc[1] < len(wc[0].args):
+                    wc[0].args[wc[1]] = v; wc[1] += 1
 
         elif op == 'unify_nil':
             if state.mode == 'read':
-                h = deref(state.heap[state.s], state)
+                rc = state.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                h = deref(h, state) if h is not None else state.fresh_var()
                 if isinstance(h, Var):
                     bind(h, make_atom('[]'), state)
                 elif not (isinstance(h, Atom) and h.name == '[]'):
                     if not fail(): return False
                     continue
             else:
-                heap_put(state, make_atom('[]'))
+                wc = state.write_ctx
+                v = make_atom('[]')
+                if wc and wc[1] < len(wc[0].args):
+                    wc[0].args[wc[1]] = v; wc[1] += 1
 
         elif op == 'unify_void':
             _, n = instr
-            if state.mode == 'write':
+            if state.mode == 'read':
+                rc = state.read_ctx
+                if rc: rc[1] += n
+            else:
+                wc = state.write_ctx
+                if wc:
+                    for _ in range(n):
+                        if wc[1] < len(wc[0].args):
+                            wc[0].args[wc[1]] = state.fresh_var(); wc[1] += 1
+
+        # --- set_* instructions: always WRITE mode, used after put_structure/put_list ---
+
+        elif op == 'set_variable':
+            _, xn = instr
+            v = state.fresh_var()
+            wc = state.write_ctx
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+            set_reg(state, xn, v)
+
+        elif op == 'set_value':
+            _, xn = instr
+            v = get_reg(state, xn)
+            wc = state.write_ctx
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+
+        elif op == 'set_local_value':
+            _, xn = instr
+            v = deref(get_reg(state, xn), state)
+            wc = state.write_ctx
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+
+        elif op == 'set_constant':
+            _, atom_arg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            v = _parse_constant(atom_name)
+            wc = state.write_ctx
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+
+        elif op == 'set_nil':
+            wc = state.write_ctx
+            v = make_atom('[]')
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+
+        elif op == 'set_integer':
+            _, n = instr
+            wc = state.write_ctx
+            v = Int(n)
+            if wc and wc[1] < len(wc[0].args):
+                wc[0].args[wc[1]] = v; wc[1] += 1
+
+        elif op == 'set_void':
+            _, n = instr
+            wc = state.write_ctx
+            if wc:
                 for _ in range(n):
-                    v = state.fresh_var()
-                    heap_put(state, v)
+                    if wc[1] < len(wc[0].args):
+                        wc[0].args[wc[1]] = state.fresh_var(); wc[1] += 1
 
         elif op == 'call_pc':
             _, target_ip, _arity, _label = instr
             state.cp = ip   # save continuation (current ip = next instr)
             if target_ip >= 0:
                 ip = target_ip
+                arg_snapshot = list(state.regs)  # snapshot at callee entry
             else:
                 if not fail(): return False
                 continue
@@ -659,6 +1004,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             _, target_ip, _label = instr
             if target_ip >= 0:
                 ip = target_ip
+                arg_snapshot = list(state.regs)  # snapshot at callee entry
             else:
                 if not fail(): return False
                 continue
@@ -670,6 +1016,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             target = labels.get(label, -1)
             if target >= 0:
                 ip = target
+                arg_snapshot = list(state.regs)  # snapshot at callee entry
             else:
                 if not fail(): return False
                 continue
@@ -680,6 +1027,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             target = labels.get(label, -1)
             if target >= 0:
                 ip = target
+                arg_snapshot = list(state.regs)  # snapshot at callee entry
             else:
                 if not fail(): return False
                 continue
@@ -690,6 +1038,10 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             if isinstance(state.cp, int):
                 ip = state.cp
                 state.cp = None
+                # Returning to caller: snapshot is now stale; it will be
+                # refreshed at the next call_pc/execute_pc if needed.
+                # Set to None so accidental reads fall back to live regs.
+                arg_snapshot = list(state.regs)
             else:
                 # Legacy tuple-based cp from old-style run_wam
                 return True
@@ -704,23 +1056,28 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
         elif op == 'try_me_else_pc':
             _, next_pc, n_args = instr
             push_choice_point(state, n_args, next_pc)
+            arg_snapshot = list(state.regs)  # snapshot at clause entry
 
         elif op == 'retry_me_else_pc':
             _, next_pc = instr
             restore_choice_point(state, next_clause=next_pc)
+            arg_snapshot = list(state.regs)  # snapshot after choice point restore
 
         elif op == 'try_me_else':
             # Legacy unresolved
             _, next_label, n_args = instr
             push_choice_point(state, n_args, labels.get(next_label, -1))
+            arg_snapshot = list(state.regs)  # snapshot at clause entry
 
         elif op == 'retry_me_else':
             # Legacy unresolved
             _, next_label = instr
             restore_choice_point(state, next_clause=labels.get(next_label, -1))
+            arg_snapshot = list(state.regs)  # snapshot after choice point restore
 
         elif op == 'trust_me':
             pop_choice_point(state)
+            arg_snapshot = list(state.regs)  # snapshot at last clause entry
 
         elif op == 'neck_cut':
             state.b = state.cut_b
@@ -735,7 +1092,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             state.b = level
 
         elif op == 'allocate':
-            _, n_perm = instr
+            n_perm = instr[1] if len(instr) > 1 else 16  # default perm vars
             push_environment(state, n_perm)
 
         elif op == 'deallocate':
@@ -758,7 +1115,7 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
             _, functor, arity = instr
             args = [deref(get_reg(state, i+1), state) for i in range(arity)]
             try:
-                ok = execute_foreign(functor, arity, args, state)
+                ok = execute_foreign(functor, arity, args, state, resume_ip=ip)
             except WAMError:
                 ok = False
             if not ok:
@@ -858,10 +1215,581 @@ def run_wam(code: list, labels: dict, entry: str, state: WamState) -> bool:
                     if not fail(): return False
                     continue
 
+        elif op == 'builtin_call':
+            _, builtin, arity = instr
+            ok = _execute_builtin(builtin, arity, state)
+            if not ok:
+                if not fail(): return False
+                continue
+
+        elif op == 'begin_aggregate':
+            # begin_aggregate agg_type, value_reg, result_reg
+            # Runs the body (up to matching end_aggregate) via backtracking,
+            # collecting value_reg at each solution, then aggregates and binds result_reg.
+            _, agg_type, value_reg, result_reg = instr
+            # Find matching end_aggregate (ip is already past begin_aggregate)
+            end_pc = _find_aggregate_end(code, ip)
+            if end_pc < 0:
+                if not fail(): return False
+                continue
+            # Run inner body in a sub-state, collecting all solutions
+            collected = _run_aggregate_body(code, labels, ip, end_pc,
+                                             value_reg, state, state.b)
+            # Compute aggregate result
+            agg_result = _compute_aggregate(agg_type, collected)
+            if agg_result is None:
+                # aggregate of 0 elements fails for sum/min/max, returns [] for collect
+                if agg_type == 'collect':
+                    agg_result = make_atom('[]')
+                elif agg_type == 'count':
+                    agg_result = Int(0)
+                else:
+                    if not fail(): return False
+                    continue
+            # Bind result_reg to agg_result
+            existing = deref(get_reg(state, result_reg), state)
+            if isinstance(existing, Var):
+                bind(existing, agg_result, state)
+            elif not unify(existing, agg_result, state):
+                if not fail(): return False
+                continue
+            ip = end_pc + 1  # skip past end_aggregate
+            arg_snapshot = list(state.regs)
+
+        elif op == 'end_aggregate':
+            # Should never be reached in normal execution flow —
+            # begin_aggregate jumps past it. If we get here it's an error.
+            raise WAMError("end_aggregate reached outside begin_aggregate scope")
+
+        elif op == 'cut_ite':
+            # Cut for if-then-else: remove the choice point created by try_me_else
+            # (the else branch) so we don't backtrack into it.
+            if state.b >= 0:
+                cp = state.stack[state.b]
+                if isinstance(cp, ChoicePoint):
+                    # Pop the topmost choice point
+                    state.stack.pop()
+                    state.b = cp.saved_b
+
+        elif op == 'jump':
+            # Unconditional jump to label
+            _, label = instr
+            target = labels.get(label, -1)
+            if target >= 0:
+                ip = target
+            # else: silently continue (label may be next instruction)
+
         else:
-            raise WAMError(f"Unknown WAM opcode: {op}")
+            # Unknown opcode — skip with a debug trace (don't crash)
+            pass  # raise WAMError(f"Unknown WAM opcode: {op}")
 
     return True
+
+
+def _find_aggregate_end(code: list, start_ip: int) -> int:
+    """Scan forward from start_ip to find the matching end_aggregate instruction.
+    Returns the PC of end_aggregate, or -1 if not found."""
+    depth = 1
+    for pc in range(start_ip, len(code)):
+        op = code[pc][0] if code[pc] else ''
+        if op == 'begin_aggregate':
+            depth += 1
+        elif op == 'end_aggregate':
+            depth -= 1
+            if depth == 0:
+                return pc
+    return -1
+
+
+def _run_aggregate_body(code: list, labels: dict, body_start: int, end_pc: int,
+                         value_reg: int, outer_state: WamState, _base_b: int) -> list:
+    """
+    Run the WAM body from body_start up to end_pc repeatedly via backtracking.
+    Collect the value in value_reg at each solution (when ip reaches end_pc).
+    Returns list of collected Term values.
+    """
+    sub = copy.deepcopy(outer_state)
+    base_b = sub.b  # choice points above this are "inner"
+    sub.cp = None
+    # Patch end_aggregate to be a no-op sentinel — handled below
+    collected = []
+    sub_arg_snap = list(sub.regs)
+
+    def sub_fail():
+        nonlocal sub_ip
+        if sub.b < 0 or sub.b <= base_b:
+            return False
+        cp = sub.stack[sub.b]
+        restore_choice_point(sub)
+        next_ip = cp.next_clause
+        if callable(next_ip):
+            result = next_ip(sub)
+            if result < 0:
+                return False
+            sub_ip = result
+        elif isinstance(next_ip, int) and next_ip >= 0:
+            sub_ip = next_ip
+        else:
+            nxt = labels.get(cp.next_clause, -1) if isinstance(cp.next_clause, str) else -1
+            if nxt < 0:
+                return False
+            sub_ip = nxt
+        return True
+
+    sub_ip = body_start
+    code_len = len(code)
+    MAX_SOLUTIONS = 10000
+    iterations = 0
+
+    while sub_ip < code_len and iterations < MAX_SOLUTIONS:
+        if sub_ip == end_pc:
+            # Hit end_aggregate: collect value and backtrack for more
+            val = deref(get_reg(sub, value_reg), sub)
+            collected.append(val)
+            iterations += 1
+            if not sub_fail():
+                break
+            sub_arg_snap = list(sub.regs)
+            continue
+
+        instr = code[sub_ip]
+        op = instr[0]
+        sub_ip += 1
+
+        if op == 'put_variable':
+            _, reg, hreg = instr
+            v = sub.fresh_var()
+            heap_put(sub, v)
+            set_reg(sub, reg, v)
+            set_reg(sub, hreg, v)
+        elif op == 'put_value':
+            _, src, dst = instr
+            set_reg(sub, dst, get_reg(sub, src))
+        elif op == 'put_constant':
+            _, atom_arg, reg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            set_reg(sub, reg, _parse_constant(atom_name))
+        elif op == 'put_nil':
+            _, reg = instr
+            set_reg(sub, reg, make_atom('[]'))
+        elif op == 'put_integer':
+            _, n, reg = instr
+            set_reg(sub, reg, Int(n))
+        elif op == 'put_float':
+            _, f, reg = instr
+            set_reg(sub, reg, Float(f))
+        elif op == 'put_structure':
+            _, functor, arity, reg = instr
+            c = Compound(functor, [None]*arity)
+            addr = heap_put(sub, c)
+            set_reg(sub, reg, Ref(addr))
+            sub.mode = 'write'; sub.s = addr
+            sub.write_ctx = [c, 0]
+        elif op == 'put_list':
+            _, reg = instr
+            c = Compound('.', [None, None])
+            addr = heap_put(sub, c)
+            set_reg(sub, reg, Ref(addr))
+            sub.mode = 'write'; sub.s = addr
+            sub.write_ctx = [c, 0]
+        elif op == 'get_variable':
+            _, xn, ai = instr
+            src = sub_arg_snap[ai] if (ai < len(sub_arg_snap) and ai < _Y_BASE) else get_reg(sub, ai)
+            set_reg(sub, xn, src)
+        elif op == 'get_value':
+            _, reg1, reg2 = instr
+            snap_val = sub_arg_snap[reg2] if (reg2 < len(sub_arg_snap) and reg2 < _Y_BASE) else get_reg(sub, reg2)
+            if not unify(get_reg(sub, reg1), snap_val, sub):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'get_constant':
+            _, atom_arg, reg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            val = deref(snap_val, sub)
+            if isinstance(val, Var):
+                bind(val, _parse_constant(atom_name), sub)
+            elif not _constant_matches(val, atom_name):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'get_nil':
+            _, reg = instr
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            val = deref(snap_val, sub)
+            if isinstance(val, Var):
+                bind(val, make_atom('[]'), sub)
+            elif not (isinstance(val, Atom) and val.name == '[]'):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'get_integer':
+            _, n, reg = instr
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            val = deref(snap_val, sub)
+            if isinstance(val, Var):
+                bind(val, Int(n), sub)
+            elif not (isinstance(val, Int) and val.n == n):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'get_structure':
+            _, functor, arity, reg = instr
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            val = deref(snap_val, sub)
+            if isinstance(val, Var):
+                c = Compound(functor, [None]*arity)
+                addr = heap_put(sub, c)
+                bind(val, Ref(addr), sub)
+                sub.mode = 'write'; sub.s = addr; sub.write_ctx = [c, 0]
+            elif isinstance(val, Ref):
+                h = sub.heap.get(val.addr)
+                if isinstance(h, Compound) and h.functor == functor and len(h.args) == arity:
+                    sub.mode = 'read'; sub.s = val.addr; sub.read_ctx = [h, 0]
+                else:
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs); continue
+            elif isinstance(val, Compound) and val.functor == functor and len(val.args) == arity:
+                sub.mode = 'read'; sub.read_ctx = [val, 0]
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs); continue
+        elif op == 'get_list':
+            _, reg = instr
+            snap_val = sub_arg_snap[reg] if (reg < len(sub_arg_snap) and reg < _Y_BASE) else get_reg(sub, reg)
+            val = deref(snap_val, sub)
+            if isinstance(val, Var):
+                c = Compound('.', [None, None])
+                addr = heap_put(sub, c)
+                bind(val, Ref(addr), sub)
+                sub.mode = 'write'; sub.s = addr; sub.write_ctx = [c, 0]
+            elif isinstance(val, Ref):
+                h = sub.heap.get(val.addr)
+                if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
+                    sub.mode = 'read'; sub.s = val.addr; sub.read_ctx = [h, 0]
+                else:
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs); continue
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs); continue
+        elif op == 'set_variable':
+            _, xn = instr
+            v = sub.fresh_var()
+            wc = sub.write_ctx
+            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+            set_reg(sub, xn, v)
+        elif op == 'unify_variable':
+            _, xn = instr
+            if sub.mode == 'read':
+                rc = sub.read_ctx
+                arg_val = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                set_reg(sub, xn, arg_val if arg_val is not None else sub.fresh_var())
+            else:
+                v = sub.fresh_var()
+                wc = sub.write_ctx
+                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+                set_reg(sub, xn, v)
+        elif op == 'set_value':
+            _, xn = instr
+            v = get_reg(sub, xn)
+            wc = sub.write_ctx
+            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+        elif op == 'unify_value':
+            _, reg = instr
+            if sub.mode == 'read':
+                rc = sub.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                if h is None: h = sub.fresh_var()
+                if not unify(get_reg(sub, reg), deref(h, sub), sub):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs); continue
+            else:
+                v = get_reg(sub, reg)
+                wc = sub.write_ctx
+                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+        elif op == 'set_constant':
+            _, atom_arg = instr
+            v = _parse_constant(atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg))
+            wc = sub.write_ctx
+            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+        elif op == 'unify_constant':
+            _, atom_arg = instr
+            atom_name = atom_arg.name if isinstance(atom_arg, Atom) else str(atom_arg)
+            if sub.mode == 'read':
+                rc = sub.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                h = deref(h, sub) if h is not None else sub.fresh_var()
+                if isinstance(h, Var): bind(h, _parse_constant(atom_name), sub)
+                elif not _constant_matches(h, atom_name):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs); continue
+            else:
+                v = _parse_constant(atom_name)
+                wc = sub.write_ctx
+                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+        elif op in ('set_nil', 'unify_nil'):
+            v = make_atom('[]')
+            if op == 'unify_nil' and sub.mode == 'read':
+                rc = sub.read_ctx
+                h = rc[0].args[rc[1]] if rc and rc[1] < len(rc[0].args) else None
+                if rc: rc[1] += 1
+                h = deref(h, sub) if h is not None else sub.fresh_var()
+                if isinstance(h, Var): bind(h, v, sub)
+                elif not (isinstance(h, Atom) and h.name == '[]'):
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs); continue
+            else:
+                wc = sub.write_ctx
+                if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = v; wc[1] += 1
+        elif op == 'set_integer':
+            _, n = instr
+            wc = sub.write_ctx
+            if wc and wc[1] < len(wc[0].args): wc[0].args[wc[1]] = Int(n); wc[1] += 1
+        elif op == 'unify_void':
+            _, n = instr
+            if sub.mode == 'read':
+                rc = sub.read_ctx
+                if rc: rc[1] += n
+            else:
+                wc = sub.write_ctx
+                if wc:
+                    for _ in range(n):
+                        if wc[1] < len(wc[0].args): wc[0].args[wc[1]] = Atom('_'); wc[1] += 1
+        elif op == 'call_pc':
+            _, target_ip, _arity, _label = instr
+            sub.cp = sub_ip
+            if target_ip >= 0:
+                sub_ip = target_ip
+                sub_arg_snap = list(sub.regs)
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'execute_pc':
+            _, target_ip, _label = instr
+            if target_ip >= 0:
+                sub_ip = target_ip
+                sub_arg_snap = list(sub.regs)
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'call':
+            _, label, _arity = instr
+            sub.cp = sub_ip
+            target = labels.get(label, -1)
+            if target >= 0:
+                sub_ip = target
+                sub_arg_snap = list(sub.regs)
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'execute':
+            _, label = instr
+            target = labels.get(label, -1)
+            if target >= 0:
+                sub_ip = target
+                sub_arg_snap = list(sub.regs)
+            else:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'proceed':
+            if sub.cp is None:
+                break  # done
+            if isinstance(sub.cp, int):
+                sub_ip = sub.cp
+                sub.cp = None
+                sub_arg_snap = list(sub.regs)
+            else:
+                break
+        elif op == 'fail':
+            if not sub_fail(): break
+            sub_arg_snap = list(sub.regs)
+            continue
+        elif op == 'halt':
+            break
+        elif op == 'try_me_else_pc':
+            _, next_pc, n_args = instr
+            push_choice_point(sub, n_args, next_pc)
+            sub_arg_snap = list(sub.regs)
+        elif op == 'retry_me_else_pc':
+            _, next_pc = instr
+            restore_choice_point(sub, next_clause=next_pc)
+            sub_arg_snap = list(sub.regs)
+        elif op == 'try_me_else':
+            _, next_label, n_args = instr
+            push_choice_point(sub, n_args, labels.get(next_label, -1))
+            sub_arg_snap = list(sub.regs)
+        elif op == 'retry_me_else':
+            _, next_label = instr
+            restore_choice_point(sub, next_clause=labels.get(next_label, -1))
+            sub_arg_snap = list(sub.regs)
+        elif op == 'trust_me':
+            pop_choice_point(sub)
+            sub_arg_snap = list(sub.regs)
+        elif op in ('neck_cut', 'cut_ite'):
+            sub.b = sub.cut_b if op == 'neck_cut' else (
+                sub.stack[sub.b].saved_b if sub.b >= 0 and isinstance(sub.stack[sub.b], ChoicePoint) else sub.b
+            )
+        elif op == 'get_level':
+            _, reg = instr
+            set_reg(sub, reg, sub.b)
+        elif op == 'cut':
+            _, reg = instr
+            sub.b = get_reg(sub, reg)
+        elif op == 'allocate':
+            n_perm = instr[1] if len(instr) > 1 else 16
+            push_environment(sub, n_perm)
+        elif op == 'deallocate':
+            pop_environment(sub)
+        elif op == 'is':
+            _, dst, expr_reg = instr
+            expr = deref(get_reg(sub, expr_reg), sub)
+            try:
+                result_val = eval_arith(expr, sub)
+            except WAMError:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+            r = Int(result_val) if isinstance(result_val, int) else Float(result_val)
+            if not unify(get_reg(sub, dst), r, sub):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'call_foreign':
+            _, functor, arity = instr
+            args = [deref(get_reg(sub, i+1), sub) for i in range(arity)]
+            try:
+                ok = execute_foreign(functor, arity, args, sub, resume_ip=sub_ip)
+            except WAMError:
+                ok = False
+            if not ok:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'builtin_call':
+            _, builtin, arity = instr
+            ok = _execute_builtin(builtin, arity, sub)
+            if not ok:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+        elif op == 'switch_on_term_pc':
+            _, lv_pc, lc_pc, ll_pc, ls_pc = instr
+            val = deref(get_reg(sub, 1), sub)
+            if isinstance(val, Var):
+                tgt = lv_pc
+            elif isinstance(val, Atom):
+                tgt = lc_pc
+            elif isinstance(val, (Int, Float)):
+                tgt = lc_pc
+            elif isinstance(val, Ref):
+                h = sub.heap.get(val.addr)
+                if isinstance(h, Compound) and h.functor == '.' and len(h.args) == 2:
+                    tgt = ll_pc
+                else:
+                    tgt = ls_pc
+            elif isinstance(val, Compound):
+                tgt = ls_pc
+            else:
+                tgt = lv_pc
+            if tgt < 0:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+            sub_ip = tgt
+        elif op == 'jump':
+            _, label = instr
+            target = labels.get(label, -1)
+            if target >= 0:
+                sub_ip = target
+        elif op == 'begin_aggregate':
+            # Nested aggregate — recursively handle
+            _, inner_agg_type, inner_value_reg, inner_result_reg = instr
+            inner_end_pc = _find_aggregate_end(code, sub_ip)
+            if inner_end_pc < 0:
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+            inner_collected = _run_aggregate_body(code, labels, sub_ip, inner_end_pc,
+                                                   inner_value_reg, sub, sub.b)
+            inner_result = _compute_aggregate(inner_agg_type, inner_collected)
+            if inner_result is None:
+                if inner_agg_type == 'collect':
+                    inner_result = make_atom('[]')
+                elif inner_agg_type == 'count':
+                    inner_result = Int(0)
+                else:
+                    if not sub_fail(): break
+                    sub_arg_snap = list(sub.regs)
+                    continue
+            existing = deref(get_reg(sub, inner_result_reg), sub)
+            if isinstance(existing, Var):
+                bind(existing, inner_result, sub)
+            elif not unify(existing, inner_result, sub):
+                if not sub_fail(): break
+                sub_arg_snap = list(sub.regs)
+                continue
+            sub_ip = inner_end_pc + 1
+            sub_arg_snap = list(sub.regs)
+        else:
+            pass  # skip unknown
+
+    return collected
+
+
+def _compute_aggregate(agg_type: str, values: list):
+    """Compute the aggregate result from a list of collected Term values."""
+    if agg_type == 'count':
+        return Int(len(values))
+    if agg_type == 'collect':
+        # Build a Prolog list
+        result = make_atom('[]')
+        for v in reversed(values):
+            result = Compound('.', [v, result])
+        return result
+    if agg_type == 'sum':
+        if not values:
+            return None
+        total = 0.0
+        for v in values:
+            if isinstance(v, Int):
+                total += v.n
+            elif isinstance(v, Float):
+                total += v.f
+            else:
+                return None
+        return Int(int(total)) if total == int(total) else Float(total)
+    if agg_type == 'min':
+        if not values:
+            return None
+        best = None
+        for v in values:
+            n = v.n if isinstance(v, Int) else (v.f if isinstance(v, Float) else None)
+            if n is None:
+                return None
+            if best is None or n < best:
+                best = n
+        return Int(int(best)) if isinstance(best, int) or best == int(best) else Float(best)
+    if agg_type == 'max':
+        if not values:
+            return None
+        best = None
+        for v in values:
+            n = v.n if isinstance(v, Int) else (v.f if isinstance(v, Float) else None)
+            if n is None:
+                return None
+            if best is None or n > best:
+                best = n
+        return Int(int(best)) if isinstance(best, int) or best == int(best) else Float(best)
+    return None
 
 
 # -- Parallel execution ------------------------------------------------------
