@@ -4,67 +4,67 @@
   "results": [
     {
       "workload": "bench_arg_read",
-      "ns_per_call": 1198.5052,
+      "ns_per_call": 1855.5313,
       "ok": true
     },
     {
       "workload": "bench_copy_flat",
-      "ns_per_call": 295.2656,
+      "ns_per_call": 448.7969,
       "ok": true
     },
     {
       "workload": "bench_copy_nested",
-      "ns_per_call": 225.0886,
+      "ns_per_call": 366.2812,
       "ok": true
     },
     {
       "workload": "bench_fib10",
-      "ns_per_call": 34545.4219,
+      "ns_per_call": 49117.8594,
       "ok": true
     },
     {
       "workload": "bench_functor_read",
-      "ns_per_call": 135.4531,
+      "ns_per_call": 191.5,
       "ok": true
     },
     {
       "workload": "bench_is_arith",
-      "ns_per_call": 127.6823,
+      "ns_per_call": 178.4375,
       "ok": true
     },
     {
       "workload": "bench_sum_big",
-      "ns_per_call": 6936.3906,
+      "ns_per_call": 8893.1511,
       "ok": true
     },
     {
       "workload": "bench_sum_medium",
-      "ns_per_call": 3396.8594,
+      "ns_per_call": 4271.2552,
       "ok": true
     },
     {
       "workload": "bench_sum_small",
-      "ns_per_call": 1376.3438,
+      "ns_per_call": 1732.4895,
       "ok": true
     },
     {
       "workload": "bench_term_depth",
-      "ns_per_call": 8347.9584,
+      "ns_per_call": 11812.8489,
       "ok": true
     },
     {
       "workload": "bench_true",
-      "ns_per_call": 53.177,
+      "ns_per_call": 73.6979,
       "ok": true
     },
     {
       "workload": "bench_unify",
-      "ns_per_call": 131.6459,
+      "ns_per_call": 186.8854,
       "ok": true
     },
     {
       "workload": "bench_univ_decomp",
-      "ns_per_call": 154.9427,
+      "ns_per_call": 218.6719,
       "ok": true
     }
   ]

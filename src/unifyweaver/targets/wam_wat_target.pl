@@ -134,6 +134,7 @@ instr_tag(arg_call_lit_2,   59).
 instr_tag(arg_call_reg_2_dead, 60).
 instr_tag(arg_call_lit_2_dead, 61).
 instr_tag(tail_call_5,      62).
+instr_tag(deallocate_proceed, 63).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -733,6 +734,14 @@ wam_instruction_to_wat_bytes(
         \/ ((N /\ 0xFFFF) << 40),
     resolve_label(Pred, Labels, PC),
     encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% deallocate_proceed: fusion of `deallocate + proceed`. Zero
+%% operands. Restores CP+env_base from the frame header, pops the
+%% frame, then jumps to CP (returning to caller) — same behavior as
+%% deallocate followed by proceed, with one less dispatch.
+wam_instruction_to_wat_bytes(deallocate_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
 
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
@@ -3045,6 +3054,28 @@ wam_wat_case(tail_call_5,
   ;; Tail-call jump (no CP save — deallocate already restored CP).
   (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
+
+wam_wat_case(deallocate_proceed,
+'  ;; Fuses `deallocate + proceed` — restore CP+env_base from the
+  ;; current env frame header, pop the frame, then jump to CP.
+  ;; Matches the base-case ending shape of clauses like
+  ;; sum_ints/3''s integer-leaf clause and fib/3''s recursive case.
+  ;; No operands.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  ;; Proceed: jump to CP if valid, otherwise halt.
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then
+      (call $set_pc (local.get $cp))
+      (i32.const 1))
+    (else
+      (call $set_halted (i32.const 1))
+      (i32.const 1)))').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -5565,6 +5596,10 @@ peephole_tail_call_k([put_value(R1, 'A1'),
                       deallocate,
                       execute(Pred) | Rest],
                      [tail_call_5(R1, R2, R3, R4, R5, Pred) | Out]) :-
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([deallocate, proceed | Rest],
+                     [deallocate_proceed | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([H|T], [H|Out]) :-
