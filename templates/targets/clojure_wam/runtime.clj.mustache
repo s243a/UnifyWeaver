@@ -117,18 +117,30 @@
                                      :stack (:stack state)
                                      :regs (snapshot-choice-regs (:regs state))
                                      :env-stack (:env-stack state)
-                                     :bindings (:bindings state)
+                                     :trail-len (count (:trail state))
                                      :cut-bar (:cut-bar state)
                                      :next-var-id (:next-var-id state)}))
+
+(defn unwind-trail [state target-len]
+  (loop [s state
+         entries (reverse (subvec (vec (:trail state)) target-len))]
+    (if-let [entry (first entries)]
+      (let [var-id (:var entry)
+            restored
+            (if (:had-old? entry)
+              (assoc-in s [:bindings var-id] (:old entry))
+              (update s :bindings dissoc var-id))]
+        (recur restored (rest entries)))
+      (assoc s :trail (vec (take target-len (:trail state)))))))
 
 (defn backtrack [state]
   (if-let [cp (peek (:choice-points state))]
     (-> state
+        (unwind-trail (:trail-len cp))
         (assoc :pc (:pc cp))
         (assoc :stack (:stack cp))
         (restore-choice-regs (:regs cp))
         (assoc :env-stack (:env-stack cp))
-        (assoc :bindings (:bindings cp))
         (assoc :cut-bar (:cut-bar cp))
         (assoc :next-var-id (:next-var-id cp))
         (update :choice-points pop)
@@ -168,7 +180,12 @@
       cur)))
 
 (defn bind-var [state var-term value]
-  (assoc-in state [:bindings (:var var-term)] value))
+  (let [var-id (:var var-term)
+        old (get-in state [:bindings var-id])
+        had-old? (contains? (:bindings state) var-id)]
+    (-> state
+        (update :trail conj {:var var-id :old old :had-old? had-old?})
+        (assoc-in [:bindings var-id] value))))
 
 (declare unify-values structure-term?)
 

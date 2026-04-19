@@ -91,6 +91,23 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(switch_on_constant_preserves_default_fallthrough) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_switch', TmpDir),
+        write_wam_clojure_project([user:wam_choice_fact/1],
+                                  [namespace('generated.wam_switch_test')], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_switch_test/core.clj', CorePath),
+        directory_file_path(TmpDir, 'src/generated/wam_switch_test/runtime.clj', RuntimePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        read_file_to_string(RuntimePath, RuntimeCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '{:value "a" :label "default"}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:value "b" :label "L_wam_choice_fact_1_2"}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:value "c" :label "L_wam_choice_fact_1_3"}')),
+        assertion(sub_string(RuntimeCode, _, _, _, ':default-fallthrough?')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(advance state)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 test(minimal_runtime_executes_execute_and_call_paths,
      [condition(clojure_exec_e2e_enabled)]) :-
     once((
