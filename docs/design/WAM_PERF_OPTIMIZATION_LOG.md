@@ -243,7 +243,8 @@ for further optimization work.
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
 | Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
 | Write-mode compound terms | Done | `put_structure`, `put_list`, `set_*` build nested terms via a builder stack |
-| End-to-end verification | Partial | Generator test plus standalone smoke runner; plunit JVM subprocess tests remain disabled in Termux |
+| Benchmark generation | Scaffolded | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls |
+| End-to-end verification | Partial | Generator tests plus standalone smoke runner; plunit JVM subprocess tests remain disabled in Termux |
 
 ### Clojure-specific lessons from this phase
 
@@ -269,16 +270,21 @@ for further optimization work.
    and `no_kernels(true)` / `foreign_lowering(false)` force the pure WAM path.
    Deterministic handlers can be wired through `clojure_foreign_handlers/1`;
    full Clojure graph kernels are still not implemented.
+7. Clojure now has an optimized effective-distance project generator. It
+   establishes benchmark-matrix shape and kernel-mode controls without trying
+   to run large JVM benchmarks in Termux.
 
 ### Highest-value remaining work
 
 1. Implement native Clojure graph kernels behind the existing `call-foreign`
    handler surface.
-2. Add proper heap/trail semantics instead of relying primarily on the
+2. Wire the Clojure generator into configurable benchmark target lists once
+   a real fact-backed handler or graph kernel exists.
+3. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
-3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+4. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
    the remaining runtime state is better separated.
-4. Split hot runtime state from cold code/context data, following the same
+5. Split hot runtime state from cold code/context data, following the same
    optimization pattern that paid off heavily in Haskell.
 
 ---
