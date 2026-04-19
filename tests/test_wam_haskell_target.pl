@@ -329,6 +329,17 @@ test_haskell_value_nfdata_instance :-
     ;   fail_test(Test, 'NFData Value instance missing')
     ).
 
+test_haskell_fork_min_branches_threshold :-
+    Test = 'WAM-Haskell: forkMinBranches threshold emitted in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "forkMinBranches :: Int"),
+        sub_string(S, _, _, _, "forkMinBranches = 3"),
+        sub_string(S, _, _, _, "length branches >= forkMinBranches")
+    ->  pass(Test)
+    ;   fail_test(Test, 'forkMinBranches threshold missing')
+    ).
+
 test_haskell_fork_helpers_present :-
     Test = 'WAM-Haskell: fork helpers (forkOrSequential, etc.) emitted in runtime',
     (   wam_haskell_target:compile_wam_runtime_to_haskell([], [], Code),
@@ -541,6 +552,7 @@ run_tests :-
     test_haskell_agg_frame_has_merge_strategy,
     test_haskell_infer_merge_strategy,
     test_haskell_value_nfdata_instance,
+    test_haskell_fork_min_branches_threshold,
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
     test_haskell_runtime_imports_parallel,
