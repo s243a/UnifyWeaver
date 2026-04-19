@@ -36,6 +36,7 @@ load_test_predicates :-
     assertz((user:parent("a", "b"))),
     assertz((user:parent("b", "c"))),
     assertz((user:parent("c", "d"))),
+    assertz((user:parent("d", "e"))),
     assertz((user:ancestor(X, Y) :- user:parent(X, Y))),
     assertz((user:ancestor(X, Y) :- user:parent(X, Z), user:ancestor(Z, Y))),
     % Mirror category_ancestor's arithmetic-hops pattern:

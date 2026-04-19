@@ -365,12 +365,19 @@ wam_elixir_lower_instr(trust_me, _PC, _Labels, _FuncName, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
 wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, Code) :-
-    Code = '    new_env = %{cp: state.cp, regs: %{}}
-    state = %{state | stack: [new_env | state.stack]}'.
+    Code = '    # Save caller\'s Y-regs so the callee can freely overwrite
+    # slots 201-299 without corrupting the outer frame. Env popped by
+    # deallocate.
+    {y_regs_saved, base_regs} = WamRuntime.split_y_regs(state.regs)
+    new_env = %{cp: state.cp, y_regs_saved: y_regs_saved}
+    state = %{state | stack: [new_env | state.stack], regs: base_regs}'.
 
 wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, Code) :-
     Code = '    state = case state.stack do
-      [env | rest] -> %{state | cp: env.cp, stack: rest}
+      [env | rest] ->
+        {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
+        merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
+        %{state | cp: env.cp, stack: rest, regs: merged}
       _ -> state
     end'.
 

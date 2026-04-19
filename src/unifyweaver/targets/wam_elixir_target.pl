@@ -251,13 +251,20 @@ wam_elixir_case(proceed,
 
 wam_elixir_case(allocate,
 '      {:allocate, _n} ->
-        new_env = %{cp: state.cp, regs: %{}}
-        %{state | stack: [new_env | state.stack], pc: state.pc + 1}').
+        # Save caller\'s Y-regs in the new env so the callee can freely
+        # use Y-reg slots (ids 201-299) without clobbering the caller.
+        {y_regs_saved, base_regs} = WamRuntime.split_y_regs(state.regs)
+        new_env = %{cp: state.cp, y_regs_saved: y_regs_saved}
+        %{state | stack: [new_env | state.stack], regs: base_regs, pc: state.pc + 1}').
 
 wam_elixir_case(deallocate,
 '      :deallocate ->
         case state.stack do
-          [env | rest] -> %{state | cp: env.cp, stack: rest, pc: state.pc + 1}
+          [env | rest] ->
+            # Discard current frame\'s Y-regs and restore the caller\'s.
+            {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
+            merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
+            %{state | cp: env.cp, stack: rest, regs: merged, pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
         end').
 
@@ -446,6 +453,23 @@ compile_utility_helpers_to_elixir(Code) :-
       [_, arity_str] -> String.to_integer(arity_str)
       _ -> 0
     end
+  end
+
+  @doc """
+  Partition a regs map into {y_regs, other_regs} by reg-id range.
+  Y-registers use ids 201..299 (see wam_elixir_utils:reg_id/2).
+  Used by allocate/deallocate to isolate Y-regs per env frame —
+  without this, recursive calls to the same predicate clobber each
+  other\'s permanents.
+  """
+  def split_y_regs(regs) do
+    Enum.reduce(regs, {%{}, %{}}, fn {k, v}, {ys, others} ->
+      if is_integer(k) and k >= 201 and k < 300 do
+        {Map.put(ys, k, v), others}
+      else
+        {ys, Map.put(others, k, v)}
+      end
+    end)
   end
 
   @doc """
