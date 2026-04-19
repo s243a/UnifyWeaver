@@ -224,6 +224,51 @@ re-doing the fusion.
 
 ---
 
+## Clojure WAM — current implementation status
+
+The Clojure hybrid/WAM target is not yet in the same maturity class as
+Haskell or Rust, but the runtime now has the right architectural shape
+for further optimization work.
+
+### Implemented so far
+
+| Area | Status | Notes |
+|---|---|---|
+| Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
+| One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
+| Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
+| Choice points | Partial | Saves `A`/`X` regs plus env stack, bindings, and var counter; still heavier than Haskell/Rust |
+| Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
+| Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
+| Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
+| Write-mode compound terms | Done | `put_structure`, `put_list`, `set_*` build nested terms via a builder stack |
+| End-to-end verification | Partial | Generator test plus standalone smoke runner; plunit JVM subprocess tests remain disabled in Termux |
+
+### Clojure-specific lessons from this phase
+
+1. Shared-table generation and pre-resolved control flow were worth doing
+   first. They match the Haskell/Rust shape and remove obvious runtime
+   string lookup costs.
+2. Choice-point snapshots cannot be reduced to `A` registers in the current
+   Clojure runtime. `X` registers are still needed across retry paths such as
+   generated if-then-else code.
+3. Treating `!/0` and `cut_ite` as "clear all choice points" is incorrect.
+   The runtime now distinguishes clause-level cuts from soft cuts.
+4. The current runtime is still a bindings-centric approximation, not a full
+   heap/trail WAM. That keeps the implementation moving, but it also defines
+   the next real parity boundary.
+
+### Highest-value remaining work
+
+1. Add proper heap/trail semantics instead of relying primarily on the
+   bindings table.
+2. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+   the remaining runtime state is better separated.
+3. Split hot runtime state from cold code/context data, following the same
+   optimization pattern that paid off heavily in Haskell.
+
+---
+
 ## Patterns that recurred across both targets
 
 These are the generalizable lessons — they'd apply to any WAM
