@@ -137,8 +137,15 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
         extract_segment_body(Rest, PC1, RestBody, Next, NPC)
     ).
 
-generate_all_segments([], _, []).
-generate_all_segments([Name-Instrs | Rest], Labels, SegCodes) :-
+generate_all_segments(Segments, Labels, SegCodes) :-
+    % Build a list of per-segment code-lists and flatten with append/2
+    % at the end. The previous recursive append(ThisSegCodes,
+    % RestCodes, _) was O(N²) over segment count — noticeable on
+    % predicates with thousands of fact clauses.
+    maplist(generate_one_segment(Labels), Segments, SegCodesNested),
+    append(SegCodesNested, SegCodes).
+
+generate_one_segment(Labels, Name-Instrs, ThisSegCodes) :-
     segment_func_name(Name, FuncName),
     classify_segment_head(Instrs, HeadType, BodyInstrs),
     % CPS split: every non-tail `call P, N` terminates a sub-segment;
@@ -147,9 +154,7 @@ generate_all_segments([Name-Instrs | Rest], Labels, SegCodes) :-
     % post-call code (which Elixir would otherwise have on a collapsed
     % tail-call stack).
     split_body_at_calls(BodyInstrs, SubSegs),
-    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, ThisSegCodes),
-    generate_all_segments(Rest, Labels, RestCodes),
-    append(ThisSegCodes, RestCodes, SegCodes).
+    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, ThisSegCodes).
 
 %% split_body_at_calls(+Instrs, -SubSegs)
 %  Splits a flat instr list into sub-segment lists, cutting after every
