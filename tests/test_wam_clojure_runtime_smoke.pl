@@ -22,6 +22,7 @@
 :- dynamic user:wam_env1/1.
 :- dynamic user:wam_env2/1.
 :- dynamic user:wam_env3/1.
+:- dynamic user:wam_trail_choice/1.
 :- dynamic user:wam_soft_cut_helper/1.
 :- dynamic user:wam_soft_cut_outer_ok/1.
 :- dynamic user:wam_cut_helper/1.
@@ -49,6 +50,7 @@ user:wam_make_list(X) :- X = [a,b].
 user:wam_env1(X) :- Y = X, Z = a, Y = Z.
 user:wam_env2(X) :- user:wam_fact(X), Y = X, user:wam_fact(Y).
 user:wam_env3(X) :- (X = a ; X = b), user:wam_fact(X).
+user:wam_trail_choice(X) :- (Y = a ; Y = b), X = Y.
 user:wam_soft_cut_helper(X) :- (X = a -> fail ; true).
 user:wam_soft_cut_outer_ok(X) :- (user:wam_soft_cut_helper(Y), X = Y ; X = b).
 user:wam_cut_helper(X) :- X = a, !, fail.
@@ -82,6 +84,7 @@ run_smoke :-
           user:wam_env1/1,
           user:wam_env2/1,
           user:wam_env3/1,
+          user:wam_trail_choice/1,
           user:wam_soft_cut_helper/1,
           user:wam_soft_cut_outer_ok/1,
           user:wam_cut_helper/1,
@@ -123,6 +126,9 @@ run_smoke :-
     verify_output(TmpDir, 'wam_env2/1', b, "false"),
     verify_output(TmpDir, 'wam_env3/1', a, "true"),
     verify_output(TmpDir, 'wam_env3/1', b, "false"),
+    verify_output(TmpDir, 'wam_trail_choice/1', a, "true"),
+    verify_output(TmpDir, 'wam_trail_choice/1', b, "true"),
+    verify_output(TmpDir, 'wam_trail_choice/1', c, "false"),
     verify_output(TmpDir, 'wam_soft_cut_outer_ok/1', b, "true"),
     verify_output(TmpDir, 'wam_hard_cut_outer_ok/1', b, "true"),
     delete_directory_and_contents(TmpDir),
