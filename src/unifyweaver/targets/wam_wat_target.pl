@@ -137,6 +137,12 @@ instr_tag(tail_call_5,      62).
 instr_tag(deallocate_proceed, 63).
 instr_tag(tail_call_5_c1_lit, 64).
 instr_tag(deallocate_builtin_proceed, 65).
+instr_tag(deallocate_arg_direct_proceed,       66).
+instr_tag(deallocate_functor_direct_proceed,   67).
+instr_tag(deallocate_copy_term_direct_proceed, 68).
+instr_tag(deallocate_univ_direct_proceed,      69).
+instr_tag(deallocate_is_list_direct_proceed,   70).
+instr_tag(builtin_proceed,                     71).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -756,6 +762,48 @@ wam_instruction_to_wat_bytes(deallocate_proceed, _Labels, Hex) :-
 wam_instruction_to_wat_bytes(deallocate_builtin_proceed(Op, N),
                              _Labels, Hex) :-
     instr_tag(deallocate_builtin_proceed, Tag),
+    (   builtin_id(Op, OpId)
+    ->  true
+    ;   OpId = 0
+    ),
+    encode_instr_hex(Tag, OpId, N, Hex).
+
+%% deallocate_<X>_direct_proceed: fusion of
+%%   `deallocate + <X>_direct + proceed`
+%% where <X>_direct is one of the zero-operand direct-dispatch
+%% builtins (arg_direct, functor_direct, copy_term_direct,
+%% univ_direct, is_list_direct). Each calls the specific $builtin_*
+%% directly — no br_table dispatch on the direct-instr tag, no
+%% $execute_builtin wrapper. Zero operands.
+%% Fires in bench_arg_read, bench_functor_read, bench_copy_flat,
+%% bench_copy_nested, bench_univ_decomp — the single-builtin
+%% microbench workloads.
+wam_instruction_to_wat_bytes(deallocate_arg_direct_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_arg_direct_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(deallocate_functor_direct_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_functor_direct_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(deallocate_copy_term_direct_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_copy_term_direct_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(deallocate_univ_direct_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_univ_direct_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+wam_instruction_to_wat_bytes(deallocate_is_list_direct_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_is_list_direct_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+
+%% builtin_proceed: fusion of `builtin_call(Op, Arity) + proceed`
+%% WITHOUT a preceding deallocate. Fires in clauses that don't use
+%% Y-registers (no allocate/deallocate) and end with a terminal
+%% builtin — e.g. `bench_is_arith/0` ends with
+%%   builtin_call(is/2, 2) + proceed
+%% and `fib/3` clause 2 ends with
+%%   builtin_call(!/0, 0) + proceed
+%% op1 = builtin id, op2 = arity.
+wam_instruction_to_wat_bytes(builtin_proceed(Op, N), _Labels, Hex) :-
+    instr_tag(builtin_proceed, Tag),
     (   builtin_id(Op, OpId)
     ->  true
     ;   OpId = 0
@@ -3188,6 +3236,105 @@ wam_wat_case(deallocate_builtin_proceed,
   ;; Note: $execute_builtin may have updated CP (e.g., `!/0` cuts
   ;; to a higher choice point but leaves CP untouched). Reread CP
   ;; from the register to be safe.
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then
+      (call $set_pc (local.get $cp))
+      (i32.const 1))
+    (else
+      (call $set_halted (i32.const 1))
+      (i32.const 1)))').
+
+%% Helper macro for the direct-dispatch clause-end fusions below:
+%% deallocate + $builtin_<X> + proceed, invoking the specific
+%% $builtin_* directly (no dispatch overhead). Matches the
+%% semantics of the 3-instruction sequence exactly.
+wam_wat_case(deallocate_arg_direct_proceed,
+'  ;; Fuses deallocate + arg_direct + proceed.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  (if (i32.eqz (call $builtin_arg)) (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then (call $set_pc (local.get $cp)) (i32.const 1))
+    (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(deallocate_functor_direct_proceed,
+'  ;; Fuses deallocate + functor_direct + proceed.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  (if (i32.eqz (call $builtin_functor)) (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then (call $set_pc (local.get $cp)) (i32.const 1))
+    (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(deallocate_copy_term_direct_proceed,
+'  ;; Fuses deallocate + copy_term_direct + proceed.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  (if (i32.eqz (call $builtin_copy_term)) (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then (call $set_pc (local.get $cp)) (i32.const 1))
+    (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(deallocate_univ_direct_proceed,
+'  ;; Fuses deallocate + univ_direct + proceed.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  (if (i32.eqz (call $builtin_univ)) (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then (call $set_pc (local.get $cp)) (i32.const 1))
+    (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(deallocate_is_list_direct_proceed,
+'  ;; Fuses deallocate + is_list_direct + proceed.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  (if (i32.eqz (call $builtin_is_list)) (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then (call $set_pc (local.get $cp)) (i32.const 1))
+    (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(builtin_proceed,
+'  ;; Fuses `builtin_call(Op, Arity) + proceed` without a preceding
+  ;; deallocate. Fires in clauses that don''t use Y-registers. After
+  ;; $execute_builtin succeeds, read CP and dispatch as proceed
+  ;; would (some builtins — e.g. `!/0` — may update CP).
+  ;; op1 = builtin id, op2 = arity.
+  (local $cp i32)
+  (if (i32.eqz (call $execute_builtin
+                  (i32.wrap_i64 (local.get $op1))
+                  (i32.wrap_i64 (local.get $op2))))
+    (then (return (i32.const 0))))
   (local.set $cp (call $get_cp))
   (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
     (then
@@ -5739,8 +5886,17 @@ peephole_tail_call_k([deallocate, builtin_call(Op, N), proceed | Rest],
                      [deallocate_builtin_proceed(Op, N) | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([deallocate, Direct, proceed | Rest],
+                     [Fused | Out]) :-
+    dealloc_direct_fused(Direct, Fused),
+    !,
+    peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([deallocate, proceed | Rest],
                      [deallocate_proceed | Out]) :-
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([builtin_call(Op, N), proceed | Rest],
+                     [builtin_proceed(Op, N) | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([H|T], [H|Out]) :-
@@ -5752,6 +5908,15 @@ peephole_tail_call_k([H|T], [H|Out]) :-
 %  source copy (IsVar=0); put_variable is a fresh-ref bind (IsVar=1).
 a2_setup(put_value(A2Src, 'A2'), A2Src, 0).
 a2_setup(put_variable(A2Dst, 'A2'), A2Dst, 1).
+
+%% dealloc_direct_fused(+DirectInstr, -FusedForm)
+%  Maps each zero-operand direct-dispatch builtin to its fused
+%  `deallocate + <X>_direct + proceed` form.
+dealloc_direct_fused(arg_direct,        deallocate_arg_direct_proceed).
+dealloc_direct_fused(functor_direct,    deallocate_functor_direct_proceed).
+dealloc_direct_fused(copy_term_direct,  deallocate_copy_term_direct_proceed).
+dealloc_direct_fused(univ_direct,       deallocate_univ_direct_proceed).
+dealloc_direct_fused(is_list_direct,    deallocate_is_list_direct_proceed).
 
 %% reg_used_before_clause_end(+Reg, +Instrs)
 %  Liveness check: succeeds if Reg is referenced on any reachable
