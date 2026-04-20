@@ -10,6 +10,7 @@ temporary C# project:
 - `bound_scan`: parameterized `RelationScanNode` over one bound column
 - `pattern`: `PatternScanNode` with a bound category
 - `join`: `KeyJoinNode` over article/category and category-parent scans
+- `selective_join`: parameter seed joined against category-parent
 - `negation`: unary negation over scanned support relations
 - `aggregate`: grouped count aggregate over a scanned relation
 
@@ -201,6 +202,16 @@ class Program
                         2,
                         2,
                         4)),
+                "selective_join" => new QueryPlan(
+                    joinOutId,
+                    new KeyJoinNode(
+                        new ParamSeedNode(new PredicateId("category_seed", 1), new int[] { 0 }, 1),
+                        new RelationScanNode(edgeId),
+                        new int[] { 0 },
+                        new int[] { 0 },
+                        1,
+                        2,
+                        3)),
                 "negation" => new QueryPlan(
                     negationOutId,
                     new NegationNode(
@@ -226,7 +237,7 @@ class Program
                 ScanRelationRetentionStrategy: scanStrategy));
 
             var stopwatch = Stopwatch.StartNew();
-            var parameters = mode == "bound_scan"
+            var parameters = mode == "bound_scan" || mode == "selective_join"
                 ? new object[][] { new object[] { patternCategory } }
                 : null;
             var rows = executor.Execute(plan, parameters: parameters, trace: trace).ToList();
@@ -335,6 +346,13 @@ def parse_metrics(stderr: str) -> dict[str, str]:
     return metrics
 
 
+def select_planner_summary(metrics: dict[str, str]) -> str:
+    operator = metrics.get("scan_operator_strategies", "")
+    if "KeyJoinIndexedRelationProvider" in operator or "IndexedRelationProviderLookup" in operator:
+        return operator
+    return metrics.get("scan_planner_strategies", "") or operator
+
+
 def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, strategy: str, repetitions: int) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
@@ -387,7 +405,7 @@ def main() -> int:
         for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
             grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
             metrics = parse_metrics(result.stderr)
-            planner = metrics.get("scan_planner_strategies", "") or metrics.get("scan_operator_strategies", "")
+            planner = select_planner_summary(metrics)
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
@@ -404,7 +422,7 @@ def main() -> int:
                 ratio = auto.median / best.median if best.median else float('inf')
                 print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
                 auto_metrics = parse_metrics(auto.stderr)
-                auto_planner = auto_metrics.get("scan_planner_strategies", "") or auto_metrics.get("scan_operator_strategies", "")
+                auto_planner = select_planner_summary(auto_metrics)
                 print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
 
         if args.keep_temp:

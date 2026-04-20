@@ -4202,6 +4202,53 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (leftIsScan || rightIsScan)
                 {
+                    if (joinKeyCount == 1)
+                    {
+                        if (rightIsScan &&
+                            TryExecuteIndexedProviderScanJoin(
+                                join,
+                                indexedScanOnLeft: false,
+                                scanPredicate: rightScanPredicate,
+                                scanPattern: rightScanPattern,
+                                scanFilter: rightScanFilter,
+                                scanKeyIndex: join.RightKeys[0],
+                                probeNode: join.Left,
+                                probeKeyIndex: join.LeftKeys[0],
+                                context,
+                                out var indexedRightRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderRight");
+                            foreach (var row in indexedRightRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+
+                        if (leftIsScan &&
+                            TryExecuteIndexedProviderScanJoin(
+                                join,
+                                indexedScanOnLeft: true,
+                                scanPredicate: leftScanPredicate,
+                                scanPattern: leftScanPattern,
+                                scanFilter: leftScanFilter,
+                                scanKeyIndex: join.LeftKeys[0],
+                                probeNode: join.Right,
+                                probeKeyIndex: join.RightKeys[0],
+                                context,
+                                out var indexedLeftRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderLeft");
+                            foreach (var row in indexedLeftRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+                    }
+
                     var useScanIndexStrategy = true;
                     if (leftIsScan != rightIsScan)
                     {
@@ -9526,6 +9573,109 @@ namespace UnifyWeaver.QueryRuntime
 
             facts = default!;
             return false;
+        }
+
+        private bool TryExecuteIndexedProviderScanJoin(
+            KeyJoinNode join,
+            bool indexedScanOnLeft,
+            PredicateId scanPredicate,
+            object[]? scanPattern,
+            Func<object[], bool>? scanFilter,
+            int scanKeyIndex,
+            PlanNode probeNode,
+            int probeKeyIndex,
+            EvaluationContext context,
+            out IEnumerable<object[]> rows)
+        {
+            rows = default!;
+            if (_provider is not IIndexedRelationProvider indexedProvider)
+            {
+                return false;
+            }
+
+            var probeRows = Evaluate(probeNode, context).Where(tuple => tuple is not null).ToList();
+            if (probeRows.Count == 0)
+            {
+                rows = Enumerable.Empty<object[]>();
+                return true;
+            }
+
+            var keys = new HashSet<object>();
+            foreach (var probeRow in probeRows)
+            {
+                var key = GetFactValue(probeRow, probeKeyIndex) ?? NullFactIndexKey;
+                keys.Add(key);
+            }
+
+            if (!indexedProvider.TryLookupFacts(scanPredicate, scanKeyIndex, keys, out var scanRows))
+            {
+                return false;
+            }
+
+            var buckets = new Dictionary<object, List<object[]>>();
+            foreach (var scanRow in scanRows)
+            {
+                if (scanRow is null)
+                {
+                    continue;
+                }
+
+                if (scanPattern is not null && !TupleMatchesPattern(scanRow, scanPattern))
+                {
+                    continue;
+                }
+
+                if (scanFilter is not null && !scanFilter(scanRow))
+                {
+                    continue;
+                }
+
+                var key = GetFactValue(scanRow, scanKeyIndex) ?? NullFactIndexKey;
+                if (!buckets.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    buckets[key] = bucket;
+                }
+
+                bucket.Add(scanRow);
+            }
+
+            rows = EnumerateIndexedProviderJoinRows(join, indexedScanOnLeft, probeRows, probeKeyIndex, buckets);
+            return true;
+        }
+
+        private static IEnumerable<object[]> EnumerateIndexedProviderJoinRows(
+            KeyJoinNode join,
+            bool indexedScanOnLeft,
+            IReadOnlyList<object[]> probeRows,
+            int probeKeyIndex,
+            Dictionary<object, List<object[]>> indexedBuckets)
+        {
+            foreach (var probeRow in probeRows)
+            {
+                if (probeRow is null)
+                {
+                    continue;
+                }
+
+                var key = GetFactValue(probeRow, probeKeyIndex) ?? NullFactIndexKey;
+                if (!indexedBuckets.TryGetValue(key, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var scanRow in bucket)
+                {
+                    if (indexedScanOnLeft)
+                    {
+                        yield return BuildJoinOutput(scanRow, probeRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                    else
+                    {
+                        yield return BuildJoinOutput(probeRow, scanRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+            }
         }
 
         private static IEnumerable<object[]> EnumerateBuckets(
