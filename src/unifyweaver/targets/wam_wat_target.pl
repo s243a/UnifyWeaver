@@ -6178,8 +6178,26 @@ instr_references_reg(Instr, Reg) :-
     member(Arg, Args),
     Arg == Reg, !.
 
-peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
+%% peephole_neck_cut: collapse `try_me_else + allocate + ... +
+%% guard_builtin + !/0 + ... + trust_me` into `allocate + ... +
+%% neck_cut_test(Guard, Arity, ElseLbl) + ...`. The neck_cut_test
+%% runs the guard inline; if it passes, clause 1's body continues;
+%% if it fails, the current env frame is popped and PC jumps to
+%% the else clause — NO choice point is ever created.
+%%
+%% Matches at the predicate entry (`label(Pred)` prefix is
+%% preserved in the output).
+%%
+%% Excludes type-test guards (integer/1, atom/1, etc.) so they
+%% remain eligible for peephole_type_dispatch downstream — that
+%% variant is strictly faster since it dispatches on A1's tag
+%% without any allocate/guard-call/deallocate round-trip on the
+%% failing branch.
+peephole_neck_cut([label(Pred), try_me_else(L), allocate | Rest],
+                  [label(Pred) | Optimized]) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
+    \+ type_test_guard(GuardOp),
+    \+ has_unifying_instr(BeforeGuard),
     remove_label_trust_me(AfterCut, L, Cleaned),
     !,
     append([allocate | BeforeGuard],
@@ -6187,8 +6205,47 @@ peephole_neck_cut([try_me_else(L), allocate | Rest], Optimized) :-
            Optimized).
 peephole_neck_cut(Instrs, Instrs).
 
+%% has_unifying_instr(+Instrs)
+%  True if any instruction in Instrs could create a trailed binding.
+%  neck_cut_test has no trail-unwind on its guard-failure path, so
+%  it's only safe to fire when the pre-guard prelude is binding-free.
+%  This excludes clauses like term_depth_args/5 where a `get_value`
+%  against a potentially-unbound A-register can trail a binding that
+%  the else clause would then see.
+has_unifying_instr(Instrs) :-
+    member(Instr, Instrs),
+    unifying_instr(Instr), !.
+
+unifying_instr(get_value(_, _)).
+unifying_instr(get_constant(_, _)).
+unifying_instr(get_structure(_, _)).
+unifying_instr(get_list(_)).
+unifying_instr(unify_value(_)).
+unifying_instr(unify_variable(_)).
+unifying_instr(unify_constant(_)).
+%% Builtin calls can also bind (is/2, =/2, ==/2 with unbound args,
+%% compound-arg builtins, etc.). Be conservative.
+unifying_instr(builtin_call(_, _)).
+
+%% type_test_guard(+GuardName)
+%  True if GuardName is a single-argument type test that the
+%  peephole_type_dispatch pass can specialize into a tag dispatch.
+%  Such guards are left for that downstream pass.
+type_test_guard('integer/1').
+type_test_guard('atom/1').
+type_test_guard('float/1').
+type_test_guard('number/1').
+type_test_guard('compound/1').
+type_test_guard('is_list/1').
+
 %% find_guard_and_cut(+Instrs, -Before, -GuardOp, -GuardArity, -After)
 %  Scans for builtin_call(Guard, N), builtin_call('!/0', 0) and splits.
+%  Also accepts a deallocate between guard and cut — the WAM compiler
+%  sometimes emits that shape when the clause has no Y-register uses
+%  after the guard (e.g. term_depth_args/5 clause 1). The deallocate
+%  is preserved in the After portion so post-cut semantics stay
+%  correct on the success path; on guard failure, neck_cut_test pops
+%  the env frame itself so the deallocate in the dead tail is skipped.
 %  Only matches if the guard is within the first 15 elements (instructions
 %  + label markers). Skips label markers in the "Before" accumulator.
 find_guard_and_cut(Instrs, Before, GuardOp, GuardArity, After) :-
@@ -6196,6 +6253,9 @@ find_guard_and_cut(Instrs, Before, GuardOp, GuardArity, After) :-
 
 find_guard_and_cut_([builtin_call(G, N), builtin_call('!/0', 0) | After],
                     _, [], G, N, After) :- !.
+find_guard_and_cut_([builtin_call(G, N), deallocate,
+                     builtin_call('!/0', 0) | After],
+                    _, [], G, N, [deallocate | After]) :- !.
 find_guard_and_cut_([I | Rest], Depth, [I | Before], G, N, After) :-
     Depth < 15,
     D1 is Depth + 1,
@@ -6204,10 +6264,27 @@ find_guard_and_cut_([I | Rest], Depth, [I | Before], G, N, After) :-
 %% remove_label_trust_me(+Instrs, +Label, -Cleaned)
 %  Finds label(L), trust_me in the instruction stream and removes the
 %  trust_me (keeping the label — it is the jump target for neck_cut_test).
-remove_label_trust_me([], _, []).
-remove_label_trust_me([label(L), trust_me | Rest], L, [label(L) | Rest]) :- !.
+%  FAILS if the exact pattern (label(L) immediately followed by trust_me)
+%  is not present — the peephole must not fire on 3-clause predicates
+%  where label(L) is followed by retry_me_else instead.
+%
+%  Label markers carry strings; the peephole's Label comes from
+%  try_me_else which is an atom. Normalize for comparison.
+remove_label_trust_me([label(LS), trust_me | Rest], L, [label(LS) | Rest]) :-
+    same_label(LS, L), !.
+remove_label_trust_me([I | Rest], L, [I | Cleaned]) :-
+    I \= label(_),       % cheap early filter
+    !,
+    remove_label_trust_me(Rest, L, Cleaned).
 remove_label_trust_me([I | Rest], L, [I | Cleaned]) :-
     remove_label_trust_me(Rest, L, Cleaned).
+
+%% same_label(+A, +B)
+%  True if A and B denote the same label, regardless of whether each
+%  is stored as a string or an atom.
+same_label(X, X) :- !.
+same_label(X, Y) :- atom(X), string(Y), atom_string(X, Y), !.
+same_label(X, Y) :- string(X), atom(Y), atom_string(Y, X).
 
 %% gen_all_entry_funcs(+PredData, +HeapStart, +CodeBase, +TotalInstrs,
 %%                     -Funcs, -Exports)
