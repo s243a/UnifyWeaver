@@ -148,6 +148,17 @@ namespace UnifyWeaver.QueryRuntime
         bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts);
     }
 
+    public sealed record IndexedRelationBucket(object Key, IReadOnlyList<object[]> Rows);
+
+    /// <summary>
+    /// Supplies key-ordered row buckets for providers that already maintain
+    /// physical indexes over relation columns.
+    /// </summary>
+    public interface IIndexedRelationBucketProvider : IRelationProvider
+    {
+        bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets);
+    }
+
     /// <summary>
     /// Base class for all query plan nodes.
     /// </summary>
@@ -1623,12 +1634,15 @@ namespace UnifyWeaver.QueryRuntime
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWBR0001");
         private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("UWBI0001");
+        private static readonly byte[] BucketRowsMagic = Encoding.ASCII.GetBytes("UWBB0001");
         private static readonly byte[] IndexDirectoryMagic = Encoding.ASCII.GetBytes("UWBD0001");
         private static readonly byte[] IndexDirectoryFooterMagic = Encoding.ASCII.GetBytes("UWBF0001");
         private const int IndexDirectoryEntrySize = sizeof(ulong) + sizeof(long) + sizeof(int) + sizeof(long);
         private const int MaxDirectoryLookupKeys = 256;
 
         internal sealed record WriteResult(long RowCount, Dictionary<string, string> IndexPaths);
+
+        private sealed record IndexRowRef(long Offset, string[] Values);
 
         private readonly record struct IndexDirectoryInfo(long TableOffset, int EntryCount);
 
@@ -1671,10 +1685,10 @@ namespace UnifyWeaver.QueryRuntime
             writer.Write(0L);
 
             long rowCount = 0;
-            var indexes = new Dictionary<int, Dictionary<string, List<long>>>();
+            var indexes = new Dictionary<int, Dictionary<string, List<IndexRowRef>>>();
             for (var i = 0; i < width; i++)
             {
-                indexes[i] = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+                indexes[i] = new Dictionary<string, List<IndexRowRef>>(StringComparer.Ordinal);
             }
 
             foreach (var row in rows)
@@ -1685,17 +1699,25 @@ namespace UnifyWeaver.QueryRuntime
                 }
 
                 var rowOffset = stream.Position;
+                var values = new string[width];
                 for (var i = 0; i < width; i++)
                 {
                     var value = row[i]?.ToString() ?? string.Empty;
-                    if (!indexes[i].TryGetValue(value, out var offsets))
+                    values[i] = value;
+                }
+
+                var rowRef = new IndexRowRef(rowOffset, values);
+                for (var i = 0; i < width; i++)
+                {
+                    var value = values[i];
+                    if (!indexes[i].TryGetValue(value, out var rowsForKey))
                     {
-                        offsets = new List<long>();
-                        indexes[i][value] = offsets;
+                        rowsForKey = new List<IndexRowRef>();
+                        indexes[i][value] = rowsForKey;
                     }
 
-                    offsets.Add(rowOffset);
-                    WriteString(writer, value);
+                    rowsForKey.Add(rowRef);
+                    WriteString(writer, values[i]);
                 }
 
                 rowCount++;
@@ -1712,6 +1734,8 @@ namespace UnifyWeaver.QueryRuntime
             {
                 var indexPath = Path.Combine(artifactDirectory, $"{artifactName}.col{kvp.Key}.uwbri");
                 WriteIndex(indexPath, kvp.Key, kvp.Value);
+                var bucketRowsPath = Path.Combine(artifactDirectory, $"{artifactName}.col{kvp.Key}.uwbrb");
+                WriteBucketRows(bucketRowsPath, kvp.Key, width, kvp.Value);
                 indexPaths[kvp.Key.ToString(CultureInfo.InvariantCulture)] = Path.GetFileName(indexPath);
             }
 
@@ -1746,6 +1770,40 @@ namespace UnifyWeaver.QueryRuntime
             var dataPath = ResolveDataPath(manifest, manifestPath);
             var offsets = ReadOffsets(indexPath, columnIndex, keys.Select(key => key?.ToString() ?? string.Empty));
             return ReadRowsAtOffsets(dataPath, manifest.Arity, offsets);
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(string manifestPath, int columnIndex)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return ReadBuckets(manifest, manifestPath, columnIndex);
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(BinaryRelationArtifactManifest manifest, string manifestPath, int columnIndex)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            if (columnIndex < 0 || columnIndex >= manifest.Arity)
+            {
+                return Enumerable.Empty<IndexedRelationBucket>();
+            }
+
+            var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+            if (!manifest.IndexPaths.TryGetValue(columnKey, out var indexPathValue))
+            {
+                return Enumerable.Empty<IndexedRelationBucket>();
+            }
+
+            var manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var indexPath = Path.IsPathRooted(indexPathValue)
+                ? indexPathValue
+                : Path.Combine(manifestDirectory, indexPathValue);
+            var bucketRowsPath = Path.ChangeExtension(indexPath, ".uwbrb");
+            if (File.Exists(bucketRowsPath))
+            {
+                return ReadBucketsFromBucketRows(bucketRowsPath, columnIndex, manifest.Arity);
+            }
+
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            return ReadBuckets(indexPath, dataPath, columnIndex, manifest.Arity);
         }
 
         private static IEnumerable<object[]> ReadRowsFromData(string dataPath, int expectedWidth, long expectedRows)
@@ -1836,7 +1894,7 @@ namespace UnifyWeaver.QueryRuntime
             _ = reader.ReadInt64();
         }
 
-        private static void WriteIndex(string indexPath, int columnIndex, Dictionary<string, List<long>> index)
+        private static void WriteIndex(string indexPath, int columnIndex, Dictionary<string, List<IndexRowRef>> index)
         {
             using var stream = new FileStream(indexPath, FileMode.Create, FileAccess.Write, FileShare.None);
             using var writer = new BinaryWriter(stream, Encoding.UTF8);
@@ -1851,13 +1909,37 @@ namespace UnifyWeaver.QueryRuntime
                 directoryEntries.Add((kvp.Key, stream.Position));
                 WriteString(writer, kvp.Key);
                 writer.Write(kvp.Value.Count);
-                foreach (var offset in kvp.Value)
+                foreach (var row in kvp.Value)
                 {
-                    writer.Write(offset);
+                    writer.Write(row.Offset);
                 }
             }
 
             WriteIndexDirectory(writer, directoryEntries);
+        }
+
+        private static void WriteBucketRows(string bucketRowsPath, int columnIndex, int width, Dictionary<string, List<IndexRowRef>> index)
+        {
+            using var stream = new FileStream(bucketRowsPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8);
+            writer.Write(BucketRowsMagic);
+            writer.Write(1);
+            writer.Write(columnIndex);
+            writer.Write(width);
+            writer.Write(index.Count);
+
+            foreach (var kvp in index.OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                WriteString(writer, kvp.Key);
+                writer.Write(kvp.Value.Count);
+                foreach (var row in kvp.Value)
+                {
+                    for (var i = 0; i < width; i++)
+                    {
+                        WriteString(writer, row.Values[i]);
+                    }
+                }
+            }
         }
 
         private static IReadOnlyList<long> ReadOffsets(string indexPath, int expectedColumnIndex, IEnumerable<string> keys)
@@ -1920,6 +2002,108 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return offsets;
+        }
+
+        private static IEnumerable<IndexedRelationBucket> ReadBuckets(string indexPath, string dataPath, int expectedColumnIndex, int expectedWidth)
+        {
+            using var indexStream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var indexReader = new BinaryReader(indexStream, Encoding.UTF8);
+            ValidateIndexHeader(indexReader, indexPath, expectedColumnIndex, out var keyCount);
+
+            using var dataStream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var dataReader = new BinaryReader(dataStream, Encoding.UTF8);
+            ValidateDataHeader(dataReader, dataPath, expectedWidth);
+
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(indexReader);
+                var offsetCount = indexReader.ReadInt32();
+                if (offsetCount < 0)
+                {
+                    throw new InvalidDataException($"Binary relation index offset count is negative for column {expectedColumnIndex}: {indexPath}");
+                }
+
+                var offsets = new long[offsetCount];
+                for (var j = 0; j < offsetCount; j++)
+                {
+                    offsets[j] = indexReader.ReadInt64();
+                }
+
+                var rows = new List<object[]>(offsetCount);
+                foreach (var offset in offsets)
+                {
+                    dataStream.Position = offset;
+                    var row = new object[expectedWidth];
+                    for (var column = 0; column < expectedWidth; column++)
+                    {
+                        row[column] = ReadString(dataReader);
+                    }
+
+                    rows.Add(row);
+                }
+
+                yield return new IndexedRelationBucket(key, rows);
+            }
+        }
+
+        private static IEnumerable<IndexedRelationBucket> ReadBucketsFromBucketRows(string bucketRowsPath, int expectedColumnIndex, int expectedWidth)
+        {
+            using var stream = new FileStream(bucketRowsPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(BucketRowsMagic.Length);
+            if (!magic.SequenceEqual(BucketRowsMagic))
+            {
+                throw new InvalidDataException($"Invalid binary relation bucket artifact magic: {bucketRowsPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation bucket artifact version {version}: {bucketRowsPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Binary relation bucket column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {bucketRowsPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Binary relation bucket width mismatch. Expected {expectedWidth}, found {width}: {bucketRowsPath}");
+            }
+
+            var keyCount = reader.ReadInt32();
+            if (keyCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation bucket key count is negative: {bucketRowsPath}");
+            }
+
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(reader);
+                var rowCount = reader.ReadInt32();
+                if (rowCount < 0)
+                {
+                    throw new InvalidDataException($"Binary relation bucket row count is negative: {bucketRowsPath}");
+                }
+
+                var rows = new List<object[]>(rowCount);
+                for (var rowIndex = 0; rowIndex < rowCount; rowIndex++)
+                {
+                    var row = new object[width];
+                    for (var column = 0; column < width; column++)
+                    {
+                        row[column] = ReadString(reader);
+                    }
+
+                    rows.Add(row);
+                }
+
+                yield return new IndexedRelationBucket(key, rows);
+            }
         }
 
         private static void WriteIndexDirectory(BinaryWriter writer, IReadOnlyList<(string Key, long EntryOffset)> entries)
@@ -2132,6 +2316,11 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void ValidateIndexHeader(BinaryReader reader, string indexPath, int expectedColumnIndex)
         {
+            ValidateIndexHeader(reader, indexPath, expectedColumnIndex, out _);
+        }
+
+        private static void ValidateIndexHeader(BinaryReader reader, string indexPath, int expectedColumnIndex, out int keyCount)
+        {
             var magic = reader.ReadBytes(IndexMagic.Length);
             if (!magic.SequenceEqual(IndexMagic))
             {
@@ -2150,7 +2339,11 @@ namespace UnifyWeaver.QueryRuntime
                 throw new InvalidDataException($"Binary relation index column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {indexPath}");
             }
 
-            _ = reader.ReadInt32();
+            keyCount = reader.ReadInt32();
+            if (keyCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index key count is negative: {indexPath}");
+            }
         }
 
         private static ulong StableHash(string value)
@@ -2230,7 +2423,7 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
-    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider
+    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IIndexedRelationBucketProvider
     {
         private readonly IRelationProvider? _fallback;
         private readonly Dictionary<PredicateId, string> _manifestPaths = new();
@@ -2318,6 +2511,29 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             facts = default!;
+            return false;
+        }
+
+        public bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+                var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+                if (manifest.IndexPaths.ContainsKey(columnKey))
+                {
+                    buckets = BinaryRelationArtifactReader.ReadBuckets(manifest, manifestPath, columnIndex);
+                    return true;
+                }
+            }
+
+            if (_fallback is IIndexedRelationBucketProvider bucketFallback &&
+                bucketFallback.TryReadIndexedBuckets(predicate, columnIndex, out buckets))
+            {
+                return true;
+            }
+
+            buckets = default!;
             return false;
         }
     }
@@ -4474,6 +4690,28 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (joinKeyCount == 1)
                     {
+                        if (leftIsScan && rightIsScan &&
+                            TryExecuteIndexedProviderBucketJoin(
+                                join,
+                                leftScanPredicate,
+                                leftScanPattern,
+                                leftScanFilter,
+                                join.LeftKeys[0],
+                                rightScanPredicate,
+                                rightScanPattern,
+                                rightScanFilter,
+                                join.RightKeys[0],
+                                out var indexedBucketRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderBuckets");
+                            foreach (var row in indexedBucketRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+
                         if (rightIsScan &&
                             TryExecuteIndexedProviderScanJoin(
                                 join,
@@ -9843,6 +10081,138 @@ namespace UnifyWeaver.QueryRuntime
 
             facts = default!;
             return false;
+        }
+
+        private bool TryExecuteIndexedProviderBucketJoin(
+            KeyJoinNode join,
+            PredicateId leftPredicate,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            int leftKeyIndex,
+            PredicateId rightPredicate,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            int rightKeyIndex,
+            out IEnumerable<object[]> rows)
+        {
+            rows = default!;
+            if (_provider is not IIndexedRelationBucketProvider bucketProvider ||
+                !bucketProvider.TryReadIndexedBuckets(leftPredicate, leftKeyIndex, out var leftBuckets) ||
+                !bucketProvider.TryReadIndexedBuckets(rightPredicate, rightKeyIndex, out var rightBuckets))
+            {
+                return false;
+            }
+
+            rows = EnumerateIndexedProviderBucketJoinRows(
+                join,
+                leftBuckets,
+                leftPattern,
+                leftFilter,
+                rightBuckets,
+                rightPattern,
+                rightFilter);
+            return true;
+        }
+
+        private static IEnumerable<object[]> EnumerateIndexedProviderBucketJoinRows(
+            KeyJoinNode join,
+            IEnumerable<IndexedRelationBucket> leftBuckets,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            IEnumerable<IndexedRelationBucket> rightBuckets,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter)
+        {
+            using var leftEnumerator = leftBuckets.GetEnumerator();
+            using var rightEnumerator = rightBuckets.GetEnumerator();
+            var hasLeft = leftEnumerator.MoveNext();
+            var hasRight = rightEnumerator.MoveNext();
+
+            while (hasLeft && hasRight)
+            {
+                var comparison = CompareBucketKeys(leftEnumerator.Current.Key, rightEnumerator.Current.Key);
+                if (comparison < 0)
+                {
+                    hasLeft = leftEnumerator.MoveNext();
+                    continue;
+                }
+
+                if (comparison > 0)
+                {
+                    hasRight = rightEnumerator.MoveNext();
+                    continue;
+                }
+
+                var rightRows = FilterBucketRows(rightEnumerator.Current.Rows, rightPattern, rightFilter);
+                if (rightRows.Count == 0)
+                {
+                    hasLeft = leftEnumerator.MoveNext();
+                    hasRight = rightEnumerator.MoveNext();
+                    continue;
+                }
+
+                foreach (var leftRow in leftEnumerator.Current.Rows)
+                {
+                    if (leftRow is null)
+                    {
+                        continue;
+                    }
+
+                    if (leftPattern is not null && !TupleMatchesPattern(leftRow, leftPattern))
+                    {
+                        continue;
+                    }
+
+                    if (leftFilter is not null && !leftFilter(leftRow))
+                    {
+                        continue;
+                    }
+
+                    foreach (var rightRow in rightRows)
+                    {
+                        yield return BuildJoinOutput(leftRow, rightRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+
+                hasLeft = leftEnumerator.MoveNext();
+                hasRight = rightEnumerator.MoveNext();
+            }
+        }
+
+        private static int CompareBucketKeys(object left, object right)
+        {
+            var leftKey = left?.ToString() ?? string.Empty;
+            var rightKey = right?.ToString() ?? string.Empty;
+            return string.CompareOrdinal(leftKey, rightKey);
+        }
+
+        private static List<object[]> FilterBucketRows(
+            IReadOnlyList<object[]> rows,
+            object[]? pattern,
+            Func<object[], bool>? filter)
+        {
+            var filtered = new List<object[]>(rows.Count);
+            foreach (var row in rows)
+            {
+                if (row is null)
+                {
+                    continue;
+                }
+
+                if (pattern is not null && !TupleMatchesPattern(row, pattern))
+                {
+                    continue;
+                }
+
+                if (filter is not null && !filter(row))
+                {
+                    continue;
+                }
+
+                filtered.Add(row);
+            }
+
+            return filtered;
         }
 
         private bool TryExecuteIndexedProviderScanJoin(

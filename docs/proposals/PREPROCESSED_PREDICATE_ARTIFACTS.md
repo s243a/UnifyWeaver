@@ -394,6 +394,10 @@ Prototype status:
   disk, seeks from key hash to index entry, and still falls back to the
   original sequential index scan for old artifacts or broad probe sets where
   sequential access is cheaper than many random seeks.
+- The binary artifact builder also emits per-column covering bucket sidecars
+  for broad indexed joins. Scan-scan joins can stream key-ordered buckets from
+  both sides and merge them linearly instead of issuing a large number of point
+  probes or random row-offset reads.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
   and `artifact` source modes against the existing scan-family workloads,
   including `bound_scan` and `selective_join` modes for indexed parameter
