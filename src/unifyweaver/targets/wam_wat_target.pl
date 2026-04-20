@@ -143,6 +143,7 @@ instr_tag(deallocate_copy_term_direct_proceed, 68).
 instr_tag(deallocate_univ_direct_proceed,      69).
 instr_tag(deallocate_is_list_direct_proceed,   70).
 instr_tag(builtin_proceed,                     71).
+instr_tag(type_dispatch_a1,                    72).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -809,6 +810,38 @@ wam_instruction_to_wat_bytes(builtin_proceed(Op, N), _Labels, Hex) :-
     ;   OpId = 0
     ),
     encode_instr_hex(Tag, OpId, N, Hex).
+
+%% type_dispatch_a1: first-argument indexing via A1's tag. Dispatches
+%% directly to one of three clause bodies based on A1's runtime tag,
+%% bypassing the try_me_else/retry_me_else/trust_me chain. For tags
+%% that don't match, falls through to the next instruction (which is
+%% typically the try_me_else — handles unbound A1).
+%%
+%% Targets are label atoms (or 0 for "no dispatch for that tag").
+%% Encoded as absolute PCs.
+%%
+%% op1 layout: atom_target (low 32) | int_target (high 32).
+%% op2 layout: cmpd_target (low 32).
+%%
+%% Semantically safe even without cuts: retry_me_else and trust_me
+%% are guarded for cp_count=0 (they no-op when the flow arrived via
+%% first-arg indexing without a preceding try_me_else CP push).
+wam_instruction_to_wat_bytes(
+    type_dispatch_a1(AtomLbl, IntLbl, CmpdLbl),
+    Labels, Hex) :-
+    instr_tag(type_dispatch_a1, Tag),
+    resolve_opt_label(AtomLbl, Labels, AtomPC),
+    resolve_opt_label(IntLbl,  Labels, IntPC),
+    resolve_opt_label(CmpdLbl, Labels, CmpdPC),
+    Op1 is (AtomPC /\ 0xFFFFFFFF) \/ ((IntPC /\ 0xFFFFFFFF) << 32),
+    Op2 is CmpdPC /\ 0xFFFFFFFF,
+    encode_instr_hex(Tag, Op1, Op2, Hex).
+
+%% resolve_opt_label(+Label, +Labels, -PC)
+%  Like resolve_label/3 but allows atom 0 (or integer 0) as "no
+%  dispatch" — returns PC = 0. Real labels resolve normally.
+resolve_opt_label(0, _, 0) :- !.
+resolve_opt_label(Lbl, Labels, PC) :- resolve_label(Lbl, Labels, PC).
 
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
@@ -3344,6 +3377,47 @@ wam_wat_case(builtin_proceed,
       (call $set_halted (i32.const 1))
       (i32.const 1)))').
 
+wam_wat_case(type_dispatch_a1,
+'  ;; First-argument indexing via A1 tag. Routes directly to one of
+  ;; three clause body labels based on tag:
+  ;;   tag 0 (atom)     -> atom_target  (op1 low 32)
+  ;;   tag 1 (integer)  -> int_target   (op1 high 32)
+  ;;   tag 3 (compound) -> cmpd_target  (op2 low 32)
+  ;; A 0 target means "no dispatch for this tag" — fall through to
+  ;; next instruction (typically try_me_else, which handles unbound A1
+  ;; and any other tag).
+  (local $d_addr i32) (local $d_tag i32)
+  (local $atom_tgt i32) (local $int_tgt i32) (local $cmpd_tgt i32)
+  (local.set $atom_tgt
+    (i32.wrap_i64 (i64.and (local.get $op1) (i64.const 0xFFFFFFFF))))
+  (local.set $int_tgt
+    (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
+  (local.set $cmpd_tgt
+    (i32.wrap_i64 (i64.and (local.get $op2) (i64.const 0xFFFFFFFF))))
+  (local.set $d_addr (call $deref_reg_addr (i32.const 0)))
+  (local.set $d_tag (call $val_tag (local.get $d_addr)))
+  (if (i32.eq (local.get $d_tag) (i32.const 0))
+    (then
+      (if (i32.ne (local.get $atom_tgt) (i32.const 0))
+        (then
+          (call $set_pc (local.get $atom_tgt))
+          (return (i32.const 1))))))
+  (if (i32.eq (local.get $d_tag) (i32.const 1))
+    (then
+      (if (i32.ne (local.get $int_tgt) (i32.const 0))
+        (then
+          (call $set_pc (local.get $int_tgt))
+          (return (i32.const 1))))))
+  (if (i32.eq (local.get $d_tag) (i32.const 3))
+    (then
+      (if (i32.ne (local.get $cmpd_tgt) (i32.const 0))
+        (then
+          (call $set_pc (local.get $cmpd_tgt))
+          (return (i32.const 1))))))
+  ;; Fall through.
+  (call $inc_pc)
+  (i32.const 1)').
+
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
   ;; op1 layout: low 32 bits = reg_idx (0 for A1, 1 for A2);
@@ -5372,7 +5446,8 @@ pass1_parse_predicates([PredInd|Rest], Options, StartPC,
         peephole_direct_builtins(ArithOptimized, DirectBuiltinsOptimized),
         peephole_arg_to_a1(DirectBuiltinsOptimized, ArgToA1Optimized),
         peephole_arg_call_k(ArgToA1Optimized, ArgCallKOptimized),
-        peephole_tail_call_k(ArgCallKOptimized, OptimizedWithLabels),
+        peephole_tail_call_k(ArgCallKOptimized, TailCallKOptimized),
+        peephole_type_dispatch(TailCallKOptimized, OptimizedWithLabels),
         %% Extract real instructions and recompute label PCs from the
         %% optimized list. Label markers (label(Name)) are stripped;
         %% their position becomes the label PC in the local table.
@@ -5901,6 +5976,90 @@ peephole_tail_call_k([builtin_call(Op, N), proceed | Rest],
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([H|T], [H|Out]) :-
     peephole_tail_call_k(T, Out).
+
+%% peephole_type_dispatch(+Instrs, -Optimized)
+%  Detects 3-clause predicates whose clauses 1 and 2 begin with type
+%  guards on A1 (integer/1 or atom/1), and whose clause 3 is the
+%  untyped default (typical in compound-walking patterns like
+%  term_depth/2 where clause 3 handles compounds). Rewrites the
+%  predicate entry to:
+%
+%    label(Pred)
+%    type_dispatch_a1(atom_tgt, int_tgt, cmpd_tgt)
+%    try_me_else(L2)               ← fallback for unbound A1
+%    label(<synthetic clause1_entry>)
+%    allocate                      ← clause 1 body continues as before
+%    ...
+%
+%  The type_dispatch_a1 instruction dispatches A1's runtime tag
+%  directly to one of the clause bodies, bypassing the try_me_else
+%  chain. retry_me_else and trust_me inside the chain are
+%  cp_count-guarded, so they no-op when the flow arrives via direct
+%  dispatch.
+%
+%  Only matches the specific shape seen in the bench — a 3-clause
+%  predicate with integer/1 and atom/1 guards on the first two
+%  clauses. Narrower patterns (2-clause, compound guards, etc.)
+%  would need additional peephole clauses.
+peephole_type_dispatch(Instrs, Optimized) :-
+    Instrs = [label(Pred), try_me_else(L2) | After],
+    %% Label markers (from the WAM-text parser) carry strings; labels
+    %% referenced by try_me_else/retry_me_else are atoms. Normalize
+    %% both sides to strings for matching.
+    atom_string(L2, L2S),
+    split_at_label(After, L2S, Clause1Body, [label(L2S), retry_me_else(L3) | After2]),
+    atom_string(L3, L3S),
+    split_at_label(After2, L3S, Clause2Body, [label(L3S), trust_me | Clause3Body]),
+    classify_guard_in_body(Clause1Body, Type1),
+    classify_guard_in_body(Clause2Body, Type2),
+    Type1 \== Type2,
+    !,
+    format(string(SynthL1), 'L_type_dispatch_clause1_~w', [Pred]),
+    assign_target(Type1, SynthL1, A1, I1),
+    %% Dispatch uses the atom form of L2/L3 (resolve_label treats them
+    %% the same as the label markers' string form via atom_string).
+    assign_target(Type2, L2,      A2, I2),
+    pick_bound(A1, A2, AtomTgt),
+    pick_bound(I1, I2, IntTgt),
+    CmpdTgt = L3,
+    append([label(Pred),
+            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt),
+            try_me_else(L2),
+            label(SynthL1) | Clause1Body],
+           [label(L2S), retry_me_else(L3) | Clause2Body],
+           Head1),
+    append(Head1,
+           [label(L3S), trust_me | Clause3Body],
+           Optimized).
+peephole_type_dispatch(Instrs, Instrs).
+
+%% split_at_label(+Instrs, +LabelString, -Before, -AtAndAfter)
+split_at_label([label(L) | Rest], L, [], [label(L) | Rest]) :- !.
+split_at_label([H|T], L, [H|Before], After) :-
+    split_at_label(T, L, Before, After).
+
+%% classify_guard_in_body(+Body, -Type)
+%  Scans the body of one clause for the leading type-guard pattern
+%  `put_value(_, A1), builtin_call(<Type>/1, 1)`. Succeeds with Type
+%  bound to 'integer' or 'atom' if found; fails if no such guard.
+classify_guard_in_body([put_value(_, 'A1'),
+                        builtin_call('integer/1', 1) | _],
+                       integer) :- !.
+classify_guard_in_body([put_value(_, 'A1'),
+                        builtin_call('atom/1', 1) | _],
+                       atom) :- !.
+classify_guard_in_body([_ | Rest], Type) :-
+    classify_guard_in_body(Rest, Type).
+
+%% assign_target(+Type, +Lbl, -AtomSlot, -IntSlot)
+assign_target(integer, Lbl, _, Lbl).
+assign_target(atom,    Lbl, Lbl, _).
+
+%% pick_bound(+A, +B, -Result)
+%  Pick whichever of A or B is bound; else 0.
+pick_bound(A, _, A) :- nonvar(A), !.
+pick_bound(_, B, B) :- nonvar(B), !.
+pick_bound(_, _, 0).
 
 %% a2_setup(+Instr, -A2Reg, -IsVar)
 %  Match the instruction that sets A2 in the K=2 fusion and extract
