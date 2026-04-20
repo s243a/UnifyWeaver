@@ -1498,9 +1498,18 @@ gen_step_function(Cases, Code) :-
   (local $tag i32)
   (local $op1 i64)
   (local $op2 i64)
-  (local.set $tag (call $fetch_instr_tag (local.get $code_base) (local.get $pc)))
-  (local.set $op1 (call $fetch_instr_op1 (local.get $code_base) (local.get $pc)))
-  (local.set $op2 (call $fetch_instr_op2 (local.get $code_base) (local.get $pc)))
+  (local $instr_addr i32)
+  ;; Compute the instruction address once and do three inline loads,
+  ;; instead of calling fetch_instr_tag/op1/op2 (which each recompute
+  ;; the address and cross a function boundary). Profile showed step
+  ;; as the dominant hot-loop cost (half of CPU time across V8 tiers),
+  ;; so trimming its per-invocation constant overhead is load-bearing.
+  (local.set $instr_addr
+    (i32.add (local.get $code_base)
+             (i32.mul (local.get $pc) (i32.const 20))))
+  (local.set $tag (i32.load (local.get $instr_addr)))
+  (local.set $op1 (i64.load (i32.add (local.get $instr_addr) (i32.const 4))))
+  (local.set $op2 (i64.load (i32.add (local.get $instr_addr) (i32.const 12))))
   (block $default
 ~w
     (br_table ~w $default (local.get $tag))
