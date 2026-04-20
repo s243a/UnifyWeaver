@@ -812,29 +812,31 @@ wam_instruction_to_wat_bytes(builtin_proceed(Op, N), _Labels, Hex) :-
     encode_instr_hex(Tag, OpId, N, Hex).
 
 %% type_dispatch_a1: first-argument indexing via A1's tag. Dispatches
-%% directly to one of three clause bodies based on A1's runtime tag,
-%% bypassing the try_me_else/retry_me_else/trust_me chain. For tags
-%% that don't match, falls through to the next instruction (which is
-%% typically the try_me_else — handles unbound A1).
-%%
-%% Targets are label atoms (or 0 for "no dispatch for that tag").
-%% Encoded as absolute PCs.
+%% directly to one of four clause bodies based on A1's runtime tag,
+%% bypassing the try_me_else/retry_me_else/trust_me chain. Tags:
+%%   0 (atom)     -> AtomLbl
+%%   1 (integer)  -> IntLbl
+%%   3 (compound) -> CmpdLbl
+%%   anything else (ref/unbound/float/list/bool) -> DefaultLbl
+%% A 0 target for any slot means "no dispatch for that tag" -> fall
+%% through to the next instruction (typically try_me_else).
 %%
 %% op1 layout: atom_target (low 32) | int_target (high 32).
-%% op2 layout: cmpd_target (low 32).
+%% op2 layout: cmpd_target (low 32) | default_target (high 32).
 %%
 %% Semantically safe even without cuts: retry_me_else and trust_me
 %% are guarded for cp_count=0 (they no-op when the flow arrived via
 %% first-arg indexing without a preceding try_me_else CP push).
 wam_instruction_to_wat_bytes(
-    type_dispatch_a1(AtomLbl, IntLbl, CmpdLbl),
+    type_dispatch_a1(AtomLbl, IntLbl, CmpdLbl, DefaultLbl),
     Labels, Hex) :-
     instr_tag(type_dispatch_a1, Tag),
-    resolve_opt_label(AtomLbl, Labels, AtomPC),
-    resolve_opt_label(IntLbl,  Labels, IntPC),
-    resolve_opt_label(CmpdLbl, Labels, CmpdPC),
+    resolve_opt_label(AtomLbl,    Labels, AtomPC),
+    resolve_opt_label(IntLbl,     Labels, IntPC),
+    resolve_opt_label(CmpdLbl,    Labels, CmpdPC),
+    resolve_opt_label(DefaultLbl, Labels, DefaultPC),
     Op1 is (AtomPC /\ 0xFFFFFFFF) \/ ((IntPC /\ 0xFFFFFFFF) << 32),
-    Op2 is CmpdPC /\ 0xFFFFFFFF,
+    Op2 is (CmpdPC /\ 0xFFFFFFFF) \/ ((DefaultPC /\ 0xFFFFFFFF) << 32),
     encode_instr_hex(Tag, Op1, Op2, Hex).
 
 %% resolve_opt_label(+Label, +Labels, -PC)
@@ -3379,42 +3381,47 @@ wam_wat_case(builtin_proceed,
 
 wam_wat_case(type_dispatch_a1,
 '  ;; First-argument indexing via A1 tag. Routes directly to one of
-  ;; three clause body labels based on tag:
-  ;;   tag 0 (atom)     -> atom_target  (op1 low 32)
-  ;;   tag 1 (integer)  -> int_target   (op1 high 32)
-  ;;   tag 3 (compound) -> cmpd_target  (op2 low 32)
+  ;; four clause body labels based on tag:
+  ;;   tag 0 (atom)     -> atom_target     (op1 low 32)
+  ;;   tag 1 (integer)  -> int_target      (op1 high 32)
+  ;;   tag 3 (compound) -> cmpd_target     (op2 low 32)
+  ;;   other tags       -> default_target  (op2 high 32)
   ;; A 0 target means "no dispatch for this tag" — fall through to
-  ;; next instruction (typically try_me_else, which handles unbound A1
-  ;; and any other tag).
+  ;; next instruction (typically try_me_else, which handles the case
+  ;; via the original clause-selection chain).
   (local $d_addr i32) (local $d_tag i32)
-  (local $atom_tgt i32) (local $int_tgt i32) (local $cmpd_tgt i32)
+  (local $atom_tgt i32) (local $int_tgt i32)
+  (local $cmpd_tgt i32) (local $default_tgt i32)
+  (local $matched_tgt i32)
   (local.set $atom_tgt
     (i32.wrap_i64 (i64.and (local.get $op1) (i64.const 0xFFFFFFFF))))
   (local.set $int_tgt
     (i32.wrap_i64 (i64.shr_u (local.get $op1) (i64.const 32))))
   (local.set $cmpd_tgt
     (i32.wrap_i64 (i64.and (local.get $op2) (i64.const 0xFFFFFFFF))))
+  (local.set $default_tgt
+    (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
   (local.set $d_addr (call $deref_reg_addr (i32.const 0)))
   (local.set $d_tag (call $val_tag (local.get $d_addr)))
+  ;; Pick the tag-specific target, falling back to default_tgt.
   (if (i32.eq (local.get $d_tag) (i32.const 0))
+    (then (local.set $matched_tgt (local.get $atom_tgt)))
+    (else
+      (if (i32.eq (local.get $d_tag) (i32.const 1))
+        (then (local.set $matched_tgt (local.get $int_tgt)))
+        (else
+          (if (i32.eq (local.get $d_tag) (i32.const 3))
+            (then (local.set $matched_tgt (local.get $cmpd_tgt)))
+            (else (local.set $matched_tgt (local.get $default_tgt))))))))
+  ;; If the chosen target is 0 and we had a tag-specific miss (atom/
+  ;; int/cmpd slot was 0 but the default is available), use default.
+  (if (i32.eqz (local.get $matched_tgt))
+    (then (local.set $matched_tgt (local.get $default_tgt))))
+  ;; Jump if we have a target, else fall through.
+  (if (i32.ne (local.get $matched_tgt) (i32.const 0))
     (then
-      (if (i32.ne (local.get $atom_tgt) (i32.const 0))
-        (then
-          (call $set_pc (local.get $atom_tgt))
-          (return (i32.const 1))))))
-  (if (i32.eq (local.get $d_tag) (i32.const 1))
-    (then
-      (if (i32.ne (local.get $int_tgt) (i32.const 0))
-        (then
-          (call $set_pc (local.get $int_tgt))
-          (return (i32.const 1))))))
-  (if (i32.eq (local.get $d_tag) (i32.const 3))
-    (then
-      (if (i32.ne (local.get $cmpd_tgt) (i32.const 0))
-        (then
-          (call $set_pc (local.get $cmpd_tgt))
-          (return (i32.const 1))))))
-  ;; Fall through.
+      (call $set_pc (local.get $matched_tgt))
+      (return (i32.const 1))))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -6004,6 +6011,11 @@ peephole_tail_call_k([H|T], [H|Out]) :-
 %% 3-clause variant: matches `try_me_else + clause(guard1) +
 %% retry_me_else + clause(guard2) + trust_me + default_clause`.
 %% Fires on term_depth/2.
+%%
+%% default_tgt is set to the last clause's label — the untyped
+%% fallback handles every non-matched tag (ref/unbound/float/list),
+%% routing directly to it instead of falling through to the
+%% now-redundant try_me_else chain.
 peephole_type_dispatch(Instrs, Optimized) :-
     Instrs = [label(Pred), try_me_else(L2) | After],
     atom_string(L2, L2S),
@@ -6022,8 +6034,9 @@ peephole_type_dispatch(Instrs, Optimized) :-
     pick_bound(A1, A2, AtomTgt),
     pick_bound(I1, I2, IntTgt),
     CmpdTgt = L3,
+    DefaultTgt = L3,
     append([label(Pred),
-            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt),
+            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt, DefaultTgt),
             try_me_else(L2),
             label(SynthL1) | Clause1Body],
            [label(L2S), retry_me_else(L3) | Clause2Body],
@@ -6033,8 +6046,9 @@ peephole_type_dispatch(Instrs, Optimized) :-
            Optimized).
 %% 2-clause variant: matches `try_me_else + clause(guard) + trust_me
 %% + default_clause`. Fires on sum_ints/3 (integer leaf + compound
-%% walk). The non-guard clause becomes the compound target; the
-%% guarded clause becomes the int or atom target based on its guard.
+%% walk). The non-guard clause becomes both the compound target AND
+%% the default target — it's the true fallback for anything the
+%% guarded clause can't handle.
 peephole_type_dispatch(Instrs, Optimized) :-
     Instrs = [label(Pred), try_me_else(L2) | After],
     atom_string(L2, L2S),
@@ -6047,8 +6061,9 @@ peephole_type_dispatch(Instrs, Optimized) :-
     pick_bound(A1, _, AtomTgt),
     pick_bound(I1, _, IntTgt),
     CmpdTgt = L2,
+    DefaultTgt = L2,
     append([label(Pred),
-            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt),
+            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt, DefaultTgt),
             try_me_else(L2),
             label(SynthL1) | Clause1Body],
            [label(L2S), trust_me | Clause2Body],
