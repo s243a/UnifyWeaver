@@ -142,6 +142,7 @@ instr_tag(deallocate_functor_direct_proceed,   67).
 instr_tag(deallocate_copy_term_direct_proceed, 68).
 instr_tag(deallocate_univ_direct_proceed,      69).
 instr_tag(deallocate_is_list_direct_proceed,   70).
+instr_tag(builtin_proceed,                     71).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -792,6 +793,22 @@ wam_instruction_to_wat_bytes(deallocate_univ_direct_proceed, _Labels, Hex) :-
 wam_instruction_to_wat_bytes(deallocate_is_list_direct_proceed, _Labels, Hex) :-
     instr_tag(deallocate_is_list_direct_proceed, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
+
+%% builtin_proceed: fusion of `builtin_call(Op, Arity) + proceed`
+%% WITHOUT a preceding deallocate. Fires in clauses that don't use
+%% Y-registers (no allocate/deallocate) and end with a terminal
+%% builtin — e.g. `bench_is_arith/0` ends with
+%%   builtin_call(is/2, 2) + proceed
+%% and `fib/3` clause 2 ends with
+%%   builtin_call(!/0, 0) + proceed
+%% op1 = builtin id, op2 = arity.
+wam_instruction_to_wat_bytes(builtin_proceed(Op, N), _Labels, Hex) :-
+    instr_tag(builtin_proceed, Tag),
+    (   builtin_id(Op, OpId)
+    ->  true
+    ;   OpId = 0
+    ),
+    encode_instr_hex(Tag, OpId, N, Hex).
 
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
@@ -3306,6 +3323,26 @@ wam_wat_case(deallocate_is_list_direct_proceed,
   (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
     (then (call $set_pc (local.get $cp)) (i32.const 1))
     (else (call $set_halted (i32.const 1)) (i32.const 1)))').
+
+wam_wat_case(builtin_proceed,
+'  ;; Fuses `builtin_call(Op, Arity) + proceed` without a preceding
+  ;; deallocate. Fires in clauses that don''t use Y-registers. After
+  ;; $execute_builtin succeeds, read CP and dispatch as proceed
+  ;; would (some builtins — e.g. `!/0` — may update CP).
+  ;; op1 = builtin id, op2 = arity.
+  (local $cp i32)
+  (if (i32.eqz (call $execute_builtin
+                  (i32.wrap_i64 (local.get $op1))
+                  (i32.wrap_i64 (local.get $op2))))
+    (then (return (i32.const 0))))
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then
+      (call $set_pc (local.get $cp))
+      (i32.const 1))
+    (else
+      (call $set_halted (i32.const 1))
+      (i32.const 1)))').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -5856,6 +5893,10 @@ peephole_tail_call_k([deallocate, Direct, proceed | Rest],
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([deallocate, proceed | Rest],
                      [deallocate_proceed | Out]) :-
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([builtin_call(Op, N), proceed | Rest],
+                     [builtin_proceed(Op, N) | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([H|T], [H|Out]) :-
