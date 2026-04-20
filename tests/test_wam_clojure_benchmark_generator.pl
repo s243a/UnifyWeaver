@@ -9,7 +9,7 @@
 test(kernel_mode_options) :-
     parse_kernel_mode(kernels_on, OnOptions),
     parse_kernel_mode(kernels_off, OffOptions),
-    assertion(member(foreign_predicates([category_parent/2]), OnOptions)),
+    assertion(member(foreign_predicates([category_parent/2, category_ancestor/4]), OnOptions)),
     assertion(member(clojure_foreign_handlers(_), OnOptions)),
     assertion(OffOptions == [no_kernels(true)]).
 
@@ -28,8 +28,10 @@ test(generate_seeded_kernels_on_project) :-
         read_file_to_string(CorePath, CoreCode, []),
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
         assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges #{')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child {')),
         assertion(sub_string(CoreCode, _, _, _, '["Abstraction" "Thought"]')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? true)')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-ancestor-hops-index')),
         assertion(sub_string(CoreCode, _, _, _, '(benchmark-build-ancestor-hops-index)')),
@@ -44,7 +46,9 @@ test(generate_seeded_kernels_off_project) :-
         read_file_to_string(CorePath, CoreCode, []),
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
         assertion(\+ sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges #{')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child {')),
         assertion(\+ sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? false)')),
         assertion(sub_string(CoreCode, _, _, _, '(benchmark-ancestor-hops category root #{category})')),
         delete_directory_and_contents(TmpDir)
@@ -58,6 +62,15 @@ test(generated_category_parent_handler_executes, [condition(clojure_available)])
                               ['Abstraction', 'Thought'], "true"),
         run_clojure_predicate(TmpDir, 'category_parent/2',
                               ['Abstraction', 'NotAParent'], "false"),
+        run_clojure_predicate(TmpDir, 'category_ancestor/4',
+                              ['Abstraction', 'Thought', raw('{:var 1000}'), visited(['Abstraction'])],
+                              "true"),
+        run_clojure_predicate(TmpDir, 'category_ancestor/4',
+                              ['Abstraction', 'Cognition', raw('{:var 1000}'), visited(['Abstraction'])],
+                              "true"),
+        run_clojure_predicate(TmpDir, 'category_ancestor/4',
+                              ['Abstraction', 'NotAParent', raw('{:var 1000}'), visited(['Abstraction'])],
+                              "false"),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -70,7 +83,7 @@ unique_tmp_dir(Prefix, TmpDir) :-
 
 run_clojure_predicate(ProjectDir, PredKey, Args, Output) :-
     find_clojure_classpath(ClassPath),
-    maplist(clojure_string_arg, Args, EdnArgs),
+    maplist(clojure_edn_arg, Args, EdnArgs),
     process_create(path(java),
                    ['-cp', ClassPath, 'clojure.main', '-m',
                     'generated.wam_clojure_optimized_bench.core', PredKey|EdnArgs],
@@ -98,8 +111,18 @@ run_clojure_predicate(ProjectDir, PredKey, Args, Output) :-
     ;   throw(error(java_stderr(PredKey, Args, ErrStr), _))
     ).
 
-clojure_string_arg(Atom, Edn) :-
+clojure_edn_arg(raw(Edn), Edn) :- !.
+clojure_edn_arg(visited(Atoms), Edn) :- !,
+    visited_list_edn(Atoms, Edn).
+clojure_edn_arg(Atom, Edn) :-
     format(string(Edn), '"~w"', [Atom]).
+
+visited_list_edn([], '"[]"').
+visited_list_edn([Atom|Rest], Edn) :-
+    visited_list_edn(Rest, Tail),
+    format(string(Edn),
+           '{:tag :struct :functor "[|]/2" :args ["~w" ~w]}',
+           [Atom, Tail]).
 
 clojure_available :-
     find_clojure_classpath(_).
