@@ -136,6 +136,7 @@ instr_tag(arg_call_lit_2_dead, 61).
 instr_tag(tail_call_5,      62).
 instr_tag(deallocate_proceed, 63).
 instr_tag(tail_call_5_c1_lit, 64).
+instr_tag(deallocate_builtin_proceed, 65).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -743,6 +744,23 @@ wam_instruction_to_wat_bytes(
 wam_instruction_to_wat_bytes(deallocate_proceed, _Labels, Hex) :-
     instr_tag(deallocate_proceed, Tag),
     encode_instr_hex(Tag, 0, 0, Hex).
+
+%% deallocate_builtin_proceed: fusion of
+%%   `deallocate + builtin_call(Op, Arity) + proceed`
+%% Runs deallocate, invokes the builtin (via $execute_builtin), then
+%% on success jumps to CP. On failure returns 0 to trigger backtrack
+%% — same semantics as the 3-instruction sequence. Fires on common
+%% clause-end shapes with a final `=/2`, `is/2`, or `!/0`.
+%% op1: builtin id (mirrors builtin_call's encoding).
+%% op2: builtin arity.
+wam_instruction_to_wat_bytes(deallocate_builtin_proceed(Op, N),
+                             _Labels, Hex) :-
+    instr_tag(deallocate_builtin_proceed, Tag),
+    (   builtin_id(Op, OpId)
+    ->  true
+    ;   OpId = 0
+    ),
+    encode_instr_hex(Tag, OpId, N, Hex).
 
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
@@ -3145,6 +3163,39 @@ wam_wat_case(tail_call_5_c1_lit,
   ;; Tail-call jump.
   (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
+
+wam_wat_case(deallocate_builtin_proceed,
+'  ;; Fuses `deallocate + builtin_call(Op, Arity) + proceed`.
+  ;; Order matches the original 3-instruction sequence:
+  ;;   1. Pop the env frame (CP restored from frame header).
+  ;;   2. Invoke the builtin via $execute_builtin.
+  ;;   3. On success, jump to CP; on failure, return 0 to trigger
+  ;;      backtrack (same semantics as builtin_call returning 0).
+  ;; op1 = builtin id, op2 = arity.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  ;; Execute builtin; on failure, bail with 0.
+  (if (i32.eqz (call $execute_builtin
+                  (i32.wrap_i64 (local.get $op1))
+                  (i32.wrap_i64 (local.get $op2))))
+    (then (return (i32.const 0))))
+  ;; Proceed: jump to CP if valid, otherwise halt.
+  ;; Note: $execute_builtin may have updated CP (e.g., `!/0` cuts
+  ;; to a higher choice point but leaves CP untouched). Reread CP
+  ;; from the register to be safe.
+  (local.set $cp (call $get_cp))
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then
+      (call $set_pc (local.get $cp))
+      (i32.const 1))
+    (else
+      (call $set_halted (i32.const 1))
+      (i32.const 1)))').
 
 wam_wat_case(switch_on_const,
 '  ;; First-argument constant indexing header.
@@ -5682,6 +5733,10 @@ peephole_tail_call_k([put_constant(C1Raw, 'A1'),
     ; string(C1Raw), number_string(C1, C1Raw), integer(C1)
     ),
     C1 >= -32768, C1 =< 32767,
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([deallocate, builtin_call(Op, N), proceed | Rest],
+                     [deallocate_builtin_proceed(Op, N) | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([deallocate, proceed | Rest],
