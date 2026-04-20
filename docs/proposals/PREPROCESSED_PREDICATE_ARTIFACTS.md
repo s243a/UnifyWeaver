@@ -389,6 +389,11 @@ Prototype status:
   materializing the whole relation. Single-key joins can also use that provider
   seam when one side is a selective probe and the other side is an indexed
   artifact-backed scan.
+- Binary relation index sidecars now include an appended key directory for
+  small lookup sets. The reader can seek directly from key hash to index entry
+  and still falls back to the original sequential index scan for old artifacts
+  or broad probe sets where sequential access is cheaper than many random
+  seeks.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
   and `artifact` source modes against the existing scan-family workloads,
   including `bound_scan` and `selective_join` modes for indexed parameter

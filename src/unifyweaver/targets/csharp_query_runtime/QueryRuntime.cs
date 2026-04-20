@@ -1623,8 +1623,12 @@ namespace UnifyWeaver.QueryRuntime
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWBR0001");
         private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("UWBI0001");
+        private static readonly byte[] IndexDirectoryMagic = Encoding.ASCII.GetBytes("UWBD0001");
+        private static readonly byte[] IndexDirectoryFooterMagic = Encoding.ASCII.GetBytes("UWBF0001");
 
         internal sealed record WriteResult(long RowCount, Dictionary<string, string> IndexPaths);
+
+        private readonly record struct IndexDirectoryEntry(ulong Hash, long KeyOffset, int KeyLength, long EntryOffset);
 
         public static BinaryRelationArtifactManifest LoadManifest(string manifestPath)
         {
@@ -1837,8 +1841,10 @@ namespace UnifyWeaver.QueryRuntime
             writer.Write(columnIndex);
             writer.Write(index.Count);
 
+            var directoryEntries = new List<(string Key, long EntryOffset)>(index.Count);
             foreach (var kvp in index.OrderBy(item => item.Key, StringComparer.Ordinal))
             {
+                directoryEntries.Add((kvp.Key, stream.Position));
                 WriteString(writer, kvp.Key);
                 writer.Write(kvp.Value.Count);
                 foreach (var offset in kvp.Value)
@@ -1846,6 +1852,8 @@ namespace UnifyWeaver.QueryRuntime
                     writer.Write(offset);
                 }
             }
+
+            WriteIndexDirectory(writer, directoryEntries);
         }
 
         private static IReadOnlyList<long> ReadOffsets(string indexPath, int expectedColumnIndex, IEnumerable<string> keys)
@@ -1856,6 +1864,17 @@ namespace UnifyWeaver.QueryRuntime
                 return Array.Empty<long>();
             }
 
+            if (keySet.Count <= 256 &&
+                TryReadOffsetsFromDirectory(indexPath, expectedColumnIndex, keySet, out var directoryOffsets))
+            {
+                return directoryOffsets;
+            }
+
+            return ReadOffsetsSequential(indexPath, expectedColumnIndex, keySet);
+        }
+
+        private static IReadOnlyList<long> ReadOffsetsSequential(string indexPath, int expectedColumnIndex, HashSet<string> keySet)
+        {
             var offsets = new List<long>();
             using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
             using var reader = new BinaryReader(stream, Encoding.UTF8);
@@ -1897,6 +1916,236 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return offsets;
+        }
+
+        private static void WriteIndexDirectory(BinaryWriter writer, IReadOnlyList<(string Key, long EntryOffset)> entries)
+        {
+            var stream = writer.BaseStream;
+            var directoryOffset = stream.Position;
+            var encodedEntries = entries
+                .Select(entry => (entry.Key, Hash: StableHash(entry.Key), KeyBytes: Encoding.UTF8.GetBytes(entry.Key), entry.EntryOffset))
+                .OrderBy(entry => entry.Hash)
+                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                .ToList();
+
+            writer.Write(IndexDirectoryMagic);
+            writer.Write(1);
+            writer.Write(encodedEntries.Count);
+
+            var tableOffset = stream.Position;
+            var tableLength = encodedEntries.Count * (sizeof(ulong) + sizeof(long) + sizeof(int) + sizeof(long));
+            var keysOffset = tableOffset + tableLength;
+            var nextKeyOffset = keysOffset;
+            foreach (var entry in encodedEntries)
+            {
+                writer.Write(entry.Hash);
+                writer.Write(nextKeyOffset);
+                writer.Write(entry.KeyBytes.Length);
+                writer.Write(entry.EntryOffset);
+                nextKeyOffset += entry.KeyBytes.Length;
+            }
+
+            foreach (var entry in encodedEntries)
+            {
+                writer.Write(entry.KeyBytes);
+            }
+
+            writer.Write(directoryOffset);
+            writer.Write(IndexDirectoryFooterMagic);
+        }
+
+        private static bool TryReadOffsetsFromDirectory(
+            string indexPath,
+            int expectedColumnIndex,
+            HashSet<string> keySet,
+            out IReadOnlyList<long> offsets)
+        {
+            offsets = Array.Empty<long>();
+            using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            ValidateIndexHeader(reader, indexPath, expectedColumnIndex);
+            if (!TryReadIndexDirectory(reader, indexPath, out var entries))
+            {
+                return false;
+            }
+
+            var result = new List<long>();
+            foreach (var key in keySet)
+            {
+                var hash = StableHash(key);
+                var index = LowerBoundByHash(entries, hash);
+                while (index < entries.Count && entries[index].Hash == hash)
+                {
+                    if (ReadDirectoryKey(stream, entries[index]) == key)
+                    {
+                        AddOffsetsFromIndexEntry(reader, indexPath, expectedColumnIndex, entries[index].EntryOffset, key, result);
+                        break;
+                    }
+
+                    index++;
+                }
+            }
+
+            offsets = result;
+            return true;
+        }
+
+        private static bool TryReadIndexDirectory(BinaryReader reader, string indexPath, out List<IndexDirectoryEntry> entries)
+        {
+            entries = new List<IndexDirectoryEntry>();
+            var stream = reader.BaseStream;
+            var footerLength = sizeof(long) + IndexDirectoryFooterMagic.Length;
+            if (stream.Length < footerLength)
+            {
+                return false;
+            }
+
+            stream.Position = stream.Length - footerLength;
+            var directoryOffset = reader.ReadInt64();
+            var footerMagic = reader.ReadBytes(IndexDirectoryFooterMagic.Length);
+            if (!footerMagic.SequenceEqual(IndexDirectoryFooterMagic) ||
+                directoryOffset < IndexMagic.Length + sizeof(int) + sizeof(int) + sizeof(int) ||
+                directoryOffset >= stream.Length - footerLength)
+            {
+                return false;
+            }
+
+            stream.Position = directoryOffset;
+            var directoryMagic = reader.ReadBytes(IndexDirectoryMagic.Length);
+            if (!directoryMagic.SequenceEqual(IndexDirectoryMagic))
+            {
+                return false;
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation index directory version {version}: {indexPath}");
+            }
+
+            var entryCount = reader.ReadInt32();
+            if (entryCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index directory entry count is negative: {indexPath}");
+            }
+
+            entries = new List<IndexDirectoryEntry>(entryCount);
+            for (var i = 0; i < entryCount; i++)
+            {
+                var hash = reader.ReadUInt64();
+                var keyOffset = reader.ReadInt64();
+                var keyLength = reader.ReadInt32();
+                var entryOffset = reader.ReadInt64();
+                if (keyOffset < 0 || keyLength < 0 || entryOffset < 0)
+                {
+                    throw new InvalidDataException($"Binary relation index directory contains a negative offset or length: {indexPath}");
+                }
+
+                entries.Add(new IndexDirectoryEntry(hash, keyOffset, keyLength, entryOffset));
+            }
+
+            return true;
+        }
+
+        private static void AddOffsetsFromIndexEntry(
+            BinaryReader reader,
+            string indexPath,
+            int expectedColumnIndex,
+            long entryOffset,
+            string expectedKey,
+            List<long> offsets)
+        {
+            var stream = reader.BaseStream;
+            stream.Position = entryOffset;
+            var key = ReadString(reader);
+            if (!string.Equals(key, expectedKey, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Binary relation index directory points to key '{key}', not '{expectedKey}': {indexPath}");
+            }
+
+            var offsetCount = reader.ReadInt32();
+            if (offsetCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index offset count is negative for column {expectedColumnIndex}: {indexPath}");
+            }
+
+            for (var i = 0; i < offsetCount; i++)
+            {
+                offsets.Add(reader.ReadInt64());
+            }
+        }
+
+        private static string ReadDirectoryKey(Stream stream, IndexDirectoryEntry entry)
+        {
+            stream.Position = entry.KeyOffset;
+            var bytes = new byte[entry.KeyLength];
+            var read = stream.Read(bytes, 0, bytes.Length);
+            if (read != bytes.Length)
+            {
+                throw new EndOfStreamException("Binary relation index directory ended while reading a key.");
+            }
+
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        private static int LowerBoundByHash(IReadOnlyList<IndexDirectoryEntry> entries, ulong hash)
+        {
+            var lo = 0;
+            var hi = entries.Count;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                if (entries[mid].Hash < hash)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            return lo;
+        }
+
+        private static void ValidateIndexHeader(BinaryReader reader, string indexPath, int expectedColumnIndex)
+        {
+            var magic = reader.ReadBytes(IndexMagic.Length);
+            if (!magic.SequenceEqual(IndexMagic))
+            {
+                throw new InvalidDataException($"Invalid binary relation index artifact magic: {indexPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation index artifact version {version}: {indexPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Binary relation index column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {indexPath}");
+            }
+
+            _ = reader.ReadInt32();
+        }
+
+        private static ulong StableHash(string value)
+        {
+            const ulong offsetBasis = 14695981039346656037UL;
+            const ulong prime = 1099511628211UL;
+
+            var hash = offsetBasis;
+            var bytes = Encoding.UTF8.GetBytes(value);
+            foreach (var b in bytes)
+            {
+                hash ^= b;
+                hash *= prime;
+            }
+
+            return hash;
         }
 
         private static string ResolveDataPath(BinaryRelationArtifactManifest manifest, string manifestPath)
