@@ -6,6 +6,8 @@
 :- dynamic user:wam_fact/1.
 :- dynamic user:wam_foreign_pair/2.
 :- dynamic user:wam_foreign_pair_query/1.
+:- dynamic user:wam_foreign_stream_pair/2.
+:- dynamic user:wam_foreign_stream_pair_query/1.
 :- dynamic user:wam_execute_caller/1.
 :- dynamic user:wam_call_caller/1.
 :- dynamic user:wam_choice_fact/1.
@@ -35,6 +37,7 @@
 
 user:wam_fact(a).
 user:wam_foreign_pair_query(Y) :- user:wam_foreign_pair(a, Y).
+user:wam_foreign_stream_pair_query(Y) :- user:wam_foreign_stream_pair(a, Y), Y = b.
 user:wam_execute_caller(X) :- user:wam_fact(X).
 user:wam_call_caller(X) :- user:wam_fact(X), user:wam_fact(X).
 user:wam_choice_fact(a).
@@ -79,6 +82,8 @@ run_smoke :-
           user:wam_fact/1,
           user:wam_foreign_pair_query/1,
           user:wam_foreign_pair/2,
+          user:wam_foreign_stream_pair_query/1,
+          user:wam_foreign_stream_pair/2,
           user:wam_choice_fact/1,
           user:wam_choice_caller/1,
           user:wam_choice_or_z/1,
@@ -106,10 +111,11 @@ run_smoke :-
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
-          foreign_predicates([wam_fact/1, wam_foreign_pair/2]),
+          foreign_predicates([wam_fact/1, wam_foreign_pair/2, wam_foreign_stream_pair/2]),
           clojure_foreign_handlers([
               handler(wam_fact/1, "(fn [args] (= (first args) \"a\"))"),
-              handler(wam_foreign_pair/2, "(fn [args] (if (= (first args) \"a\") {:bindings {2 \"b\"}} false))")
+              handler(wam_foreign_pair/2, "(fn [args] (if (= (first args) \"a\") {:bindings {2 \"b\"}} false))"),
+              handler(wam_foreign_stream_pair/2, "(fn [args] (if (= (first args) \"a\") {:solutions [{:bindings {2 \"a\"}} {:bindings {2 \"b\"}}]} false))")
           ])
         ],
         TmpDir),
@@ -119,6 +125,9 @@ run_smoke :-
     verify_output(TmpDir, 'wam_call_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_foreign_pair_query/1', b, "true"),
     verify_output(TmpDir, 'wam_foreign_pair_query/1', c, "false"),
+    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', a, "false"),
+    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', b, "true"),
+    verify_output(TmpDir, 'wam_foreign_stream_pair_query/1', c, "false"),
     verify_output(TmpDir, 'wam_choice_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_choice_caller/1', 'b', "true"),
     verify_output(TmpDir, 'wam_choice_caller/1', 'c', "true"),
