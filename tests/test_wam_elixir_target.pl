@@ -4,6 +4,8 @@
 
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
+              [lower_predicate_to_elixir/4, classify_predicate/4]).
 
 :- dynamic test_failed/0.
 
@@ -172,6 +174,130 @@ test_functional_run_loop :-
     ;   fail_test(Test, 'run loop not recursive')
     ).
 
+%% Phase A fact-shape classification tests
+
+:- dynamic
+    phase_a_test:small_fact/2,
+    phase_a_test:big_fact/2,
+    phase_a_test:rule/2,
+    phase_a_test:variable_head/1.
+
+phase_a_fixture_setup :-
+    % Small fact-only predicate (4 clauses).
+    retractall(phase_a_test:small_fact(_, _)),
+    forall(member(X-Y, [a-1, b-2, c-3, d-4]),
+           assertz(phase_a_test:small_fact(X, Y))),
+    % Big fact-only predicate (150 clauses — above default threshold of 100).
+    retractall(phase_a_test:big_fact(_, _)),
+    forall(between(1, 150, I), (
+        atom_number(K, I),
+        assertz(phase_a_test:big_fact(K, I))
+    )),
+    % Rule-bearing predicate (non-fact-only).
+    retractall(phase_a_test:rule(_, _)),
+    assertz((phase_a_test:rule(X, Y) :- phase_a_test:small_fact(X, Y))),
+    % Variable-head fact (for first_arg_groundness=all_variable).
+    retractall(phase_a_test:variable_head(_)),
+    assertz((phase_a_test:variable_head(_X))).
+
+compile_and_segments(PredArity, Segments) :-
+    wam_target:compile_predicate_to_wam(phase_a_test:PredArity, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments).
+
+test_classify_small_fact_only :-
+    Test = 'Phase A: small fact-only predicate → compiled (below threshold)',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [],
+                       fact_shape_info(NCl, FactOnly, G, Layout)),
+    (   NCl == 4, FactOnly == true, G == all_ground, Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, classified(NCl, FactOnly, G, Layout))
+    ).
+
+test_classify_big_fact_only :-
+    Test = 'Phase A: big fact-only predicate → inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [],
+                       fact_shape_info(NCl, FactOnly, _G, Layout)),
+    (   NCl == 150, FactOnly == true, Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, classified(NCl, FactOnly, Layout))
+    ).
+
+test_classify_rule :-
+    Test = 'Phase A: rule-bearing predicate → compiled (not fact-only)',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs, [],
+                       fact_shape_info(_NCl, FactOnly, _G, Layout)),
+    (   FactOnly == false, Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, classified(FactOnly, Layout))
+    ).
+
+test_classify_variable_head :-
+    Test = 'Phase A: all-variable first arg → first_arg=all_variable',
+    phase_a_fixture_setup,
+    compile_and_segments(variable_head/1, Segs),
+    classify_predicate(variable_head/1, Segs, [],
+                       fact_shape_info(_, _, G, _)),
+    (   G == all_variable
+    ->  pass(Test)
+    ;   fail_test(Test, groundness(G))
+    ).
+
+test_classify_user_override_layout :-
+    Test = 'Phase A: user fact_layout/2 override wins over default',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    Opts = [fact_layout(small_fact/2, external_source(tsv("/tmp/x.tsv")))],
+    classify_predicate(small_fact/2, Segs, Opts,
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = external_source(_)
+    ->  pass(Test)
+    ;   fail_test(Test, layout(Layout))
+    ).
+
+test_classify_user_override_threshold :-
+    Test = 'Phase A: fact_count_threshold(1) promotes small fact set to inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [fact_count_threshold(1)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, layout(Layout))
+    ).
+
+test_shape_comment_in_generated_module :-
+    Test = 'Phase A: generated module carries fact-shape comment',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, 'Phase-A fact-shape classification'),
+        sub_string(Code, _, _, _, 'clauses=150'),
+        sub_string(Code, _, _, _, 'fact_only=true'),
+        sub_string(Code, _, _, _, 'layout=inline_data')
+    ->  pass(Test)
+    ;   fail_test(Test, 'comment missing or wrong content')
+    ).
+
+test_phase_a_preserves_compiled_output :-
+    Test = 'Phase A: generated module still uses compiled defps (no behaviour change)',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    % Even though layout=inline_data, Phase A still emits defp clauses
+    (   sub_string(Code, _, _, _, 'defp clause_'),
+        sub_string(Code, _, _, _, 'def run(%WamRuntime.WamState{}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected compiled-shape output not present')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -190,5 +316,13 @@ run_tests :-
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,
+    test_classify_small_fact_only,
+    test_classify_big_fact_only,
+    test_classify_rule,
+    test_classify_variable_head,
+    test_classify_user_override_layout,
+    test_classify_user_override_threshold,
+    test_shape_comment_in_generated_module,
+    test_phase_a_preserves_compiled_output,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
