@@ -307,13 +307,71 @@ escape_elixir_char('"', ['\\', '"']).
 escape_elixir_char(C, [C]).
 
 % ============================================================================
+% QUOTE-AWARE LINE TOKENIZATION
+% ============================================================================
+%
+% The WAM text uses ` `, `,`, `\t` as token separators. Atoms containing
+% those characters (e.g. `'Washington,_D.C.'`) are wrapped in single
+% quotes by `wam_target:quote_wam_constant/2`. This tokenizer recognises
+% the quotes, strips them, and honours `\'` / `\\` escapes so quoted
+% tokens reparse to the original atom text.
+%
+% Unquoted tokens pass through unchanged — keeping hot paths (identifier
+% atoms like `A1` or labels like `L_parent_2_2`) as cheap as the previous
+% split_string-based code.
+
+%% tokenize_wam_line(+Line, -Tokens)
+%  `Line` is any string or atom; `Tokens` is a list of strings, in order,
+%  with separators removed and quoted regions unquoted/unescaped.
+tokenize_wam_line(Line, Tokens) :-
+    (   string(Line) -> LineStr = Line ; atom_string(Line, LineStr) ),
+    string_chars(LineStr, Chars),
+    tokenize_chars(Chars, Tokens).
+
+tokenize_chars([], []).
+tokenize_chars([C | Rest], Tokens) :-
+    (   wam_separator_char(C)
+    ->  tokenize_chars(Rest, Tokens)
+    ;   C == '\''
+    ->  read_quoted_chars(Rest, TokenChars, Remainder),
+        string_chars(Token, TokenChars),
+        Tokens = [Token | RestTokens],
+        tokenize_chars(Remainder, RestTokens)
+    ;   read_unquoted_chars([C | Rest], TokenChars, Remainder),
+        string_chars(Token, TokenChars),
+        Tokens = [Token | RestTokens],
+        tokenize_chars(Remainder, RestTokens)
+    ).
+
+wam_separator_char(' ').
+wam_separator_char('\t').
+wam_separator_char(',').
+
+read_quoted_chars([], [], []).             % unterminated quote — yield what we have
+read_quoted_chars(['\'' | Rest], [], Rest).
+read_quoted_chars(['\\', Escaped | Rest], [Real | More], Remainder) :-
+    !,
+    unescape_wam_char(Escaped, Real),
+    read_quoted_chars(Rest, More, Remainder).
+read_quoted_chars([C | Rest], [C | More], Remainder) :-
+    read_quoted_chars(Rest, More, Remainder).
+
+unescape_wam_char('\'', '\'').
+unescape_wam_char('\\', '\\').
+unescape_wam_char(C, C).
+
+read_unquoted_chars([], [], []).
+read_unquoted_chars([C | Rest], [], [C | Rest]) :- wam_separator_char(C), !.
+read_unquoted_chars([C | Rest], [C | More], Remainder) :-
+    read_unquoted_chars(Rest, More, Remainder).
+
+% ============================================================================
 % LABEL COLLECTION
 % ============================================================================
 
 collect_labels([], _, []).
 collect_labels([Line|Rest], PC, OutLabels) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    tokenize_wam_line(Line, CleanParts),
     (   CleanParts = [First|_], is_label_part(First)
     ->  sub_string(First, 0, _, 1, LabelName),
         OutLabels = [LabelName-PC|RestLabels],
@@ -330,8 +388,7 @@ collect_labels([Line|Rest], PC, OutLabels) :-
 
 split_into_segments([], _, []).
 split_into_segments([Line|Rest], PC, Segments) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    tokenize_wam_line(Line, CleanParts),
     (   CleanParts == [] -> split_into_segments(Rest, PC, Segments)
     ;   CleanParts = [First|_], is_label_part(First)
     ->  sub_string(First, 0, _, 1, LabelName),
@@ -345,8 +402,7 @@ split_into_segments([Line|Rest], PC, Segments) :-
 
 extract_segment_body([], PC, [], [], PC).
 extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    tokenize_wam_line(Line, CleanParts),
     (   CleanParts = [First|_], is_label_part(First)
     ->  Body = [], Next = [Line|Rest], NPC = PC
     ;   CleanParts == [] -> extract_segment_body(Rest, PC, Body, Next, NPC)

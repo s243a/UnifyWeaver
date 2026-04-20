@@ -13,7 +13,10 @@
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
     write_wam_program/2,                 % +Code, +Filename
-    init_wam_target/0                    % Initialize target
+    init_wam_target/0,                   % Initialize target
+    % WAM constant quoting — exported so downstream tokenizers can
+    % share the same rules (see wam_elixir_lowered_emitter:tokenize_wam_line/2).
+    quote_wam_constant/2                 % +Value, -QuotedString
 ]).
 
 :- use_module(library(lists)).
@@ -233,8 +236,66 @@ build_constant_index_on([Head-_|Rest], ArgPos, I, Pred, Arity, [Val-Label|RestEn
     build_constant_index_on(Rest, ArgPos, NextI, Pred, Arity, RestEntries).
 
 format_index_entries(Entries, Str) :-
-    maplist([K-V, S]>>format(atom(S), "~w:~w", [K, V]), Entries, Parts),
+    maplist([K-V, S]>>(quote_wam_constant(K, KStr),
+                       format(atom(S), "~w:~w", [KStr, V])),
+            Entries, Parts),
     atomic_list_concat(Parts, ', ', Str).
+
+% ---------------------------------------------------------------------------
+% Constant quoting
+% ---------------------------------------------------------------------------
+%
+% The symbolic WAM text uses ` `, `,`, and `\t` as token separators and
+% `:` as the key/label separator inside `switch_on_constant` entries.
+% Prolog atoms freely contain any of those characters, so a naive
+% `~w` serialisation produces output the downstream line tokenizer
+% cannot reparse (`get_constant Washington,_D.C., A1` splits on the
+% embedded comma and emits a `raw/1` catch-all).
+%
+% `quote_wam_constant/2` wraps constants that need quoting in
+% single quotes, escaping embedded `'` as `\'` and `\` as `\\`.
+% Unambiguous unquoted atoms (identifier-like, numeric) pass through
+% unchanged, keeping the common case readable.
+%
+% Downstream tokenizers (see `wam_elixir_lowered_emitter:tokenize_wam_line/2`)
+% must recognise the same quote syntax.
+
+%% quote_wam_constant(+Value, -QuotedString)
+%  Value is an atom, string, or number. QuotedString is a string
+%  suitable to embed after `get_constant`, `put_constant`, etc.
+quote_wam_constant(Value, Quoted) :-
+    (   number(Value)
+    ->  format(string(Quoted), "~w", [Value])
+    ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
+        (   constant_needs_quoting(Str)
+        ->  escape_for_wam_quoting(Str, Escaped),
+            format(string(Quoted), "'~w'", [Escaped])
+        ;   Quoted = Str
+        )
+    ).
+
+constant_needs_quoting("") :- !.
+constant_needs_quoting(Str) :-
+    string_chars(Str, Chars),
+    member(C, Chars),
+    separator_or_special_char(C), !.
+
+separator_or_special_char(' ').
+separator_or_special_char('\t').
+separator_or_special_char(',').
+separator_or_special_char(':').
+separator_or_special_char('\'').
+separator_or_special_char('\\').
+
+escape_for_wam_quoting(Str, Escaped) :-
+    string_chars(Str, Chars),
+    maplist(escape_wam_char, Chars, NestedChars),
+    append(NestedChars, EscChars),
+    string_chars(Escaped, EscChars).
+
+escape_wam_char('\\', ['\\', '\\']).
+escape_wam_char('\'', ['\\', '\'']).
+escape_wam_char(C, [C]).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
@@ -405,7 +466,8 @@ compile_head_argument(Arg, I, V0, V1, Code) :-
             format(string(Code), "    get_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
-    ->  format(string(Code), "    get_constant ~w, A~w", [Arg, I]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(Code), "    get_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
     ;   is_list_term(Arg)
     ->  Arg = [H|T],
@@ -436,7 +498,8 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
             format(string(ArgCode), "    unify_variable ~w", [XReg])
         )
     ;   atomic(Arg)
-    ->  format(string(ArgCode), "    unify_constant ~w", [Arg]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(ArgCode), "    unify_constant ~w", [ArgStr]),
         V1 = V0
     ;   % Nested structure — emit unify_variable for a temp register,
         % then get_structure + unify_* for the nested sub-arguments.
@@ -845,7 +908,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
             format(string(Code), "    put_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
-    ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
     ;   is_list_term(Arg)
     ->  Arg = [H|T],
@@ -891,7 +955,8 @@ compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
     ;   atomic(Arg)
     ->  % For atomic sub-args, emit set_constant directly
         V1 = V0,
-        format(string(ArgCode), "    set_constant ~w", [Arg])
+        quote_wam_constant(Arg, ArgStr),
+        format(string(ArgCode), "    set_constant ~w", [ArgStr])
     ;   % Nested compound — recursively emit put_structure + set_* for sub-args
         compound(Arg)
     ->  Arg =.. [F|NestedArgs],
