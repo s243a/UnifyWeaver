@@ -119,7 +119,7 @@ python examples/benchmark/benchmark_effective_distance.py \
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
 
-### WAM-Clojure Benchmark Scaffold
+### WAM-Clojure Benchmark Runner
 
 The Clojure hybrid-WAM target now has an optimized-project generator:
 
@@ -136,22 +136,25 @@ Supported modes:
   Clojure set-backed handler generated from the supplied `facts.pl`.
 - `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)`.
 
-This is intentionally a generated-project scaffold, not a large JVM benchmark
-runner. Larger Clojure benchmark runs should stay configurable because JVM
-startup and memory behavior are noisy in constrained Termux environments.
+The generated project supports two entry modes:
 
-The configurable benchmark matrix exposes these scaffold targets for explicit
-generation/selection tests:
+- no arguments: emit the common effective-distance result table
+- predicate key plus EDN args: run the generated WAM predicate wrapper used by
+  smoke tests
+
+Larger Clojure benchmark runs should stay configurable because JVM startup and
+memory behavior are noisy in constrained Termux environments.
+
+The configurable benchmark matrix now treats `clojure-wam-accumulated` as a
+result-producing `hybrid-wam` target. The remaining modes are still explicit
+generation/selection scaffolds:
 
 - `clojure-wam-seeded`
 - `clojure-wam-seeded-no-kernels`
-- `clojure-wam-accumulated`
 - `clojure-wam-accumulated-no-kernels`
 
-They are grouped under `clojure-wam-scaffold` and intentionally excluded from
-the default result-producing `hybrid-wam` comparisons until the Clojure project
-emits the same effective-distance result table as the mature Rust/Haskell/Go
-paths.
+Those scaffold modes are grouped under `clojure-wam-scaffold` and skipped by
+the result-producing matrix runner until they emit the same table shape.
 
 ### Why Seeded Closures Win
 

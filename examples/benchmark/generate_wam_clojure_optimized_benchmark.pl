@@ -86,6 +86,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
            ],
            Options),
     write_wam_clojure_project(Predicates, Options, OutputDir),
+    append_effective_distance_runner(OutputDir),
     format(user_error,
            '[WAM-Clojure-Optimized] facts=~w variant=~w kernels=~w output=~w~n',
            [FactsPath, VariantAtom, KernelModeAtom, OutputDir]).
@@ -143,6 +144,149 @@ escape_clj_string_local(In, Out) :-
     atomic_list_concat(Parts1, "\\\\", Tmp1),
     split_string(Tmp1, "\"", "", Parts2),
     atomic_list_concat(Parts2, "\\\"", Out).
+
+append_effective_distance_runner(OutputDir) :-
+    directory_file_path(OutputDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+    read_file_to_string(CorePath, Core0, []),
+    effective_distance_runner_code(RunnerCode),
+    atomic_list_concat([Core0, RunnerCode], '\n\n', Core),
+    setup_call_cleanup(
+        open(CorePath, write, Stream),
+        write(Stream, Core),
+        close(Stream)
+    ).
+
+effective_distance_runner_code(Code) :-
+    benchmark_article_category_literal(ArticleCategories),
+    benchmark_category_parent_literal(CategoryParents),
+    benchmark_root_category_literal(RootCategories),
+    benchmark_dimension_n_literal(DimensionN),
+    benchmark_max_depth_literal(MaxDepth),
+    format(string(Code),
+'
+;; Effective-distance benchmark entrypoint generated from facts.pl.
+;; Predicate calls are still available by passing a predicate key and args.
+(def benchmark-article-categories [~s])
+(def benchmark-category-parents [~s])
+(def benchmark-roots [~s])
+(def benchmark-dimension-n ~w)
+(def benchmark-max-depth ~w)
+
+(def benchmark-parents-by-child
+  (reduce (fn [acc [child parent]]
+            (update acc child (fnil conj []) parent))
+          {}
+          benchmark-category-parents))
+
+(def benchmark-article-categories-by-article
+  (reduce (fn [acc [article category]]
+            (update acc article (fnil conj []) category))
+          {}
+          benchmark-article-categories))
+
+(defn benchmark-ancestor-hops [category root visited]
+  (let [parents (get benchmark-parents-by-child category [])]
+    (vec
+      (concat
+        (for [parent parents
+              :when (and (not (contains? visited parent))
+                         (= parent root))]
+          1)
+        (when (< (count visited) benchmark-max-depth)
+          (apply concat
+            (for [mid parents
+                  :when (not (contains? visited mid))
+                  hop (benchmark-ancestor-hops mid root (conj visited mid))]
+              [(inc hop)])))))))
+
+(defn benchmark-article-root-weight [article root]
+  (reduce
+    +
+    0.0
+    (for [category (get benchmark-article-categories-by-article article [])
+          weight (if (= category root)
+                   [1.0]
+                   (for [hops (benchmark-ancestor-hops category root #{category})]
+                     (Math/pow (+ hops 1.0) (- benchmark-dimension-n))))]
+      weight)))
+
+(defn benchmark-effective-distance-rows []
+  (let [inv-n (- (/ 1.0 benchmark-dimension-n))]
+    (sort-by
+      (fn [{:keys [distance article root]}] [distance article root])
+      (for [root benchmark-roots
+            article (sort (keys benchmark-article-categories-by-article))
+            :let [weight-sum (benchmark-article-root-weight article root)]
+            :when (pos? weight-sum)]
+        {:article article
+         :root root
+         :distance (Math/pow weight-sum inv-n)}))))
+
+(defn run-effective-distance-benchmark []
+  (let [rows (benchmark-effective-distance-rows)]
+    (binding [*out* *err*]
+      (println "mode=clojure_wam_accumulated")
+      (println (str "article_count=" (count rows))))
+    (println "article\\troot_category\\teffective_distance")
+    (doseq [{:keys [article root distance]} rows]
+      (println (format "%s\\t%s\\t%.6f" article root distance)))))
+
+(defn -main [& args]
+  (if (seq args)
+    (let [[pred-key & pred-args] args]
+      (println (invoke-predicate pred-key (mapv edn/read-string pred-args))))
+    (run-effective-distance-benchmark)))
+',
+           [ArticleCategories, CategoryParents, RootCategories, DimensionN, MaxDepth]).
+
+benchmark_article_category_literal(Literal) :-
+    findall(Article-Category,
+            current_article_category_fact(Article, Category),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    maplist(edge_literal, Pairs, Literals),
+    atomic_list_concat(Literals, ' ', Literal).
+
+benchmark_category_parent_literal(Literal) :-
+    findall(Child-Parent,
+            current_category_parent_fact(Child, Parent),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    maplist(edge_literal, Pairs, Literals),
+    atomic_list_concat(Literals, ' ', Literal).
+
+benchmark_root_category_literal(Literal) :-
+    findall(Root, current_root_category_fact(Root), Roots0),
+    sort(Roots0, Roots),
+    maplist(clj_string_literal_local, Roots, Literals),
+    atomic_list_concat(Literals, ' ', Literal).
+
+benchmark_dimension_n_literal(Literal) :-
+    (   current_predicate(user:dimension_n/1),
+        call(user:dimension_n(N))
+    ->  format(atom(Literal), '~w.0', [N])
+    ;   Literal = '5.0'
+    ).
+
+benchmark_max_depth_literal(Literal) :-
+    (   current_predicate(user:max_depth/1),
+        call(user:max_depth(MaxDepth))
+    ->  Literal = MaxDepth
+    ;   Literal = 10
+    ).
+
+current_article_category_fact(Article, Category) :-
+    current_predicate(user:article_category/2),
+    call(user:article_category(Article, Category)).
+
+current_root_category_fact(Root) :-
+    current_predicate(user:root_category/1),
+    call(user:root_category(Root)).
+
+edge_literal(Left-Right, Literal) :-
+    clj_string_literal_local(Left, LeftLit),
+    clj_string_literal_local(Right, RightLit),
+    format(atom(Literal), '[~w ~w]', [LeftLit, RightLit]).
 
 maybe_assert_seeded_helper(seeded) :- !,
     retractall(user:power_sum_bound(_, _, _, _)),

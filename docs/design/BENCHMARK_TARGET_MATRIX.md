@@ -236,6 +236,7 @@ The default presets are:
 - `desktop-default`
 - `optimized-prolog`
 - `hybrid-wam`
+- `clojure-wam`
 - `clojure-wam-scaffold`
 - `direct-pipeline`
 - `query-engine`
@@ -243,17 +244,20 @@ The default presets are:
 
 `hybrid-wam-scaffold` is for generated targets that have benchmark-generation
 shape and smoke coverage but do not yet emit the common effective-distance
-result table. Clojure WAM currently lives here:
+result table. Clojure WAM is split between one executable target and the
+remaining scaffold targets:
+
+- `clojure-wam-accumulated` — executable `hybrid-wam`; emits the common result
+  table and matches `prolog-accumulated` on the `dev` scale
 
 - `clojure-wam-seeded`
 - `clojure-wam-seeded-no-kernels`
-- `clojure-wam-accumulated`
 - `clojure-wam-accumulated-no-kernels`
 
-The effective-distance matrix lists and resolves these targets, but skips them
-with an explicit scaffold-only message when a result-producing benchmark run is
-requested. This avoids comparing a predicate-level smoke path against full
-effective-distance table producers.
+The effective-distance matrix lists and resolves all of these targets, but
+skips the scaffold-only modes with an explicit message when a result-producing
+benchmark run is requested. This avoids comparing a predicate-level smoke path
+against full effective-distance table producers.
 
 ## Termux Rule
 

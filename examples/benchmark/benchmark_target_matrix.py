@@ -76,8 +76,8 @@ TARGETS: dict[str, TargetInfo] = {
     ),
     "clojure-wam-accumulated": TargetInfo(
         "clojure-wam-accumulated",
-        "hybrid-wam-scaffold",
-        "Hybrid WAM Clojure generated project with optimized accumulated helpers and kernels enabled",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers and a result-producing runner",
     ),
     "clojure-wam-accumulated-no-kernels": TargetInfo(
         "clojure-wam-accumulated-no-kernels",
@@ -124,6 +124,7 @@ TARGET_SETS: dict[str, list[str]] = {
         "wam-rust-accumulated",
         "go-wam-accumulated",
         "go-wam-accumulated-no-kernels",
+        "clojure-wam-accumulated",
         "haskell-pure-interp",
         "haskell-interp-ffi",
         "haskell-lowered-only",
@@ -132,7 +133,12 @@ TARGET_SETS: dict[str, list[str]] = {
     "clojure-wam-scaffold": [
         "clojure-wam-seeded",
         "clojure-wam-seeded-no-kernels",
+        "clojure-wam-accumulated-no-kernels",
+    ],
+    "clojure-wam": [
         "clojure-wam-accumulated",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
         "clojure-wam-accumulated-no-kernels",
     ],
     "direct-pipeline": [

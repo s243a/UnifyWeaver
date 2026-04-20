@@ -73,6 +73,9 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("go-wam-") and (shutil.which("swipl") is None or shutil.which("go") is None):
             print(f"skip {target}: swipl or go not found", file=sys.stderr)
             continue
+        if target.startswith("clojure-wam-") and (shutil.which("swipl") is None or shutil.which("java") is None):
+            print(f"skip {target}: swipl or java not found", file=sys.stderr)
+            continue
         targets.append(target)
     return targets
 

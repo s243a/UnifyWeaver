@@ -284,11 +284,17 @@ for further optimization work.
    resolvable, but intentionally skipped by the effective-distance runner
    until Clojure emits the same result table as the mature Rust/Haskell/Go
    benchmark paths.
+10. `clojure-wam-accumulated` now has a generated no-argument benchmark
+    entrypoint that emits the common effective-distance result table. On the
+    `dev` scale it matches `prolog-accumulated` by normalized output digest;
+    the remaining Clojure modes stay scaffold-only until they have equivalent
+    result-producing entrypoints.
 
 ### Highest-value remaining work
 
-1. Add a result-producing Clojure effective-distance benchmark runner so the
-   scaffold targets can move into the executable `hybrid-wam` comparison set.
+1. Add result-producing entrypoints for the remaining Clojure benchmark modes,
+   especially `clojure-wam-accumulated-no-kernels`, so kernel-on/off comparisons
+   become meaningful in the matrix.
 2. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
    especially multi-output traversal kernels comparable to the mature
    Haskell/Rust hybrid paths.
