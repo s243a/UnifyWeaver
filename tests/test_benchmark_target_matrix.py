@@ -30,11 +30,12 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ],
         )
         self.assertEqual(TARGETS["clojure-wam-accumulated"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-accumulated-no-kernels"].category, "hybrid-wam")
         self.assertTrue(
             all(
                 TARGETS[target].category == "hybrid-wam-scaffold"
                 for target in targets
-                if target != "clojure-wam-accumulated"
+                if target not in {"clojure-wam-accumulated", "clojure-wam-accumulated-no-kernels"}
             )
         )
 
@@ -47,20 +48,21 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("go-wam-accumulated", targets)
         self.assertIn("haskell-interp-ffi", targets)
         self.assertIn("clojure-wam-accumulated", targets)
+        self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertNotIn("clojure-wam-seeded", targets)
 
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
 
         self.assertIn("clojure-wam-accumulated\thybrid-wam", text)
+        self.assertIn("clojure-wam-accumulated-no-kernels\thybrid-wam", text)
         self.assertIn(
             "clojure-wam\tclojure-wam-accumulated,clojure-wam-seeded,"
             "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
             text,
         )
         self.assertIn(
-            "clojure-wam-scaffold\tclojure-wam-seeded,clojure-wam-seeded-no-kernels,"
-            "clojure-wam-accumulated-no-kernels",
+            "clojure-wam-scaffold\tclojure-wam-seeded,clojure-wam-seeded-no-kernels",
             text,
         )
 
