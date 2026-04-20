@@ -133,12 +133,12 @@ Supported modes:
 - `seeded` and `accumulated` select the same optimized Prolog predicate
   generation path used by the mature WAM benchmark generators.
 - `kernels_on` emits a `category_parent/2` `call-foreign` stub and a
-  deterministic placeholder Clojure handler.
+  Clojure set-backed handler generated from the supplied `facts.pl`.
 - `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)`.
 
 This is intentionally a generated-project scaffold, not a large JVM benchmark
-runner. Native Clojure graph kernels and fact-backed handler loading are still
-future work.
+runner. Larger Clojure benchmark runs should stay configurable because JVM
+startup and memory behavior are noisy in constrained Termux environments.
 
 ### Why Seeded Closures Win
 
