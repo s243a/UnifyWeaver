@@ -30,6 +30,10 @@ This document frames how UnifyWeaver maps logical predicates onto executable env
 - **SQL** (`target(sql)`)
   Generates declarative SQL queries (SELECT, CREATE VIEW) for execution on relational databases. Unlike other targets that emit executable code, SQL output is meant for external database execution. Supports full SQL feature set including JOINs, aggregations, subqueries, window functions, CTEs, recursive CTEs, and set operations.
 
+### WebAssembly Targets
+- **WAM-WAT** (`target(wam_wat)`)
+  Compiles Prolog through a textual WAM intermediate form into a self-contained WebAssembly module (`.wat`/`.wasm`). Runs in any WASM runtime (browser, Node.js, Wasmtime, Wasmer). The runtime interprets WAM bytecode via a tagged-dispatch `$step` loop; an 8-pass peephole optimizer fuses common patterns (first-arg type dispatch, neck-cut-deterministic clauses, tail-call setup, clause-end cleanups) into specialized instructions. See [`wam-wat.md`](wam-wat.md) for details. Sibling targets in the broader WAM family (Go, Rust, LLVM, ILAsm, Elixir, JVM) emit host-language source instead; see `src/unifyweaver/targets/wam_*_target.pl`.
+
 ### Scripting Targets
 - **Python** (`target(python)`)
   Generates Python scripts with strong recursion support, ML integration, and pipeline chaining. Ideal for data science workflows and rapid prototyping.
@@ -45,6 +49,7 @@ Preferences (`preferences.pl`) and runtime options choose a target. Planned beha
 - `target(csharp)` acts as a smart facade, preferring `csharp_codegen` where features exist and falling back to `csharp_query` when advanced behaviour (e.g., recursion) is required.
 - `target(bash)` continues to reference the existing Bash ecosystem (partitioning, fork, etc.).
 - `target(sql)` generates SQL queries for database execution rather than standalone programs.
+- `target(wam_wat)` compiles through the WAM intermediate form to a self-contained WebAssembly module — useful where WASM is the deployment platform (browser, embedded runtimes, sandboxed execution).
 
 ## Why Multiple Targets
 - Operational diversity: Bash fits quick shell deployment; C# unlocks integration with managed runtimes, type safety, and IDE tooling.
