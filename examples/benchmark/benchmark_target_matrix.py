@@ -64,6 +64,26 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Go benchmark with optimized accumulated helpers and no_kernels(true)",
     ),
+    "clojure-wam-seeded": TargetInfo(
+        "clojure-wam-seeded",
+        "hybrid-wam-scaffold",
+        "Hybrid WAM Clojure generated project with seeded helpers and kernels enabled",
+    ),
+    "clojure-wam-seeded-no-kernels": TargetInfo(
+        "clojure-wam-seeded-no-kernels",
+        "hybrid-wam-scaffold",
+        "Hybrid WAM Clojure generated project with seeded helpers and no_kernels(true)",
+    ),
+    "clojure-wam-accumulated": TargetInfo(
+        "clojure-wam-accumulated",
+        "hybrid-wam-scaffold",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers and kernels enabled",
+    ),
+    "clojure-wam-accumulated-no-kernels": TargetInfo(
+        "clojure-wam-accumulated-no-kernels",
+        "hybrid-wam-scaffold",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers and no_kernels(true)",
+    ),
     "haskell-pure-interp": TargetInfo(
         "haskell-pure-interp",
         "hybrid-wam",
@@ -108,6 +128,12 @@ TARGET_SETS: dict[str, list[str]] = {
         "haskell-interp-ffi",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+    ],
+    "clojure-wam-scaffold": [
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-no-kernels",
     ],
     "direct-pipeline": [
         "rust-dfs",

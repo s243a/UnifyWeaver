@@ -140,6 +140,19 @@ This is intentionally a generated-project scaffold, not a large JVM benchmark
 runner. Larger Clojure benchmark runs should stay configurable because JVM
 startup and memory behavior are noisy in constrained Termux environments.
 
+The configurable benchmark matrix exposes these scaffold targets for explicit
+generation/selection tests:
+
+- `clojure-wam-seeded`
+- `clojure-wam-seeded-no-kernels`
+- `clojure-wam-accumulated`
+- `clojure-wam-accumulated-no-kernels`
+
+They are grouped under `clojure-wam-scaffold` and intentionally excluded from
+the default result-producing `hybrid-wam` comparisons until the Clojure project
+emits the same effective-distance result table as the mature Rust/Haskell/Go
+paths.
+
 ### Why Seeded Closures Win
 
 The main advantage comes from **seed deduplication**: many articles
