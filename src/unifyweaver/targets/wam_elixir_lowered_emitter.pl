@@ -9,7 +9,14 @@
 
 :- module(wam_elixir_lowered_emitter, [
     lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -Code
-    wam_elixir_lower_instr/5      % +Instr, +PC, +Labels, +FuncName, -Code
+    wam_elixir_lower_instr/5,     % +Instr, +PC, +Labels, +FuncName, -Code
+    % Phase A fact-shape classification (see docs/proposals/WAM_FACT_SHAPE_*.md).
+    % Emitter-internal for now; may move to its own module once other
+    % targets adopt the same classification.
+    classify_predicate/4,         % +PredIndicator, +Segments, +Options, -Info
+    clause_count/2,               % +Segments, -N
+    fact_only/2,                  % +Segments, -Bool
+    first_arg_groundness/3        % +Segments, +Arity, -Status
 ]).
 
 :- use_module(library(lists)).
@@ -35,9 +42,17 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     camel_case(ModName, CamelMod),
     Segments = [FirstSegName-_|_],
     segment_func_name(FirstSegName, FirstFunc),
+    % Phase A: classify the predicate and record the chosen layout as a
+    % module-level comment. Phase A emits every predicate via the
+    % existing `compiled` path regardless of the chosen layout — this
+    % is observation-only. Phase B switches on Info.layout.
+    classify_predicate(Pred/Arity, Segments, Options, Info),
+    format_fact_shape_comment(Info, ShapeComment),
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
+
+~w
 
   # run/1 is a plain tail call into the first clause segment. No
   # try/catch here — failures propagate via throw({:fail, state}) up to
@@ -85,7 +100,96 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
   end
 
 ~w
-end', [CamelMod, CamelPred, PredStr, Arity, FirstFunc, CamelPred, FuncsBody]).
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FirstFunc, CamelPred, FuncsBody]).
+
+% ============================================================================
+% PHASE A: FACT-SHAPE CLASSIFICATION
+% ============================================================================
+%
+% Observation-only in this phase — the chosen `Layout` field is
+% surfaced as a module-level comment, but every predicate still emits
+% via the existing `compiled` code path. Phase B switches actual
+% emission on Layout. See docs/proposals/WAM_FACT_SHAPE_SPEC.md for
+% the wider contract.
+
+%% classify_predicate(+PredIndicator, +Segments, +Options, -Info)
+%  Info is the term `fact_shape_info(NClauses, FactOnly, FirstArg, Layout)`.
+classify_predicate(Pred/Arity, Segments, Options, Info) :-
+    clause_count(Segments, NClauses),
+    fact_only(Segments, FactOnly),
+    first_arg_groundness(Segments, Arity, FirstArg),
+    pick_layout(Pred/Arity, NClauses, FactOnly, Options, Layout),
+    Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+%% clause_count(+Segments, -N)
+%  Each top-level segment corresponds to one clause (or the predicate
+%  header segment, which is still per-clause since the WAM emitter
+%  synthesises one segment per clause). CPS sub-segments (`_kN`) are
+%  generated later and never appear in this list.
+clause_count(Segments, N) :-
+    length(Segments, N).
+
+%% fact_only(+Segments, -Bool)
+%  `true` iff no clause has a body-level call.
+fact_only(Segments, true) :-
+    forall(member(_-Instrs, Segments),
+           forall(member(_-Instr, Instrs),
+                  \+ is_body_call_instr(Instr))), !.
+fact_only(_, false).
+
+is_body_call_instr(call(_, _)).
+is_body_call_instr(execute(_)).
+is_body_call_instr(builtin_call(_, _)).
+
+%% first_arg_groundness(+Segments, +Arity, -Status)
+%  Status is one of: `none` (arity 0), `all_ground`, `all_variable`,
+%  `mixed`. Determined by which head-unification instruction binds A1
+%  in each clause.
+first_arg_groundness(_Segments, 0, none) :- !.
+first_arg_groundness(Segments, Arity, Status) :-
+    Arity > 0,
+    maplist(clause_arg1_type, Segments, Types),
+    combine_groundness(Types, Status).
+
+clause_arg1_type(_-Instrs, Type) :-
+    (   member(_-get_constant(_, "A1"), Instrs) -> Type = ground
+    ;   member(_-get_structure(_, "A1"), Instrs) -> Type = ground
+    ;   member(_-get_variable(_, "A1"), Instrs) -> Type = variable
+    ;   member(_-get_value(_, "A1"), Instrs)    -> Type = variable
+    ;   Type = unknown
+    ).
+
+combine_groundness(Types, all_ground)   :- forall(member(T, Types), T == ground), !.
+combine_groundness(Types, all_variable) :- forall(member(T, Types), T == variable), !.
+combine_groundness(_, mixed).
+
+%% pick_layout(+PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  User override via `fact_layout/2` in Options or `user:fact_layout/2`
+%  always wins. Otherwise default policy: fact-only ∧ count > threshold
+%  → `inline_data`; else `compiled`. Threshold from `fact_count_threshold`
+%  option, default 100.
+pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
+    option(fact_layout(PredIndicator, UserLayout), Options), !,
+    Layout = UserLayout.
+pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
+    catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
+    Layout = UserLayout.
+pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_count_threshold(Threshold), Options, 100),
+    (   FactOnly == true, NClauses > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+
+%% format_fact_shape_comment(+Info, -Comment)
+%  Renders `Info` as an Elixir comment surfaced in the generated
+%  module. Phase A uses this purely as documentation; Phase B+ reads
+%  Info to pick the emission path.
+format_fact_shape_comment(fact_shape_info(N, FactOnly, FirstArg, Layout), Comment) :-
+    format(string(Comment),
+'  # Phase-A fact-shape classification (observation-only):
+  #   clauses=~w fact_only=~w first_arg=~w layout=~w',
+           [N, FactOnly, FirstArg, Layout]).
 
 % ============================================================================
 % LABEL COLLECTION
