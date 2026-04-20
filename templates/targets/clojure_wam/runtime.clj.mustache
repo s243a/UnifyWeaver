@@ -108,17 +108,22 @@
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
+(declare activate-foreign-choice)
+
+(defn choice-snapshot [state target-pc]
+  {:pc target-pc
+   :stack (:stack state)
+   :regs (:regs state)
+   :env-stack (:env-stack state)
+   :trail-len (count (:trail state))
+   :heap-len (count (:heap state))
+   :unify-queue (:unify-queue state)
+   :build-stack (:build-stack state)
+   :cut-bar (:cut-bar state)
+   :next-var-id (:next-var-id state)})
+
 (defn push-choice-point [state target-pc]
-  (update state :choice-points conj {:pc target-pc
-                                     :stack (:stack state)
-                                     :regs (:regs state)
-                                     :env-stack (:env-stack state)
-                                     :trail-len (count (:trail state))
-                                     :heap-len (count (:heap state))
-                                     :unify-queue (:unify-queue state)
-                                     :build-stack (:build-stack state)
-                                     :cut-bar (:cut-bar state)
-                                     :next-var-id (:next-var-id state)}))
+  (update state :choice-points conj (choice-snapshot state target-pc)))
 
 (defn unwind-trail [state target-len]
   (loop [s state
@@ -132,21 +137,25 @@
         (recur restored (rest entries)))
       (assoc s :trail (vec (take target-len (:trail state)))))))
 
+(defn restore-choice-state [state cp]
+  (-> state
+      (unwind-trail (:trail-len cp))
+      (assoc :pc (:pc cp))
+      (assoc :stack (:stack cp))
+      (restore-choice-regs (:regs cp))
+      (assoc :env-stack (:env-stack cp))
+      (assoc :heap (vec (take (:heap-len cp) (:heap state))))
+      (assoc :unify-queue (:unify-queue cp))
+      (assoc :build-stack (:build-stack cp))
+      (assoc :cut-bar (:cut-bar cp))
+      (assoc :next-var-id (:next-var-id cp))
+      (update :choice-points pop)))
+
 (defn backtrack [state]
   (if-let [cp (peek (:choice-points state))]
     (-> state
-        (unwind-trail (:trail-len cp))
-        (assoc :pc (:pc cp))
-        (assoc :stack (:stack cp))
-        (restore-choice-regs (:regs cp))
-        (assoc :env-stack (:env-stack cp))
-        (assoc :heap (vec (take (:heap-len cp) (:heap state))))
-        (assoc :unify-queue (:unify-queue cp))
-        (assoc :build-stack (:build-stack cp))
-        (assoc :cut-bar (:cut-bar cp))
-        (assoc :next-var-id (:next-var-id cp))
-        (update :choice-points pop)
-        (assoc :status :running))
+        (restore-choice-state cp)
+        (activate-foreign-choice cp))
     (fail-state state)))
 
 (defn y-slot? [reg]
@@ -358,16 +367,52 @@
     :else
     [false state]))
 
+(defn foreign-solution-results [result]
+  (cond
+    (and (map? result) (contains? result :solutions))
+    (seq (:solutions result))
+
+    (and (map? result) (contains? result :results))
+    (seq (:results result))
+
+    :else
+    nil))
+
+(defn push-foreign-choice-point [state base-state resume-pc results]
+  (if (seq results)
+    (update state :choice-points conj
+            (assoc (choice-snapshot base-state resume-pc)
+                   :foreign-results (vec results)))
+    state))
+
+(defn apply-first-foreign-solution [base-state resume-pc results]
+  (loop [remaining (seq results)]
+    (if-let [result (first remaining)]
+      (let [[ok next-state] (apply-foreign-result base-state result)]
+        (if ok
+          (-> next-state
+              (push-foreign-choice-point base-state resume-pc (next remaining))
+              (assoc :pc resume-pc))
+          (recur (next remaining))))
+      (backtrack base-state))))
+
+(defn activate-foreign-choice [state cp]
+  (if-let [results (seq (:foreign-results cp))]
+    (apply-first-foreign-solution state (:pc cp) results)
+    (assoc state :status :running)))
+
 (defn execute-foreign [state instr]
   (let [key (foreign-key (:pred instr) (:arity instr))
         handler (get (:foreign-handlers state) key)]
     (if handler
-      (let [[ok next-state] (apply-foreign-result
-                              state
-                              (handler (foreign-args state (:arity instr))))]
-        (if ok
-          (advance next-state)
-          (backtrack state)))
+      (let [result (handler (foreign-args state (:arity instr)))
+            resume-pc (inc (:pc state))]
+        (if-let [results (foreign-solution-results result)]
+          (apply-first-foreign-solution state resume-pc results)
+          (let [[ok next-state] (apply-foreign-result state result)]
+            (if ok
+              (advance next-state)
+              (backtrack state)))))
       (backtrack state))))
 
 (defn step [state]

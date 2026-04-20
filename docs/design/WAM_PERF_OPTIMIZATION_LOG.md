@@ -308,12 +308,18 @@ for further optimization work.
     returning to WAM code. This moves traversal kernels closer to the generic
     Haskell/Rust hybrid FFI shape, but it is still single-result and does not
     provide streaming/backtracking foreign solutions yet.
+15. Clojure `call-foreign` can now consume deterministic streams of foreign
+    solutions. A handler can return `{:solutions [{:bindings {...}} ...]}`;
+    the runtime binds the first viable solution and stores the remaining
+    solutions as foreign choice points. If later WAM code fails, backtracking
+    restores the pre-foreign state and tries the next solution. This is the
+    generic runtime surface needed before moving traversal kernels out of
+    runner-specific code.
 
 ### Highest-value remaining work
 
-1. Add multi-solution/streaming foreign traversal so Clojure kernels can
-   produce backtracking result sets instead of only deterministic output
-   bindings.
+1. Move the Clojure traversal kernel onto the generic streaming `call-foreign`
+   surface instead of keeping it runner-specific.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
