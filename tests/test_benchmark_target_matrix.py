@@ -31,13 +31,8 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertEqual(TARGETS["clojure-wam-accumulated"].category, "hybrid-wam")
         self.assertEqual(TARGETS["clojure-wam-accumulated-no-kernels"].category, "hybrid-wam")
-        self.assertTrue(
-            all(
-                TARGETS[target].category == "hybrid-wam-scaffold"
-                for target in targets
-                if target not in {"clojure-wam-accumulated", "clojure-wam-accumulated-no-kernels"}
-            )
-        )
+        self.assertEqual(TARGETS["clojure-wam-seeded"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["clojure-wam-seeded-no-kernels"].category, "hybrid-wam")
 
     def test_default_hybrid_wam_excludes_clojure_scaffolds(self) -> None:
         targets = resolve_targets(
@@ -49,24 +44,24 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn("haskell-interp-ffi", targets)
         self.assertIn("clojure-wam-accumulated", targets)
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
-        self.assertNotIn("clojure-wam-seeded", targets)
+        self.assertIn("clojure-wam-seeded", targets)
+        self.assertIn("clojure-wam-seeded-no-kernels", targets)
 
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
 
         self.assertIn("clojure-wam-accumulated\thybrid-wam", text)
         self.assertIn("clojure-wam-accumulated-no-kernels\thybrid-wam", text)
+        self.assertIn("clojure-wam-seeded\thybrid-wam", text)
+        self.assertIn("clojure-wam-seeded-no-kernels\thybrid-wam", text)
         self.assertIn(
             "clojure-wam\tclojure-wam-accumulated,clojure-wam-seeded,"
             "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
             text,
         )
-        self.assertIn(
-            "clojure-wam-scaffold\tclojure-wam-seeded,clojure-wam-seeded-no-kernels",
-            text,
-        )
+        self.assertIn("clojure-wam-scaffold\t", text)
 
-    def test_effective_distance_runner_skips_scaffold_targets(self) -> None:
+    def test_effective_distance_runner_resolves_seeded_clojure_targets(self) -> None:
         original_argv = sys.argv
         try:
             sys.argv = [
@@ -75,7 +70,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
                 "clojure-wam-seeded,prolog-accumulated",
             ]
             args = parse_args()
-            self.assertEqual(resolve_requested_targets(args), ["prolog-accumulated"])
+            self.assertEqual(resolve_requested_targets(args), ["clojure-wam-seeded", "prolog-accumulated"])
         finally:
             sys.argv = original_argv
 
