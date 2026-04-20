@@ -57,6 +57,7 @@ Proposals serve several purposes:
 | [Transformer Distillation](TRANSFORMER_DISTILLATION.md) | Implemented | v0.0.4 | Low |
 | [LDA Database Schema](LDA_DATABASE_SCHEMA.md) | Implemented | v0.0.3 | Medium |
 | [LDA Training Approach](LDA_TRAINING_APPROACH.md) | Implemented | v0.0.3 | Medium |
+| [Preprocessed Predicate Artifacts](PREPROCESSED_PREDICATE_ARTIFACTS.md) | Draft | v0.0.4+ | Medium |
 
 ## Proposal Template
 
