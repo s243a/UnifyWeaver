@@ -289,12 +289,15 @@ for further optimization work.
     `dev` scale it matches `prolog-accumulated` by normalized output digest;
     the remaining Clojure modes stay scaffold-only until they have equivalent
     result-producing entrypoints.
+11. `clojure-wam-accumulated-no-kernels` is now also executable in the matrix.
+    On `dev`, both accumulated Clojure modes and `prolog-accumulated` produce
+    the same normalized digest, which gives a valid Clojure kernel-on/off
+    comparison surface.
 
 ### Highest-value remaining work
 
-1. Add result-producing entrypoints for the remaining Clojure benchmark modes,
-   especially `clojure-wam-accumulated-no-kernels`, so kernel-on/off comparisons
-   become meaningful in the matrix.
+1. Add result-producing entrypoints for the seeded Clojure benchmark modes so
+   seeded/accumulated comparisons are available in the matrix.
 2. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
    especially multi-output traversal kernels comparable to the mature
    Haskell/Rust hybrid paths.
