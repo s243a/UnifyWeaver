@@ -378,20 +378,35 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:trail_len, cp.trail_len)
         |> Map.put(:choice_points, rest)
 
-        if is_function(cp.pc) do
-          # The retried clause may throw {:fail, thrown_state} (its own
-          # guards failed, with CPs accumulated during its body) or
-          # {:return, result} (it succeeded). Translate back into the
-          # {:ok, state} | :fail contract so the caller does not need to
-          # know about clause-local control flow.
-          try do
-            cp.pc.(state)
-          catch
-            {:fail, thrown_state} -> backtrack(thrown_state)
-            {:return, result} -> result
-          end
-        else
-          {:ok, state}
+        cond do
+          is_function(cp.pc) ->
+            # The retried clause may throw {:fail, thrown_state} (its own
+            # guards failed, with CPs accumulated during its body) or
+            # {:return, result} (it succeeded). Translate back into the
+            # {:ok, state} | :fail contract so the caller does not need to
+            # know about clause-local control flow.
+            try do
+              cp.pc.(state)
+            catch
+              {:fail, thrown_state} -> backtrack(thrown_state)
+              {:return, result} -> result
+            end
+
+          match?({:fact_stream, _, _}, cp.pc) ->
+            # Phase-B fact-stream CP: resume iteration over the remaining
+            # tail of the fact list. The snapshot already restored regs /
+            # trail / heap to their pre-unify state, so resume_fact_stream
+            # just needs to attempt the next fact.
+            {:fact_stream, remaining, arity} = cp.pc
+            try do
+              resume_fact_stream(state, remaining, arity)
+            catch
+              {:fail, thrown_state} -> backtrack(thrown_state)
+              {:return, result} -> result
+            end
+
+          true ->
+            {:ok, state}
         end
     end
   end', []).
@@ -506,6 +521,83 @@ compile_utility_helpers_to_elixir(Code) :-
   contract.
   """
   def terminal_cp(state), do: {:ok, state}
+
+  @doc """
+  Phase-B fact-stream entry point. Called by an `inline_data`-layout
+  predicate\'s `run/1` with the module\'s `@facts` literal. Iterates the
+  list, attempts to unify each tuple with state.regs[1..arity], and on
+  success pushes a fact-stream CP (shape `{:fact_stream, remaining,
+  arity}`) so backtracking resumes at the next tuple. Emits the driver
+  contract via state.cp — same as a CPS-lowered clause after a
+  successful head unify.
+  """
+  def stream_facts(state, facts, arity) do
+    resume_fact_stream(state, facts, arity)
+  end
+
+  @doc """
+  Resume a fact-stream scan from the current list tail. Called both from
+  `stream_facts/3` (initial call) and from `backtrack/1` (after popping
+  a fact-stream CP). Empty list → `{:fail, state}` propagates to the
+  caller; caller\'s outer catch routes to `backtrack`.
+  """
+  def resume_fact_stream(state, [], _arity), do: throw({:fail, state})
+  def resume_fact_stream(state, [tuple | rest], arity) do
+    trail_mark = state.trail_len
+    case try_unify_fact_tuple(state, tuple, 1, arity) do
+      {:ok, bound_state} ->
+        # Push a CP snapshotting PRE-unify state. On later backtrack,
+        # unwind_trail(trail_mark) rolls back any bindings we just made.
+        cp = %{
+          pc: {:fact_stream, rest, arity},
+          regs: state.regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: trail_mark,
+          stack: state.stack
+        }
+        s_with_cp = %{bound_state | choice_points: [cp | bound_state.choice_points]}
+        s_with_cp.cp.(s_with_cp)
+
+      :fail ->
+        # Partial unify may have bound regs before failing — roll back
+        # to the pre-attempt trail mark so `rest` is tried on clean state.
+        cleaned = unwind_trail(state, trail_mark)
+        resume_fact_stream(cleaned, rest, arity)
+    end
+  end
+
+  defp try_unify_fact_tuple(state, _tuple, i, arity) when i > arity, do: {:ok, state}
+  defp try_unify_fact_tuple(state, tuple, i, arity) do
+    element = elem(tuple, i - 1)
+    case element do
+      :_var ->
+        # Head was a variable — any incoming value unifies trivially.
+        try_unify_fact_tuple(state, tuple, i + 1, arity)
+
+      value ->
+        reg_val = deref_var(state, Map.get(state.regs, i))
+        case reg_val do
+          {:unbound, _} ->
+            # Caller left this arg unbound. Bind it to the fact\'s value
+            # via put_reg so the trail records it and the binding is
+            # undoable on backtrack.
+            {:unbound, id} = reg_val
+            s2 = state
+                 |> trail_binding(id)
+                 |> put_reg(id, value)
+            try_unify_fact_tuple(s2, tuple, i + 1, arity)
+
+          bound when bound == value ->
+            try_unify_fact_tuple(state, tuple, i + 1, arity)
+
+          _ ->
+            :fail
+        end
+    end
+  end
 
   @doc "Read `len` consecutive heap cells starting at `start`."
   def heap_slice(_state, _start, 0), do: []
