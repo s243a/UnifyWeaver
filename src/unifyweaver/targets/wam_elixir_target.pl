@@ -762,8 +762,15 @@ compile_utility_helpers_to_elixir(Code) :-
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         if v1 < v2, do: %{state | pc: new_pc}, else: :fail
       {"length/2", 2} ->
-        list = get_reg(state, 1)
-        len = if is_list(list), do: length(list), else: throw({:fail, state})
+        # length walks the list. The list may be either a native Elixir
+        # list (driver-supplied, e.g. ["Classical_mechanics"]) or a
+        # heap-built `./2` chain (produced by put_list when the
+        # compiler constructs [Mid|Visited] from a mix of reg and heap
+        # values). Mixed recursion handles both forms; the empty list
+        # terminator is either Elixir `[]` or the atom string "[]".
+        list = deref_var(state, get_reg(state, 1))
+        len = wam_list_length(state, list)
+        if len == :fail, do: throw({:fail, state})
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         case unify(state, len, get_reg(state, 2)) do
           {:ok, s} -> %{s | pc: new_pc}
@@ -808,24 +815,59 @@ compile_utility_helpers_to_elixir(Code) :-
           :success -> :fail
         end
       {"member/2", 2} ->
-        item = get_reg(state, 1)
-        list = get_reg(state, 2)
+        # member walks the list. Like length/2, handles both native
+        # Elixir lists and heap-built `./2` chains produced by put_list.
+        item = deref_var(state, get_reg(state, 1))
+        list = deref_var(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        cond do
-          is_list(list) ->
-            if item in list, do: %{state | pc: new_pc}, else: :fail
-          true -> :fail
+        if wam_list_member?(state, item, list) do
+          %{state | pc: new_pc}
+        else
+          :fail
         end
       {"!/0", 0} ->
-        # Cut: discard all choice points accumulated in this clause.
-        # Conservative (prunes more than strict WAM cut-barrier semantics
-        # would) but matches green-cut usage — the only form currently
-        # emitted by the compiler.
+        # Cut: truncate choice_points back to the barrier set at
+        # predicate entry (saved by `allocate` into state.cut_point).
+        # Preserves caller CPs while clearing CPs pushed inside this
+        # clause body.
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | choice_points: [], pc: new_pc}
+        %{state | choice_points: state.cut_point, pc: new_pc}
       _ -> :fail
     end
   end
+
+  defp wam_list_length(_state, []), do: 0
+  defp wam_list_length(_state, "[]"), do: 0
+  defp wam_list_length(_state, list) when is_list(list), do: length(list)
+  defp wam_list_length(state, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, "./2"} ->
+        [_h, tail] = heap_slice(state, addr + 1, 2)
+        case wam_list_length(state, deref_var(state, tail)) do
+          :fail -> :fail
+          n -> n + 1
+        end
+      _ -> :fail
+    end
+  end
+  defp wam_list_length(_state, _), do: :fail
+
+  defp wam_list_member?(_state, _item, []), do: false
+  defp wam_list_member?(_state, _item, "[]"), do: false
+  defp wam_list_member?(_state, item, list) when is_list(list), do: item in list
+  defp wam_list_member?(state, item, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, "./2"} ->
+        [h, tail] = heap_slice(state, addr + 1, 2)
+        if deref_var(state, h) == item do
+          true
+        else
+          wam_list_member?(state, item, deref_var(state, tail))
+        end
+      _ -> false
+    end
+  end
+  defp wam_list_member?(_state, _item, _), do: false
 
   defp eval_arith(_state, n) when is_number(n), do: n
   defp eval_arith(_state, n) when is_binary(n) do
@@ -885,7 +927,13 @@ compile_wam_runtime_to_elixir(Options, Code) :-
               # caller-supplied unbound arg. Set by run(args) at entry so
               # next_solution/1 can rematerialise output regs on every
               # solution (A-regs get clobbered as scratch during clauses).
-              arg_vars: []
+              arg_vars: [],
+              # cut_point is the choice_points snapshot to restore on `!`.
+              # Saved to the env frame by `allocate`; restored by
+              # `deallocate`. A cut truncates state.choice_points back to
+              # this snapshot — clearing CPs pushed inside the current
+              # predicate body without touching the caller\'s CPs.
+              cut_point: []
   end
 
 ~w
