@@ -380,6 +380,37 @@ test_haskell_runtime_imports_parallel :-
     ;   fail_test(Test, 'parallel/deepseq imports missing from WamRuntime')
     ).
 
+%% PutStructureDyn: runtime-parsed functors
+%% --------------------------------------------
+
+test_haskell_put_structure_dyn_in_types :-
+    Test = 'WAM-Haskell: PutStructureDyn constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "PutStructureDyn !RegId !RegId !RegId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn missing from Instruction type')
+    ).
+
+test_haskell_put_structure_dyn_step_handler :-
+    Test = 'WAM-Haskell: PutStructureDyn step handler present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (PutStructureDyn nameReg arityReg targetReg)"),
+        sub_string(S, _, _, _, "BuildStruct fn targetReg (fromIntegral arity)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn step handler missing or incorrect')
+    ).
+
+test_haskell_put_structure_dyn_wam_parse :-
+    Test = 'WAM-Haskell: put_structure_dyn WAM text parsed',
+    (   wam_haskell_target:wam_instr_to_haskell(
+            ["put_structure_dyn", "A1,", "A2,", "A3"], Hs),
+        sub_string(Hs, _, _, _, "PutStructureDyn")
+    ->  pass(Test)
+    ;   fail_test(Test, 'put_structure_dyn WAM text not parsed')
+    ).
+
 %% Phase 4.3: findall/bag/set merge strategies
 %% --------------------------------------------
 
@@ -700,6 +731,10 @@ run_tests :-
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
     test_haskell_runtime_imports_parallel,
+    %% PutStructureDyn: runtime-parsed functors
+    test_haskell_put_structure_dyn_in_types,
+    test_haskell_put_structure_dyn_step_handler,
+    test_haskell_put_structure_dyn_wam_parse,
     %% Phase 4.3: findall/bag/set merge strategies
     test_haskell_findall_bag_set_forkable,
     test_haskell_infer_collect_maps_to_findall,

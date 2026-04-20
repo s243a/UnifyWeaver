@@ -1505,6 +1505,19 @@ step !ctx s (PutStructure fn ai arity) =
           , wsBuilder = BuildStruct fn ai arity []
           })
 
+-- PutStructureDyn: like PutStructure but functor name and arity come
+-- from registers at runtime. Used when the term shape is computed
+-- dynamically (e.g., after =../2 or functor/3 with variable args).
+step !ctx s (PutStructureDyn nameReg arityReg targetReg) =
+  let mName = derefVar (wsBindings s) <$> getReg nameReg s
+      mArity = derefVar (wsBindings s) <$> getReg arityReg s
+  in case (mName, mArity) of
+    (Just (Atom fn), Just (Integer arity)) | arity >= 0 ->
+      Just (s { wsPC = wsPC s + 1
+              , wsBuilder = BuildStruct fn targetReg (fromIntegral arity) []
+              })
+    _ -> Nothing  -- name must be an atom, arity a non-negative integer
+
 step !ctx s (PutList ai) =
   Just (s { wsPC = wsPC s + 1
            , wsBuilder = BuildList ai []
@@ -2729,6 +2742,7 @@ data Instruction
   | PutVariable !RegId !RegId
   | PutValue !RegId !RegId
   | PutStructure String !RegId !Int   -- functor, target reg, arity (pre-parsed)
+  | PutStructureDyn !RegId !RegId !RegId  -- nameReg, arityReg, targetReg (runtime-parsed)
   | PutList !RegId
   | SetValue !RegId
   | SetConstant Value
@@ -3046,6 +3060,10 @@ wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutStructure "~w" ~w ~w', [CFN, AiI, Arity]).
+wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
+    clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
+    reg_name_to_int(CN, NI), reg_name_to_int(CA, AI), reg_name_to_int(CT, TI),
+    format(string(Hs), 'PutStructureDyn ~w ~w ~w', [NI, AI, TI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
