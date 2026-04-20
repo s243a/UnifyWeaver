@@ -302,12 +302,18 @@ for further optimization work.
     for the benchmark seed categories and roots, while `kernels_off` keeps the
     on-demand recursive traversal path. Both modes still match
     `prolog-accumulated` on `dev`.
+14. Clojure `call-foreign` now accepts deterministic output bindings from
+    handlers. Existing boolean handlers still work, while handlers can return
+    `{:bindings {2 "value"}}` to unify output argument registers before
+    returning to WAM code. This moves traversal kernels closer to the generic
+    Haskell/Rust hybrid FFI shape, but it is still single-result and does not
+    provide streaming/backtracking foreign solutions yet.
 
 ### Highest-value remaining work
 
-1. Move the traversal-index kernel closer to the generic `call-foreign`
-   runtime surface, especially multi-output traversal kernels comparable to
-   the mature Haskell/Rust hybrid paths.
+1. Add multi-solution/streaming foreign traversal so Clojure kernels can
+   produce backtracking result sets instead of only deterministic output
+   bindings.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once

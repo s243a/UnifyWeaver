@@ -322,13 +322,52 @@
                        (reg-get-raw state (str "A" idx))))
         (range 1 (inc arity))))
 
+(defn foreign-binding-reg [idx]
+  (cond
+    (integer? idx) (str "A" idx)
+    (string? idx) idx
+    (keyword? idx) (name idx)
+    :else (str idx)))
+
+(defn apply-foreign-bindings [state bindings]
+  (loop [s state
+         pairs (seq bindings)]
+    (if-let [[idx value] (first pairs)]
+      (let [reg (foreign-binding-reg idx)
+            current (or (reg-get-raw s reg) ::unbound)
+            [ok next-state] (unify-values s current value)]
+        (if ok
+          (recur next-state (next pairs))
+          [false state]))
+      [true s])))
+
+(defn apply-foreign-result [state result]
+  (cond
+    (true? result)
+    [true state]
+
+    (false? result)
+    [false state]
+
+    (and (map? result) (contains? result :bindings))
+    (apply-foreign-bindings state (:bindings result))
+
+    (and (vector? result) (not-empty result))
+    (apply-foreign-bindings state (into {} (map-indexed (fn [idx value] [(inc idx) value]) result)))
+
+    :else
+    [false state]))
+
 (defn execute-foreign [state instr]
   (let [key (foreign-key (:pred instr) (:arity instr))
         handler (get (:foreign-handlers state) key)]
     (if handler
-      (if (boolean (handler (foreign-args state (:arity instr))))
-        (advance state)
-        (backtrack state))
+      (let [[ok next-state] (apply-foreign-result
+                              state
+                              (handler (foreign-args state (:arity instr))))]
+        (if ok
+          (advance next-state)
+          (backtrack state)))
       (backtrack state))))
 
 (defn step [state]
