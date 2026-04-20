@@ -5,7 +5,7 @@
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
-              [lower_predicate_to_elixir/4, classify_predicate/4]).
+              [lower_predicate_to_elixir/4, classify_predicate/4, extract_facts/3]).
 
 :- dynamic test_failed/0.
 
@@ -278,7 +278,7 @@ test_shape_comment_in_generated_module :-
     phase_a_fixture_setup,
     wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
     lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
-    (   sub_string(Code, _, _, _, 'Phase-A fact-shape classification'),
+    (   sub_string(Code, _, _, _, 'Fact-shape classification'),
         sub_string(Code, _, _, _, 'clauses=150'),
         sub_string(Code, _, _, _, 'fact_only=true'),
         sub_string(Code, _, _, _, 'layout=inline_data')
@@ -287,15 +287,74 @@ test_shape_comment_in_generated_module :-
     ).
 
 test_phase_a_preserves_compiled_output :-
-    Test = 'Phase A: generated module still uses compiled defps (no behaviour change)',
+    Test = 'Phase A: small predicate with default threshold uses compiled defps',
     phase_a_fixture_setup,
-    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
-    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
-    % Even though layout=inline_data, Phase A still emits defp clauses
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    lower_predicate_to_elixir(small_fact/2, WamCode, [module_name('TestMod')], Code),
     (   sub_string(Code, _, _, _, 'defp clause_'),
         sub_string(Code, _, _, _, 'def run(%WamRuntime.WamState{}')
     ->  pass(Test)
     ;   fail_test(Test, 'expected compiled-shape output not present')
+    ).
+
+%% Phase B inline_data emission tests
+
+test_extract_facts_simple :-
+    Test = 'Phase B: extract_facts yields tuple list for fact-only predicate',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_facts(Segments, 2, Literal),
+    (   sub_string(Literal, _, _, _, '{"a", "1"}'),
+        sub_string(Literal, _, _, _, '{"d", "4"}')
+    ->  pass(Test)
+    ;   fail_test(Test, Literal)
+    ).
+
+test_phase_b_emits_inline_data_when_chosen :-
+    Test = 'Phase B: inline_data layout emits @facts and no defp clauses',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, '@facts ['),
+        sub_string(Code, _, _, _, 'WamRuntime.stream_facts(state, @facts, 2)'),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected inline_data shape missing or leaked defp')
+    ).
+
+test_phase_b_variable_head_becomes_sentinel :-
+    Test = 'Phase B: variable head arg emits :_var sentinel',
+    phase_a_fixture_setup,
+    % Force variable_head/1 to inline_data via low threshold.
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    lower_predicate_to_elixir(variable_head/1, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    (   sub_string(Code, _, _, _, ':_var'),
+        sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'variable_head did not lower to :_var sentinel')
+    ).
+
+test_phase_b_fallback_on_unextractable :-
+    Test = 'Phase B: unextractable fact falls back to compiled (safe default)',
+    phase_a_fixture_setup,
+    % Inject a compound-head fact; extraction should fail and fall back.
+    retractall(phase_a_test:compound_head(_)),
+    assertz((phase_a_test:compound_head(foo(1, 2)))),
+    wam_target:compile_predicate_to_wam(phase_a_test:compound_head/1, [], WamCode),
+    % Force inline_data via override, but extraction should fail and
+    % lower_predicate_to_elixir/4 falls through to compiled.
+    lower_predicate_to_elixir(compound_head/1, WamCode,
+                              [module_name('TestMod'),
+                               fact_layout(compound_head/1, inline_data([]))], Code),
+    (   sub_string(Code, _, _, _, 'defp clause_'),
+        \+ sub_string(Code, _, _, _, '@facts [')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected fallback to compiled did not occur')
     ).
 
 %% Test runner
@@ -324,5 +383,9 @@ run_tests :-
     test_classify_user_override_threshold,
     test_shape_comment_in_generated_module,
     test_phase_a_preserves_compiled_output,
+    test_extract_facts_simple,
+    test_phase_b_emits_inline_data_when_chosen,
+    test_phase_b_variable_head_becomes_sentinel,
+    test_phase_b_fallback_on_unextractable,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

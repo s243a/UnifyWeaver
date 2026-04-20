@@ -16,7 +16,9 @@
     classify_predicate/4,         % +PredIndicator, +Segments, +Options, -Info
     clause_count/2,               % +Segments, -N
     fact_only/2,                  % +Segments, -Bool
-    first_arg_groundness/3        % +Segments, +Arity, -Status
+    first_arg_groundness/3,       % +Segments, +Arity, -Status
+    % Phase B fact extraction. Exported so tests can exercise it.
+    extract_facts/3               % +Segments, +Arity, -ElixirListLiteral
 ]).
 
 :- use_module(library(lists)).
@@ -29,25 +31,42 @@
 % ============================================================================
 
 %% lower_predicate_to_elixir(+PredIndicator, +WamCode, +Options, -Code)
+%
+%  Dispatches on the Phase-A classification layout:
+%    - `compiled`    — emit one `defp` per clause (unchanged path)
+%    - `inline_data` — emit `@facts [{...}, ...]` and a single
+%      `run/1` that delegates to `WamRuntime.stream_facts/3`
+%    - `external_source` — Phase D, currently falls back to `compiled`
+%
+%  Falling back to `compiled` is always safe and preserves correctness,
+%  so an extraction failure (e.g., a compound head arg we can\'t yet
+%  represent inline) silently falls back instead of erroring.
 lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     collect_labels(Lines, 1, Labels),
     split_into_segments(Lines, 1, Segments),
-    generate_all_segments(Segments, Labels, FuncCodes),
-    atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
     atom_string(Pred, PredStr),
     camel_case(PredStr, CamelPred),
     option(module_name(ModName), Options, 'WamPredLow'),
     camel_case(ModName, CamelMod),
-    Segments = [FirstSegName-_|_],
-    segment_func_name(FirstSegName, FirstFunc),
-    % Phase A: classify the predicate and record the chosen layout as a
-    % module-level comment. Phase A emits every predicate via the
-    % existing `compiled` path regardless of the chosen layout — this
-    % is observation-only. Phase B switches on Info.layout.
     classify_predicate(Pred/Arity, Segments, Options, Info),
     format_fact_shape_comment(Info, ShapeComment),
+    Info = fact_shape_info(_, _, _, Layout),
+    (   Layout = inline_data(_),
+        catch(extract_facts(Segments, Arity, FactsLiteral), _, fail)
+    ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
+                                  ShapeComment, FactsLiteral, Code)
+    ;   render_compiled_module(CamelMod, CamelPred, PredStr, Arity,
+                               ShapeComment, Segments, Labels, Code)
+    ).
+
+render_compiled_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
+                       Segments, Labels, Code) :-
+    generate_all_segments(Segments, Labels, FuncCodes),
+    atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
+    Segments = [FirstSegName-_|_],
+    segment_func_name(FirstSegName, FirstFunc),
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
@@ -65,12 +84,6 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
 
   def run(args) when is_list(args) do
     state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
-    # Rewrite each caller-supplied unbound to a fresh make_ref so the id
-    # cannot collide with any register slot — subsequent put_variable on
-    # the same A-reg would otherwise corrupt the binding chain. Remember
-    # the refs in state.arg_vars so run/1 and next_solution/1 can read
-    # the correct bound value even after body code has used the A-reg as
-    # scratch.
     {state, arg_vars} = Enum.with_index(args, 1)
     |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
       case arg do
@@ -81,9 +94,6 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
           {%{s | regs: Map.put(s.regs, i, other)}, vars}
       end
     end)
-    # state.cp holds the current continuation — a function of
-    # `(state) -> {:ok, state} | :fail`. At the top level we terminate
-    # in WamRuntime.terminal_cp/1 which just returns {:ok, state}.
     state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
     try do
       case run(state) do
@@ -101,6 +111,54 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
 
 ~w
 end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FirstFunc, CamelPred, FuncsBody]).
+
+render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
+                          FactsLiteral, Code) :-
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc "Lowered WAM-compiled predicate: ~w/~w (inline_data)"
+
+~w
+
+  # Phase-B inline_data layout: facts live as a module attribute, not as
+  # per-fact defp functions. run/1 delegates to WamRuntime.stream_facts,
+  # which iterates @facts, attempts unification on each tuple, and
+  # pushes a fact-stream CP on success so backtracking resumes at the
+  # next tuple. :_var in a tuple slot means the head arg was a variable
+  # — it unifies trivially with any incoming value.
+  @facts ~w
+
+  def run(%WamRuntime.WamState{} = state) do
+    WamRuntime.stream_facts(state, @facts, ~w)
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} = Enum.with_index(args, 1)
+    |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+      case arg do
+        {:unbound, _} ->
+          v = {:unbound, make_ref()}
+          {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+        other ->
+          {%{s | regs: Map.put(s.regs, i, other)}, vars}
+      end
+    end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FactsLiteral, Arity, CamelPred]).
 
 % ============================================================================
 % PHASE A: FACT-SHAPE CLASSIFICATION
@@ -187,9 +245,66 @@ pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
 %  Info to pick the emission path.
 format_fact_shape_comment(fact_shape_info(N, FactOnly, FirstArg, Layout), Comment) :-
     format(string(Comment),
-'  # Phase-A fact-shape classification (observation-only):
+'  # Fact-shape classification:
   #   clauses=~w fact_only=~w first_arg=~w layout=~w',
            [N, FactOnly, FirstArg, Layout]).
+
+% ============================================================================
+% PHASE B: INLINE_DATA FACT EXTRACTION
+% ============================================================================
+%
+% Walks each clause\'s instruction list to build an Elixir tuple of the
+% head args. Constants (from `get_constant`) become quoted strings.
+% Variables (from `get_variable`) become `:_var`, meaning the head was
+% a variable at that slot and any incoming value unifies trivially.
+% Compound args (`get_structure` / `get_list`) are not representable
+% inline yet — extraction fails and the caller falls back to `compiled`.
+
+%% extract_facts(+Segments, +Arity, -ElixirLiteral)
+%  ElixirLiteral is a string like "[\n    {\"a\", \"b\"},\n    ...\n  ]"
+%  suitable for dropping into a module attribute.
+extract_facts(Segments, Arity, ElixirLiteral) :-
+    maplist(extract_clause_tuple(Arity), Segments, TupleLiterals),
+    (   TupleLiterals = []
+    ->  ElixirLiteral = '[]'
+    ;   atomic_list_concat(TupleLiterals, ',\n    ', Joined),
+        format(string(ElixirLiteral), '[\n    ~w\n  ]', [Joined])
+    ).
+
+extract_clause_tuple(Arity, _Name-Instrs, TupleLiteral) :-
+    numlist(1, Arity, Slots),
+    maplist(extract_arg_value(Instrs), Slots, Values),
+    atomic_list_concat(Values, ', ', Inner),
+    format(string(TupleLiteral), '{~w}', [Inner]).
+
+extract_arg_value(Instrs, Slot, ElixirVal) :-
+    format(string(AStr), 'A~w', [Slot]),
+    (   member(_-get_constant(C, AStr), Instrs)
+    ->  elixir_string_literal(C, ElixirVal)
+    ;   member(_-get_variable(_, AStr), Instrs)
+    ->  ElixirVal = ':_var'
+    ;   member(_-get_value(_, AStr), Instrs)
+    ->  ElixirVal = ':_var'
+    ;   % get_structure / get_list / anything else → unrepresentable;
+        % fail the whole extraction so lower_predicate_to_elixir/4
+        % falls back to the compiled path.
+        fail
+    ).
+
+%% elixir_string_literal(+RawString, -Literal)
+%  Wraps the raw WAM operand in double quotes, escaping backslashes and
+%  embedded double-quotes so the result is a valid Elixir string.
+elixir_string_literal(C, Literal) :-
+    (   atom(C) -> atom_string(C, CStr) ; CStr = C ),
+    string_chars(CStr, Chars),
+    maplist(escape_elixir_char, Chars, NestedChars),
+    append(NestedChars, EscapedChars),
+    string_chars(Escaped, EscapedChars),
+    format(string(Literal), '"~w"', [Escaped]).
+
+escape_elixir_char('\\', ['\\', '\\']).
+escape_elixir_char('"', ['\\', '"']).
+escape_elixir_char(C, [C]).
 
 % ============================================================================
 % LABEL COLLECTION
