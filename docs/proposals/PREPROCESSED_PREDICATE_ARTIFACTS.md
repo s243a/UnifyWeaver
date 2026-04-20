@@ -386,10 +386,13 @@ Prototype status:
   external-materialized access without a new planner enum yet. It also exposes
   indexed single-column lookups through `IIndexedRelationProvider`, letting
   parameterized fact scans probe preprocessed offsets without first
-  materializing the whole relation.
+  materializing the whole relation. Single-key joins can also use that provider
+  seam when one side is a selective probe and the other side is an indexed
+  artifact-backed scan.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
   and `artifact` source modes against the existing scan-family workloads,
-  including a `bound_scan` mode for indexed parameter probes.
+  including `bound_scan` and `selective_join` modes for indexed parameter
+  probes.
 
 ## Success Criteria
 
