@@ -1625,8 +1625,12 @@ namespace UnifyWeaver.QueryRuntime
         private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("UWBI0001");
         private static readonly byte[] IndexDirectoryMagic = Encoding.ASCII.GetBytes("UWBD0001");
         private static readonly byte[] IndexDirectoryFooterMagic = Encoding.ASCII.GetBytes("UWBF0001");
+        private const int IndexDirectoryEntrySize = sizeof(ulong) + sizeof(long) + sizeof(int) + sizeof(long);
+        private const int MaxDirectoryLookupKeys = 256;
 
         internal sealed record WriteResult(long RowCount, Dictionary<string, string> IndexPaths);
+
+        private readonly record struct IndexDirectoryInfo(long TableOffset, int EntryCount);
 
         private readonly record struct IndexDirectoryEntry(ulong Hash, long KeyOffset, int KeyLength, long EntryOffset);
 
@@ -1864,7 +1868,7 @@ namespace UnifyWeaver.QueryRuntime
                 return Array.Empty<long>();
             }
 
-            if (keySet.Count <= 256 &&
+            if (keySet.Count <= MaxDirectoryLookupKeys &&
                 TryReadOffsetsFromDirectory(indexPath, expectedColumnIndex, keySet, out var directoryOffsets))
             {
                 return directoryOffsets;
@@ -1965,7 +1969,7 @@ namespace UnifyWeaver.QueryRuntime
             using var reader = new BinaryReader(stream, Encoding.UTF8);
 
             ValidateIndexHeader(reader, indexPath, expectedColumnIndex);
-            if (!TryReadIndexDirectory(reader, indexPath, out var entries))
+            if (!TryReadIndexDirectoryInfo(reader, indexPath, out var directory))
             {
                 return false;
             }
@@ -1974,12 +1978,18 @@ namespace UnifyWeaver.QueryRuntime
             foreach (var key in keySet)
             {
                 var hash = StableHash(key);
-                var index = LowerBoundByHash(entries, hash);
-                while (index < entries.Count && entries[index].Hash == hash)
+                var index = LowerBoundByHash(reader, directory, hash);
+                while (index < directory.EntryCount)
                 {
-                    if (ReadDirectoryKey(stream, entries[index]) == key)
+                    var entry = ReadIndexDirectoryEntry(reader, directory, index);
+                    if (entry.Hash != hash)
                     {
-                        AddOffsetsFromIndexEntry(reader, indexPath, expectedColumnIndex, entries[index].EntryOffset, key, result);
+                        break;
+                    }
+
+                    if (ReadDirectoryKey(stream, entry) == key)
+                    {
+                        AddOffsetsFromIndexEntry(reader, indexPath, expectedColumnIndex, entry.EntryOffset, key, result);
                         break;
                     }
 
@@ -1991,9 +2001,9 @@ namespace UnifyWeaver.QueryRuntime
             return true;
         }
 
-        private static bool TryReadIndexDirectory(BinaryReader reader, string indexPath, out List<IndexDirectoryEntry> entries)
+        private static bool TryReadIndexDirectoryInfo(BinaryReader reader, string indexPath, out IndexDirectoryInfo directory)
         {
-            entries = new List<IndexDirectoryEntry>();
+            directory = default;
             var stream = reader.BaseStream;
             var footerLength = sizeof(long) + IndexDirectoryFooterMagic.Length;
             if (stream.Length < footerLength)
@@ -2030,22 +2040,30 @@ namespace UnifyWeaver.QueryRuntime
                 throw new InvalidDataException($"Binary relation index directory entry count is negative: {indexPath}");
             }
 
-            entries = new List<IndexDirectoryEntry>(entryCount);
-            for (var i = 0; i < entryCount; i++)
-            {
-                var hash = reader.ReadUInt64();
-                var keyOffset = reader.ReadInt64();
-                var keyLength = reader.ReadInt32();
-                var entryOffset = reader.ReadInt64();
-                if (keyOffset < 0 || keyLength < 0 || entryOffset < 0)
-                {
-                    throw new InvalidDataException($"Binary relation index directory contains a negative offset or length: {indexPath}");
-                }
+            var tableOffset = stream.Position;
+            directory = new IndexDirectoryInfo(tableOffset, entryCount);
+            return true;
+        }
 
-                entries.Add(new IndexDirectoryEntry(hash, keyOffset, keyLength, entryOffset));
+        private static IndexDirectoryEntry ReadIndexDirectoryEntry(BinaryReader reader, IndexDirectoryInfo directory, int index)
+        {
+            if (index < 0 || index >= directory.EntryCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
             }
 
-            return true;
+            var stream = reader.BaseStream;
+            stream.Position = directory.TableOffset + ((long)index * IndexDirectoryEntrySize);
+            var hash = reader.ReadUInt64();
+            var keyOffset = reader.ReadInt64();
+            var keyLength = reader.ReadInt32();
+            var entryOffset = reader.ReadInt64();
+            if (keyOffset < 0 || keyLength < 0 || entryOffset < 0)
+            {
+                throw new InvalidDataException("Binary relation index directory contains a negative offset or length.");
+            }
+
+            return new IndexDirectoryEntry(hash, keyOffset, keyLength, entryOffset);
         }
 
         private static void AddOffsetsFromIndexEntry(
@@ -2089,14 +2107,17 @@ namespace UnifyWeaver.QueryRuntime
             return Encoding.UTF8.GetString(bytes);
         }
 
-        private static int LowerBoundByHash(IReadOnlyList<IndexDirectoryEntry> entries, ulong hash)
+        private static int LowerBoundByHash(BinaryReader reader, IndexDirectoryInfo directory, ulong hash)
         {
             var lo = 0;
-            var hi = entries.Count;
+            var hi = directory.EntryCount;
+            var stream = reader.BaseStream;
             while (lo < hi)
             {
                 var mid = lo + ((hi - lo) / 2);
-                if (entries[mid].Hash < hash)
+                stream.Position = directory.TableOffset + ((long)mid * IndexDirectoryEntrySize);
+                var midHash = reader.ReadUInt64();
+                if (midHash < hash)
                 {
                     lo = mid + 1;
                 }
