@@ -315,11 +315,18 @@ for further optimization work.
     restores the pre-foreign state and tries the next solution. This is the
     generic runtime surface needed before moving traversal kernels out of
     runner-specific code.
+16. Clojure `kernels_on` now exposes `category_ancestor/4` through that
+    generic streaming `call-foreign` surface. The generated handler builds a
+    parent adjacency map from facts, returns multiple `{Ancestor, Hops}`
+    solutions via `:solutions`, and keeps `kernels_off` on the pure WAM path.
+    The effective-distance runner still has its runner-side traversal index,
+    but the WAM predicate surface now has the same shape needed to replace it.
 
 ### Highest-value remaining work
 
-1. Move the Clojure traversal kernel onto the generic streaming `call-foreign`
-   surface instead of keeping it runner-specific.
+1. Update the Clojure effective-distance runner to consume the generic
+   streaming `category_ancestor/4` foreign path instead of its bespoke
+   runner-side traversal index.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once

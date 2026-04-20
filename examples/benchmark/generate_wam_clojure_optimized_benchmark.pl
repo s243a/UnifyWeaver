@@ -4,6 +4,7 @@
             generate/4,
             parse_kernel_mode/2,
             category_parent_handler_code/1,
+            category_ancestor_handler_code/1,
             collect_wam_predicates/2,
             collect_wam_predicates/3
           ]).
@@ -104,12 +105,14 @@ parse_variant(accumulated, [
 ]).
 
 parse_kernel_mode(kernels_on, [
-    foreign_predicates([category_parent/2]),
+    foreign_predicates([category_parent/2, category_ancestor/4]),
     clojure_foreign_handlers([
-        handler(category_parent/2, HandlerCode)
+        handler(category_parent/2, ParentHandlerCode),
+        handler(category_ancestor/4, AncestorHandlerCode)
     ])
 ]) :-
-    category_parent_handler_code(HandlerCode).
+    category_parent_handler_code(ParentHandlerCode),
+    category_ancestor_handler_code(AncestorHandlerCode).
 parse_kernel_mode(kernels_off, [
     no_kernels(true)
 ]).
@@ -133,6 +136,31 @@ category_parent_edge_literal(Child-Parent, Literal) :-
     clj_string_literal_local(Child, ChildLit),
     clj_string_literal_local(Parent, ParentLit),
     format(atom(Literal), '[~w ~w]', [ChildLit, ParentLit]).
+
+category_ancestor_handler_code(HandlerCode) :-
+    category_parent_map_literal(ParentsByChild),
+    benchmark_max_depth_literal(MaxDepth),
+    format(string(HandlerCode),
+           "(let [parents-by-child {~s} max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get parents-by-child category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
+           [ParentsByChild, MaxDepth]).
+
+category_parent_map_literal(Literal) :-
+    findall(Child,
+            current_category_parent_fact(Child, _),
+            Children0),
+    sort(Children0, Children),
+    maplist(category_parent_bucket_literal, Children, BucketLiterals),
+    atomic_list_concat(BucketLiterals, ' ', Literal).
+
+category_parent_bucket_literal(Child, Literal) :-
+    findall(Parent,
+            current_category_parent_fact(Child, Parent),
+            Parents0),
+    sort(Parents0, Parents),
+    clj_string_literal_local(Child, ChildLit),
+    maplist(clj_string_literal_local, Parents, ParentLiterals),
+    atomic_list_concat(ParentLiterals, ' ', ParentBody),
+    format(atom(Literal), '~w [~w]', [ChildLit, ParentBody]).
 
 clj_string_literal_local(In, Literal) :-
     atom_string(In, InStr0),
