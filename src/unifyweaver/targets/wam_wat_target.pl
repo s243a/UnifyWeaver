@@ -6016,6 +6016,15 @@ peephole_tail_call_k([H|T], [H|Out]) :-
 %% fallback handles every non-matched tag (ref/unbound/float/list),
 %% routing directly to it instead of falling through to the
 %% now-redundant try_me_else chain.
+%%
+%% Since default_tgt makes the try_me_else/retry_me_else/trust_me
+%% chain unreachable on every path, we drop those three
+%% instructions from the output entirely. The label markers (L2, L3,
+%% SynthL1) stay — they're the dispatch targets. retry_me_else and
+%% trust_me are already guarded for cp_count=0, so removing them
+%% is equivalent to having them run as no-ops; dropping them saves
+%% one instruction dispatch per clause 2/3 entry plus data-segment
+%% space.
 peephole_type_dispatch(Instrs, Optimized) :-
     Instrs = [label(Pred), try_me_else(L2) | After],
     atom_string(L2, L2S),
@@ -6037,18 +6046,15 @@ peephole_type_dispatch(Instrs, Optimized) :-
     DefaultTgt = L3,
     append([label(Pred),
             type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt, DefaultTgt),
-            try_me_else(L2),
             label(SynthL1) | Clause1Body],
-           [label(L2S), retry_me_else(L3) | Clause2Body],
+           [label(L2S) | Clause2Body],
            Head1),
     append(Head1,
-           [label(L3S), trust_me | Clause3Body],
+           [label(L3S) | Clause3Body],
            Optimized).
 %% 2-clause variant: matches `try_me_else + clause(guard) + trust_me
 %% + default_clause`. Fires on sum_ints/3 (integer leaf + compound
-%% walk). The non-guard clause becomes both the compound target AND
-%% the default target — it's the true fallback for anything the
-%% guarded clause can't handle.
+%% walk). Same chain-dropping optimization as the 3-clause variant.
 peephole_type_dispatch(Instrs, Optimized) :-
     Instrs = [label(Pred), try_me_else(L2) | After],
     atom_string(L2, L2S),
@@ -6064,9 +6070,8 @@ peephole_type_dispatch(Instrs, Optimized) :-
     DefaultTgt = L2,
     append([label(Pred),
             type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt, DefaultTgt),
-            try_me_else(L2),
             label(SynthL1) | Clause1Body],
-           [label(L2S), trust_me | Clause2Body],
+           [label(L2S) | Clause2Body],
            Optimized).
 peephole_type_dispatch(Instrs, Instrs).
 
