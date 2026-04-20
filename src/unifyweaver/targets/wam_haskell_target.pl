@@ -52,6 +52,53 @@
 :- reexport('wam_haskell_lowered_emitter',
             [wam_haskell_lowerable/3, lower_predicate_to_haskell/4]).
 
+% ============================================================================
+% ATOM INTERNING TABLE (compile-time)
+% ============================================================================
+% Built during WAM → Haskell compilation. Maps atom strings to integer IDs.
+% Well-known atoms are pre-assigned: true=0, fail=1, []=2, .=3, ""=4.
+
+:- dynamic atom_intern_id/2.    % atom_intern_id(String, IntId)
+:- dynamic atom_intern_next/1.  % atom_intern_next(NextId)
+
+init_atom_intern_table :-
+    retractall(atom_intern_id(_, _)),
+    retractall(atom_intern_next(_)),
+    % Reserve well-known atoms
+    assertz(atom_intern_id("true", 0)),
+    assertz(atom_intern_id("fail", 1)),
+    assertz(atom_intern_id("[]", 2)),
+    assertz(atom_intern_id(".", 3)),
+    assertz(atom_intern_id("", 4)),
+    assertz(atom_intern_next(5)).
+
+%% intern_atom(+AtomStr, -Id) is det.
+%  Assigns a stable integer ID to the given atom string. Idempotent.
+intern_atom(AtomStr, Id) :-
+    atom_string(AtomStr, Str),
+    (   atom_intern_id(Str, Id0)
+    ->  Id = Id0
+    ;   retract(atom_intern_next(Next)),
+        Id = Next,
+        Next1 is Next + 1,
+        assertz(atom_intern_id(Str, Id)),
+        assertz(atom_intern_next(Next1))
+    ).
+
+%% emit_atom_table_haskell(-Code) is det.
+%  Emits the compile-time atom table as Haskell code.
+emit_atom_table_haskell(Code) :-
+    findall(Id-Str, atom_intern_id(Str, Id), Pairs),
+    sort(Pairs, Sorted),
+    maplist([Id-Str, Entry]>>(
+        format(string(Entry), '(~w, "~w")', [Id, Str])
+    ), Sorted, Entries),
+    atomic_list_concat(Entries, ', ', EntryStr),
+    length(Sorted, N),
+    format(string(Code),
+        'compileTimeAtomTable :: InternTable\ncompileTimeAtomTable = \n  let pairs = [~w]\n  in InternTable (Map.fromList [(s, i) | (i, s) <- pairs])\n                (IM.fromList pairs)\n                ~w\n',
+        [EntryStr, N]).
+
 %% ============================================================================
 %% emit_mode selector (Phase 1 of WAM-lowered Haskell path)
 %% ============================================================================
@@ -318,7 +365,7 @@ emit_input_let_bindings([input(RegN, Type)|Rest], Pos) :-
 reg_var_name(N, Name) :-
     format(atom(Name), 'r~w', [N]).
 
-reg_default_value(atom, 'Atom ""').
+reg_default_value(atom, 'Atom atomEmpty').
 reg_default_value(integer, 'Integer 0').
 reg_default_value(vlist_atoms, 'VList []').
 
@@ -370,9 +417,9 @@ emit_one_call_arg(derived(length, RegN), InputRegs) :-
 %  atom lists are interned via wcAtomIntern so the kernel operates on
 %  Int IDs instead of Strings (eliminates hashing in the hot loop).
 emit_reg_extraction(VarName, atom) :-
-    format('(fromMaybe (-1) (Map.lookup ~wS (wcAtomIntern ctx)))', [VarName]).
+    format('(fromMaybe (-1) (Map.lookup ~wS (itForward (wcInternTable ctx))))', [VarName]).
 emit_reg_extraction(VarName, vlist_atoms) :-
-    format('[fromMaybe (-1) (Map.lookup v (wcAtomIntern ctx)) | Atom v <- ~wL]', [VarName]).
+    format('[fromMaybe (-1) (Map.lookup v (itForward (wcInternTable ctx))) | Atom v <- ~wL]', [VarName]).
 emit_reg_extraction(VarName, integer) :-
     format('~wI', [VarName]).
 
@@ -637,7 +684,7 @@ emit_multi_wrap_list([output(_, Type)|Rest], I) :-
 result_wrap_expr_for_rv(integer, I, Expr) :-
     format(atom(Expr), 'Integer (fromIntegral rv_~w)', [I]).
 result_wrap_expr_for_rv(atom, I, Expr) :-
-    format(atom(Expr), 'Atom (fromMaybe "" (IM.lookup rv_~w (wcAtomDeintern ctx)))', [I]).
+    format(atom(Expr), 'Atom rv_~w', [I]).
 result_wrap_expr_for_rv(float, I, Expr) :-
     format(atom(Expr), 'Float rv_~w', [I]).
 
@@ -647,7 +694,7 @@ result_wrap_expr_for_rv(float, I, Expr) :-
 %  be de-interned back to Strings before wrapping in the Atom constructor.
 %  For `integer` and `float`, no interning is involved.
 result_wrap_expr(integer, 'Integer (fromIntegral rv)').
-result_wrap_expr(atom, 'Atom (fromMaybe "" (IM.lookup rv (wcAtomDeintern ctx)))').
+result_wrap_expr(atom, 'Atom rv').
 result_wrap_expr(float, 'Float rv').
 
 %% detect_kernels(+Predicates, -DetectedKernels)
@@ -851,7 +898,7 @@ wam_to_haskell(builtin_call('!/0', 0), Code) :-
 
 wam_to_haskell(builtin_call('is/2', 2), Code) :-
     Code = '  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (Map.lookup "A2" (wsRegs s))
-      result = evalArith (wsBindings s) expr
+      result = evalArith (wcInternTable ctx) (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
   in case (lhs, result) of
     (Just (Unbound var), Just r) ->
@@ -882,8 +929,8 @@ wam_to_haskell(builtin_call('length/2', 2), Code) :-
        _ -> Nothing'.
 
 wam_to_haskell(builtin_call('</2', 2), Code) :-
-    Code = '  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+    Code = '  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing'.
@@ -942,9 +989,9 @@ backtrack s = case wsCPs s of
 resumeBuiltin :: BuiltinState -> ChoicePoint -> [ChoicePoint] -> WamState -> Maybe WamState
 resumeBuiltin (FactRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
-resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
-  let newBindings = IM.insert vid (Atom v) (cpBindings cp)
-      newRegs = IM.insert 2 (Atom v) (cpRegs cp)
+resumeBuiltin (FactRetry vid (vId:vs) retPC) cp rest s =
+  let newBindings = IM.insert vid (Atom vId) (cpBindings cp)
+      newRegs = IM.insert 2 (Atom vId) (cpRegs cp)
       newCPs = case vs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (FactRetry vid vs retPC) } : rest
@@ -1351,31 +1398,34 @@ callIndexedFact2 !ctx pred s =
   in case Map.lookup basePred (wcForeignFacts ctx) of
     Nothing -> Nothing
     Just factIndex ->
-      let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
+      let tbl = wcInternTable ctx
+          a1 = derefVar (wsBindings s) $ fromMaybe (Atom atomEmpty) (IM.lookup 1 (wsRegs s))
           a2 = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
       in case a1 of
-        Atom key -> case Map.lookup key factIndex of
+        Atom aid -> case Map.lookup (lookupAtom tbl aid) factIndex of
           Just (v:rest) -> case a2 of
             Unbound vid ->
-              let newRegs = IM.insert 2 (Atom v) (wsRegs s)
-                  newBindings = IM.insert vid (Atom v) (wsBindings s)
+              let vId = internAtomPure tbl v
+                  newRegs = IM.insert 2 (Atom vId) (wsRegs s)
+                  newBindings = IM.insert vid (Atom vId) (wsBindings s)
                   newTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-                  newCPs = case rest of
+                  restIds = map (internAtomPure tbl) rest
+                  newCPs = case restIds of
                     [] -> wsCPs s  -- single match, no CP
                     _  -> ChoicePoint
                             { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
                             , cpCP = wsCP s, cpTrailLen = wsTrailLen s
                             , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
-                            , cpBuiltin = Just (FactRetry vid rest retPC)
+                            , cpBuiltin = Just (FactRetry vid restIds retPC)
                             } : wsCPs s
-                  newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+                  newCPsLen = case restIds of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
                          , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1
                          , wsCPs = newCPs, wsCPsLen = newCPsLen })
-            Atom existing ->
-              if existing == v then Just (s { wsPC = retPC })
-              else case filter (== existing) rest of
+            Atom existingId ->
+              if existingId == vId then Just (s { wsPC = retPC })
+              else case filter (== existingId) restIds of
                 (_:_) -> Just (s { wsPC = retPC })
                 [] -> Nothing
             _ -> Nothing
@@ -1500,9 +1550,9 @@ step !ctx s (PutValue xn ai) =
     Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
-step !ctx s (PutStructure fn ai arity) =
+step !ctx s (PutStructure fnId ai arity) =
   Just (s { wsPC = wsPC s + 1
-          , wsBuilder = BuildStruct fn ai arity []
+          , wsBuilder = BuildStruct fnId ai arity []
           })
 
 -- PutStructureDyn: like PutStructure but functor name and arity come
@@ -1512,9 +1562,9 @@ step !ctx s (PutStructureDyn nameReg arityReg targetReg) =
   let mName = derefVar (wsBindings s) <$> getReg nameReg s
       mArity = derefVar (wsBindings s) <$> getReg arityReg s
   in case (mName, mArity) of
-    (Just (Atom fn), Just (Integer arity)) | arity >= 0 ->
+    (Just (Atom fnId), Just (Integer arity)) | arity >= 0 ->
       Just (s { wsPC = wsPC s + 1
-              , wsBuilder = BuildStruct fn targetReg (fromIntegral arity) []
+              , wsBuilder = BuildStruct fnId targetReg (fromIntegral arity) []
               })
     _ -> Nothing  -- name must be an atom, arity a non-negative integer
 
@@ -1670,10 +1720,10 @@ step !ctx s (SwitchOnConstantPc table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
-    Just (Atom key) -> case Map.lookup key table of
+    Just (Atom aid) -> case IM.lookup aid table of
       Just pc -> Just (s { wsPC = pc })
       Nothing -> Nothing
-    Just (Integer n) -> case Map.lookup (show n) table of
+    Just (Integer n) -> case IM.lookup n table of
       Just pc -> Just (s { wsPC = pc })
       Nothing -> Nothing
     _ -> Nothing
@@ -1721,7 +1771,7 @@ step !ctx s (BuiltinCall "number/1" _) =
 
 step !ctx s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
-      result = evalArith (wsBindings s) expr
+      result = evalArith (wcInternTable ctx) (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case (lhs, result) of
     (Just (Unbound vid), Just r) ->
@@ -1755,17 +1805,18 @@ step !ctx s (BuiltinCall "length/2" _) =
     _ -> Nothing
 
 step !ctx s (BuiltinCall "</2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 step !ctx s (BuiltinCall "\\\\+/1" _) =
   let goal = IM.lookup 1 (wsRegs s) >>= derefHeap (wsHeap s)
+      tbl = wcInternTable ctx
   in case goal of
-    -- Fast path: \\+ member(X, L)
-    Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
+    -- Fast path: \\+ member(X, L) — check functor name via reverse lookup
+    Just (Str fnId [needle, haystack]) | "member" `isPrefixOf` lookupAtom tbl fnId ->
       let n = derefVar (wsBindings s) needle
           h = derefVar (wsBindings s) haystack
           found = case h of
@@ -1773,13 +1824,13 @@ step !ctx s (BuiltinCall "\\\\+/1" _) =
             _ -> False
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
     -- Fast path: \\+ true always fails, \\+ fail always succeeds
-    Just (Atom "true") -> Nothing
-    Just (Atom "fail") -> Just (s { wsPC = wsPC s + 1 })
+    Just (Atom aid) | aid == atomTrue -> Nothing
+    Just (Atom aid) | aid == atomFail -> Just (s { wsPC = wsPC s + 1 })
     -- General path: resolve the goal, snapshot-and-run.
     -- Phase 4.4: if the goal''s entry instruction is ParTryMeElse,
     -- fork branches in parallel via runNegationParallel.
-    Just (Str fn args) ->
-      let goalKey = fn ++ "/" ++ show (length args)
+    Just (Str fnId args) ->
+      let goalKey = lookupAtom tbl fnId ++ "/" ++ show (length args)
           dArgs = map (derefVar (wsBindings s)) args
       in case Map.lookup goalKey (wcLabels ctx) of
            Just pc ->
@@ -1804,8 +1855,8 @@ step !ctx s (BuiltinCall "\\\\+/1" _) =
                 else Just (s { wsPC = wsPC s + 1 })
            Nothing -> Just (s { wsPC = wsPC s + 1 })  -- unknown pred; treat as failing goal
     -- Atom as 0-arity goal (e.g. \\+ some_pred)
-    Just (Atom fn) ->
-      let goalKey = fn ++ "/0"
+    Just (Atom fnId) ->
+      let goalKey = lookupAtom tbl fnId ++ "/0"
       in case Map.lookup goalKey (wcLabels ctx) of
            Just pc ->
              let snapshot = s { wsPC = pc
@@ -1831,8 +1882,8 @@ step !ctx s (SwitchOnConstant table) =
     Nothing -> Nothing
 
 step !ctx s (BuiltinCall ">/2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
@@ -1910,9 +1961,9 @@ step !_ctx s (BuiltinCall "functor/3" _) =
     Just tVal ->
       -- Read mode: extract functor name and arity.
       let mInfo = case tVal of
-            Str fn args -> Just (Atom fn, length args)
-            VList [] -> Just (Atom "[]", 0)
-            VList _ -> Just (Atom ".", 2)
+            Str fnId args -> Just (Atom fnId, length args)
+            VList [] -> Just (Atom atomNil, 0)
+            VList _ -> Just (Atom atomDot, 2)
             Atom _ -> Just (tVal, 0)
             Integer _ -> Just (tVal, 0)
             Float _ -> Just (tVal, 0)
@@ -1974,12 +2025,12 @@ step !_ctx s (BuiltinCall "=../2" _) =
     Just tVal ->
       -- Decompose mode: build list from T.
       let mList = case tVal of
-            Str fn args -> Just (VList (Atom fn : args))
+            Str fnId args -> Just (VList (Atom fnId : args))
             Atom _ -> Just (VList [tVal])
             Integer _ -> Just (VList [tVal])
             Float _ -> Just (VList [tVal])
-            VList [] -> Just (VList [Atom "[]"])
-            VList (x : xs) -> Just (VList [Atom ".", x, VList xs])
+            VList [] -> Just (VList [Atom atomNil])
+            VList (x : xs) -> Just (VList [Atom atomDot, x, VList xs])
             _ -> Nothing
       in case mList of
         Nothing -> Nothing
@@ -2054,6 +2105,8 @@ callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 %  - Predicates.hs: compiled predicates
 %  - Main.hs: benchmark driver
 write_wam_haskell_project(Predicates, Options, ProjectDir) :-
+    % Initialize the compile-time atom intern table with well-known atoms
+    init_atom_intern_table,
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'src', SrcDir),
     make_directory_path(SrcDir),
@@ -2412,24 +2465,25 @@ derefVar bindings (Unbound vid) =
     Nothing  -> Unbound vid
 derefVar _ v = v
 
--- | Evaluate arithmetic expression.
-evalArith :: IM.IntMap Value -> Value -> Maybe Double
-evalArith _ (Integer n) = Just (fromIntegral n)
-evalArith _ (Float f) = Just f
-evalArith bindings (Atom s) = case reads s of
+-- | Evaluate arithmetic expression. InternTable needed for reverse
+-- lookup of atom strings (numeric atom parsing, operator names).
+evalArith :: InternTable -> IM.IntMap Value -> Value -> Maybe Double
+evalArith _ _ (Integer n) = Just (fromIntegral n)
+evalArith _ _ (Float f) = Just f
+evalArith tbl _ (Atom aid) = case reads (lookupAtom tbl aid) of
   [(n, "")] -> Just n
   _ -> Nothing
-evalArith bindings (Str op [a]) = do
-  va <- evalArith bindings (derefVar bindings a)
-  let bareOp = takeWhile (/= ''/'') op
+evalArith tbl bindings (Str opId [a]) = do
+  va <- evalArith tbl bindings (derefVar bindings a)
+  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
   case bareOp of
     "-" -> Just (negate va)
     "abs" -> Just (abs va)
     _ -> Nothing
-evalArith bindings (Str op [a, b]) = do
-  va <- evalArith bindings (derefVar bindings a)
-  vb <- evalArith bindings (derefVar bindings b)
-  let bareOp = takeWhile (/= ''/'') op
+evalArith tbl bindings (Str opId [a, b]) = do
+  va <- evalArith tbl bindings (derefVar bindings a)
+  vb <- evalArith tbl bindings (derefVar bindings b)
+  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
   case bareOp of
     "+" -> Just (va + vb)
     "-" -> Just (va - vb)
@@ -2440,7 +2494,7 @@ evalArith bindings (Str op [a, b]) = do
     "//" -> if vb /= 0 then Just (fromIntegral (truncate va `div` truncate vb :: Int)) else Nothing
     "mod" -> if vb /= 0 then Just (fromIntegral (truncate va `mod` truncate vb :: Int)) else Nothing
     _ -> Nothing
-evalArith _ _ = Nothing
+evalArith _ _ _ = Nothing
 
 -- | Get register value. Y-registers (id >= 200) come from the env frame.
 {-# INLINE getReg #-}
@@ -2496,7 +2550,7 @@ addToBuilder val s = case wsBuilder s of
        then let [tl, hd] = args''   -- reversed because we cons-built
                 list = case tl of
                   VList items -> VList (hd : items)
-                  Atom "[]"  -> VList [hd]
+                  Atom aid | aid == atomNil -> VList [hd]
                   _           -> VList [hd, tl]
             in Just (s { wsPC = wsPC s + 1
                        , wsRegs = IM.insert ai list (wsRegs s)
@@ -2560,11 +2614,11 @@ resolveCallInstrs labels foreignPreds = map resolve
       Just pc -> ParRetryMeElsePc pc
       Nothing -> ParRetryMeElse label
     resolve (SwitchOnConstant table) =
-      let extractKey (Atom s) = s
-          extractKey (Integer n) = show n
-          extractKey v = show v
-      in SwitchOnConstantPc (Map.fromList [(extractKey v, pc) | (v, label) <- Map.toList table,
-                                                                 Just pc <- [Map.lookup label labels]])
+      let extractId (Atom aid) = aid
+          extractId (Integer n) = n  -- integers use their value directly as key
+          extractId _ = (-1)
+      in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
+                                                               Just pc <- [Map.lookup label labels]])
     resolve i = i
 ', [StepCode, BacktrackCode, RunCode]).
 
@@ -2579,14 +2633,54 @@ import Data.Array (Array, listArray, (!), bounds)
 -- each forked branch''s contribution before the merge step.
 import Control.DeepSeq (NFData(..))
 
-data Value = Atom String
+-- | Core value type. Atoms and Str functor names are interned as Ints
+-- for O(1) equality. Use lookupAtom/internAtom via the InternTable in
+-- WamContext for String conversion.
+data Value = Atom !Int          -- interned atom ID
            | Integer !Int
            | Float !Double
            | VList [Value]
-           | Str String [Value]
-           | Unbound !Int   -- variable ID (interned via wsVarCounter)
+           | Str !Int [Value]   -- interned functor name, args
+           | Unbound !Int       -- variable ID (interned via wsVarCounter)
            | Ref Int
            deriving (Eq, Ord, Show)
+
+-- | Atom intern table. Built at compile time, extended at load time
+-- with runtime atoms (e.g., from TSV fact data). Read-only after
+-- construction — safe for parallelism (shared via WamContext).
+data InternTable = InternTable
+  { itForward :: !(Map.Map String Int)   -- String -> atom ID
+  , itReverse :: !(IM.IntMap String)     -- atom ID -> String
+  , itSize    :: !Int                    -- next available ID
+  } deriving (Show)
+
+emptyInternTable :: InternTable
+emptyInternTable = InternTable Map.empty IM.empty 0
+
+internAtom :: InternTable -> String -> (Int, InternTable)
+internAtom tbl s = case Map.lookup s (itForward tbl) of
+  Just aid -> (aid, tbl)
+  Nothing  -> let aid = itSize tbl
+              in (aid, tbl { itForward = Map.insert s aid (itForward tbl)
+                           , itReverse = IM.insert aid s (itReverse tbl)
+                           , itSize = aid + 1 })
+
+internAtomPure :: InternTable -> String -> Int
+internAtomPure tbl s = case Map.lookup s (itForward tbl) of
+  Just aid -> aid
+  Nothing  -> (-1)  -- should not happen for well-formed programs
+
+lookupAtom :: InternTable -> Int -> String
+lookupAtom tbl aid = IM.findWithDefault ("?atom_" ++ show aid) aid (itReverse tbl)
+
+-- | Well-known atom IDs. Reserved during compile-time atom collection.
+-- These MUST match the IDs assigned by the Prolog codegen.
+atomTrue, atomFail, atomNil, atomDot, atomEmpty :: Int
+atomTrue  = 0
+atomFail  = 1
+atomNil   = 2   -- "[]"
+atomDot   = 3   -- "."
+atomEmpty = 4   -- ""
 
 data EnvFrame = EnvFrame {-# UNPACK #-} !Int !(IM.IntMap Value)
               deriving (Show)
@@ -2609,7 +2703,7 @@ data ChoicePoint = ChoicePoint
 
 -- | Builtin state for choice points that need custom retry logic.
 data BuiltinState
-  = FactRetry !Int ![String] !Int  -- variable ID, remaining values, returnPC
+  = FactRetry !Int ![Int] !Int     -- variable ID, remaining interned atom IDs, returnPC
   | HopsRetry !Int ![Int] !Int     -- variable ID, remaining Hops values, returnPC
     -- Multi-output FFI kernel retry. Each remaining tuple is already
     -- wrapped as a list of Values (pre-interned / wrapped at call site).
@@ -2673,17 +2767,17 @@ inferMergeStrategy _       = MergeSequential
 -- aggregate values). Everything is first-order / strict already;
 -- these definitions just walk the structure to force evaluation.
 instance NFData Value where
-  rnf (Atom s)         = rnf s
+  rnf (Atom n)         = rnf n
   rnf (Integer n)      = rnf n
   rnf (Float f)        = rnf f
   rnf (VList xs)       = rnf xs
-  rnf (Str name args)  = rnf name `seq` rnf args
+  rnf (Str n args)     = rnf n `seq` rnf args
   rnf (Unbound n)      = rnf n
   rnf (Ref n)          = rnf n
 
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
-data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID, arity, collected args
-             | BuildList !Int ![Value]                  -- target reg ID, collected [head, tail]
+data Builder = BuildStruct !Int !Int !Int ![Value]  -- interned functor ID, target reg ID, arity, collected args
+             | BuildList !Int ![Value]               -- target reg ID, collected [head, tail]
              | NoBuilder
              deriving (Show)
 
@@ -2696,17 +2790,12 @@ data WamContext = WamContext
   , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
   , wcForeignConfig :: !(Map.Map String Int)
   , wcLoweredPredicates :: !(Map.Map String (WamContext -> WamState -> Maybe WamState))
-  -- | Atom interning table for the FFI boundary. Populated at startup
-  -- with String -> Int IDs. Used by executeForeign to convert WAM-side
-  -- String atoms to Int keys before calling native kernels.
-  , wcAtomIntern    :: !(Map.Map String Int)
-  -- | Reverse intern table (Int -> String) for de-interning kernel
-  -- results that return Ints but need to be wrapped as Atom String.
-  , wcAtomDeintern  :: !(IM.IntMap String)
+  -- | System-wide atom intern table. Built at compile time, extended
+  -- at load time with runtime atoms. Used for Value → String display,
+  -- evalArith reverse lookup, and FFI boundary interning.
+  , wcInternTable   :: !InternTable
   -- | Fact indexes keyed by interned Int atoms. Used exclusively by the
   -- FFI kernel path. Populated per-kernel from edge_pred config.
-  -- Separate from wcForeignFacts so callIndexedFact2 (WAM path) is
-  -- unaffected.
   , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
   -- | Weighted fact indexes for kernels that need (target, weight)
   -- pairs per edge (e.g., weighted_shortest_path3 / Dijkstra). Used
@@ -2754,7 +2843,7 @@ data Instruction
   | PutConstant Value !RegId
   | PutVariable !RegId !RegId
   | PutValue !RegId !RegId
-  | PutStructure String !RegId !Int   -- functor, target reg, arity (pre-parsed)
+  | PutStructure !Int !RegId !Int     -- interned functor ID, target reg, arity
   | PutStructureDyn !RegId !RegId !RegId  -- nameReg, arityReg, targetReg (runtime-parsed)
   | PutList !RegId
   | SetValue !RegId
@@ -2772,7 +2861,7 @@ data Instruction
   | Proceed
   | TryMeElsePc !Int                   -- post-resolution: direct PC for else branch
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
-  | SwitchOnConstantPc !(Map.Map String Int) -- post-resolution: atom string -> PC
+  | SwitchOnConstantPc !(IM.IntMap Int)      -- post-resolution: interned atom ID -> PC
   | BuiltinCall String !Int
   | TryMeElse String
   | RetryMeElse String
@@ -2806,8 +2895,7 @@ mkContext codeList labels =
     , wcForeignFacts  = Map.empty
     , wcForeignConfig = Map.empty
     , wcLoweredPredicates = Map.empty
-    , wcAtomIntern    = Map.empty
-    , wcAtomDeintern  = IM.empty
+    , wcInternTable   = emptyInternTable
     , wcFfiFacts      = Map.empty
     , wcFfiWeightedFacts = Map.empty
     }
@@ -3072,7 +3160,8 @@ wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
-    format(string(Hs), 'PutStructure "~w" ~w ~w', [CFN, AiI, Arity]).
+    intern_atom(CFN, FnId),
+    format(string(Hs), 'PutStructure ~w ~w ~w', [FnId, AiI, Arity]).
 wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
     clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
     reg_name_to_int(CN, NI), reg_name_to_int(CA, AI), reg_name_to_int(CT, TI),
@@ -3159,7 +3248,8 @@ wam_value_to_haskell(Val, Hs) :-
         ->  format(string(Hs), 'Float (~w)', [F])
         ;   format(string(Hs), 'Float ~w', [F])
         )
-    ;   format(string(Hs), 'Atom "~w"', [Val])
+    ;   intern_atom(Val, AtomId),
+        format(string(Hs), 'Atom ~w', [AtomId])
     ).
 
 %% clean_comma(+Str, -Clean) — strip trailing comma
@@ -3180,7 +3270,8 @@ parse_switch_entries([Entry|Rest], [HsPair|HsRest]) :-
         sub_atom(CEntry, After, _, 0, Label),
         wam_value_to_haskell(Key, HsKey),
         format(string(HsPair), '(~w, "~w")', [HsKey, Label])
-    ;   format(string(HsPair), '(Atom "~w", "default")', [CEntry])
+    ;   intern_atom(CEntry, DefId),
+        format(string(HsPair), '(Atom ~w, "default")', [DefId])
     ),
     parse_switch_entries(Rest, HsRest).
 

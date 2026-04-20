@@ -53,7 +53,7 @@ test_haskell_functor_builtin_present :-
         %% Construct mode: allocates fresh Unbound cells.
         sub_string(S, _, _, _, "Unbound (c0 + i)"),
         %% Read mode: pattern matches Str and VList branches.
-        sub_string(S, _, _, _, "Str fn args -> Just (Atom fn, length args)")
+        sub_string(S, _, _, _, "Str fnId args -> Just (Atom fnId, length args)")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing functor/3 step case patterns')
     ).
@@ -75,7 +75,7 @@ test_haskell_univ_builtin_present :-
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"=../2\""),
         %% Decompose mode: prepends functor atom to arg list.
-        sub_string(S, _, _, _, "VList (Atom fn : args)"),
+        sub_string(S, _, _, _, "VList (Atom fnId : args)"),
         %% Compose mode: rebuilds Str from list head+tail.
         sub_string(S, _, _, _, "(Atom fname : rest) -> Just (Str fname rest)")
     ->  pass(Test)
@@ -194,10 +194,10 @@ test_transitive_closure_execute_foreign :-
         sub_string(Code, _, _, _, "wcFfiFacts ctx"),
         %% Native call: first arg is facts, second is interned atom lookup
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
-        sub_string(Code, _, _, _, "Map.lookup r1S (wcAtomIntern ctx)"),
-        %% Output is atom: de-intern via wcAtomDeintern (rv_1 after
+        sub_string(Code, _, _, _, "itForward (wcInternTable ctx)"),
+        %% Output is atom: directly use interned ID (rv_1 after
         %% routing single-output through the multi-output FFIStreamRetry path)
-        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv_1 (wcAtomDeintern ctx)))"),
+        sub_string(Code, _, _, _, "Atom rv_1"),
         %% Single-input case pattern (not tuple)
         sub_string(Code, _, _, _, "case r1 of"),
         sub_string(Code, _, _, _, "Atom r1S ->")
@@ -397,7 +397,7 @@ test_haskell_put_structure_dyn_step_handler :-
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "step !ctx s (PutStructureDyn nameReg arityReg targetReg)"),
-        sub_string(S, _, _, _, "BuildStruct fn targetReg (fromIntegral arity)")
+        sub_string(S, _, _, _, "BuildStruct fnId targetReg (fromIntegral arity)")
     ->  pass(Test)
     ;   fail_test(Test, 'PutStructureDyn step handler missing or incorrect')
     ).
@@ -494,8 +494,8 @@ test_haskell_negation_general_handler :-
     Test = 'WAM-Haskell: general \\+/1 handler with run-based sub-execution',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
-        % General path: resolve goal key and call run ctx snapshot
-        sub_string(S, _, _, _, "goalKey = fn ++ \"/\" ++ show (length args)"),
+        % General path: resolve goal key via lookupAtom and call run ctx snapshot
+        sub_string(S, _, _, _, "lookupAtom tbl fnId"),
         sub_string(S, _, _, _, "case run ctx snapshot of")
     ->  pass(Test)
     ;   fail_test(Test, 'general \\+/1 handler missing run-based sub-execution')
@@ -548,8 +548,8 @@ test_haskell_negation_true_fail_fast_paths :-
     Test = 'WAM-Haskell: \\+/1 has fast paths for true and fail atoms',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "Just (Atom \"true\") -> Nothing"),
-        sub_string(S, _, _, _, "Just (Atom \"fail\") -> Just (s { wsPC = wsPC s + 1 })")
+        sub_string(S, _, _, _, "aid == atomTrue -> Nothing"),
+        sub_string(S, _, _, _, "aid == atomFail -> Just (s { wsPC = wsPC s + 1 })")
     ->  pass(Test)
     ;   fail_test(Test, '\\+ true/fail fast paths missing')
     ).
