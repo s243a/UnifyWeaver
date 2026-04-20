@@ -3,6 +3,7 @@
             generate/3,
             generate/4,
             parse_kernel_mode/2,
+            category_parent_handler_code/1,
             collect_wam_predicates/2,
             collect_wam_predicates/3
           ]).
@@ -64,6 +65,8 @@ generate(FactsPath, OutputDir, VariantAtom) :-
 generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     must_exist_file(FactsPath),
     benchmark_workload_path(WorkloadPath),
+    load_files(user:FactsPath, [silent(true)]),
+    parse_kernel_mode(KernelModeAtom, KernelOptions),
     load_files(user:WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
@@ -75,7 +78,6 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     maybe_load_optimized_predicates(VariantAtom, ScriptCode),
 
     maybe_assert_seeded_helper(VariantAtom),
-    parse_kernel_mode(KernelModeAtom, KernelOptions),
     collect_wam_predicates(VariantAtom, KernelModeAtom, Predicates),
     append([ [ module_name('wam-clojure-optimized-bench'),
                namespace('generated.wam_clojure_optimized_bench')
@@ -103,12 +105,44 @@ parse_variant(accumulated, [
 parse_kernel_mode(kernels_on, [
     foreign_predicates([category_parent/2]),
     clojure_foreign_handlers([
-        handler(category_parent/2, "(fn [_args] false)")
+        handler(category_parent/2, HandlerCode)
     ])
-]).
+]) :-
+    category_parent_handler_code(HandlerCode).
 parse_kernel_mode(kernels_off, [
     no_kernels(true)
 ]).
+
+category_parent_handler_code(HandlerCode) :-
+    findall(Child-Parent,
+            current_category_parent_fact(Child, Parent),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    maplist(category_parent_edge_literal, Pairs, EdgeLiterals),
+    atomic_list_concat(EdgeLiterals, ' ', Edges),
+    format(string(HandlerCode),
+           "(let [edges #{~s}] (fn [args] (contains? edges [(nth args 0) (nth args 1)])))",
+           [Edges]).
+
+current_category_parent_fact(Child, Parent) :-
+    current_predicate(user:category_parent/2),
+    call(user:category_parent(Child, Parent)).
+
+category_parent_edge_literal(Child-Parent, Literal) :-
+    clj_string_literal_local(Child, ChildLit),
+    clj_string_literal_local(Parent, ParentLit),
+    format(atom(Literal), '[~w ~w]', [ChildLit, ParentLit]).
+
+clj_string_literal_local(In, Literal) :-
+    atom_string(In, InStr0),
+    escape_clj_string_local(InStr0, Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
+
+escape_clj_string_local(In, Out) :-
+    split_string(In, "\\", "", Parts1),
+    atomic_list_concat(Parts1, "\\\\", Tmp1),
+    split_string(Tmp1, "\"", "", Parts2),
+    atomic_list_concat(Parts2, "\\\"", Out).
 
 maybe_assert_seeded_helper(seeded) :- !,
     retractall(user:power_sum_bound(_, _, _, _)),

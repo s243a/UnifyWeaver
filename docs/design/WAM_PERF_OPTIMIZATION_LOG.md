@@ -237,14 +237,14 @@ for further optimization work.
 | Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
 | One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
 | Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
-| FFI controls | Scaffolded | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic Clojure handlers can be registered; native graph kernels remain future work |
+| FFI controls | Partial | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic handlers work, and the optimized benchmark generator now emits a fact-backed `category_parent/2` graph handler |
 | Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
 | Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
 | Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
 | Write-mode compound terms | Done | `put_structure`, `put_list`, `set_*` build nested terms via a builder stack |
-| Benchmark generation | Scaffolded | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls |
-| End-to-end verification | Partial | Generator tests plus standalone smoke runner; plunit JVM subprocess tests remain disabled in Termux |
+| Benchmark generation | Partial | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls and fact-backed graph handler generation |
+| End-to-end verification | Partial | Generator tests, fact-backed foreign-handler JVM smoke, and standalone runtime smoke runner pass locally; large JVM benchmarks remain constrained in Termux |
 
 ### Clojure-specific lessons from this phase
 
@@ -273,13 +273,20 @@ for further optimization work.
 7. Clojure now has an optimized effective-distance project generator. It
    establishes benchmark-matrix shape and kernel-mode controls without trying
    to run large JVM benchmarks in Termux.
+8. The first Clojure graph-kernel path is now fact-backed rather than a
+   placeholder: `kernels_on` emits a Clojure set-backed `category_parent/2`
+   handler from `facts.pl`, while `kernels_off` keeps the pure WAM fallback.
+   Synthesizing the handler immediately after loading facts is important
+   because later optimization/loading steps can alter predicate visibility in
+   PlUnit contexts.
 
 ### Highest-value remaining work
 
-1. Implement native Clojure graph kernels behind the existing `call-foreign`
-   handler surface.
-2. Wire the Clojure generator into configurable benchmark target lists once
-   a real fact-backed handler or graph kernel exists.
+1. Wire the Clojure generator into configurable benchmark target lists now
+   that `kernels_on` has a real fact-backed graph handler.
+2. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
+   especially multi-output traversal kernels comparable to the mature
+   Haskell/Rust hybrid paths.
 3. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 4. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
