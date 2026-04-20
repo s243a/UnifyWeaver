@@ -583,7 +583,16 @@ def resolve_requested_targets(args: argparse.Namespace) -> list[str]:
         include_targets=include_targets,
         exclude_targets=exclude_targets,
     )
-    return available_targets(resolved)
+    runnable = []
+    for target in resolved:
+        if TARGETS[target].category == "hybrid-wam-scaffold":
+            print(
+                f"skip {target}: scaffold-only target; no result-producing effective-distance runner yet",
+                file=sys.stderr,
+            )
+            continue
+        runnable.append(target)
+    return available_targets(runnable)
 
 
 def main() -> int:

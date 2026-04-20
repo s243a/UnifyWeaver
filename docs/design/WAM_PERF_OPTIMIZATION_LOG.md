@@ -279,11 +279,16 @@ for further optimization work.
    Synthesizing the handler immediately after loading facts is important
    because later optimization/loading steps can alter predicate visibility in
    PlUnit contexts.
+9. Clojure WAM scaffold targets are now registered in the configurable
+   benchmark target matrix under `clojure-wam-scaffold`. They are listed and
+   resolvable, but intentionally skipped by the effective-distance runner
+   until Clojure emits the same result table as the mature Rust/Haskell/Go
+   benchmark paths.
 
 ### Highest-value remaining work
 
-1. Wire the Clojure generator into configurable benchmark target lists now
-   that `kernels_on` has a real fact-backed graph handler.
+1. Add a result-producing Clojure effective-distance benchmark runner so the
+   scaffold targets can move into the executable `hybrid-wam` comparison set.
 2. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
    especially multi-output traversal kernels comparable to the mature
    Haskell/Rust hybrid paths.

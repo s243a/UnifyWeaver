@@ -225,6 +225,7 @@ The new matrix script uses these categories:
 
 - `optimized-prolog`
 - `hybrid-wam`
+- `hybrid-wam-scaffold`
 - `direct-pipeline`
 - `query-engine`
 
@@ -235,9 +236,24 @@ The default presets are:
 - `desktop-default`
 - `optimized-prolog`
 - `hybrid-wam`
+- `clojure-wam-scaffold`
 - `direct-pipeline`
 - `query-engine`
 - `all`
+
+`hybrid-wam-scaffold` is for generated targets that have benchmark-generation
+shape and smoke coverage but do not yet emit the common effective-distance
+result table. Clojure WAM currently lives here:
+
+- `clojure-wam-seeded`
+- `clojure-wam-seeded-no-kernels`
+- `clojure-wam-accumulated`
+- `clojure-wam-accumulated-no-kernels`
+
+The effective-distance matrix lists and resolves these targets, but skips them
+with an explicit scaffold-only message when a result-producing benchmark run is
+requested. This avoids comparing a predicate-level smoke path against full
+effective-distance table producers.
 
 ## Termux Rule
 
@@ -271,6 +287,7 @@ New scripts:
 - `examples/benchmark/generate_wam_python_optimized_benchmark.pl`
 - `examples/benchmark/generate_wam_fsharp_optimized_benchmark.pl`
 - `examples/benchmark/generate_wam_rust_optimized_benchmark.pl`
+- `examples/benchmark/generate_wam_clojure_optimized_benchmark.pl`
 - `tests/bench_wam_fsharp.pl` (F# compilation throughput benchmarks)
 - `tests/bench_wam_rust.pl` (Rust compilation throughput benchmarks)
 - `examples/benchmark/gen_prof_matrix.pl` (4 Haskell + 4 Go + 4 Python + 4 F# + 4 Rust profiling configs)
