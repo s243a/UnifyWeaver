@@ -632,6 +632,7 @@ namespace UnifyWeaver.QueryRuntime
         double PairProbeCacheAdmissionMinCostPerProbe = 0,
         int SeededCacheAdmissionMinRows = 0,
         double SeededCacheAdmissionMinRowsPerSeed = 0,
+        bool CompactSeededCacheRows = false,
         /// <summary>
         /// Maximum number of fixpoint iterations before termination.
         /// Prevents non-convergence on cyclic graphs with counter-bearing
@@ -2022,6 +2023,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly double _pairProbeCacheAdmissionMinCostPerProbe;
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
+        private readonly bool _compactSeededCacheRows;
         private readonly int _maxFixpointIterations;
         private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
@@ -2045,6 +2047,7 @@ namespace UnifyWeaver.QueryRuntime
             _pairProbeCacheAdmissionMinCostPerProbe = Math.Max(0d, options.PairProbeCacheAdmissionMinCostPerProbe);
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
+            _compactSeededCacheRows = options.CompactSeededCacheRows;
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
             _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
@@ -19491,7 +19494,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             dagStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CacheBinaryRows(dagRows),
+                            CacheSeededRows(dagRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19537,7 +19540,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CacheBinaryRows(memoizedRows),
+                            CacheSeededRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19627,7 +19630,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CacheBinaryRows(singleRows),
+                            CacheSeededRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19719,7 +19722,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        CacheBinaryRows(totalRows),
+                        CacheSeededRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19734,6 +19737,11 @@ namespace UnifyWeaver.QueryRuntime
                 context.FixpointDepth--;
             }
         }
+
+        private CachedResultRows CacheSeededRows(IReadOnlyList<object[]> rows) =>
+            _compactSeededCacheRows
+                ? CacheBinaryRows(rows)
+                : CachedResultRows.FromObjectRows(rows);
 
         private static CachedResultRows CacheBinaryRows(IReadOnlyList<object[]> rows)
         {
@@ -19958,7 +19966,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CacheBinaryRows(memoizedRows),
+                            CacheSeededRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -20048,7 +20056,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            CacheBinaryRows(singleRows),
+                            CacheSeededRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -20140,7 +20148,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        CacheBinaryRows(totalRows),
+                        CacheSeededRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
