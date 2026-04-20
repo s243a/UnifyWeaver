@@ -3,7 +3,8 @@
 Measure generic scan-family materialization planning in the C# query runtime.
 
 This harness exercises representative scan-heavy plans against the benchmark
-TSVs using streamed relation sources inside a temporary C# project:
+TSVs using preloaded, streamed, or binary-artifact relation sources inside a
+temporary C# project:
 
 - `scan`: plain `RelationScanNode`
 - `pattern`: `PatternScanNode` with a bound category
@@ -70,12 +71,31 @@ class Program
             .ToList();
     }
 
-    static void RegisterBinaryRelation(InMemoryRelationProvider provider, PredicateId predicate, string path)
+    static void RegisterBinaryRelation(
+        InMemoryRelationProvider memoryProvider,
+        BinaryRelationArtifactProvider artifactProvider,
+        PredicateId predicate,
+        string path,
+        string sourceMode,
+        string artifactDir)
     {
-        provider.RegisterDelimitedSource(predicate, new DelimitedRelationSource(path, '	', 1, 2));
-        foreach (var parts in ReadDelimitedRows(path, 2))
+        var source = new DelimitedRelationSource(path, '	', 1, 2);
+        switch (sourceMode)
         {
-            provider.AddFact(predicate, parts[0], parts[1]);
+            case "artifact":
+                var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir);
+                artifactProvider.RegisterArtifact(predicate, manifestPath);
+                break;
+            case "delimited":
+                memoryProvider.RegisterDelimitedSource(predicate, source);
+                break;
+            default:
+                memoryProvider.RegisterDelimitedSource(predicate, source);
+                foreach (var parts in ReadDelimitedRows(path, 2))
+                {
+                    memoryProvider.AddFact(predicate, parts[0], parts[1]);
+                }
+                break;
         }
     }
 
@@ -114,14 +134,23 @@ class Program
         var articlePath = args[2];
         var traceEnabled = Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE") == "1";
         var scanStrategy = ParseScanStrategy(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_RETENTION_STRATEGY") ?? "auto");
+        var sourceMode = (Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE") ?? "preload").ToLowerInvariant();
+        if (sourceMode != "preload" && sourceMode != "delimited" && sourceMode != "artifact")
+        {
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {sourceMode}");
+            return 1;
+        }
 
-        var provider = new InMemoryRelationProvider();
+        var memoryProvider = new InMemoryRelationProvider();
+        var artifactDir = Path.Combine(Path.GetTempPath(), $"uw-scan-artifacts-{Guid.NewGuid():N}");
+        var artifactProvider = new BinaryRelationArtifactProvider(memoryProvider);
+        IRelationProvider provider = sourceMode == "artifact" ? artifactProvider : memoryProvider;
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
 
-        RegisterBinaryRelation(provider, edgeId, edgePath);
-        RegisterBinaryRelation(provider, articleId, articlePath);
+        RegisterBinaryRelation(memoryProvider, artifactProvider, edgeId, edgePath, sourceMode, artifactDir);
+        RegisterBinaryRelation(memoryProvider, artifactProvider, articleId, articlePath, sourceMode, artifactDir);
 
         var articleRows = ReadDelimitedRows(articlePath, 2);
         var patternCategory = articleRows.Count > 0
@@ -142,7 +171,7 @@ class Program
 
         try
         {
-            RegisterBinaryRelation(provider, blockedId, blockedPath);
+            RegisterBinaryRelation(memoryProvider, artifactProvider, blockedId, blockedPath, sourceMode, artifactDir);
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -197,6 +226,7 @@ class Program
             stopwatch.Stop();
 
             Console.Error.WriteLine($"mode={mode}");
+            Console.Error.WriteLine($"source_mode={sourceMode}");
             Console.Error.WriteLine($"scan_retention_strategy_setting={scanStrategy}");
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
@@ -227,6 +257,7 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
+            try { Directory.Delete(artifactDir, recursive: true); } catch { }
         }
     }
 }
@@ -237,6 +268,7 @@ class Program
 class BenchResult:
     scale: str
     mode: str
+    source_mode: str
     strategy: str
     times: list[float]
     stderr: str
@@ -250,6 +282,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,10k")
     parser.add_argument("--modes", default="scan,pattern,join,negation,aggregate")
+    parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
@@ -294,13 +327,14 @@ def parse_metrics(stderr: str) -> dict[str, str]:
     return metrics
 
 
-def benchmark_mode(command: list[str], scale: str, mode: str, strategy: str, repetitions: int) -> BenchResult:
+def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, strategy: str, repetitions: int) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
     article_path = scale_dir / "article_category.tsv"
     env = os.environ.copy()
     env["UNIFYWEAVER_BENCH_TRACE"] = "1"
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
+    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
 
     times: list[float] = []
     stderr = ""
@@ -313,13 +347,14 @@ def benchmark_mode(command: list[str], scale: str, mode: str, strategy: str, rep
         times.append(elapsed)
         stderr = result.stderr
 
-    return BenchResult(scale=scale, mode=mode, strategy=strategy, times=times, stderr=stderr)
+    return BenchResult(scale=scale, mode=mode, source_mode=source_mode, strategy=strategy, times=times, stderr=stderr)
 
 
 def main() -> int:
     args = parse_args()
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
     modes = [part.strip() for part in args.modes.split(",") if part.strip()]
+    source_modes = [part.strip() for part in args.source_modes.split(",") if part.strip()]
     strategies = [part.strip() for part in args.strategies.split(",") if part.strip()]
 
     temp_ctx = None
@@ -334,32 +369,33 @@ def main() -> int:
         results: list[BenchResult] = []
         for scale in scales:
             for mode in modes:
-                for strategy in strategies:
-                    results.append(benchmark_mode(command, scale, mode, strategy, args.repetitions))
+                for source_mode in source_modes:
+                    for strategy in strategies:
+                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	strategy	median_s	min_s	max_s	rows	planner	phases")
-        grouped: dict[tuple[str, str], dict[str, BenchResult]] = {}
-        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.strategy)):
-            grouped.setdefault((result.scale, result.mode), {})[result.strategy] = result
+        print("scale	mode	source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
+        grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
+        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
+            grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
             metrics = parse_metrics(result.stderr)
             planner = metrics.get("scan_planner_strategies", "")
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
-                f"{result.scale}	{result.mode}	{result.strategy}	{result.median:.3f}	"
+                f"{result.scale}	{result.mode}	{result.source_mode}	{result.strategy}	{result.median:.3f}	"
                 f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{phases}"
             )
 
-        for scale, mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1])):
-            by_strategy = grouped[(scale, mode)]
+        for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
+            by_strategy = grouped[(scale, mode, source_mode)]
             auto = by_strategy.get("auto")
             best = min(by_strategy.values(), key=lambda item: item.median)
             if auto is not None:
-                print(f"{scale}	{mode}	best_strategy	{best.strategy}")
+                print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
                 ratio = auto.median / best.median if best.median else float('inf')
-                print(f"{scale}	{mode}	auto_vs_best	{ratio:.2f}x")
+                print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
                 auto_metrics = parse_metrics(auto.stderr)
-                print(f"{scale}	{mode}	auto_planner	{auto_metrics.get('scan_planner_strategies', '')}")
+                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_metrics.get('scan_planner_strategies', '')}")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)

@@ -373,6 +373,20 @@ The recommended first implementation is intentionally narrow:
 This prototype should avoid vector search, Redis, Hadoop, and general database
 integration until the exact local artifact boundary is proven.
 
+Prototype status:
+
+- The first runtime seam is a string-row binary relation artifact with a JSON
+  manifest and `.uwbr` data file.
+- `BinaryRelationArtifactBuilder` can build an artifact from a delimited
+  relation source and records predicate, arity, row count, source length, and
+  source SHA-256 metadata.
+- `BinaryRelationArtifactProvider` exposes artifacts through the existing
+  `IRelationProvider` and `IRetentionAwareRelationProvider` boundaries, so the
+  current scan materialization planner can compare artifact replayable and
+  external-materialized access without a new planner enum yet.
+- `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
+  and `artifact` source modes against the existing scan-family workloads.
+
 ## Success Criteria
 
 - A valid artifact can replace runtime-built state for a narrow exact predicate

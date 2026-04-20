@@ -15,6 +15,7 @@ using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -100,6 +101,29 @@ namespace UnifyWeaver.QueryRuntime
         char Delimiter = '	',
         int SkipRows = 1,
         int ExpectedWidth = 2);
+
+    public sealed class BinaryRelationArtifactManifest
+    {
+        public const string CurrentFormat = "unifyweaver.binary_relation.v1";
+
+        public string Format { get; set; } = CurrentFormat;
+
+        public int Version { get; set; } = 1;
+
+        public string PredicateName { get; set; } = string.Empty;
+
+        public int Arity { get; set; } = 2;
+
+        public string DataPath { get; set; } = string.Empty;
+
+        public long RowCount { get; set; }
+
+        public string? SourcePath { get; set; }
+
+        public long? SourceLength { get; set; }
+
+        public string? SourceSha256 { get; set; }
+    }
 
     public interface IReplayableRelationSource
     {
@@ -1529,6 +1553,294 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return _factory().Take(Math.Max(0, maxRows)).ToList();
+        }
+    }
+
+    public static class BinaryRelationArtifactBuilder
+    {
+        public static string BuildFromDelimited(
+            PredicateId predicate,
+            DelimitedRelationSource source,
+            string artifactDirectory,
+            string? artifactName = null)
+        {
+            if (artifactDirectory is null) throw new ArgumentNullException(nameof(artifactDirectory));
+            Directory.CreateDirectory(artifactDirectory);
+
+            artifactName ??= SanitizeArtifactName(predicate);
+            var dataPath = Path.Combine(artifactDirectory, artifactName + ".uwbr");
+            var manifestPath = Path.Combine(artifactDirectory, artifactName + ".uwbr.json");
+
+            var rowCount = BinaryRelationArtifactReader.WriteRows(dataPath, DelimitedRelationReader.ReadRows(source), source.ExpectedWidth);
+            var sourceInfo = File.Exists(source.InputPath)
+                ? new FileInfo(source.InputPath)
+                : null;
+            var manifest = new BinaryRelationArtifactManifest
+            {
+                PredicateName = predicate.Name,
+                Arity = Math.Max(2, source.ExpectedWidth),
+                DataPath = Path.GetFileName(dataPath),
+                RowCount = rowCount,
+                SourcePath = source.InputPath,
+                SourceLength = sourceInfo?.Length,
+                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath)
+            };
+
+            var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(manifestPath, json, Encoding.UTF8);
+            return manifestPath;
+        }
+
+        private static string SanitizeArtifactName(PredicateId predicate)
+        {
+            var raw = $"{predicate.Name}_{predicate.Arity}";
+            var builder = new StringBuilder(raw.Length);
+            foreach (var ch in raw)
+            {
+                builder.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
+            }
+
+            return builder.ToString();
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+    }
+
+    public static class BinaryRelationArtifactReader
+    {
+        private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWBR0001");
+
+        public static BinaryRelationArtifactManifest LoadManifest(string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = JsonSerializer.Deserialize<BinaryRelationArtifactManifest>(File.ReadAllText(manifestPath, Encoding.UTF8))
+                ?? throw new InvalidDataException($"Binary relation artifact manifest is empty: {manifestPath}");
+            ValidateManifest(manifest, manifestPath);
+            return manifest;
+        }
+
+        public static IEnumerable<object[]> ReadRows(string manifestPath)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return ReadRows(manifest, manifestPath);
+        }
+
+        public static IEnumerable<object[]> ReadRows(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            return ReadRowsFromData(dataPath, manifest.Arity, manifest.RowCount);
+        }
+
+        internal static long WriteRows(string dataPath, IEnumerable<object[]> rows, int width)
+        {
+            if (dataPath is null) throw new ArgumentNullException(nameof(dataPath));
+            if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+            width = Math.Max(2, width);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dataPath)) ?? ".");
+            using var stream = new FileStream(dataPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            writer.Write(Magic);
+            writer.Write(1);
+            writer.Write(width);
+            writer.Write(0L);
+
+            long rowCount = 0;
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < width)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i < width; i++)
+                {
+                    WriteString(writer, row[i]?.ToString() ?? string.Empty);
+                }
+
+                rowCount++;
+            }
+
+            writer.Flush();
+            stream.Position = Magic.Length + sizeof(int) + sizeof(int);
+            writer.Write(rowCount);
+            return rowCount;
+        }
+
+        private static IEnumerable<object[]> ReadRowsFromData(string dataPath, int expectedWidth, long expectedRows)
+        {
+            using var stream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(Magic.Length);
+            if (!magic.SequenceEqual(Magic))
+            {
+                throw new InvalidDataException($"Invalid binary relation artifact magic: {dataPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact version {version}: {dataPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Binary relation artifact width mismatch. Expected {expectedWidth}, found {width}: {dataPath}");
+            }
+
+            var rowCount = reader.ReadInt64();
+            if (expectedRows >= 0 && rowCount != expectedRows)
+            {
+                throw new InvalidDataException($"Binary relation artifact row-count mismatch. Expected {expectedRows}, found {rowCount}: {dataPath}");
+            }
+
+            for (var rowIndex = 0L; rowIndex < rowCount; rowIndex++)
+            {
+                var row = new object[width];
+                for (var i = 0; i < width; i++)
+                {
+                    row[i] = ReadString(reader);
+                }
+
+                yield return row;
+            }
+        }
+
+        private static string ResolveDataPath(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            var dataPath = manifest.DataPath;
+            if (string.IsNullOrWhiteSpace(dataPath))
+            {
+                throw new InvalidDataException($"Binary relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            return Path.IsPathRooted(dataPath)
+                ? dataPath
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", dataPath);
+        }
+
+        private static void ValidateManifest(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            if (!string.Equals(manifest.Format, BinaryRelationArtifactManifest.CurrentFormat, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact format '{manifest.Format}': {manifestPath}");
+            }
+
+            if (manifest.Version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact manifest version {manifest.Version}: {manifestPath}");
+            }
+
+            if (manifest.Arity < 1)
+            {
+                throw new InvalidDataException($"Binary relation artifact arity must be positive: {manifestPath}");
+            }
+
+            if (manifest.RowCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation artifact row count must be non-negative: {manifestPath}");
+            }
+        }
+
+        private static void WriteString(BinaryWriter writer, string value)
+        {
+            var bytes = Encoding.UTF8.GetBytes(value);
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+
+        private static string ReadString(BinaryReader reader)
+        {
+            var length = reader.ReadInt32();
+            if (length < 0)
+            {
+                throw new InvalidDataException("Binary relation artifact contains a negative string length.");
+            }
+
+            var bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+            {
+                throw new EndOfStreamException("Binary relation artifact ended while reading a string field.");
+            }
+
+            return Encoding.UTF8.GetString(bytes);
+        }
+    }
+
+    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider
+    {
+        private readonly IRelationProvider? _fallback;
+        private readonly Dictionary<PredicateId, string> _manifestPaths = new();
+        private readonly Dictionary<PredicateId, IReplayableRelationSource> _replayableSources = new();
+
+        public BinaryRelationArtifactProvider(IRelationProvider? fallback = null)
+        {
+            _fallback = fallback;
+        }
+
+        public void RegisterArtifact(PredicateId predicate, string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+            if (!string.Equals(manifest.PredicateName, predicate.Name, StringComparison.Ordinal) ||
+                manifest.Arity != predicate.Arity)
+            {
+                throw new InvalidDataException($"Binary relation artifact manifest describes {manifest.PredicateName}/{manifest.Arity}, not {predicate}.");
+            }
+
+            _manifestPaths[predicate] = manifestPath;
+            _replayableSources.Remove(predicate);
+        }
+
+        public IEnumerable<object[]> GetFacts(PredicateId predicate)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                return BinaryRelationArtifactReader.ReadRows(manifestPath);
+            }
+
+            return _fallback?.GetFacts(predicate) ?? Array.Empty<object[]>();
+        }
+
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                if (preferredMode == RelationRetentionMode.Replayable)
+                {
+                    if (!_replayableSources.TryGetValue(predicate, out var source))
+                    {
+                        source = new ReplayableRelationSource(() => BinaryRelationArtifactReader.ReadRows(manifestPath));
+                        _replayableSources[predicate] = source;
+                    }
+
+                    binding = new RelationBinding(RelationRetentionMode.Replayable, ReplayableSource: source);
+                    return true;
+                }
+
+                if (preferredMode == RelationRetentionMode.ExternalMaterialized)
+                {
+                    binding = new RelationBinding(RelationRetentionMode.ExternalMaterialized);
+                    return true;
+                }
+            }
+
+            if (_fallback is IRetentionAwareRelationProvider retentionAwareFallback &&
+                retentionAwareFallback.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
         }
     }
 
