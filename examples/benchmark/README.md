@@ -145,19 +145,15 @@ The generated project supports two entry modes:
 Larger Clojure benchmark runs should stay configurable because JVM startup and
 memory behavior are noisy in constrained Termux environments.
 
-The configurable benchmark matrix now treats both accumulated Clojure modes as
-result-producing `hybrid-wam` targets:
+The configurable benchmark matrix now treats all Clojure WAM effective-distance
+modes as result-producing `hybrid-wam` targets:
 
 - `clojure-wam-accumulated`
 - `clojure-wam-accumulated-no-kernels`
-
-The seeded modes are still explicit generation/selection scaffolds:
-
 - `clojure-wam-seeded`
 - `clojure-wam-seeded-no-kernels`
 
-Those scaffold modes are grouped under `clojure-wam-scaffold` and skipped by
-the result-producing matrix runner until they emit the same table shape.
+These targets provide both seeded/accumulated and kernel-on/off comparisons.
 
 ### Why Seeded Closures Win
 

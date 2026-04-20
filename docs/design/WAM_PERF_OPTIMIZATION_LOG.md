@@ -293,19 +293,22 @@ for further optimization work.
     On `dev`, both accumulated Clojure modes and `prolog-accumulated` produce
     the same normalized digest, which gives a valid Clojure kernel-on/off
     comparison surface.
+12. The seeded Clojure modes are executable too. All four Clojure
+    effective-distance modes now match `prolog-accumulated` on `dev` by
+    normalized digest:
+    `clojure-wam-accumulated`, `clojure-wam-accumulated-no-kernels`,
+    `clojure-wam-seeded`, and `clojure-wam-seeded-no-kernels`.
 
 ### Highest-value remaining work
 
-1. Add result-producing entrypoints for the seeded Clojure benchmark modes so
-   seeded/accumulated comparisons are available in the matrix.
-2. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
+1. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
    especially multi-output traversal kernels comparable to the mature
    Haskell/Rust hybrid paths.
-3. Add proper heap/trail semantics instead of relying primarily on the
+2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
-4. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
    the remaining runtime state is better separated.
-5. Split hot runtime state from cold code/context data, following the same
+4. Split hot runtime state from cold code/context data, following the same
    optimization pattern that paid off heavily in Haskell.
 
 ---

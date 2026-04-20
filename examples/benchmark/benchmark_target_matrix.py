@@ -66,12 +66,12 @@ TARGETS: dict[str, TargetInfo] = {
     ),
     "clojure-wam-seeded": TargetInfo(
         "clojure-wam-seeded",
-        "hybrid-wam-scaffold",
+        "hybrid-wam",
         "Hybrid WAM Clojure generated project with seeded helpers and kernels enabled",
     ),
     "clojure-wam-seeded-no-kernels": TargetInfo(
         "clojure-wam-seeded-no-kernels",
-        "hybrid-wam-scaffold",
+        "hybrid-wam",
         "Hybrid WAM Clojure generated project with seeded helpers and no_kernels(true)",
     ),
     "clojure-wam-accumulated": TargetInfo(
@@ -126,15 +126,14 @@ TARGET_SETS: dict[str, list[str]] = {
         "go-wam-accumulated-no-kernels",
         "clojure-wam-accumulated",
         "clojure-wam-accumulated-no-kernels",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
         "haskell-pure-interp",
         "haskell-interp-ffi",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
     ],
-    "clojure-wam-scaffold": [
-        "clojure-wam-seeded",
-        "clojure-wam-seeded-no-kernels",
-    ],
+    "clojure-wam-scaffold": [],
     "clojure-wam": [
         "clojure-wam-accumulated",
         "clojure-wam-seeded",

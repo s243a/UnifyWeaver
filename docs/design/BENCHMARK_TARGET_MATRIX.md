@@ -244,21 +244,17 @@ The default presets are:
 
 `hybrid-wam-scaffold` is for generated targets that have benchmark-generation
 shape and smoke coverage but do not yet emit the common effective-distance
-result table. Clojure WAM is split between executable accumulated targets and
-remaining seeded scaffold targets:
+result table. Clojure WAM no longer has scaffold-only effective-distance modes;
+all four Clojure modes are executable `hybrid-wam` targets:
 
 - `clojure-wam-accumulated` — executable `hybrid-wam`; emits the common result
   table and matches `prolog-accumulated` on the `dev` scale
 - `clojure-wam-accumulated-no-kernels` — executable `hybrid-wam`; same result
   table with `no_kernels(true)` for kernel-on/off comparison
-
-- `clojure-wam-seeded`
-- `clojure-wam-seeded-no-kernels`
-
-The effective-distance matrix lists and resolves all of these targets, but
-skips the scaffold-only modes with an explicit message when a result-producing
-benchmark run is requested. This avoids comparing a predicate-level smoke path
-against full effective-distance table producers.
+- `clojure-wam-seeded` — executable `hybrid-wam`; seeded helper path with
+  kernels enabled
+- `clojure-wam-seeded-no-kernels` — executable `hybrid-wam`; seeded helper
+  path with `no_kernels(true)`
 
 ## Termux Rule
 

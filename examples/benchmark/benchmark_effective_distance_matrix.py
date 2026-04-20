@@ -691,6 +691,10 @@ def main() -> int:
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
                 elif target == "clojure-wam-accumulated-no-kernels":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_off")
+                elif target == "clojure-wam-seeded":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_on")
+                elif target == "clojure-wam-seeded-no-kernels":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_off")
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))
