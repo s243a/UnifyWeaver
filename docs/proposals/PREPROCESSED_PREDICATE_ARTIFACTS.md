@@ -399,9 +399,11 @@ Prototype status:
   both sides and merge them linearly instead of issuing a large number of point
   probes or random row-offset reads.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
-  and `artifact` source modes against the existing scan-family workloads,
-  including `bound_scan` and `selective_join` modes for indexed parameter
-  probes.
+  `artifact`, and `artifact-prebuilt` source modes against the existing
+  scan-family workloads, including `bound_scan` and `selective_join` modes for
+  indexed parameter probes. The prebuilt mode keeps artifacts in a stable
+  benchmark directory so runtime measurements can separate query execution
+  from preprocessing cost.
 
 ## Success Criteria
 
