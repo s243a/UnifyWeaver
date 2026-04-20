@@ -96,6 +96,20 @@ main = do
     t1 <- getCurrentTime
     let loadMs = round (diffUTCTime t1 t0 * 1000) :: Int
 
+    -- Build system-wide atom intern table. Extends the compile-time atom
+    -- table (from Predicates.hs) with runtime atoms from TSV data. All
+    -- atoms that reach the WAM interpreter or FFI kernels must be interned.
+    -- The hot loop uses Int comparison instead of String comparison.
+    let atomStrings =
+            [child | (child, _) <- categoryParents] ++
+            [parent | (_, parent) <- categoryParents] ++
+            [cat | (_, cat) <- articleCategories] ++
+            roots
+        !fullInternTable = foldl'
+            (\tbl s -> snd (internAtom tbl s))
+            compileTimeAtomTable atomStrings
+        iAtom s = internAtomPure fullInternTable s
+
     -- Build merged code: compiled predicates + runtime facts.
     -- When FFI handles fact lookups, the WAM-compiled fact code is pure
     -- waste (42% of time, 85% of allocation). The generator injects the
@@ -113,20 +127,6 @@ main = do
         root = head roots
         n = 5.0 :: Double
         negN = -n
-
-    -- Build system-wide atom intern table. Extends the compile-time atom
-    -- table (from Predicates.hs) with runtime atoms from TSV data. All
-    -- atoms that reach the WAM interpreter or FFI kernels must be interned.
-    -- The hot loop uses Int comparison instead of String comparison.
-    let atomStrings =
-            [child | (child, _) <- categoryParents] ++
-            [parent | (_, parent) <- categoryParents] ++
-            [cat | (_, cat) <- articleCategories] ++
-            roots
-        !fullInternTable = foldl'
-            (\tbl s -> snd (internAtom tbl s))
-            compileTimeAtomTable atomStrings
-        iAtom s = internAtomPure fullInternTable s
 
     -- Build child -> [parents] index in interned form for the FFI fast path.
     let !parentsIndexInterned = IM.fromListWith (++)

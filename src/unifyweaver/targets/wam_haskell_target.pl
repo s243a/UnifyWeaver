@@ -1424,8 +1424,10 @@ callIndexedFact2 !ctx pred s =
                          , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1
                          , wsCPs = newCPs, wsCPsLen = newCPsLen })
             Atom existingId ->
-              if existingId == vId then Just (s { wsPC = retPC })
-              else case filter (== existingId) restIds of
+              let vId2 = internAtomPure tbl v
+                  restIds2 = map (internAtomPure tbl) rest
+              in if existingId == vId2 then Just (s { wsPC = retPC })
+              else case filter (== existingId) restIds2 of
                 (_:_) -> Just (s { wsPC = retPC })
                 [] -> Nothing
             _ -> Nothing
