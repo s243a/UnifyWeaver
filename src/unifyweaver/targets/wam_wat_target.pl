@@ -6001,23 +6001,23 @@ peephole_tail_call_k([H|T], [H|Out]) :-
 %  predicate with integer/1 and atom/1 guards on the first two
 %  clauses. Narrower patterns (2-clause, compound guards, etc.)
 %  would need additional peephole clauses.
+%% 3-clause variant: matches `try_me_else + clause(guard1) +
+%% retry_me_else + clause(guard2) + trust_me + default_clause`.
+%% Fires on term_depth/2.
 peephole_type_dispatch(Instrs, Optimized) :-
     Instrs = [label(Pred), try_me_else(L2) | After],
-    %% Label markers (from the WAM-text parser) carry strings; labels
-    %% referenced by try_me_else/retry_me_else are atoms. Normalize
-    %% both sides to strings for matching.
     atom_string(L2, L2S),
-    split_at_label(After, L2S, Clause1Body, [label(L2S), retry_me_else(L3) | After2]),
+    split_at_label(After, L2S, Clause1Body,
+                   [label(L2S), retry_me_else(L3) | After2]),
     atom_string(L3, L3S),
-    split_at_label(After2, L3S, Clause2Body, [label(L3S), trust_me | Clause3Body]),
+    split_at_label(After2, L3S, Clause2Body,
+                   [label(L3S), trust_me | Clause3Body]),
     classify_guard_in_body(Clause1Body, Type1),
     classify_guard_in_body(Clause2Body, Type2),
     Type1 \== Type2,
     !,
     format(string(SynthL1), 'L_type_dispatch_clause1_~w', [Pred]),
     assign_target(Type1, SynthL1, A1, I1),
-    %% Dispatch uses the atom form of L2/L3 (resolve_label treats them
-    %% the same as the label markers' string form via atom_string).
     assign_target(Type2, L2,      A2, I2),
     pick_bound(A1, A2, AtomTgt),
     pick_bound(I1, I2, IntTgt),
@@ -6030,6 +6030,28 @@ peephole_type_dispatch(Instrs, Optimized) :-
            Head1),
     append(Head1,
            [label(L3S), trust_me | Clause3Body],
+           Optimized).
+%% 2-clause variant: matches `try_me_else + clause(guard) + trust_me
+%% + default_clause`. Fires on sum_ints/3 (integer leaf + compound
+%% walk). The non-guard clause becomes the compound target; the
+%% guarded clause becomes the int or atom target based on its guard.
+peephole_type_dispatch(Instrs, Optimized) :-
+    Instrs = [label(Pred), try_me_else(L2) | After],
+    atom_string(L2, L2S),
+    split_at_label(After, L2S, Clause1Body,
+                   [label(L2S), trust_me | Clause2Body]),
+    classify_guard_in_body(Clause1Body, Type1),
+    !,
+    format(string(SynthL1), 'L_type_dispatch_clause1_~w', [Pred]),
+    assign_target(Type1, SynthL1, A1, I1),
+    pick_bound(A1, _, AtomTgt),
+    pick_bound(I1, _, IntTgt),
+    CmpdTgt = L2,
+    append([label(Pred),
+            type_dispatch_a1(AtomTgt, IntTgt, CmpdTgt),
+            try_me_else(L2),
+            label(SynthL1) | Clause1Body],
+           [label(L2S), trust_me | Clause2Body],
            Optimized).
 peephole_type_dispatch(Instrs, Instrs).
 
