@@ -5,7 +5,8 @@
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
-              [lower_predicate_to_elixir/4, classify_predicate/4, extract_facts/3]).
+              [lower_predicate_to_elixir/4, classify_predicate/4,
+               extract_facts/3, extract_arg1_index/3]).
 
 :- dynamic test_failed/0.
 
@@ -423,6 +424,72 @@ test_round_trip_comma_atom :-
     ;   fail_test(Test, 'comma-atom round-trip failed')
     ).
 
+%% Phase C first-argument indexing tests
+
+test_extract_arg1_index_ground :-
+    Test = 'Phase C: all-ground first arg → indexed map literal',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_arg1_index(Segments, 2, IndexResult),
+    (   IndexResult = indexed(Lit),
+        sub_string(Lit, _, _, _, '"a" => [{"a", "1"}]'),
+        sub_string(Lit, _, _, _, '"d" => [{"d", "4"}]')
+    ->  pass(Test)
+    ;   fail_test(Test, IndexResult)
+    ).
+
+test_extract_arg1_index_variable :-
+    Test = 'Phase C: variable first arg → no_index',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_arg1_index(Segments, 1, IndexResult),
+    (   IndexResult == no_index
+    ->  pass(Test)
+    ;   fail_test(Test, IndexResult)
+    ).
+
+test_phase_c_indexed_module_emission :-
+    Test = 'Phase C: indexed predicate emits @facts_by_arg1 and dispatching run/1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, '@facts_by_arg1 %{'),
+        sub_string(Code, _, _, _, 'case arg1 do'),
+        sub_string(Code, _, _, _, 'Map.get(@facts_by_arg1, key, [])')
+    ->  pass(Test)
+    ;   fail_test(Test, 'indexed shape missing')
+    ).
+
+test_phase_c_index_policy_none :-
+    Test = 'Phase C: fact_index_policy(none) suppresses @facts_by_arg1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode,
+                              [module_name('TestMod'), fact_index_policy(none)], Code),
+    (   sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, '@facts_by_arg1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'index was not suppressed by policy(none)')
+    ).
+
+test_phase_c_variable_head_no_index :-
+    Test = 'Phase C: variable head uses flat-only inline_data (no index block)',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    lower_predicate_to_elixir(variable_head/1, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    (   sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, '@facts_by_arg1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'variable-head emitted unexpected index')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -460,5 +527,10 @@ run_tests :-
     test_tokenize_quoted_atom_with_comma,
     test_tokenize_quoted_atom_with_escape,
     test_round_trip_comma_atom,
+    test_extract_arg1_index_ground,
+    test_extract_arg1_index_variable,
+    test_phase_c_indexed_module_emission,
+    test_phase_c_index_policy_none,
+    test_phase_c_variable_head_no_index,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

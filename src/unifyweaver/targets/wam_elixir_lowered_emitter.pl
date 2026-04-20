@@ -18,7 +18,9 @@
     fact_only/2,                  % +Segments, -Bool
     first_arg_groundness/3,       % +Segments, +Arity, -Status
     % Phase B fact extraction. Exported so tests can exercise it.
-    extract_facts/3               % +Segments, +Arity, -ElixirListLiteral
+    extract_facts/3,              % +Segments, +Arity, -ElixirListLiteral
+    % Phase C first-argument indexing.
+    extract_arg1_index/3          % +Segments, +Arity, -IndexResult
 ]).
 
 :- use_module(library(lists)).
@@ -54,11 +56,26 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     format_fact_shape_comment(Info, ShapeComment),
     Info = fact_shape_info(_, _, _, Layout),
     (   Layout = inline_data(_),
-        catch(extract_facts(Segments, Arity, FactsLiteral), _, fail)
+        catch(extract_facts(Segments, Arity, FactsLiteral), _, fail),
+        choose_index(Segments, Arity, Options, IndexResult)
     ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
-                                  ShapeComment, FactsLiteral, Code)
+                                  ShapeComment, FactsLiteral, IndexResult, Code)
     ;   render_compiled_module(CamelMod, CamelPred, PredStr, Arity,
                                ShapeComment, Segments, Labels, Code)
+    ).
+
+%% choose_index(+Segments, +Arity, +Options, -IndexResult)
+%  IndexResult is `indexed(MapLiteral)` when Phase-C first-arg indexing
+%  applies (arity >= 1 ∧ every clause has a ground arg1 ∧ policy allows
+%  it), or `no_index` otherwise. The policy is the `fact_index_policy`
+%  option: `none` disables; `auto` (default) and `first_arg` enable.
+choose_index(_Segments, 0, _Options, no_index) :- !.
+choose_index(Segments, Arity, Options, IndexResult) :-
+    Arity >= 1,
+    option(fact_index_policy(Policy), Options, auto),
+    (   Policy == none
+    ->  IndexResult = no_index
+    ;   catch(extract_arg1_index(Segments, Arity, IndexResult), _, IndexResult = no_index)
     ).
 
 render_compiled_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
@@ -113,7 +130,9 @@ render_compiled_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
 end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FirstFunc, CamelPred, FuncsBody]).
 
 render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
-                          FactsLiteral, Code) :-
+                          FactsLiteral, IndexResult, Code) :-
+    inline_data_index_block(IndexResult, IndexBlock),
+    inline_data_run1_body(IndexResult, Arity, RunBody),
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w (inline_data)"
@@ -127,10 +146,10 @@ render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
   # next tuple. :_var in a tuple slot means the head arg was a variable
   # — it unifies trivially with any incoming value.
   @facts ~w
+~w
 
   def run(%WamRuntime.WamState{} = state) do
-    WamRuntime.stream_facts(state, @facts, ~w)
-  end
+~w  end
 
   def run(args) when is_list(args) do
     state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
@@ -158,7 +177,32 @@ render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
         :fail
     end
   end
-end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FactsLiteral, Arity, CamelPred]).
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment,
+       FactsLiteral, IndexBlock, RunBody, CamelPred]).
+
+%% inline_data_index_block(+IndexResult, -Block)
+%  Emits the `@facts_by_arg1` module attribute when indexing is on;
+%  otherwise empty string.
+inline_data_index_block(no_index, "").
+inline_data_index_block(indexed(IndexLit), Block) :-
+    format(string(Block), '  @facts_by_arg1 ~w', [IndexLit]).
+
+%% inline_data_run1_body(+IndexResult, +Arity, -Body)
+%  `run(%WamState{} = state)` body. Indexed: deref arg1 and pick either
+%  the matching bucket or the full list. Non-indexed: stream the full
+%  list unconditionally.
+inline_data_run1_body(no_index, Arity, Body) :-
+    format(string(Body),
+           '    WamRuntime.stream_facts(state, @facts, ~w)\n', [Arity]).
+inline_data_run1_body(indexed(_), Arity, Body) :-
+    format(string(Body),
+'    arg1 = WamRuntime.deref_var(state, Map.get(state.regs, 1))
+    facts = case arg1 do
+      {:unbound, _} -> @facts
+      key -> Map.get(@facts_by_arg1, key, [])
+    end
+    WamRuntime.stream_facts(state, facts, ~w)
+', [Arity]).
 
 % ============================================================================
 % PHASE A: FACT-SHAPE CLASSIFICATION
@@ -305,6 +349,56 @@ elixir_string_literal(C, Literal) :-
 escape_elixir_char('\\', ['\\', '\\']).
 escape_elixir_char('"', ['\\', '"']).
 escape_elixir_char(C, [C]).
+
+% ============================================================================
+% PHASE C: FIRST-ARGUMENT INDEXING
+% ============================================================================
+%
+% When every clause has a ground first argument, an `@facts_by_arg1` map
+% accompanies `@facts`. `run/1` derefs regs[1] and picks the matching
+% bucket if ground, else falls back to the full list. This turns seeded
+% queries from O(N) linear scan into O(1) bucket lookup + O(M) scan of
+% just that bucket.
+
+%% extract_arg1_index(+Segments, +Arity, -IndexResult)
+%  IndexResult is `indexed(MapLiteral)` when a first-arg index applies;
+%  `no_index` if any clause has a variable (or otherwise non-ground)
+%  arg1 that we cannot use as a map key.
+extract_arg1_index(Segments, Arity, IndexResult) :-
+    Arity >= 1,
+    maplist(extract_clause_arg1(Arity), Segments, KeyTuplePairs),
+    (   all_pairs_have_ground_key(KeyTuplePairs)
+    ->  group_and_render_index(KeyTuplePairs, MapLiteral),
+        IndexResult = indexed(MapLiteral)
+    ;   IndexResult = no_index
+    ).
+
+extract_clause_arg1(Arity, _Name-Instrs, Arg1Key-TupleLiteral) :-
+    numlist(1, Arity, Slots),
+    maplist(extract_arg_value(Instrs), Slots, Values),
+    atomic_list_concat(Values, ', ', Inner),
+    format(string(TupleLiteral), '{~w}', [Inner]),
+    Values = [Arg1Literal | _],
+    (   Arg1Literal == ':_var'
+    ->  Arg1Key = var
+    ;   Arg1Key = Arg1Literal
+    ).
+
+all_pairs_have_ground_key([]).
+all_pairs_have_ground_key([Key-_ | Rest]) :-
+    Key \== var,
+    all_pairs_have_ground_key(Rest).
+
+group_and_render_index(Pairs, MapLiteral) :-
+    sort(0, @=<, Pairs, SortedPairs),
+    group_pairs_by_key(SortedPairs, Grouped),
+    maplist(render_index_entry, Grouped, Entries),
+    atomic_list_concat(Entries, ',\n    ', Joined),
+    format(string(MapLiteral), '%{\n    ~w\n  }', [Joined]).
+
+render_index_entry(Key-Tuples, Entry) :-
+    atomic_list_concat(Tuples, ', ', TupleList),
+    format(string(Entry), '~w => [~w]', [Key, TupleList]).
 
 % ============================================================================
 % QUOTE-AWARE LINE TOKENIZATION

@@ -829,12 +829,19 @@ compile_utility_helpers_to_elixir(Code) :-
 
   defp eval_arith(_state, n) when is_number(n), do: n
   defp eval_arith(_state, n) when is_binary(n) do
-    case Float.parse(n) do
-      {f, _} -> f
-      :error ->
-        case Integer.parse(n) do
-          {i, _} -> i
-          :error -> throw({:eval_error, n})
+    # Try integer first and only accept a full-match parse — otherwise
+    # `Integer.parse("1.5")` would swallow the `1` and drop the `.5`.
+    # Fall back to float only when the integer parse leaves a remainder
+    # (i.e. the input was `"1.5"` or `"3.14e2"`), not when the number is
+    # genuinely integral like `"1"`. Previous order (Float first) turned
+    # every integer head-constant into a float the moment `is/2`
+    # touched it, breaking drivers that expected `is_integer(hops)`.
+    case Integer.parse(n) do
+      {i, ""} -> i
+      _ ->
+        case Float.parse(n) do
+          {f, ""} -> f
+          _ -> throw({:eval_error, n})
         end
     end
   end
