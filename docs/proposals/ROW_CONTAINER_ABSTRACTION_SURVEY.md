@@ -117,13 +117,16 @@ cache prototype extends the same seam into cache storage for the simple
 two-column shape while leaving grouped and wider row shapes on object rows.
 This trades retained cache size and row-array isolation against hit-path
 latency, because compact cache hits must allocate fresh public `object[]` rows
-instead of reusing cached row arrays. `benchmark_seeded_cache_hits.py` now
+instead of reusing cached row arrays. It is therefore exposed as the opt-in
+`QueryExecutorOptions.CompactSeededCacheRows` mode; object-row seeded cache
+storage remains the default hot-hit path. `benchmark_seeded_cache_hits.py` now
 reports both coarse warm-cache GC deltas and a direct seeded-cache storage
-estimate. On the 300 and 1k category-parent slices with 16 seeds, compact
-two-column cache storage reduces estimated seeded-cache row storage from about
-204-883 KB to about 69-295 KB, while median cache-hit latency remains slower
-than object-row reuse. The next step is to decide whether this memory/row
-isolation tradeoff is valuable enough to expose behind a runtime option.
+estimate, and can run object, compact, or both row-storage modes. On the 300
+and 1k category-parent slices with 16 seeds, compact two-column cache storage
+reduces estimated seeded-cache row storage from about 204-883 KB to about
+69-295 KB, while median cache-hit latency remains slower than object-row reuse.
+The next step is to evaluate larger or preprocessed external storage shapes
+where retained-memory pressure dominates cache-hit row allocation cost.
 
 ## Non-Goals
 
