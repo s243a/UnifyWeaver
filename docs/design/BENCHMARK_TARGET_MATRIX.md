@@ -248,11 +248,12 @@ result table. Clojure WAM no longer has scaffold-only effective-distance modes;
 all four Clojure modes are executable `hybrid-wam` targets:
 
 - `clojure-wam-accumulated` — executable `hybrid-wam`; emits the common result
-  table and matches `prolog-accumulated` on the `dev` scale
+  table, builds the native Clojure ancestor-hop index, and matches
+  `prolog-accumulated` on the `dev` scale
 - `clojure-wam-accumulated-no-kernels` — executable `hybrid-wam`; same result
   table with `no_kernels(true)` for kernel-on/off comparison
 - `clojure-wam-seeded` — executable `hybrid-wam`; seeded helper path with
-  kernels enabled
+  kernels enabled and the native Clojure ancestor-hop index
 - `clojure-wam-seeded-no-kernels` — executable `hybrid-wam`; seeded helper
   path with `no_kernels(true)`
 

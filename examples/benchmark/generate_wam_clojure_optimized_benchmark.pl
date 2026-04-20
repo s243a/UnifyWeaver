@@ -86,7 +86,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
            ],
            Options),
     write_wam_clojure_project(Predicates, Options, OutputDir),
-    append_effective_distance_runner(OutputDir),
+    append_effective_distance_runner(OutputDir, KernelModeAtom),
     format(user_error,
            '[WAM-Clojure-Optimized] facts=~w variant=~w kernels=~w output=~w~n',
            [FactsPath, VariantAtom, KernelModeAtom, OutputDir]).
@@ -145,10 +145,10 @@ escape_clj_string_local(In, Out) :-
     split_string(Tmp1, "\"", "", Parts2),
     atomic_list_concat(Parts2, "\\\"", Out).
 
-append_effective_distance_runner(OutputDir) :-
+append_effective_distance_runner(OutputDir, KernelModeAtom) :-
     directory_file_path(OutputDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
     read_file_to_string(CorePath, Core0, []),
-    effective_distance_runner_code(RunnerCode),
+    effective_distance_runner_code(KernelModeAtom, RunnerCode),
     atomic_list_concat([Core0, RunnerCode], '\n\n', Core),
     setup_call_cleanup(
         open(CorePath, write, Stream),
@@ -156,12 +156,13 @@ append_effective_distance_runner(OutputDir) :-
         close(Stream)
     ).
 
-effective_distance_runner_code(Code) :-
+effective_distance_runner_code(KernelModeAtom, Code) :-
     benchmark_article_category_literal(ArticleCategories),
     benchmark_category_parent_literal(CategoryParents),
     benchmark_root_category_literal(RootCategories),
     benchmark_dimension_n_literal(DimensionN),
     benchmark_max_depth_literal(MaxDepth),
+    benchmark_use_traversal_kernel_literal(KernelModeAtom, UseTraversalKernel),
     format(string(Code),
 '
 ;; Effective-distance benchmark entrypoint generated from facts.pl.
@@ -171,6 +172,7 @@ effective_distance_runner_code(Code) :-
 (def benchmark-roots [~s])
 (def benchmark-dimension-n ~w)
 (def benchmark-max-depth ~w)
+(def benchmark-use-traversal-kernel? ~w)
 
 (def benchmark-parents-by-child
   (reduce (fn [acc [child parent]]
@@ -183,6 +185,9 @@ effective_distance_runner_code(Code) :-
             (update acc article (fnil conj []) category))
           {}
           benchmark-article-categories))
+
+(def benchmark-seed-categories
+  (sort (set (map second benchmark-article-categories))))
 
 (defn benchmark-ancestor-hops [category root visited]
   (let [parents (get benchmark-parents-by-child category [])]
@@ -199,6 +204,23 @@ effective_distance_runner_code(Code) :-
                   hop (benchmark-ancestor-hops mid root (conj visited mid))]
               [(inc hop)])))))))
 
+(defn benchmark-build-ancestor-hops-index []
+  (into {}
+    (for [category benchmark-seed-categories
+          root benchmark-roots
+          :let [hops (benchmark-ancestor-hops category root #{category})]
+          :when (seq hops)]
+      [[category root] hops])))
+
+(def benchmark-ancestor-hops-index
+  (when benchmark-use-traversal-kernel?
+    (benchmark-build-ancestor-hops-index)))
+
+(defn benchmark-category-root-hops [category root]
+  (if benchmark-use-traversal-kernel?
+    (get benchmark-ancestor-hops-index [category root] [])
+    (benchmark-ancestor-hops category root #{category})))
+
 (defn benchmark-article-root-weight [article root]
   (reduce
     +
@@ -206,7 +228,7 @@ effective_distance_runner_code(Code) :-
     (for [category (get benchmark-article-categories-by-article article [])
           weight (if (= category root)
                    [1.0]
-                   (for [hops (benchmark-ancestor-hops category root #{category})]
+                   (for [hops (benchmark-category-root-hops category root)]
                      (Math/pow (+ hops 1.0) (- benchmark-dimension-n))))]
       weight)))
 
@@ -237,7 +259,11 @@ effective_distance_runner_code(Code) :-
       (println (invoke-predicate pred-key (mapv edn/read-string pred-args))))
     (run-effective-distance-benchmark)))
 ',
-           [ArticleCategories, CategoryParents, RootCategories, DimensionN, MaxDepth]).
+           [ArticleCategories, CategoryParents, RootCategories, DimensionN, MaxDepth,
+            UseTraversalKernel]).
+
+benchmark_use_traversal_kernel_literal(kernels_on, true).
+benchmark_use_traversal_kernel_literal(kernels_off, false).
 
 benchmark_article_category_literal(Literal) :-
     findall(Article-Category,

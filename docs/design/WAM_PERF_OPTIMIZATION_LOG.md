@@ -237,13 +237,13 @@ for further optimization work.
 | Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
 | One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
 | Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
-| FFI controls | Partial | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic handlers work, and the optimized benchmark generator now emits a fact-backed `category_parent/2` graph handler |
+| FFI controls | Partial | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic handlers work, and the optimized benchmark generator now emits a fact-backed `category_parent/2` graph handler plus a Clojure ancestor-hop traversal index for `kernels_on` benchmark runners |
 | Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
 | Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
 | Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
 | Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
 | Write-mode compound terms | Done | `put_structure`, `put_list`, `set_*` build nested terms via a builder stack |
-| Benchmark generation | Partial | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls and fact-backed graph handler generation |
+| Benchmark generation | Partial | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls, fact-backed graph handler generation, and a result-producing traversal-index runner |
 | End-to-end verification | Partial | Generator tests, fact-backed foreign-handler JVM smoke, and standalone runtime smoke runner pass locally; large JVM benchmarks remain constrained in Termux |
 
 ### Clojure-specific lessons from this phase
@@ -268,8 +268,7 @@ for further optimization work.
 6. Clojure now has the same basic control vocabulary used by benchmark
    matrices in other WAM targets: explicit foreign predicates can be marked,
    and `no_kernels(true)` / `foreign_lowering(false)` force the pure WAM path.
-   Deterministic handlers can be wired through `clojure_foreign_handlers/1`;
-   full Clojure graph kernels are still not implemented.
+   Deterministic handlers can be wired through `clojure_foreign_handlers/1`.
 7. Clojure now has an optimized effective-distance project generator. It
    establishes benchmark-matrix shape and kernel-mode controls without trying
    to run large JVM benchmarks in Termux.
@@ -298,12 +297,17 @@ for further optimization work.
     normalized digest:
     `clojure-wam-accumulated`, `clojure-wam-accumulated-no-kernels`,
     `clojure-wam-seeded`, and `clojure-wam-seeded-no-kernels`.
+13. The result-producing runner now distinguishes `kernels_on` and
+    `kernels_off`: `kernels_on` builds a native Clojure ancestor-hop index once
+    for the benchmark seed categories and roots, while `kernels_off` keeps the
+    on-demand recursive traversal path. Both modes still match
+    `prolog-accumulated` on `dev`.
 
 ### Highest-value remaining work
 
-1. Extend Clojure graph kernels beyond deterministic `category_parent/2`,
-   especially multi-output traversal kernels comparable to the mature
-   Haskell/Rust hybrid paths.
+1. Move the traversal-index kernel closer to the generic `call-foreign`
+   runtime surface, especially multi-output traversal kernels comparable to
+   the mature Haskell/Rust hybrid paths.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
