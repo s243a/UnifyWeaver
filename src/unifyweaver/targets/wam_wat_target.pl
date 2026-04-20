@@ -1774,15 +1774,20 @@ wam_wat_case(allocate,
   ;; inside this frame (accessed via $env_base in $reg_offset), so
   ;; each call level gets its own Y storage and there is no need to
   ;; save/restore Y explicitly — the frame IS the Y storage.
-  ;; Frame: [prev_env_base:i32 +0][CP:i32 +4][32 Y slots: 384 bytes +8] = 392 bytes.
+  ;; Frame: [prev_env_base:i32 +0][CP:i32 +4][32 Y slots: 384 bytes +8]
+  ;;        [trail_mark:i32 +392] = 396 bytes.
+  ;; The trail_mark slot snapshots trail_top at frame entry so
+  ;; neck_cut_test can unwind any bindings made by the pre-guard
+  ;; prelude on guard failure, without needing a full choice point.
   (local $soff i32)
   (local.set $soff (call $get_stack_top))
-  ;; Save previous env_base and CP
+  ;; Save previous env_base, CP, and trail mark
   (i32.store (local.get $soff) (global.get $env_base))
   (i32.store (i32.add (local.get $soff) (i32.const 4)) (call $get_cp))
+  (i32.store (i32.add (local.get $soff) (i32.const 392)) (call $get_trail_top))
   ;; This frame becomes the current environment
   (global.set $env_base (local.get $soff))
-  (call $set_stack_top (i32.add (local.get $soff) (i32.const 392)))
+  (call $set_stack_top (i32.add (local.get $soff) (i32.const 396)))
   (call $inc_pc)
   (i32.const 1)').
 
@@ -1859,9 +1864,12 @@ wam_wat_case(neck_cut_test,
   ;; detects try_me_else + guard + cut. No choice point is created.
   ;; op1 = else clause PC, op2 = (guard_builtin_id << 32) | arity.
   ;; If guard succeeds: advance PC (continue with clause 1 body).
-  ;; If guard fails: undo the current allocate frame and jump to
-  ;; the else clause — no CP push/pop, no register save/restore.
+  ;; If guard fails: unwind any trailed bindings made by the pre-
+  ;; guard prelude, pop the env frame that allocate pushed for
+  ;; clause 1, and jump to the else clause — no CP push/pop, no
+  ;; register save/restore.
   (local $else_pc i32) (local $guard_id i32) (local $guard_arity i32)
+  (local $frame i32) (local $mark i32)
   (local.set $else_pc (i32.wrap_i64 (local.get $op1)))
   (local.set $guard_id (i32.wrap_i64 (i64.shr_u (local.get $op2) (i64.const 32))))
   (local.set $guard_arity (i32.wrap_i64 (local.get $op2)))
@@ -1870,10 +1878,16 @@ wam_wat_case(neck_cut_test,
       (call $inc_pc)
       (i32.const 1))
     (else
-      ;; Guard failed: pop the env frame that allocate pushed for
-      ;; clause 1 (the else clause will do its own allocate).
-      (call $set_stack_top (global.get $env_base))
-      (global.set $env_base (i32.load (global.get $env_base)))
+      ;; Guard failed. Read the trail mark stored by allocate at
+      ;; frame+392 and unwind any bindings created during the
+      ;; pre-guard prelude (e.g. get_value on an unbound A-reg).
+      (local.set $frame (global.get $env_base))
+      (local.set $mark
+        (i32.load (i32.add (local.get $frame) (i32.const 392))))
+      (call $unwind_trail (local.get $mark))
+      ;; Pop the env frame (the else clause will do its own allocate).
+      (call $set_stack_top (local.get $frame))
+      (global.set $env_base (i32.load (local.get $frame)))
       (call $set_pc (local.get $else_pc))
       (i32.const 1)))').
 
@@ -6197,35 +6211,12 @@ peephole_neck_cut([label(Pred), try_me_else(L), allocate | Rest],
                   [label(Pred) | Optimized]) :-
     find_guard_and_cut(Rest, BeforeGuard, GuardOp, GuardArity, AfterCut),
     \+ type_test_guard(GuardOp),
-    \+ has_unifying_instr(BeforeGuard),
     remove_label_trust_me(AfterCut, L, Cleaned),
     !,
     append([allocate | BeforeGuard],
            [neck_cut_test(GuardOp, GuardArity, L) | Cleaned],
            Optimized).
 peephole_neck_cut(Instrs, Instrs).
-
-%% has_unifying_instr(+Instrs)
-%  True if any instruction in Instrs could create a trailed binding.
-%  neck_cut_test has no trail-unwind on its guard-failure path, so
-%  it's only safe to fire when the pre-guard prelude is binding-free.
-%  This excludes clauses like term_depth_args/5 where a `get_value`
-%  against a potentially-unbound A-register can trail a binding that
-%  the else clause would then see.
-has_unifying_instr(Instrs) :-
-    member(Instr, Instrs),
-    unifying_instr(Instr), !.
-
-unifying_instr(get_value(_, _)).
-unifying_instr(get_constant(_, _)).
-unifying_instr(get_structure(_, _)).
-unifying_instr(get_list(_)).
-unifying_instr(unify_value(_)).
-unifying_instr(unify_variable(_)).
-unifying_instr(unify_constant(_)).
-%% Builtin calls can also bind (is/2, =/2, ==/2 with unbound args,
-%% compound-arg builtins, etc.). Be conservative.
-unifying_instr(builtin_call(_, _)).
 
 %% type_test_guard(+GuardName)
 %  True if GuardName is a single-argument type test that the
