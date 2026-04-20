@@ -2158,7 +2158,10 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
     compile_predicates_to_haskell(Predicates, Options, PredsCode0),
-    apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
+    % Append compile-time atom table to Predicates.hs
+    emit_atom_table_haskell(AtomTableCode),
+    format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
+    apply_hashmap_rewrite(UseHM, generic, PredsCode0WithAtoms, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
 
@@ -2341,11 +2344,11 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
         mergedLabels = allLabels'
     ;   Code =
 '    let baseLen = length allCode
-        (cpCode, cpLabels) = buildFact2Code "category_parent" categoryParents (baseLen + 1)
+        (cpCode, cpLabels) = buildFact2Code iAtom "category_parent" categoryParents (baseLen + 1)
         cpEnd = baseLen + length cpCode
-        (acCode, acLabels) = buildFact2Code "article_category" articleCategories (cpEnd + 1)
+        (acCode, acLabels) = buildFact2Code iAtom "article_category" articleCategories (cpEnd + 1)
         acEnd = cpEnd + length acCode
-        (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
+        (rcCode, rcLabels) = buildFact1Code iAtom "root_category" roots (acEnd + 1)
 
         mergedCodeRaw = allCode ++ cpCode ++ acCode ++ rcCode
         mergedLabels = Map.union allLabels
@@ -2361,7 +2364,7 @@ generate_query_body(Options, QueryBody) :-
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
             [QueryPred1])
     ;   member(use_ffi(true), Options)
     ->  % FFI path: call executeForeign directly instead of running WAM code.
@@ -2372,7 +2375,7 @@ generate_query_body(Options, QueryBody) :-
 'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ;   % Default: collectSolutions loop for category_ancestor/4
         QueryBody =
-'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
@@ -2963,6 +2966,7 @@ compile_predicates_to_haskell(Predicates, Options, Code) :-
 'module Predicates where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import WamTypes
 
 -- | Merged WAM code for all predicates.
@@ -3236,14 +3240,15 @@ parse_functor_arity(FN, Arity) :-
 %% wam_value_to_haskell(+WamVal, -HaskellExpr)
 %  Converts a WAM constant to a Haskell Value constructor.
 wam_value_to_haskell(Val, Hs) :-
-    (   number_string(N, Val), integer(N)
+    atom_string(Val, ValStr),
+    (   number_string(N, ValStr), integer(N)
     ->  % Wrap negative integers in parens so Haskell parses correctly:
         % Integer (-5) not Integer -5
         (   N < 0
         ->  format(string(Hs), 'Integer (~w)', [N])
         ;   format(string(Hs), 'Integer ~w', [N])
         )
-    ;   number_string(F, Val), float(F)
+    ;   number_string(F, ValStr), float(F)
     ->  (   F < 0
         ->  format(string(Hs), 'Float (~w)', [F])
         ;   format(string(Hs), 'Float ~w', [F])
