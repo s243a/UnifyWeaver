@@ -133,8 +133,10 @@ Supported modes:
 - `seeded` and `accumulated` select the same optimized Prolog predicate
   generation path used by the mature WAM benchmark generators.
 - `kernels_on` emits a `category_parent/2` `call-foreign` stub and a
-  Clojure set-backed handler generated from the supplied `facts.pl`.
-- `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)`.
+  Clojure set-backed handler generated from the supplied `facts.pl`; the
+  result-producing runner also precomputes a native Clojure ancestor-hop index.
+- `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)` and keeps
+  the result-producing runner on the on-demand traversal path.
 
 The generated project supports two entry modes:
 
