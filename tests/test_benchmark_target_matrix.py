@@ -14,22 +14,29 @@ from benchmark_target_matrix import TARGETS, list_targets_text, resolve_targets 
 
 
 class BenchmarkTargetMatrixTests(unittest.TestCase):
-    def test_clojure_scaffold_targets_are_registered(self) -> None:
+    def test_clojure_targets_are_registered(self) -> None:
         targets = resolve_targets(
             explicit_targets=None,
-            target_set_names=["clojure-wam-scaffold"],
+            target_set_names=["clojure-wam"],
         )
 
         self.assertEqual(
             targets,
             [
+                "clojure-wam-accumulated",
                 "clojure-wam-seeded",
                 "clojure-wam-seeded-no-kernels",
-                "clojure-wam-accumulated",
                 "clojure-wam-accumulated-no-kernels",
             ],
         )
-        self.assertTrue(all(TARGETS[target].category == "hybrid-wam-scaffold" for target in targets))
+        self.assertEqual(TARGETS["clojure-wam-accumulated"].category, "hybrid-wam")
+        self.assertTrue(
+            all(
+                TARGETS[target].category == "hybrid-wam-scaffold"
+                for target in targets
+                if target != "clojure-wam-accumulated"
+            )
+        )
 
     def test_default_hybrid_wam_excludes_clojure_scaffolds(self) -> None:
         targets = resolve_targets(
@@ -39,15 +46,21 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
 
         self.assertIn("go-wam-accumulated", targets)
         self.assertIn("haskell-interp-ffi", targets)
-        self.assertNotIn("clojure-wam-accumulated", targets)
+        self.assertIn("clojure-wam-accumulated", targets)
+        self.assertNotIn("clojure-wam-seeded", targets)
 
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
 
-        self.assertIn("clojure-wam-accumulated\thybrid-wam-scaffold", text)
+        self.assertIn("clojure-wam-accumulated\thybrid-wam", text)
+        self.assertIn(
+            "clojure-wam\tclojure-wam-accumulated,clojure-wam-seeded,"
+            "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
+            text,
+        )
         self.assertIn(
             "clojure-wam-scaffold\tclojure-wam-seeded,clojure-wam-seeded-no-kernels,"
-            "clojure-wam-accumulated,clojure-wam-accumulated-no-kernels",
+            "clojure-wam-accumulated-no-kernels",
             text,
         )
 
@@ -57,7 +70,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             sys.argv = [
                 "benchmark_effective_distance_matrix.py",
                 "--targets",
-                "clojure-wam-accumulated,prolog-accumulated",
+                "clojure-wam-seeded,prolog-accumulated",
             ]
             args = parse_args()
             self.assertEqual(resolve_requested_targets(args), ["prolog-accumulated"])

@@ -64,6 +64,7 @@ PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_
 WAM_RUST_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
+WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
 
@@ -239,6 +240,59 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(project_dir / "hybrid_ed_bench_go")], cwd=project_dir, env=env)
     return [str(project_dir / "hybrid_ed_bench_go")]
+
+
+def clojure_classpath(project_dir: Path) -> str:
+    env_classpath = os.environ.get("CLASSPATH", "")
+    if env_classpath:
+        return ":".join([str(project_dir / "src"), env_classpath])
+    jar_paths = [
+        Path.home() / ".m2" / "repository" / "org" / "clojure" / "clojure" / "1.11.1" / "clojure-1.11.1.jar",
+        Path.home() / ".m2" / "repository" / "org" / "clojure" / "spec.alpha" / "0.3.218" / "spec.alpha-0.3.218.jar",
+        Path.home()
+        / ".m2"
+        / "repository"
+        / "org"
+        / "clojure"
+        / "core.specs.alpha"
+        / "0.2.62"
+        / "core.specs.alpha-0.2.62.jar",
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/clojure/1.11.1/clojure-1.11.1.jar"),
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/spec.alpha/0.3.218/spec.alpha-0.3.218.jar"),
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/core.specs.alpha/0.2.62/core.specs.alpha-0.2.62.jar"),
+    ]
+    existing_jars = [path for path in jar_paths if path.exists()]
+    if not existing_jars:
+        raise RuntimeError("Clojure jars not found; cannot run clojure-wam target")
+    return ":".join([str(project_dir / "src"), *(str(path) for path in existing_jars)])
+
+
+def build_wam_clojure_effective_distance(root: Path, scale: str, variant: str, kernel_mode: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_clojure_{variant}_{kernel_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_CLOJURE_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            variant,
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    return [
+        "java",
+        "-cp",
+        clojure_classpath(project_dir),
+        "clojure.main",
+        "-m",
+        "generated.wam_clojure_optimized_bench.core",
+    ]
 
 
 def parse_effective_distance_facts(facts_path: Path) -> tuple[list[tuple[str, str]], list[str]]:
@@ -529,7 +583,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-") or target.startswith("wam-"):
+        if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
             result = run_command(command, cwd=ROOT)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
@@ -633,6 +687,8 @@ def main() -> int:
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "go-wam-accumulated-no-kernels":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "clojure-wam-accumulated":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))
