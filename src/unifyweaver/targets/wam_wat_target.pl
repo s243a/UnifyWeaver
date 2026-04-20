@@ -134,6 +134,8 @@ instr_tag(arg_call_lit_2,   59).
 instr_tag(arg_call_reg_2_dead, 60).
 instr_tag(arg_call_lit_2_dead, 61).
 instr_tag(tail_call_5,      62).
+instr_tag(deallocate_proceed, 63).
+instr_tag(tail_call_5_c1_lit, 64).
 
 % Builtin operation IDs
 builtin_id('write/1',  0).
@@ -734,6 +736,14 @@ wam_instruction_to_wat_bytes(
     resolve_label(Pred, Labels, PC),
     encode_instr_hex(Tag, Op1, PC, Hex).
 
+%% deallocate_proceed: fusion of `deallocate + proceed`. Zero
+%% operands. Restores CP+env_base from the frame header, pops the
+%% frame, then jumps to CP (returning to caller) — same behavior as
+%% deallocate followed by proceed, with one less dispatch.
+wam_instruction_to_wat_bytes(deallocate_proceed, _Labels, Hex) :-
+    instr_tag(deallocate_proceed, Tag),
+    encode_instr_hex(Tag, 0, 0, Hex).
+
 %% tail_call_5: fusion of a 5-arg tail-call setup window:
 %%   put_value(R1,A1) put_value(R2,A2) put_value(R3,A3)
 %%   put_value(R4,A4) put_value(R5,A5) deallocate execute(Pred)
@@ -758,6 +768,34 @@ wam_instruction_to_wat_bytes(
         \/ (I3 << 16)
         \/ (I4 << 24)
         \/ (I5 << 32),
+    resolve_label(Pred, Labels, PC),
+    encode_instr_hex(Tag, Op1, PC, Hex).
+
+%% tail_call_5_c1_lit: K=5 tail-call fusion where the first argument
+%% is an integer literal rather than a register copy. Matches
+%%   put_constant(K, A1) put_value(R2, A2) put_value(R3, A3)
+%%   put_value(R4, A4) put_value(R5, A5) deallocate execute(Pred)
+%% Fires on sum_ints/3 clause 2 where the recursive tail into
+%% sum_ints_args/5 passes literal index 1 as the first argument.
+%%
+%% op1 layout: R2Idx (8-15), R3Idx (16-23), R4Idx (24-31),
+%%             R5Idx (32-39), C1 literal (40-55, 16-bit signed).
+%% op2: target PC.
+%% Falls through the peephole if C1 doesn't fit in 16 signed bits
+%% (unusual — most put_constant first args are small indices).
+wam_instruction_to_wat_bytes(
+    tail_call_5_c1_lit(C1, R2, R3, R4, R5, Pred),
+    Labels, Hex) :-
+    instr_tag(tail_call_5_c1_lit, Tag),
+    reg_name_to_index(R2, I2),
+    reg_name_to_index(R3, I3),
+    reg_name_to_index(R4, I4),
+    reg_name_to_index(R5, I5),
+    Op1 is (I2 << 8)
+        \/ (I3 << 16)
+        \/ (I4 << 24)
+        \/ (I5 << 32)
+        \/ ((C1 /\ 0xFFFF) << 40),
     resolve_label(Pred, Labels, PC),
     encode_instr_hex(Tag, Op1, PC, Hex).
 
@@ -3043,6 +3081,68 @@ wam_wat_case(tail_call_5,
   (global.set $env_base (i32.load (local.get $frame)))
   (call $set_stack_top (local.get $frame))
   ;; Tail-call jump (no CP save — deallocate already restored CP).
+  (call $set_pc (i32.wrap_i64 (local.get $op2)))
+  (i32.const 1)').
+
+wam_wat_case(deallocate_proceed,
+'  ;; Fuses `deallocate + proceed` — restore CP+env_base from the
+  ;; current env frame header, pop the frame, then jump to CP.
+  ;; Matches the base-case ending shape of clauses like
+  ;; sum_ints/3''s integer-leaf clause and fib/3''s recursive case.
+  ;; No operands.
+  (local $frame i32)
+  (local $cp i32)
+  (local.set $frame (global.get $env_base))
+  (local.set $cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  (call $set_cp (local.get $cp))
+  ;; Proceed: jump to CP if valid, otherwise halt.
+  (if (result i32) (i32.ge_s (local.get $cp) (i32.const 0))
+    (then
+      (call $set_pc (local.get $cp))
+      (i32.const 1))
+    (else
+      (call $set_halted (i32.const 1))
+      (i32.const 1)))').
+
+wam_wat_case(tail_call_5_c1_lit,
+'  ;; K=5 tail-call fusion with literal first argument. Writes the
+  ;; literal (sign-extended from 16 bits) to A1, copies R2-R5 to
+  ;; A2-A5, inlines deallocate, jumps to target.
+  ;; op1 packing: R2 (8-15), R3 (16-23), R4 (24-31), R5 (32-39),
+  ;;              C1 literal (40-55, 16-bit signed). op2 = target PC.
+  (local $op1i i64)
+  (local $r2_idx i32) (local $r3_idx i32)
+  (local $r4_idx i32) (local $r5_idx i32)
+  (local $c1 i64)
+  (local $frame i32)
+  (local.set $op1i (local.get $op1))
+  (local.set $r2_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 8)) (i64.const 0xFF))))
+  (local.set $r3_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 16)) (i64.const 0xFF))))
+  (local.set $r4_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 24)) (i64.const 0xFF))))
+  (local.set $r5_idx (i32.wrap_i64
+    (i64.and (i64.shr_u (local.get $op1i) (i64.const 32)) (i64.const 0xFF))))
+  ;; Sign-extend 16-bit literal: shift left then arithmetic right.
+  (local.set $c1 (i64.shr_s
+    (i64.shl (i64.shr_u (local.get $op1i) (i64.const 40)) (i64.const 48))
+    (i64.const 48)))
+  ;; A1 := integer literal.
+  (call $set_reg (i32.const 0) (i32.const 1) (local.get $c1))
+  ;; A2-A5 := R2-R5 values (read before deallocate).
+  (call $copy_to_reg (i32.const 1) (call $reg_offset (local.get $r2_idx)))
+  (call $copy_to_reg (i32.const 2) (call $reg_offset (local.get $r3_idx)))
+  (call $copy_to_reg (i32.const 3) (call $reg_offset (local.get $r4_idx)))
+  (call $copy_to_reg (i32.const 4) (call $reg_offset (local.get $r5_idx)))
+  ;; Inline deallocate.
+  (local.set $frame (global.get $env_base))
+  (call $set_cp (i32.load (i32.add (local.get $frame) (i32.const 4))))
+  (global.set $env_base (i32.load (local.get $frame)))
+  (call $set_stack_top (local.get $frame))
+  ;; Tail-call jump.
   (call $set_pc (i32.wrap_i64 (local.get $op2)))
   (i32.const 1)').
 
@@ -5565,6 +5665,27 @@ peephole_tail_call_k([put_value(R1, 'A1'),
                       deallocate,
                       execute(Pred) | Rest],
                      [tail_call_5(R1, R2, R3, R4, R5, Pred) | Out]) :-
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([put_constant(C1Raw, 'A1'),
+                      put_value(R2, 'A2'),
+                      put_value(R3, 'A3'),
+                      put_value(R4, 'A4'),
+                      put_value(R5, 'A5'),
+                      deallocate,
+                      execute(Pred) | Rest],
+                     [tail_call_5_c1_lit(C1, R2, R3, R4, R5, Pred) | Out]) :-
+    %% Constants arrive as strings from the WAM-text parser; accept
+    %% either an already-parsed integer or a numeric string. Atom
+    %% constants (non-numeric strings) don't match this fusion.
+    ( integer(C1Raw) -> C1 = C1Raw
+    ; string(C1Raw), number_string(C1, C1Raw), integer(C1)
+    ),
+    C1 >= -32768, C1 =< 32767,
+    !,
+    peephole_tail_call_k(Rest, Out).
+peephole_tail_call_k([deallocate, proceed | Rest],
+                     [deallocate_proceed | Out]) :-
     !,
     peephole_tail_call_k(Rest, Out).
 peephole_tail_call_k([H|T], [H|Out]) :-
