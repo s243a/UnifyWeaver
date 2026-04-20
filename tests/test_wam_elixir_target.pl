@@ -357,6 +357,72 @@ test_phase_b_fallback_on_unextractable :-
     ;   fail_test(Test, 'expected fallback to compiled did not occur')
     ).
 
+%% WAM constant quoting tests
+
+:- dynamic phase_a_test:comma_atom/2.
+
+test_quote_wam_constant_plain :-
+    Test = 'Quoting: identifier-like atom passes through unquoted',
+    wam_target:quote_wam_constant('foo_bar_123', Str),
+    (   Str == "foo_bar_123"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_quote_wam_constant_comma :-
+    Test = 'Quoting: atom containing comma is single-quoted',
+    wam_target:quote_wam_constant('Has,comma', Str),
+    (   Str == "'Has,comma'"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_quote_wam_constant_escape :-
+    Test = 'Quoting: atom containing single-quote is escaped',
+    wam_target:quote_wam_constant('it\'s', Str),
+    (   Str == "'it\\'s'"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_tokenize_unquoted :-
+    Test = 'Tokenizer: plain line splits on spaces and commas',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant foo, A1", Tokens),
+    (   Tokens == ["get_constant", "foo", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_tokenize_quoted_atom_with_comma :-
+    Test = 'Tokenizer: quoted atom containing comma stays one token',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'Has,comma', A1", Tokens),
+    (   Tokens == ["get_constant", "Has,comma", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_tokenize_quoted_atom_with_escape :-
+    Test = 'Tokenizer: quoted atom with \\\' escape unquotes to literal',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'it\\'s', A1", Tokens),
+    (   Tokens == ["get_constant", "it's", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_round_trip_comma_atom :-
+    Test = 'Round trip: atom with comma survives WAM-text -> tokenizer',
+    retractall(phase_a_test:comma_atom(_, _)),
+    assertz((phase_a_test:comma_atom('Has,comma', value))),
+    wam_target:compile_predicate_to_wam(phase_a_test:comma_atom/2, [], WamCode),
+    lower_predicate_to_elixir(comma_atom/2, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    % Should reach inline_data and emit the atom as an Elixir string.
+    (   sub_string(Code, _, _, _, '{"Has,comma", "value"}'),
+        \+ sub_string(Code, _, _, _, 'raw:')
+    ->  pass(Test)
+    ;   fail_test(Test, 'comma-atom round-trip failed')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -387,5 +453,12 @@ run_tests :-
     test_phase_b_emits_inline_data_when_chosen,
     test_phase_b_variable_head_becomes_sentinel,
     test_phase_b_fallback_on_unextractable,
+    test_quote_wam_constant_plain,
+    test_quote_wam_constant_comma,
+    test_quote_wam_constant_escape,
+    test_tokenize_unquoted,
+    test_tokenize_quoted_atom_with_comma,
+    test_tokenize_quoted_atom_with_escape,
+    test_round_trip_comma_atom,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
