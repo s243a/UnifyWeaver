@@ -33,8 +33,11 @@ test(generate_seeded_kernels_on_project) :-
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? true)')),
-        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-ancestor-hops-index')),
-        assertion(sub_string(CoreCode, _, _, _, '(benchmark-build-ancestor-hops-index)')),
+        assertion(sub_string(CoreCode, _, _, _, '(defn benchmark-foreign-category-root-hops [category root]')),
+        assertion(sub_string(CoreCode, _, _, _, '(handler [category root {:var 9001} (benchmark-list-term [category])]')),
+        assertion(sub_string(CoreCode, _, _, _, '(benchmark-foreign-category-root-hops category root)')),
+        assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-ancestor-hops-index')),
+        assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-build-ancestor-hops-index')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -51,6 +54,8 @@ test(generate_seeded_kernels_off_project) :-
         assertion(\+ sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? false)')),
         assertion(sub_string(CoreCode, _, _, _, '(benchmark-ancestor-hops category root #{category})')),
+        assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-ancestor-hops-index')),
+        assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-build-ancestor-hops-index')),
         delete_directory_and_contents(TmpDir)
     )).
 

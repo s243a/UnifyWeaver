@@ -232,21 +232,25 @@ effective_distance_runner_code(KernelModeAtom, Code) :-
                   hop (benchmark-ancestor-hops mid root (conj visited mid))]
               [(inc hop)])))))))
 
-(defn benchmark-build-ancestor-hops-index []
-  (into {}
-    (for [category benchmark-seed-categories
-          root benchmark-roots
-          :let [hops (benchmark-ancestor-hops category root #{category})]
-          :when (seq hops)]
-      [[category root] hops])))
+(defn benchmark-list-term [items]
+  (reduce
+    (fn [tail item]
+      {:tag :struct :functor "[|]/2" :args [item tail]})
+    "[]"
+    (reverse items)))
 
-(def benchmark-ancestor-hops-index
-  (when benchmark-use-traversal-kernel?
-    (benchmark-build-ancestor-hops-index)))
+(defn benchmark-foreign-category-root-hops [category root]
+  (let [handler (get foreign-handlers "category_ancestor/4")
+        result (when handler
+                 (handler [category root {:var 9001} (benchmark-list-term [category])]))]
+    (vec
+      (keep (fn [solution]
+              (get-in solution [:bindings 3]))
+            (:solutions result)))))
 
 (defn benchmark-category-root-hops [category root]
   (if benchmark-use-traversal-kernel?
-    (get benchmark-ancestor-hops-index [category root] [])
+    (benchmark-foreign-category-root-hops category root)
     (benchmark-ancestor-hops category root #{category})))
 
 (defn benchmark-article-root-weight [article root]

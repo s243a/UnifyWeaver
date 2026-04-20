@@ -321,12 +321,16 @@ for further optimization work.
     solutions via `:solutions`, and keeps `kernels_off` on the pure WAM path.
     The effective-distance runner still has its runner-side traversal index,
     but the WAM predicate surface now has the same shape needed to replace it.
+17. Clojure `kernels_on` effective-distance runner now consumes the generic
+    streaming `category_ancestor/4` foreign handler directly. The bespoke
+    runner-side `benchmark-ancestor-hops-index` materialization is gone;
+    `kernels_off` still uses the pure recursive runner path for comparison.
 
 ### Highest-value remaining work
 
-1. Update the Clojure effective-distance runner to consume the generic
-   streaming `category_ancestor/4` foreign path instead of its bespoke
-   runner-side traversal index.
+1. Start reducing Clojure runtime overhead now that the traversal kernel path
+   is generic: avoid full choice-point snapshots where foreign choice points
+   only need a narrow state slice.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
