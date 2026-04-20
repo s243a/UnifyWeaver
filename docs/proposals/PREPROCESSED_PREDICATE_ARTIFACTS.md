@@ -376,16 +376,20 @@ integration until the exact local artifact boundary is proven.
 Prototype status:
 
 - The first runtime seam is a string-row binary relation artifact with a JSON
-  manifest and `.uwbr` data file.
+  manifest, `.uwbr` data file, and per-column offset index sidecars.
 - `BinaryRelationArtifactBuilder` can build an artifact from a delimited
   relation source and records predicate, arity, row count, source length, and
   source SHA-256 metadata.
 - `BinaryRelationArtifactProvider` exposes artifacts through the existing
   `IRelationProvider` and `IRetentionAwareRelationProvider` boundaries, so the
   current scan materialization planner can compare artifact replayable and
-  external-materialized access without a new planner enum yet.
+  external-materialized access without a new planner enum yet. It also exposes
+  indexed single-column lookups through `IIndexedRelationProvider`, letting
+  parameterized fact scans probe preprocessed offsets without first
+  materializing the whole relation.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
-  and `artifact` source modes against the existing scan-family workloads.
+  and `artifact` source modes against the existing scan-family workloads,
+  including a `bound_scan` mode for indexed parameter probes.
 
 ## Success Criteria
 

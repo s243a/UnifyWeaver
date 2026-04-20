@@ -7,6 +7,7 @@ TSVs using preloaded, streamed, or binary-artifact relation sources inside a
 temporary C# project:
 
 - `scan`: plain `RelationScanNode`
+- `bound_scan`: parameterized `RelationScanNode` over one bound column
 - `pattern`: `PatternScanNode` with a bound category
 - `join`: `KeyJoinNode` over article/category and category-parent scans
 - `negation`: unary negation over scanned support relations
@@ -25,7 +26,6 @@ import statistics
 import subprocess
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -184,6 +184,10 @@ class Program
                 "scan" => new QueryPlan(
                     scanOutId,
                     new RelationScanNode(articleId)),
+                "bound_scan" => new QueryPlan(
+                    patternOutId,
+                    new RelationScanNode(articleId),
+                    InputPositions: new int[] { 1 }),
                 "pattern" => new QueryPlan(
                     patternOutId,
                     new PatternScanNode(articleId, new object[] { Wildcard.Value, patternCategory })),
@@ -222,7 +226,10 @@ class Program
                 ScanRelationRetentionStrategy: scanStrategy));
 
             var stopwatch = Stopwatch.StartNew();
-            var rows = executor.Execute(plan, trace: trace).ToList();
+            var parameters = mode == "bound_scan"
+                ? new object[][] { new object[] { patternCategory } }
+                : null;
+            var rows = executor.Execute(plan, parameters: parameters, trace: trace).ToList();
             stopwatch.Stop();
 
             Console.Error.WriteLine($"mode={mode}");
@@ -246,6 +253,7 @@ class Program
                     SummarizeStrategies(
                         trace,
                         strategy => strategy.Strategy.StartsWith("KeyJoin", StringComparison.Ordinal) ||
+                                    strategy.Strategy.StartsWith("IndexedRelationProvider", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanRelationRetention", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanMaterializationPlan", StringComparison.Ordinal)));
 
@@ -341,11 +349,12 @@ def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, 
     if repetitions > 0:
         run(command + [mode, str(edge_path), str(article_path)], env=env)
     for _ in range(repetitions):
-        started = time.perf_counter()
         result = run(command + [mode, str(edge_path), str(article_path)], env=env)
-        elapsed = time.perf_counter() - started
-        times.append(elapsed)
         stderr = result.stderr
+        metrics = parse_metrics(stderr)
+        elapsed_ms = metrics.get("elapsed_ms")
+        elapsed = float(elapsed_ms) / 1000.0 if elapsed_ms is not None else 0.0
+        times.append(elapsed)
 
     return BenchResult(scale=scale, mode=mode, source_mode=source_mode, strategy=strategy, times=times, stderr=stderr)
 
@@ -378,7 +387,7 @@ def main() -> int:
         for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
             grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
             metrics = parse_metrics(result.stderr)
-            planner = metrics.get("scan_planner_strategies", "")
+            planner = metrics.get("scan_planner_strategies", "") or metrics.get("scan_operator_strategies", "")
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
@@ -395,7 +404,8 @@ def main() -> int:
                 ratio = auto.median / best.median if best.median else float('inf')
                 print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
                 auto_metrics = parse_metrics(auto.stderr)
-                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_metrics.get('scan_planner_strategies', '')}")
+                auto_planner = auto_metrics.get("scan_planner_strategies", "") or auto_metrics.get("scan_operator_strategies", "")
+                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
