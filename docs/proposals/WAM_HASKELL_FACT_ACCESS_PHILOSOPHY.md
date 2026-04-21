@@ -188,10 +188,29 @@ fact sources are parallelism-safe:
 |---|---|---|
 | Strict IntMap | Yes | Immutable, no locks needed |
 | Lazy Haskell list | Yes (once forced) | Immutable after evaluation |
-| Memory-mapped file | Yes | OS handles page sharing |
+| Memory-mapped file | Yes | No file handle contention (see below) |
 | SQLite (default) | No | Single-writer lock; readers block writers |
 | SQLite (WAL mode) | Partial | Concurrent reads OK, single writer |
 | Mutable IORef | No | Race conditions without MVar/STM |
+
+**Why memory-mapped files are the ideal parallel data source:**
+Memory-mapped files avoid file handle contention entirely. The OS maps
+the file into virtual memory and each thread reads by dereferencing
+pointers at different addresses — there is no `read()` syscall with a
+shared file offset. Page faults are handled transparently by the kernel:
+the first access to a page loads it from disk; subsequent accesses from
+any thread hit the page cache. Multiple threads reading different
+offsets is fully concurrent with zero coordination. In Haskell, a
+`ByteString` backed by an `mmap`'d region is just a pointer + length,
+safe to share across GHC's green threads and OS threads. This makes
+mmap'd artifacts the natural choice for large fact sources under
+parallelism — they combine the immutability of an IntMap with the
+memory efficiency of not loading everything at once.
+
+**Contrast with traditional file IO:** A single file descriptor with
+`seek` + `read` has a shared offset, so concurrent reads require
+locking or per-thread handles. `mmap` sidesteps this because each
+thread accesses the mapped region via independent virtual addresses.
 
 For sources that are not parallelism-safe (like SQLite in default
 mode), the engine must either:
