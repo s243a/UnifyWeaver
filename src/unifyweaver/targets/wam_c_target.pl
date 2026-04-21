@@ -218,13 +218,13 @@ compile_step_wam_to_c(_Options, CCode) :-
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
-                WamValue val = state->A[instr->reg];
-                if (val_is_unbound(val)) {
-                    trail_binding(state, instr->reg);
-                    state->A[instr->reg] = instr->val;
+                WamValue *cell = &state->A[instr->reg];
+                if (val_is_unbound(*cell)) {
+                    trail_binding(state, cell);
+                    *cell = instr->val;
                     state->P++;
                     return true;
-                } else if (val_equal(val, instr->val)) {
+                } else if (val_equal(*cell, instr->val)) {
                     state->P++;
                     return true;
                 }
@@ -252,7 +252,7 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_PUT_VARIABLE: {
                 WamValue fresh = val_unbound("fresh");
-                trail_binding(state, instr->reg_xn);
+                trail_binding(state, &state->A[instr->reg_xn]);
                 state->A[instr->reg_xn] = fresh;
                 state->A[instr->reg_ai] = fresh;
                 state->P++;
@@ -304,6 +304,16 @@ compile_step_wam_to_c(_Options, CCode) :-
                 pop_choice_point(state);
                 state->P++;
                 return true;
+            }
+            case INSTR_GET_STRUCTURE:
+            case INSTR_GET_LIST:
+            case INSTR_PUT_STRUCTURE:
+            case INSTR_PUT_LIST:
+            case INSTR_UNIFY_VARIABLE:
+            case INSTR_UNIFY_VALUE:
+            case INSTR_UNIFY_CONSTANT: {
+                // TODO: Full heap and structure allocation/unification
+                return false;
             }
             default: return false;
         }
