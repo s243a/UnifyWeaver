@@ -603,6 +603,64 @@ test_phase_e_user_override_preempts_policy :-
     ;   fail_test(Test, Layout)
     ).
 
+%% cost_aware policy tests
+
+test_cost_aware_promotes_big_fact_set :-
+    Test = 'cost_aware: 150-clause arity-2 (score 300) > default threshold 200 → inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [fact_layout_policy(cost_aware)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_keeps_small_preds_compiled :-
+    Test = 'cost_aware: 4-clause arity-2 (score 8) < default threshold → compiled',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [fact_layout_policy(cost_aware)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_threshold_override :-
+    Test = 'cost_aware: fact_cost_threshold(5) promotes 4-clause predicate (score 8 > 5)',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs,
+                       [fact_layout_policy(cost_aware), fact_cost_threshold(5)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_respects_fact_only :-
+    Test = 'cost_aware: rule-bearing predicate stays compiled regardless of score',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs,
+                       [fact_layout_policy(cost_aware), fact_cost_threshold(1)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_ets_adaptor_emitted_in_runtime :-
+    Test = 'ETS adaptor: runtime assembly emits FactSource.Ets',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Ets do'),
+        sub_string(RuntimeCode, _, _, _, ':ets.tab2list'),
+        sub_string(RuntimeCode, _, _, _, ':ets.lookup')
+    ->  pass(Test)
+    ;   fail_test(Test, 'ETS adaptor missing from emitted runtime')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -653,5 +711,10 @@ run_tests :-
     test_phase_e_inline_eager_ignores_threshold,
     test_phase_e_inline_eager_respects_fact_only,
     test_phase_e_user_override_preempts_policy,
+    test_cost_aware_promotes_big_fact_set,
+    test_cost_aware_keeps_small_preds_compiled,
+    test_cost_aware_threshold_override,
+    test_cost_aware_respects_fact_only,
+    test_ets_adaptor_emitted_in_runtime,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

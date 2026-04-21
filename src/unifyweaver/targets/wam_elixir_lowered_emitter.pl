@@ -389,6 +389,21 @@ builtin_layout_policy(inline_eager, _PredIndicator, _NClauses, FactOnly, _Option
     ->  Layout = inline_data([])
     ;   Layout = compiled
     ).
+builtin_layout_policy(cost_aware, _Pred/Arity, NClauses, FactOnly, Options, Layout) :-
+    % Static cost estimate: NClauses × max(1, Arity). Proxies the
+    % generated-module size since each clause contributes a tuple
+    % of Arity slots. Default threshold 200 keeps the classic
+    % arity-2 /count≥100 boundary (100 × 2 = 200) — same shape as
+    % the `auto` policy for 2-column fact predicates, but smarter
+    % when arity varies (arity-1 stays `compiled` longer; wide
+    % arities flip to `inline_data` sooner).
+    option(fact_cost_threshold(Threshold), Options, 200),
+    Mult is max(1, Arity),
+    CostScore is NClauses * Mult,
+    (   FactOnly == true, CostScore > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
 
 %% format_fact_shape_comment(+Info, -Comment)
 %  Renders `Info` as an Elixir comment surfaced in the generated
