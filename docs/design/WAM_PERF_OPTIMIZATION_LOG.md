@@ -330,16 +330,25 @@ for further optimization work.
     trail boundary, regs/env/stack, cut barrier, next-var-id, resume PC, and
     remaining foreign results, but they no longer snapshot heap/unify/build
     state that deterministic foreign handlers do not touch.
+19. Large Clojure benchmark scaffolds now externalize benchmark relation data
+    and foreign-kernel lookup tables into EDN sidecars instead of embedding
+    giant handler literals in generated source. This avoids JVM bytecode
+    `Method code too large` failures on larger scales and is the first concrete
+    Clojure step toward the same preprocessing/materialization direction that
+    already exists in the C# query runtime.
 
 ### Highest-value remaining work
 
-1. Measure whether the slimmer foreign choice points improve the `dev`
+1. Push the new Clojure benchmark sidecars toward a real preprocessed artifact
+   path so larger scales reuse compact adjacency data instead of reparsing EDN
+   into generic vectors and maps on every JVM start.
+2. Measure whether the slimmer foreign choice points improve the `dev`
    Clojure benchmark timings enough to justify similar hot-state split work.
-2. Add proper heap/trail semantics instead of relying primarily on the
+3. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
-3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+4. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
    the remaining runtime state is better separated.
-4. Split hot runtime state from cold code/context data, following the same
+5. Split hot runtime state from cold code/context data, following the same
    optimization pattern that paid off heavily in Haskell.
 
 ---
@@ -405,3 +414,23 @@ Not every attempt was a win. Tracking these so we don't repeat them.
   now largely delivered
 - `docs/design/WAM_HASKELL_FFI_PROFILING_REPORT.md` — the profiling
   matrix that drove the Phase-D wins
+
+## Clojure benchmark preprocessing follow-up
+
+Recent Clojure hybrid WAM benchmark work exposed two practical
+lessons for externalized/preprocessed predicate data:
+
+1. Sidecar paths must be generation-time absolute for benchmark harnesses
+   that launch projects from a repository root rather than the generated
+   project directory. Relative sidecar paths were enough for direct
+   smoke runs but broke the cross-target matrix.
+2. Preprocessing policy should be declarative, not only a CLI switch.
+   The benchmark generator now lets `auto` honor an optional benchmark
+   predicate (`wam_clojure_benchmark_data_mode/1` or
+   `benchmark_data_mode/1`) before falling back to the scale-favoring
+   heuristic (`sidecar` above the current fact-volume threshold,
+   `inline` otherwise).
+
+That moves the Clojure benchmark path closer to the C# materialization
+direction: policy can live with the workload, while the default still
+favors scaling safely.
