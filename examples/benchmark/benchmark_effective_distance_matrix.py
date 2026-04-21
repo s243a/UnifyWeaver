@@ -267,7 +267,9 @@ def clojure_classpath(project_dir: Path) -> str:
     return ":".join([str(project_dir / "src"), *(str(path) for path in existing_jars)])
 
 
-def build_wam_clojure_effective_distance(root: Path, scale: str, variant: str, kernel_mode: str) -> list[str]:
+def build_wam_clojure_effective_distance(
+    root: Path, scale: str, variant: str, kernel_mode: str, data_mode: str = "sidecar"
+) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
     project_dir = root / f"wam_clojure_{variant}_{kernel_mode}" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -282,6 +284,7 @@ def build_wam_clojure_effective_distance(root: Path, scale: str, variant: str, k
             str(project_dir),
             variant,
             kernel_mode,
+            data_mode,
         ],
         cwd=ROOT,
     )
@@ -691,10 +694,26 @@ def main() -> int:
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
                 elif target == "clojure-wam-accumulated-no-kernels":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_off")
+                elif target == "clojure-wam-accumulated-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_on", "artifact"
+                    )
+                elif target == "clojure-wam-accumulated-no-kernels-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_off", "artifact"
+                    )
                 elif target == "clojure-wam-seeded":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_on")
                 elif target == "clojure-wam-seeded-no-kernels":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_off")
+                elif target == "clojure-wam-seeded-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "seeded", "kernels_on", "artifact"
+                    )
+                elif target == "clojure-wam-seeded-no-kernels-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "seeded", "kernels_off", "artifact"
+                    )
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))
