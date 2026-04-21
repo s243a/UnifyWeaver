@@ -97,36 +97,114 @@ wam_instruction_to_c_literal(call(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(execute(P), Code) :-
     format(atom(Code), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [P]).
+wam_instruction_to_c_literal(try_me_else(Label), Code) :-
+    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .label = "~w" }', [Label]).
+wam_instruction_to_c_literal(retry_me_else(Label), Code) :-
+    format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .label = "~w" }', [Label]).
+wam_instruction_to_c_literal(trust_me, '{ .tag = INSTR_TRUST_ME }').
 wam_instruction_to_c_literal(proceed, '{ .tag = INSTR_PROCEED }').
 wam_instruction_to_c_literal(allocate, '{ .tag = INSTR_ALLOCATE }').
 wam_instruction_to_c_literal(deallocate, '{ .tag = INSTR_DEALLOCATE }').
-% ... add other instructions as needed ...
 wam_instruction_to_c_literal(Instr, Code) :-
     format(atom(Code), '// TODO: ~w', [Instr]).
 
 c_value_literal(Atom, Lit) :- atom(Atom), format(atom(Lit), 'val_atom("~w")', [Atom]).
 c_value_literal(Int, Lit) :- integer(Int), format(atom(Lit), 'val_int(~w)', [Int]).
-c_reg_index(RegAtom, Idx) :- 
-    atom_chars(RegAtom, [_|NumChars]), 
-    number_chars(Idx, NumChars).
+
+c_reg_index(RegAtom, Idx) :-
+    atom_chars(RegAtom, Chars),
+    (   Chars = [Prefix|NumChars],
+        (Prefix == 'a'; Prefix == 'x'; Prefix == 'A'; Prefix == 'X'),
+        catch(number_chars(Idx, NumChars), _, fail)
+    ->  true
+    ;   Idx = 0
+    ).
+
 
 % ============================================================================
 % PHASE 2b: wam_predicate -> C Array
 % ============================================================================
 
+wam_line_to_c_instr(["get_constant", C, Ai], Instr) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    c_value_literal(CC, Val), c_reg_index(CAi, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+wam_line_to_c_instr(["get_variable", Xn, Ai], Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    c_reg_index(CXn, XIdx), c_reg_index(CAi, AIdx),
+    format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+wam_line_to_c_instr(["put_constant", C, Ai], Instr) :-
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    c_value_literal(CC, Val), c_reg_index(CAi, Idx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+wam_line_to_c_instr(["call", P, N], Instr) :-
+    clean_comma(P, CP), clean_comma(N, CN),
+    format(atom(Instr), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [CP, CN]).
+wam_line_to_c_instr(["execute", P], Instr) :-
+    clean_comma(P, CP),
+    format(atom(Instr), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [CP]).
+wam_line_to_c_instr(["try_me_else", L], Instr) :-
+    clean_comma(L, CL),
+    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .label = "~w" }', [CL]).
+wam_line_to_c_instr(["retry_me_else", L], Instr) :-
+    clean_comma(L, CL),
+    format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .label = "~w" }', [CL]).
+wam_line_to_c_instr(["trust_me"], '{ .tag = INSTR_TRUST_ME }').
+wam_line_to_c_instr(["proceed"], '{ .tag = INSTR_PROCEED }').
+wam_line_to_c_instr(["allocate"], '{ .tag = INSTR_ALLOCATE }').
+wam_line_to_c_instr(["deallocate"], '{ .tag = INSTR_DEALLOCATE }').
+wam_line_to_c_instr(Parts, Instr) :-
+    atomic_list_concat(Parts, ' ', Combined),
+    format(atom(Instr), '/* TODO: ~w */ {0}', [Combined]).
+
+clean_comma(S, Clean) :-
+    (   sub_string(S, _, 1, 0, ",")
+    ->  sub_string(S, 0, _, 1, Clean)
+    ;   Clean = S
+    ).
+
+wam_lines_to_c([], _, [], []).
+wam_lines_to_c([Line|Rest], PC, Instrs, Labels) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_lines_to_c(Rest, PC, Instrs, Labels)
+    ;   CleanParts = [First|_],
+        (   sub_string(First, _, 1, 0, ":")
+        ->  sub_string(First, 0, _, 1, LabelName),
+            format(atom(LabelInsert), '    state->label_names[state->label_count] = "~w"; state->label_pcs[state->label_count++] = ~w;', [LabelName, PC]),
+            Labels = [LabelInsert|RestLabels],
+            wam_lines_to_c(Rest, PC, Instrs, RestLabels)
+        ;   wam_line_to_c_instr(CleanParts, CInstr),
+            format(atom(InstrEntry), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
+            NPC is PC + 1,
+            Instrs = [InstrEntry|RestInstrs],
+            wam_lines_to_c(Rest, NPC, RestInstrs, Labels)
+        )
+    ).
+
 compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
     atom_string(WamCode, WamStr),
-    % Parsing lines is a placeholder, actual impl should use WAM terms
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_c(Lines, 0, InstrParts, LabelParts),
+    atomic_list_concat(InstrParts, '\n', InstrLiterals),
+    atomic_list_concat(LabelParts, '\n', LabelLiterals),
     format(atom(CCode), 
-'// WAM-compiled predicate: ~w/~w
-void ~w_~w(WamState* state) {
-    // TODO: Instruction array and label initialization
-    /*
+'/* WAM-compiled predicate: ~w/~w */
+void setup_~w_~w(WamState* state) {
+    if (!state->code) {
+        state->code_size = 1000; // placeholder size
+        state->code = malloc(sizeof(Instruction) * state->code_size);
+        state->label_cap = 100;
+        state->label_names = malloc(sizeof(char*) * state->label_cap);
+        state->label_pcs = malloc(sizeof(int) * state->label_cap);
+        state->label_count = 0;
+    }
 ~w
-    */
-}', [PredStr, Arity, PredStr, Arity, WamStr]).
+~w
+}', [PredStr, Arity, PredStr, Arity, InstrLiterals, LabelLiterals]).
 
 % ============================================================================
 % PHASE 3: step_wam/3 -> C switch statement
@@ -134,12 +212,12 @@ void ~w_~w(WamState* state) {
 
 compile_step_wam_to_c(_Options, CCode) :-
     format(string(CCode),
-'    bool step(WamState* state, Instruction* instr) {
+'    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
                 WamValue val = state->A[instr->reg];
                 if (val_is_unbound(val)) {
-                    trail_binding(state, &state->A[instr->reg]);
+                    trail_binding(state, instr->reg);
                     state->A[instr->reg] = instr->val;
                     state->P++;
                     return true;
@@ -149,17 +227,56 @@ compile_step_wam_to_c(_Options, CCode) :-
                 }
                 return false;
             }
+            case INSTR_GET_VARIABLE: {
+                WamValue val = state->A[instr->reg_ai];
+                trail_binding(state, instr->reg_xn);
+                state->A[instr->reg_xn] = val;
+                state->P++;
+                return true;
+            }
+            case INSTR_PUT_CONSTANT: {
+                state->A[instr->reg] = instr->val;
+                state->P++;
+                return true;
+            }
             case INSTR_PROCEED: {
                 state->P = state->CP;
                 return true;
             }
-            // TODO: generate other match arms
+            case INSTR_CALL: {
+                state->CP = state->P + 1;
+                int target = resolve_label(state, instr->pred);
+                if (target >= 0) { state->P = target; return true; }
+                return false;
+            }
+            case INSTR_EXECUTE: {
+                int target = resolve_label(state, instr->pred);
+                if (target >= 0) { state->P = target; return true; }
+                return false;
+            }
+            case INSTR_TRY_ME_ELSE: {
+                int target = resolve_label(state, instr->label);
+                push_choice_point(state, target);
+                state->P++;
+                return true;
+            }
+            case INSTR_RETRY_ME_ELSE: {
+                int target = resolve_label(state, instr->label);
+                update_choice_point(state, target);
+                state->P++;
+                return true;
+            }
+            case INSTR_TRUST_ME: {
+                pop_choice_point(state);
+                state->P++;
+                return true;
+            }
             default: return false;
         }
     }').
 
 compile_wam_helpers_to_c(_Options, CCode) :-
-    CCode = '// TODO: C Helpers'.
+    CCode = '#include "wam_runtime.h"\n\n// TODO: More C Helpers'.
 
 compile_wam_runtime_to_c(Options, CCode) :-
     compile_step_wam_to_c(Options, StepCode),
