@@ -107,11 +107,11 @@ run_multi_result_test :-
     %   5. Uses proceed → backtrack loop to count results
     %   6. Returns count as exit code
     DriverIR = '
-@mr_test_code = private constant [2 x %Instruction] [
+@module_code = private constant [2 x %Instruction] [
   %Instruction { i32 20, i64 0, i64 0 },
   %Instruction { i32 20, i64 0, i64 0 }
 ]
-@mr_test_labels = private constant [1 x i32] [ i32 0 ]
+@module_labels = private constant [1 x i32] [ i32 0 ]
 
 define i32 @main() {
 entry:
@@ -142,9 +142,9 @@ entry:
 
   ; Create VM
   %vm = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([2 x %Instruction], [2 x %Instruction]* @mr_test_code, i32 0, i32 0),
+      %Instruction* getelementptr ([2 x %Instruction], [2 x %Instruction]* @module_code, i32 0, i32 0),
       i32 2,
-      i32* getelementptr ([1 x i32], [1 x i32]* @mr_test_labels, i32 0, i32 0),
+      i32* getelementptr ([1 x i32], [1 x i32]* @module_labels, i32 0, i32 0),
       i32 0)
 
   ; Write result[0] to register 0 (first yield)

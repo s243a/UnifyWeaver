@@ -117,17 +117,13 @@ add_binding(Label, _, Acc, Acc) :-
 add_binding(Label, Id, Acc, [Label-Id | Acc]).
 
 extract_instr_count(Src, PredName, Count) :-
-    format(atom(Pat),
-        "@~w_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
-        [PredName]),
+    Pat = "@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
     re_matchsub(Pat, Src, Match, []),
     get_dict(n, Match, NStr),
     number_string(Count, NStr).
 
 extract_label_count(Src, PredName, Count) :-
-    format(atom(Pat),
-        "@~w_labels = private constant \\[(?<n>\\d+) x i32\\]",
-        [PredName]),
+    Pat = "@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
     re_matchsub(Pat, Src, Match, []),
     get_dict(n, Match, NStr),
     number_string(Count, NStr).
@@ -180,14 +176,17 @@ build_multi_cases([main_case(PredName, StartId, TargetId, Expected) | Rest],
          Index, Index]),
     format(atom(VmSetup),
 '  %vm_~w = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
-      i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
-      i32 0)
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  %start_pc_~w = load i32, i32* @~w_start_pc
+  call void @wam_set_pc(%WamState* %vm_~w, i32 %start_pc_~w)
 ',
         [Index,
-         InstrCount, InstrCount, PredName, InstrCount,
-         LabelCount, LabelCount, PredName]),
+         InstrCount, InstrCount, InstrCount,
+         LabelCount, LabelCount, LabelCount,
+         Index, PredName, Index, Index]),
     format(atom(RegSets),
 '  call void @wam_set_reg(%WamState* %vm_~w, i32 0, %Value %a1_~w)
   call void @wam_set_reg(%WamState* %vm_~w, i32 1, %Value %a2_~w)

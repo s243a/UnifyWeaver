@@ -12,8 +12,8 @@
 %      @wam_td3_kernel_impl body that calls @wam_bfs_atom_distance,
 %      and an %AtomFactPair edge table.
 %   3. The test appends a `main()` function to the module that
-%      duplicates @reach's vm setup (same @reach_code and
-%      @reach_labels globals), runs the WAM interpreter via
+%      duplicates @reach's vm setup (same @module_code and
+%      @module_labels globals), runs the WAM interpreter via
 %      @run_loop, then reads the A3 register via
 %      @wam_get_reg_payload to retrieve the computed distance.
 %   4. The full module is compiled via llc → clang → native binary
@@ -91,16 +91,16 @@ extract_atom_ids(Src, AtomIds) :-
 
 %% extract_instr_count(+Src, -Count)
 %  Reach has a call_foreign + proceed = 2 instructions. We parse it
-%  from the `@reach_code = private constant [N x %Instruction]` line
+%  from the `@module_code = private constant [N x %Instruction]` line
 %  so the test doesn't silently break if the compile pipeline changes.
 extract_instr_count(Src, Count) :-
-    re_matchsub("@reach_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
+    re_matchsub("@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
         Src, Match, []),
     get_dict(n, Match, NStr),
     number_string(Count, NStr).
 
 extract_label_count(Src, Count) :-
-    re_matchsub("@reach_labels = private constant \\[(?<n>\\d+) x i32\\]",
+    re_matchsub("@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
         Src, Match, []),
     get_dict(n, Match, NStr),
     number_string(Count, NStr).
@@ -127,9 +127,9 @@ entry:
 
   ; Create a fresh vm backed by reach_code / reach_labels.
   %vm = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @reach_code, i32 0, i32 0),
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
-      i32* getelementptr ([~w x i32], [~w x i32]* @reach_labels, i32 0, i32 0),
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
       i32 0)
 
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)

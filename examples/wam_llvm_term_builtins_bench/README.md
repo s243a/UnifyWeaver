@@ -19,14 +19,16 @@ are out of scope here and tracked below.
 | `bench_true`         | OK     | baseline dispatch overhead                    |
 | `bench_is_arith`     | OK     | `is/2`                                        |
 | `bench_unify`        | OK     | `X = foo(a,b,c), X = foo(a,b,c)`              |
-| `bench_functor_read` | OK     | `functor/3` read mode — landed in this PR     |
-| `bench_arg_read`     | OK     | `arg/3` — landed in this PR                   |
+| `bench_functor_read` | OK     | `functor/3` read mode                         |
+| `bench_arg_read`     | OK     | `arg/3`                                       |
 | `bench_univ_decomp`  | FAIL   | `=../2` — needs a list representation         |
 | `bench_copy_flat`    | FAIL   | `copy_term/2` — needs term-walking allocator  |
 | `bench_copy_nested`  | FAIL   | `copy_term/2` — same                          |
-| `bench_sum_*`        | —      | excluded: cross-pred label bug (see below)    |
+| `bench_sum_small`    | OK     | cross-pred: merged-labels fix                 |
+| `bench_sum_medium`   | OK     | cross-pred: merged-labels fix                 |
+| `bench_sum_big`      | OK     | cross-pred: merged-labels fix                 |
 | `bench_term_depth`   | —      | excluded: if-then-else lowering gap           |
-| `bench_fib10`        | —      | excluded: cross-pred + if-then-else           |
+| `bench_fib10`        | —      | excluded: if-then-else lowering gap           |
 
 The FAIL rows still produce ns/call timings (the bench harness just records
 the returned `0`). Those numbers are still meaningful as dispatch-cost
@@ -61,17 +63,24 @@ side's JSON schema so downstream compare tooling can treat them alike).
 Phase 0 doesn't try to fix these — it documents them so Phase 1 has a clear
 punch list.
 
-### 1. Cross-predicate label resolution (silent wrong-answer)
+### 1. Cross-predicate label resolution (fixed)
 
-`compile_wam_predicate_to_llvm/4` emits per-predicate `@<pred>_code` and
-`@<pred>_labels` globals. An instruction like `call sum_ints/3` inside
-`bench_sum_big` looks up `"sum_ints/3"` in `bench_sum_big`'s local label
-map, doesn't find it, falls back to index 0 (with a warning), which at
-runtime is `bench_sum_big`'s first instruction — silent self-recursion.
+Previously, `compile_wam_predicate_to_llvm/4` emitted per-predicate
+`@<pred>_code` and `@<pred>_labels` globals. An instruction like
+`call sum_ints/3` inside `bench_sum_big` looked up `"sum_ints/3"` in
+`bench_sum_big`'s local label map, didn't find it, and defaulted to
+index 0 — silent self-recursion at runtime.
 
-Same bug WAT had before PR #1476's project-level label merge. Fix is a
-structural refactor: concatenate all predicate instruction arrays into a
-single module-level array and resolve labels across the merged table.
+**Fixed** (same architecture WAT adopted in PR #1476):
+`compile_predicates_for_llvm/4` now does a two-pass merged-label
+compile — all wam-fallback predicates share a single `@module_code`
+instruction array and a single `@module_labels` label-PC table built
+from every predicate's locals shifted by its cumulative start PC.
+Cross-predicate `call` / `execute` now resolve to the right global PC.
+Each `@<pred>()` entry function points at the shared globals and calls
+`@wam_set_pc(vm, <pred>_start_pc)` before `@run_loop`. For tests that
+build their own driver VM, a `@<pred>_start_pc` constant is also
+emitted so the driver can seed the PC.
 
 ### 2. Unhandled `cut_ite` / `jump` in LLVM IR emission
 

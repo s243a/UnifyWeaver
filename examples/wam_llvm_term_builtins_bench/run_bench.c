@@ -28,6 +28,9 @@ extern int run_bench_arg_read(void);
 extern int run_bench_univ_decomp(void);
 extern int run_bench_copy_flat(void);
 extern int run_bench_copy_nested(void);
+extern int run_bench_sum_small(void);
+extern int run_bench_sum_medium(void);
+extern int run_bench_sum_big(void);
 
 typedef struct {
     const char *name;
@@ -43,6 +46,9 @@ static bench_t BENCHES[] = {
     {"bench_univ_decomp",  run_bench_univ_decomp},
     {"bench_copy_flat",    run_bench_copy_flat},
     {"bench_copy_nested",  run_bench_copy_nested},
+    {"bench_sum_small",    run_bench_sum_small},
+    {"bench_sum_medium",   run_bench_sum_medium},
+    {"bench_sum_big",      run_bench_sum_big},
 };
 #define N_BENCHES (sizeof(BENCHES) / sizeof(BENCHES[0]))
 
