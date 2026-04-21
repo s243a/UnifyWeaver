@@ -112,7 +112,9 @@ write_bench_driver(Path, Predicates, Options) :-
     format(S, '~n', []),
     format(S, '    IO.puts("article\\troot_category\\teffective_distance")~n', []),
     format(S, '    for {deff, art} <- results do~n', []),
-    format(S, '      :io.format("~~s\\t~~s\\t~~.6f~~n", [art, root, deff])~n', []),
+    % `~ts` is the UTF-8-aware string format; plain `~s` treats the
+    % binary as Latin-1 and mojibakes `é` (C3 A9) into `Ã©`.
+    format(S, '      :io.format("~~ts\\t~~ts\\t~~.6f~~n", [art, root, deff])~n', []),
     format(S, '    end~n', []),
     format(S, '  end~n', []),
     format(S, '~n', []),
