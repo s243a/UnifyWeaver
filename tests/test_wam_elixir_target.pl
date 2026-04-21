@@ -490,6 +490,55 @@ test_phase_c_variable_head_no_index :-
     ;   fail_test(Test, 'variable-head emitted unexpected index')
     ).
 
+%% Phase D external_source tests
+
+test_phase_d_emits_external_source_shape :-
+    Test = 'Phase D: fact_layout external_source emits FactSource-facade run/1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    Opts = [module_name('TestMod'),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code),
+    (   sub_string(Code, _, _, _, '@pred_indicator "big_fact/2"'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSourceRegistry.lookup!'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSource.stream_all'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSource.lookup_by_arg1'),
+        \+ sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source shape missing or bled through to other layouts')
+    ).
+
+test_phase_d_runtime_emits_fact_source :-
+    Test = 'Phase D: runtime assembly emits FactSource behaviour + Tsv adaptor + Registry',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource do'),
+        sub_string(RuntimeCode, _, _, _, '@callback open'),
+        sub_string(RuntimeCode, _, _, _, '@callback stream_all'),
+        sub_string(RuntimeCode, _, _, _, '@callback lookup_by_arg1'),
+        sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Tsv do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSourceRegistry do'),
+        sub_string(RuntimeCode, _, _, _, ':persistent_term')
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactSource runtime pieces missing')
+    ).
+
+test_phase_d_external_beats_inline_override :-
+    Test = 'Phase D: external_source user override preempts default inline_data',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    % big_fact defaults to inline_data (150 clauses > threshold 100).
+    % Explicit external_source must win.
+    Opts = [module_name('TestMod'),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code),
+    (   sub_string(Code, _, _, _, '(external_source)'),
+        \+ sub_string(Code, _, _, _, '(inline_data)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source did not win over default inline_data')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -532,5 +581,8 @@ run_tests :-
     test_phase_c_indexed_module_emission,
     test_phase_c_index_policy_none,
     test_phase_c_variable_head_no_index,
+    test_phase_d_emits_external_source_shape,
+    test_phase_d_runtime_emits_fact_source,
+    test_phase_d_external_beats_inline_override,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

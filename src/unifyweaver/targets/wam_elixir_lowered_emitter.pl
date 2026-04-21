@@ -55,7 +55,10 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     classify_predicate(Pred/Arity, Segments, Options, Info),
     format_fact_shape_comment(Info, ShapeComment),
     Info = fact_shape_info(_, _, _, Layout),
-    (   Layout = inline_data(_),
+    (   Layout = external_source(_)
+    ->  render_external_source_module(CamelMod, CamelPred, PredStr, Arity,
+                                      ShapeComment, Code)
+    ;   Layout = inline_data(_),
         catch(extract_facts(Segments, Arity, FactsLiteral), _, fail),
         choose_index(Segments, Arity, Options, IndexResult)
     ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
@@ -203,6 +206,68 @@ inline_data_run1_body(indexed(_), Arity, Body) :-
     end
     WamRuntime.stream_facts(state, facts, ~w)
 ', [Arity]).
+
+%% render_external_source_module(+CamelMod, +CamelPred, +PredStr, +Arity,
+%%                               +ShapeComment, -Code)
+%  Phase-D external_source layout: no inline facts. `run/1` looks the
+%  source up in the FactSourceRegistry (drivers must register before
+%  calling), then dispatches to stream_all/lookup_by_arg1 through the
+%  FactSource behaviour facade. The SourceSpec the user passed in
+%  fact_layout/2 is opaque to the emitter — it is only consulted at
+%  runtime via the registry, which decouples the generated code from
+%  the concrete source implementation (TSV today; SQLite / ETS /
+%  preprocessed artifacts tomorrow).
+render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment, Code) :-
+    format(string(PredIndicator), '~w/~w', [PredStr, Arity]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc "Lowered WAM-compiled predicate: ~w/~w (external_source)"
+
+~w
+
+  # Phase-D external_source layout: facts live outside the compiled
+  # module. A driver registers a concrete WamRuntime.FactSource (e.g.
+  # Tsv) for this predicate before calling run/1; the registry lookup
+  # returns the handle which dispatches via the FactSource behaviour.
+  @pred_indicator "~w"
+
+  def run(%WamRuntime.WamState{} = state) do
+    source = WamRuntime.FactSourceRegistry.lookup!(@pred_indicator)
+    arg1 = WamRuntime.deref_var(state, Map.get(state.regs, 1))
+    facts = case arg1 do
+      {:unbound, _} -> WamRuntime.FactSource.stream_all(source, state)
+      key -> WamRuntime.FactSource.lookup_by_arg1(source, key, state)
+    end
+    WamRuntime.stream_facts(state, facts, ~w)
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} = Enum.with_index(args, 1)
+    |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+      case arg do
+        {:unbound, _} ->
+          v = {:unbound, make_ref()}
+          {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+        other ->
+          {%{s | regs: Map.put(s.regs, i, other)}, vars}
+      end
+    end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, PredIndicator, Arity, CamelPred]).
 
 % ============================================================================
 % PHASE A: FACT-SHAPE CLASSIFICATION
