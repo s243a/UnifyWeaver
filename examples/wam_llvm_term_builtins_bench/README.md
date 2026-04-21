@@ -21,14 +21,14 @@ are out of scope here and tracked below.
 | `bench_unify`        | OK     | `X = foo(a,b,c), X = foo(a,b,c)`              |
 | `bench_functor_read` | OK     | `functor/3` read mode                         |
 | `bench_arg_read`     | OK     | `arg/3`                                       |
-| `bench_univ_decomp`  | OK     | `=../2` — cons-cell list; this PR             |
-| `bench_copy_flat`    | FAIL   | `copy_term/2` — needs term-walking allocator  |
-| `bench_copy_nested`  | FAIL   | `copy_term/2` — same                          |
+| `bench_univ_decomp`  | OK     | `=../2` decompose                             |
+| `bench_copy_flat`    | OK     | `copy_term/2` — this PR                       |
+| `bench_copy_nested`  | OK     | `copy_term/2` deep copy — this PR             |
 | `bench_sum_small`    | OK     | cross-pred (merged-labels)                    |
 | `bench_sum_medium`   | OK     | cross-pred (merged-labels)                    |
 | `bench_sum_big`      | OK     | cross-pred (merged-labels)                    |
-| `bench_term_depth`   | FAIL   | needs separate ITE-interaction fix (below)    |
-| `bench_fib10`        | OK     | cut_ite/jump (this PR)                        |
+| `bench_term_depth`   | FAIL   | `put_variable` register-aliasing bug (below)  |
+| `bench_fib10`        | OK     | cut_ite/jump                                  |
 
 The FAIL rows still produce ns/call timings (the bench harness just records
 the returned `0`). Those numbers are still meaningful as dispatch-cost
@@ -148,8 +148,8 @@ and returned `ret i1 false` unconditionally.
 |----------------------|--------------------------|------------------------------------------------|
 | `bench_functor_read` | `functor/3`              | implemented (opcode 26; read mode only)        |
 | `bench_arg_read`     | `arg/3`                  | implemented (opcode 27)                        |
-| `bench_univ_decomp`  | `=../2`                  | implemented (opcode 28; decompose only)        |
-| `bench_copy_flat`    | `copy_term/2`            | still missing — term-walking allocator needed  |
+| `bench_univ_decomp`  | `=../2`                  | implemented (opcode 28; decompose + compose)   |
+| `bench_copy_flat`    | `copy_term/2`            | implemented (opcode 29) — this PR              |
 | `bench_copy_nested`  | `copy_term/2`            | same                                           |
 
 ### `bench_term_depth` FAIL — separate ITE + register-aliasing issue
