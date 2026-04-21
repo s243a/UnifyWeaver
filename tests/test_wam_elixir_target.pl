@@ -661,6 +661,32 @@ test_ets_adaptor_emitted_in_runtime :-
     ;   fail_test(Test, 'ETS adaptor missing from emitted runtime')
     ).
 
+test_sqlite_adaptor_emitted_in_runtime :-
+    Test = 'SQLite adaptor: runtime assembly emits FactSource.Sqlite',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Sqlite do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defstruct [:db, :query_all, :query_by_arg1, :arity]'),
+        sub_string(RuntimeCode, _, _, _, 'query_by_arg1: q_by1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'SQLite adaptor missing expected structure')
+    ).
+
+test_sqlite_adaptor_uses_indirect_module_resolution :-
+    Test = 'SQLite adaptor: uses Module.concat so runtime compiles without :exqlite',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Critical: the adaptor must NOT reference Exqlite.Sqlite3 as a
+    % literal module call — that would generate compile-time warnings
+    % in drivers without :exqlite. Module.concat/1 defers resolution
+    % to call time.
+    (   sub_string(RuntimeCode, _, _, _, 'Module.concat([Exqlite, Sqlite3])'),
+        sub_string(RuntimeCode, _, _, _, 'apply(mod,'),
+        % Sanity: no literal `Exqlite.Sqlite3.` call anywhere.
+        \+ sub_string(RuntimeCode, _, _, _, 'Exqlite.Sqlite3.open')
+    ->  pass(Test)
+    ;   fail_test(Test, 'SQLite adaptor has literal Exqlite references — will warn without dep')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -716,5 +742,7 @@ run_tests :-
     test_cost_aware_threshold_override,
     test_cost_aware_respects_fact_only,
     test_ets_adaptor_emitted_in_runtime,
+    test_sqlite_adaptor_emitted_in_runtime,
+    test_sqlite_adaptor_uses_indirect_module_resolution,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
