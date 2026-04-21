@@ -8355,7 +8355,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
      _ => value?.ToString() ?? string.Empty
  };
 
- void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
+ void PrintRows((IRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
  {
      var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
      var _planText = QueryPlanExplainer.Explain(result.Plan);
