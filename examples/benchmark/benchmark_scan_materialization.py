@@ -87,8 +87,7 @@ class Program
         return mode switch
         {
             "bound_scan" => "artifact",
-            "selective_join" when totalRows <= 5_000L => "artifact",
-            "selective_join" => "artifact-prebuilt",
+            "selective_join" => "artifact",
             "join" when totalRows <= 5_000L => "artifact-prebuilt",
             "join" => "artifact",
             _ => "preload",
