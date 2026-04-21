@@ -65,6 +65,36 @@ class Program
         _ => ScanRelationRetentionStrategy.Auto,
     };
 
+    static long CountDataRows(string path)
+    {
+        long count = 0;
+        foreach (var _ in File.ReadLines(path).Skip(1))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    static string ResolveSourceMode(string configuredSourceMode, string mode, long articleRows, long edgeRows)
+    {
+        if (!string.Equals(configuredSourceMode, "auto", StringComparison.Ordinal))
+        {
+            return configuredSourceMode;
+        }
+
+        var totalRows = articleRows + edgeRows;
+        return mode switch
+        {
+            "bound_scan" => "artifact",
+            "selective_join" when totalRows <= 5_000L => "artifact",
+            "selective_join" => "artifact-prebuilt",
+            "join" when totalRows <= 5_000L => "artifact-prebuilt",
+            "join" => "artifact",
+            _ => "preload",
+        };
+    }
+
     static List<string[]> ReadDelimitedRows(string path, int expectedWidth)
     {
         return File.ReadLines(path)
@@ -148,12 +178,16 @@ class Program
         var articlePath = args[2];
         var traceEnabled = Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE") == "1";
         var scanStrategy = ParseScanStrategy(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_RETENTION_STRATEGY") ?? "auto");
-        var sourceMode = (Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE") ?? "preload").ToLowerInvariant();
-        if (sourceMode != "preload" && sourceMode != "delimited" && sourceMode != "artifact" && sourceMode != "artifact-prebuilt")
+        var configuredSourceMode = (Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE") ?? "preload").ToLowerInvariant();
+        if (configuredSourceMode != "auto" && configuredSourceMode != "preload" && configuredSourceMode != "delimited" && configuredSourceMode != "artifact" && configuredSourceMode != "artifact-prebuilt")
         {
-            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {sourceMode}");
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {configuredSourceMode}");
             return 1;
         }
+
+        var articleRowCount = CountDataRows(articlePath);
+        var edgeRowCount = CountDataRows(edgePath);
+        var sourceMode = ResolveSourceMode(configuredSourceMode, mode, articleRowCount, edgeRowCount);
 
         var memoryProvider = new InMemoryRelationProvider();
         var artifactDir = Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_ARTIFACT_DIR");
@@ -260,7 +294,8 @@ class Program
             stopwatch.Stop();
 
             Console.Error.WriteLine($"mode={mode}");
-            Console.Error.WriteLine($"source_mode={sourceMode}");
+            Console.Error.WriteLine($"source_mode={configuredSourceMode}");
+            Console.Error.WriteLine($"resolved_source_mode={sourceMode}");
             Console.Error.WriteLine($"scan_retention_strategy_setting={scanStrategy}");
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
@@ -376,27 +411,6 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     return metrics.get("scan_planner_strategies", "") or operator
 
 
-def choose_auto_source_mode(scale: str, mode: str, available_source_modes: list[str]) -> str:
-    scale_value = scale_sort_key(scale)[0]
-    requested = set(available_source_modes)
-
-    if mode in {"bound_scan", "selective_join"}:
-        preference = ["artifact-prebuilt", "artifact", "preload", "delimited"]
-    elif mode == "join":
-        if scale_value <= 1_000:
-            preference = ["artifact-prebuilt", "artifact", "preload", "delimited"]
-        else:
-            preference = ["artifact", "artifact-prebuilt", "preload", "delimited"]
-    else:
-        preference = ["preload", "artifact-prebuilt", "artifact", "delimited"]
-
-    for candidate in preference:
-        if candidate in requested:
-            return candidate
-
-    return available_source_modes[0] if available_source_modes else "preload"
-
-
 def benchmark_mode(
     command: list[str],
     scale: str,
@@ -404,7 +418,6 @@ def benchmark_mode(
     source_mode: str,
     strategy: str,
     repetitions: int,
-    available_source_modes: list[str],
 ) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
@@ -412,10 +425,8 @@ def benchmark_mode(
     env = os.environ.copy()
     env["UNIFYWEAVER_BENCH_TRACE"] = "1"
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
-    candidate_source_modes = [mode_name for mode_name in available_source_modes if mode_name != "auto"]
-    resolved_source_mode = choose_auto_source_mode(scale, mode, candidate_source_modes) if source_mode == "auto" else source_mode
-    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = resolved_source_mode
-    if resolved_source_mode == "artifact-prebuilt":
+    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
+    if source_mode in {"artifact-prebuilt", "auto"}:
         artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
@@ -431,6 +442,8 @@ def benchmark_mode(
         elapsed_ms = metrics.get("elapsed_ms")
         elapsed = float(elapsed_ms) / 1000.0 if elapsed_ms is not None else 0.0
         times.append(elapsed)
+    metrics = parse_metrics(stderr)
+    resolved_source_mode = metrics.get("resolved_source_mode", source_mode)
 
     return BenchResult(
         scale=scale,
@@ -464,7 +477,7 @@ def main() -> int:
             for mode in modes:
                 for source_mode in source_modes:
                     for strategy in strategies:
-                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions, source_modes))
+                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
         print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
         grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
