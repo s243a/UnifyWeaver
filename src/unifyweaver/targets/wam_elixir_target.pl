@@ -1035,6 +1035,43 @@ defmodule WamRuntime.FactSource.Tsv do
   def close(_handle, _state), do: :ok
 end
 
+defmodule WamRuntime.FactSource.Ets do
+  @moduledoc """
+  ETS-table fact source. Lightweight second adaptor that proves the
+  FactSource behaviour is generic — zero external deps (ETS ships
+  with OTP) and a storage shape meaningfully different from the
+  TSV adaptor\'s list-of-tuples. The driver populates the table
+  before registering the source; the adaptor just wraps the table
+  reference and forwards lookups.
+
+  Spec fields:
+    table   — ETS table identifier or named atom (required)
+    arity   — number of columns per tuple (required; only 2 supported)
+
+  Keying convention: arg1 is the ETS key. Use a :bag table if a
+  single arg1 can map to multiple tuples (e.g. `category_parent/2`);
+  :set tables are fine for unique-key predicates.
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:table, :arity]
+
+  @impl true
+  def open(%{table: table, arity: arity}, _pred_arity, _state) when arity == 2 do
+    %__MODULE__{table: table, arity: arity}
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{table: table}, _state), do: :ets.tab2list(table)
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{table: table}, key, _state) do
+    :ets.lookup(table, key)
+  end
+
+  @impl true
+  def close(_handle, _state), do: :ok
+end
+
 defmodule WamRuntime.FactSourceRegistry do
   @moduledoc """
   Predicate-indicator → source-handle map. Uses :persistent_term so
