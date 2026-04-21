@@ -1072,6 +1072,85 @@ defmodule WamRuntime.FactSource.Ets do
   def close(_handle, _state), do: :ok
 end
 
+defmodule WamRuntime.FactSource.Sqlite do
+  @moduledoc """
+  SQLite fact source. Disk-backed artifact adaptor — the
+  "preprocessed-artifact" shape `PREPROCESSED_PREDICATE_ARTIFACTS.md`
+  describes for the C# side, but for Elixir. Predicates too large to
+  inline can live in a .sqlite file; the runtime prepares the two
+  queries once per source and steps them per call.
+
+  **Driver must add `:exqlite` to its own mix deps** before loading
+  this generated runtime. To keep the runtime dep-free for drivers
+  that don\'t use SQLite, this module references `Exqlite.Sqlite3`
+  indirectly via `Module.concat/1`; the reference is resolved at
+  call time, so compilation does not fail if `:exqlite` is absent
+  (you just get an `UndefinedFunctionError` when the adaptor is
+  actually used).
+
+  Spec fields:
+    path          — path to the .sqlite file (required)
+    query_all     — SQL returning all rows as 2-column result set
+                    (required; e.g. "SELECT a, b FROM cp")
+    query_by_arg1 — SQL with one bound parameter returning matching
+                    rows (required; e.g. "SELECT a, b FROM cp WHERE a = ?1")
+    arity         — number of columns per tuple (required; only 2 supported)
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:db, :query_all, :query_by_arg1, :arity]
+
+  # Resolve Exqlite.Sqlite3 indirectly so the runtime still compiles
+  # when the driver hasn\'t added :exqlite. Callers who never touch
+  # this adaptor pay zero cost; callers who do get a clear
+  # UndefinedFunctionError at open/3.
+  defp sqlite3_module, do: Module.concat([Exqlite, Sqlite3])
+
+  @impl true
+  def open(%{path: path, query_all: q_all, query_by_arg1: q_by1, arity: arity},
+           _pred_arity, _state) when arity == 2 do
+    mod = sqlite3_module()
+    {:ok, db} = apply(mod, :open, [path])
+    %__MODULE__{db: db, query_all: q_all, query_by_arg1: q_by1, arity: arity}
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{db: db, query_all: q_all}, _state) do
+    mod = sqlite3_module()
+    {:ok, stmt} = apply(mod, :prepare, [db, q_all])
+    try do
+      collect_rows(mod, db, stmt, [])
+    after
+      apply(mod, :release, [db, stmt])
+    end
+  end
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{db: db, query_by_arg1: q_by1}, key, _state) do
+    mod = sqlite3_module()
+    {:ok, stmt} = apply(mod, :prepare, [db, q_by1])
+    try do
+      :ok = apply(mod, :bind, [db, stmt, [key]])
+      collect_rows(mod, db, stmt, [])
+    after
+      apply(mod, :release, [db, stmt])
+    end
+  end
+
+  @impl true
+  def close(%__MODULE__{db: db}, _state) do
+    apply(sqlite3_module(), :close, [db])
+    :ok
+  end
+
+  defp collect_rows(mod, db, stmt, acc) do
+    case apply(mod, :step, [db, stmt]) do
+      :done -> Enum.reverse(acc)
+      {:row, row} -> collect_rows(mod, db, stmt, [List.to_tuple(row) | acc])
+      _other -> Enum.reverse(acc)
+    end
+  end
+end
+
 defmodule WamRuntime.FactSourceRegistry do
   @moduledoc """
   Predicate-indicator → source-handle map. Uses :persistent_term so
