@@ -21,6 +21,7 @@ planner rather than a cross-target benchmark.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import statistics
@@ -314,6 +315,9 @@ class BenchResult:
         return statistics.median(self.times)
 
 
+RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,10k")
@@ -379,7 +383,7 @@ def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, 
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
     env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
     if source_mode == "artifact-prebuilt":
-        artifact_dir = Path(tempfile.gettempdir()) / "uw-scan-prebuilt-artifacts-v2" / scale
+        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 

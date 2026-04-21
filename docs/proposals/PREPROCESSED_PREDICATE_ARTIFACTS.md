@@ -402,8 +402,9 @@ Prototype status:
   `artifact`, and `artifact-prebuilt` source modes against the existing
   scan-family workloads, including `bound_scan` and `selective_join` modes for
   indexed parameter probes. The prebuilt mode keeps artifacts in a stable
-  benchmark directory so runtime measurements can separate query execution
-  from preprocessing cost.
+  benchmark directory keyed by the current runtime source so runtime
+  measurements can separate query execution from preprocessing cost without
+  reusing stale artifact formats.
 
 ## Success Criteria
 
