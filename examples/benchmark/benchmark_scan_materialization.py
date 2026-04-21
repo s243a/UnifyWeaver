@@ -76,24 +76,6 @@ class Program
         return count;
     }
 
-    static string ResolveSourceMode(string configuredSourceMode, string mode, long articleRows, long edgeRows)
-    {
-        if (!string.Equals(configuredSourceMode, "auto", StringComparison.Ordinal))
-        {
-            return configuredSourceMode;
-        }
-
-        var totalRows = articleRows + edgeRows;
-        return mode switch
-        {
-            "bound_scan" => "artifact",
-            "selective_join" => "artifact",
-            "join" when totalRows <= 5_000L => "artifact-prebuilt",
-            "join" => "artifact",
-            _ => "preload",
-        };
-    }
-
     static List<string[]> ReadDelimitedRows(string path, int expectedWidth)
     {
         return File.ReadLines(path)
@@ -101,45 +83,6 @@ class Program
             .Select(line => line.Split('	'))
             .Where(parts => parts.Length == expectedWidth)
             .ToList();
-    }
-
-    static void RegisterBinaryRelation(
-        InMemoryRelationProvider memoryProvider,
-        BinaryRelationArtifactProvider artifactProvider,
-        PredicateId predicate,
-        string path,
-        string sourceMode,
-        string artifactDir)
-    {
-        var source = new DelimitedRelationSource(path, '	', 1, 2);
-        switch (sourceMode)
-        {
-            case "artifact":
-                var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir);
-                artifactProvider.RegisterArtifact(predicate, manifestPath);
-                break;
-            case "artifact-prebuilt":
-                Directory.CreateDirectory(artifactDir);
-                var artifactName = $"{predicate.Name}_{predicate.Arity}";
-                var prebuiltManifestPath = Path.Combine(artifactDir, artifactName + ".uwbr.json");
-                if (!File.Exists(prebuiltManifestPath))
-                {
-                    prebuiltManifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir, artifactName);
-                }
-
-                artifactProvider.RegisterArtifact(predicate, prebuiltManifestPath);
-                break;
-            case "delimited":
-                memoryProvider.RegisterDelimitedSource(predicate, source);
-                break;
-            default:
-                memoryProvider.RegisterDelimitedSource(predicate, source);
-                foreach (var parts in ReadDelimitedRows(path, 2))
-                {
-                    memoryProvider.AddFact(predicate, parts[0], parts[1]);
-                }
-                break;
-        }
     }
 
     static string SummarizeStrategies(QueryExecutionTrace trace, Func<QueryStrategyTrace, bool> predicate)
@@ -177,30 +120,26 @@ class Program
         var articlePath = args[2];
         var traceEnabled = Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE") == "1";
         var scanStrategy = ParseScanStrategy(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_RETENTION_STRATEGY") ?? "auto");
-        var configuredSourceMode = (Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE") ?? "preload").ToLowerInvariant();
-        if (configuredSourceMode != "auto" && configuredSourceMode != "preload" && configuredSourceMode != "delimited" && configuredSourceMode != "artifact" && configuredSourceMode != "artifact-prebuilt")
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE"), out var configuredSourceMode))
         {
-            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {configuredSourceMode}");
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE")}");
             return 1;
         }
 
         var articleRowCount = CountDataRows(articlePath);
         var edgeRowCount = CountDataRows(edgePath);
-        var sourceMode = ResolveSourceMode(configuredSourceMode, mode, articleRowCount, edgeRowCount);
+        var sourceMode = RelationSourceModePolicy.ResolveScanBenchmarkMode(configuredSourceMode, mode, articleRowCount, edgeRowCount);
 
-        var memoryProvider = new InMemoryRelationProvider();
         var artifactDir = Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_ARTIFACT_DIR");
-        artifactDir = string.IsNullOrWhiteSpace(artifactDir)
-            ? Path.Combine(Path.GetTempPath(), $"uw-scan-artifacts-{Guid.NewGuid():N}")
-            : artifactDir;
-        var artifactProvider = new BinaryRelationArtifactProvider(memoryProvider);
-        IRelationProvider provider = sourceMode == "artifact" || sourceMode == "artifact-prebuilt" ? artifactProvider : memoryProvider;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(sourceMode, artifactDir);
+        var memoryProvider = configuredProvider.MemoryProvider;
+        IRelationProvider provider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
 
-        RegisterBinaryRelation(memoryProvider, artifactProvider, edgeId, edgePath, sourceMode, artifactDir);
-        RegisterBinaryRelation(memoryProvider, artifactProvider, articleId, articlePath, sourceMode, artifactDir);
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(edgePath, '	', 1, 2), $"{edgeId.Name}_{edgeId.Arity}");
+        configuredProvider.RegisterBinaryRelation(articleId, new DelimitedRelationSource(articlePath, '	', 1, 2), $"{articleId.Name}_{articleId.Arity}");
 
         var articleRows = ReadDelimitedRows(articlePath, 2);
         var patternCategory = articleRows.Count > 0
@@ -221,7 +160,7 @@ class Program
 
         try
         {
-            RegisterBinaryRelation(memoryProvider, artifactProvider, blockedId, blockedPath, sourceMode, artifactDir);
+            configuredProvider.RegisterBinaryRelation(blockedId, new DelimitedRelationSource(blockedPath, '	', 1, 2), $"{blockedId.Name}_{blockedId.Arity}");
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -293,8 +232,8 @@ class Program
             stopwatch.Stop();
 
             Console.Error.WriteLine($"mode={mode}");
-            Console.Error.WriteLine($"source_mode={configuredSourceMode}");
-            Console.Error.WriteLine($"resolved_source_mode={sourceMode}");
+            Console.Error.WriteLine($"source_mode={RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}");
+            Console.Error.WriteLine($"resolved_source_mode={RelationSourceModePolicy.ToConfigValue(sourceMode)}");
             Console.Error.WriteLine($"scan_retention_strategy_setting={scanStrategy}");
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
@@ -326,9 +265,12 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
-            if (sourceMode != "artifact-prebuilt")
+            if (sourceMode != RelationSourceMode.ArtifactPrebuilt)
             {
-                try { Directory.Delete(artifactDir, recursive: true); } catch { }
+                if (!string.IsNullOrWhiteSpace(configuredProvider.ArtifactDirectory))
+                {
+                    try { Directory.Delete(configuredProvider.ArtifactDirectory, recursive: true); } catch { }
+                }
             }
         }
     }

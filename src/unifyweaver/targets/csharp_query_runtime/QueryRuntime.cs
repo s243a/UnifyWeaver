@@ -77,6 +77,15 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum RelationSourceMode
+    {
+        Auto,
+        Preload,
+        Delimited,
+        Artifact,
+        ArtifactPrebuilt
+    }
+
     public enum ClosureRelationRetentionStrategy
     {
         Auto,
@@ -101,6 +110,66 @@ namespace UnifyWeaver.QueryRuntime
         char Delimiter = '	',
         int SkipRows = 1,
         int ExpectedWidth = 2);
+
+    public static class RelationSourceModePolicy
+    {
+        public static bool TryParse(string? value, out RelationSourceMode mode)
+        {
+            switch ((value ?? "preload").Trim().ToLowerInvariant())
+            {
+                case "auto":
+                    mode = RelationSourceMode.Auto;
+                    return true;
+                case "preload":
+                    mode = RelationSourceMode.Preload;
+                    return true;
+                case "delimited":
+                    mode = RelationSourceMode.Delimited;
+                    return true;
+                case "artifact":
+                    mode = RelationSourceMode.Artifact;
+                    return true;
+                case "artifact-prebuilt":
+                    mode = RelationSourceMode.ArtifactPrebuilt;
+                    return true;
+                default:
+                    mode = RelationSourceMode.Preload;
+                    return false;
+            }
+        }
+
+        public static string ToConfigValue(RelationSourceMode mode) => mode switch
+        {
+            RelationSourceMode.Auto => "auto",
+            RelationSourceMode.Preload => "preload",
+            RelationSourceMode.Delimited => "delimited",
+            RelationSourceMode.Artifact => "artifact",
+            RelationSourceMode.ArtifactPrebuilt => "artifact-prebuilt",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+        };
+
+        public static RelationSourceMode ResolveScanBenchmarkMode(
+            RelationSourceMode configuredMode,
+            string mode,
+            long articleRows,
+            long edgeRows)
+        {
+            if (configuredMode != RelationSourceMode.Auto)
+            {
+                return configuredMode;
+            }
+
+            var totalRows = articleRows + edgeRows;
+            return mode switch
+            {
+                "bound_scan" => RelationSourceMode.Artifact,
+                "selective_join" => RelationSourceMode.Artifact,
+                "join" when totalRows <= 5_000L => RelationSourceMode.ArtifactPrebuilt,
+                "join" => RelationSourceMode.Artifact,
+                _ => RelationSourceMode.Preload,
+            };
+        }
+    }
 
     public sealed class BinaryRelationArtifactManifest
     {
@@ -3384,6 +3453,67 @@ namespace UnifyWeaver.QueryRuntime
 
             binding = default;
             return false;
+        }
+    }
+
+    public sealed class ConfiguredDelimitedRelationProvider
+    {
+        public RelationSourceMode SourceMode { get; }
+
+        public InMemoryRelationProvider MemoryProvider { get; }
+
+        public BinaryRelationArtifactProvider? ArtifactProvider { get; }
+
+        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? MemoryProvider;
+
+        public string? ArtifactDirectory { get; }
+
+        public ConfiguredDelimitedRelationProvider(
+            RelationSourceMode sourceMode,
+            string? artifactDirectory = null,
+            InMemoryRelationProvider? memoryProvider = null)
+        {
+            if (sourceMode == RelationSourceMode.Auto)
+            {
+                throw new ArgumentException("Auto source mode must be resolved before provider construction.", nameof(sourceMode));
+            }
+
+            SourceMode = sourceMode;
+            MemoryProvider = memoryProvider ?? new InMemoryRelationProvider();
+
+            if (sourceMode == RelationSourceMode.Artifact || sourceMode == RelationSourceMode.ArtifactPrebuilt)
+            {
+                ArtifactDirectory = string.IsNullOrWhiteSpace(artifactDirectory)
+                    ? Path.Combine(Path.GetTempPath(), $"uw-rel-artifacts-{Guid.NewGuid():N}")
+                    : artifactDirectory;
+                ArtifactProvider = new BinaryRelationArtifactProvider(MemoryProvider);
+            }
+        }
+
+        public void RegisterBinaryRelation(PredicateId predicate, DelimitedRelationSource source, string? artifactName = null)
+        {
+            switch (SourceMode)
+            {
+                case RelationSourceMode.Preload:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    return;
+                case RelationSourceMode.Delimited:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    return;
+                case RelationSourceMode.Artifact:
+                case RelationSourceMode.ArtifactPrebuilt:
+                    if (ArtifactProvider is null || string.IsNullOrWhiteSpace(ArtifactDirectory))
+                    {
+                        throw new InvalidOperationException("Artifact mode requires an initialized artifact provider.");
+                    }
+
+                    var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
+                    ArtifactProvider.RegisterArtifact(predicate, manifestPath);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
+            }
         }
     }
 

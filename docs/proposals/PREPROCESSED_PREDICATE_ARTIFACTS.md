@@ -406,7 +406,17 @@ Prototype status:
   indexed parameter probes. The prebuilt mode keeps artifacts in a stable
   benchmark directory keyed by the current runtime source so runtime
   measurements can separate query execution from preprocessing cost without
-  reusing stale artifact formats.
+  reusing stale artifact formats. The benchmark now resolves source-family
+  choices through runtime-owned `RelationSourceMode` and
+  `RelationSourceModePolicy` helpers instead of a benchmark-local string switch,
+  which is the current seam for moving source selection out of Python-only
+  configuration.
+- Runtime-owned `ConfiguredDelimitedRelationProvider` now encapsulates
+  delimited-source registration for `preload`, `delimited`, `artifact`, and
+  `artifact-prebuilt` modes. The scan benchmark and generated C# pipeline
+  programs use that helper, and pipeline programs can now take
+  `UNIFYWEAVER_RELATION_SOURCE_MODE` plus `UNIFYWEAVER_RELATION_ARTIFACT_DIR`
+  without re-implementing artifact registration in each generated template.
 
 ## Success Criteria
 
