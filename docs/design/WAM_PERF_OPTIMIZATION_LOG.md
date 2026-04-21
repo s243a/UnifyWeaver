@@ -397,6 +397,57 @@ Not every attempt was a win. Tracking these so we don't repeat them.
 
 ---
 
+## Phase E: System-wide atom interning (2026-04-20)
+
+**Branch:** `feat/wam-haskell-atom-interning`
+
+Changed `Value` from `Atom String` / `Str String [Value]` to `Atom !Int` /
+`Str !Int [Value]` with a system-wide `InternTable`. Compile-time atoms get
+reserved IDs (0-7: true, fail, [], ., "", member/2, +/2, **/2); runtime atoms
+from TSV data extend the table at load time.
+
+### Changes
+
+| Component | Before | After |
+|---|---|---|
+| `data Value` | `Atom String`, `Str String [Value]` | `Atom !Int`, `Str !Int [Value]` |
+| `SwitchOnConstantPc` | `Map.Map String Int` | `IM.IntMap Int` |
+| Atom equality | O(n) string compare | O(1) Int compare |
+| `WamContext` | `wcAtomIntern`/`wcAtomDeintern` maps | `wcInternTable :: !InternTable` |
+| FFI boundary | Map.lookup to intern/deintern | Identity (atoms already Int) |
+| `evalArith` | String-based operator names | Reverse-lookup via InternTable |
+| Lowered emitter | `Atom "string"` literals | `Atom <id>` via `intern_atom/2` |
+
+### Benchmark results — 10k scale (25k category_parent, 10k article_category)
+
+All configurations produce identical output: tuple_count=462, article_count=5192.
+
+| Configuration | Mean query_ms | vs Baseline |
+|---|---|---|
+| Baseline FFI (main, String atoms) | **555** | — |
+| Interned FFI (atom-interning, Int atoms) | **556** | ~0% |
+| Baseline WAM-only (main, String atoms) | **19,173** | — |
+| Interned WAM-only (atom-interning, Int atoms) | **15,546** | **-19% faster** |
+
+At 1k scale, both WAM-only paths were ~1550ms (within noise). The 19%
+improvement at 10k confirms atom interning scales with dataset size — more
+atoms mean more comparisons where Int beats String.
+
+The FFI path is unaffected because the native kernel already used `Int`
+comparison (via the old `wcAtomIntern` boundary table).
+
+### Bug fixes included in this branch
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| FFI query dispatch | `tuple_count=0` on effective-distance benchmark when kernels detected | Added `collectForeignSolutions` using `executeForeign` directly instead of running WAM code (where fact code was skipped) |
+| `collectSolutions` refactoring | Infinite loop on WAM-only path | Restored `run ctx` call after `backtrack` (WAM choice points need re-execution; only FFI StreamRetry CPs bind directly) |
+
+**Note:** The FFI query dispatch bug also affected main (pre-interning) and
+was fixed separately in commit `e5a8e866` on main.
+
+---
+
 ## Related documents
 
 - `docs/vision/HASKELL_TARGET_ROADMAP.md` — where this is going

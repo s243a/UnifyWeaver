@@ -1,6 +1,6 @@
 # Haskell WAM Target: Roadmap
 
-## Current state (2026-04-13, post-parallelization)
+## Current state (2026-04-20, post-atom-interning)
 
 The Haskell WAM target **outperforms the Rust WAM target** on the effective-
 distance benchmark (300 scale) thanks to seed-level parallelism that Rust's
@@ -12,12 +12,14 @@ mutable-vector design can't trivially match. Median numbers over 10 runs:
 | Haskell + FFI single-core (300 scale) | 193ms total, 107ms query | — |
 | Rust + FFI (300 scale) | 126ms | baseline |
 | SWI-Prolog optimized | 311ms | — |
-| Pure interpreter (no FFI) | 2518ms | — |
+| Pure interpreter (no FFI, pre-interning) | 2518ms | — |
 | Haskell at 5k scale (4 cores) | 213ms total, 86ms query | 3.5x parallel speedup |
+| Pure interpreter (10k WAM-only, interned) | **15,546ms** | 19% faster than baseline |
 | Lowered predicates | 5 of 7 | — |
 | Detected kernels | category_ancestor (auto-generated FFI) | — |
 
-**Phases 1 and 2 are now complete** (seed parallelism, atom interning).
+**Phases 1, 2, and 2c are now complete** (seed parallelism, FFI-boundary
+interning, system-wide atom interning).
 Additional optimizations beyond the original roadmap: `skip_fact_wam`
 (eliminates redundant WAM-compilation of FFI-owned facts, -70% total at
 300 scale), O(n) intern-table construction. See
@@ -64,12 +66,30 @@ scheduling/GC contention; 4 cores is the sweet spot.
 on a single core — beat Rust's 126ms on query time without needing
 parallelism.
 
-**Still-open Phase 2 work** (low priority, likely not needed):
-- Atom interning in the WAM interpreter path itself (would require
-  touching `Value`, `SwitchOnConstantPc`, `callIndexedFact2`). Only
-  useful if we start routing hot predicates through the interpreter
-  rather than FFI. Given that FFI already handles the hot path, this
-  is on hold.
+## Phase 2c: System-Wide Atom Interning — DONE
+
+**Goal:** Promote atom interning from the FFI boundary to the entire system.
+Change `Atom String` to `Atom !Int` everywhere — WAM interpreter, lowered
+emitter, FFI kernels, fact dispatch.
+
+**Delivered (branch `feat/wam-haskell-atom-interning`):**
+1. `data Value`: `Atom !Int`, `Str !Int [Value]`
+2. `InternTable` type with forward (String→Int) and reverse (Int→String) maps
+3. Well-known atom constants: atomTrue=0, atomFail=1, atomNil=2, atomDot=3
+4. `SwitchOnConstantPc` changed from `Map.Map String Int` to `IM.IntMap Int`
+5. `compileTimeAtomTable` emitted in Predicates.hs, extended at load time
+6. FFI boundary simplified — atoms already Int, no intern/deintern step
+7. Lowered emitter updated to emit `Atom <id>` via `intern_atom/2`
+8. `evalArith` threaded through `InternTable` for reverse lookup
+
+**Actual outcome:** 19% faster on the WAM-only interpreter path at 10k
+scale (19,173ms → 15,546ms). FFI path unchanged (already used Int
+comparison). Correctness verified: identical output at 1k and 10k.
+
+**Also fixed:** FFI query dispatch bug — effective-distance benchmark was
+producing `tuple_count=0` when kernels were detected (fact code skipped
+but query entered WAM code directly). Added `collectForeignSolutions`
+using `executeForeign` dispatch. This fix was also applied to main.
 
 ## Phase 2b (unplanned): Skip-Facts
 

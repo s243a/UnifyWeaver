@@ -53,7 +53,7 @@ test_haskell_functor_builtin_present :-
         %% Construct mode: allocates fresh Unbound cells.
         sub_string(S, _, _, _, "Unbound (c0 + i)"),
         %% Read mode: pattern matches Str and VList branches.
-        sub_string(S, _, _, _, "Str fn args -> Just (Atom fn, length args)")
+        sub_string(S, _, _, _, "Str fnId args -> Just (Atom fnId, length args)")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing functor/3 step case patterns')
     ).
@@ -75,7 +75,7 @@ test_haskell_univ_builtin_present :-
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"=../2\""),
         %% Decompose mode: prepends functor atom to arg list.
-        sub_string(S, _, _, _, "VList (Atom fn : args)"),
+        sub_string(S, _, _, _, "VList (Atom fnId : args)"),
         %% Compose mode: rebuilds Str from list head+tail.
         sub_string(S, _, _, _, "(Atom fname : rest) -> Just (Str fname rest)")
     ->  pass(Test)
@@ -192,15 +192,15 @@ test_transitive_closure_execute_foreign :-
         %% config_facts_from resolved to edge pred name, now using wcFfiFacts
         sub_string(Code, _, _, _, "edge_facts = fromMaybe IM.empty"),
         sub_string(Code, _, _, _, "wcFfiFacts ctx"),
-        %% Native call: first arg is facts, second is interned atom lookup
+        %% Native call: first arg is facts, input atom is already Int (interned)
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
-        sub_string(Code, _, _, _, "Map.lookup r1S (wcAtomIntern ctx)"),
-        %% Output is atom: de-intern via wcAtomDeintern (rv_1 after
+        sub_string(Code, _, _, _, "r1I"),
+        %% Output is atom: directly use interned ID (rv_1 after
         %% routing single-output through the multi-output FFIStreamRetry path)
-        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv_1 (wcAtomDeintern ctx)))"),
-        %% Single-input case pattern (not tuple)
+        sub_string(Code, _, _, _, "Atom rv_1"),
+        %% Single-input case pattern: Atom r1I (Int, not String)
         sub_string(Code, _, _, _, "case r1 of"),
-        sub_string(Code, _, _, _, "Atom r1S ->")
+        sub_string(Code, _, _, _, "Atom r1I ->")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_closure2 executeForeign generation failed')
     ).
@@ -380,6 +380,37 @@ test_haskell_runtime_imports_parallel :-
     ;   fail_test(Test, 'parallel/deepseq imports missing from WamRuntime')
     ).
 
+%% PutStructureDyn: runtime-parsed functors
+%% --------------------------------------------
+
+test_haskell_put_structure_dyn_in_types :-
+    Test = 'WAM-Haskell: PutStructureDyn constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "PutStructureDyn !RegId !RegId !RegId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn missing from Instruction type')
+    ).
+
+test_haskell_put_structure_dyn_step_handler :-
+    Test = 'WAM-Haskell: PutStructureDyn step handler present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (PutStructureDyn nameReg arityReg targetReg)"),
+        sub_string(S, _, _, _, "BuildStruct fnId targetReg (fromIntegral arity)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn step handler missing or incorrect')
+    ).
+
+test_haskell_put_structure_dyn_wam_parse :-
+    Test = 'WAM-Haskell: put_structure_dyn WAM text parsed',
+    (   wam_haskell_target:wam_instr_to_haskell(
+            ["put_structure_dyn", "A1,", "A2,", "A3"], Hs),
+        sub_string(Hs, _, _, _, "PutStructureDyn")
+    ->  pass(Test)
+    ;   fail_test(Test, 'put_structure_dyn WAM text not parsed')
+    ).
+
 %% Phase 4.3: findall/bag/set merge strategies
 %% --------------------------------------------
 
@@ -463,8 +494,8 @@ test_haskell_negation_general_handler :-
     Test = 'WAM-Haskell: general \\+/1 handler with run-based sub-execution',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
-        % General path: resolve goal key and call run ctx snapshot
-        sub_string(S, _, _, _, "goalKey = fn ++ \"/\" ++ show (length args)"),
+        % General path: resolve goal key via lookupAtom and call run ctx snapshot
+        sub_string(S, _, _, _, "lookupAtom tbl fnId"),
         sub_string(S, _, _, _, "case run ctx snapshot of")
     ->  pass(Test)
     ;   fail_test(Test, 'general \\+/1 handler missing run-based sub-execution')
@@ -481,21 +512,44 @@ test_haskell_negation_parallel_dispatch :-
     ).
 
 test_haskell_negation_parallel_helper :-
-    Test = 'WAM-Haskell: runNegationParallel helper uses parMap rdeepseq',
+    Test = 'WAM-Haskell: runNegationParallel uses async race-to-cancel',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool"),
-        sub_string(S, _, _, _, "parMap rdeepseq branchSucceeds branchPCs")
+        sub_string(S, _, _, _, "unsafePerformIO"),
+        sub_string(S, _, _, _, "raceToTrue")
     ->  pass(Test)
-    ;   fail_test(Test, 'runNegationParallel helper missing or incomplete')
+    ;   fail_test(Test, 'runNegationParallel race-to-cancel missing or incomplete')
+    ).
+
+test_haskell_race_to_true_helper :-
+    Test = 'WAM-Haskell: raceToTrue helper with async/waitAny/cancel',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "raceToTrue :: [IO Bool] -> IO Bool"),
+        sub_string(S, _, _, _, "waitAny"),
+        sub_string(S, _, _, _, "mapM_ cancel")
+    ->  pass(Test)
+    ;   fail_test(Test, 'raceToTrue helper missing')
+    ).
+
+test_haskell_async_imports :-
+    Test = 'WAM-Haskell: async/unsafePerformIO imports present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Control.Concurrent.Async"),
+        sub_string(S, _, _, _, "System.IO.Unsafe"),
+        sub_string(S, _, _, _, "Control.Exception (evaluate)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'async/unsafe imports missing')
     ).
 
 test_haskell_negation_true_fail_fast_paths :-
     Test = 'WAM-Haskell: \\+/1 has fast paths for true and fail atoms',
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "Just (Atom \"true\") -> Nothing"),
-        sub_string(S, _, _, _, "Just (Atom \"fail\") -> Just (s { wsPC = wsPC s + 1 })")
+        sub_string(S, _, _, _, "aid == atomTrue -> Nothing"),
+        sub_string(S, _, _, _, "aid == atomFail -> Just (s { wsPC = wsPC s + 1 })")
     ->  pass(Test)
     ;   fail_test(Test, '\\+ true/fail fast paths missing')
     ).
@@ -677,6 +731,10 @@ run_tests :-
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
     test_haskell_runtime_imports_parallel,
+    %% PutStructureDyn: runtime-parsed functors
+    test_haskell_put_structure_dyn_in_types,
+    test_haskell_put_structure_dyn_step_handler,
+    test_haskell_put_structure_dyn_wam_parse,
     %% Phase 4.3: findall/bag/set merge strategies
     test_haskell_findall_bag_set_forkable,
     test_haskell_infer_collect_maps_to_findall,
@@ -689,6 +747,8 @@ run_tests :-
     test_haskell_negation_general_handler,
     test_haskell_negation_parallel_dispatch,
     test_haskell_negation_parallel_helper,
+    test_haskell_race_to_true_helper,
+    test_haskell_async_imports,
     test_haskell_negation_true_fail_fast_paths,
     %% Phase 4.1: Par* instructions + certificate-driven emission
     test_haskell_par_instructions_in_types,
