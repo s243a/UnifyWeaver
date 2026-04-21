@@ -74,6 +74,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Clojure generated project with seeded helpers and no_kernels(true)",
     ),
+    "clojure-wam-seeded-artifact": TargetInfo(
+        "clojure-wam-seeded-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers, kernels enabled, and preprocessed artifact data",
+    ),
+    "clojure-wam-seeded-no-kernels-artifact": TargetInfo(
+        "clojure-wam-seeded-no-kernels-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers, no_kernels(true), and preprocessed artifact data",
+    ),
     "clojure-wam-accumulated": TargetInfo(
         "clojure-wam-accumulated",
         "hybrid-wam",
@@ -83,6 +93,16 @@ TARGETS: dict[str, TargetInfo] = {
         "clojure-wam-accumulated-no-kernels",
         "hybrid-wam",
         "Hybrid WAM Clojure generated project with optimized accumulated helpers and no_kernels(true)",
+    ),
+    "clojure-wam-accumulated-artifact": TargetInfo(
+        "clojure-wam-accumulated-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers, kernels enabled, and preprocessed artifact data",
+    ),
+    "clojure-wam-accumulated-no-kernels-artifact": TargetInfo(
+        "clojure-wam-accumulated-no-kernels-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers, no_kernels(true), and preprocessed artifact data",
     ),
     "haskell-pure-interp": TargetInfo(
         "haskell-pure-interp",
@@ -139,6 +159,16 @@ TARGET_SETS: dict[str, list[str]] = {
         "clojure-wam-seeded",
         "clojure-wam-seeded-no-kernels",
         "clojure-wam-accumulated-no-kernels",
+    ],
+    "clojure-wam-artifact": [
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-artifact",
+        "clojure-wam-accumulated-no-kernels",
+        "clojure-wam-accumulated-no-kernels-artifact",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-artifact",
+        "clojure-wam-seeded-no-kernels",
+        "clojure-wam-seeded-no-kernels-artifact",
     ],
     "direct-pipeline": [
         "rust-dfs",

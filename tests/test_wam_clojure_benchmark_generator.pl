@@ -15,6 +15,7 @@ test(kernel_mode_options) :-
 
 test(data_mode_options) :-
     parse_benchmark_data_mode(sidecar, sidecar),
+    parse_benchmark_data_mode(artifact, artifact),
     parse_benchmark_data_mode(inline, inline),
     setup_call_cleanup(
         load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
@@ -25,9 +26,9 @@ test(data_mode_options) :-
 test(data_mode_predicate_override) :-
     setup_call_cleanup(
         ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
-          assertz(user:wam_clojure_benchmark_data_mode(inline))
+          assertz(user:wam_clojure_benchmark_data_mode(artifact))
         ),
-        assertion(parse_benchmark_data_mode(auto, inline)),
+        assertion(parse_benchmark_data_mode(auto, artifact)),
         maybe_abolish_test_predicate(wam_clojure_benchmark_data_mode/1)
     ).
 
@@ -103,10 +104,29 @@ test(generate_seeded_inline_project) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(generate_seeded_artifact_project) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_bench_artifact', TmpDir),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+        directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/category_parent_by_child.edn', ParentByChildPath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/article_category_by_article.edn', ArticleByArticlePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(exists_file(ParentByChildPath)),
+        assertion(exists_file(ArticleByArticlePath)),
+        assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [parents-by-child-delay (delay (edn/read-string (slurp "/')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child-delay (delay (edn/read-string (slurp "/')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-article-categories-by-article-delay')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-parents-by-child-delay')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '(def benchmark-category-parents-delay')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '(def benchmark-article-categories-delay')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 test(generated_category_parent_handler_executes, [condition(clojure_available)]) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_bench_exec', TmpDir),
-        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, sidecar),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
         run_clojure_predicate(TmpDir, 'category_parent/2',
                               ['Abstraction', 'Thought'], "true"),
         run_clojure_predicate(TmpDir, 'category_parent/2',

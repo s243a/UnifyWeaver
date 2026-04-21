@@ -485,3 +485,23 @@ lessons for externalized/preprocessed predicate data:
 That moves the Clojure benchmark path closer to the C# materialization
 direction: policy can live with the workload, while the default still
 favors scaling safely.
+
+The next Clojure benchmark step added an explicit `artifact` mode beside
+`sidecar` and `inline`. The first artifact shape precomputes
+`category_parent_by_child` and `article_category_by_article` EDN maps so
+the generated runner and `category_ancestor/4` foreign handler can skip
+their startup regrouping pass.
+
+Initial Termux `dev` measurements were mixed rather than a clear win:
+
+- `clojure-wam-accumulated`: `1.867s`
+- `clojure-wam-accumulated-artifact`: `1.852s`
+- `clojure-wam-seeded`: `1.846s`
+- `clojure-wam-seeded-artifact`: `2.250s`
+
+All outputs still matched digest `1659619c9d36`, but these numbers are
+not strong enough to justify changing the default heuristic away from
+`sidecar`. The artifact path is valuable as an explicit comparison mode
+and as groundwork for more compact non-EDN preprocessing, but it still
+needs better desktop measurements and probably a denser artifact format
+before it should become the default.

@@ -125,7 +125,7 @@ The Clojure hybrid-WAM target now has an optimized-project generator:
 
 ```bash
 swipl -q -s examples/benchmark/generate_wam_clojure_optimized_benchmark.pl -- \
-  data/benchmark/dev/facts.pl /tmp/wam-clojure-bench seeded kernels_on
+  data/benchmark/dev/facts.pl /tmp/wam-clojure-bench seeded kernels_on sidecar
 ```
 
 Supported modes:
@@ -137,6 +137,16 @@ Supported modes:
   result-producing runner also precomputes a native Clojure ancestor-hop index.
 - `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)` and keeps
   the result-producing runner on the on-demand traversal path.
+
+The generator accepts benchmark data modes:
+
+- `inline`: embed benchmark relations directly in the generated namespace
+- `sidecar`: externalize benchmark relation rows into EDN sidecars
+- `artifact`: externalize preprocessed EDN artifacts such as
+  `category_parent_by_child` and `article_category_by_article`
+- `auto`: honor an optional workload predicate
+  (`wam_clojure_benchmark_data_mode/1` or `benchmark_data_mode/1`) and
+  otherwise fall back to the current scale-favoring heuristic
 
 The generated project supports two entry modes:
 
@@ -156,6 +166,14 @@ modes as result-producing `hybrid-wam` targets:
 - `clojure-wam-seeded-no-kernels`
 
 These targets provide both seeded/accumulated and kernel-on/off comparisons.
+
+Artifact-vs-sidecar Clojure comparisons are available through the
+`clojure-wam-artifact` target set, which adds:
+
+- `clojure-wam-accumulated-artifact`
+- `clojure-wam-accumulated-no-kernels-artifact`
+- `clojure-wam-seeded-artifact`
+- `clojure-wam-seeded-no-kernels-artifact`
 
 ### Why Seeded Closures Win
 
