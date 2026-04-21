@@ -874,9 +874,89 @@ test_f1_compiled_only_policy :-
     ),
     retractall(user:f1_co(_)).
 
+%% Phase F2: FactStream choice point type tests
+%% -----------------------------------------------
+
+test_f2_fact_stream_in_builtin_state :-
+    Test = 'F2: FactStream constructor in BuiltinState type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "FactStream !Int !Int ![(Int, Int)] !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream constructor not found in BuiltinState')
+    ).
+
+test_f2_call_fact_stream_in_instruction :-
+    Test = 'F2: CallFactStream constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "CallFactStream String !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream constructor not found in Instruction type')
+    ).
+
+test_f2_stream_facts_function :-
+    Test = 'F2: streamFacts function present in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "streamFacts :: WamContext -> String -> WamState -> Maybe WamState")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts function not found in runtime')
+    ).
+
+test_f2_resume_fact_stream_handler :-
+    Test = 'F2: resumeBuiltin handles FactStream CPs',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream"),
+        sub_string(S, _, _, _, "FactStream var1 var2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'resumeBuiltin FactStream handler not found')
+    ).
+
+test_f2_call_fact_stream_step_handler :-
+    Test = 'F2: step function handles CallFactStream',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (CallFactStream pred"),
+        sub_string(S, _, _, _, "streamFacts ctx pred")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream step handler not found')
+    ).
+
+test_f2_wc_inline_facts_field :-
+    Test = 'F2: wcInlineFacts field in WamContext',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "wcInlineFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcInlineFacts field not found in WamContext')
+    ).
+
+test_f2_stream_facts_filters_bound_a1 :-
+    Test = 'F2: streamFacts filters by bound A1',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        % Verify the filter logic: Atom aid case filters rows
+        sub_string(S, _, _, _, "Atom aid, Atom bid"),
+        sub_string(S, _, _, _, "Atom aid, _)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts bound-arg filtering logic not found')
+    ).
+
+test_f2_fact_stream_exhaustion_backtracks :-
+    Test = 'F2: FactStream empty rows triggers backtrack',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream _ _ [] _) _ rest s"),
+        sub_string(S, _, _, _, "backtrack (s { wsCPs = rest")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream exhaustion backtrack not found')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1+F2 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -943,6 +1023,15 @@ run_tests :-
     test_f1_comment_in_predicates_hs,
     test_f1_segment_parser,
     test_f1_compiled_only_policy,
+    %% Phase F2: FactStream choice point type
+    test_f2_fact_stream_in_builtin_state,
+    test_f2_call_fact_stream_in_instruction,
+    test_f2_stream_facts_function,
+    test_f2_resume_fact_stream_handler,
+    test_f2_call_fact_stream_step_handler,
+    test_f2_wc_inline_facts_field,
+    test_f2_stream_facts_filters_bound_a1,
+    test_f2_fact_stream_exhaustion_backtracks,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

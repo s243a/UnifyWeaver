@@ -1243,6 +1243,30 @@ resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
+-- Phase F2: FactStream resume — iterate through inline fact tuples.
+-- Each (a1, a2) pair is unified against registers A1/A2. Variable IDs
+-- var1/var2 indicate which bindings to update (-1 = skip, already bound).
+resumeBuiltin (FactStream _ _ [] _) _ rest s =
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+resumeBuiltin (FactStream var1 var2 ((a1,a2):rows) retPC) cp rest s =
+  let newRegs0 = IM.insert 1 (Atom a1) (cpRegs cp)
+      newRegs  = IM.insert 2 (Atom a2) newRegs0
+      newBindings0 = if var1 == -1 then cpBindings cp
+                     else IM.insert var1 (Atom a1) (cpBindings cp)
+      newBindings  = if var2 == -1 then newBindings0
+                     else IM.insert var2 (Atom a2) newBindings0
+      newCPs = case rows of
+        [] -> rest
+        _  -> cp { cpBuiltin = Just (FactStream var1 var2 rows retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+            , wsCP = cpCP cp
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
+            , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
 -- an aggregate frame, return Nothing (inner solutions exhausted).
 -- Otherwise, normal backtrack.
@@ -1631,6 +1655,55 @@ callIndexedFact2 !ctx pred s =
           _ -> Nothing
         _ -> Nothing
 
+-- | Phase F2: Stream through inline fact tuples for a 2-arg predicate.
+-- Looks up the predicate''s fact data in wcInlineFacts, determines which
+-- registers are unbound (need variable binding) vs bound (need match check),
+-- and yields the first matching row with a FactStream CP for the rest.
+streamFacts :: WamContext -> String -> WamState -> Maybe WamState
+streamFacts !ctx pred s =
+  case Map.lookup pred (wcInlineFacts ctx) of
+    Nothing -> Nothing
+    Just [] -> Nothing
+    Just rows ->
+      let retPC = wsCP s
+          a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+          a2val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+          -- Determine variable IDs for binding (-1 = already bound)
+          var1 = case a1val of { Unbound vid -> vid; _ -> -1 }
+          var2 = case a2val of { Unbound vid -> vid; _ -> -1 }
+          -- Filter rows by any bound arguments
+          filtered = case (a1val, a2val) of
+            (Atom aid, Atom bid) -> filter (\\(a, b) -> a == aid && b == bid) rows
+            (Atom aid, _)       -> filter (\\(a, _) -> a == aid) rows
+            (_, Atom bid)       -> filter (\\(_, b) -> b == bid) rows
+            _                   -> rows
+      in case filtered of
+        [] -> Nothing
+        ((a1,a2):rest) ->
+          let newRegs = IM.insert 2 (Atom a2) $ IM.insert 1 (Atom a1) (wsRegs s)
+              newBindings0 = if var1 == -1 then wsBindings s
+                             else IM.insert var1 (Atom a1) (wsBindings s)
+              newBindings  = if var2 == -1 then newBindings0
+                             else IM.insert var2 (Atom a2) newBindings0
+              newTrail0 = if var1 == -1 then wsTrail s
+                          else TrailEntry var1 (IM.lookup var1 (wsBindings s)) : wsTrail s
+              newTrail  = if var2 == -1 then newTrail0
+                          else TrailEntry var2 (IM.lookup var2 newBindings0) : newTrail0
+              trailAdded = (if var1 == -1 then 0 else 1) + (if var2 == -1 then 0 else 1)
+              newCPs = case rest of
+                [] -> wsCPs s
+                _  -> ChoicePoint
+                        { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                        , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                        , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
+                        , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                        , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                        } : wsCPs s
+              newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+          in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
+                     , wsTrail = newTrail, wsTrailLen = wsTrailLen s + trailAdded
+                     , wsCPs = newCPs, wsCPsLen = newCPsLen })
+
 {{execute_foreign}}
 
 -- | Bind an output register to a value WITHOUT advancing PC.
@@ -1789,6 +1862,11 @@ step !ctx s (CallResolved pc _arity) =
 -- path — Nothing means no solutions (backtrack), never fallthrough.
 step !ctx s (CallForeign pred _arity) =
   executeForeign ctx pred (s { wsCP = wsPC s + 1 })
+
+-- Phase F2: FactStream call. Dispatches to streamFacts which iterates
+-- inline fact tuples from wcInlineFacts. Nothing = no matching facts.
+step !ctx s (CallFactStream pred _arity) =
+  streamFacts ctx pred (s { wsCP = wsPC s + 1 })
 
 -- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
 -- are handled by CallForeign (resolved at compile time), so executeForeign
@@ -2944,6 +3022,10 @@ data BuiltinState
     -- outRegs and outVars are parallel lists (same length as each tuple).
     -- outVars contains -1 for originally-bound outputs (no binding update).
   | FFIStreamRetry ![Int] ![Int] ![[Value]] !Int  -- outRegs, outVars, remaining tuples, returnPC
+    -- Phase F2: FactStream for inline_data fact predicates.
+    -- Iterates interned (arg1, arg2) tuples via backtracking.
+    -- var1/var2 are variable IDs for binding (-1 = already bound, skip).
+  | FactStream !Int !Int ![(Int, Int)] !Int  -- var1, var2, remaining rows, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
@@ -3037,6 +3119,11 @@ data WamContext = WamContext
   -- sources — not wired into the default Main.hs template yet, so
   -- standalone benchmarks build this directly.
   , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
+  -- | Phase F2: inline fact data for FactStream predicates. Keyed by
+  -- predicate name (e.g., "category_parent"). Each entry is a list of
+  -- interned (arg1, arg2) tuples. Populated by Phase F3 code generation;
+  -- empty until then.
+  , wcInlineFacts :: !(Map.Map String [(Int, Int)])
   }
 -- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
 -- and functions have no Show instance. Add a manual instance if needed.
@@ -3114,6 +3201,7 @@ data Instruction
   | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
   | BeginAggregate String !RegId !RegId   -- type, valueReg, resultReg
   | EndAggregate !RegId                   -- valueReg
+  | CallFactStream String !Int            -- Phase F2: predicate name, arity
   deriving (Show, Eq)
 
 -- | Build the read-only context from compiled code and labels. Called
@@ -3132,6 +3220,7 @@ mkContext codeList labels =
     , wcInternTable   = emptyInternTable
     , wcFfiFacts      = Map.empty
     , wcFfiWeightedFacts = Map.empty
+    , wcInlineFacts   = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
