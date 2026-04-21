@@ -13,7 +13,14 @@ and produces observable results.
 
 ## Phase A: Classification infrastructure (no behaviour change)
 
-Status: not started.
+Status: landed (PR #1511). `classify_predicate/4`, `clause_count/2`,
+`fact_only/2`, `first_arg_groundness/3` exported from
+`wam_elixir_lowered_emitter`. `fact_layout/2` and
+`fact_count_threshold/1` options recognised. Every generated module
+carries a fact-shape comment under `@moduledoc`. Tests cover small /
+big / rule / variable-head / override / threshold-override /
+comment-in-output / no-behaviour-change. Observation-only — every
+predicate still compiles via the `compiled` path.
 
 Work:
 
@@ -36,7 +43,16 @@ Acceptance:
 
 ## Phase B: `inline_data` emission for Elixir
 
-Status: not started.
+Status: landed (PR #1519). `inline_data` predicates now emit an
+`@facts [{...}, ...]` module attribute and a single `run/1` that
+delegates to `WamRuntime.stream_facts/3`. New runtime pieces
+`stream_facts/3` + `resume_fact_stream/3` plus a `{:fact_stream,
+remaining, arity}` CP shape that `backtrack/1` dispatches on.
+Compound head args fall back to `compiled`. Observable effect:
+dev-scale `category_parent.ex` drops from many defps to ~9.5 KB;
+host-compile time drops from seconds to milliseconds. Required two
+adjuncts to actually work at 6000+ clauses: WAM atom quoting
+(PR #1522) and CPS continuations (PR #1500).
 
 Work:
 
@@ -66,7 +82,14 @@ Acceptance:
 
 ## Phase C: First-argument indexing
 
-Status: not started.
+Status: landed (PR #1525). Predicates with all-ground arg1 emit an
+`@facts_by_arg1 %{key => [tuple, ...]}` module attribute alongside
+`@facts`; `run/1` derefs A1 and picks the indexed bucket when ground,
+else falls back to the flat list. `fact_index_policy` option (`auto`
+default, `first_arg`, `none`) gates it. Measured on scale-300
+`category_parent/2` (6008 facts): seeded query first solution in
+~8 µs vs ~626 µs for unbound-first-arg (80× speedup on seeded).
+Module grows ~2× (336 KB flat → 716 KB flat + index) in exchange.
 
 Work:
 
@@ -89,7 +112,20 @@ Acceptance:
 
 ## Phase D: `external_source` layout and `FactSource` behaviour
 
-Status: not started.
+Status: landed (PR #1551). Generic `WamRuntime.FactSource` behaviour
+with `open/3`, `stream_all/2`, `lookup_by_arg1/3`, optional `close/2`;
+struct-based facade so callers don't need to know the concrete
+adaptor module. One concrete implementation: `WamRuntime.FactSource.Tsv`
+(two-column TSV, eager load, first-arg index, `header: :skip | :none`
+option). `WamRuntime.FactSourceRegistry` uses `:persistent_term` for
+O(1) cross-process reads. Emitter branch for
+`fact_layout(P/A, external_source(SourceSpec))` produces a module
+with no `@facts` — just a `@pred_indicator` string, a registry
+lookup, and a facade dispatch. Verified byte-for-byte equivalent to
+the inline_data layout at dev scale. Designed to extend to SQLite,
+ETS, memory-mapped hash tables, and the preprocessed-artifact
+direction already in motion on the C# side without touching the
+emitter (see `PREPROCESSED_PREDICATE_ARTIFACTS.md`, PR #1548).
 
 Work:
 
@@ -114,29 +150,41 @@ Acceptance:
 
 ## Phase E: Cost-based default selection
 
-Status: not started.
+Status: landed (PR #1555) — **pluggable-policy** part only. The
+Phase-A `pick_layout/5` is now a dispatcher to named policies.
+Three built-ins: `auto` (byte-identical to the pre-Phase-E rule),
+`compiled_only`, `inline_eager`. A multifile
+`user:wam_elixir_layout_policy/5` hook lets external tooling plug in
+their own policy by name without patching the emitter. User
+per-predicate `fact_layout/2` overrides still preempt any policy.
 
-Work:
-
-- Move the Phase-A threshold policy behind a pluggable selector in
-  the emitter.
-- Measure compile-time and size cost for each layout across a
-  representative corpus.
-- Tune defaults so that the chosen layout minimises host-compile
-  time while keeping small predicates in `compiled` form.
-
-Acceptance:
-
-- Default behaviour across the existing benchmark corpus is
-  measurably better than any fixed threshold.
-- Selection is overridable per-predicate and per-module, and is
-  observable in the generated module's layout-comment.
+**Deferred to follow-up:** the *measurement-driven tuning* the
+Phase-E acceptance criterion talks about. The policy surface is open
+for a cost-aware selector; a separate PR would plug one in via the
+hook once measurement tooling and a representative corpus are in
+place. Existing `auto` behaviour is unchanged and remains safe, so
+this deferral doesn't block any of Phases A–D's observable wins.
 
 ## Phase F: Port to other WAM targets
 
-Status: not started.
+Status: **deferred as future work** (intentional scope limit).
 
-Targets in rough priority order:
+Rationale for deferral:
+
+- Phases A–E landed for Elixir and the end-to-end result is strong
+  enough to call a stopping point: 9193 data rows byte-for-byte
+  identical to native SWI across the scale-300, 1k, 5k, 10x, and 10k
+  corpora (PR #1547 for reference generation; PR #1554 for the
+  harness parity column that will catch any regression).
+- Each target is substantive separate work — a new `inline_data`
+  emitter branch, a new `stream_facts` / `resume_fact_stream`
+  implementation in that target's host language, and its own test
+  surface. Doing all of them in one change would be huge; doing one
+  at a time is a natural per-target PR pattern.
+- The Elixir spec + behaviour contract already documents the shape
+  other targets should adopt, so future ports are well-defined.
+
+Targets in rough priority order (unchanged from the original plan):
 
 1. `wam_clojure_target` — Clojure is next most likely to see the same
    pathology at scale.
@@ -182,11 +230,40 @@ Acceptance:
 
 ## Exit criteria
 
-The project is considered done when:
+The project was considered done when:
 
-1. `category_parent/2` at scale 300 compiles and runs through the
-   effective-distance benchmark to a correct reference-row count on
-   Elixir.
-2. At least one other WAM target has the same layout available.
-3. Documentation in `docs/design/WAM_ELIXIR_CORRECTNESS_GAPS.md` and
-   the parallel target-design docs reflect the new default shape.
+1. **Met.** `category_parent/2` at scale 300 compiles and runs
+   through the effective-distance benchmark to a correct reference
+   row count on Elixir — 272 rows including header, byte-for-byte
+   identical to native SWI (see `data/benchmark/300/reference_output.tsv`
+   from PR #1547 and the harness parity check in PR #1554).
+   End-to-end runtime at scale 300: ~2.9 s.
+2. **Deferred.** "At least one other WAM target has the same layout
+   available" — intentional scope limit (Phase F above). The
+   design contract is documented; the port itself is future work.
+3. **Met.** Documentation in
+   `docs/design/WAM_ELIXIR_CORRECTNESS_GAPS.md` and the fact-shape
+   proposal triplet (philosophy / spec / this plan) reflect the new
+   default shape.
+
+## Wrap-up summary
+
+Beyond the five phases, several supporting changes landed to make
+the Elixir end-to-end actually work at scale:
+
+- PR #1500 — CPS continuations (non-tail recursion).
+- PR #1505 — O(N²) codegen string-accumulator fix.
+- PR #1522 — WAM atom quoting (separator-containing atoms).
+- PR #1525 — integer-preserving arithmetic + Phase C.
+- PR #1535 — category_ancestor cut barrier + heap-walking list
+  builtins (length/2, member/2).
+- PR #1547 — reference outputs for scales 300 / 1k / 5k / 10x / 10k
+  + UTF-8 fix in the bench driver.
+- PR #1554 — Python benchmark harness reports parity vs reference.
+
+Aggregate result at end of Phase E: WAM-Elixir `effective_distance`
+matches native SWI byte-for-byte at every scale except dev (where
+18 rows show FP-associativity deltas of ~0.001–0.02 from a
+summation-order difference — semantically correct, dominant on tiny
+data because bigger data aggregates more paths). Total parity:
+**9193 rows across 10x / 300 / 1k / 5k / 10k scales exact**.
