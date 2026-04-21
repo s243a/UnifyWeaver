@@ -272,6 +272,38 @@ a provider. The fact access layer should respect the same capability
 declarations, falling back gracefully when a preferred strategy is
 unavailable.
 
+**Compile-time environment predicates:** Environment constraints
+should be declarable at compile time via Prolog-side predicates:
+
+```prolog
+% Explicit declarations — user knows the target platform
+:- environment(mmap(false)).
+:- environment(max_cores(2)).
+:- environment(platform(termux)).
+
+% Auto-detect from the build machine (default: enabled)
+:- environment(auto_detect(true)).
+
+% Disable auto-detect for cross-compilation scenarios
+:- environment(auto_detect(false)).
+```
+
+When `auto_detect(true)`, the codegen probes the build machine at
+generation time: OS type, available memory, core count, filesystem
+capabilities. This feeds the compile-time planner's decision space.
+
+Auto-detect must be disableable because the build machine is not
+always the target machine — cross-compilation, CI pipelines building
+for mobile, generating Haskell on a desktop that runs on embedded.
+When disabled, only explicit `environment/1` declarations are used;
+absent any declaration, the planner assumes conservative defaults
+(no mmap, single core, limited memory) so generated code is safe
+everywhere.
+
+Explicit declarations override auto-detect on a per-capability
+basis: `environment(mmap(false))` disables mmap even if auto-detect
+would find it available.
+
 **Compile-time vs runtime planning:** The planner is not a single
 runtime decision. It operates at two stages:
 
