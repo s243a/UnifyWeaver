@@ -192,15 +192,15 @@ test_transitive_closure_execute_foreign :-
         %% config_facts_from resolved to edge pred name, now using wcFfiFacts
         sub_string(Code, _, _, _, "edge_facts = fromMaybe IM.empty"),
         sub_string(Code, _, _, _, "wcFfiFacts ctx"),
-        %% Native call: first arg is facts, second is interned atom lookup
+        %% Native call: first arg is facts, input atom is already Int (interned)
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
-        sub_string(Code, _, _, _, "itForward (wcInternTable ctx)"),
+        sub_string(Code, _, _, _, "r1I"),
         %% Output is atom: directly use interned ID (rv_1 after
         %% routing single-output through the multi-output FFIStreamRetry path)
         sub_string(Code, _, _, _, "Atom rv_1"),
-        %% Single-input case pattern (not tuple)
+        %% Single-input case pattern: Atom r1I (Int, not String)
         sub_string(Code, _, _, _, "case r1 of"),
-        sub_string(Code, _, _, _, "Atom r1S ->")
+        sub_string(Code, _, _, _, "Atom r1I ->")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_closure2 executeForeign generation failed')
     ).

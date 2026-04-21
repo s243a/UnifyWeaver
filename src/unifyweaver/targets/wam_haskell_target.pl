@@ -2374,7 +2374,7 @@ generate_query_body(Options, QueryBody) :-
         % Call "category_parent/2" would fail (fact code is skipped). Use
         % collectForeignSolutions which calls the native kernel directly.
         QueryBody =
-'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ;   % Default: collectSolutions loop for category_ancestor/4
         QueryBody =
 'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'

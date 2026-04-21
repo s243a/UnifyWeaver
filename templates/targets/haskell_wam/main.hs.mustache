@@ -236,10 +236,12 @@ collectForeignSolutions !ctx pred s0 hopsVarId =
       Just s1 -> extractFfiAndBacktrack ctx pred s1 hopsVarId
 
 -- | Extract the hops value from an FFI result state, then backtrack for more.
+-- FFIStreamRetry choice points bind the next result directly on backtrack,
+-- so no run ctx is needed between results.
 extractFfiAndBacktrack :: WamContext -> String -> WamState -> Int -> [Double]
 extractFfiAndBacktrack !ctx pred s1 hopsVarId =
     let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
-          Just v -> extractDouble (derefVar (wsBindings s1) v)
+          Just v -> extractDouble (wcInternTable ctx) (derefVar (wsBindings s1) v)
           Nothing -> Nothing
         hops = fromMaybe 0 hopsVal
         rest = case backtrack s1 of
