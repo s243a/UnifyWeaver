@@ -410,16 +410,16 @@ emit_one_call_arg(reg(RegN), InputRegs) :-
 emit_one_call_arg(derived(length, RegN), InputRegs) :-
     member(input(RegN, _Type), InputRegs),
     reg_var_name(RegN, VarName),
-    format('(length [v | Atom v <- ~wL])', [VarName]).
+    format('(length [v | Atom v <- ~wL])', [VarName]).  % v is Int, just counting elements
 
 %% emit_reg_extraction(+VarName, +Type)
 %  Emit the extraction expression for a kernel call argument. Atoms and
 %  atom lists are interned via wcAtomIntern so the kernel operates on
 %  Int IDs instead of Strings (eliminates hashing in the hot loop).
 emit_reg_extraction(VarName, atom) :-
-    format('(fromMaybe (-1) (Map.lookup ~wS (itForward (wcInternTable ctx))))', [VarName]).
+    format('~wI', [VarName]).
 emit_reg_extraction(VarName, vlist_atoms) :-
-    format('[fromMaybe (-1) (Map.lookup v (itForward (wcInternTable ctx))) | Atom v <- ~wL]', [VarName]).
+    format('[v | Atom v <- ~wL]', [VarName]).
 emit_reg_extraction(VarName, integer) :-
     format('~wI', [VarName]).
 
@@ -466,7 +466,7 @@ emit_pattern_tuple([input(RegN, Type)|Rest], Pos) :-
     emit_pattern_tuple(Rest, rest).
 
 type_pattern(atom, VarName, Pattern) :-
-    format(atom(Pattern), 'Atom ~wS', [VarName]).
+    format(atom(Pattern), 'Atom ~wI', [VarName]).
 type_pattern(integer, VarName, Pattern) :-
     format(atom(Pattern), 'Integer ~wI', [VarName]).
 type_pattern(vlist_atoms, VarName, Pattern) :-
