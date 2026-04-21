@@ -162,6 +162,79 @@ materialization.
 - Existing benchmarks continue to work. The strict IntMap path is
   wrapped in the FactSource interface but behaves identically.
 
+## Connection to purity, order-independence, and parallelism
+
+Fact access design does not exist in isolation. It connects to three
+other concerns that form a feedback loop:
+
+**Purity and order-independence** (see `PURITY_CERTIFICATE_SPECIFICATION.md`):
+When the purity certificate declares goals as `pure` and
+`order_independent`, the engine gains freedom to reorder them. Goal
+reordering directly affects which fact predicates are accessed first,
+how selective each access is, and therefore which materialization
+strategy is optimal. A predicate probed 1000 times benefits from an
+indexed layout; one scanned once benefits from streaming. The ordering
+determines the access pattern, which determines the layout.
+
+The Rust WAM target has taken purity and order-independence analysis
+further than C#, providing more reordering freedom and thus more
+materialization options for its planner.
+
+**Parallelism constrains data structures**: The `parMap rdeepseq`
+model requires all shared state to be immutable. This constrains which
+fact sources are parallelism-safe:
+
+| Source type | Parallelism-safe? | Why |
+|---|---|---|
+| Strict IntMap | Yes | Immutable, no locks needed |
+| Lazy Haskell list | Yes (once forced) | Immutable after evaluation |
+| Memory-mapped file | Yes | OS handles page sharing |
+| SQLite (default) | No | Single-writer lock; readers block writers |
+| SQLite (WAL mode) | Partial | Concurrent reads OK, single writer |
+| Mutable IORef | No | Race conditions without MVar/STM |
+
+For sources that are not parallelism-safe (like SQLite in default
+mode), the engine must either:
+
+1. **Read once, then split.** Load the needed facts into an immutable
+   structure before the parallel section, then share it. This is what
+   the current eager IntMap approach does — it works, but forces full
+   materialization.
+2. **Per-worker connections.** Each spark gets its own database handle.
+   Works for read-only workloads but multiplies connection overhead.
+3. **Stream and partition.** Read the source sequentially, partition
+   rows by seed/worker, pass each partition to its spark. The source
+   is accessed once; parallelism operates on the partitioned data.
+
+The Elixir target's recent SQLite data source (via external_source)
+would face this exact constraint under parallelism. The fact that
+SQLite isn't good at multi-process access means the materialization
+planner must account for concurrency when choosing a layout — not just
+access pattern and scale.
+
+**The feedback loop:**
+
+```
+purity analysis → goal reordering freedom
+                        ↓
+              materialization planner
+              (which predicates to index, stream, or precompute)
+                        ↓
+              data structure selection
+              (IntMap, lazy list, mmap, database)
+                        ↓
+              parallelism constraints
+              (immutable? lockable? per-worker?)
+                        ↓
+              back to materialization
+              (must materialize before parallel section
+               if source isn't parallelism-safe)
+```
+
+This loop means the fact access design must leave room for the
+materialization planner to make informed choices — not commit eagerly
+to a single strategy at code generation time.
+
 ## Non-goals
 
 - Join planning or cost-based layout selection. The default policy is
