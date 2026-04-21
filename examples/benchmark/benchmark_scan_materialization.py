@@ -15,7 +15,8 @@ relation sources inside a temporary C# project:
 - `aggregate`: grouped count aggregate over a scanned relation
 
 It is intended as a focused validation tool for the scan materialization
-planner rather than a cross-target benchmark.
+planner rather than a cross-target benchmark. It can also exercise a simple
+source-mode planner via `--source-modes auto,...`.
 """
 
 from __future__ import annotations
@@ -306,6 +307,7 @@ class BenchResult:
     scale: str
     mode: str
     source_mode: str
+    resolved_source_mode: str
     strategy: str
     times: list[float]
     stderr: str
@@ -374,15 +376,46 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     return metrics.get("scan_planner_strategies", "") or operator
 
 
-def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, strategy: str, repetitions: int) -> BenchResult:
+def choose_auto_source_mode(scale: str, mode: str, available_source_modes: list[str]) -> str:
+    scale_value = scale_sort_key(scale)[0]
+    requested = set(available_source_modes)
+
+    if mode in {"bound_scan", "selective_join"}:
+        preference = ["artifact-prebuilt", "artifact", "preload", "delimited"]
+    elif mode == "join":
+        if scale_value <= 1_000:
+            preference = ["artifact-prebuilt", "artifact", "preload", "delimited"]
+        else:
+            preference = ["artifact", "artifact-prebuilt", "preload", "delimited"]
+    else:
+        preference = ["preload", "artifact-prebuilt", "artifact", "delimited"]
+
+    for candidate in preference:
+        if candidate in requested:
+            return candidate
+
+    return available_source_modes[0] if available_source_modes else "preload"
+
+
+def benchmark_mode(
+    command: list[str],
+    scale: str,
+    mode: str,
+    source_mode: str,
+    strategy: str,
+    repetitions: int,
+    available_source_modes: list[str],
+) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
     article_path = scale_dir / "article_category.tsv"
     env = os.environ.copy()
     env["UNIFYWEAVER_BENCH_TRACE"] = "1"
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
-    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
-    if source_mode == "artifact-prebuilt":
+    candidate_source_modes = [mode_name for mode_name in available_source_modes if mode_name != "auto"]
+    resolved_source_mode = choose_auto_source_mode(scale, mode, candidate_source_modes) if source_mode == "auto" else source_mode
+    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = resolved_source_mode
+    if resolved_source_mode == "artifact-prebuilt":
         artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
@@ -399,7 +432,15 @@ def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, 
         elapsed = float(elapsed_ms) / 1000.0 if elapsed_ms is not None else 0.0
         times.append(elapsed)
 
-    return BenchResult(scale=scale, mode=mode, source_mode=source_mode, strategy=strategy, times=times, stderr=stderr)
+    return BenchResult(
+        scale=scale,
+        mode=mode,
+        source_mode=source_mode,
+        resolved_source_mode=resolved_source_mode,
+        strategy=strategy,
+        times=times,
+        stderr=stderr,
+    )
 
 
 def main() -> int:
@@ -423,18 +464,21 @@ def main() -> int:
             for mode in modes:
                 for source_mode in source_modes:
                     for strategy in strategies:
-                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
+                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions, source_modes))
 
-        print("scale	mode	source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
+        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
         grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
+        by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
         for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
             grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
+            if result.strategy == "auto":
+                by_source_mode[(result.scale, result.mode, result.source_mode)] = result
             metrics = parse_metrics(result.stderr)
             planner = select_planner_summary(metrics)
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
-                f"{result.scale}	{result.mode}	{result.source_mode}	{result.strategy}	{result.median:.3f}	"
+                f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
                 f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{phases}"
             )
 
@@ -449,6 +493,27 @@ def main() -> int:
                 auto_metrics = parse_metrics(auto.stderr)
                 auto_planner = select_planner_summary(auto_metrics)
                 print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
+
+        if "auto" in source_modes:
+            for scale in scales:
+                for mode in modes:
+                    auto = by_source_mode.get((scale, mode, "auto"))
+                    if auto is None:
+                        continue
+
+                    concrete = [
+                        result
+                        for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                        if result_scale == scale and result_mode == mode and result_source_mode != "auto"
+                    ]
+                    if not concrete:
+                        continue
+
+                    best = min(concrete, key=lambda item: item.median)
+                    ratio = auto.median / best.median if best.median else float("inf")
+                    print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
+                    print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
+                    print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
