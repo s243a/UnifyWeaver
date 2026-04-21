@@ -16,15 +16,14 @@ typedef enum {
     VAL_ATOM, VAL_INT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
 } WamValueTag;
 
-/* Tagged union value */
 typedef struct {
     WamValueTag tag;
     union {
-        char *atom;
+        const char *atom;
         int integer;
         int ref_addr;
-        char *str_functor;
-        char *unbound_name;
+        const char *str_functor;
+        const char *unbound_name;
     } data;
 } WamValue;
 
@@ -144,7 +143,7 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
     state->TR_array[state->TR].old_val = *cell;
     state->TR++;
 }
-static inline void push_choice_point(WamState *state, int next_pc) {
+static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
         state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
         state->B_array = realloc(state->B_array, sizeof(ChoicePoint) * state->B_cap);
@@ -155,9 +154,26 @@ static inline void push_choice_point(WamState *state, int next_pc) {
     cp->heap_size = state->H;
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
-    memcpy(cp->a_regs, state->A, sizeof(WamValue) * 32);
+    
+    int save_arity = arity < 32 ? arity : 32;
+    memcpy(cp->a_regs, state->A, sizeof(WamValue) * save_arity);
     state->B++;
     state->HB = state->H;
+}
+static inline void unwind_trail(WamState *state, int target_tr) {
+    while (state->TR > target_tr) {
+        state->TR--;
+        TrailEntry *te = &state->TR_array[state->TR];
+        *te->cell = te->old_val;
+    }
+}
+static inline void restore_choice_point(WamState *state, ChoicePoint *cp, int arity) {
+    state->H = cp->heap_size;
+    state->E = cp->stack_size;
+    unwind_trail(state, cp->trail_size);
+    
+    int restore_arity = arity < 32 ? arity : 32;
+    memcpy(state->A, cp->a_regs, sizeof(WamValue) * restore_arity);
 }
 static inline void pop_choice_point(WamState *state) {
     if (state->B > 0) {

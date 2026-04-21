@@ -290,17 +290,22 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_TRY_ME_ELSE: {
                 int target = resolve_label(state, instr->label);
-                push_choice_point(state, target);
+                // TODO: extract actual arity from context; defaulting to 32
+                push_choice_point(state, target, 32);
                 state->P++;
                 return true;
             }
             case INSTR_RETRY_ME_ELSE: {
                 int target = resolve_label(state, instr->label);
-                update_choice_point(state, target);
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                cp->next_pc = target;
+                restore_choice_point(state, cp, 32);
                 state->P++;
                 return true;
             }
             case INSTR_TRUST_ME: {
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                restore_choice_point(state, cp, 32);
                 pop_choice_point(state);
                 state->P++;
                 return true;
