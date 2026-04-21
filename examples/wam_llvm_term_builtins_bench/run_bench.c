@@ -31,6 +31,8 @@ extern int run_bench_copy_nested(void);
 extern int run_bench_sum_small(void);
 extern int run_bench_sum_medium(void);
 extern int run_bench_sum_big(void);
+extern int run_bench_term_depth(void);
+extern int run_bench_fib10(void);
 
 typedef struct {
     const char *name;
@@ -49,6 +51,8 @@ static bench_t BENCHES[] = {
     {"bench_sum_small",    run_bench_sum_small},
     {"bench_sum_medium",   run_bench_sum_medium},
     {"bench_sum_big",      run_bench_sum_big},
+    {"bench_term_depth",   run_bench_term_depth},
+    {"bench_fib10",        run_bench_fib10},
 };
 #define N_BENCHES (sizeof(BENCHES) / sizeof(BENCHES[0]))
 

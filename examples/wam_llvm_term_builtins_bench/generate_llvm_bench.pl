@@ -26,11 +26,10 @@
 :- initialization(main, main).
 
 main :-
-    % Re-enabled 3 multi-pred workloads (bench_sum_small/medium/big)
-    % after the cross-pred label resolution fix landed. bench_term_depth
-    % and bench_fib10 still excluded — they use if-then-else which the
-    % shared WAM emitter lowers to cut_ite / jump, and those WAM
-    % instructions still have no lowering in wam_line_to_llvm_literal.
+    % Full 13-workload bench parity with the WAT suite — cut_ite/jump
+    % and univ (=../2) landed in this branch, enabling bench_term_depth,
+    % bench_fib10, and bench_univ_decomp. bench_copy_flat/nested remain
+    % FAIL pending copy_term/2.
     Predicates = [
         bench_suite:bench_true/0,
         bench_suite:bench_is_arith/0,
@@ -43,8 +42,13 @@ main :-
         bench_suite:bench_sum_small/0,
         bench_suite:bench_sum_medium/0,
         bench_suite:bench_sum_big/0,
+        bench_suite:bench_term_depth/0,
+        bench_suite:bench_fib10/0,
         bench_term_walk:sum_ints/3,
-        bench_term_walk:sum_ints_args/5
+        bench_term_walk:sum_ints_args/5,
+        bench_suite:term_depth/2,
+        bench_suite:term_depth_args/5,
+        bench_suite:fib/3
     ],
     LLPath = 'examples/wam_llvm_term_builtins_bench/bench_suite.ll',
     write_wam_llvm_project(
