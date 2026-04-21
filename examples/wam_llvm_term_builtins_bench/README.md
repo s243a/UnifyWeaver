@@ -21,14 +21,14 @@ are out of scope here and tracked below.
 | `bench_unify`        | OK     | `X = foo(a,b,c), X = foo(a,b,c)`              |
 | `bench_functor_read` | OK     | `functor/3` read mode                         |
 | `bench_arg_read`     | OK     | `arg/3`                                       |
-| `bench_univ_decomp`  | FAIL   | `=../2` — needs a list representation         |
+| `bench_univ_decomp`  | OK     | `=../2` — cons-cell list; this PR             |
 | `bench_copy_flat`    | FAIL   | `copy_term/2` — needs term-walking allocator  |
 | `bench_copy_nested`  | FAIL   | `copy_term/2` — same                          |
-| `bench_sum_small`    | OK     | cross-pred: merged-labels fix                 |
-| `bench_sum_medium`   | OK     | cross-pred: merged-labels fix                 |
-| `bench_sum_big`      | OK     | cross-pred: merged-labels fix                 |
-| `bench_term_depth`   | —      | excluded: if-then-else lowering gap           |
-| `bench_fib10`        | —      | excluded: if-then-else lowering gap           |
+| `bench_sum_small`    | OK     | cross-pred (merged-labels)                    |
+| `bench_sum_medium`   | OK     | cross-pred (merged-labels)                    |
+| `bench_sum_big`      | OK     | cross-pred (merged-labels)                    |
+| `bench_term_depth`   | FAIL   | needs separate ITE-interaction fix (below)    |
+| `bench_fib10`        | OK     | cut_ite/jump (this PR)                        |
 
 The FAIL rows still produce ns/call timings (the bench harness just records
 the returned `0`). Those numbers are still meaningful as dispatch-cost
@@ -82,21 +82,20 @@ Each `@<pred>()` entry function points at the shared globals and calls
 build their own driver VM, a `@<pred>_start_pc` constant is also
 emitted so the driver can seed the PC.
 
-### 2. Unhandled `cut_ite` / `jump` in LLVM IR emission
+### 2. Unhandled `cut_ite` / `jump` in LLVM IR emission (fixed)
 
-`wam_line_to_llvm_literal/2` has no clause for `cut_ite` or `jump
+`wam_line_to_llvm_literal/2` had no clause for `cut_ite` or `jump
 L_<label>` — the shared `wam_target` emits these for if-then-else.
-They fall through to a `; TODO:` comment, which counts toward the
-`[N x %Instruction]` array size computed by `length(ResolvedLiterals, _)`
-but produces a blank literal. llc rejects the module with
-`got type [N-k x %Instruction] but expected [N x %Instruction]`.
+They used to fall through to a `; TODO:` comment, which counted toward
+the `[N x %Instruction]` array size but produced a blank literal. llc
+rejected the module with a size mismatch.
 
-Even if the size were correct, the semantics would be wrong — without
-real instruction translations, if-then-else would not dispatch correctly.
-
-Fix: add `wam_line_to_llvm_literal` clauses for `cut_ite` and
-`jump` that emit proper LLVM instruction literals, analogous to what
-`wam_wat_target.pl` emits.
+**Fixed in this PR's branch.** New instruction tags 31 (`cut_ite`) and
+32 (`jump`) with proper LLVM case bodies: `cut_ite` decrements
+`cp_count` by 1 (soft cut, preserving outer CPs); `jump` calls
+`wam_label_pc` and sets PC. Enables `bench_fib10` (previously excluded).
+`bench_term_depth` no longer errors at llc time but still returns 0 —
+separate bug below.
 
 ### 3. WASM-variant state-struct mismatch
 
@@ -145,20 +144,29 @@ The FAIL rows come from the same underlying gap: WAM-LLVM's
 comparisons, type checks, `=/2`. Anything else hit the `unknown:` label
 and returned `ret i1 false` unconditionally.
 
-| Workload             | Builtin the bench uses   | LLVM status          |
-|----------------------|--------------------------|----------------------|
-| `bench_functor_read` | `functor/3`              | implemented in this PR (opcode 26; read mode only) |
-| `bench_arg_read`     | `arg/3`                  | implemented in this PR (opcode 27) |
-| `bench_univ_decomp`  | `=../2`                  | still missing — requires list repr |
-| `bench_copy_flat`    | `copy_term/2`            | still missing — requires term-walking allocator |
-| `bench_copy_nested`  | `copy_term/2`            | same                 |
+| Workload             | Builtin the bench uses   | LLVM status                                    |
+|----------------------|--------------------------|------------------------------------------------|
+| `bench_functor_read` | `functor/3`              | implemented (opcode 26; read mode only)        |
+| `bench_arg_read`     | `arg/3`                  | implemented (opcode 27)                        |
+| `bench_univ_decomp`  | `=../2`                  | implemented (opcode 28; decompose only)        |
+| `bench_copy_flat`    | `copy_term/2`            | still missing — term-walking allocator needed  |
+| `bench_copy_nested`  | `copy_term/2`            | same                                           |
 
-The WAT target has all four — `$builtin_functor`, `$builtin_arg`,
-`$builtin_univ`, `$builtin_copy_term` in `wam_wat_target.pl`. Adding
-`functor/3` and `arg/3` to LLVM was mechanical; the remaining two are
-larger because they touch runtime data structures that aren't fully
-worked out on the LLVM side yet (cons-cell list layout; term-walking
-allocator that interacts with the arena's `wam_cleanup` rewind).
+### `bench_term_depth` FAIL — separate ITE + register-aliasing issue
+
+With cut_ite/jump in place, `term_depth/2` compiles cleanly through
+llc but the runtime returns 0. Probably `put_variable Xn, Ai` in the
+LLVM target doesn't create a SHARED heap cell between Xn and Ai —
+it puts two independent `Unbound` Value structs in the two register
+slots. When a cross-pred `call` binds Ai to the callee's result, Xn
+remains unbound, so subsequent reads (e.g. the `>/2` guard in
+`term_depth_args`'s ITE) compare against an unbound payload.
+
+`bench_fib10` exercises the same shape but passes — its wrapper only
+checks whether `@run_loop` returned `i1 true`, not the computed result.
+`bench_term_depth`'s WAM path probably fails a guard that a correct
+impl would pass, causing `run_loop → false`. Separate follow-up;
+orthogonal to this PR's scope.
 
 ### `put_constant` tag fix (landed in this PR)
 

@@ -1178,6 +1178,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
+    % Pre-register functor globals referenced directly by runtime
+    % helpers (e.g. =../2 needs the cons-cell functor "." and the
+    % empty-list atom "[]").
+    assert(functor_string_global(".", 2)),
+    assert(functor_string_global("[]", 3)),
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
 
     % Emit functor string globals collected during WAM compilation.
@@ -1788,6 +1793,8 @@ entry:
     i32 28, label %begin_aggregate
     i32 29, label %end_aggregate
     i32 30, label %call_foreign
+    i32 31, label %cut_ite
+    i32 32, label %jump
   ]
 
 ~w
@@ -2494,6 +2501,43 @@ cf.success:
 cf.fail:
   ret i1 false').
 
+% --- If-then-else control flow ---
+
+wam_llvm_case('cut_ite',
+'  ; Soft cut: pop only the most recent choice point (the ITE guard CP),
+  ; preserving any outer CPs. Unlike !/0 which zeros cp_count, cut_ite
+  ; decrements by 1 iff cp_count > 0.
+  %ci.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %ci.cpn = load i32, i32* %ci.cpn_ptr
+  %ci.has_cp = icmp sgt i32 %ci.cpn, 0
+  br i1 %ci.has_cp, label %ci.pop, label %ci.advance
+
+ci.pop:
+  %ci.new_cpn = sub i32 %ci.cpn, 1
+  store i32 %ci.new_cpn, i32* %ci.cpn_ptr
+  br label %ci.advance
+
+ci.advance:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
+wam_llvm_case('jump',
+'  ; Unconditional jump: set PC to op1 (label-resolved absolute PC in
+  ; @module_labels). Used after the then-branch of if-then-else to
+  ; skip over the else-branch.
+  ; op1 itself is a label index — dereference via wam_label_pc.
+  %j.label = trunc i64 %op1 to i32
+  %j.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %j.label)
+  %j.valid = icmp sge i32 %j.target_pc, 0
+  br i1 %j.valid, label %j.go, label %j.fail
+
+j.go:
+  call void @wam_set_pc(%WamState* %vm, i32 %j.target_pc)
+  ret i1 true
+
+j.fail:
+  ret i1 false').
+
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
 % ============================================================================
@@ -2653,6 +2697,7 @@ entry:
     i32 25, label %builtin_not_unify
     i32 26, label %builtin_functor
     i32 27, label %builtin_arg
+    i32 28, label %builtin_univ
   ]
 
 builtin_is:
@@ -3064,6 +3109,137 @@ ag.a3_check:
 ag.fail:
   ret i1 false
 
+builtin_univ:
+  ; =../2 — decompose mode only (A1 bound).
+  ;   A1 = Term, A2 = List (typically unbound).
+  ;   If A1 is an atomic (tag 0/1/2): L = [A1]  — one cons cell.
+  ;   If A1 is a Compound (tag 3):    L = [functor_atom | args_as_values]
+  ;                                     — (arity+1) cons cells.
+  ;   Otherwise: fail. Compose mode (A1 unbound, A2 = list) is a
+  ;   follow-up — most benchmarks only exercise decompose.
+  ;
+  ; List repr: Prolog canonical cons cells as %Compound { ".", 2,
+  ; [head, tail] }. Empty list = Atom value for "[]". Each cons lives
+  ; in the arena (same allocator as put_structure) so @wam_cleanup
+  ; reclaims them on backtrack/return.
+  %u.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %u.a1_tag = call i32 @value_tag(%Value %u.a1)
+  switch i32 %u.a1_tag, label %u.fail [
+    i32 0, label %u.setup_atomic
+    i32 1, label %u.setup_atomic
+    i32 2, label %u.setup_atomic
+    i32 3, label %u.setup_compound
+  ]
+
+u.setup_atomic:
+  ; Single-element list: N=1. args-pointer and fn_val are unused on
+  ; this path; we still feed placeholders through the merge phi
+  ; because SSA requires every value used downstream to dominate the
+  ; use site.
+  br label %u.loop_init
+
+u.setup_compound:
+  ; Unpack Compound: element[0] = Atom(functor_ptr), element[i>=1] = args[i-1].
+  %u.cp_bits = call i64 @value_payload(%Value %u.a1)
+  %u.cp_ptr = inttoptr i64 %u.cp_bits to %Compound*
+  %u.ar_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 1
+  %u.arity = load i32, i32* %u.ar_slot
+  %u.args_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 2
+  %u.args_c = load %Value*, %Value** %u.args_slot
+  %u.fn_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 0
+  %u.fn_ptr = load i8*, i8** %u.fn_slot
+  %u.fn_val_c = call %Value @value_atom(i8* %u.fn_ptr)
+  br label %u.loop_init
+
+u.loop_init:
+  ; i counts DOWN from start_i to 0 inclusive, building cons cells
+  ; from the TAIL inward (last element first, innermost cons last).
+  ; start_i = 0 for atomic (one cell), = arity for compound ((arity+1)
+  ; cells). is_atomic picks element source in the loop body.
+  ; args and fn_val get merged through even though the atomic path
+  ; never reads them — SSA-dominance requirement.
+  %u.start_i = phi i32 [ 0, %u.setup_atomic ], [ %u.arity, %u.setup_compound ]
+  %u.is_atomic = phi i1 [ true, %u.setup_atomic ], [ false, %u.setup_compound ]
+  %u.args = phi %Value* [ null, %u.setup_atomic ], [ %u.args_c, %u.setup_compound ]
+  %u.fn_val = phi %Value [ zeroinitializer, %u.setup_atomic ], [ %u.fn_val_c, %u.setup_compound ]
+  call void @wam_arena_ensure()
+  %u.empty = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  br label %u.loop_body
+
+u.loop_body:
+  %u.i = phi i32 [ %u.start_i, %u.loop_init ], [ %u.i_next, %u.loop_continue ]
+  %u.tail = phi %Value [ %u.empty, %u.loop_init ], [ %u.cons_val, %u.loop_continue ]
+  ; Pick element[i]:
+  ;   atomic path: always A1 (i is guaranteed 0 here)
+  ;   compound path: i == 0 → functor atom; i >= 1 → args[i-1]
+  br i1 %u.is_atomic, label %u.elt_atomic, label %u.elt_compound_check
+
+u.elt_atomic:
+  br label %u.build_cons
+
+u.elt_compound_check:
+  %u.is_functor = icmp eq i32 %u.i, 0
+  br i1 %u.is_functor, label %u.elt_functor, label %u.elt_arg
+
+u.elt_functor:
+  br label %u.build_cons
+
+u.elt_arg:
+  %u.arg_idx = sub i32 %u.i, 1
+  %u.arg_ptr = getelementptr %Value, %Value* %u.args, i32 %u.arg_idx
+  %u.arg_val = load %Value, %Value* %u.arg_ptr
+  br label %u.build_cons
+
+u.build_cons:
+  %u.elt = phi %Value
+    [ %u.a1,      %u.elt_atomic ],
+    [ %u.fn_val,  %u.elt_functor ],
+    [ %u.arg_val, %u.elt_arg ]
+  ; Allocate %Compound + 2-element args array from the arena.
+  %u.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %u.cons_mem = call i8* @wam_arena_alloc(i64 %u.cp_size)
+  %u.cons = bitcast i8* %u.cons_mem to %Compound*
+  %u.cons_fn = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 0
+  store i8* getelementptr ([2 x i8], [2 x i8]* @.fn__2E, i32 0, i32 0), i8** %u.cons_fn
+  %u.cons_ar = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 1
+  store i32 2, i32* %u.cons_ar
+  %u.cargs_mem = call i8* @wam_arena_alloc(i64 32)
+  %u.cargs = bitcast i8* %u.cargs_mem to %Value*
+  %u.cons_args_slot = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 2
+  store %Value* %u.cargs, %Value** %u.cons_args_slot
+  %u.ca0 = getelementptr %Value, %Value* %u.cargs, i32 0
+  store %Value %u.elt, %Value* %u.ca0
+  %u.ca1 = getelementptr %Value, %Value* %u.cargs, i32 1
+  store %Value %u.tail, %Value* %u.ca1
+  ; Wrap cons pointer as a Compound Value.
+  %u.cons_i64 = ptrtoint %Compound* %u.cons to i64
+  %u.cons_val0 = insertvalue %Value undef, i32 3, 0
+  %u.cons_val = insertvalue %Value %u.cons_val0, i64 %u.cons_i64, 1
+  %u.done = icmp eq i32 %u.i, 0
+  br i1 %u.done, label %u.bind_a2, label %u.loop_continue
+
+u.loop_continue:
+  %u.i_next = sub i32 %u.i, 1
+  br label %u.loop_body
+
+u.bind_a2:
+  %u.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.a2_unb = call i1 @value_is_unbound(%Value %u.a2)
+  br i1 %u.a2_unb, label %u.a2_bind, label %u.a2_check
+
+u.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %u.cons_val)
+  ret i1 true
+
+u.a2_check:
+  ; A2 already bound — limited support: accept iff structural-equal.
+  %u.a2_eq = call i1 @value_equals(%Value %u.a2, %Value %u.cons_val)
+  ret i1 %u.a2_eq
+
+u.fail:
+  ret i1 false
+
 unknown:
   ret i1 false
 }'.
@@ -3449,6 +3625,7 @@ builtin_op_to_id('=/2', 24).
 builtin_op_to_id('\\=/2', 25).
 builtin_op_to_id('functor/3', 26).
 builtin_op_to_id('arg/3', 27).
+builtin_op_to_id('=../2', 28).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -3741,6 +3918,10 @@ wam_line_to_llvm_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
     format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 }', [LabelIdx]).
+wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
+    clean_comma(L, CL),
+    lookup_label_index(CL, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
 % switch_on_constant: defer until compile_wam_predicate_to_llvm can
 % allocate a switch table global. Returns a switch_deferred(_) term.
 wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
@@ -3989,6 +4170,16 @@ wam_line_to_llvm_literal(["switch_on_structure"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
     '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
+
+wam_line_to_llvm_literal(["cut_ite"],
+    '%Instruction { i32 31, i64 0, i64 0 }').
+
+% jump without a label map errors — label-referencing. Text parser that
+% produces label-free literals is only used for the non-resolved path
+% (unit-test fixtures). Throw so the bug is loud.
+wam_line_to_llvm_literal(["jump", _], _) :-
+    throw(error(label_resolution_required(jump, "provide a LabelMap"),
+                _)).
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),
