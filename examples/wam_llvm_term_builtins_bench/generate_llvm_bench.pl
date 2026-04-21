@@ -26,28 +26,11 @@
 :- initialization(main, main).
 
 main :-
-    % Phase 0 scope: 8 single-predicate workloads.
-    %
-    % The 5 multi-predicate workloads (bench_sum_small/medium/big,
-    % bench_term_depth, bench_fib10) hit pre-existing WAM-LLVM gaps
-    % that are out of scope here and tracked in README.md:
-    %
-    %   1. Cross-predicate call: labels like "sum_ints/3" resolve
-    %      against each predicate's LOCAL label table, defaulting to
-    %      index 0 on miss — silent wrong answer. Same bug WAT had
-    %      before PR #1476's project-level label merge.
-    %
-    %   2. Unhandled WAM instructions: term_depth and fib use
-    %      if-then-else which the shared WAM emitter lowers to
-    %      cut_ite / jump. wam_line_to_llvm_literal has no clause
-    %      for those — they fall through to a `; TODO:` comment,
-    %      which counts toward the instruction array size in
-    %      compile_wam_predicate_to_llvm but produces an empty
-    %      entry, so llc rejects the module with a size mismatch.
-    %
-    % These are separate, already-in-the-backlog issues. Excluding
-    % those workloads unblocks Phase 0 without pretending the gaps
-    % don't exist.
+    % Re-enabled 3 multi-pred workloads (bench_sum_small/medium/big)
+    % after the cross-pred label resolution fix landed. bench_term_depth
+    % and bench_fib10 still excluded — they use if-then-else which the
+    % shared WAM emitter lowers to cut_ite / jump, and those WAM
+    % instructions still have no lowering in wam_line_to_llvm_literal.
     Predicates = [
         bench_suite:bench_true/0,
         bench_suite:bench_is_arith/0,
@@ -56,7 +39,12 @@ main :-
         bench_suite:bench_arg_read/0,
         bench_suite:bench_univ_decomp/0,
         bench_suite:bench_copy_flat/0,
-        bench_suite:bench_copy_nested/0
+        bench_suite:bench_copy_nested/0,
+        bench_suite:bench_sum_small/0,
+        bench_suite:bench_sum_medium/0,
+        bench_suite:bench_sum_big/0,
+        bench_term_walk:sum_ints/3,
+        bench_term_walk:sum_ints_args/5
     ],
     LLPath = 'examples/wam_llvm_term_builtins_bench/bench_suite.ll',
     write_wam_llvm_project(

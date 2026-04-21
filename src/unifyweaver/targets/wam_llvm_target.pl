@@ -1443,45 +1443,269 @@ read_template_file(Path, Content) :-
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
-%  Collects all predicate code into lists, then joins once (O(n) concatenation).
+%
+%  Two-pass project-level compilation for WAM-fallback predicates:
+%
+%    Pass 1 (pass1_classify_predicates/4): classify each predicate as
+%      native / foreign-kernel / wam-fallback / failed. For wam-fallback
+%      and foreign-kernel preds, parse WAM to raw instruction parts +
+%      local labels and accumulate each predicate's cumulative start PC
+%      in a merged instruction array.
+%
+%    Label merge (build_merged_labels/2): shift every local label by
+%      its predicate's StartPC and union into a project-wide
+%      LabelName-AbsolutePC list. The entry label (e.g. 'sum_ints/3')
+%      lives at StartPC so cross-predicate `call sum_ints/3` resolves.
+%
+%    Pass 2 (pass2_emit_merged/5): re-encode every wam/foreign
+%      predicate's instructions against the merged LabelMap, emit ONE
+%      @module_code array + ONE @module_labels array, and per-predicate
+%      entry functions that share those globals but set their own start
+%      PC before calling @run_loop.
+%
+%  Prior to this, each wam-compiled predicate had its own @<pred>_code
+%  and @<pred>_labels arrays. An `execute sum_ints_args/5` inside
+%  sum_ints/3 looked up the label in sum_ints/3's local map, didn't
+%  find it, defaulted to index 0, and at runtime jumped to sum_ints/3's
+%  own first instruction — silent self-recursion. Same class of bug
+%  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    compile_predicates_collect(Predicates, Options, NativeParts, WamParts),
+    pass1_classify_predicates(Predicates, Options, 0, Classified),
+    build_merged_labels(Classified, NamePCPairs, LabelMap),
+    pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
+                      NativeParts, WamParts),
     atomic_list_concat(NativeParts, '\n\n', NativeCode),
     atomic_list_concat(WamParts, '\n\n', WamCode).
 
-compile_predicates_collect([], _, [], []).
-compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts) :-
+%% pass1_classify_predicates(+Preds, +Options, +StartPC, -Classified)
+%
+%  Classified is a list of records (in input order):
+%    native(PredIndicator, Arity, PredCode)
+%       — native-lowered; emit PredCode as-is.
+%    wam(PredIndicator, Arity, RawInstrs, LocalLabels, StartPC, NumInstrs)
+%       — wam-fallback or foreign-kernel; goes into merged code.
+%    failed(PredIndicator, Arity)
+%       — both native + wam failed; emit a comment.
+%
+%  StartPC threads through wam/foreign records only; native/failed do
+%  not consume code slots.
+pass1_classify_predicates([], _, _, []).
+pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
+                          [Record | RestRecs]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    compile_predicates_collect(Rest, Options, RestNative, RestWam),
-    (   % M5.6: foreign kernel lowering — check spec table first.
-        lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
+    (   lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
     ->  format(user_error, '  ~w/~w: foreign kernel (~w)~n', [Pred, Arity, Kind]),
-        compile_foreign_kernel_predicate(Pred/Arity, Kind, Arity, Options, PredCode),
-        NativeParts = RestNative,
-        WamParts = [PredCode | RestWam]
-    ;   % Try native LLVM lowering
-        catch(
+        foreign_kernel_wam_text(Pred/Arity, Kind, Arity, Options, WamRaw),
+        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   catch(
             llvm_target:compile_predicate_to_llvm(Module:Pred/Arity, Options, PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        NativeParts = [PredCode | RestNative],
-        WamParts = RestWam
-    ;   % Fall back to WAM compilation
-        option(wam_fallback(WamFB), Options, true),
+        Record = native(PredIndicator, Arity, PredCode),
+        NextPC = StartPC
+    ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
-        compile_wam_predicate_to_llvm(Pred/Arity, WamRaw, Options, PredCode)
+        catch(
+            wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
+            _, fail)
     ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        NativeParts = RestNative,
-        WamParts = [PredCode | RestWam]
-    ;   % Neither worked
-        format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
-        NativeParts = RestNative,
-        format(atom(FailComment), '; ~w/~w: compilation failed', [Pred, Arity]),
-        WamParts = [FailComment | RestWam]
+        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
+        Record = failed(PredIndicator, Arity),
+        NextPC = StartPC
+    ),
+    pass1_classify_predicates(Rest, Options, NextPC, RestRecs).
+
+%% parse_wam_to_pass1(+Pred/Arity, +WamCode, +Arity, +StartPC,
+%%                    -wam(...), -NumInstrs)
+%  Shared between wam-fallback and foreign-kernel classifications.
+parse_wam_to_pass1(Pred/Arity, WamCode, ArityOut, StartPC,
+                   wam(Pred/Arity, ArityOut, RawInstrs, LocalLabels,
+                       StartPC, NumInstrs),
+                   NumInstrs) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_pass1(Lines, 0, RawInstrs, LocalLabels),
+    length(RawInstrs, NumInstrs).
+
+%% foreign_kernel_wam_text(+Pred/Arity, +Kind, +Arity, +Options, -WamCode)
+%  Produce the WAM text for a foreign kernel predicate.
+foreign_kernel_wam_text(Pred/Arity, Kind, _Arity, _Options, WamCode) :-
+    wam_llvm_foreign_kind_id(Kind, _KindId),
+    allocate_foreign_instance_id(Pred/Arity, Kind, InstanceId),
+    format(atom(WamCode), '~w/~w:\ncall_foreign ~w, ~w\nproceed',
+           [Pred, Arity, Kind, InstanceId]).
+
+%% build_merged_labels(+Classified, -NamePCPairs, -LabelMap)
+%  Shift each wam/foreign predicate's local labels by its StartPC and
+%  accumulate into NamePCPairs (LabelName-AbsolutePC, in predicate
+%  order). LabelMap is the derived LabelName-Index view used by the
+%  literal-resolution passes (index = physical slot in @module_labels).
+%  At runtime, @wam_label_pc reads @module_labels[Index] to get the PC.
+build_merged_labels(Classified, NamePCPairs, LabelMap) :-
+    build_merged_labels_entries(Classified, NamePCPairs),
+    build_label_index_map(NamePCPairs, LabelMap).
+
+build_merged_labels_entries([], []).
+build_merged_labels_entries([wam(_, _, _, LocalLabels, StartPC, _)|Rest],
+                            Entries) :- !,
+    shift_labels(LocalLabels, StartPC, Shifted),
+    build_merged_labels_entries(Rest, RestEntries),
+    append(Shifted, RestEntries, Entries).
+build_merged_labels_entries([_|Rest], Entries) :-
+    build_merged_labels_entries(Rest, Entries).
+
+shift_labels([], _, []).
+shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
+    GlobalPC is LocalPC + Shift,
+    shift_labels(Rest, Shift, RestShifted).
+
+%% pass2_emit_merged(+Classified, +GlobalLabels, +Options,
+%%                   -NativeParts, -WamParts)
+%  Emit:
+%    - native predicates verbatim (→ NativeParts)
+%    - one @module_code array + one @module_labels array covering all
+%      wam/foreign predicates
+%    - per-predicate entry functions that share those globals
+%    - resolved switch tables (one per switch instruction)
+%  All of these go into WamParts.
+pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
+                  NativeParts, WamParts) :-
+    partition_classified(Classified, NativeRecords, WamRecords, FailedRecords),
+    maplist([native(_,_,Code), Code]>>true, NativeRecords, NativeParts),
+    (   WamRecords == []
+    ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
+    ;   emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
+                                MergedCode, EntryFuncs, SwitchDefs)
+    ),
+    maplist([failed(PI,A), C]>>format(atom(C),
+               '; ~w/~w: compilation failed', [PI, A]),
+            FailedRecords, FailedComments),
+    WamParts0 = [SwitchDefs, MergedCode, EntryFuncs | FailedComments],
+    exclude(==(''), WamParts0, WamParts).
+
+partition_classified([], [], [], []).
+partition_classified([native(PI,A,C)|Rest], [native(PI,A,C)|RN], RW, RF) :- !,
+    partition_classified(Rest, RN, RW, RF).
+partition_classified([wam(P,A,I,L,S,N)|Rest], RN, [wam(P,A,I,L,S,N)|RW], RF) :- !,
+    partition_classified(Rest, RN, RW, RF).
+partition_classified([failed(PI,A)|Rest], RN, RW, [failed(PI,A)|RF]) :-
+    partition_classified(Rest, RN, RW, RF).
+
+%% emit_merged_wam_section(+WamRecords, +GlobalLabels, +Options,
+%%                         -CodeGlobal, -EntryFuncs, -SwitchDefs)
+%
+%  Re-encodes every wam/foreign predicate's raw instruction parts
+%  against GlobalLabels, collects all literals into one big list, and
+%  produces:
+%    - CodeGlobal: @module_code = [N x %Instruction] [ ... ] + @module_labels
+%    - EntryFuncs: one `define i1 @<pred>(...)` per predicate, each
+%      setting start PC to its own StartPC before calling @run_loop
+%    - SwitchDefs: all switch-table globals referenced by the merged
+%      code (names are predicate-qualified already, collisions avoided)
+emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
+                        CodeGlobal, EntryFuncs, SwitchDefs) :-
+    resolve_all_wam_records(WamRecords, LabelMap, AllLiterals,
+                            AllSwitchDefs),
+    length(AllLiterals, InstrCount),
+    length(NamePCPairs, LabelCount),
+    (   InstrCount =:= 0
+    ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
+    ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
+                AllLiterals, Entries),
+        atomic_list_concat(Entries, ',\n', EntriesStr),
+        ( NamePCPairs == []
+        -> LabelsStr = "  i32 0",
+           LabelArraySize = 1
+        ;  maplist([_-PC, E]>>format(atom(E), '  i32 ~w', [PC]),
+                   NamePCPairs, LabelRows),
+           atomic_list_concat(LabelRows, ',\n', LabelsStr),
+           LabelArraySize = LabelCount
+        ),
+        format(atom(CodeGlobal),
+'; === Merged WAM code and labels (project-level) ===
+@module_code = private constant [~w x %Instruction] [
+~w
+]
+
+@module_labels = private constant [~w x i32] [
+~w
+]',         [InstrCount, EntriesStr, LabelArraySize, LabelsStr]),
+        emit_all_entry_funcs(WamRecords, Options,
+                             InstrCount, LabelCount, LabelArraySize,
+                             EntryFuncs),
+        ( AllSwitchDefs == []
+        -> SwitchDefs = ''
+        ;  atomic_list_concat(AllSwitchDefs, '\n', SwitchDefs)
+        )
     ).
+
+%% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
+%%                         -AllSwitchDefs)
+%  Resolves each record's raw instructions against GlobalLabels and
+%  concatenates the literal lists in predicate order. Switch-table
+%  names are predicate-qualified so flattening doesn't collide.
+resolve_all_wam_records([], _, [], []).
+resolve_all_wam_records([wam(Pred/_Arity, _, RawInstrs, _, _, _)|Rest],
+                        GlobalLabels, AllLiterals, AllSwitchDefs) :-
+    atom_string(Pred, PredStr),
+    maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
+    resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
+    resolve_all_wam_records(Rest, GlobalLabels, RestLits, RestDefs),
+    append(ResolvedLits, RestLits, AllLiterals),
+    append(SwitchDefs, RestDefs, AllSwitchDefs).
+
+%% emit_all_entry_funcs(+WamRecords, +Options,
+%%                      +InstrCount, +LabelCount, +LabelArraySize,
+%%                      -EntryFuncs)
+%  One `define i1 @<pred>(...)` per wam/foreign predicate. All share
+%  @module_code and @module_labels, setting PC = StartPC before
+%  invoking the run loop.
+emit_all_entry_funcs(WamRecords, _Options, InstrCount, LabelCount,
+                     LabelArraySize, EntryFuncs) :-
+    maplist(emit_one_entry_func(InstrCount, LabelCount, LabelArraySize),
+            WamRecords, Funcs),
+    atomic_list_concat(Funcs, '\n\n', EntryFuncs).
+
+emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
+                    wam(Pred/Arity, _, _, _, StartPC, _),
+                    Func) :-
+    atom_string(Pred, PredStr),
+    build_llvm_arg_setup(Arity, ArgSetup),
+    build_llvm_param_list(Arity, ParamList),
+    % Per-predicate start-PC global. External drivers that build their
+    % own VM (bypassing the entry function) need to know where the
+    % predicate starts in @module_code. The name matches the pattern
+    % used by test tooling for regex extraction.
+    format(atom(Func),
+'; WAM-compiled predicate: ~w/~w (merged module code, start PC ~w)
+@~w_start_pc = private constant i32 ~w
+
+define i1 @~w(~w) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+    i32 ~w,
+    i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+    i32 ~w)
+  call void @wam_set_pc(%WamState* %vm, i32 ~w)
+~w
+  %result = call i1 @run_loop(%WamState* %vm)
+  ret i1 %result
+}',
+        [PredStr, Arity, StartPC,
+         PredStr, StartPC,
+         PredStr, ParamList,
+         InstrCount, InstrCount,
+         InstrCount,
+         LabelArraySize, LabelArraySize,
+         LabelCount,
+         StartPC,
+         ArgSetup]).
 
 %% compile_foreign_kernel_predicate(+PredArity, +Kind, +Arity, +Options, -PredCode).
 %

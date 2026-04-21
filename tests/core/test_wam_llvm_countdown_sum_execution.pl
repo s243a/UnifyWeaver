@@ -39,10 +39,10 @@ host_target_triple(Triple) :-
     ).
 
 extract_instr_count(Src, P, C) :-
-    format(atom(Pat), "@~w_code = private constant \\[(?<n>\\d+) x %Instruction\\]", [P]),
+    Pat = "@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
 extract_label_count(Src, P, C) :-
-    format(atom(Pat), "@~w_labels = private constant \\[(?<n>\\d+) x i32\\]", [P]),
+    Pat = "@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
 
 run_sum_case(Label, N, Expected) :-
@@ -70,9 +70,9 @@ entry:
   %a2_0 = insertvalue %Value undef, i32 6, 0
   %a2 = insertvalue %Value %a2_0, i64 0, 1
   %vm = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @my_sum_code, i32 0, i32 0),
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
-      i32* getelementptr ([~w x i32], [~w x i32]* @my_sum_labels, i32 0, i32 0),
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
       i32 0)
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
