@@ -31,7 +31,13 @@
     compile_wam_runtime_to_haskell/3,    % +Options, +DetectedKernels, -HaskellCode
     write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
     wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
-    wam_haskell_partition_predicates/5   % +Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList
+    wam_haskell_partition_predicates/5,  % +Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList
+    % Phase F1: fact predicate classification
+    classify_fact_predicate/4,           % +PredIndicator, +WamLines, +Options, -Info
+    haskell_fact_only/2,                 % +Segments, -Bool
+    haskell_first_arg_groundness/3,      % +Segments, +Arity, -Status
+    haskell_pick_layout/5,              % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
+    split_wam_into_segments/2            % +Lines, -Segments
 ]).
 
 :- use_module(library(lists)).
@@ -217,6 +223,197 @@ wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
     ;   PredIndicator = Pred/Arity
     ),
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+% ============================================================================
+% PHASE F1: FACT PREDICATE CLASSIFICATION
+% ============================================================================
+% Classifies each predicate as fact-only or rule-bearing and selects a
+% layout strategy (compiled, inline_data, external_source). Ports the
+% Elixir classification pattern (WAM_FACT_SHAPE_SPEC.md) to the Haskell
+% target. In Phase F1 all predicates still emit as `compiled` — this is
+% classification infrastructure only, with no behaviour change.
+
+%% classify_fact_predicate(+PredIndicator, +WamLines, +Options, -Info)
+%  Info = fact_shape_info(NClauses, FactOnly, FirstArgGroundness, Layout).
+%  WamLines is a list of strings from splitting the WAM text on newlines.
+classify_fact_predicate(PredIndicator, WamLines, Options, Info) :-
+    split_wam_into_segments(WamLines, Segments),
+    length(Segments, NClauses),
+    haskell_fact_only(Segments, FactOnly),
+    (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
+    haskell_first_arg_groundness(Segments, Arity, FirstArg),
+    haskell_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout),
+    Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+%% split_wam_into_segments(+Lines, -Segments)
+%  Groups WAM text lines into Label-InstrList pairs. Each segment
+%  corresponds to one clause entry point. Instructions are parsed into
+%  terms like get_constant(C, Reg), call(P, N), etc.
+split_wam_into_segments([], []).
+split_wam_into_segments([Line|Rest], Segments) :-
+    tokenize_wam_line_hs(Line, Parts),
+    (   Parts == []
+    ->  split_wam_into_segments(Rest, Segments)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelName),
+        extract_segment_instrs(Rest, Instrs, Remaining),
+        Segments = [LabelName-Instrs | RestSegs],
+        split_wam_into_segments(Remaining, RestSegs)
+    ;   % Instruction line before any label — skip
+        split_wam_into_segments(Rest, Segments)
+    ).
+
+%% extract_segment_instrs(+Lines, -Instrs, -Remaining)
+%  Collects parsed instructions until the next label or end of input.
+extract_segment_instrs([], [], []).
+extract_segment_instrs([Line|Rest], Instrs, Remaining) :-
+    tokenize_wam_line_hs(Line, Parts),
+    (   Parts == []
+    ->  extract_segment_instrs(Rest, Instrs, Remaining)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  Instrs = [], Remaining = [Line|Rest]
+    ;   (   parse_wam_instr_hs(Parts, Instr)
+        ->  Instrs = [Instr | RestInstrs],
+            extract_segment_instrs(Rest, RestInstrs, Remaining)
+        ;   % Unrecognized instruction — skip but continue
+            extract_segment_instrs(Rest, Instrs, Remaining)
+        )
+    ).
+
+%% tokenize_wam_line_hs(+Line, -Parts)
+%  Simple tokenizer: split on whitespace/comma, remove empties.
+%  Does not handle quoted atoms — sufficient for classification.
+tokenize_wam_line_hs(Line, Parts) :-
+    split_string(Line, " \t,", " \t,", Parts0),
+    delete(Parts0, "", Parts).
+
+%% parse_wam_instr_hs(+Parts, -Instr)
+%  Parse tokenized WAM line into a structured instruction term.
+%  Only instructions relevant to classification need to be recognized.
+parse_wam_instr_hs(["get_constant", C, Ai], get_constant(C, Ai)).
+parse_wam_instr_hs(["get_variable", Xn, Ai], get_variable(Xn, Ai)).
+parse_wam_instr_hs(["get_value", Xn, Ai], get_value(Xn, Ai)).
+parse_wam_instr_hs(["get_structure", F, Ai], get_structure(F, Ai)).
+parse_wam_instr_hs(["put_constant", C, Ai], put_constant(C, Ai)).
+parse_wam_instr_hs(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
+parse_wam_instr_hs(["put_value", Xn, Ai], put_value(Xn, Ai)).
+parse_wam_instr_hs(["put_structure", F|_], put_structure(F)).
+parse_wam_instr_hs(["put_list", Ai], put_list(Ai)).
+parse_wam_instr_hs(["unify_variable", Xn], unify_variable(Xn)).
+parse_wam_instr_hs(["unify_value", Xn], unify_value(Xn)).
+parse_wam_instr_hs(["unify_constant", C], unify_constant(C)).
+parse_wam_instr_hs(["call", P, N], call(P, N)).
+parse_wam_instr_hs(["execute", P], execute(P)).
+parse_wam_instr_hs(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
+parse_wam_instr_hs(["proceed"], proceed).
+parse_wam_instr_hs(["try_me_else", L], try_me_else(L)).
+parse_wam_instr_hs(["retry_me_else", L], retry_me_else(L)).
+parse_wam_instr_hs(["trust_me"], trust_me).
+parse_wam_instr_hs(["allocate"], allocate).
+parse_wam_instr_hs(["deallocate"], deallocate).
+parse_wam_instr_hs(["switch_on_constant"|_], switch_on_constant).
+
+%% haskell_fact_only(+Segments, -Bool)
+%  `true` iff no clause has a body-level call instruction.
+%  Mirrors the Elixir fact_only/2 from wam_elixir_lowered_emitter.pl.
+haskell_fact_only(Segments, true) :-
+    forall(member(_-Instrs, Segments),
+           forall(member(Instr, Instrs),
+                  \+ haskell_is_body_call(Instr))), !.
+haskell_fact_only(_, false).
+
+haskell_is_body_call(call(_, _)).
+haskell_is_body_call(execute(_)).
+haskell_is_body_call(builtin_call(_, _)).
+
+%% haskell_first_arg_groundness(+Segments, +Arity, -Status)
+%  Status is one of: `none` (arity 0), `all_ground`, `all_variable`, `mixed`.
+haskell_first_arg_groundness(_Segments, 0, none) :- !.
+haskell_first_arg_groundness(Segments, Arity, Status) :-
+    Arity > 0,
+    maplist(haskell_clause_arg1_type, Segments, Types),
+    haskell_combine_groundness(Types, Status).
+
+%% haskell_clause_arg1_type(+Segment, -Type)
+%  Inspects the instructions in a clause segment for the A1 binding.
+haskell_clause_arg1_type(_-Instrs, Type) :-
+    (   member(get_constant(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_structure(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_variable(_, "A1"), Instrs) -> Type = variable
+    ;   member(get_value(_, "A1"), Instrs)    -> Type = variable
+    ;   Type = unknown
+    ).
+
+haskell_combine_groundness(Types, all_ground)   :- forall(member(T, Types), T == ground), !.
+haskell_combine_groundness(Types, all_variable) :- forall(member(T, Types), T == variable), !.
+haskell_combine_groundness(_, mixed).
+
+%% haskell_pick_layout(+PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  User override via fact_layout/2 in Options always wins. Otherwise
+%  dispatches to the policy (default: auto). Same structure as the Elixir
+%  pick_layout but uses the user:fact_layout/2 multifile hook.
+:- multifile user:fact_layout/2.
+:- multifile user:wam_haskell_layout_policy/5.
+
+haskell_pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
+    option(fact_layout(PredIndicator, UserLayout), Options), !,
+    Layout = UserLayout.
+haskell_pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
+    catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
+    Layout = UserLayout.
+haskell_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_layout_policy(PolicyName), Options, auto),
+    haskell_layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    catch(user:wam_haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Layout0),
+          _, fail),
+    !,
+    (   nonvar(Layout0)
+    ->  Layout = Layout0
+    ;   haskell_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout)
+    ).
+haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    haskell_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+%% haskell_builtin_layout_policy(+Policy, +PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  Built-in layout policies mirroring the Elixir target.
+%    auto          — fact-only ∧ count > threshold → inline_data, else compiled
+%    compiled_only — always compiled (regression bisection)
+%    inline_eager  — fact-only always → inline_data
+%    cost_aware    — factors in arity for the threshold
+haskell_builtin_layout_policy(auto, _Pred, NClauses, FactOnly, Options, Layout) :-
+    option(fact_count_threshold(Threshold), Options, 100),
+    (   FactOnly == true, NClauses > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+haskell_builtin_layout_policy(compiled_only, _, _, _, _, compiled).
+haskell_builtin_layout_policy(inline_eager, _, _, FactOnly, _, Layout) :-
+    (   FactOnly == true
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+haskell_builtin_layout_policy(cost_aware, _Pred/Arity, NClauses, FactOnly, Options, Layout) :-
+    option(fact_cost_threshold(Threshold), Options, 200),
+    Mult is max(1, Arity),
+    CostScore is NClauses * Mult,
+    (   FactOnly == true, CostScore > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+
+%% format_fact_shape_comment_hs(+PredIndicator, +Info, -Comment)
+%  Renders classification info as a Haskell comment line.
+format_fact_shape_comment_hs(PredIndicator, fact_shape_info(N, FO, FA, Layout), Comment) :-
+    (PredIndicator = _:P/A -> true ; PredIndicator = P/A),
+    format(string(Comment),
+           '-- ~w/~w: fact_only=~w, clauses=~w, first_arg=~w, layout=~w',
+           [P, A, FO, N, FA, Layout]).
+
+% ============================================================================
+% LOWERED EMISSION
+% ============================================================================
 
 %% lower_all(+LoweredList, +BasePCMap, +DetectedKernels, -LoweredEntries)
 %  Run the Phase 3+ emitter over each predicate in LoweredList, using
@@ -2991,18 +3188,24 @@ executable ~w
 
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
 %  Compiles all predicates into a single merged code array and label map,
-%  with proper PC offsets for each predicate.
+%  with proper PC offsets for each predicate. Phase F1: also classifies
+%  each predicate and emits classification comments in Predicates.hs.
 compile_predicates_to_haskell(Predicates, Options, Code) :-
-    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels),
+    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments),
     atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
     atomic_list_concat(AllLabels, '\n    , ', LabelCode),
+    (   ShapeComments == []
+    ->  ShapeBlock = ""
+    ;   atomic_list_concat(ShapeComments, '\n', ShapeLines),
+        format(string(ShapeBlock), '\n-- Fact shape classification:\n~w\n', [ShapeLines])
+    ),
     format(string(Code),
 'module Predicates where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
 import WamTypes
-
+~w
 -- | Merged WAM code for all predicates.
 allCode :: [Instruction]
 allCode =
@@ -3014,10 +3217,10 @@ allLabels :: Map.Map String Int
 allLabels = Map.fromList
     [ ~w
     ]
-', [InstrCode, LabelCode]).
+', [ShapeBlock, InstrCode, LabelCode]).
 
-compile_predicates_merged([], _, _, [], []).
-compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels) :-
+compile_predicates_merged([], _, _, [], [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
@@ -3025,14 +3228,19 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, All
     format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
+    % Phase F1: classify the predicate from WAM text
+    classify_fact_predicate(Pred/Arity, Lines, Options, ShapeInfo),
+    format_fact_shape_comment_hs(Pred/Arity, ShapeInfo, Comment),
+    format(user_error, '    ~w~n', [Comment]),
     wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
     % Phase 4.1: if the purity certificate says this predicate is
     % safe to parallelize, rewrite its choice-point instructions
     % (TryMeElse / RetryMeElse / TrustMe) to the Par* variants.
     maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
-    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels),
+    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments),
     append(InstrExprs, RestInstrs, AllInstrs),
-    append(LabelExprs, RestLabels, AllLabels).
+    append(LabelExprs, RestLabels, AllLabels),
+    AllComments = [Comment | RestComments].
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies

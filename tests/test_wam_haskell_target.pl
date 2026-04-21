@@ -701,9 +701,182 @@ test_par_rewrite_preserves_non_choice_instrs :-
     ),
     retract(clause_body_analysis:order_independent(user:p41_mix/1)).
 
+%% Phase F1: Fact predicate classification tests
+%% -----------------------------------------------
+
+test_f1_fact_only_classification :-
+    Test = 'F1: fact-only predicate classified correctly',
+    (   retractall(user:f1_color(_)),
+        assert(user:(f1_color(red))),
+        assert(user:(f1_color(blue))),
+        assert(user:(f1_color(green))),
+        wam_target:compile_predicate_to_wam(f1_color/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_color/1, Lines, [], Info),
+        Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout),
+        NClauses == 3,
+        FactOnly == true,
+        FirstArg == all_ground,
+        Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, 'Incorrect classification for fact-only predicate')
+    ),
+    retractall(user:f1_color(_)).
+
+test_f1_rule_predicate_not_fact_only :-
+    Test = 'F1: rule predicate classified as not fact-only',
+    (   retractall(user:f1_anc(_, _)),
+        retractall(user:f1_par(_, _)),
+        assert(user:(f1_par(tom, bob))),
+        assert(user:(f1_anc(X, Y) :- user:f1_par(X, Y))),
+        assert(user:(f1_anc(X, Y) :- user:f1_par(X, Z), user:f1_anc(Z, Y))),
+        wam_target:compile_predicate_to_wam(f1_anc/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_anc/2, Lines, [], Info),
+        Info = fact_shape_info(_, FactOnly, _, _),
+        FactOnly == false
+    ->  pass(Test)
+    ;   fail_test(Test, 'Rule predicate should be fact_only=false')
+    ),
+    retractall(user:f1_anc(_, _)),
+    retractall(user:f1_par(_, _)).
+
+test_f1_two_arg_fact_groundness :-
+    Test = 'F1: 2-arg fact predicate has all_ground first arg',
+    (   retractall(user:f1_edge(_, _)),
+        assert(user:(f1_edge(a, b))),
+        assert(user:(f1_edge(b, c))),
+        wam_target:compile_predicate_to_wam(f1_edge/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_edge/2, Lines, [], Info),
+        Info = fact_shape_info(2, true, all_ground, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Two-arg fact should be fact_only=true, all_ground, compiled')
+    ),
+    retractall(user:f1_edge(_, _)).
+
+test_f1_variable_first_arg :-
+    Test = 'F1: variable first arg detected as mixed',
+    (   retractall(user:f1_vfact(_, _)),
+        assert(user:(f1_vfact(X, pizza) :- true)),
+        assert(user:(f1_vfact(bob, tacos) :- true)),
+        wam_target:compile_predicate_to_wam(f1_vfact/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_vfact/2, Lines, [], Info),
+        Info = fact_shape_info(_, true, FirstArg, _),
+        FirstArg == mixed
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed first-arg groundness not detected')
+    ),
+    retractall(user:f1_vfact(_, _)).
+
+test_f1_layout_auto_above_threshold :-
+    Test = 'F1: auto policy picks inline_data above threshold',
+    (   retractall(user:f1_big(_)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            assert(user:f1_big(A))
+        )),
+        wam_target:compile_predicate_to_wam(f1_big/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_big/1, Lines, [fact_count_threshold(5)], Info),
+        Info = fact_shape_info(6, true, all_ground, inline_data([]))
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto policy should pick inline_data above threshold')
+    ),
+    retractall(user:f1_big(_)).
+
+test_f1_layout_compiled_below_threshold :-
+    Test = 'F1: auto policy keeps compiled below threshold',
+    (   retractall(user:f1_small(_)),
+        assert(user:f1_small(x)),
+        assert(user:f1_small(y)),
+        wam_target:compile_predicate_to_wam(f1_small/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_small/1, Lines, [fact_count_threshold(5)], Info),
+        Info = fact_shape_info(2, true, all_ground, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto policy should keep compiled below threshold')
+    ),
+    retractall(user:f1_small(_)).
+
+test_f1_layout_user_override :-
+    Test = 'F1: user fact_layout override respected',
+    (   retractall(user:f1_ov(_)),
+        assert(user:f1_ov(a)),
+        wam_target:compile_predicate_to_wam(f1_ov/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_ov/1, Lines,
+            [fact_layout(f1_ov/1, external_source(tsv("data.tsv")))], Info),
+        Info = fact_shape_info(_, _, _, external_source(tsv("data.tsv")))
+    ->  pass(Test)
+    ;   fail_test(Test, 'User override should take precedence')
+    ),
+    retractall(user:f1_ov(_)).
+
+test_f1_comment_in_predicates_hs :-
+    Test = 'F1: classification comment emitted in Predicates.hs',
+    (   retractall(user:f1_cp(_)),
+        assert(user:f1_cp(hello)),
+        assert(user:f1_cp(world)),
+        wam_haskell_target:compile_predicates_to_haskell([f1_cp/1], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Fact shape classification"),
+        sub_string(S, _, _, _, "f1_cp/1: fact_only=true")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Classification comment not found in Predicates.hs')
+    ),
+    retractall(user:f1_cp(_)).
+
+test_f1_segment_parser :-
+    Test = 'F1: split_wam_into_segments parses correctly',
+    (   Lines = [
+            "pred/1:",
+            "    get_constant foo, A1",
+            "    proceed",
+            "L_pred_1_2:",
+            "    get_constant bar, A1",
+            "    proceed"
+        ],
+        split_wam_into_segments(Lines, Segments),
+        length(Segments, 2),
+        Segments = ["pred/1"-Instrs1, "L_pred_1_2"-Instrs2],
+        member(get_constant("foo", "A1"), Instrs1),
+        member(proceed, Instrs1),
+        member(get_constant("bar", "A1"), Instrs2),
+        member(proceed, Instrs2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Segment parser produced wrong results')
+    ).
+
+test_f1_compiled_only_policy :-
+    Test = 'F1: compiled_only policy always returns compiled',
+    (   retractall(user:f1_co(_)),
+        forall(between(1, 200, I), (
+            atom_number(A, I),
+            assert(user:f1_co(A))
+        )),
+        wam_target:compile_predicate_to_wam(f1_co/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_co/1, Lines,
+            [fact_layout_policy(compiled_only)], Info),
+        Info = fact_shape_info(_, true, _, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'compiled_only policy should always return compiled')
+    ),
+    retractall(user:f1_co(_)).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -759,6 +932,17 @@ run_tests :-
     test_no_par_emission_for_impure_body,
     test_intra_query_parallel_false_kill_switch,
     test_par_rewrite_preserves_non_choice_instrs,
+    %% Phase F1: Fact predicate classification
+    test_f1_fact_only_classification,
+    test_f1_rule_predicate_not_fact_only,
+    test_f1_two_arg_fact_groundness,
+    test_f1_variable_first_arg,
+    test_f1_layout_auto_above_threshold,
+    test_f1_layout_compiled_below_threshold,
+    test_f1_layout_user_override,
+    test_f1_comment_in_predicates_hs,
+    test_f1_segment_parser,
+    test_f1_compiled_only_policy,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
