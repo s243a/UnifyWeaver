@@ -111,7 +111,8 @@
 (declare activate-foreign-choice)
 
 (defn choice-snapshot [state target-pc]
-  {:pc target-pc
+  {:kind :wam
+   :pc target-pc
    :stack (:stack state)
    :regs (:regs state)
    :env-stack (:env-stack state)
@@ -121,6 +122,17 @@
    :build-stack (:build-stack state)
    :cut-bar (:cut-bar state)
    :next-var-id (:next-var-id state)})
+
+(defn foreign-choice-snapshot [state target-pc results]
+  {:pc target-pc
+   :kind :foreign
+   :stack (:stack state)
+   :regs (:regs state)
+   :env-stack (:env-stack state)
+   :trail-len (count (:trail state))
+   :cut-bar (:cut-bar state)
+   :next-var-id (:next-var-id state)
+   :foreign-results (vec results)})
 
 (defn push-choice-point [state target-pc]
   (update state :choice-points conj (choice-snapshot state target-pc)))
@@ -138,18 +150,30 @@
       (assoc s :trail (vec (take target-len (:trail state)))))))
 
 (defn restore-choice-state [state cp]
-  (-> state
-      (unwind-trail (:trail-len cp))
-      (assoc :pc (:pc cp))
-      (assoc :stack (:stack cp))
-      (restore-choice-regs (:regs cp))
-      (assoc :env-stack (:env-stack cp))
-      (assoc :heap (vec (take (:heap-len cp) (:heap state))))
-      (assoc :unify-queue (:unify-queue cp))
-      (assoc :build-stack (:build-stack cp))
-      (assoc :cut-bar (:cut-bar cp))
-      (assoc :next-var-id (:next-var-id cp))
-      (update :choice-points pop)))
+  (case (:kind cp)
+    :foreign
+    (-> state
+        (unwind-trail (:trail-len cp))
+        (assoc :pc (:pc cp))
+        (assoc :stack (:stack cp))
+        (restore-choice-regs (:regs cp))
+        (assoc :env-stack (:env-stack cp))
+        (assoc :cut-bar (:cut-bar cp))
+        (assoc :next-var-id (:next-var-id cp))
+        (update :choice-points pop))
+
+    (-> state
+        (unwind-trail (:trail-len cp))
+        (assoc :pc (:pc cp))
+        (assoc :stack (:stack cp))
+        (restore-choice-regs (:regs cp))
+        (assoc :env-stack (:env-stack cp))
+        (assoc :heap (vec (take (:heap-len cp) (:heap state))))
+        (assoc :unify-queue (:unify-queue cp))
+        (assoc :build-stack (:build-stack cp))
+        (assoc :cut-bar (:cut-bar cp))
+        (assoc :next-var-id (:next-var-id cp))
+        (update :choice-points pop))))
 
 (defn backtrack [state]
   (if-let [cp (peek (:choice-points state))]
@@ -381,8 +405,7 @@
 (defn push-foreign-choice-point [state base-state resume-pc results]
   (if (seq results)
     (update state :choice-points conj
-            (assoc (choice-snapshot base-state resume-pc)
-                   :foreign-results (vec results)))
+            (foreign-choice-snapshot base-state resume-pc results))
     state))
 
 (defn apply-first-foreign-solution [base-state resume-pc results]

@@ -78,6 +78,8 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-result [state result]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-bindings [state bindings]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-first-foreign-solution [base-state resume-pc results]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn foreign-choice-snapshot [state target-pc results]')),
+        assertion(sub_string(RuntimeCode, _, _, _, ':kind :foreign')),
         assertion(sub_string(RuntimeCode, _, _, _, ':bindings')),
         assertion(sub_string(RuntimeCode, _, _, _, ':solutions')),
         assertion(sub_string(RuntimeCode, _, _, _, ':cut-ite')),

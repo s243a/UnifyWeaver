@@ -325,12 +325,16 @@ for further optimization work.
     streaming `category_ancestor/4` foreign handler directly. The bespoke
     runner-side `benchmark-ancestor-hops-index` materialization is gone;
     `kernels_off` still uses the pure recursive runner path for comparison.
+18. Streamed foreign alternatives in Clojure now use a narrower choice-point
+    shape than ordinary WAM backtracking. Foreign choice points retain the
+    trail boundary, regs/env/stack, cut barrier, next-var-id, resume PC, and
+    remaining foreign results, but they no longer snapshot heap/unify/build
+    state that deterministic foreign handlers do not touch.
 
 ### Highest-value remaining work
 
-1. Start reducing Clojure runtime overhead now that the traversal kernel path
-   is generic: avoid full choice-point snapshots where foreign choice points
-   only need a narrow state slice.
+1. Measure whether the slimmer foreign choice points improve the `dev`
+   Clojure benchmark timings enough to justify similar hot-state split work.
 2. Add proper heap/trail semantics instead of relying primarily on the
    bindings table.
 3. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
