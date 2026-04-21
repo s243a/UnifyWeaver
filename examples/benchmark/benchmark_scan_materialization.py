@@ -85,45 +85,6 @@ class Program
             .ToList();
     }
 
-    static void RegisterBinaryRelation(
-        InMemoryRelationProvider memoryProvider,
-        BinaryRelationArtifactProvider artifactProvider,
-        PredicateId predicate,
-        string path,
-        RelationSourceMode sourceMode,
-        string artifactDir)
-    {
-        var source = new DelimitedRelationSource(path, '	', 1, 2);
-        switch (sourceMode)
-        {
-            case RelationSourceMode.Artifact:
-                var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir);
-                artifactProvider.RegisterArtifact(predicate, manifestPath);
-                break;
-            case RelationSourceMode.ArtifactPrebuilt:
-                Directory.CreateDirectory(artifactDir);
-                var artifactName = $"{predicate.Name}_{predicate.Arity}";
-                var prebuiltManifestPath = Path.Combine(artifactDir, artifactName + ".uwbr.json");
-                if (!File.Exists(prebuiltManifestPath))
-                {
-                    prebuiltManifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir, artifactName);
-                }
-
-                artifactProvider.RegisterArtifact(predicate, prebuiltManifestPath);
-                break;
-            case RelationSourceMode.Delimited:
-                memoryProvider.RegisterDelimitedSource(predicate, source);
-                break;
-            default:
-                memoryProvider.RegisterDelimitedSource(predicate, source);
-                foreach (var parts in ReadDelimitedRows(path, 2))
-                {
-                    memoryProvider.AddFact(predicate, parts[0], parts[1]);
-                }
-                break;
-        }
-    }
-
     static string SummarizeStrategies(QueryExecutionTrace trace, Func<QueryStrategyTrace, bool> predicate)
     {
         return string.Join(
@@ -169,21 +130,16 @@ class Program
         var edgeRowCount = CountDataRows(edgePath);
         var sourceMode = RelationSourceModePolicy.ResolveScanBenchmarkMode(configuredSourceMode, mode, articleRowCount, edgeRowCount);
 
-        var memoryProvider = new InMemoryRelationProvider();
         var artifactDir = Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_ARTIFACT_DIR");
-        artifactDir = string.IsNullOrWhiteSpace(artifactDir)
-            ? Path.Combine(Path.GetTempPath(), $"uw-scan-artifacts-{Guid.NewGuid():N}")
-            : artifactDir;
-        var artifactProvider = new BinaryRelationArtifactProvider(memoryProvider);
-        IRelationProvider provider = sourceMode == RelationSourceMode.Artifact || sourceMode == RelationSourceMode.ArtifactPrebuilt
-            ? artifactProvider
-            : memoryProvider;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(sourceMode, artifactDir);
+        var memoryProvider = configuredProvider.MemoryProvider;
+        IRelationProvider provider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
 
-        RegisterBinaryRelation(memoryProvider, artifactProvider, edgeId, edgePath, sourceMode, artifactDir);
-        RegisterBinaryRelation(memoryProvider, artifactProvider, articleId, articlePath, sourceMode, artifactDir);
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(edgePath, '	', 1, 2), $"{edgeId.Name}_{edgeId.Arity}");
+        configuredProvider.RegisterBinaryRelation(articleId, new DelimitedRelationSource(articlePath, '	', 1, 2), $"{articleId.Name}_{articleId.Arity}");
 
         var articleRows = ReadDelimitedRows(articlePath, 2);
         var patternCategory = articleRows.Count > 0
@@ -204,7 +160,7 @@ class Program
 
         try
         {
-            RegisterBinaryRelation(memoryProvider, artifactProvider, blockedId, blockedPath, sourceMode, artifactDir);
+            configuredProvider.RegisterBinaryRelation(blockedId, new DelimitedRelationSource(blockedPath, '	', 1, 2), $"{blockedId.Name}_{blockedId.Arity}");
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -311,7 +267,10 @@ class Program
             try { File.Delete(blockedPath); } catch { }
             if (sourceMode != RelationSourceMode.ArtifactPrebuilt)
             {
-                try { Directory.Delete(artifactDir, recursive: true); } catch { }
+                if (!string.IsNullOrWhiteSpace(configuredProvider.ArtifactDirectory))
+                {
+                    try { Directory.Delete(configuredProvider.ArtifactDirectory, recursive: true); } catch { }
+                }
             }
         }
     }

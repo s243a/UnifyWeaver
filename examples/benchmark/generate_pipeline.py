@@ -1487,14 +1487,25 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("project_dependency", 2);
         var predId = new PredicateId("dependency_reach", 2);
         var projects = new HashSet<string>(StringComparer.Ordinal);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "project_dependency_2");
         foreach (var line in File.ReadLines(args[1]).Skip(1))
         {{
             var tab = line.IndexOf('	');
@@ -1513,7 +1524,7 @@ class Program
 
         var dagRetentionStrategy = ReadDagRetentionStrategy();
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             DagRelationRetentionStrategy: dagRetentionStrategy));
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
@@ -1992,14 +2003,25 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("project_dependency", 2);
         var predId = new PredicateId("dependency_longest_depth", 2);
         var projects = new HashSet<string>(StringComparer.Ordinal);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "project_dependency_2");
         foreach (var line in File.ReadLines(args[1]).Skip(1))
         {{
             var tab = line.IndexOf('\t');
@@ -2018,7 +2040,7 @@ class Program
 
         var dagRetentionStrategy = ReadDagRetentionStrategy();
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             DagRelationRetentionStrategy: dagRetentionStrategy));
         var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE"), "1", StringComparison.Ordinal);
@@ -2635,14 +2657,25 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("article_category", 2);
         var rootId = new PredicateId("root_category", 1);
         var resultId = new PredicateId("article_root_weight_sum", 3);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "article_category_2");
         foreach (var root in ROOTS.OrderBy(x => x, StringComparer.Ordinal))
         {{
             provider.AddFact(rootId, root);
@@ -2664,7 +2697,7 @@ class Program
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
             PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
@@ -2808,14 +2841,25 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("article_category", 2);
         var rootId = new PredicateId("root_category", 1);
         var resultId = new PredicateId("article_root_weight_sum", 3);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "article_category_2");
         provider.AddFact(rootId, ROOT_CATEGORY);
         swLoad.Stop();
 
@@ -2833,7 +2877,7 @@ class Program
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
         var swExec = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
             PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
@@ -2973,14 +3017,25 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("article_category", 2);
         var rootId = new PredicateId("root_category", 1);
         var resultId = new PredicateId("article_root_shortest_path", 3);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "article_category_2");
         provider.AddFact(rootId, ROOT_CATEGORY);
         swLoad.Stop();
 
@@ -2998,7 +3053,7 @@ class Program
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
             PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,
@@ -3149,7 +3204,18 @@ class Program
         var swTotal = Stopwatch.StartNew();
         var swLoad = Stopwatch.StartNew();
 
-        var provider = new InMemoryRelationProvider();
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE"), out var configuredSourceMode))
+        {{
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_RELATION_SOURCE_MODE: {{Environment.GetEnvironmentVariable(\"UNIFYWEAVER_RELATION_SOURCE_MODE\")}}");
+            Environment.Exit(1);
+        }}
+
+        var sourceMode = configuredSourceMode == RelationSourceMode.Auto ? RelationSourceMode.Preload : configuredSourceMode;
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(
+            sourceMode,
+            Environment.GetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR"));
+        var provider = configuredProvider.MemoryProvider;
+        IRelationProvider relationProvider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var seedId = new PredicateId("article_category", 2);
         var rootId = new PredicateId("root_category", 1);
@@ -3158,8 +3224,8 @@ class Program
         var outDegree = new Dictionary<string, int>(StringComparer.Ordinal);
         var sourceNodes = new HashSet<string>(StringComparer.Ordinal);
 
-        provider.RegisterDelimitedSource(edgeId, new DelimitedRelationSource(args[0]));
-        provider.RegisterDelimitedSource(seedId, new DelimitedRelationSource(args[1]));
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(args[0]), "category_parent_2");
+        configuredProvider.RegisterBinaryRelation(seedId, new DelimitedRelationSource(args[1]), "article_category_2");
         foreach (var (line, i) in File.ReadLines(args[0]).Select((l, i) => (l, i)))
         {{
             if (i == 0 && (line.StartsWith("child") || line.StartsWith("article")))
@@ -3214,7 +3280,7 @@ class Program
         QueryExecutionTrace? trace = traceEnabled ? new QueryExecutionTrace() : null;
 
         var swQuery = Stopwatch.StartNew();
-        var executor = new QueryExecutor(provider, new QueryExecutorOptions(
+        var executor = new QueryExecutor(relationProvider, new QueryExecutorOptions(
             ReuseCaches: false,
             PathAwareEdgeRetentionStrategy: edgeRetentionStrategy,
             PathAwareSupportRelationRetentionStrategy: supportRetentionStrategy,

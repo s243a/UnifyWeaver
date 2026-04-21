@@ -3456,6 +3456,67 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public sealed class ConfiguredDelimitedRelationProvider
+    {
+        public RelationSourceMode SourceMode { get; }
+
+        public InMemoryRelationProvider MemoryProvider { get; }
+
+        public BinaryRelationArtifactProvider? ArtifactProvider { get; }
+
+        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? MemoryProvider;
+
+        public string? ArtifactDirectory { get; }
+
+        public ConfiguredDelimitedRelationProvider(
+            RelationSourceMode sourceMode,
+            string? artifactDirectory = null,
+            InMemoryRelationProvider? memoryProvider = null)
+        {
+            if (sourceMode == RelationSourceMode.Auto)
+            {
+                throw new ArgumentException("Auto source mode must be resolved before provider construction.", nameof(sourceMode));
+            }
+
+            SourceMode = sourceMode;
+            MemoryProvider = memoryProvider ?? new InMemoryRelationProvider();
+
+            if (sourceMode == RelationSourceMode.Artifact || sourceMode == RelationSourceMode.ArtifactPrebuilt)
+            {
+                ArtifactDirectory = string.IsNullOrWhiteSpace(artifactDirectory)
+                    ? Path.Combine(Path.GetTempPath(), $"uw-rel-artifacts-{Guid.NewGuid():N}")
+                    : artifactDirectory;
+                ArtifactProvider = new BinaryRelationArtifactProvider(MemoryProvider);
+            }
+        }
+
+        public void RegisterBinaryRelation(PredicateId predicate, DelimitedRelationSource source, string? artifactName = null)
+        {
+            switch (SourceMode)
+            {
+                case RelationSourceMode.Preload:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    return;
+                case RelationSourceMode.Delimited:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    return;
+                case RelationSourceMode.Artifact:
+                case RelationSourceMode.ArtifactPrebuilt:
+                    if (ArtifactProvider is null || string.IsNullOrWhiteSpace(ArtifactDirectory))
+                    {
+                        throw new InvalidOperationException("Artifact mode requires an initialized artifact provider.");
+                    }
+
+                    var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
+                    ArtifactProvider.RegisterArtifact(predicate, manifestPath);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
+            }
+        }
+    }
+
     public sealed class QueryExecutor
     {
         private readonly IRelationProvider _provider;
