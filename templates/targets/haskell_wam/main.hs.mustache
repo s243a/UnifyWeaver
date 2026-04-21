@@ -3,6 +3,7 @@ module Main where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -132,6 +133,13 @@ main = do
     let !parentsIndexInterned = IM.fromListWith (++)
             [(iAtom child, [iAtom parent]) | (child, parent) <- categoryParents]
 
+    -- Demand-driven pruning: compute the backward-reachable set from root,
+    -- then filter parentsIndex to only include edges to reachable parents.
+    -- This prunes branches that can never reach root, reducing DFS work.
+    -- On sparse graphs this eliminates most exploration; on dense graphs
+    -- (like Wikipedia categories, ~95% reachable) the effect is small.
+{{demand_filter}}
+
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- wcInternTable is the system-wide atom intern table (compile-time +
@@ -140,7 +148,7 @@ main = do
             { wcForeignConfig = Map.singleton "max_depth" 10
             , wcLoweredPredicates = Lowered.loweredPredicates
             , wcInternTable   = fullInternTable
-            , wcFfiFacts      = Map.singleton "category_parent" parentsIndexInterned
+            , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
             }
 
     t2 <- getCurrentTime
@@ -196,6 +204,7 @@ main = do
     hPutStrLn stderr $ "seed_count=" ++ show (length seedCats)
     hPutStrLn stderr $ "tuple_count=" ++ show (Map.size seedWeightSums)
     hPutStrLn stderr $ "article_count=" ++ show (length results)
+{{demand_metrics}}
 
 -- | Format a Double to 6 decimal places.
 showFFloat6 :: Double -> String
@@ -257,3 +266,30 @@ extractDouble _ (Integer h) = Just (fromIntegral h)
 extractDouble _ (Float h) = Just h
 extractDouble tbl (Atom aid) = case reads (lookupAtom tbl aid) of [(h, "")] -> Just h; _ -> Nothing
 extractDouble _ _ = Nothing
+
+-- | Compute the backward-reachable demand set from a root node.
+-- Given a child→[parents] adjacency map, returns all nodes that can
+-- reach rootId via the edge relation (backward BFS fixpoint).
+computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
+computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId)
+  where
+    -- Build reverse adjacency: parent → [children]
+    !reverseAdj = IM.foldlWithKey' (\m child ps ->
+        foldl' (\m' p -> IM.insertWith (++) p [child] m') m ps
+      ) IM.empty parents
+    bfs frontier visited
+      | IS.null frontier = visited
+      | otherwise =
+          let newNodes = IS.fromList
+                [ c | node <- IS.toList frontier
+                    , c <- IM.findWithDefault [] node reverseAdj
+                    , not (IS.member c visited) ]
+          in bfs newNodes (IS.union visited newNodes)
+
+-- | Filter a child→[parents] map to only include parents in the demand set.
+-- Removes edges to unreachable parents, and drops entries with no remaining parents.
+filterByDemand :: IS.IntSet -> IM.IntMap [Int] -> IM.IntMap [Int]
+filterByDemand demandSet = IM.mapMaybe $ \ps ->
+    case filter (`IS.member` demandSet) ps of
+      [] -> Nothing
+      ps' -> Just ps'

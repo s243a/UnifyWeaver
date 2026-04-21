@@ -2319,11 +2319,43 @@ generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     ),
     generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
+    generate_demand_filter(DetectedKernels, Options, DemandFilter, FactsSource),
+    (   DemandFilter \= ''
+    ->  DemandMetrics =
+'    hPutStrLn stderr $ "demand_set_size=" ++ show demandSize
+    hPutStrLn stderr $ "demand_total_nodes=" ++ show totalNodes
+    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
+    ;   DemandMetrics = ''
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , query_body=QueryBody
         , merged_code_build=MergedCodeBuild
+        , demand_filter=DemandFilter
+        , facts_source=FactsSource
+        , demand_metrics=DemandMetrics
         ], Code).
+
+%% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
+%  When demand filtering is enabled (kernels detected with an edge predicate),
+%  emit code to compute the demand set via backward BFS and filter the parents
+%  index. Otherwise emit nothing and use the unfiltered index.
+generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
+    (   option(demand_filter(false), Options)
+    ->  FilterCode = '',
+        FactsSource = 'parentsIndexInterned'
+    ;   DetectedKernels \= []
+    ->  FilterCode =
+'    let !rootId = iAtom root
+        !demandSet = computeDemandSet parentsIndexInterned rootId
+        !demandSize = IS.size demandSet
+        !totalNodes = IM.size parentsIndexInterned
+        !filteredParents = filterByDemand demandSet parentsIndexInterned
+        !filteredSize = IM.size filteredParents',
+        FactsSource = 'filteredParents'
+    ;   FilterCode = '',
+        FactsSource = 'parentsIndexInterned'
+    ).
 
 %% generate_merged_code_build(+DetectedKernels, +Options, -Code)
 %  Emit the merged-code construction block for Main.hs.
