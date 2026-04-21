@@ -3,8 +3,8 @@
 Measure generic scan-family materialization planning in the C# query runtime.
 
 This harness exercises representative scan-heavy plans against the benchmark
-TSVs using preloaded, streamed, or binary-artifact relation sources inside a
-temporary C# project:
+TSVs using preloaded, streamed, binary-artifact, or prebuilt binary-artifact
+relation sources inside a temporary C# project:
 
 - `scan`: plain `RelationScanNode`
 - `bound_scan`: parameterized `RelationScanNode` over one bound column
@@ -21,6 +21,7 @@ planner rather than a cross-target benchmark.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import statistics
@@ -87,6 +88,17 @@ class Program
                 var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir);
                 artifactProvider.RegisterArtifact(predicate, manifestPath);
                 break;
+            case "artifact-prebuilt":
+                Directory.CreateDirectory(artifactDir);
+                var artifactName = $"{predicate.Name}_{predicate.Arity}";
+                var prebuiltManifestPath = Path.Combine(artifactDir, artifactName + ".uwbr.json");
+                if (!File.Exists(prebuiltManifestPath))
+                {
+                    prebuiltManifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, artifactDir, artifactName);
+                }
+
+                artifactProvider.RegisterArtifact(predicate, prebuiltManifestPath);
+                break;
             case "delimited":
                 memoryProvider.RegisterDelimitedSource(predicate, source);
                 break;
@@ -136,16 +148,19 @@ class Program
         var traceEnabled = Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE") == "1";
         var scanStrategy = ParseScanStrategy(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_RETENTION_STRATEGY") ?? "auto");
         var sourceMode = (Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE") ?? "preload").ToLowerInvariant();
-        if (sourceMode != "preload" && sourceMode != "delimited" && sourceMode != "artifact")
+        if (sourceMode != "preload" && sourceMode != "delimited" && sourceMode != "artifact" && sourceMode != "artifact-prebuilt")
         {
             Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {sourceMode}");
             return 1;
         }
 
         var memoryProvider = new InMemoryRelationProvider();
-        var artifactDir = Path.Combine(Path.GetTempPath(), $"uw-scan-artifacts-{Guid.NewGuid():N}");
+        var artifactDir = Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_ARTIFACT_DIR");
+        artifactDir = string.IsNullOrWhiteSpace(artifactDir)
+            ? Path.Combine(Path.GetTempPath(), $"uw-scan-artifacts-{Guid.NewGuid():N}")
+            : artifactDir;
         var artifactProvider = new BinaryRelationArtifactProvider(memoryProvider);
-        IRelationProvider provider = sourceMode == "artifact" ? artifactProvider : memoryProvider;
+        IRelationProvider provider = sourceMode == "artifact" || sourceMode == "artifact-prebuilt" ? artifactProvider : memoryProvider;
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
@@ -276,7 +291,10 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
-            try { Directory.Delete(artifactDir, recursive: true); } catch { }
+            if (sourceMode != "artifact-prebuilt")
+            {
+                try { Directory.Delete(artifactDir, recursive: true); } catch { }
+            }
         }
     }
 }
@@ -295,6 +313,9 @@ class BenchResult:
     @property
     def median(self) -> float:
         return statistics.median(self.times)
+
+
+RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
 
 
 def parse_args() -> argparse.Namespace:
@@ -361,6 +382,10 @@ def benchmark_mode(command: list[str], scale: str, mode: str, source_mode: str, 
     env["UNIFYWEAVER_BENCH_TRACE"] = "1"
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
     env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
+    if source_mode == "artifact-prebuilt":
+        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 
     times: list[float] = []
     stderr = ""

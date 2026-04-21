@@ -390,14 +390,23 @@ Prototype status:
   seam when one side is a selective probe and the other side is an indexed
   artifact-backed scan.
 - Binary relation index sidecars now include an appended key directory for
-  small lookup sets. The reader can seek directly from key hash to index entry
-  and still falls back to the original sequential index scan for old artifacts
-  or broad probe sets where sequential access is cheaper than many random
-  seeks.
+  small lookup sets. The reader binary-searches the fixed directory table on
+  disk, seeks from key hash to index entry, and still falls back to the
+  original sequential index scan for old artifacts or broad probe sets where
+  sequential access is cheaper than many random seeks.
+- The binary artifact builder also emits per-column covering bucket sidecars
+  for broad indexed joins. The current runtime can merge those sorted sidecars
+  directly and only deserialize rows for matching keys, which avoids
+  materializing the full bucket stream for broad joins. When bucket sidecars
+  are unavailable, it falls back to the smaller-side hash build path when
+  relation cardinalities are known, and then to the older generic bucket path.
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
-  and `artifact` source modes against the existing scan-family workloads,
-  including `bound_scan` and `selective_join` modes for indexed parameter
-  probes.
+  `artifact`, and `artifact-prebuilt` source modes against the existing
+  scan-family workloads, including `bound_scan` and `selective_join` modes for
+  indexed parameter probes. The prebuilt mode keeps artifacts in a stable
+  benchmark directory keyed by the current runtime source so runtime
+  measurements can separate query execution from preprocessing cost without
+  reusing stale artifact formats.
 
 ## Success Criteria
 
