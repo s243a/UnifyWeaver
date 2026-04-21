@@ -13,6 +13,24 @@ test(kernel_mode_options) :-
     assertion(member(clojure_foreign_handlers(_), OnOptions)),
     assertion(OffOptions == [no_kernels(true)]).
 
+test(data_mode_options) :-
+    parse_benchmark_data_mode(sidecar, sidecar),
+    parse_benchmark_data_mode(inline, inline),
+    setup_call_cleanup(
+        load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+        assertion(parse_benchmark_data_mode(auto, sidecar)),
+        true
+    ).
+
+test(data_mode_predicate_override) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:wam_clojure_benchmark_data_mode(inline))
+        ),
+        assertion(parse_benchmark_data_mode(auto, inline)),
+        maybe_abolish_test_predicate(wam_clojure_benchmark_data_mode/1)
+    ).
+
 test(collect_seeded_predicates) :-
     collect_wam_predicates(seeded, Predicates),
     assertion(member(user:dimension_n/1, Predicates)),
@@ -23,13 +41,20 @@ test(collect_seeded_predicates) :-
 test(generate_seeded_kernels_on_project) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_bench_on', TmpDir),
-        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, sidecar),
         directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/category_parent.edn', CategoryParentPath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/article_category.edn', ArticleCategoryPath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/root_category.edn', RootCategoryPath),
         read_file_to_string(CorePath, CoreCode, []),
+        assertion(exists_file(CategoryParentPath)),
+        assertion(exists_file(ArticleCategoryPath)),
+        assertion(exists_file(RootCategoryPath)),
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
-        assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges #{')),
-        assertion(sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child {')),
-        assertion(sub_string(CoreCode, _, _, _, '["Abstraction" "Thought"]')),
+        assertion(sub_string(CoreCode, _, _, _, 'slurp "/')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child-delay (delay (reduce')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-data-dir "/')),
+        assertion(sub_string(CoreCode, _, _, _, '(slurp (str benchmark-data-dir "/category_parent.edn"))')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? true)')),
@@ -44,25 +69,44 @@ test(generate_seeded_kernels_on_project) :-
 test(generate_seeded_kernels_off_project) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_bench_off', TmpDir),
-        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_off),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_off, sidecar),
         directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/category_parent.edn', CategoryParentPath),
         read_file_to_string(CorePath, CoreCode, []),
+        assertion(exists_file(CategoryParentPath)),
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
-        assertion(\+ sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges #{')),
-        assertion(\+ sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child {')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges-delay (delay')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child-delay (delay')),
         assertion(\+ sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
         assertion(\+ sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? false)')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-data-dir "/')),
         assertion(sub_string(CoreCode, _, _, _, '(benchmark-ancestor-hops category root #{category})')),
         assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-ancestor-hops-index')),
         assertion(\+ sub_string(CoreCode, _, _, _, 'benchmark-build-ancestor-hops-index')),
         delete_directory_and_contents(TmpDir)
     )).
 
+test(generate_seeded_inline_project) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_bench_inline', TmpDir),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, inline),
+        directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+        directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/category_parent.edn', CategoryParentPath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(\+ exists_file(CategoryParentPath)),
+        assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [edges #{')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_ancestor/4" (let [parents-by-child {')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-article-categories-delay (delay [[')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-category-parents-delay (delay [[')),
+        assertion(sub_string(CoreCode, _, _, _, '(def benchmark-roots-delay (delay [')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 test(generated_category_parent_handler_executes, [condition(clojure_available)]) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_bench_exec', TmpDir),
-        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on),
+        generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, sidecar),
         run_clojure_predicate(TmpDir, 'category_parent/2',
                               ['Abstraction', 'Thought'], "true"),
         run_clojure_predicate(TmpDir, 'category_parent/2',
@@ -144,3 +188,9 @@ find_clojure_classpath(ClassPath) :-
         JarPaths),
     JarPaths \= [],
     atomic_list_concat(['src'|JarPaths], :, ClassPath).
+
+maybe_abolish_test_predicate(Name/Arity) :-
+    (   current_predicate(user:Name/Arity)
+    ->  abolish(user:Name/Arity)
+    ;   true
+    ).
