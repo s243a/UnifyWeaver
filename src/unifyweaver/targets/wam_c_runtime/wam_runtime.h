@@ -40,6 +40,7 @@ typedef struct {
     int heap_size;
     int trail_size;
     int stack_size;
+    int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
 
@@ -116,13 +117,13 @@ typedef struct {
 static inline WamValue val_atom(const char *s) {
     // We avoid strdup here to prevent leaks, assuming 's' is a string literal.
     // Dynamic atoms will require an interning table later.
-    WamValue v; v.tag = VAL_ATOM; v.data.atom = (char*)s; return v;
+    WamValue v; v.tag = VAL_ATOM; v.data.atom = s; return v;
 }
 static inline WamValue val_int(int n) {
     WamValue v; v.tag = VAL_INT; v.data.integer = n; return v;
 }
 static inline WamValue val_unbound(const char *name) {
-    WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = (char*)name; return v;
+    WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
 }
 static inline bool val_is_unbound(WamValue v) {
     return v.tag == VAL_UNBOUND;
@@ -156,6 +157,7 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     cp->stack_size = state->E;
     
     int save_arity = arity < 32 ? arity : 32;
+    cp->arity = save_arity;
     memcpy(cp->a_regs, state->A, sizeof(WamValue) * save_arity);
     state->B++;
     state->HB = state->H;
@@ -167,13 +169,12 @@ static inline void unwind_trail(WamState *state, int target_tr) {
         *te->cell = te->old_val;
     }
 }
-static inline void restore_choice_point(WamState *state, ChoicePoint *cp, int arity) {
+static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
+    state->CP = cp->cp;
     unwind_trail(state, cp->trail_size);
-    
-    int restore_arity = arity < 32 ? arity : 32;
-    memcpy(state->A, cp->a_regs, sizeof(WamValue) * restore_arity);
+    memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
 static inline void pop_choice_point(WamState *state) {
     if (state->B > 0) {

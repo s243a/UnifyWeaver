@@ -299,13 +299,13 @@ compile_step_wam_to_c(_Options, CCode) :-
                 int target = resolve_label(state, instr->label);
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 cp->next_pc = target;
-                restore_choice_point(state, cp, 32);
+                restore_choice_point(state, cp);
                 state->P++;
                 return true;
             }
             case INSTR_TRUST_ME: {
                 ChoicePoint *cp = &state->B_array[state->B - 1];
-                restore_choice_point(state, cp, 32);
+                restore_choice_point(state, cp);
                 pop_choice_point(state);
                 state->P++;
                 return true;
