@@ -272,9 +272,41 @@ a provider. The fact access layer should respect the same capability
 declarations, falling back gracefully when a preferred strategy is
 unavailable.
 
-This loop means the fact access design must leave room for the
-materialization planner to make informed choices — not commit eagerly
-to a single strategy at code generation time.
+**Compile-time vs runtime planning:** The planner is not a single
+runtime decision. It operates at two stages:
+
+*Compile time* (Prolog codegen): The emitter already knows clause
+structure, mode declarations, purity certificates, kernel detection
+results, fact-only classification, and first-arg groundness. It can
+trim logical paths — eliminating layout options that are provably
+wrong or suboptimal before any code is generated:
+
+- Impure predicate → don't consider parallel streaming layouts
+- Clause count below threshold → compiled layout, no further options
+- First-arg always ground → compile-time index is viable
+- No mode declaration → cannot infer selectivity, keep all options open
+- Kernel-detected predicate → FFI path, skip fact layout entirely
+
+The compile-time planner emits code that supports the remaining
+options (e.g., generates both a flat literal and an indexed map so
+the runtime can choose).
+
+*Runtime* (startup / query time): The actual data characteristics are
+not known until load time — file sizes, row counts, available memory,
+number of cores, whether mmap works on this filesystem. The runtime
+planner selects from the options the compile-time planner left open:
+
+- Row count exceeds memory budget → stream, don't materialize
+- Multiple cores available → prefer immutable indexed structures
+- mmap available → use artifact provider
+- Single query → scan is fine; repeated probes → build index
+
+This two-stage design means the compile-time planner trims the
+decision space and the runtime planner selects within it. Neither
+stage operates alone — compile time without runtime would over-commit
+to a strategy that doesn't fit the data; runtime without compile time
+would waste time considering options that the program structure
+already rules out.
 
 ## Non-goals
 
