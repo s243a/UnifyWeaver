@@ -27,6 +27,7 @@ from benchmark_common import (
     print_result_table,
     require_file,
     run_command,
+    three_column_parity_vs_reference,
 )
 
 
@@ -43,6 +44,7 @@ class RunResult:
     stdout_sha256: str
     row_count: int
     stderr: str
+    parity: str  # "match" / "no-ref" / "diff:<N>/ours:<A>/ref:<B>"
 
     @property
     def median(self) -> float:
@@ -135,7 +137,17 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
 
     normalized = normalize_three_column_float_rows(last_stdout, decimals=6)
     digest, rows = digest_normalized_output(normalized)
-    return RunResult(target=target, scale=scale, times=times, stdout_sha256=digest, row_count=rows, stderr=last_stderr)
+    reference_path = BENCH_DIR / scale / "reference_output.tsv"
+    parity = three_column_parity_vs_reference(normalized, reference_path, decimals=6)
+    return RunResult(
+        target=target,
+        scale=scale,
+        times=times,
+        stdout_sha256=digest,
+        row_count=rows,
+        stderr=last_stderr,
+        parity=parity,
+    )
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -180,9 +192,20 @@ def main() -> int:
                 raise
             results.append(benchmark_target(command, scale, args.repetitions, "wam-elixir-lowered"))
 
-        print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
+        # Custom print that includes the new `parity` column — a short
+        # string telling the reader whether our output matches the
+        # native-SWI reference TSV at this scale. "match" is the happy
+        # path; "no-ref" means data/benchmark/<scale>/reference_output.tsv
+        # is absent; "diff:N/ours:A/ref:B" breaks down the delta.
+        print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256\tparity")
         for scale, entries in group_results_by_scale(results, sort_key=scale_sort_key):
-            print_result_table(entries, scale)
+            for result in sorted(entries, key=lambda item: item.target):
+                print(
+                    f"{scale}\t{result.target}\t{result.median:.3f}\t"
+                    f"{min(result.times):.3f}\t{max(result.times):.3f}\t"
+                    f"{result.row_count}\t{result.stdout_sha256[:12]}\t"
+                    f"{result.parity}"
+                )
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
