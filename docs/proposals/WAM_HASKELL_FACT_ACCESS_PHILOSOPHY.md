@@ -250,6 +250,28 @@ purity analysis → goal reordering freedom
                if source isn't parallelism-safe)
 ```
 
+**Environment awareness:** The planner also needs to know about the
+deployment environment. Not all platforms support all strategies:
+
+- **Termux / Android userland**: May have restricted `mmap` support
+  (filesystem-dependent, executable mapping limits). Parallelism is
+  constrained by thermal throttling and limited cores. The planner
+  should fall back to sequential scan or in-memory IntMap.
+- **WebAssembly**: No `mmap`, no threads (unless SharedArrayBuffer is
+  available). Single-threaded streaming only.
+- **Embedded / low-memory**: Large IntMaps may not fit. External
+  streaming or small-batch loading is required.
+- **Server / cloud**: Full mmap, many cores, large memory. All
+  strategies available; cost-based selection pays off.
+
+The artifact proposal's `target_capabilities` field
+(`PREPROCESSED_PREDICATE_ARTIFACTS.md`) already handles this: each
+artifact declares required capabilities (`mmap`, `little_endian`,
+`threads`), and the runtime checks what is available before selecting
+a provider. The fact access layer should respect the same capability
+declarations, falling back gracefully when a preferred strategy is
+unavailable.
+
 This loop means the fact access design must leave room for the
 materialization planner to make informed choices — not commit eagerly
 to a single strategy at code generation time.
