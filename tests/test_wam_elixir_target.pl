@@ -539,6 +539,70 @@ test_phase_d_external_beats_inline_override :-
     ;   fail_test(Test, 'external_source did not win over default inline_data')
     ).
 
+%% Phase E pluggable layout policy tests
+
+test_phase_e_auto_matches_pre_phase_e :-
+    Test = 'Phase E: auto policy is equivalent to pre-Phase-E default',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [fact_layout_policy(auto)],
+                       fact_shape_info(_, _, _, Layout1)),
+    classify_predicate(big_fact/2, Segs, [],
+                       fact_shape_info(_, _, _, Layout2)),
+    (   Layout1 == Layout2, Layout1 = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, mismatch(Layout1, Layout2))
+    ).
+
+test_phase_e_compiled_only_forces_compiled :-
+    Test = 'Phase E: compiled_only policy forces big fact set to compiled',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs,
+                       [fact_layout_policy(compiled_only)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_inline_eager_ignores_threshold :-
+    Test = 'Phase E: inline_eager picks inline_data even below threshold',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs,
+                       [fact_layout_policy(inline_eager)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_inline_eager_respects_fact_only :-
+    Test = 'Phase E: inline_eager still falls to compiled for rule-bearing',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs,
+                       [fact_layout_policy(inline_eager)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_user_override_preempts_policy :-
+    Test = 'Phase E: user fact_layout/2 preempts any policy',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    Opts = [fact_layout_policy(compiled_only),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    classify_predicate(big_fact/2, Segs, Opts,
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = external_source(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -584,5 +648,10 @@ run_tests :-
     test_phase_d_emits_external_source_shape,
     test_phase_d_runtime_emits_fact_source,
     test_phase_d_external_beats_inline_override,
+    test_phase_e_auto_matches_pre_phase_e,
+    test_phase_e_compiled_only_forces_compiled,
+    test_phase_e_inline_eager_ignores_threshold,
+    test_phase_e_inline_eager_respects_fact_only,
+    test_phase_e_user_override_preempts_policy,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

@@ -332,18 +332,60 @@ combine_groundness(_, mixed).
 
 %% pick_layout(+PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
 %  User override via `fact_layout/2` in Options or `user:fact_layout/2`
-%  always wins. Otherwise default policy: fact-only ∧ count > threshold
-%  → `inline_data`; else `compiled`. Threshold from `fact_count_threshold`
-%  option, default 100.
+%  always wins. Otherwise dispatches to the Phase-E pluggable policy
+%  `layout_policy/5` — the default `auto` policy implements the
+%  pre-Phase-E rule (fact-only ∧ count > threshold → `inline_data`),
+%  but callers can select a different built-in or register their own
+%  via the multifile `user:wam_elixir_layout_policy/5` hook.
 pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
     option(fact_layout(PredIndicator, UserLayout), Options), !,
     Layout = UserLayout.
 pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
     catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
     Layout = UserLayout.
-pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
+pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_layout_policy(PolicyName), Options, auto),
+    layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+%% layout_policy(+Policy, +PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  Phase-E pluggable layout selector. Three built-in policies:
+%
+%    auto            — Fact-only ∧ count > threshold → `inline_data`,
+%                      else `compiled`. Threshold from
+%                      `fact_count_threshold` option (default 100).
+%                      Mirrors the pre-Phase-E default.
+%    compiled_only   — Always `compiled`. Useful for bisecting
+%                      regressions or for hosts where the inline
+%                      literal cost is too high.
+%    inline_eager    — Fact-only always → `inline_data([])`,
+%                      ignoring the count threshold. Rule-bearing
+%                      predicates still fall to `compiled`.
+%
+%  Users can add their own by asserting clauses on the multifile
+%  `user:wam_elixir_layout_policy/5`; those take precedence over the
+%  built-ins for the same policy name.
+:- multifile user:wam_elixir_layout_policy/5.
+
+layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    catch(user:wam_elixir_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Layout0),
+          _, fail),
+    !,
+    (   nonvar(Layout0)
+    ->  Layout = Layout0
+    ;   builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout)
+    ).
+layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+builtin_layout_policy(auto, _PredIndicator, NClauses, FactOnly, Options, Layout) :-
     option(fact_count_threshold(Threshold), Options, 100),
     (   FactOnly == true, NClauses > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+builtin_layout_policy(compiled_only, _PredIndicator, _NClauses, _FactOnly, _Options, compiled).
+builtin_layout_policy(inline_eager, _PredIndicator, _NClauses, FactOnly, _Options, Layout) :-
+    (   FactOnly == true
     ->  Layout = inline_data([])
     ;   Layout = compiled
     ).
