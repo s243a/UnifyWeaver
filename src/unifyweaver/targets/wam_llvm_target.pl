@@ -1331,37 +1331,70 @@ declare i32 @printf(i8*, ...)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
-%  Generate WASM export wrappers that expose predicates as i32-returning functions.
+%  Generate WASM export wrappers that expose predicates as i32-returning
+%  functions. Each wrapper delegates to the predicate's own `@<pred>()`
+%  function (emitted by compile_wam_predicate_to_llvm for WAM-fallback
+%  predicates, or by the native LLVM lowering for native predicates),
+%  which has the correct instruction-array + label-table bound.
+%  Arena state is rewound via @wam_cleanup after each call so successive
+%  bench calls don't leak.
 generate_wasm_exports([], "").
 generate_wasm_exports(Predicates, ExportCode) :-
+    number_predicates(Predicates, 0, NumberedPreds),
     findall(ExportFunc, (
-        member(PredIndicator, Predicates),
+        member(Idx-PredIndicator, NumberedPreds),
         (   PredIndicator = _:Pred/Arity -> true
         ;   PredIndicator = Pred/Arity
         ),
         atom_string(Pred, PredStr),
+        build_llvm_undef_args(Arity, ArgsList),
         format(atom(ExportFunc),
 '; WASM export: ~w/~w
 ; Visibility: dso_local ensures symbol is retained by wasm-ld.
-; The __export_name attribute maps to the WASM export name.
-define dso_local i32 @~w_wasm() #0 {
+define dso_local i32 @~w_wasm() #~w {
 entry:
-  %vm = call %WamState* @wam_state_new(
-    %Instruction* getelementptr ([0 x %Instruction], [0 x %Instruction]* null, i32 0, i32 0),
-    i32 0, i32* null, i32 0)
-  %result = call i1 @run_loop(%WamState* %vm)
+  %result = call i1 @~w(~w)
   call void @wam_cleanup()
   %ret = zext i1 %result to i32
   ret i32 %ret
-}', [PredStr, Arity, PredStr])
+}', [PredStr, Arity, PredStr, Idx, PredStr, ArgsList])
     ), ExportFuncs),
     atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
-    % Add WASM export attribute group
+    findall(AttrGroup, (
+        member(Idx-PredIndicator, NumberedPreds),
+        (   PredIndicator = _:Pred/Arity -> true
+        ;   PredIndicator = Pred/Arity
+        ),
+        atom_string(Pred, PredStr),
+        format(atom(AttrGroup),
+'attributes #~w = { "wasm-export-name"="~w_wasm" }',
+            [Idx, PredStr])
+    ), AttrGroups),
+    atomic_list_concat(AttrGroups, '\n', AttrGroupsStr),
     format(atom(ExportCode),
 '~w
 
-; WASM export attributes
-attributes #0 = { "wasm-export-name"="query" }', [ExportFuncsStr]).
+; WASM export attributes (one group per exported wrapper)
+~w', [ExportFuncsStr, AttrGroupsStr]).
+
+%% number_predicates(+Preds, +Start, -Numbered)
+%  Pair each predicate with a zero-based index used as the LLVM
+%  attribute-group id for its WASM export wrapper.
+number_predicates([], _, []).
+number_predicates([P|Rest], N, [N-P|RestNum]) :-
+    N1 is N + 1,
+    number_predicates(Rest, N1, RestNum).
+
+%% build_llvm_undef_args(+Arity, -ArgsStr)
+%  Produce a comma-separated list of `%Value undef` (Arity copies).
+%  Used by bench-style wrappers that just need to invoke the predicate
+%  without binding its arguments.
+build_llvm_undef_args(0, '') :- !.
+build_llvm_undef_args(Arity, ArgsStr) :-
+    Arity > 0,
+    length(Undefs, Arity),
+    maplist(=('%Value undef'), Undefs),
+    atomic_list_concat(Undefs, ', ', ArgsStr).
 
 %% build_wam_wasm_module(+LLFile, +OutputName, -Commands)
 %  Generate shell commands to build a WASM module from the generated .ll file.
@@ -1784,9 +1817,13 @@ uc.fail:
 % --- Body Construction Instructions ---
 
 wam_llvm_case('put_constant',
-'  ; op1 = constant value (packed), op2 = register index
-  %pc.reg_idx = trunc i64 %op2 to i32
-  %pc.val = insertvalue %Value undef, i32 0, 0
+'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
+  ; Lower 16 bits: register index. Upper bits: %Value tag.
+  ; 0 = Atom, 1 = Integer, 2 = Float, etc. See value.ll.mustache.
+  %pc.op2_32 = trunc i64 %op2 to i32
+  %pc.reg_idx = and i32 %pc.op2_32, 65535
+  %pc.tag_i32 = lshr i32 %pc.op2_32, 16
+  %pc.val = insertvalue %Value undef, i32 %pc.tag_i32, 0
   %pc.val2 = insertvalue %Value %pc.val, i64 %op1, 1
   call void @wam_trail_binding(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
@@ -2390,6 +2427,8 @@ entry:
     i32 23, label %builtin_plus
     i32 24, label %builtin_unify
     i32 25, label %builtin_not_unify
+    i32 26, label %builtin_functor
+    i32 27, label %builtin_arg
   ]
 
 builtin_is:
@@ -2655,6 +2694,150 @@ nu.both_bound:
   ret i1 %nu.r
 
 nu.fail:
+  ret i1 false
+
+builtin_functor:
+  ; functor/3 — read mode only for now.
+  ; A1 = Term (expected bound), A2 = Name, A3 = Arity.
+  ;   If A1 is a Compound (tag 3): extract functor pointer + arity,
+  ;     then bind A2 = Atom(functor_ptr), A3 = Integer(arity).
+  ;   If A1 is an Atom (tag 0): bind A2 = A1, A3 = Integer(0).
+  ;   If A1 is an Integer (tag 1): bind A2 = A1, A3 = Integer(0).
+  ;   Otherwise (unbound / compound-construct mode / list): fail.
+  %fn.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fn.a1_tag = call i32 @value_tag(%Value %fn.a1)
+  switch i32 %fn.a1_tag, label %fn.fail [
+    i32 0, label %fn.atomic
+    i32 1, label %fn.atomic
+    i32 3, label %fn.compound
+  ]
+
+fn.compound:
+  %fn.cp_bits = call i64 @value_payload(%Value %fn.a1)
+  %fn.cp_ptr = inttoptr i64 %fn.cp_bits to %Compound*
+  %fn.fn_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 0
+  %fn.fn_i8 = load i8*, i8** %fn.fn_slot
+  %fn.ar_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 1
+  %fn.ar = load i32, i32* %fn.ar_slot
+  %fn.ar_i64 = sext i32 %fn.ar to i64
+  %fn.name_val = call %Value @value_atom(i8* %fn.fn_i8)
+  %fn.ar_val = call %Value @value_integer(i64 %fn.ar_i64)
+  br label %fn.bind_both
+
+fn.atomic:
+  ; Atom or Integer: arity 0, name = the value itself.
+  %fn.ar0_val = call %Value @value_integer(i64 0)
+  br label %fn.bind_atomic
+
+fn.bind_atomic:
+  ; Bind A2 = A1 (as atomic name), A3 = 0
+  %fn.atm.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fn.atm.a2_unb = call i1 @value_is_unbound(%Value %fn.atm.a2)
+  br i1 %fn.atm.a2_unb, label %fn.atm.a2_bind, label %fn.atm.a2_check
+
+fn.atm.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.a1)
+  br label %fn.atm.a3
+
+fn.atm.a2_check:
+  %fn.atm.a2_eq = call i1 @value_equals(%Value %fn.atm.a2, %Value %fn.a1)
+  br i1 %fn.atm.a2_eq, label %fn.atm.a3, label %fn.fail
+
+fn.atm.a3:
+  %fn.atm.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.atm.a3_unb = call i1 @value_is_unbound(%Value %fn.atm.a3v)
+  br i1 %fn.atm.a3_unb, label %fn.atm.a3_bind, label %fn.atm.a3_check
+
+fn.atm.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar0_val)
+  ret i1 true
+
+fn.atm.a3_check:
+  %fn.atm.a3_eq = call i1 @value_equals(%Value %fn.atm.a3v, %Value %fn.ar0_val)
+  ret i1 %fn.atm.a3_eq
+
+fn.bind_both:
+  ; Bind A2 = Atom(functor_name_ptr)
+  %fn.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fn.a2_unb = call i1 @value_is_unbound(%Value %fn.a2)
+  br i1 %fn.a2_unb, label %fn.a2_bind, label %fn.a2_check
+
+fn.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.name_val)
+  br label %fn.a3
+
+fn.a2_check:
+  %fn.a2_eq = call i1 @value_equals(%Value %fn.a2, %Value %fn.name_val)
+  br i1 %fn.a2_eq, label %fn.a3, label %fn.fail
+
+fn.a3:
+  %fn.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.a3_unb = call i1 @value_is_unbound(%Value %fn.a3v)
+  br i1 %fn.a3_unb, label %fn.a3_bind, label %fn.a3_check
+
+fn.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar_val)
+  ret i1 true
+
+fn.a3_check:
+  %fn.a3_eq = call i1 @value_equals(%Value %fn.a3v, %Value %fn.ar_val)
+  ret i1 %fn.a3_eq
+
+fn.fail:
+  ret i1 false
+
+builtin_arg:
+  ; arg/3 — A1 = N (Integer, 1-based), A2 = Compound, A3 = Arg.
+  ; Extracts args[N-1] and unifies with A3. Fails if A1 is not Integer,
+  ; A2 is not Compound, or N is out of range.
+  %ag.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ag.a1_tag = call i32 @value_tag(%Value %ag.a1)
+  %ag.a1_is_int = icmp eq i32 %ag.a1_tag, 1
+  br i1 %ag.a1_is_int, label %ag.check_a2, label %ag.fail
+
+ag.check_a2:
+  %ag.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ag.a2_tag = call i32 @value_tag(%Value %ag.a2)
+  %ag.a2_is_cp = icmp eq i32 %ag.a2_tag, 3
+  br i1 %ag.a2_is_cp, label %ag.extract, label %ag.fail
+
+ag.extract:
+  %ag.n_i64 = call i64 @value_payload(%Value %ag.a1)
+  %ag.n = trunc i64 %ag.n_i64 to i32
+  %ag.cp_bits = call i64 @value_payload(%Value %ag.a2)
+  %ag.cp_ptr = inttoptr i64 %ag.cp_bits to %Compound*
+  %ag.ar_slot = getelementptr %Compound, %Compound* %ag.cp_ptr, i32 0, i32 1
+  %ag.ar = load i32, i32* %ag.ar_slot
+  %ag.n_ge1 = icmp sge i32 %ag.n, 1
+  %ag.n_le_ar = icmp sle i32 %ag.n, %ag.ar
+  %ag.n_ok = and i1 %ag.n_ge1, %ag.n_le_ar
+  br i1 %ag.n_ok, label %ag.load, label %ag.fail
+
+ag.load:
+  %ag.args_slot = getelementptr %Compound, %Compound* %ag.cp_ptr, i32 0, i32 2
+  %ag.args = load %Value*, %Value** %ag.args_slot
+  %ag.idx = sub i32 %ag.n, 1
+  %ag.arg_ptr = getelementptr %Value, %Value* %ag.args, i32 %ag.idx
+  %ag.arg_val = load %Value, %Value* %ag.arg_ptr
+  ; Unify A3 with args[N-1]
+  %ag.a3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %ag.a3_unb = call i1 @value_is_unbound(%Value %ag.a3)
+  br i1 %ag.a3_unb, label %ag.a3_bind, label %ag.a3_check
+
+ag.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %ag.arg_val)
+  ret i1 true
+
+ag.a3_check:
+  %ag.a3_eq = call i1 @value_equals(%Value %ag.a3, %Value %ag.arg_val)
+  ret i1 %ag.a3_eq
+
+ag.fail:
   ret i1 false
 
 unknown:
@@ -2960,17 +3143,33 @@ emit_functor_string_globals(IR) :-
     ).
 
 %% sanitize_functor_for_llvm(+Name, -Sanitized)
-%  Replace characters invalid in LLVM identifiers with descriptive names.
+%  Produce a bijective LLVM-identifier encoding of Name. Alphanumeric
+%  bytes pass through unchanged; everything else (including underscore)
+%  is hex-escaped as `_HH`. Bijectivity matters: two distinct functor
+%  strings must never collapse to the same LLVM global name, or we get
+%  `redefinition of global` when llc sees the bench module (which
+%  references e.g. both `+` and `*` as functors).
 sanitize_functor_for_llvm(Name, Sanitized) :-
     string_codes(Name, Codes),
-    maplist(sanitize_char, Codes, SanCodes),
+    sanitize_codes(Codes, SanCodes),
     string_codes(Sanitized, SanCodes).
 
-sanitize_char(C, C) :- C >= 0'a, C =< 0'z, !.
-sanitize_char(C, C) :- C >= 0'A, C =< 0'Z, !.
-sanitize_char(C, C) :- C >= 0'0, C =< 0'9, !.
-sanitize_char(0'_, 0'_) :- !.
-sanitize_char(_, 0'_).
+sanitize_codes([], []).
+sanitize_codes([C|Cs], [C|Out]) :-
+    ( C >= 0'a, C =< 0'z
+    ; C >= 0'A, C =< 0'Z
+    ; C >= 0'0, C =< 0'9
+    ), !,
+    sanitize_codes(Cs, Out).
+sanitize_codes([C|Cs], [0'_,H,L|Out]) :-
+    Hi is (C >> 4) /\ 0xF,
+    Lo is C /\ 0xF,
+    hex_digit(Hi, H),
+    hex_digit(Lo, L),
+    sanitize_codes(Cs, Out).
+
+hex_digit(N, C) :- N < 10, !, C is N + 0'0.
+hex_digit(N, C) :- C is N - 10 + 0'A.
 :- dynamic atom_table_entry/2.   % atom_table_entry(AtomName, Id)
 :- dynamic atom_table_next_id/1. % atom_table_next_id(NextId)
 atom_table_next_id(1).           % Start from 1; 0 reserved for empty
@@ -3024,6 +3223,8 @@ builtin_op_to_id('succ/2', 22).
 builtin_op_to_id('plus/3', 23).
 builtin_op_to_id('=/2', 24).
 builtin_op_to_id('\\=/2', 25).
+builtin_op_to_id('functor/3', 26).
+builtin_op_to_id('arg/3', 27).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -3421,7 +3622,13 @@ wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
     llvm_pack_value_str(CC, PackedVal),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, RegIdx),
-    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }', [PackedVal, RegIdx]).
+    % Encode op2 = (tag << 16) | reg_idx. Integers get tag 1, atoms get
+    % tag 0. Previously the runtime hardcoded tag 0, which mis-tagged
+    % every integer constant — surface symptom was arg/3 having to accept
+    % tag 0 or 1 for its N argument.
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_line_to_llvm_literal(["put_variable", Xn, Ai], Lit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
