@@ -232,6 +232,32 @@ collectSolutions !ctx s0 hopsVarId =
           Just _ -> hops : rest
           Nothing -> rest
 
+-- | Collect all Hops solutions via executeForeign dispatch.
+-- Used when the query predicate has an FFI kernel — bypasses WAM
+-- code and calls the native kernel directly. The first result comes
+-- from executeForeign; subsequent results via backtrack through the
+-- ChoicePoints that executeForeign created. After backtrack, the
+-- FFIStreamRetry handler binds the next result directly — no run needed.
+collectForeignSolutions :: WamContext -> String -> WamState -> Int -> [Double]
+collectForeignSolutions !ctx pred s0 hopsVarId =
+    case executeForeign ctx pred s0 of
+      Nothing -> []
+      Just s1 -> extractFfiAndBacktrack ctx pred s1 hopsVarId
+
+-- | Extract the hops value from an FFI result state, then backtrack for more.
+extractFfiAndBacktrack :: WamContext -> String -> WamState -> Int -> [Double]
+extractFfiAndBacktrack !ctx pred s1 hopsVarId =
+    let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
+          Just v -> extractDouble (derefVar (wsBindings s1) v)
+          Nothing -> Nothing
+        hops = fromMaybe 0 hopsVal
+        rest = case backtrack s1 of
+          Just s2 -> extractFfiAndBacktrack ctx pred s2 hopsVarId
+          Nothing -> []
+    in case hopsVal of
+      Just _ -> hops : rest
+      Nothing -> rest
+
 -- | Extract a Double from a Value.
 extractDouble :: Value -> Maybe Double
 extractDouble (Integer h) = Just (fromIntegral h)

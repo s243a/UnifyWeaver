@@ -2253,7 +2253,13 @@ generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
-    generate_query_body(Options, QueryBody),
+    % When kernels are detected, the query body should use executeForeign
+    % dispatch instead of running WAM code (fact code is skipped).
+    (   DetectedKernels \= []
+    ->  QueryOptions = [use_ffi(true)|Options]
+    ;   QueryOptions = Options
+    ),
+    generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
@@ -2304,6 +2310,13 @@ generate_query_body(Options, QueryBody) :-
         format(atom(QueryBody),
 'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
             [QueryPred1])
+    ;   member(use_ffi(true), Options)
+    ->  % FFI path: call executeForeign directly instead of running WAM code.
+        % When the query predicate has an FFI kernel, the WAM code's internal
+        % Call "category_parent/2" would fail (fact code is skipped). Use
+        % collectForeignSolutions which calls the native kernel directly.
+        QueryBody =
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ;   % Default: collectSolutions loop for category_ancestor/4
         QueryBody =
 'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
