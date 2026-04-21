@@ -39,6 +39,12 @@
     demand_spec_guard_points/2,       % +DemandSpec, -GuardPoints
     demand_spec_edge_direction/2,     % +DemandSpec, -direction(FromPos, ToPos)
 
+    %% Guard emission — Prolog clause generation
+    demand_guard_pred_name/2,         % +DemandSpec, -GuardPredName
+    generate_demand_init/3,           % +DemandSpec, +TargetFacts, -InitClause
+    generate_guarded_clauses/3,       % +DemandSpec, +OrigClauses, -GuardedClauses
+    compute_demand_set/3,             % +DemandSpec, +TargetValues, -DemandSet
+
     %% Convenience
     is_demand_eligible/3              % +Pred, +Arity, +Clauses
 ]).
@@ -81,9 +87,11 @@ detect_demand_eligible(Pred, Arity, Clauses, DemandSpec) :-
     %    the "from" (current node) and which is "to" (next hop).
     detect_edge_direction(Pred, Arity, RecBody, EdgePred/EdgeArity, EdgeDirection),
     % 7. Find guard insertion points (after edge call, before recursive call)
+    %    ClauseIdx is the index in the FULL clause list (not just recursive).
     findall(
         guard_point(ClauseIdx, GoalIdx, GuardVar),
-        (   nth0(ClauseIdx, RecClauses, _CH-CB),
+        (   nth0(ClauseIdx, Clauses, CH-CB),
+            is_recursive_clause(Pred, Arity, CH-CB),
             find_guard_point(Pred, Arity, CB, EdgePred/EdgeArity, GoalIdx, GuardVar)
         ),
         GuardPoints
@@ -346,3 +354,155 @@ is_builtin_pred(true/0).
 is_builtin_pred(fail/0).
 is_builtin_pred(max_depth/1).
 is_builtin_pred(dimension_n/1).
+
+%% ========================================================================
+%% Guard emission — Prolog clause generation (Phase D2)
+%% ========================================================================
+
+%% demand_guard_pred_name(+DemandSpec, -GuardPredName)
+%  The name of the demand guard predicate. For category_ancestor/4 with
+%  edge category_parent/2, this is `can_reach_via_category_parent`.
+demand_guard_pred_name(DemandSpec, GuardPredName) :-
+    demand_spec_edge_pred(DemandSpec, EdgePred/_),
+    atom_concat('can_reach_via_', EdgePred, GuardPredName).
+
+%% compute_demand_set(+DemandSpec, +TargetValues, -DemandSet)
+%  Compute the backward-reachable demand set from TargetValues using
+%  the edge predicate. DemandSet is a sorted list of all values that
+%  can reach any value in TargetValues via the edge predicate.
+%
+%  This is a runtime operation — it calls the edge predicate to enumerate
+%  edges. Requires the edge predicate facts to be loaded.
+%
+%  The algorithm is a backward BFS fixpoint:
+%    1. Seed with TargetValues
+%    2. For each edge(From, To) where To is in the current set, add From
+%    3. Repeat until no new values are added
+compute_demand_set(DemandSpec, TargetValues, DemandSet) :-
+    demand_spec_edge_pred(DemandSpec, EdgePred/2),
+    demand_spec_edge_direction(DemandSpec, direction(_FromPos, ToPos)),
+    (ToPos =:= 2 -> Reverse = forward ; Reverse = backward),
+    list_to_ord_set(TargetValues, Seed),
+    bfs_fixpoint(EdgePred, Reverse, Seed, Seed, DemandSet).
+
+%% bfs_fixpoint(+EdgePred, +Direction, +Frontier, +Visited, -FinalSet)
+%  Expand the frontier by one BFS layer via the edge predicate.
+%  Direction = forward means edge(From, To), backward reachability
+%  adds From when To is in frontier. Direction = backward means edge(To, From).
+bfs_fixpoint(EdgePred, Direction, Frontier, Visited, FinalSet) :-
+    findall(New,
+        (   member(Node, Frontier),
+            edge_neighbor(EdgePred, Direction, Node, New),
+            \+ ord_memberchk(New, Visited)
+        ),
+        NewNodes0),
+    sort(NewNodes0, NewNodes),
+    (   NewNodes == []
+    ->  FinalSet = Visited
+    ;   ord_union(Visited, NewNodes, Visited1),
+        bfs_fixpoint(EdgePred, Direction, NewNodes, Visited1, FinalSet)
+    ).
+
+%% edge_neighbor(+EdgePred, +Direction, +Node, -Neighbor)
+%  Find a neighbor of Node via the edge predicate.
+%  For backward reachability (demand), we want nodes that can REACH Node.
+%  If edge is category_parent(Child, Parent) and direction=forward,
+%  backward reachability from Parent finds Child (From=Child when To=Parent).
+edge_neighbor(EdgePred, forward, Node, Neighbor) :-
+    % edge(Neighbor, Node) — find sources that reach Node
+    Call =.. [EdgePred, Neighbor, Node],
+    call(Call).
+edge_neighbor(EdgePred, backward, Node, Neighbor) :-
+    % edge(Node, Neighbor) — reversed
+    Call =.. [EdgePred, Node, Neighbor],
+    call(Call).
+
+%% generate_demand_init(+DemandSpec, +TargetFact, -InitClause)
+%  Generate a Prolog clause for `init_demand/0` that:
+%    1. Retracts any existing demand guard facts
+%    2. Seeds the guard with all values from TargetFact
+%    3. Runs backward BFS fixpoint over the edge predicate
+%    4. Asserts can_reach_via_<edge>(X) for each reachable value
+%
+%  TargetFact is the predicate that provides seed values (e.g., root_category/1).
+%  InitClause is a (Head :- Body) term ready for assert or write.
+generate_demand_init(DemandSpec, TargetFact/TargetArity, InitClause) :-
+    demand_guard_pred_name(DemandSpec, GuardPred),
+    demand_spec_edge_pred(DemandSpec, EdgePred/2),
+    demand_spec_edge_direction(DemandSpec, direction(_FromPos, ToPos)),
+    % Build the retractall goal
+    RetractArg =.. [GuardPred, _],
+    RetractGoal = retractall(RetractArg),
+    % Build the seed assertion loop
+    length(SeedArgs, TargetArity),
+    SeedCall =.. [TargetFact|SeedArgs],
+    (   TargetArity =:= 1
+    ->  SeedArgs = [SeedVal]
+    ;   SeedArgs = [_, SeedVal|_]  % take second arg as the value
+    ),
+    AssertSeed =.. [GuardPred, SeedVal],
+    SeedLoop = forall(SeedCall, assert(AssertSeed)),
+    % Build the fixpoint loop
+    %   For backward reachability with edge(From, To):
+    %   find From where To is in guard set, From is not
+    (   ToPos =:= 2
+    ->  FixCall =.. [EdgePred, NewNode, ReachedNode]
+    ;   FixCall =.. [EdgePred, ReachedNode, NewNode]
+    ),
+    GuardCheck =.. [GuardPred, ReachedNode],
+    NotGuardCheck =.. [GuardPred, NewNode],
+    AssertNew =.. [GuardPred, NewNode],
+    FixpointBody = (
+        repeat,
+        (   FixCall,
+            GuardCheck,
+            \+ NotGuardCheck
+        ->  assert(AssertNew), fail
+        ;   !
+        )
+    ),
+    % Assemble init_demand/0
+    InitClause = (init_demand :- (RetractGoal, SeedLoop, FixpointBody)).
+
+%% generate_guarded_clauses(+DemandSpec, +OrigClauses, -GuardedClauses)
+%  Takes the original Head-Body clause pairs and returns new pairs with
+%  demand guards inserted at the guard points identified by the spec.
+%  Only recursive clauses are modified; base clauses pass through unchanged.
+generate_guarded_clauses(DemandSpec, OrigClauses, GuardedClauses) :-
+    demand_spec_guard_points(DemandSpec, GuardPoints),
+    demand_guard_pred_name(DemandSpec, GuardPred),
+    DemandSpec = demand_spec(Pred/Arity, _, _, _, _, _),
+    generate_guarded_clauses_(OrigClauses, Pred, Arity, GuardPred, GuardPoints, 0, GuardedClauses).
+
+generate_guarded_clauses_([], _, _, _, _, _, []).
+generate_guarded_clauses_([Head-Body|Rest], Pred, Arity, GuardPred, GuardPoints, ClauseIdx, [Head-NewBody|RestOut]) :-
+    (   is_recursive_clause(Pred, Arity, Head-Body),
+        member(guard_point(ClauseIdx, GoalIdx, GuardVar), GuardPoints)
+    ->  insert_guard_in_body(Body, GoalIdx, GuardPred, GuardVar, NewBody)
+    ;   NewBody = Body
+    ),
+    ClauseIdx1 is ClauseIdx + 1,
+    generate_guarded_clauses_(Rest, Pred, Arity, GuardPred, GuardPoints, ClauseIdx1, RestOut).
+
+%% insert_guard_in_body(+Body, +GoalIdx, +GuardPred, +GuardVar, -NewBody)
+%  Insert `GuardPred(GuardVar)` at position GoalIdx in the conjunction.
+insert_guard_in_body(Body, GoalIdx, GuardPred, GuardVar, NewBody) :-
+    body_to_goals(Body, Goals),
+    GuardGoal =.. [GuardPred, GuardVar],
+    insert_at(GoalIdx, GuardGoal, Goals, NewGoals),
+    goals_to_body(NewGoals, NewBody).
+
+%% insert_at(+Idx, +Elem, +List, -Result)
+%  Insert Elem at position Idx (0-based) in List.
+insert_at(0, Elem, List, [Elem|List]) :- !.
+insert_at(N, Elem, [H|T], [H|R]) :-
+    N > 0,
+    N1 is N - 1,
+    insert_at(N1, Elem, T, R).
+
+%% goals_to_body(+Goals, -Body)
+%  Reconstruct a conjunction from a list of goals.
+goals_to_body([], true).
+goals_to_body([G], G) :- !.
+goals_to_body([G|Rest], (G, RestBody)) :-
+    goals_to_body(Rest, RestBody).

@@ -55,6 +55,9 @@ test(test_guard_point_detection).
 test(test_edge_direction_detection).
 test(test_simple_transitive_closure).
 test(test_is_demand_eligible_convenience).
+test(test_guard_pred_name).
+test(test_generate_guarded_clauses).
+test(test_generate_demand_init).
 
 %% ========================================================================
 %% Setup: mock mode declarations
@@ -225,4 +228,48 @@ test_is_demand_eligible_convenience :-
     (   is_demand_eligible(category_ancestor, 4, Pairs)
     ->  pass(Test)
     ;   fail_test(Test, 'convenience predicate failed')
+    ).
+
+%% ========================================================================
+%% Phase D2 tests — guard emission
+%% ========================================================================
+
+test_guard_pred_name :-
+    Test = 'Demand D2: guard pred name derived from edge pred',
+    ca_clauses(Clauses),
+    clauses_to_pairs(Clauses, Pairs),
+    (   detect_demand_eligible(category_ancestor, 4, Pairs, Spec),
+        demand_guard_pred_name(Spec, Name),
+        Name == can_reach_via_category_parent
+    ->  pass(Test)
+    ;   fail_test(Test, 'wrong guard pred name')
+    ).
+
+test_generate_guarded_clauses :-
+    Test = 'Demand D2: guarded clauses have guard goal inserted',
+    ca_clauses(Clauses),
+    clauses_to_pairs(Clauses, Pairs),
+    (   detect_demand_eligible(category_ancestor, 4, Pairs, Spec),
+        generate_guarded_clauses(Spec, Pairs, GuardedPairs),
+        length(GuardedPairs, 2),
+        % The recursive clause (index 1) should contain the guard
+        nth0(1, GuardedPairs, _GHead-GBody),
+        term_to_atom(GBody, BodyAtom),
+        sub_atom(BodyAtom, _, _, _, 'can_reach_via_category_parent')
+    ->  pass(Test)
+    ;   fail_test(Test, 'guard not inserted in recursive clause')
+    ).
+
+test_generate_demand_init :-
+    Test = 'Demand D2: generate_demand_init produces init_demand clause',
+    ca_clauses(Clauses),
+    clauses_to_pairs(Clauses, Pairs),
+    (   detect_demand_eligible(category_ancestor, 4, Pairs, Spec),
+        generate_demand_init(Spec, root_category/1, InitClause),
+        InitClause = (init_demand :- _InitBody),
+        term_to_atom(InitClause, ClauseAtom),
+        sub_atom(ClauseAtom, _, _, _, 'retractall'),
+        sub_atom(ClauseAtom, _, _, _, 'can_reach_via_category_parent')
+    ->  pass(Test)
+    ;   fail_test(Test, 'init clause generation failed')
     ).
