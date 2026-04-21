@@ -159,6 +159,11 @@ namespace UnifyWeaver.QueryRuntime
         bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets);
     }
 
+    public interface IRelationCardinalityProvider : IRelationProvider
+    {
+        bool TryGetRelationCardinality(PredicateId predicate, out long rowCount);
+    }
+
     /// <summary>
     /// Base class for all query plan nodes.
     /// </summary>
@@ -2423,7 +2428,7 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
-    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IIndexedRelationBucketProvider
+    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IIndexedRelationBucketProvider, IRelationCardinalityProvider
     {
         private readonly IRelationProvider? _fallback;
         private readonly Dictionary<PredicateId, string> _manifestPaths = new();
@@ -2534,6 +2539,25 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             buckets = default!;
+            return false;
+        }
+
+        public bool TryGetRelationCardinality(PredicateId predicate, out long rowCount)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+                rowCount = manifest.RowCount;
+                return true;
+            }
+
+            if (_fallback is IRelationCardinalityProvider cardinalityFallback &&
+                cardinalityFallback.TryGetRelationCardinality(predicate, out rowCount))
+            {
+                return true;
+            }
+
+            rowCount = 0;
             return false;
         }
     }
@@ -10103,87 +10127,91 @@ namespace UnifyWeaver.QueryRuntime
                 return false;
             }
 
-            rows = EnumerateIndexedProviderBucketJoinRows(
-                join,
-                leftBuckets,
-                leftPattern,
-                leftFilter,
-                rightBuckets,
-                rightPattern,
-                rightFilter);
+            var buildLeft = true;
+            if (_provider is IRelationCardinalityProvider cardinalityProvider &&
+                cardinalityProvider.TryGetRelationCardinality(leftPredicate, out var leftCount) &&
+                cardinalityProvider.TryGetRelationCardinality(rightPredicate, out var rightCount))
+            {
+                buildLeft = leftCount <= rightCount;
+            }
+
+            rows = buildLeft
+                ? EnumerateIndexedProviderBucketHashJoinRows(
+                    join,
+                    buildBuckets: leftBuckets,
+                    buildPattern: leftPattern,
+                    buildFilter: leftFilter,
+                    probeBuckets: rightBuckets,
+                    probePattern: rightPattern,
+                    probeFilter: rightFilter,
+                    buildOnLeft: true)
+                : EnumerateIndexedProviderBucketHashJoinRows(
+                    join,
+                    buildBuckets: rightBuckets,
+                    buildPattern: rightPattern,
+                    buildFilter: rightFilter,
+                    probeBuckets: leftBuckets,
+                    probePattern: leftPattern,
+                    probeFilter: leftFilter,
+                    buildOnLeft: false);
             return true;
         }
 
-        private static IEnumerable<object[]> EnumerateIndexedProviderBucketJoinRows(
+        private static IEnumerable<object[]> EnumerateIndexedProviderBucketHashJoinRows(
             KeyJoinNode join,
-            IEnumerable<IndexedRelationBucket> leftBuckets,
-            object[]? leftPattern,
-            Func<object[], bool>? leftFilter,
-            IEnumerable<IndexedRelationBucket> rightBuckets,
-            object[]? rightPattern,
-            Func<object[], bool>? rightFilter)
+            IEnumerable<IndexedRelationBucket> buildBuckets,
+            object[]? buildPattern,
+            Func<object[], bool>? buildFilter,
+            IEnumerable<IndexedRelationBucket> probeBuckets,
+            object[]? probePattern,
+            Func<object[], bool>? probeFilter,
+            bool buildOnLeft)
         {
-            using var leftEnumerator = leftBuckets.GetEnumerator();
-            using var rightEnumerator = rightBuckets.GetEnumerator();
-            var hasLeft = leftEnumerator.MoveNext();
-            var hasRight = rightEnumerator.MoveNext();
-
-            while (hasLeft && hasRight)
+            var buildIndex = new Dictionary<string, List<object[]>>(StringComparer.Ordinal);
+            foreach (var bucket in buildBuckets)
             {
-                var comparison = CompareBucketKeys(leftEnumerator.Current.Key, rightEnumerator.Current.Key);
-                if (comparison < 0)
+                var buildRows = FilterBucketRows(bucket.Rows, buildPattern, buildFilter);
+                if (buildRows.Count == 0)
                 {
-                    hasLeft = leftEnumerator.MoveNext();
                     continue;
                 }
 
-                if (comparison > 0)
-                {
-                    hasRight = rightEnumerator.MoveNext();
-                    continue;
-                }
-
-                var rightRows = FilterBucketRows(rightEnumerator.Current.Rows, rightPattern, rightFilter);
-                if (rightRows.Count == 0)
-                {
-                    hasLeft = leftEnumerator.MoveNext();
-                    hasRight = rightEnumerator.MoveNext();
-                    continue;
-                }
-
-                foreach (var leftRow in leftEnumerator.Current.Rows)
-                {
-                    if (leftRow is null)
-                    {
-                        continue;
-                    }
-
-                    if (leftPattern is not null && !TupleMatchesPattern(leftRow, leftPattern))
-                    {
-                        continue;
-                    }
-
-                    if (leftFilter is not null && !leftFilter(leftRow))
-                    {
-                        continue;
-                    }
-
-                    foreach (var rightRow in rightRows)
-                    {
-                        yield return BuildJoinOutput(leftRow, rightRow, join.LeftWidth, join.RightWidth, join.Width);
-                    }
-                }
-
-                hasLeft = leftEnumerator.MoveNext();
-                hasRight = rightEnumerator.MoveNext();
+                buildIndex[bucket.Key?.ToString() ?? string.Empty] = buildRows;
             }
-        }
 
-        private static int CompareBucketKeys(object left, object right)
-        {
-            var leftKey = left?.ToString() ?? string.Empty;
-            var rightKey = right?.ToString() ?? string.Empty;
-            return string.CompareOrdinal(leftKey, rightKey);
+            foreach (var probeBucket in probeBuckets)
+            {
+                var key = probeBucket.Key?.ToString() ?? string.Empty;
+                if (!buildIndex.TryGetValue(key, out var buildRows))
+                {
+                    continue;
+                }
+
+                foreach (var probeRow in probeBucket.Rows)
+                {
+                    if (probeRow is null)
+                    {
+                        continue;
+                    }
+
+                    if (probePattern is not null && !TupleMatchesPattern(probeRow, probePattern))
+                    {
+                        continue;
+                    }
+
+                    if (probeFilter is not null && !probeFilter(probeRow))
+                    {
+                        continue;
+                    }
+
+                    foreach (var buildRow in buildRows)
+                    {
+                        yield return buildOnLeft
+                            ? BuildJoinOutput(buildRow, probeRow, join.LeftWidth, join.RightWidth, join.Width)
+                            : BuildJoinOutput(probeRow, buildRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+            }
         }
 
         private static List<object[]> FilterBucketRows(
