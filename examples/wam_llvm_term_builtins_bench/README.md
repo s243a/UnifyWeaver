@@ -152,21 +152,41 @@ and returned `ret i1 false` unconditionally.
 | `bench_copy_flat`    | `copy_term/2`            | implemented (opcode 29) — this PR              |
 | `bench_copy_nested`  | `copy_term/2`            | same                                           |
 
-### `bench_term_depth` FAIL — separate ITE + register-aliasing issue
+### `bench_term_depth` FAIL — put_variable register-aliasing + structural unification
 
-With cut_ite/jump in place, `term_depth/2` compiles cleanly through
-llc but the runtime returns 0. Probably `put_variable Xn, Ai` in the
-LLVM target doesn't create a SHARED heap cell between Xn and Ai —
-it puts two independent `Unbound` Value structs in the two register
-slots. When a cross-pred `call` binds Ai to the callee's result, Xn
-remains unbound, so subsequent reads (e.g. the `>/2` guard in
-`term_depth_args`'s ITE) compare against an unbound payload.
+`term_depth/2` compiles cleanly through llc but returns 0 at runtime.
+Root cause is `put_variable Xn, Ai` in the LLVM target: it stores two
+independent `Unbound` Value structs in Xn and Ai rather than Refs to
+a shared heap cell. When a cross-pred `call` binds Ai to the callee's
+result, Xn remains unbound, and the next `>/2` guard in
+`term_depth_args`'s ITE compares against an unbound payload.
 
 `bench_fib10` exercises the same shape but passes — its wrapper only
 checks whether `@run_loop` returned `i1 true`, not the computed result.
-`bench_term_depth`'s WAM path probably fails a guard that a correct
-impl would pass, causing `run_loop → false`. Separate follow-up;
-orthogonal to this PR's scope.
+`bench_term_depth` has a conditional path that fails a guard under the
+broken aliasing, so `run_loop → false`.
+
+**Attempted fix** (rolled back in this branch's history): introduced
+`@wam_deref_value`, `@wam_bind_reg`, `@wam_get_reg_deref` helpers in
+`state.ll.mustache`; changed `put_variable` to allocate a heap cell
+and store `Ref{addr}` in both registers; routed all binding sites
+(`get_constant`, `get_value`, `builtin_is`, comparison builtins, type
+checks, `functor/arg/univ/copy_term`) through the new deref/bind
+helpers. Result: `bench_unify` started failing because `X = foo(a,b,c),
+X = foo(a,b,c)` now correctly binds A1 to the first compound on the
+first `=/2`, and the second `=/2` compares pointers on two structurally
+equal but physically distinct compounds — the existing `value_equals`
+is shallow (pointer compare), not structural. So the Ref fix exposes a
+latent gap in the unification implementation.
+
+A proper fix therefore needs both:
+  1. Ref-based put_variable (aliased heap cell); and
+  2. Structural unification in `value_equals` / builtin_unify, including
+     walking compound args recursively with cycle detection.
+
+Out of scope for this PR; the state.ll.mustache helpers would have
+been useful infrastructure but are omitted until the unification story
+is settled.
 
 ### `put_constant` tag fix (landed in this PR)
 

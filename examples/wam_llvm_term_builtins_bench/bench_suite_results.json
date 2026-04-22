@@ -2,18 +2,18 @@
   "engine": "wam-llvm-native-aarch64",
   "iterations": 1000,
   "results": [
-    {"workload": "bench_true", "ns_per_call": 58201.82, "ok": true},
-    {"workload": "bench_is_arith", "ns_per_call": 64085.52, "ok": true},
-    {"workload": "bench_unify", "ns_per_call": 76063.28, "ok": true},
-    {"workload": "bench_functor_read", "ns_per_call": 101759.32, "ok": true},
-    {"workload": "bench_arg_read", "ns_per_call": 132349.22, "ok": true},
-    {"workload": "bench_univ_decomp", "ns_per_call": 232372.19, "ok": true},
-    {"workload": "bench_copy_flat", "ns_per_call": 189050.36, "ok": true},
-    {"workload": "bench_copy_nested", "ns_per_call": 38027.19, "ok": true},
-    {"workload": "bench_sum_small", "ns_per_call": 36738.33, "ok": true},
-    {"workload": "bench_sum_medium", "ns_per_call": 36613.85, "ok": true},
-    {"workload": "bench_sum_big", "ns_per_call": 37062.61, "ok": true},
-    {"workload": "bench_term_depth", "ns_per_call": 51535.47, "ok": false},
-    {"workload": "bench_fib10", "ns_per_call": 38370.21, "ok": true}
+    {"workload": "bench_true", "ns_per_call": 60842.81, "ok": true},
+    {"workload": "bench_is_arith", "ns_per_call": 56688.07, "ok": true},
+    {"workload": "bench_unify", "ns_per_call": 70389.01, "ok": true},
+    {"workload": "bench_functor_read", "ns_per_call": 95325.31, "ok": true},
+    {"workload": "bench_arg_read", "ns_per_call": 203716.20, "ok": true},
+    {"workload": "bench_univ_decomp", "ns_per_call": 429928.18, "ok": true},
+    {"workload": "bench_copy_flat", "ns_per_call": 187533.96, "ok": true},
+    {"workload": "bench_copy_nested", "ns_per_call": 31840.62, "ok": true},
+    {"workload": "bench_sum_small", "ns_per_call": 31330.52, "ok": true},
+    {"workload": "bench_sum_medium", "ns_per_call": 39219.22, "ok": true},
+    {"workload": "bench_sum_big", "ns_per_call": 53125.16, "ok": true},
+    {"workload": "bench_term_depth", "ns_per_call": 80856.25, "ok": false},
+    {"workload": "bench_fib10", "ns_per_call": 59485.47, "ok": true}
   ]
 }
