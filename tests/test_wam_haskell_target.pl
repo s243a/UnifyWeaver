@@ -1125,9 +1125,67 @@ test_f4_stream_fact_rows_helper :-
     ;   fail_test(Test, 'streamFactRows helper not found')
     ).
 
+%% E2E: fact access wiring tests
+%% -----------------------------------------------
+
+test_e2e_inline_data_project_has_call_fact_stream :-
+    Test = 'E2E: inline_data project emits CallFactStream in allCode',
+    (   retractall(user:e2e_edge(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(src_, A, S),
+            atom_concat(dst_, A, D),
+            assert(user:e2e_edge(S, D))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [e2e_edge/2], [fact_count_threshold(5)], Code, InlineDefs),
+        atom_string(Code, CS),
+        sub_string(CS, _, _, _, "CallFactStream"),
+        InlineDefs = [inline_fact(_, _, _)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream not in allCode or InlineDefs missing')
+    ),
+    retractall(user:e2e_edge(_, _)).
+
+test_e2e_inline_facts_wiring_generated :-
+    Test = 'E2E: generate_inline_facts_wiring produces wcInlineFacts code',
+    (   InlineDefs = [inline_fact("my_pred", 'myPredFacts', "...")],
+        wam_haskell_target:generate_inline_facts_wiring(InlineDefs, Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "wcInlineFacts"),
+        sub_string(S, _, _, _, "\"my_pred\""),
+        sub_string(S, _, _, _, "myPredFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcInlineFacts wiring code not generated correctly')
+    ).
+
+test_e2e_empty_inline_defs_no_wiring :-
+    Test = 'E2E: empty InlineDefs produces no wcInlineFacts wiring',
+    (   wam_haskell_target:generate_inline_facts_wiring([], Code),
+        Code == ''
+    ->  pass(Test)
+    ;   fail_test(Test, 'Empty InlineDefs should produce empty wiring code')
+    ).
+
+test_e2e_below_threshold_no_inline :-
+    Test = 'E2E: below-threshold project has no CallFactStream or inline facts',
+    (   retractall(user:e2e_sm(_, _)),
+        assert(user:e2e_sm(x, y)),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [e2e_sm/2], [fact_count_threshold(5)], Code, InlineDefs),
+        atom_string(Code, CS),
+        \+ sub_string(CS, _, _, _, "CallFactStream"),
+        InlineDefs == []
+    ->  pass(Test)
+    ;   fail_test(Test, 'Below-threshold should have no CallFactStream or InlineDefs')
+    ),
+    retractall(user:e2e_sm(_, _)).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -1217,6 +1275,11 @@ run_tests :-
     test_f4_intmap_fact_source_function,
     test_f4_stream_facts_fallback_to_fact_sources,
     test_f4_stream_fact_rows_helper,
+    %% E2E: fact access wiring
+    test_e2e_inline_data_project_has_call_fact_stream,
+    test_e2e_inline_facts_wiring_generated,
+    test_e2e_empty_inline_defs_no_wiring,
+    test_e2e_below_threshold_no_inline,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

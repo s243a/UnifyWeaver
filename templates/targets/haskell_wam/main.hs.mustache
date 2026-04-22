@@ -149,6 +149,7 @@ main = do
             , wcLoweredPredicates = Lowered.loweredPredicates
             , wcInternTable   = fullInternTable
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
+{{inline_facts}}
             }
 
     t2 <- getCurrentTime
