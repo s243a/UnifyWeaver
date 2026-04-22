@@ -954,9 +954,118 @@ test_f2_fact_stream_exhaustion_backtracks :-
     ;   fail_test(Test, 'FactStream exhaustion backtrack not found')
     ).
 
+%% Phase F3: inline_data emission tests
+%% -----------------------------------------------
+
+test_f3_inline_data_emits_call_fact_stream :-
+    Test = 'F3: inline_data predicate emits CallFactStream instruction',
+    (   retractall(user:f3_big(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(parent_, A, P),
+            assert(user:f3_big(A, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_big/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream not emitted for inline_data predicate')
+    ),
+    retractall(user:f3_big(_, _)).
+
+test_f3_inline_data_emits_fact_literal :-
+    Test = 'F3: inline_data predicate emits fact literal list',
+    (   retractall(user:f3_lit(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(val_, A, V),
+            assert(user:f3_lit(A, V))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_lit/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "f3LitFacts :: [(Int, Int)]"),
+        sub_string(S, _, _, _, "inline fact data")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact literal list not emitted in Predicates.hs')
+    ),
+    retractall(user:f3_lit(_, _)).
+
+test_f3_below_threshold_stays_compiled :-
+    Test = 'F3: below-threshold predicate stays compiled (no CallFactStream)',
+    (   retractall(user:f3_sm(_, _)),
+        assert(user:f3_sm(a, b)),
+        assert(user:f3_sm(c, d)),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_sm/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Below-threshold predicate should not use CallFactStream')
+    ),
+    retractall(user:f3_sm(_, _)).
+
+test_f3_inline_defs_returned :-
+    Test = 'F3: compile_predicates_to_haskell returns InlineDefs',
+    (   retractall(user:f3_def(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(x_, A, X),
+            assert(user:f3_def(A, X))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_def/2], [fact_count_threshold(5)], _, InlineDefs),
+        InlineDefs = [inline_fact(_, _, _)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'InlineDefs not returned for inline_data predicate')
+    ),
+    retractall(user:f3_def(_, _)).
+
+test_f3_fact_tuples_extracted :-
+    Test = 'F3: extract_fact_tuples_hs extracts interned pairs',
+    (   init_atom_intern_table,
+        Lines = [
+            "pred/2:",
+            "    switch_on_constant a:default",
+            "    try_me_else L_pred_2_2",
+            "    get_constant alpha, A1",
+            "    get_constant beta, A2",
+            "    proceed",
+            "L_pred_2_2:",
+            "    trust_me",
+            "    get_constant gamma, A1",
+            "    get_constant delta, A2",
+            "    proceed"
+        ],
+        split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, Tuples),
+        length(Tuples, 2),
+        Tuples = [(Id1a, Id1b), (Id2a, Id2b)],
+        integer(Id1a), integer(Id1b),
+        integer(Id2a), integer(Id2b),
+        Id1a \= Id2a  % different first args
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact tuple extraction failed')
+    ).
+
+test_f3_camel_case_list_name :-
+    Test = 'F3: haskell_fact_list_name generates camelCase',
+    (   haskell_fact_list_name("category_parent", Name1),
+        Name1 == 'categoryParentFacts',
+        haskell_fact_list_name("edge", Name2),
+        Name2 == 'edgeFacts'
+    ->  pass(Test)
+    ;   fail_test(Test, 'camelCase list name generation failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1+F2 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1+F2+F3 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -1032,6 +1141,13 @@ run_tests :-
     test_f2_wc_inline_facts_field,
     test_f2_stream_facts_filters_bound_a1,
     test_f2_fact_stream_exhaustion_backtracks,
+    %% Phase F3: inline_data emission
+    test_f3_inline_data_emits_call_fact_stream,
+    test_f3_inline_data_emits_fact_literal,
+    test_f3_below_threshold_stays_compiled,
+    test_f3_inline_defs_returned,
+    test_f3_fact_tuples_extracted,
+    test_f3_camel_case_list_name,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

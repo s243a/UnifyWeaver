@@ -37,7 +37,11 @@
     haskell_fact_only/2,                 % +Segments, -Bool
     haskell_first_arg_groundness/3,      % +Segments, +Arity, -Status
     haskell_pick_layout/5,              % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
-    split_wam_into_segments/2            % +Lines, -Segments
+    split_wam_into_segments/2,           % +Lines, -Segments
+    % Phase F3: inline_data emission
+    extract_fact_tuples_hs/2,            % +Segments, -Tuples
+    haskell_fact_list_name/2,            % +PredName, -ListName
+    init_atom_intern_table/0             % reinitialize atom intern table
 ]).
 
 :- use_module(library(lists)).
@@ -3280,13 +3284,25 @@ executable ~w
 %  with proper PC offsets for each predicate. Phase F1: also classifies
 %  each predicate and emits classification comments in Predicates.hs.
 compile_predicates_to_haskell(Predicates, Options, Code) :-
-    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments),
+    compile_predicates_to_haskell(Predicates, Options, Code, _InlineDefs).
+
+%% compile_predicates_to_haskell(+Predicates, +Options, -Code, -InlineDefs)
+%  Extended version that also returns inline fact definitions for Main.hs wiring.
+compile_predicates_to_haskell(Predicates, Options, Code, InlineDefs) :-
+    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments, InlineDefs),
     atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
     atomic_list_concat(AllLabels, '\n    , ', LabelCode),
     (   ShapeComments == []
     ->  ShapeBlock = ""
     ;   atomic_list_concat(ShapeComments, '\n', ShapeLines),
         format(string(ShapeBlock), '\n-- Fact shape classification:\n~w\n', [ShapeLines])
+    ),
+    % Phase F3: collect inline fact literal definitions
+    (   InlineDefs == []
+    ->  InlineBlock = ""
+    ;   maplist([inline_fact(_, _, DefCode), DefCode]>>true, InlineDefs, DefCodes),
+        atomic_list_concat(DefCodes, '\n', InlineCode),
+        format(string(InlineBlock), '\n-- | Phase F3: inline fact data for FactStream predicates.\n~w\n', [InlineCode])
     ),
     format(string(Code),
 'module Predicates where
@@ -3306,10 +3322,10 @@ allLabels :: Map.Map String Int
 allLabels = Map.fromList
     [ ~w
     ]
-', [ShapeBlock, InstrCode, LabelCode]).
+~w', [ShapeBlock, InstrCode, LabelCode, InlineBlock]).
 
-compile_predicates_merged([], _, _, [], [], []).
-compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments) :-
+compile_predicates_merged([], _, _, [], [], [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
@@ -3321,15 +3337,79 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, All
     classify_fact_predicate(Pred/Arity, Lines, Options, ShapeInfo),
     format_fact_shape_comment_hs(Pred/Arity, ShapeInfo, Comment),
     format(user_error, '    ~w~n', [Comment]),
-    wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
-    % Phase 4.1: if the purity certificate says this predicate is
-    % safe to parallelize, rewrite its choice-point instructions
-    % (TryMeElse / RetryMeElse / TrustMe) to the Par* variants.
-    maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
-    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments),
+    ShapeInfo = fact_shape_info(_, _, _, Layout),
+    % Phase F3: if inline_data, emit fact literal + CallFactStream instead of WAM
+    (   Layout = inline_data(_), Arity == 2
+    ->  split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, FactTuples),
+        length(FactTuples, NTuples),
+        format(atom(PredNameAtom), '~w', [Pred]),
+        atom_string(PredNameAtom, PredNameStr),
+        haskell_fact_list_name(PredNameStr, ListName),
+        emit_inline_fact_literal(ListName, FactTuples, InlineDefCode),
+        format(string(LabelExpr), '("~w/~w", ~w)', [Pred, Arity, StartPC]),
+        format(string(InstrExpr), 'CallFactStream "~w" ~w', [Pred, Arity]),
+        InstrExprs = [InstrExpr],
+        LabelExprs = [LabelExpr],
+        NextPC is StartPC + 1,
+        InlineDefs = [inline_fact(PredNameStr, ListName, InlineDefCode)],
+        format(user_error, '    [F3] ~w/~w: emitting inline_data (~w tuples)~n',
+               [Pred, Arity, NTuples])
+    ;   % Normal compiled path
+        wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
+        maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
+        InlineDefs = []
+    ),
+    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments, RestInlineDefs),
     append(InstrExprs, RestInstrs, AllInstrs),
     append(LabelExprs, RestLabels, AllLabels),
-    AllComments = [Comment | RestComments].
+    AllComments = [Comment | RestComments],
+    append(InlineDefs, RestInlineDefs, AllInlineDefs).
+
+%% extract_fact_tuples_hs(+Segments, -Tuples)
+%  Extracts (InternedA1, InternedA2) pairs from classified fact segments.
+%  Each segment should contain get_constant instructions for A1 and A2.
+%  Atoms are interned via the compile-time intern table.
+extract_fact_tuples_hs(Segments, Tuples) :-
+    findall((Id1, Id2), (
+        member(_-Instrs, Segments),
+        member(get_constant(Val1, "A1"), Instrs),
+        member(get_constant(Val2, "A2"), Instrs),
+        intern_atom(Val1, Id1),
+        intern_atom(Val2, Id2)
+    ), Tuples).
+
+%% haskell_fact_list_name(+PredName, -ListName)
+%  Generate a Haskell identifier for the inline fact list.
+%  e.g., "category_parent" -> "categoryParentFacts"
+haskell_fact_list_name(PredName, ListName) :-
+    split_string(PredName, "_", "", Parts),
+    Parts = [First|Rest],
+    maplist([In, Out]>>(
+        string_chars(In, [C|Cs]),
+        upcase_atom(C, UC),
+        atom_chars(UC, [UCC]),
+        string_chars(Out, [UCC|Cs])
+    ), Rest, CamelRest),
+    atomic_list_concat([First|CamelRest], '', CamelName),
+    format(atom(ListName), '~wFacts', [CamelName]).
+
+%% emit_inline_fact_literal(+ListName, +Tuples, -Code)
+%  Emits a Haskell top-level definition for an inline fact list with
+%  interned atom ID tuples.
+emit_inline_fact_literal(ListName, Tuples, Code) :-
+    maplist([(Id1, Id2), Entry]>>(
+        format(string(Entry), '(~w, ~w)', [Id1, Id2])
+    ), Tuples, Entries),
+    (   Entries = []
+    ->  format(string(Code), '~w :: [(Int, Int)]\n~w = []\n', [ListName, ListName])
+    ;   Entries = [First|Rest],
+        format(string(FirstLine), '    [ ~w', [First]),
+        maplist([E, L]>>format(string(L), '    , ~w', [E]), Rest, RestLines),
+        append([FirstLine], RestLines, AllLines),
+        atomic_list_concat(AllLines, '\n', Body),
+        format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
+    ).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
