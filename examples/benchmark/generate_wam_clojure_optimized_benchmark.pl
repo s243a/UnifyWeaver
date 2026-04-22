@@ -15,6 +15,8 @@
 :- use_module('../../src/unifyweaver/targets/wam_clojure_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- discontiguous benchmark_article_category_by_article_artifact/1.
+:- discontiguous benchmark_category_parent_by_child_artifact/1.
 
 %% generate_wam_clojure_optimized_benchmark.pl
 %%
@@ -81,7 +83,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
     load_files(user:WorkloadPath, [silent(true), if(true)]),
     load_files(user:FactsPath, [silent(true), if(true)]),
     parse_benchmark_data_mode(DataModeAtom, DataMode),
-    parse_kernel_mode(OutputDir, KernelModeAtom, DataMode, KernelOptions),
+    parse_kernel_mode(OutputDir, VariantAtom, KernelModeAtom, DataMode, KernelOptions),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
 
@@ -94,7 +96,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
     maybe_assert_seeded_helper(VariantAtom),
     collect_wam_predicates(VariantAtom, KernelModeAtom, Predicates),
     collect_benchmark_data(BenchmarkData),
-    effective_distance_runner_code(OutputDir, KernelModeAtom, DataMode, BenchmarkData, RunnerCode),
+    effective_distance_runner_code(OutputDir, VariantAtom, KernelModeAtom, DataMode, BenchmarkData, RunnerCode),
     append([ [ module_name('wam-clojure-optimized-bench'),
                namespace('generated.wam_clojure_optimized_bench'),
                clojure_benchmark_data_mode(DataMode)
@@ -170,16 +172,17 @@ parse_kernel_mode(kernels_off, _DataMode, [
     no_kernels(true)
 ]).
 
-parse_kernel_mode(OutputDir, kernels_on, DataMode, [
+parse_kernel_mode(OutputDir, VariantAtom, kernels_on, DataMode, [
     foreign_predicates([category_parent/2, category_ancestor/4]),
     clojure_foreign_handlers([
         handler(category_parent/2, ParentHandlerCode),
         handler(category_ancestor/4, AncestorHandlerCode)
     ])
 ]) :-
-    category_parent_handler_code(OutputDir, DataMode, ParentHandlerCode),
-    category_ancestor_handler_code(OutputDir, DataMode, AncestorHandlerCode).
-parse_kernel_mode(_OutputDir, kernels_off, _DataMode, [
+    benchmark_effective_data_modes(VariantAtom, DataMode, _ArticleMode, ParentMode),
+    category_parent_handler_code(OutputDir, ParentMode, ParentHandlerCode),
+    category_ancestor_handler_code(OutputDir, ParentMode, AncestorHandlerCode).
+parse_kernel_mode(_OutputDir, _VariantAtom, kernels_off, _DataMode, [
     no_kernels(true)
 ]).
 
@@ -208,6 +211,17 @@ benchmark_declared_data_mode(Mode) :-
     memberchk(DeclaredMode, [auto, sidecar, artifact, inline]),
     Mode = DeclaredMode.
 
+benchmark_relation_declared_data_mode(Relation, Mode) :-
+    member(Name,
+           [ wam_clojure_benchmark_relation_data_mode,
+             benchmark_relation_data_mode
+           ]),
+    current_predicate(user:Name/2),
+    Goal =.. [Name, Relation, DeclaredMode],
+    once(call(user:Goal)),
+    memberchk(DeclaredMode, [auto, sidecar, artifact, inline]),
+    Mode = DeclaredMode.
+
 benchmark_fact_volume(RowCount) :-
     benchmark_fact_count(user:category_parent/2, ParentCount),
     benchmark_fact_count(user:article_category/2, ArticleCount),
@@ -229,9 +243,9 @@ category_parent_handler_code(OutputDir, sidecar, HandlerCode) :-
            "(let [edges-delay (delay (set (edn/read-string (slurp ~w))))] (fn [args] (contains? @edges-delay [(nth args 0) (nth args 1)])))",
            [CategoryParentPath]).
 category_parent_handler_code(OutputDir, artifact, HandlerCode) :-
-    benchmark_sidecar_file_path_literal(OutputDir, 'category_parent_by_child.edn', CategoryParentMapPath),
+    benchmark_sidecar_file_path_literal(OutputDir, 'category_parent_by_child.tsv', CategoryParentMapPath),
     format(string(HandlerCode),
-           "(let [parents-by-child-delay (delay (edn/read-string (slurp ~w)))] (fn [args] (let [child (nth args 0) parent (nth args 1)] (boolean (some #(= parent %) (get @parents-by-child-delay child []))))))",
+           "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp ~w) \"\\\\r?\\\\n\"))))] (fn [args] (let [child (nth args 0) parent (nth args 1)] (boolean (some #(= parent %) (get @parents-by-child-delay child []))))))",
            [CategoryParentMapPath]).
 category_parent_handler_code(_OutputDir, inline, HandlerCode) :-
     category_parent_handler_code(inline, HandlerCode).
@@ -241,7 +255,7 @@ category_parent_handler_code(sidecar, HandlerCode) :-
            []).
 category_parent_handler_code(artifact, HandlerCode) :-
     format(string(HandlerCode),
-           "(let [parents-by-child-delay (delay (edn/read-string (slurp \"data/generated/wam_clojure_optimized_bench/category_parent_by_child.edn\")))] (fn [args] (let [child (nth args 0) parent (nth args 1)] (boolean (some #(= parent %) (get @parents-by-child-delay child []))))))",
+           "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp \"data/generated/wam_clojure_optimized_bench/category_parent_by_child.tsv\") \"\\\\r?\\\\n\"))))] (fn [args] (let [child (nth args 0) parent (nth args 1)] (boolean (some #(= parent %) (get @parents-by-child-delay child []))))))",
            []).
 category_parent_handler_code(inline, HandlerCode) :-
     findall(Child-Parent,
@@ -266,9 +280,9 @@ category_ancestor_handler_code(OutputDir, sidecar, HandlerCode) :-
            [CategoryParentPath, MaxDepth]).
 category_ancestor_handler_code(OutputDir, artifact, HandlerCode) :-
     benchmark_max_depth_literal(MaxDepth),
-    benchmark_sidecar_file_path_literal(OutputDir, 'category_parent_by_child.edn', CategoryParentMapPath),
+    benchmark_sidecar_file_path_literal(OutputDir, 'category_parent_by_child.tsv', CategoryParentMapPath),
     format(string(HandlerCode),
-           "(let [parents-by-child-delay (delay (edn/read-string (slurp ~w))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get @parents-by-child-delay category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
+           "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp ~w) \"\\\\r?\\\\n\")))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get @parents-by-child-delay category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
            [CategoryParentMapPath, MaxDepth]).
 category_ancestor_handler_code(_OutputDir, inline, HandlerCode) :-
     category_ancestor_handler_code(inline, HandlerCode).
@@ -280,7 +294,7 @@ category_ancestor_handler_code(sidecar, HandlerCode) :-
 category_ancestor_handler_code(artifact, HandlerCode) :-
     benchmark_max_depth_literal(MaxDepth),
     format(string(HandlerCode),
-           "(let [parents-by-child-delay (delay (edn/read-string (slurp \"data/generated/wam_clojure_optimized_bench/category_parent_by_child.edn\"))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get @parents-by-child-delay category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
+           "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp \"data/generated/wam_clojure_optimized_bench/category_parent_by_child.tsv\") \"\\\\r?\\\\n\")))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get @parents-by-child-delay category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
            [MaxDepth]).
 category_ancestor_handler_code(inline, HandlerCode) :-
     benchmark_max_depth_literal(MaxDepth),
@@ -337,15 +351,16 @@ append_effective_distance_runner(OutputDir, RunnerCode) :-
         close(Stream)
     ).
 
-effective_distance_runner_code(OutputDir, KernelModeAtom, DataMode, BenchmarkData, Code) :-
+effective_distance_runner_code(OutputDir, VariantAtom, KernelModeAtom, DataMode, BenchmarkData, Code) :-
     benchmark_dimension_n_literal(DimensionN),
     benchmark_max_depth_literal(MaxDepth),
     benchmark_use_traversal_kernel_literal(KernelModeAtom, UseTraversalKernel),
     benchmark_sidecar_dir_literal(OutputDir, DataDirLiteral),
-    benchmark_article_categories_code(DataMode, DataDirLiteral, BenchmarkData, ArticleCategoriesCode),
-    benchmark_category_parents_code(DataMode, DataDirLiteral, BenchmarkData, CategoryParentsCode),
+    benchmark_effective_data_modes(VariantAtom, DataMode, ArticleMode, ParentMode),
+    benchmark_article_categories_code(ArticleMode, DataDirLiteral, BenchmarkData, ArticleCategoriesCode),
+    benchmark_category_parents_code(ParentMode, DataDirLiteral, BenchmarkData, CategoryParentsCode),
     benchmark_roots_code(DataMode, DataDirLiteral, BenchmarkData, RootsCode),
-    benchmark_derived_state_code(DataMode, DerivedStateCode),
+    benchmark_derived_state_code(ArticleMode, ParentMode, DerivedStateCode),
     format(string(Code),
 '
 ;; Effective-distance benchmark entrypoint generated from facts.pl.
@@ -436,10 +451,37 @@ effective_distance_runner_code(OutputDir, KernelModeAtom, DataMode, BenchmarkDat
            [DataDirLiteral, ArticleCategoriesCode, CategoryParentsCode, RootsCode, DerivedStateCode,
             DimensionN, MaxDepth, UseTraversalKernel]).
 
-benchmark_derived_state_code(artifact, Code) :-
+benchmark_effective_data_modes(_VariantAtom, sidecar, sidecar, sidecar).
+benchmark_effective_data_modes(_VariantAtom, inline, inline, inline).
+benchmark_effective_data_modes(VariantAtom, artifact, ArticleMode, ParentMode) :-
+    benchmark_effective_default_data_modes(VariantAtom, DefaultArticleMode, DefaultParentMode),
+    benchmark_effective_relation_mode(article_category, DefaultArticleMode, ArticleMode),
+    benchmark_effective_relation_mode(category_parent, DefaultParentMode, ParentMode).
+
+benchmark_effective_default_data_modes(accumulated, artifact, artifact).
+benchmark_effective_default_data_modes(seeded, sidecar, artifact).
+
+benchmark_effective_relation_mode(Relation, DefaultMode, Mode) :-
+    (   benchmark_relation_declared_data_mode(Relation, DeclaredMode),
+        DeclaredMode \== auto
+    ->  Mode = DeclaredMode
+    ;   Mode = DefaultMode
+    ).
+
+benchmark_derived_state_code(artifact, artifact, Code) :-
     Code = '(def benchmark-seed-categories-delay
   (delay (sort (set (mapcat identity (vals @benchmark-article-categories-by-article-delay))))))'.
-benchmark_derived_state_code(_DataMode, Code) :-
+benchmark_derived_state_code(sidecar, artifact, Code) :-
+    Code = '(def benchmark-article-categories-by-article-delay
+  (delay
+    (reduce (fn [acc [article category]]
+              (update acc article (fnil conj []) category))
+            {}
+            @benchmark-article-categories-delay)))
+
+(def benchmark-seed-categories-delay
+  (delay (sort (set (map second @benchmark-article-categories-delay)))))'.
+benchmark_derived_state_code(_ArticleMode, _ParentMode, Code) :-
     Code = '(def benchmark-parents-by-child-delay
   (delay
     (reduce (fn [acc [child parent]]
@@ -462,7 +504,15 @@ benchmark_article_categories_code(sidecar, _DataDirLiteral, _BenchmarkData, Code
   (delay (vec (edn/read-string (slurp (str benchmark-data-dir "/article_category.edn"))))))'.
 benchmark_article_categories_code(artifact, _DataDirLiteral, _BenchmarkData, Code) :-
     Code = '(def benchmark-article-categories-by-article-delay
-  (delay (edn/read-string (slurp (str benchmark-data-dir "/article_category_by_article.edn")))))'.
+  (delay
+    (into {}
+      (keep (fn [line]
+              (when-not (.isEmpty ^String line)
+                (let [parts (vec (.split ^String line "\\t"))
+                      article (first parts)
+                      categories (subvec parts 1)]
+                  [article categories]))))
+      (.split ^String (slurp (str benchmark-data-dir "/article_category_by_article.tsv")) "\\r?\\n"))))'.
 benchmark_article_categories_code(inline, _DataDirLiteral, benchmark_data(ArticleCategories, _, _, _, _, _, _, _), Code) :-
     format(string(Code),
            "(def benchmark-article-categories-delay (delay [~s]))",
@@ -473,7 +523,15 @@ benchmark_category_parents_code(sidecar, _DataDirLiteral, _BenchmarkData, Code) 
   (delay (vec (edn/read-string (slurp (str benchmark-data-dir "/category_parent.edn"))))))'.
 benchmark_category_parents_code(artifact, _DataDirLiteral, _BenchmarkData, Code) :-
     Code = '(def benchmark-parents-by-child-delay
-  (delay (edn/read-string (slurp (str benchmark-data-dir "/category_parent_by_child.edn")))))'.
+  (delay
+    (into {}
+      (keep (fn [line]
+              (when-not (.isEmpty ^String line)
+                (let [parts (vec (.split ^String line "\\t"))
+                      child (first parts)
+                      parents (subvec parts 1)]
+                  [child parents]))))
+      (.split ^String (slurp (str benchmark-data-dir "/category_parent_by_child.tsv")) "\\r?\\n"))))'.
 benchmark_category_parents_code(inline, _DataDirLiteral, benchmark_data(_, CategoryParents, _, _, _, _, _, _), Code) :-
     format(string(Code),
            "(def benchmark-category-parents-delay (delay [~s]))",
@@ -502,9 +560,9 @@ write_benchmark_sidecar_files(OutputDir, BenchmarkData) :-
     benchmark_sidecar_dir(OutputDir, DataDir),
     make_directory_path(DataDir),
     write_benchmark_sidecar_file(DataDir, 'article_category.edn', BenchmarkData, benchmark_article_category_edn),
-    write_benchmark_sidecar_file(DataDir, 'article_category_by_article.edn', BenchmarkData, benchmark_article_category_by_article_edn),
+    write_benchmark_sidecar_file(DataDir, 'article_category_by_article.tsv', BenchmarkData, benchmark_article_category_by_article_artifact),
     write_benchmark_sidecar_file(DataDir, 'category_parent.edn', BenchmarkData, benchmark_category_parent_edn),
-    write_benchmark_sidecar_file(DataDir, 'category_parent_by_child.edn', BenchmarkData, benchmark_category_parent_by_child_edn),
+    write_benchmark_sidecar_file(DataDir, 'category_parent_by_child.tsv', BenchmarkData, benchmark_category_parent_by_child_artifact),
     write_benchmark_sidecar_file(DataDir, 'root_category.edn', BenchmarkData, benchmark_root_category_edn).
 
 benchmark_sidecar_dir(OutputDir, DataDir) :-
@@ -534,15 +592,15 @@ write_benchmark_sidecar_file(DataDir, FileName, BenchmarkData, Builder) :-
 
 collect_benchmark_data(benchmark_data(ArticleCategories, CategoryParents, RootCategories,
                                       ArticleEdn, CategoryEdn, RootEdn,
-                                      ArticleByArticleEdn, ParentByChildEdn)) :-
+                                      ArticleByArticleArtifact, ParentByChildArtifact)) :-
     benchmark_article_category_literal(ArticleCategories),
     benchmark_category_parent_literal(CategoryParents),
     benchmark_root_category_literal(RootCategories),
     benchmark_article_category_edn_from_literal(ArticleCategories, ArticleEdn),
     benchmark_category_parent_edn_from_literal(CategoryParents, CategoryEdn),
     benchmark_root_category_edn_from_literal(RootCategories, RootEdn),
-    benchmark_article_category_by_article_edn(ArticleByArticleEdn),
-    benchmark_category_parent_by_child_edn(ParentByChildEdn).
+    benchmark_article_category_by_article_artifact(ArticleByArticleArtifact),
+    benchmark_category_parent_by_child_artifact(ParentByChildArtifact).
 
 benchmark_use_traversal_kernel_literal(kernels_on, true).
 benchmark_use_traversal_kernel_literal(kernels_off, false).
@@ -568,28 +626,25 @@ benchmark_category_parent_literal(Literal) :-
     maplist(edge_literal, Pairs, Literals),
     atomic_list_concat(Literals, ' ', Literal).
 
-benchmark_article_category_by_article_edn(Content) :-
-    benchmark_article_category_by_article_literal(Literal),
-    format(atom(Content), '{~w}', [Literal]).
-benchmark_article_category_by_article_edn(benchmark_data(_, _, _, _, _, _, Content, _), Content).
-
-benchmark_article_category_by_article_literal(Literal) :-
+benchmark_article_category_by_article_artifact(Content) :-
     findall(Article,
             current_article_category_fact(Article, _),
             Articles0),
     sort(Articles0, Articles),
-    maplist(article_category_bucket_literal, Articles, BucketLiterals),
-    atomic_list_concat(BucketLiterals, ' ', Literal).
+    maplist(article_category_bucket_artifact_line, Articles, Lines),
+    atomic_list_concat(Lines, '\n', Content).
+benchmark_article_category_by_article_artifact(benchmark_data(_, _, _, _, _, _, Content, _), Content) :-
+    nonvar(Content),
+    !.
+benchmark_article_category_by_article_artifact(_, Content) :-
+    benchmark_article_category_by_article_artifact(Content).
 
-article_category_bucket_literal(Article, Literal) :-
+article_category_bucket_artifact_line(Article, Line) :-
     findall(Category,
             current_article_category_fact(Article, Category),
             Categories0),
     sort(Categories0, Categories),
-    clj_string_literal_local(Article, ArticleLit),
-    maplist(clj_string_literal_local, Categories, CategoryLiterals),
-    atomic_list_concat(CategoryLiterals, ' ', CategoryBody),
-    format(atom(Literal), '~w [~w]', [ArticleLit, CategoryBody]).
+    atomic_list_concat([Article|Categories], '\t', Line).
 
 benchmark_category_parent_edn(benchmark_data(_, _, _, _, Content, _, _, _), Content).
 
@@ -602,10 +657,25 @@ benchmark_root_category_literal(Literal) :-
     maplist(clj_string_literal_local, Roots, Literals),
     atomic_list_concat(Literals, ' ', Literal).
 
-benchmark_category_parent_by_child_edn(Content) :-
-    category_parent_map_literal(Literal),
-    format(atom(Content), '{~w}', [Literal]).
-benchmark_category_parent_by_child_edn(benchmark_data(_, _, _, _, _, _, _, Content), Content).
+benchmark_category_parent_by_child_artifact(Content) :-
+    findall(Child,
+            current_category_parent_fact(Child, _),
+            Children0),
+    sort(Children0, Children),
+    maplist(category_parent_bucket_artifact_line, Children, Lines),
+    atomic_list_concat(Lines, '\n', Content).
+benchmark_category_parent_by_child_artifact(benchmark_data(_, _, _, _, _, _, _, Content), Content) :-
+    nonvar(Content),
+    !.
+benchmark_category_parent_by_child_artifact(_, Content) :-
+    benchmark_category_parent_by_child_artifact(Content).
+
+category_parent_bucket_artifact_line(Child, Line) :-
+    findall(Parent,
+            current_category_parent_fact(Child, Parent),
+            Parents0),
+    sort(Parents0, Parents),
+    atomic_list_concat([Child|Parents], '\t', Line).
 
 benchmark_root_category_edn(benchmark_data(_, _, _, _, _, Content, _, _), Content).
 

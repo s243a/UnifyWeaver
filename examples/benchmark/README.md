@@ -142,11 +142,26 @@ The generator accepts benchmark data modes:
 
 - `inline`: embed benchmark relations directly in the generated namespace
 - `sidecar`: externalize benchmark relation rows into EDN sidecars
-- `artifact`: externalize preprocessed EDN artifacts such as
-  `category_parent_by_child` and `article_category_by_article`
+- `artifact`: externalize denser preprocessed grouped sidecars such as
+  `category_parent_by_child.tsv`, with the generator free to keep simpler
+  row sidecars on workload paths where they benchmark better
 - `auto`: honor an optional workload predicate
   (`wam_clojure_benchmark_data_mode/1` or `benchmark_data_mode/1`) and
   otherwise fall back to the current scale-favoring heuristic
+
+For finer control, a workload may also declare per-relation overrides:
+
+- `wam_clojure_benchmark_relation_data_mode/2`
+- `benchmark_relation_data_mode/2`
+
+Current relation keys are:
+
+- `article_category`
+- `category_parent`
+
+These are applied on top of `artifact` mode so a workload can, for
+example, keep `category_parent` on the grouped artifact path while
+forcing `article_category` back to row sidecars, or vice versa.
 
 The generated project supports two entry modes:
 

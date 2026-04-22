@@ -505,3 +505,68 @@ not strong enough to justify changing the default heuristic away from
 and as groundwork for more compact non-EDN preprocessing, but it still
 needs better desktop measurements and probably a denser artifact format
 before it should become the default.
+
+The follow-up dense-artifact pass kept the public `artifact` mode stable
+but replaced those grouped EDN maps with grouped TSV sidecars:
+
+- `category_parent_by_child.tsv`
+- `article_category_by_article.tsv`
+
+That reduces artifact size and drops `edn/read-string` from the hot
+artifact path. The generated Clojure runner and the
+`category_parent/2` / `category_ancestor/4` foreign handlers now parse
+the grouped TSV files directly into vectors/maps at startup. `sidecar`
+remains the default-for-scale heuristic until repeated measurements on a
+desktop JVM show that the denser artifact format is consistently better
+than the simpler EDN row sidecars.
+
+The next follow-up made `artifact` mode selective by benchmark variant:
+
+- `accumulated` keeps the fully grouped artifact path
+- `seeded` keeps the grouped `category_parent_by_child.tsv` artifact for
+  traversal lookups but falls back to the simpler article row sidecar for
+  article/category ingestion
+
+On the small Termux `dev` matrix, that selective seeded path removed the
+earlier regression while preserving output parity:
+
+- `clojure-wam-accumulated`: `2.014s`
+- `clojure-wam-accumulated-artifact`: `1.988s`
+- `clojure-wam-seeded`: `2.254s`
+- `clojure-wam-seeded-artifact`: `2.130s`
+
+All outputs still matched digest `1659619c9d36`. The result is still not
+strong enough to justify changing the default heuristic away from
+`sidecar`, but it does show that Clojure artifact preprocessing should
+stay workload-sensitive instead of assuming one storage shape wins
+everywhere.
+
+The next refinement pushed that workload sensitivity one level deeper by
+adding per-relation benchmark predicates:
+
+- `wam_clojure_benchmark_relation_data_mode/2`
+- `benchmark_relation_data_mode/2`
+
+Supported relation keys are currently `article_category` and
+`category_parent`. These overrides sit on top of the public benchmark
+`artifact` mode and apply consistently to both the generated
+effective-distance runner and the Clojure foreign traversal handlers.
+
+That gives the benchmark workload a C#-style policy surface:
+
+- keep `category_parent` on the grouped artifact path when traversal
+  lookups benefit from it
+- keep `article_category` on row sidecars when startup regrouping is
+  cheaper than loading a grouped artifact
+
+Small Termux `dev` validation after adding the per-relation hook still
+matched digest `1659619c9d36` across:
+
+- `clojure-wam-accumulated`
+- `clojure-wam-accumulated-artifact`
+- `clojure-wam-seeded`
+- `clojure-wam-seeded-artifact`
+
+The timings are still noisy, but the code path is now flexible enough to
+move further measurement and policy tuning to desktop without changing
+the benchmark interface again.
