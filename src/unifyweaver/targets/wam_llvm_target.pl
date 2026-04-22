@@ -1700,6 +1700,9 @@ entry:
   call void @wam_set_pc(%WamState* %vm, i32 ~w)
 ~w
   %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
   ret i1 %result
 }',
         [PredStr, Arity, StartPC,

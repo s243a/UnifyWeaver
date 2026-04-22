@@ -96,6 +96,43 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   ret %WamState* %vm
 }
 
+; Release every malloc'd buffer owned by a %WamState and the state
+; struct itself. Callers MUST invoke this on any state produced by
+; @wam_state_new once they are done reading results — bench harnesses
+; loop state-new/run/free, and without this a 10k-iteration bench
+; leaks ~85KB per iteration (stack 6KB + heap 64KB + trail 6KB + CPs
+; ~1.5KB + agg_accum 1KB + state ~200B) and the process aborts on OOM.
+define void @wam_state_free(%WamState* %vm) {
+  %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
+  %stack = load %StackEntry*, %StackEntry** %stack_ptr
+  %stack_i8 = bitcast %StackEntry* %stack to i8*
+  call void @free(i8* %stack_i8)
+
+  %heap_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap = load %Value*, %Value** %heap_ptr
+  %heap_i8 = bitcast %Value* %heap to i8*
+  call void @free(i8* %heap_i8)
+
+  %trail_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail = load %TrailEntry*, %TrailEntry** %trail_ptr
+  %trail_i8 = bitcast %TrailEntry* %trail to i8*
+  call void @free(i8* %trail_i8)
+
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %cps_i8 = bitcast %ChoicePoint* %cps to i8*
+  call void @free(i8* %cps_i8)
+
+  %agg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 20
+  %agg = load %Value*, %Value** %agg_ptr
+  %agg_i8 = bitcast %Value* %agg to i8*
+  call void @free(i8* %agg_i8)
+
+  %vm_i8 = bitcast %WamState* %vm to i8*
+  call void @free(i8* %vm_i8)
+  ret void
+}
+
 ; Get register value by index
 define %Value @wam_get_reg(%WamState* %vm, i32 %idx) {
   %reg_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 %idx

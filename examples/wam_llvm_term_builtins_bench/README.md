@@ -126,15 +126,30 @@ Pre-fix: `generate_wasm_exports/2` emitted wrappers that called
 not the predicate's actual code. Fixed by delegating to `@<pred>()`
 directly. See `src/unifyweaver/targets/wam_llvm_target.pl`.
 
-### 6. Arena growth not reset across bench iterations
+### 6. VM-state leak across bench iterations (fixed)
 
-The bench wrapper calls `@wam_cleanup()` after each iteration, which is
-supposed to rewind the arena. 1000-iteration runs complete; a
-10000-iteration run on bench_suite aborts mid-workload. This points to
-`wam_cleanup` not fully resetting whatever allocator state accumulates
-(a malloc-backed structure not on the arena, or a bump pointer that
-doesn't rewind). Out of scope for Phase 0 — for now, use `1000`
-iterations, which is enough for order-of-magnitude baseline signal.
+Pre-fix: each call to an `@<pred>()` entry function allocated a fresh
+`%WamState` via `wam_state_new`, which malloc'd ~85 KB of supporting
+buffers (stack 6 KB + heap 64 KB + trail 6 KB + choice points ~1.5 KB
++ agg_accum 1 KB + state struct). `wam_cleanup` only destroyed the
+arena, so the 85 KB leaked per iteration. At 10 000 iterations that
+is ~850 MB, which aborts on memory-constrained devices.
+
+Fixed by adding a `@wam_state_free` helper in
+`templates/targets/llvm_wam/state.ll.mustache` that frees every
+malloc'd buffer plus the state struct itself, and having each
+per-predicate entry function emitted by `emit_one_entry_func` call it
+after `run_loop` returns. Tests that build their own driver VM
+(bypassing the entry function) keep working because they never call
+`@<pred>()` — they manage their own state directly.
+
+Two effects of this fix:
+  - 10 000-iteration bench runs now complete.
+  - ns/call drops ~10-50× across the board, because the previous
+    numbers were dominated by malloc pressure, not WAM work. E.g.
+    `bench_true` went from ~50 000 ns/call at 1 k iter to ~1 100
+    ns/call at 10 k iter. The 10 k numbers are a much more faithful
+    "cost of a minimal WAM call" baseline for Phase 1 profiling.
 
 ## Per-workload correctness failures — root cause identified
 
