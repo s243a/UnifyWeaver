@@ -41,7 +41,9 @@
     % Phase F3: inline_data emission
     extract_fact_tuples_hs/2,            % +Segments, -Tuples
     haskell_fact_list_name/2,            % +PredName, -ListName
-    init_atom_intern_table/0             % reinitialize atom intern table
+    init_atom_intern_table/0,            % reinitialize atom intern table
+    % E2E wiring
+    generate_inline_facts_wiring/2       % +InlineDefs, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -2480,7 +2482,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % lowered ones — so backtrack can land on alternate clauses that the
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
-    compile_predicates_to_haskell(Predicates, Options, PredsCode0),
+    compile_predicates_to_haskell(Predicates, Options, PredsCode0, InlineDefs),
     % Append compile-time atom table to Predicates.hs
     emit_atom_table_haskell(AtomTableCode),
     format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
@@ -2506,8 +2508,8 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, CabalFile, CabalPath),
     write_hs_file(CabalPath, CabalCode),
 
-    % Generate Main.hs
-    generate_main_hs(Predicates, DetectedKernels, Options, MainCode0),
+    % Generate Main.hs (InlineDefs from F3 → wcInlineFacts wiring)
+    generate_main_hs(Predicates, DetectedKernels, InlineDefs, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
@@ -2621,14 +2623,16 @@ emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
     format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
     emit_lowered_entries_rest(Rest).
 
-%% generate_main_hs(+Predicates, +DetectedKernels, +Options, -Code)
+%% generate_main_hs(+Predicates, +DetectedKernels, +InlineDefs, +Options, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Reads main.hs.mustache and populates template variables.
+%  InlineDefs from Phase F3: list of inline_fact(PredName, ListName, _)
+%  terms that need wcInlineFacts wiring.
 %  Options:
 %    query_pred(Pred/Arity) — use a WAM-compiled aggregation predicate
 %      instead of the default collectSolutions loop. The predicate should
 %      accept (Cat, Root, WeightSum) and return the accumulated weight sum.
-generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
+generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
@@ -2648,6 +2652,8 @@ generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
     hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
     ;   DemandMetrics = ''
     ),
+    % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
+    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , query_body=QueryBody
@@ -2655,7 +2661,21 @@ generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
         , demand_filter=DemandFilter
         , facts_source=FactsSource
         , demand_metrics=DemandMetrics
+        , inline_facts=InlineFactsWiring
         ], Code).
+
+%% generate_inline_facts_wiring(+InlineDefs, -Code)
+%  Generates the Haskell code to populate wcInlineFacts in the WamContext.
+%  Each inline_fact(PredName, ListName, _) becomes a Map entry.
+generate_inline_facts_wiring([], '') :- !.
+generate_inline_facts_wiring(InlineDefs, Code) :-
+    maplist([inline_fact(PredName, ListName, _), Entry]>>(
+        format(string(Entry), '("~w", ~w)', [PredName, ListName])
+    ), InlineDefs, Entries),
+    atomic_list_concat(Entries, ', ', EntriesStr),
+    format(string(Code),
+           '            , wcInlineFacts   = Map.fromList [~w]',
+           [EntriesStr]).
 
 %% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
 %  When demand filtering is enabled (kernels detected with an edge predicate),
