@@ -251,10 +251,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_PUT_VARIABLE: {
-                WamValue fresh = val_unbound("fresh");
-                trail_binding(state, &state->A[instr->reg_xn]);
-                state->A[instr->reg_xn] = fresh;
-                state->A[instr->reg_ai] = fresh;
+                WamValue ref = wam_make_ref(state);
+                state->A[instr->reg_xn] = ref;
+                state->A[instr->reg_ai] = ref;
                 state->P++;
                 return true;
             }
@@ -300,6 +299,9 @@ compile_step_wam_to_c(_Options, CCode) :-
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 cp->next_pc = target;
                 restore_choice_point(state, cp);
+                // Note: P++ is correct per WAM try_me_else/retry_me_else semantics.
+                // The outer failure loop jumped here. We update the alternative to "target",
+                // restore state, and continue sequentially to the clause body immediately following.
                 state->P++;
                 return true;
             }
@@ -307,6 +309,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 restore_choice_point(state, cp);
                 pop_choice_point(state);
+                // Note: P++ is correct for TRUST_ME. It falls through to the final alternative.
                 state->P++;
                 return true;
             }

@@ -125,6 +125,18 @@ static inline WamValue val_int(int n) {
 static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
 }
+static inline WamValue wam_make_ref(WamState *state) {
+    if (state->H >= state->H_cap) {
+        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
+    WamValue ref;
+    ref.tag = VAL_REF;
+    ref.data.ref_addr = state->H;
+    state->H_array[state->H] = val_unbound("heap_var");
+    state->H++;
+    return ref;
+}
 static inline bool val_is_unbound(WamValue v) {
     return v.tag == VAL_UNBOUND;
 }
