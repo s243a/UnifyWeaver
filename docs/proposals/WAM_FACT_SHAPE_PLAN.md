@@ -299,7 +299,12 @@ back to the Elixir side without changing Phases A–E's scope:
   certificates reach the Elixir target, the `cost_aware` policy
   (PR #1559) becomes a natural consumer — probe-count hints could
   feed the `user:wam_elixir_layout_policy/5` hook that Phase E
-  exposed.
+  exposed. See also
+  [`docs/design/WAM_TIERED_LOWERING.md`](../design/WAM_TIERED_LOWERING.md),
+  which argues the purity certificate is the **cross-target routing
+  signal** deciding which tier (1 pure-functional, 2 host-native
+  parallel, 3 WAM/CPS) a predicate lands in. This fact-shape work
+  is the Elixir side of Tier 1.
 - **Laziness trade-offs.** Haskell's default lazy semantics let its
   fact sources stream without special machinery; Elixir is strict
   by default, so our `inline_data` holds the full `@facts` list in
