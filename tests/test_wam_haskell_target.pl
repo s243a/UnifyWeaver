@@ -874,9 +874,198 @@ test_f1_compiled_only_policy :-
     ),
     retractall(user:f1_co(_)).
 
+%% Phase F2: FactStream choice point type tests
+%% -----------------------------------------------
+
+test_f2_fact_stream_in_builtin_state :-
+    Test = 'F2: FactStream constructor in BuiltinState type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "FactStream !Int !Int ![(Int, Int)] !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream constructor not found in BuiltinState')
+    ).
+
+test_f2_call_fact_stream_in_instruction :-
+    Test = 'F2: CallFactStream constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "CallFactStream String !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream constructor not found in Instruction type')
+    ).
+
+test_f2_stream_facts_function :-
+    Test = 'F2: streamFacts function present in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "streamFacts :: WamContext -> String -> WamState -> Maybe WamState")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts function not found in runtime')
+    ).
+
+test_f2_resume_fact_stream_handler :-
+    Test = 'F2: resumeBuiltin handles FactStream CPs',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream"),
+        sub_string(S, _, _, _, "FactStream var1 var2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'resumeBuiltin FactStream handler not found')
+    ).
+
+test_f2_call_fact_stream_step_handler :-
+    Test = 'F2: step function handles CallFactStream',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (CallFactStream pred"),
+        sub_string(S, _, _, _, "streamFacts ctx pred")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream step handler not found')
+    ).
+
+test_f2_wc_inline_facts_field :-
+    Test = 'F2: wcInlineFacts field in WamContext',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "wcInlineFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcInlineFacts field not found in WamContext')
+    ).
+
+test_f2_stream_facts_filters_bound_a1 :-
+    Test = 'F2: streamFacts filters by bound A1',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        % Verify the filter logic: Atom aid case filters rows
+        sub_string(S, _, _, _, "Atom aid, Atom bid"),
+        sub_string(S, _, _, _, "Atom aid, _)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts bound-arg filtering logic not found')
+    ).
+
+test_f2_fact_stream_exhaustion_backtracks :-
+    Test = 'F2: FactStream empty rows triggers backtrack',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream _ _ [] _) _ rest s"),
+        sub_string(S, _, _, _, "backtrack (s { wsCPs = rest")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream exhaustion backtrack not found')
+    ).
+
+%% Phase F3: inline_data emission tests
+%% -----------------------------------------------
+
+test_f3_inline_data_emits_call_fact_stream :-
+    Test = 'F3: inline_data predicate emits CallFactStream instruction',
+    (   retractall(user:f3_big(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(parent_, A, P),
+            assert(user:f3_big(A, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_big/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream not emitted for inline_data predicate')
+    ),
+    retractall(user:f3_big(_, _)).
+
+test_f3_inline_data_emits_fact_literal :-
+    Test = 'F3: inline_data predicate emits fact literal list',
+    (   retractall(user:f3_lit(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(val_, A, V),
+            assert(user:f3_lit(A, V))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_lit/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "f3LitFacts :: [(Int, Int)]"),
+        sub_string(S, _, _, _, "inline fact data")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact literal list not emitted in Predicates.hs')
+    ),
+    retractall(user:f3_lit(_, _)).
+
+test_f3_below_threshold_stays_compiled :-
+    Test = 'F3: below-threshold predicate stays compiled (no CallFactStream)',
+    (   retractall(user:f3_sm(_, _)),
+        assert(user:f3_sm(a, b)),
+        assert(user:f3_sm(c, d)),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_sm/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Below-threshold predicate should not use CallFactStream')
+    ),
+    retractall(user:f3_sm(_, _)).
+
+test_f3_inline_defs_returned :-
+    Test = 'F3: compile_predicates_to_haskell returns InlineDefs',
+    (   retractall(user:f3_def(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(x_, A, X),
+            assert(user:f3_def(A, X))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_def/2], [fact_count_threshold(5)], _, InlineDefs),
+        InlineDefs = [inline_fact(_, _, _)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'InlineDefs not returned for inline_data predicate')
+    ),
+    retractall(user:f3_def(_, _)).
+
+test_f3_fact_tuples_extracted :-
+    Test = 'F3: extract_fact_tuples_hs extracts interned pairs',
+    (   init_atom_intern_table,
+        Lines = [
+            "pred/2:",
+            "    switch_on_constant a:default",
+            "    try_me_else L_pred_2_2",
+            "    get_constant alpha, A1",
+            "    get_constant beta, A2",
+            "    proceed",
+            "L_pred_2_2:",
+            "    trust_me",
+            "    get_constant gamma, A1",
+            "    get_constant delta, A2",
+            "    proceed"
+        ],
+        split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, Tuples),
+        length(Tuples, 2),
+        Tuples = [(Id1a, Id1b), (Id2a, Id2b)],
+        integer(Id1a), integer(Id1b),
+        integer(Id2a), integer(Id2b),
+        Id1a \= Id2a  % different first args
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact tuple extraction failed')
+    ).
+
+test_f3_camel_case_list_name :-
+    Test = 'F3: haskell_fact_list_name generates camelCase',
+    (   haskell_fact_list_name("category_parent", Name1),
+        Name1 == 'categoryParentFacts',
+        haskell_fact_list_name("edge", Name2),
+        Name2 == 'edgeFacts'
+    ->  pass(Test)
+    ;   fail_test(Test, 'camelCase list name generation failed')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1+F2+F3 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -943,6 +1132,22 @@ run_tests :-
     test_f1_comment_in_predicates_hs,
     test_f1_segment_parser,
     test_f1_compiled_only_policy,
+    %% Phase F2: FactStream choice point type
+    test_f2_fact_stream_in_builtin_state,
+    test_f2_call_fact_stream_in_instruction,
+    test_f2_stream_facts_function,
+    test_f2_resume_fact_stream_handler,
+    test_f2_call_fact_stream_step_handler,
+    test_f2_wc_inline_facts_field,
+    test_f2_stream_facts_filters_bound_a1,
+    test_f2_fact_stream_exhaustion_backtracks,
+    %% Phase F3: inline_data emission
+    test_f3_inline_data_emits_call_fact_stream,
+    test_f3_inline_data_emits_fact_literal,
+    test_f3_below_threshold_stays_compiled,
+    test_f3_inline_defs_returned,
+    test_f3_fact_tuples_extracted,
+    test_f3_camel_case_list_name,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

@@ -37,7 +37,11 @@
     haskell_fact_only/2,                 % +Segments, -Bool
     haskell_first_arg_groundness/3,      % +Segments, +Arity, -Status
     haskell_pick_layout/5,              % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
-    split_wam_into_segments/2            % +Lines, -Segments
+    split_wam_into_segments/2,           % +Lines, -Segments
+    % Phase F3: inline_data emission
+    extract_fact_tuples_hs/2,            % +Segments, -Tuples
+    haskell_fact_list_name/2,            % +PredName, -ListName
+    init_atom_intern_table/0             % reinitialize atom intern table
 ]).
 
 :- use_module(library(lists)).
@@ -1243,6 +1247,30 @@ resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
+-- Phase F2: FactStream resume — iterate through inline fact tuples.
+-- Each (a1, a2) pair is unified against registers A1/A2. Variable IDs
+-- var1/var2 indicate which bindings to update (-1 = skip, already bound).
+resumeBuiltin (FactStream _ _ [] _) _ rest s =
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+resumeBuiltin (FactStream var1 var2 ((a1,a2):rows) retPC) cp rest s =
+  let newRegs0 = IM.insert 1 (Atom a1) (cpRegs cp)
+      newRegs  = IM.insert 2 (Atom a2) newRegs0
+      newBindings0 = if var1 == -1 then cpBindings cp
+                     else IM.insert var1 (Atom a1) (cpBindings cp)
+      newBindings  = if var2 == -1 then newBindings0
+                     else IM.insert var2 (Atom a2) newBindings0
+      newCPs = case rows of
+        [] -> rest
+        _  -> cp { cpBuiltin = Just (FactStream var1 var2 rows retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+            , wsCP = cpCP cp
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
+            , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
 -- an aggregate frame, return Nothing (inner solutions exhausted).
 -- Otherwise, normal backtrack.
@@ -1631,6 +1659,55 @@ callIndexedFact2 !ctx pred s =
           _ -> Nothing
         _ -> Nothing
 
+-- | Phase F2: Stream through inline fact tuples for a 2-arg predicate.
+-- Looks up the predicate''s fact data in wcInlineFacts, determines which
+-- registers are unbound (need variable binding) vs bound (need match check),
+-- and yields the first matching row with a FactStream CP for the rest.
+streamFacts :: WamContext -> String -> WamState -> Maybe WamState
+streamFacts !ctx pred s =
+  case Map.lookup pred (wcInlineFacts ctx) of
+    Nothing -> Nothing
+    Just [] -> Nothing
+    Just rows ->
+      let retPC = wsCP s
+          a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+          a2val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+          -- Determine variable IDs for binding (-1 = already bound)
+          var1 = case a1val of { Unbound vid -> vid; _ -> -1 }
+          var2 = case a2val of { Unbound vid -> vid; _ -> -1 }
+          -- Filter rows by any bound arguments
+          filtered = case (a1val, a2val) of
+            (Atom aid, Atom bid) -> filter (\\(a, b) -> a == aid && b == bid) rows
+            (Atom aid, _)       -> filter (\\(a, _) -> a == aid) rows
+            (_, Atom bid)       -> filter (\\(_, b) -> b == bid) rows
+            _                   -> rows
+      in case filtered of
+        [] -> Nothing
+        ((a1,a2):rest) ->
+          let newRegs = IM.insert 2 (Atom a2) $ IM.insert 1 (Atom a1) (wsRegs s)
+              newBindings0 = if var1 == -1 then wsBindings s
+                             else IM.insert var1 (Atom a1) (wsBindings s)
+              newBindings  = if var2 == -1 then newBindings0
+                             else IM.insert var2 (Atom a2) newBindings0
+              newTrail0 = if var1 == -1 then wsTrail s
+                          else TrailEntry var1 (IM.lookup var1 (wsBindings s)) : wsTrail s
+              newTrail  = if var2 == -1 then newTrail0
+                          else TrailEntry var2 (IM.lookup var2 newBindings0) : newTrail0
+              trailAdded = (if var1 == -1 then 0 else 1) + (if var2 == -1 then 0 else 1)
+              newCPs = case rest of
+                [] -> wsCPs s
+                _  -> ChoicePoint
+                        { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                        , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                        , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
+                        , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                        , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                        } : wsCPs s
+              newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+          in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
+                     , wsTrail = newTrail, wsTrailLen = wsTrailLen s + trailAdded
+                     , wsCPs = newCPs, wsCPsLen = newCPsLen })
+
 {{execute_foreign}}
 
 -- | Bind an output register to a value WITHOUT advancing PC.
@@ -1789,6 +1866,11 @@ step !ctx s (CallResolved pc _arity) =
 -- path — Nothing means no solutions (backtrack), never fallthrough.
 step !ctx s (CallForeign pred _arity) =
   executeForeign ctx pred (s { wsCP = wsPC s + 1 })
+
+-- Phase F2: FactStream call. Dispatches to streamFacts which iterates
+-- inline fact tuples from wcInlineFacts. Nothing = no matching facts.
+step !ctx s (CallFactStream pred _arity) =
+  streamFacts ctx pred (s { wsCP = wsPC s + 1 })
 
 -- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
 -- are handled by CallForeign (resolved at compile time), so executeForeign
@@ -2944,6 +3026,10 @@ data BuiltinState
     -- outRegs and outVars are parallel lists (same length as each tuple).
     -- outVars contains -1 for originally-bound outputs (no binding update).
   | FFIStreamRetry ![Int] ![Int] ![[Value]] !Int  -- outRegs, outVars, remaining tuples, returnPC
+    -- Phase F2: FactStream for inline_data fact predicates.
+    -- Iterates interned (arg1, arg2) tuples via backtracking.
+    -- var1/var2 are variable IDs for binding (-1 = already bound, skip).
+  | FactStream !Int !Int ![(Int, Int)] !Int  -- var1, var2, remaining rows, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
@@ -3037,6 +3123,11 @@ data WamContext = WamContext
   -- sources — not wired into the default Main.hs template yet, so
   -- standalone benchmarks build this directly.
   , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
+  -- | Phase F2: inline fact data for FactStream predicates. Keyed by
+  -- predicate name (e.g., "category_parent"). Each entry is a list of
+  -- interned (arg1, arg2) tuples. Populated by Phase F3 code generation;
+  -- empty until then.
+  , wcInlineFacts :: !(Map.Map String [(Int, Int)])
   }
 -- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
 -- and functions have no Show instance. Add a manual instance if needed.
@@ -3114,6 +3205,7 @@ data Instruction
   | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
   | BeginAggregate String !RegId !RegId   -- type, valueReg, resultReg
   | EndAggregate !RegId                   -- valueReg
+  | CallFactStream String !Int            -- Phase F2: predicate name, arity
   deriving (Show, Eq)
 
 -- | Build the read-only context from compiled code and labels. Called
@@ -3132,6 +3224,7 @@ mkContext codeList labels =
     , wcInternTable   = emptyInternTable
     , wcFfiFacts      = Map.empty
     , wcFfiWeightedFacts = Map.empty
+    , wcInlineFacts   = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
@@ -3191,13 +3284,25 @@ executable ~w
 %  with proper PC offsets for each predicate. Phase F1: also classifies
 %  each predicate and emits classification comments in Predicates.hs.
 compile_predicates_to_haskell(Predicates, Options, Code) :-
-    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments),
+    compile_predicates_to_haskell(Predicates, Options, Code, _InlineDefs).
+
+%% compile_predicates_to_haskell(+Predicates, +Options, -Code, -InlineDefs)
+%  Extended version that also returns inline fact definitions for Main.hs wiring.
+compile_predicates_to_haskell(Predicates, Options, Code, InlineDefs) :-
+    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments, InlineDefs),
     atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
     atomic_list_concat(AllLabels, '\n    , ', LabelCode),
     (   ShapeComments == []
     ->  ShapeBlock = ""
     ;   atomic_list_concat(ShapeComments, '\n', ShapeLines),
         format(string(ShapeBlock), '\n-- Fact shape classification:\n~w\n', [ShapeLines])
+    ),
+    % Phase F3: collect inline fact literal definitions
+    (   InlineDefs == []
+    ->  InlineBlock = ""
+    ;   maplist([inline_fact(_, _, DefCode), DefCode]>>true, InlineDefs, DefCodes),
+        atomic_list_concat(DefCodes, '\n', InlineCode),
+        format(string(InlineBlock), '\n-- | Phase F3: inline fact data for FactStream predicates.\n~w\n', [InlineCode])
     ),
     format(string(Code),
 'module Predicates where
@@ -3217,10 +3322,10 @@ allLabels :: Map.Map String Int
 allLabels = Map.fromList
     [ ~w
     ]
-', [ShapeBlock, InstrCode, LabelCode]).
+~w', [ShapeBlock, InstrCode, LabelCode, InlineBlock]).
 
-compile_predicates_merged([], _, _, [], [], []).
-compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments) :-
+compile_predicates_merged([], _, _, [], [], [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
@@ -3232,15 +3337,79 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, All
     classify_fact_predicate(Pred/Arity, Lines, Options, ShapeInfo),
     format_fact_shape_comment_hs(Pred/Arity, ShapeInfo, Comment),
     format(user_error, '    ~w~n', [Comment]),
-    wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
-    % Phase 4.1: if the purity certificate says this predicate is
-    % safe to parallelize, rewrite its choice-point instructions
-    % (TryMeElse / RetryMeElse / TrustMe) to the Par* variants.
-    maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
-    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments),
+    ShapeInfo = fact_shape_info(_, _, _, Layout),
+    % Phase F3: if inline_data, emit fact literal + CallFactStream instead of WAM
+    (   Layout = inline_data(_), Arity == 2
+    ->  split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, FactTuples),
+        length(FactTuples, NTuples),
+        format(atom(PredNameAtom), '~w', [Pred]),
+        atom_string(PredNameAtom, PredNameStr),
+        haskell_fact_list_name(PredNameStr, ListName),
+        emit_inline_fact_literal(ListName, FactTuples, InlineDefCode),
+        format(string(LabelExpr), '("~w/~w", ~w)', [Pred, Arity, StartPC]),
+        format(string(InstrExpr), 'CallFactStream "~w" ~w', [Pred, Arity]),
+        InstrExprs = [InstrExpr],
+        LabelExprs = [LabelExpr],
+        NextPC is StartPC + 1,
+        InlineDefs = [inline_fact(PredNameStr, ListName, InlineDefCode)],
+        format(user_error, '    [F3] ~w/~w: emitting inline_data (~w tuples)~n',
+               [Pred, Arity, NTuples])
+    ;   % Normal compiled path
+        wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
+        maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
+        InlineDefs = []
+    ),
+    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments, RestInlineDefs),
     append(InstrExprs, RestInstrs, AllInstrs),
     append(LabelExprs, RestLabels, AllLabels),
-    AllComments = [Comment | RestComments].
+    AllComments = [Comment | RestComments],
+    append(InlineDefs, RestInlineDefs, AllInlineDefs).
+
+%% extract_fact_tuples_hs(+Segments, -Tuples)
+%  Extracts (InternedA1, InternedA2) pairs from classified fact segments.
+%  Each segment should contain get_constant instructions for A1 and A2.
+%  Atoms are interned via the compile-time intern table.
+extract_fact_tuples_hs(Segments, Tuples) :-
+    findall((Id1, Id2), (
+        member(_-Instrs, Segments),
+        member(get_constant(Val1, "A1"), Instrs),
+        member(get_constant(Val2, "A2"), Instrs),
+        intern_atom(Val1, Id1),
+        intern_atom(Val2, Id2)
+    ), Tuples).
+
+%% haskell_fact_list_name(+PredName, -ListName)
+%  Generate a Haskell identifier for the inline fact list.
+%  e.g., "category_parent" -> "categoryParentFacts"
+haskell_fact_list_name(PredName, ListName) :-
+    split_string(PredName, "_", "", Parts),
+    Parts = [First|Rest],
+    maplist([In, Out]>>(
+        string_chars(In, [C|Cs]),
+        upcase_atom(C, UC),
+        atom_chars(UC, [UCC]),
+        string_chars(Out, [UCC|Cs])
+    ), Rest, CamelRest),
+    atomic_list_concat([First|CamelRest], '', CamelName),
+    format(atom(ListName), '~wFacts', [CamelName]).
+
+%% emit_inline_fact_literal(+ListName, +Tuples, -Code)
+%  Emits a Haskell top-level definition for an inline fact list with
+%  interned atom ID tuples.
+emit_inline_fact_literal(ListName, Tuples, Code) :-
+    maplist([(Id1, Id2), Entry]>>(
+        format(string(Entry), '(~w, ~w)', [Id1, Id2])
+    ), Tuples, Entries),
+    (   Entries = []
+    ->  format(string(Code), '~w :: [(Int, Int)]\n~w = []\n', [ListName, ListName])
+    ;   Entries = [First|Rest],
+        format(string(FirstLine), '    [ ~w', [First]),
+        maplist([E, L]>>format(string(L), '    , ~w', [E]), Rest, RestLines),
+        append([FirstLine], RestLines, AllLines),
+        atomic_list_concat(AllLines, '\n', Body),
+        format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
+    ).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
