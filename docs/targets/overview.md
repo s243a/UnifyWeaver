@@ -56,4 +56,18 @@ Preferences (`preferences.pl`) and runtime options choose a target. Planned beha
 - Experimentation: Query IR lets us evolve execution strategies (semi-naive evaluation, distributed plans) without regenerating source each time.
 - Comparative validation: Running the same logical program through multiple targets helps uncover regressions and clarifies semantics.
 
+## Non-determinism Strategies (WAM-Hybrid Targets)
+
+WAM-hybrid targets (`wam_haskell`, `wam_elixir`, `wam_rust`, `wam_go`,
+`wam_csharp_native`, etc.) are **not uniform machines**. Each target
+declares a non-determinism *strategy menu* and the emitter selects
+per predicate based on the predicate's purity, arity, and clause
+count. WAM interpretation is the **lowest tier**, not the reference
+architecture.
+
+The shared framing — tiers (1) pure functional lowering, (2) host-native
+parallel search, (3) WAM / CPS fallback — plus the purity certificate
+as cross-target routing signal is captured in
+[`docs/design/WAM_TIERED_LOWERING.md`](../design/WAM_TIERED_LOWERING.md).
+
 Sub-documents in this directory dive into each target family and the comparison matrix that helps choose the right backend for a given deployment.
