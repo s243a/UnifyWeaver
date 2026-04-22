@@ -1659,54 +1659,96 @@ callIndexedFact2 !ctx pred s =
           _ -> Nothing
         _ -> Nothing
 
--- | Phase F2: Stream through inline fact tuples for a 2-arg predicate.
--- Looks up the predicate''s fact data in wcInlineFacts, determines which
--- registers are unbound (need variable binding) vs bound (need match check),
--- and yields the first matching row with a FactStream CP for the rest.
+-- | Phase F2/F4: Stream through fact tuples for a 2-arg predicate.
+-- Checks wcInlineFacts first (Phase F3 compiled literals), then falls
+-- back to wcFactSources (Phase F4 external sources via FactSource).
+-- The FactSource path uses unsafePerformIO to bridge IO into the pure
+-- WAM interpreter — safe because fact sources are read-only after the
+-- force barrier in Main.hs.
 streamFacts :: WamContext -> String -> WamState -> Maybe WamState
 streamFacts !ctx pred s =
   case Map.lookup pred (wcInlineFacts ctx) of
-    Nothing -> Nothing
-    Just [] -> Nothing
-    Just rows ->
-      let retPC = wsCP s
-          a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
-          a2val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
-          -- Determine variable IDs for binding (-1 = already bound)
-          var1 = case a1val of { Unbound vid -> vid; _ -> -1 }
-          var2 = case a2val of { Unbound vid -> vid; _ -> -1 }
-          -- Filter rows by any bound arguments
-          filtered = case (a1val, a2val) of
-            (Atom aid, Atom bid) -> filter (\\(a, b) -> a == aid && b == bid) rows
-            (Atom aid, _)       -> filter (\\(a, _) -> a == aid) rows
-            (_, Atom bid)       -> filter (\\(_, b) -> b == bid) rows
-            _                   -> rows
-      in case filtered of
-        [] -> Nothing
-        ((a1,a2):rest) ->
-          let newRegs = IM.insert 2 (Atom a2) $ IM.insert 1 (Atom a1) (wsRegs s)
-              newBindings0 = if var1 == -1 then wsBindings s
-                             else IM.insert var1 (Atom a1) (wsBindings s)
-              newBindings  = if var2 == -1 then newBindings0
-                             else IM.insert var2 (Atom a2) newBindings0
-              newTrail0 = if var1 == -1 then wsTrail s
-                          else TrailEntry var1 (IM.lookup var1 (wsBindings s)) : wsTrail s
-              newTrail  = if var2 == -1 then newTrail0
-                          else TrailEntry var2 (IM.lookup var2 newBindings0) : newTrail0
-              trailAdded = (if var1 == -1 then 0 else 1) + (if var2 == -1 then 0 else 1)
-              newCPs = case rest of
-                [] -> wsCPs s
-                _  -> ChoicePoint
-                        { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
-                        , cpCP = wsCP s, cpTrailLen = wsTrailLen s
-                        , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
-                        , cpCutBar = wsCutBar s, cpAggFrame = Nothing
-                        , cpBuiltin = Just (FactStream var1 var2 rest retPC)
-                        } : wsCPs s
-              newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
-          in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
-                     , wsTrail = newTrail, wsTrailLen = wsTrailLen s + trailAdded
-                     , wsCPs = newCPs, wsCPsLen = newCPsLen })
+    Just rows@(_:_) -> streamFactRows rows s
+    _ -> case Map.lookup pred (wcFactSources ctx) of
+      Nothing -> Nothing
+      Just fs ->
+        let a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+            rows = unsafePerformIO $ case a1val of
+              Atom aid -> fsLookupArg1 fs aid
+              _        -> fsScan fs
+        in streamFactRows rows s
+
+-- | Core row-streaming logic shared by inline and external paths.
+streamFactRows :: [(Int, Int)] -> WamState -> Maybe WamState
+streamFactRows [] _ = Nothing
+streamFactRows rows s =
+  let retPC = wsCP s
+      a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+      a2val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+      var1 = case a1val of { Unbound vid -> vid; _ -> -1 }
+      var2 = case a2val of { Unbound vid -> vid; _ -> -1 }
+      -- Filter rows by any bound arguments
+      filtered = case (a1val, a2val) of
+        (Atom aid, Atom bid) -> filter (\\(a, b) -> a == aid && b == bid) rows
+        (Atom aid, _)       -> filter (\\(a, _) -> a == aid) rows
+        (_, Atom bid)       -> filter (\\(_, b) -> b == bid) rows
+        _                   -> rows
+  in case filtered of
+    [] -> Nothing
+    ((a1,a2):rest) ->
+      let newRegs = IM.insert 2 (Atom a2) $ IM.insert 1 (Atom a1) (wsRegs s)
+          newBindings0 = if var1 == -1 then wsBindings s
+                         else IM.insert var1 (Atom a1) (wsBindings s)
+          newBindings  = if var2 == -1 then newBindings0
+                         else IM.insert var2 (Atom a2) newBindings0
+          newTrail0 = if var1 == -1 then wsTrail s
+                      else TrailEntry var1 (IM.lookup var1 (wsBindings s)) : wsTrail s
+          newTrail  = if var2 == -1 then newTrail0
+                      else TrailEntry var2 (IM.lookup var2 newBindings0) : newTrail0
+          trailAdded = (if var1 == -1 then 0 else 1) + (if var2 == -1 then 0 else 1)
+          newCPs = case rest of
+            [] -> wsCPs s
+            _  -> ChoicePoint
+                    { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                    , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                    , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
+                    , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                    , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                    } : wsCPs s
+          newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+      in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
+                 , wsTrail = newTrail, wsTrailLen = wsTrailLen s + trailAdded
+                 , wsCPs = newCPs, wsCPsLen = newCPsLen })
+
+-- | Phase F4: Build a FactSource from a TSV file with lazy IO.
+-- The file is parsed lazily on first fsScan/fsLookupArg1 call.
+-- The index (IntMap grouping by arg1) is built on first demand.
+tsvFactSource :: InternTable -> FilePath -> IO FactSource
+tsvFactSource tbl path = do
+    content <- readFile path  -- lazy IO
+    let ls = drop 1 (lines content)  -- skip header
+        rows = [ (internAtomPure tbl a, internAtomPure tbl b)
+               | l <- ls, not (null l)
+               , let (a, rest) = break (== ''\\t'') l
+               , not (null rest)
+               , let b = drop 1 rest  -- skip the tab
+               , not (null b)
+               ]
+        index = IM.fromListWith (++) [(k, [(k, v)]) | (k, v) <- rows]
+    return FactSource
+      { fsScan       = return rows
+      , fsLookupArg1 = \\key -> return $ IM.findWithDefault [] key index
+      , fsClose      = return ()
+      }
+
+-- | Phase F4: Wrap an existing strict IntMap as a FactSource.
+-- Used to bridge the current eager-load path into the FactSource interface.
+intMapFactSource :: IM.IntMap [Int] -> FactSource
+intMapFactSource im = FactSource
+  { fsScan       = return [(k, v) | (k, vs) <- IM.toList im, v <- vs]
+  , fsLookupArg1 = \\key -> return $ map (\\v -> (key, v)) $ IM.findWithDefault [] key im
+  , fsClose      = return ()
+  }
 
 {{execute_foreign}}
 
@@ -3101,6 +3143,16 @@ data Builder = BuildStruct !Int !Int !Int ![Value]  -- interned functor ID, targ
              | NoBuilder
              deriving (Show)
 
+-- | Phase F4: FactSource abstraction for external fact data.
+-- Mirrors the Elixir FactSource behaviour (fsScan, fsLookupArg1, fsClose).
+-- Concrete implementations: TsvFactSource (lazy IO), IntMapFactSource
+-- (wraps existing strict IntMap). MmapFactSource deferred to Phase F6.
+data FactSource = FactSource
+  { fsScan       :: IO [(Int, Int)]         -- full scan (lazy)
+  , fsLookupArg1 :: Int -> IO [(Int, Int)]  -- indexed by first arg
+  , fsClose      :: IO ()                   -- release resources
+  }
+
 -- | Read-only context. Threaded through the run loop / step function as
 -- a separate argument so it doesn''t pay the per-step record-update cost
 -- on the mutable WamState. Built once at startup, never modified.
@@ -3128,8 +3180,19 @@ data WamContext = WamContext
   -- interned (arg1, arg2) tuples. Populated by Phase F3 code generation;
   -- empty until then.
   , wcInlineFacts :: !(Map.Map String [(Int, Int)])
+  -- | Phase F4: external fact sources keyed by predicate name.
+  -- Each entry is a FactSource adaptor (TsvFactSource, IntMapFactSource,
+  -- etc.) that provides scan and indexed lookup. Populated at startup
+  -- from fact_layout declarations.
+  -- Phase F5 strictness: the strict (!) annotation forces the Map spine
+  -- at construction. FactSource records are WHNF (IO actions are values).
+  -- The !ctx bang pattern in Main.hs ensures the entire WamContext is
+  -- evaluated before parMap. Within each spark, streamFacts uses
+  -- unsafePerformIO per-call — no cross-spark lazy IO sharing.
+  , wcFactSources :: !(Map.Map String FactSource)
   }
--- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
+-- Note: no `deriving (Show)` because wcLoweredPredicates and
+-- wcFactSources are function-valued and have no Show instance.
 -- and functions have no Show instance. Add a manual instance if needed.
 
 -- | Mutable state. Updated on every WAM step. Held separate from WamContext
@@ -3225,6 +3288,7 @@ mkContext codeList labels =
     , wcFfiFacts      = Map.empty
     , wcFfiWeightedFacts = Map.empty
     , wcInlineFacts   = Map.empty
+    , wcFactSources   = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
