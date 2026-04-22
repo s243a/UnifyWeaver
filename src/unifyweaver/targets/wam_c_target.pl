@@ -76,23 +76,23 @@ predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
 
 %% wam_instruction_to_c_literal(+WamInstr, -CCode)
 wam_instruction_to_c_literal(get_constant(C, Ai), Code) :-
-    c_value_literal(C, Val), c_reg_index(Ai, Idx),
-    format(atom(Code), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+    c_value_literal(C, Val), c_reg_index(Ai, IsY_Ai, Idx),
+    format(atom(Code), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY_Ai]).
 wam_instruction_to_c_literal(get_variable(Xn, Ai), Code) :-
-    c_reg_index(Xn, XIdx), c_reg_index(Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+    c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(get_value(Xn, Ai), Code) :-
-    c_reg_index(Xn, XIdx), c_reg_index(Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_GET_VALUE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+    c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_GET_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_constant(C, Ai), Code) :-
-    c_value_literal(C, Val), c_reg_index(Ai, Idx),
-    format(atom(Code), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+    c_value_literal(C, Val), c_reg_index(Ai, IsY_Ai, Idx),
+    format(atom(Code), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY_Ai]).
 wam_instruction_to_c_literal(put_variable(Xn, Ai), Code) :-
-    c_reg_index(Xn, XIdx), c_reg_index(Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_VARIABLE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+    c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_PUT_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(put_value(Xn, Ai), Code) :-
-    c_reg_index(Xn, XIdx), c_reg_index(Ai, AIdx),
-    format(atom(Code), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+    c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_instruction_to_c_literal(call(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(execute(P), Code) :-
@@ -111,15 +111,16 @@ wam_instruction_to_c_literal(Instr, Code) :-
 c_value_literal(Atom, Lit) :- atom(Atom), format(atom(Lit), 'val_atom("~w")', [Atom]).
 c_value_literal(Int, Lit) :- integer(Int), format(atom(Lit), 'val_int(~w)', [Int]).
 
-c_reg_index(RegAtom, Idx) :-
+c_reg_index(RegAtom, IsY, Idx) :-
     atom_chars(RegAtom, Chars),
     (   Chars = [Prefix|NumChars],
-        (Prefix == 'a'; Prefix == 'x'; Prefix == 'A'; Prefix == 'X'; Prefix == 'y'; Prefix == 'Y'),
-        catch(number_chars(Idx, NumChars), _, fail)
-    ->  true
+        (Prefix == 'a'; Prefix == 'x'; Prefix == 'A'; Prefix == 'X')
+    ->  IsY = 0, catch(number_chars(Idx, NumChars), _, fail)
+    ;   Chars = [Prefix|NumChars],
+        (Prefix == 'y'; Prefix == 'Y')
+    ->  IsY = 1, catch(number_chars(Idx, NumChars), _, fail)
     ;   throw(error(wam_c_target_error(unknown_register(RegAtom)), _))
     ).
-
 
 % ============================================================================
 % PHASE 2b: wam_predicate -> C Array
@@ -127,16 +128,16 @@ c_reg_index(RegAtom, Idx) :-
 
 wam_line_to_c_instr(["get_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
-    c_value_literal(CC, Val), c_reg_index(CAi, Idx),
-    format(atom(Instr), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+    c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
 wam_line_to_c_instr(["get_variable", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
-    c_reg_index(CXn, XIdx), c_reg_index(CAi, AIdx),
-    format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .reg_ai = ~w }', [XIdx, AIdx]).
+    c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
+    format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["put_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
-    c_value_literal(CC, Val), c_reg_index(CAi, Idx),
-    format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w }', [Val, Idx]).
+    c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
 wam_line_to_c_instr(["call", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [CP, CN]).
@@ -218,7 +219,7 @@ compile_step_wam_to_c(_Options, CCode) :-
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
-                WamValue *cell = &state->A[instr->reg];
+                WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
                 if (val_is_unbound(*cell)) {
                     trail_binding(state, cell);
                     *cell = instr->val;
@@ -233,12 +234,16 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_GET_VARIABLE: {
                 // Per WAM spec: copy A[Ai] to X[Xn] without trailing.
                 // Trailing is only for mutations of already-bound cells.
-                state->A[instr->reg_xn] = state->A[instr->reg_ai];
+                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                *cell_xn = *cell_ai;
                 state->P++;
                 return true;
             }
             case INSTR_GET_VALUE: {
-                if (val_equal(state->A[instr->reg_xn], state->A[instr->reg_ai])) {
+                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                if (val_equal(*cell_xn, *cell_ai)) {
                     state->P++;
                     return true;
                 }
@@ -246,29 +251,44 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_PUT_CONSTANT: {
-                state->A[instr->reg] = instr->val;
+                WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
+                *cell = instr->val;
                 state->P++;
                 return true;
             }
             case INSTR_PUT_VARIABLE: {
                 WamValue ref = wam_make_ref(state);
-                state->A[instr->reg_xn] = ref;
-                state->A[instr->reg_ai] = ref;
+                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                *cell_xn = ref;
+                *cell_ai = ref;
                 state->P++;
                 return true;
             }
             case INSTR_PUT_VALUE: {
-                state->A[instr->reg_ai] = state->A[instr->reg_xn];
+                WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
+                *cell_ai = *cell_xn;
                 state->P++;
                 return true;
             }
             case INSTR_ALLOCATE: {
-                state->E++;
+                int new_e_idx = state->E + 1;
+                if (new_e_idx >= state->E_cap) {
+                    state->E_cap = state->E_cap ? state->E_cap * 2 : WAM_INITIAL_CAP;
+                    state->E_array = realloc(state->E_array, sizeof(EnvFrame) * state->E_cap);
+                }
+                state->E_array[new_e_idx].cp = state->CP;
+                state->E_array[new_e_idx].saved_e = state->E;
+                state->E = new_e_idx;
                 state->P++;
                 return true;
             }
             case INSTR_DEALLOCATE: {
-                state->E--;
+                if (state->E >= 0) {
+                    state->CP = state->E_array[state->E].cp;
+                    state->E = state->E_array[state->E].saved_e;
+                }
                 state->P++;
                 return true;
             }
@@ -298,18 +318,11 @@ compile_step_wam_to_c(_Options, CCode) :-
                 int target = resolve_label(state, instr->label);
                 ChoicePoint *cp = &state->B_array[state->B - 1];
                 cp->next_pc = target;
-                restore_choice_point(state, cp);
-                // Note: P++ is correct per WAM try_me_else/retry_me_else semantics.
-                // The outer failure loop jumped here. We update the alternative to "target",
-                // restore state, and continue sequentially to the clause body immediately following.
                 state->P++;
                 return true;
             }
             case INSTR_TRUST_ME: {
-                ChoicePoint *cp = &state->B_array[state->B - 1];
-                restore_choice_point(state, cp);
                 pop_choice_point(state);
-                // Note: P++ is correct for TRUST_ME. It falls through to the final alternative.
                 state->P++;
                 return true;
             }
@@ -325,6 +338,22 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             default: return false;
         }
+    }
+
+    int wam_run(WamState* state) {
+        // Outer backtracking loop
+        while (state->P >= 0 && state->P < state->code_size) {
+            Instruction* instr = &state->code[state->P];
+            if (!step_wam(state, instr)) {
+                if (state->B == 0) {
+                    return WAM_HALT; // Failure, no choice points left
+                }
+                ChoicePoint* cp = &state->B_array[state->B - 1];
+                restore_choice_point(state, cp); // Restores H, E, CP, A, unwinds TR
+                state->P = cp->next_pc; // Explicitly jump to alternative
+            }
+        }
+        return (state->P == WAM_HALT) ? 0 : (WAM_HALT - 1); // 0 on success (HALT), else OOB error
     }').
 
 compile_wam_helpers_to_c(_Options, CCode) :-
