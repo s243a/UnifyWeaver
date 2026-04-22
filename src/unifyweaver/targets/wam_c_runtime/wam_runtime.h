@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #define WAM_HALT -1
 #define WAM_MAX_REGS 256
@@ -44,6 +45,13 @@ typedef struct {
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
 
+/* Environment Frame */
+typedef struct {
+    int cp;
+    int saved_e;
+    WamValue y_regs[32];
+} EnvFrame;
+
 /* Instruction tags */
 typedef enum {
     INSTR_GET_CONSTANT, INSTR_GET_VARIABLE, INSTR_GET_VALUE,
@@ -63,8 +71,11 @@ typedef enum {
 typedef struct {
     WamInstrTag tag;
     int reg;
+    int is_y_reg;
     int reg_xn;
+    int is_y_xn;
     int reg_ai;
+    int is_y_ai;
     WamValue val;
     int arity;
     char *pred;
@@ -98,7 +109,7 @@ typedef struct {
     int B_cap;
     
     /* Stack (Environments) */
-    WamValue *E_array;
+    EnvFrame *E_array;
     int E;    // Stack size/pointer
     int E_cap;
     
@@ -146,6 +157,13 @@ static inline bool val_equal(WamValue v1, WamValue v2) {
     if (v1.tag == VAL_ATOM) return strcmp(v1.data.atom, v2.data.atom) == 0;
     // simplify for demonstration
     return false;
+}
+static inline WamValue* resolve_reg(WamState *state, int reg_idx, int is_y) {
+    if (is_y) {
+        assert(state->E >= 0 && "Y-register accessed with empty environment stack");
+        return &state->E_array[state->E].y_regs[reg_idx];
+    }
+    return &state->A[reg_idx];
 }
 static inline void trail_binding(WamState *state, WamValue *cell) {
     if (state->TR >= state->TR_cap) {
