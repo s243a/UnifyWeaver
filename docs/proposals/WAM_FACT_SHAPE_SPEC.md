@@ -1,5 +1,17 @@
 # WAM Fact Shape Specification
 
+## Cross-target status
+
+This spec was originally written for the Elixir target (landed in
+Phases A–E, PRs #1511/#1519/#1525/#1551/#1555). The Haskell target's
+fact-access trilogy
+(`WAM_HASKELL_FACT_ACCESS_{PHILOSOPHY,SPEC,PLAN}.md`, commit
+`776c9c2`) adopts the same classification vocabulary
+(`compiled` / `inline_data` / `external_source`) and the same
+`FactSource` shape (`open/3`, `stream_all/2`, `lookup_by_arg1/3`,
+`close/2`) verbatim — so the terms defined below are treated as the
+cross-target contract, not just Elixir nomenclature.
+
 ## Scope
 
 This document specifies the contract between the WAM lowered emitter

@@ -191,7 +191,17 @@ Targets in rough priority order (unchanged from the original plan):
 2. `wam_go_target`, `wam_rust_target` — both compile facts to
    functions today.
 3. `wam_haskell_target` — has its own fact-heavy fast paths; fit may
-   already be acceptable, worth measuring first.
+   already be acceptable, worth measuring first. **Design trilogy
+   already drafted** — see
+   `WAM_HASKELL_FACT_ACCESS_PHILOSOPHY.md`,
+   `WAM_HASKELL_FACT_ACCESS_SPEC.md`, and
+   `WAM_HASKELL_FACT_ACCESS_PLAN.md` (commit `776c9c2`). Those docs
+   reuse the `compiled` / `inline_data` / `external_source`
+   vocabulary from this plan verbatim, confirming it as the
+   cross-target standard. Phased rollout F1–F6 mirrors this one;
+   F6 in particular specs a `MmapFactSource` that Elixir could
+   parallel once the binary artifact format stabilises
+   (see below).
 4. `wam_csharp_native_target` — the C# side is already on the
    materialization-aware runtime, but the WAM-generated-code side may
    still compile facts as methods.
@@ -267,3 +277,33 @@ matches native SWI byte-for-byte at every scale except dev (where
 summation-order difference — semantically correct, dominant on tiny
 data because bigger data aggregates more paths). Total parity:
 **9193 rows across 10x / 300 / 1k / 5k / 10k scales exact**.
+
+## Cross-target alignment notes
+
+Ideas surfaced in sibling target-design docs that would cross-apply
+back to the Elixir side without changing Phases A–E's scope:
+
+- **Binary-artifact (`Mmap`) `FactSource` adaptor.** Parallels the
+  Haskell plan's Phase F6 and consumes the artifact format described
+  in `PREPROCESSED_PREDICATE_ARTIFACTS.md`. Would slot alongside
+  `Tsv` / `Ets` / `Sqlite` in the existing
+  `WamRuntime.FactSource` behaviour without any emitter or registry
+  change. Deferred until the artifact format stabilises on the C#
+  side (ongoing via the `csharp-query` PRs).
+- **Purity / order-independence feedback loop.** The Haskell
+  philosophy doc (`WAM_HASKELL_FACT_ACCESS_PHILOSOPHY.md` §
+  "Connection to purity, order-independence, and parallelism")
+  observes that goal reordering affects which fact predicates get
+  probed, which access patterns dominate, and therefore which
+  layout is optimal. If `PURITY_CERTIFICATE_SPECIFICATION.md`-style
+  certificates reach the Elixir target, the `cost_aware` policy
+  (PR #1559) becomes a natural consumer — probe-count hints could
+  feed the `user:wam_elixir_layout_policy/5` hook that Phase E
+  exposed.
+- **Laziness trade-offs.** Haskell's default lazy semantics let its
+  fact sources stream without special machinery; Elixir is strict
+  by default, so our `inline_data` holds the full `@facts` list in
+  the BEAM literal pool. A future `Stream`-based `inline_data`
+  variant would only help if paired with a predicate that never
+  backtracks past the first solution — the existing shape is fine
+  for now and matches how other strict targets behave.
