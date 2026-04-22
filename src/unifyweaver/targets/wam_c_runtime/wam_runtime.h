@@ -16,21 +16,20 @@ typedef enum {
     VAL_ATOM, VAL_INT, VAL_REF, VAL_STR, VAL_UNBOUND, VAL_LIST
 } WamValueTag;
 
-/* Tagged union value */
 typedef struct {
     WamValueTag tag;
     union {
-        char *atom;
+        const char *atom;
         int integer;
         int ref_addr;
-        char *str_functor;
-        char *unbound_name;
+        const char *str_functor;
+        const char *unbound_name;
     } data;
 } WamValue;
 
 /* Trail entry */
 typedef struct {
-    int reg_index;
+    WamValue *cell;
     WamValue old_val;
 } TrailEntry;
 
@@ -41,7 +40,8 @@ typedef struct {
     int heap_size;
     int trail_size;
     int stack_size;
-    WamValue a_regs[WAM_MAX_REGS];
+    int arity;
+    WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
 } ChoicePoint;
 
 /* Instruction tags */
@@ -59,6 +59,7 @@ typedef enum {
 } WamInstrTag;
 
 /* Instruction */
+// TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
     WamInstrTag tag;
     int reg;
@@ -114,13 +115,27 @@ typedef struct {
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
-    WamValue v; v.tag = VAL_ATOM; v.data.atom = strdup(s); return v;
+    // We avoid strdup here to prevent leaks, assuming 's' is a string literal.
+    // Dynamic atoms will require an interning table later.
+    WamValue v; v.tag = VAL_ATOM; v.data.atom = s; return v;
 }
 static inline WamValue val_int(int n) {
     WamValue v; v.tag = VAL_INT; v.data.integer = n; return v;
 }
 static inline WamValue val_unbound(const char *name) {
-    WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = strdup(name); return v;
+    WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
+}
+static inline WamValue wam_make_ref(WamState *state) {
+    if (state->H >= state->H_cap) {
+        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
+    WamValue ref;
+    ref.tag = VAL_REF;
+    ref.data.ref_addr = state->H;
+    state->H_array[state->H] = val_unbound("heap_var");
+    state->H++;
+    return ref;
 }
 static inline bool val_is_unbound(WamValue v) {
     return v.tag == VAL_UNBOUND;
@@ -132,16 +147,16 @@ static inline bool val_equal(WamValue v1, WamValue v2) {
     // simplify for demonstration
     return false;
 }
-static inline void trail_binding(WamState *state, int reg_index) {
+static inline void trail_binding(WamState *state, WamValue *cell) {
     if (state->TR >= state->TR_cap) {
         state->TR_cap = state->TR_cap ? state->TR_cap * 2 : WAM_INITIAL_CAP;
         state->TR_array = realloc(state->TR_array, sizeof(TrailEntry) * state->TR_cap);
     }
-    state->TR_array[state->TR].reg_index = reg_index;
-    state->TR_array[state->TR].old_val = state->A[reg_index];
+    state->TR_array[state->TR].cell = cell;
+    state->TR_array[state->TR].old_val = *cell;
     state->TR++;
 }
-static inline void push_choice_point(WamState *state, int next_pc) {
+static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
         state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
         state->B_array = realloc(state->B_array, sizeof(ChoicePoint) * state->B_cap);
@@ -152,9 +167,26 @@ static inline void push_choice_point(WamState *state, int next_pc) {
     cp->heap_size = state->H;
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
-    memcpy(cp->a_regs, state->A, sizeof(state->A));
+    
+    int save_arity = arity < 32 ? arity : 32;
+    cp->arity = save_arity;
+    memcpy(cp->a_regs, state->A, sizeof(WamValue) * save_arity);
     state->B++;
     state->HB = state->H;
+}
+static inline void unwind_trail(WamState *state, int target_tr) {
+    while (state->TR > target_tr) {
+        state->TR--;
+        TrailEntry *te = &state->TR_array[state->TR];
+        *te->cell = te->old_val;
+    }
+}
+static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
+    state->H = cp->heap_size;
+    state->E = cp->stack_size;
+    state->CP = cp->cp;
+    unwind_trail(state, cp->trail_size);
+    memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
 static inline void pop_choice_point(WamState *state) {
     if (state->B > 0) {
@@ -172,6 +204,7 @@ static inline void update_choice_point(WamState *state, int next_pc) {
     }
 }
 static inline int resolve_label(WamState *state, const char *label) {
+    // TODO: Optimize from O(n) to O(1) or O(log n) via hash map or bsearch
     for (int i = 0; i < state->label_count; i++) {
         if (strcmp(state->label_names[i], label) == 0) return state->label_pcs[i];
     }
