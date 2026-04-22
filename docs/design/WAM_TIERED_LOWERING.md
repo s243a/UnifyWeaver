@@ -140,25 +140,90 @@ correctness gate.
 clause segment body with its choice-point push and `try/catch` block.
 The emission decision for a segment happens at a single call site.
 
-A Tier-2 variant `par_wrap_segment/3` would:
+A Tier-2 variant `par_wrap_segment/3` gates on three conditions, all
+derivable at emit time:
 
-1. Check `purity_certificate:analyze_predicate_purity/2` for the
-   current predicate.
-2. If `Verdict = pure` ∧ `Confidence >= 0.85` ∧
-   `option(intra_query_parallel(false), Options)` is absent, emit
-   `Task.async_stream`-based code instead of `try/catch`.
-3. Fall through to `wrap_segment/3` otherwise (current behaviour).
+```prolog
+par_wrap_segment(Pred/Arity, Segments, Options) :-
+    \+ option(intra_query_parallel(false), Options),
+    purity_certificate:analyze_predicate_purity(
+        Pred/Arity, purity_cert(pure, _, Conf, _)),
+    Conf >= 0.85,
+    length(Segments, N), N >= 3,          % min-branches cost gate
+    !,
+    emit_par_tier2_wrapper(Pred/Arity, Segments, Options).
+par_wrap_segment(Pred/Arity, Segments, Options) :-
+    wrap_segment(Pred/Arity, Segments, Options).   % Tier 3 fallback.
+```
+
+No `contains_cut/1` static check — cut safety comes from the runtime
+barrier pinned in the emitted wrapper (see "Cut semantics" below).
+Kill-switch (`intra_query_parallel(false)`), purity confidence gate
+(≥0.85 matching Haskell), and min-branches threshold (≥3) are all
+static.
+
+### Cost gate: `forkMinBranches = 3`
+
+Matches the Haskell target's identical threshold. Rationale:
+`Task.async_stream` has non-trivial setup cost per task. A 2-clause
+predicate where one branch is trivial is reliably slower with
+parallelism than without. Three branches is the minimum at which
+amortisation starts to pay.
+
+This is a conservative **static** cost hint — the same pattern the
+C# query runtime uses in
+`docs/proposals/PREPROCESSED_PREDICATE_ARTIFACTS.md`: don't wait for
+measured data before making a sensible default. Measurement-driven
+threshold tuning plugs into the existing `cost_aware` policy hook
+(PR #1559) when desktop-environment profiling lands.
+
+### Cut semantics (decision: runtime barrier, not static filter)
+
+Matches Haskell's approach. Cut (`!`) inside a parallel branch is
+contained to that branch via a **cut barrier pinned at fork time**.
+The emitted wrapper writes the parent's current `choice_points` into
+each branch's `cut_point` before spawning:
+
+```elixir
+branch_state = %{state | cut_point: state.choice_points}
+```
+
+When `!/0` fires inside the branch, the runtime truncates
+`choice_points` back to `cut_point` — removing only CPs the branch
+itself pushed after fork. Sibling branches' CPs are unreachable by
+construction; parent's aggregate frame is unreachable by
+construction.
+
+This is the same mechanism Elixir already uses for per-predicate cut
+via `allocate` / `deallocate` (PR #1535). Fork pinning is structurally
+a "virtual allocate" — save the barrier without pushing an env frame.
+
+The CPS `throw({:fail, state})` propagation handles branch failure
+cleanly: a branch that throws `{:fail, _}` exits its own `try/catch`
+and the task returns the failure signal; sibling tasks continue
+unaffected. No `Task.Supervisor` + manual cancellation needed for
+the failure path — only `on_timeout: :kill_task` for runaway
+branches.
+
+**Semantic tradeoff stated honestly.** A pure predicate of ≥3
+clauses that contains `!` *and* is called inside a findall-style
+aggregate collection will produce solutions that cut would have
+pruned under sequential evaluation. `forkMinBranches = 3` excludes
+the common cases (2-clause greens like `max/3`); the remaining
+divergence is accepted as the cost of Tier 2, same as Haskell.
 
 ### Shape of generated Tier-2 code
 
-Roughly (exact shape subject to prototype):
-
 ```elixir
 defp clause_main(state) do
+  # Pin cut barrier at fork — !/0 inside branches can only prune
+  # branch-local CPs, not sibling branches or the parent.
+  branch_state = %{state | cut_point: state.choice_points}
+
   branches = [&clause_main_impl/1, &clause_k1_impl/1, &clause_k2_impl/1]
 
   branches
-  |> Task.async_stream(& &1.(state),
+  |> Task.async_stream(& &1.(branch_state),
                        on_timeout: :kill_task,
                        ordered: false,
                        max_concurrency: System.schedulers_online())
@@ -171,7 +236,8 @@ end
 
 `clause_main_impl/1`, `clause_k1_impl/1`, etc. are the
 currently-generated per-clause `defp`s, unchanged. The outer wrapper
-swaps from sequential `try/catch` to parallel fan-out + first-win.
+swaps from sequential `try/catch` to parallel fan-out + first-win
+with the pinned cut barrier.
 
 ### Why BEAM processes specifically
 
@@ -190,23 +256,36 @@ The following must hold before Tier 2 is a reasonable next PR:
 1. A concrete Elixir-side consumer of `purity_certificate.pl` exists
    (even if only the wrapper predicate). Any target that wants Tier 2
    needs to wire the certificate lookup.
-2. The CPS throw/catch semantics interacting with `Task.async_stream`
+2. The CPS `throw/catch` semantics interacting with `Task.async_stream`
    need verification: a branch that throws `{:fail, state}` must be
    captured as "this alternative failed" without killing sibling
    tasks. The `{:exit, reason}` vs `{:ok, value}` dichotomy of
    `async_stream` maps onto this cleanly but needs testing.
-3. Cut (`!`) semantics under parallel evaluation need a design pass —
-   the Haskell Tier-2 gates on purity which typically excludes cuts,
-   but pure-with-green-cut is a valid niche. Probably: if any clause
-   contains `!`, fall back to Tier 3.
 
 ### Deferred
 
+- **Aggregate-context runtime gate.** Haskell's `forkOrSequential`
+  falls back to sequential `TryMeElse` unless the current frame has
+  a forkable aggregate strategy (`MergeFindall`, `MergeSum`,
+  `MergeSet`). That check is runtime in Haskell because `ParTryMeElse`
+  fires in every call site of the interpreter loop. Elixir is a
+  lowered emitter — `par_wrap_segment` decides *per predicate at emit
+  time*, not per call site at runtime — so the aggregate-frame check
+  would require new runtime infrastructure
+  (`WamRuntime.in_forkable_aggregate_frame?/1` plus CP stack
+  inspection). `Enum.reduce_while` in the emitted wrapper already
+  provides once-semantics (`:halt` after first `{:ok, _}`), so the
+  worst case under Tier 2 without this gate is "briefly spun up
+  sibling tasks that get killed by `:kill_task` when the first
+  succeeds." Meaningful optimisation but safe to defer; add once
+  Tier 2 lands and measurement shows idle siblings are real overhead.
 - **Measurement.** Whether Tier 2 actually pays on realistic Elixir
   workloads requires runtime profiling — desktop-environment work.
-- **Cost-model knob for "worth parallelizing."** A 3-clause predicate
-  probed once doesn't need parallelism. Threshold goes into the same
-  cost-aware policy hook as existing layout decisions.
+- **Cost-model knob for "worth parallelizing" beyond min-branches.**
+  A 3-clause predicate probed once doesn't need parallelism; a
+  5-clause predicate probed 10k times clearly does. Secondary
+  threshold plugs into the same `cost_aware` policy hook
+  (PR #1559) once measurement infrastructure exists.
 
 ## Relation to existing UnifyWeaver documents
 
@@ -226,15 +305,15 @@ The following must hold before Tier 2 is a reasonable next PR:
 - **Cross-target Tier-2 test harness.** Once two targets implement
   Tier 2, a shared test that verifies pure-parallel vs pure-sequential
   emission produces identical multisets of solutions would catch
-  accidental divergence.
+  accidental divergence — with the caveat that Tier 2 explicitly
+  accepts cut-in-aggregate divergence (see "Cut semantics" above), so
+  the test corpus must carefully separate predicates that should
+  match under the two tiers from predicates that are allowed to
+  differ.
 - **Where the tier decision lives.** Currently scattered — each
   target's emitter has its own policy. A shared `layout_policy/6`
   hook like Elixir's Phase E might generalize across tiers, not just
   within Tier 1.
-- **Should Tier 2 gate on cost?** A 2-clause predicate called 10
-  times per query probably doesn't benefit from spinning up BEAM
-  processes. The cost-aware policy hook is the natural home for this,
-  but we lack runtime data to calibrate.
 
 ## Why this matters
 
