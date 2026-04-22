@@ -1063,9 +1063,71 @@ test_f3_camel_case_list_name :-
     ;   fail_test(Test, 'camelCase list name generation failed')
     ).
 
+%% Phase F4: FactSource abstraction tests
+%% -----------------------------------------------
+
+test_f4_fact_source_type_present :-
+    Test = 'F4: FactSource record type in WamTypes',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "data FactSource = FactSource"),
+        sub_string(S, _, _, _, "fsScan"),
+        sub_string(S, _, _, _, "fsLookupArg1"),
+        sub_string(S, _, _, _, "fsClose")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactSource type not found in WamTypes')
+    ).
+
+test_f4_wc_fact_sources_field :-
+    Test = 'F4: wcFactSources field in WamContext',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "wcFactSources")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcFactSources field not found in WamContext')
+    ).
+
+test_f4_tsv_fact_source_function :-
+    Test = 'F4: tsvFactSource function in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "tsvFactSource :: InternTable -> FilePath -> IO FactSource")
+    ->  pass(Test)
+    ;   fail_test(Test, 'tsvFactSource function not found in runtime')
+    ).
+
+test_f4_intmap_fact_source_function :-
+    Test = 'F4: intMapFactSource function in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "intMapFactSource :: IM.IntMap [Int] -> FactSource")
+    ->  pass(Test)
+    ;   fail_test(Test, 'intMapFactSource function not found in runtime')
+    ).
+
+test_f4_stream_facts_fallback_to_fact_sources :-
+    Test = 'F4: streamFacts falls back to wcFactSources',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "wcFactSources ctx"),
+        sub_string(S, _, _, _, "fsLookupArg1 fs"),
+        sub_string(S, _, _, _, "fsScan fs")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts does not fall back to wcFactSources')
+    ).
+
+test_f4_stream_fact_rows_helper :-
+    Test = 'F4: streamFactRows helper present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "streamFactRows :: [(Int, Int)] -> WamState -> Maybe WamState")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFactRows helper not found')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1+F2+F3 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -1148,6 +1210,13 @@ run_tests :-
     test_f3_inline_defs_returned,
     test_f3_fact_tuples_extracted,
     test_f3_camel_case_list_name,
+    %% Phase F4: FactSource abstraction
+    test_f4_fact_source_type_present,
+    test_f4_wc_fact_sources_field,
+    test_f4_tsv_fact_source_function,
+    test_f4_intmap_fact_source_function,
+    test_f4_stream_facts_fallback_to_fact_sources,
+    test_f4_stream_fact_rows_helper,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
