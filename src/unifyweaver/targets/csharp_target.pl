@@ -2360,11 +2360,14 @@ order_free_join_role(Role) :-
 %  a goal that is certified pure (confidence >= 0.85) can be freely
 %  reordered, even if its role is not a standard order-free role.
 %  Pure goals are side-effect-free, so evaluation order is
-%  semantically irrelevant — the optimizer can reorder them for
-%  better join plans (e.g., pushing selective filters earlier).
+%  semantically irrelevant. Constraint and aggregate roles are still
+%  excluded here because they depend on variable-binding order and are
+%  handled by the pipeline builder rather than the join reorderer.
 order_free_join_item(_Term, Role) :-
     order_free_join_role(Role), !.
-order_free_join_item(Term, _Role) :-
+order_free_join_item(Term, Role) :-
+    Role \== constraint,
+    Role \== aggregate,
     nonvar(Term),
     catch(
         analyze_goal_purity(Term, purity_cert(pure, _, Conf, _)),
@@ -3589,13 +3592,11 @@ namespace UnifyWeaver.Generated
         public static (IRelationProvider Provider, QueryPlan Plan) Build()
         {
             var configuredProvider = BuildProvider();
-            var memoryProvider = configuredProvider.MemoryProvider;
-            var provider = configuredProvider.Provider;
-~w            return (provider, CachedPlan.Value);
+            return (configuredProvider.Provider, CachedPlan.Value);
         }
     }
  }
-', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderMethod, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral, ProviderSection]).
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderMethod, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
 
 render_plans_to_csharp(Plans, Code) :-
     Plans = [FirstPlan|_],
@@ -4379,6 +4380,11 @@ delimited_reader_literal(Metadata, Arity, Literal) :-
         [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity]).
 
 can_emit_configured_binary_relation(Metadata, Literal) :-
+    (   get_dict(record_format, Metadata, Format0)
+    ->  Format = Format0
+    ;   Format = text_line
+    ),
+    \+ memberchk(Format, [json, jsonl, xml]),
     get_dict(input, Metadata, file(Path)),
     get_dict(field_separator, Metadata, FieldSep0),
     field_separator_char_literal(FieldSep0, FieldSepLiteral),
