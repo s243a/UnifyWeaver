@@ -1234,6 +1234,74 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
+test_b1_external_source_skips_wam_compilation :-
+    Test = 'B1: external_source fact predicate skips WAM compilation',
+    (   retractall(user:b1_ext(_, _)),
+        forall(between(1, 10, I), (
+            atom_number(A, I),
+            atom_concat(parent_, A, P),
+            assert(user:b1_ext(A, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [b1_ext/2],
+            [use_lmdb(true), lmdb_backed_facts([b1_ext/2])],
+            Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "external_source"),
+        % No per-fact emission in any path — neither CallFactStream nor
+        % an inline fact list nor WAM label entry for b1_ext
+        \+ sub_string(S, _, _, _, "CallFactStream"),
+        \+ sub_string(S, _, _, _, "b1ExtFacts"),
+        \+ sub_string(S, _, _, _, "(\"b1_ext/2\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source predicate should emit no WAM code')
+    ),
+    retractall(user:b1_ext(_, _)).
+
+test_b1_external_source_default_allow_list :-
+    Test = 'B1: default lmdb_backed_facts covers category_parent/2',
+    (   retractall(user:category_parent(_, _)),
+        forall(between(1, 10, I), (
+            atom_number(A, I),
+            atom_concat(cp_p_, A, P),
+            atom_concat(cp_c_, A, C),
+            assert(user:category_parent(C, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [category_parent/2],
+            [use_lmdb(true)],
+            Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "external_source"),
+        \+ sub_string(S, _, _, _, "CallFactStream"),
+        \+ sub_string(S, _, _, _, "categoryParentFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'category_parent/2 should be skipped by default under use_lmdb(true)')
+    ),
+    retractall(user:category_parent(_, _)).
+
+test_b1_external_source_off_without_use_lmdb :-
+    Test = 'B1: without use_lmdb(true) fact predicates still compile',
+    (   retractall(user:b1_noext(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(p_, A, P),
+            assert(user:b1_noext(A, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [b1_noext/2],
+            [lmdb_backed_facts([b1_noext/2])],
+            Code, _),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "external_source")
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source should require use_lmdb(true)')
+    ),
+    retractall(user:b1_noext(_, _)).
+
 test_b1_lmdb_raw_zero_copy_reads :-
     Test = 'B1: lmdbRawEdgeLookup uses mdb_get for zero-copy reads',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
@@ -1349,6 +1417,9 @@ run_tests :-
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
     test_b1_lmdb_raw_zero_copy_reads,
+    test_b1_external_source_skips_wam_compilation,
+    test_b1_external_source_default_allow_list,
+    test_b1_external_source_off_without_use_lmdb,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

@@ -169,6 +169,33 @@ of IntMap with warm OS page cache.
 | LMDB raw (cold pages) | 1018 | 1.9x |
 | LMDB raw (warm pages) | 684 | 1.29x |
 
+### 100k scale (category-only workload)
+
+Dataset: full simplewiki category hierarchy (84,136 categories,
+196,900 child→parent edges) with every category acting as its own
+query seed. No article predicates; the graph is just the category
+tree. Queries: effective-distance aggregation via the
+`category_ancestor/4` FFI kernel.
+
+| Backend | query_ms (100k_cats) | Ratio |
+|---------|---------------------|-------|
+| IntMap (avg of 2) | ~172,000 | 1.0x |
+| LMDB raw (cold) | 191,550 | 1.11x |
+| LMDB raw (warm) | 181,263 | 1.05x |
+
+The warm ratio narrowed from 1.29x at 10k to **1.05x at 100k_cats** —
+within noise. This is consistent with the projected crossover: as the
+in-memory IntMap grows, per-query GC and pointer-chasing cost
+creeps up while LMDB's mmap'd B+ tree lookups stay flat.
+
+**Key compile-time lesson**: the first 100k LMDB build took 18+ minutes
+before we identified and fixed it. The compile_predicates pipeline
+was still running full WAM compilation for `category_parent` even
+though the runtime path served it from LMDB. Adding an
+`external_source` layout — which short-circuits WAM compilation for
+LMDB-backed fact predicates — dropped project generation to 4.5
+seconds. The runtime numbers above use that fix.
+
 The lesson: **serialization format matters enormously for database-backed
 lookups in hot loops**. CBOR's flexibility (arbitrary Haskell types) is
 not worth the cost when the data is just arrays of integers.
