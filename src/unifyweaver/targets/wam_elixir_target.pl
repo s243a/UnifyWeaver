@@ -333,7 +333,8 @@ compile_wam_helpers_to_elixir(_Options, Code) :-
     compile_backtrack_to_elixir(BTCode),
     compile_unwind_trail_to_elixir(UnwindCode),
     compile_utility_helpers_to_elixir(UtilCode),
-    atomic_list_concat([RunCode, '\n\n', BTCode, '\n\n', UnwindCode, '\n\n', UtilCode], Code).
+    compile_aggregate_helpers_to_elixir(AggCode),
+    atomic_list_concat([RunCode, '\n\n', BTCode, '\n\n', UnwindCode, '\n\n', UtilCode, '\n\n', AggCode], Code).
 
 compile_run_loop_to_elixir(Code) :-
     format(string(Code),
@@ -903,6 +904,75 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   defp eval_arith(state, val), do: eval_arith(state, deref_var(state, val))', []).
 
+%% compile_aggregate_helpers_to_elixir(-Code)
+%
+%  Emits the Tier-2 aggregate-frame substrate: two runtime helpers that
+%  consume aggregate-frame choice points but don\'t produce them. See
+%  docs/design/WAM_TIERED_LOWERING.md for the full plan.
+%
+%  An "aggregate frame" is a choice point with an `:agg_type` field set
+%  to one of `:findall | :bagof | :setof | :aggregate_all | :sum | :count`.
+%  Aggregate wrappers (findall/3, bagof/3, etc.) push such a CP at entry
+%  and consume it at exit, accumulating solutions in the CP\'s `:agg_accum`
+%  list. Infrastructure PR: no wrapper pushes the marker yet; these
+%  helpers are dead code until PR2 adds Tier-2 emission and a later PR
+%  adds findall/bagof/aggregate_all.
+%
+%  `in_forkable_aggregate_frame?/1` answers "may a Tier-2 fan-out emit
+%  under the current CP stack?" — true only if the nearest aggregate
+%  frame is order-independent (findall/aggregate_all). bagof/setof have
+%  witness-variable semantics that forbid naive parallelisation.
+%
+%  `merge_into_aggregate/2` takes a state and a branch-results list,
+%  locates the nearest aggregate frame, and appends the results to its
+%  accumulator. Returns the updated state.
+compile_aggregate_helpers_to_elixir(Code) :-
+    format(string(Code),
+'  @doc """
+  True if the nearest aggregate frame on the CP stack is forkable
+  (findall / aggregate_all — both order-independent). Returns false
+  for bagof/setof (witness-variable dependency) and for an empty or
+  non-aggregate-bearing CP stack.
+
+  Consumed by the Tier-2 wrapper (`par_wrap_segment/3`, PR2) as a
+  correctness gate: outside a forkable aggregate, parallel fan-out
+  would strand solutions that the sequential `next_solution/1`
+  enumeration path would otherwise surface.
+  """
+  def in_forkable_aggregate_frame?(state) do
+    Enum.any?(state.choice_points, fn cp ->
+      case Map.get(cp, :agg_type) do
+        :findall -> true
+        :aggregate_all -> true
+        _ -> false
+      end
+    end)
+  end
+
+  @doc """
+  Append branch results to the nearest aggregate frame\'s accumulator.
+  Used by the Tier-2 wrapper after `Task.async_stream` fully exhausts
+  all branches — each branch produces a list of solutions, and the
+  wrapper hands the flattened list to this function before returning
+  the updated state to the aggregate-wrapper continuation.
+
+  If no aggregate frame is present (caller misuse — Tier-2 gate should
+  have prevented this), the state is returned unchanged.
+  """
+  def merge_into_aggregate(state, branch_results) when is_list(branch_results) do
+    {updated_cps, _merged} =
+      Enum.map_reduce(state.choice_points, false, fn cp, merged ->
+        cond do
+          merged -> {cp, merged}
+          Map.has_key?(cp, :agg_type) ->
+            prior = Map.get(cp, :agg_accum, [])
+            {Map.put(cp, :agg_accum, prior ++ branch_results), true}
+          true -> {cp, merged}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end', []).
+
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3
 % ============================================================================
@@ -934,7 +1004,14 @@ compile_wam_runtime_to_elixir(Options, Code) :-
               # `deallocate`. A cut truncates state.choice_points back to
               # this snapshot — clearing CPs pushed inside the current
               # predicate body without touching the caller\'s CPs.
-              cut_point: []
+              cut_point: [],
+              # parallel_depth counts how many Tier-2 parallel fan-outs
+              # are currently active on this branch of the search. The
+              # Tier-2 wrapper increments it when spawning Task.async_stream
+              # children and checks > 0 to short-circuit back to
+              # sequential — prevents B^D spark explosion on recursive
+              # predicates. See docs/design/WAM_TIERED_LOWERING.md.
+              parallel_depth: 0
   end
 
 ~w

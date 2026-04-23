@@ -20,13 +20,18 @@
     % Phase B fact extraction. Exported so tests can exercise it.
     extract_facts/3,              % +Segments, +Arity, -ElixirListLiteral
     % Phase C first-argument indexing.
-    extract_arg1_index/3          % +Segments, +Arity, -IndexResult
+    extract_arg1_index/3,         % +Segments, +Arity, -IndexResult
+    % Tier-2 purity gate (see docs/design/WAM_TIERED_LOWERING.md).
+    % Consumed by `par_wrap_segment/3` (PR2) to decide whether a
+    % predicate is eligible for host-native parallel emission.
+    tier2_purity_eligible/3       % +Pred, +Arity, -Cert
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
+:- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
 
 % ============================================================================
 % MAIN ENTRY POINT
@@ -414,6 +419,32 @@ format_fact_shape_comment(fact_shape_info(N, FactOnly, FirstArg, Layout), Commen
 '  # Fact-shape classification:
   #   clauses=~w fact_only=~w first_arg=~w layout=~w',
            [N, FactOnly, FirstArg, Layout]).
+
+% ============================================================================
+% TIER-2 PURITY GATE
+% ============================================================================
+%
+% `par_wrap_segment/3` (PR2) checks a predicate\'s purity certificate
+% before emitting the host-native parallel wrapper. Encapsulated here
+% so the threshold (0.85) lives alongside the other emitter-facing
+% classification helpers — and so a failing certificate fails the
+% whole gate predicate (no partial-match leakage of Cert into the
+% sequential fallback path). The 0.85 threshold matches Haskell\'s
+% Tier-2 implementation (Phase P4).
+%
+% This is the Tier-2 infrastructure hand-off: the gate is wired but
+% nothing calls it yet. PR2 adds `par_wrap_segment/3` in the
+% SEGMENTATION section, which depends on this predicate.
+
+%% tier2_purity_eligible(+Pred, +Arity, -Cert)
+%  Succeeds iff `Pred/Arity` has a purity certificate with verdict
+%  `pure` and confidence ≥ 0.85. Binds `Cert` for downstream logging
+%  / debug. Fails silently for any other verdict — Tier-2 emission
+%  defers to the Tier-3 sequential fallback when this fails.
+tier2_purity_eligible(Pred, Arity, Cert) :-
+    analyze_predicate_purity(Pred/Arity, Cert),
+    Cert = purity_cert(pure, _Proof, Confidence, _Reasons),
+    Confidence >= 0.85.
 
 % ============================================================================
 % PHASE B: INLINE_DATA FACT EXTRACTION
