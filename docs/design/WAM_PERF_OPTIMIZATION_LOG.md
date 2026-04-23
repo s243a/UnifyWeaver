@@ -570,3 +570,21 @@ matched digest `1659619c9d36` across:
 The timings are still noisy, but the code path is now flexible enough to
 move further measurement and policy tuning to desktop without changing
 the benchmark interface again.
+
+The follow-up manifest pass closes another pre-desktop gap by giving the
+Clojure benchmark sidecars a C#-style inspection surface. Sidecar-backed
+`sidecar` and `artifact` modes now emit
+`data/generated/wam_clojure_optimized_bench/manifest.edn` with:
+
+- artifact format/version
+- source facts path
+- benchmark variant, kernel mode, and top-level data mode
+- per-relation resolved mode
+- per-relation file name and physical format
+- row counts
+- supported access contracts
+
+This does not change runtime behavior. It makes the generated data
+layout explicit enough for desktop benchmarking, artifact invalidation
+work, and later provider-style loaders without forcing another change to
+the benchmark target names.

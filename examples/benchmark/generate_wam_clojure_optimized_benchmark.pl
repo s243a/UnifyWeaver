@@ -105,7 +105,7 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
            ],
            Options),
     write_wam_clojure_project(Predicates, Options, OutputDir),
-    maybe_write_benchmark_sidecar_files(OutputDir, DataMode, BenchmarkData),
+    maybe_write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, DataMode, BenchmarkData),
     append_effective_distance_runner(OutputDir, RunnerCode),
     format(user_error,
            '[WAM-Clojure-Optimized] facts=~w variant=~w kernels=~w data_mode=~w output=~w~n',
@@ -548,22 +548,24 @@ benchmark_roots_code(inline, _DataDirLiteral, benchmark_data(_, _, RootCategorie
            "(def benchmark-roots-delay (delay [~s]))",
            [RootCategories]).
 
-maybe_write_benchmark_sidecar_files(OutputDir, sidecar, BenchmarkData) :-
+maybe_write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, sidecar, BenchmarkData) :-
     !,
-    write_benchmark_sidecar_files(OutputDir, BenchmarkData).
-maybe_write_benchmark_sidecar_files(OutputDir, artifact, BenchmarkData) :-
+    write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, sidecar, BenchmarkData).
+maybe_write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, artifact, BenchmarkData) :-
     !,
-    write_benchmark_sidecar_files(OutputDir, BenchmarkData).
-maybe_write_benchmark_sidecar_files(_, inline, _).
+    write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, artifact, BenchmarkData).
+maybe_write_benchmark_sidecar_files(_, _, _, _, inline, _).
 
-write_benchmark_sidecar_files(OutputDir, BenchmarkData) :-
+write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, DataMode, BenchmarkData) :-
     benchmark_sidecar_dir(OutputDir, DataDir),
     make_directory_path(DataDir),
     write_benchmark_sidecar_file(DataDir, 'article_category.edn', BenchmarkData, benchmark_article_category_edn),
     write_benchmark_sidecar_file(DataDir, 'article_category_by_article.tsv', BenchmarkData, benchmark_article_category_by_article_artifact),
     write_benchmark_sidecar_file(DataDir, 'category_parent.edn', BenchmarkData, benchmark_category_parent_edn),
     write_benchmark_sidecar_file(DataDir, 'category_parent_by_child.tsv', BenchmarkData, benchmark_category_parent_by_child_artifact),
-    write_benchmark_sidecar_file(DataDir, 'root_category.edn', BenchmarkData, benchmark_root_category_edn).
+    write_benchmark_sidecar_file(DataDir, 'root_category.edn', BenchmarkData, benchmark_root_category_edn),
+    benchmark_artifact_manifest(FactsPath, VariantAtom, KernelModeAtom, DataMode, Manifest),
+    write_benchmark_sidecar_content(DataDir, 'manifest.edn', Manifest).
 
 benchmark_sidecar_dir(OutputDir, DataDir) :-
     directory_file_path(OutputDir, 'data', DataRoot),
@@ -583,12 +585,72 @@ benchmark_sidecar_file_path_literal(OutputDir, FileName, Literal) :-
 
 write_benchmark_sidecar_file(DataDir, FileName, BenchmarkData, Builder) :-
     call(Builder, BenchmarkData, Content),
+    write_benchmark_sidecar_content(DataDir, FileName, Content).
+
+write_benchmark_sidecar_content(DataDir, FileName, Content) :-
     directory_file_path(DataDir, FileName, Path),
     setup_call_cleanup(
         open(Path, write, Stream),
         write(Stream, Content),
         close(Stream)
     ).
+
+benchmark_artifact_manifest(FactsPath, VariantAtom, KernelModeAtom, DataMode, Manifest) :-
+    benchmark_effective_data_modes(VariantAtom, DataMode, ArticleMode, ParentMode),
+    benchmark_fact_count(user:article_category/2, ArticleRows),
+    benchmark_fact_count(user:category_parent/2, ParentRows),
+    benchmark_fact_count(user:root_category/1, RootRows),
+    clj_string_literal_local(FactsPath, FactsPathLit),
+    clj_string_literal_local(VariantAtom, VariantLit),
+    clj_string_literal_local(KernelModeAtom, KernelModeLit),
+    clj_string_literal_local(DataMode, DataModeLit),
+    relation_manifest_entry(article_category, ArticleMode, ArticleRows, ArticleEntry),
+    relation_manifest_entry(category_parent, ParentMode, ParentRows, ParentEntry),
+    relation_manifest_entry(root_category, sidecar, RootRows, RootEntry),
+    format(atom(Manifest),
+'{:format "unifyweaver.clojure_benchmark_artifacts.v1"
+ :exactness :exact
+ :source {:path ~w}
+ :benchmark {:variant ~w :kernel_mode ~w :data_mode ~w}
+ :relations {~w
+             ~w
+             ~w}
+ :notes "Generated sidecar/artifact manifest for Clojure WAM benchmark validation."}
+',
+           [FactsPathLit, VariantLit, KernelModeLit, DataModeLit,
+            ArticleEntry, ParentEntry, RootEntry]).
+
+relation_manifest_entry(Relation, Mode, RowCount, Entry) :-
+    relation_manifest_shape(Relation, Mode, FileName, Format, Access),
+    clj_string_literal_local(Relation, RelationLit),
+    clj_string_literal_local(Mode, ModeLit),
+    clj_string_literal_local(FileName, FileNameLit),
+    clj_string_literal_local(Format, FormatLit),
+    clj_string_literal_local(Access, AccessLit),
+    format(atom(Entry),
+           '~w {:mode ~w :file ~w :format ~w :row_count ~w :access ~w}',
+           [RelationLit, ModeLit, FileNameLit, FormatLit, RowCount, AccessLit]).
+
+relation_manifest_shape(article_category, artifact,
+                        'article_category_by_article.tsv',
+                        'grouped_tsv_arg1',
+                        'scan,arg1_grouped_lookup') :- !.
+relation_manifest_shape(article_category, _,
+                        'article_category.edn',
+                        'edn_rows',
+                        'scan,arg1_group_at_startup') :- !.
+relation_manifest_shape(category_parent, artifact,
+                        'category_parent_by_child.tsv',
+                        'grouped_tsv_arg1',
+                        'arg1_lookup,scan_grouped') :- !.
+relation_manifest_shape(category_parent, _,
+                        'category_parent.edn',
+                        'edn_rows',
+                        'scan,arg1_group_at_startup') :- !.
+relation_manifest_shape(root_category, _,
+                        'root_category.edn',
+                        'edn_rows',
+                        'scan').
 
 collect_benchmark_data(benchmark_data(ArticleCategories, CategoryParents, RootCategories,
                                       ArticleEdn, CategoryEdn, RootEdn,

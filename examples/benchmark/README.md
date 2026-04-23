@@ -163,6 +163,13 @@ These are applied on top of `artifact` mode so a workload can, for
 example, keep `category_parent` on the grouped artifact path while
 forcing `article_category` back to row sidecars, or vice versa.
 
+Sidecar-backed modes also emit
+`data/generated/wam_clojure_optimized_bench/manifest.edn`. The manifest
+records the resolved top-level mode, per-relation storage policy, file
+format, row counts, and access contracts. It is intentionally small and
+EDN-readable so desktop validation can inspect the generated data layout
+without parsing generated Clojure source.
+
 The generated project supports two entry modes:
 
 - no arguments: emit the common effective-distance result table
