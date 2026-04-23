@@ -2794,7 +2794,7 @@ build_predicate_loads(Predicates, Code) :-
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
-compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
+compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
@@ -2805,6 +2805,13 @@ compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
                     [kernel_functions=KernelFunctionsCode,
                      execute_foreign=ExecuteForeignCode],
                     BacktrackCode),
+    % Phase B1: conditional LMDB imports and functions
+    (   option(use_lmdb(true), Options)
+    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), ReadOnly,\n                                    openReadOnlyEnvironment, readOnlyTransaction,\n                                    getDatabase, defaultLimits)\nimport Database.LMDB.Simple.View (View, newView)\nimport qualified Database.LMDB.Simple.View as View\nimport Codec.Serialise (Serialise)",
+        generate_lmdb_functions(LmdbFunctions)
+    ;   LmdbImports = "",
+        LmdbFunctions = ""
+    ),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
@@ -2826,12 +2833,14 @@ import Control.DeepSeq (NFData(..), deepseq)
 import Control.Concurrent.Async (async, cancel, waitAny)
 import Control.Exception (evaluate)
 import System.IO.Unsafe (unsafePerformIO)
+~w
 import WamTypes
 
 ~w
 
 ~w
 
+~w
 ~w
 
 -- | Dereference an Unbound variable through the binding table.
@@ -2998,7 +3007,7 @@ resolveCallInstrs labels foreignPreds = map resolve
       in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
                                                                Just pc <- [Map.lookup label labels]])
     resolve i = i
-', [StepCode, BacktrackCode, RunCode]).
+', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -3339,8 +3348,13 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     % deepseq + parallel for seed-level parMap rdeepseq
     % async for Phase 4.4 race-to-cancel negation
     (   UseHM == true
-    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
-    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ->  BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ;   BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ),
+    % Phase B1: conditional LMDB dependency
+    (   option(use_lmdb(true), Options)
+    ->  format(string(Deps), "~w, lmdb-simple >= 0.4, serialise >= 0.2", [BaseDeps])
+    ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.
@@ -3494,6 +3508,12 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
         atomic_list_concat(AllLines, '\n', Body),
         format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
     ).
+
+%% generate_lmdb_functions(-Code)
+%  Loads the LMDB FactSource functions from the Mustache template.
+%  Only called when use_lmdb(true).
+generate_lmdb_functions(Code) :-
+    read_kernel_template('lmdb_fact_source.hs.mustache', Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies

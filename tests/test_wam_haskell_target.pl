@@ -1183,9 +1183,72 @@ test_e2e_below_threshold_no_inline :-
     ),
     retractall(user:e2e_sm(_, _)).
 
+%% Phase B1: LMDB backend tests
+%% -----------------------------------------------
+
+test_b1_lmdb_functions_present_when_enabled :-
+    Test = 'B1: lmdbFactSource emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdbFactSource :: FilePath -> String -> IO FactSource"),
+        sub_string(S, _, _, _, "ingestTsvToLmdb")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB functions not found when use_lmdb(true)')
+    ).
+
+test_b1_lmdb_imports_present_when_enabled :-
+    Test = 'B1: LMDB imports emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "import Database.LMDB.Simple"),
+        sub_string(S, _, _, _, "import Database.LMDB.Simple.View")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB imports not found when use_lmdb(true)')
+    ).
+
+test_b1_lmdb_absent_when_disabled :-
+    Test = 'B1: no LMDB code when use_lmdb not set',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "lmdbFactSource"),
+        \+ sub_string(S, _, _, _, "import Database.LMDB")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB code should not appear without use_lmdb(true)')
+    ).
+
+test_b1_lmdb_cabal_dependency :-
+    Test = 'B1: cabal includes lmdb-simple when use_lmdb(true)',
+    (   wam_haskell_target:generate_cabal_file('test', false, [use_lmdb(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdb-simple"),
+        sub_string(S, _, _, _, "serialise")
+    ->  pass(Test)
+    ;   fail_test(Test, 'lmdb-simple not in cabal deps when use_lmdb(true)')
+    ).
+
+test_b1_no_lmdb_cabal_default :-
+    Test = 'B1: cabal excludes lmdb-simple by default',
+    (   wam_haskell_target:generate_cabal_file('test', false, [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "lmdb-simple")
+    ->  pass(Test)
+    ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
+    ).
+
+test_b1_lmdb_view_for_parallelism :-
+    Test = 'B1: lmdbFactSource uses View for pure concurrent reads',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "View.lookup"),
+        sub_string(S, _, _, _, "View.toList"),
+        sub_string(S, _, _, _, "View.newView")
+    ->  pass(Test)
+    ;   fail_test(Test, 'View-based pure reads not found in lmdbFactSource')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -1280,6 +1343,13 @@ run_tests :-
     test_e2e_inline_facts_wiring_generated,
     test_e2e_empty_inline_defs_no_wiring,
     test_e2e_below_threshold_no_inline,
+    %% Phase B1: LMDB backend
+    test_b1_lmdb_functions_present_when_enabled,
+    test_b1_lmdb_imports_present_when_enabled,
+    test_b1_lmdb_absent_when_disabled,
+    test_b1_lmdb_cabal_dependency,
+    test_b1_no_lmdb_cabal_default,
+    test_b1_lmdb_view_for_parallelism,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
