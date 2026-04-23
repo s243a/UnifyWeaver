@@ -69,8 +69,13 @@ generate_fact_layout_benchmark(FactsPath, OutputDir, LayoutOptions) :-
         user:category_ancestor/4,
         user:power_sum_bound/4
     ],
-    append([module_name('wam-haskell-bench'), no_kernels(true)],
-           LayoutOptions, Options),
+    % no_kernels(true) only for compiled/inline variants (WAM-only comparison).
+    % LMDB variant uses kernels — the point is LMDB backing the FFI path.
+    (   member(use_lmdb(true), LayoutOptions)
+    ->  BaseOptions = [module_name('wam-haskell-bench')]
+    ;   BaseOptions = [module_name('wam-haskell-bench'), no_kernels(true)]
+    ),
+    append(BaseOptions, LayoutOptions, Options),
 
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-Haskell] Fact layout benchmark generated (~w).~n',
