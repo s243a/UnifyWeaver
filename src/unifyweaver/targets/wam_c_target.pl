@@ -93,6 +93,27 @@ wam_instruction_to_c_literal(put_variable(Xn, Ai), Code) :-
 wam_instruction_to_c_literal(put_value(Xn, Ai), Code) :-
     c_reg_index(Xn, IsY_Xn, XIdx), c_reg_index(Ai, IsY_Ai, AIdx),
     format(atom(Code), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+wam_instruction_to_c_literal(get_structure(F, Ai), Code) :-
+    c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_GET_STRUCTURE, .pred = "~w", .reg_ai = ~w, .is_y_ai = ~w }', [F, AIdx, IsY_Ai]).
+wam_instruction_to_c_literal(put_structure(F, Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_PUT_STRUCTURE, .pred = "~w", .reg_xn = ~w, .is_y_xn = ~w }', [F, XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(get_list(Ai), Code) :-
+    c_reg_index(Ai, IsY_Ai, AIdx),
+    format(atom(Code), '{ .tag = INSTR_GET_LIST, .reg_ai = ~w, .is_y_ai = ~w }', [AIdx, IsY_Ai]).
+wam_instruction_to_c_literal(put_list(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(unify_variable(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(unify_value(Xn), Code) :-
+    c_reg_index(Xn, IsY_Xn, XIdx),
+    format(atom(Code), '{ .tag = INSTR_UNIFY_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [XIdx, IsY_Xn]).
+wam_instruction_to_c_literal(unify_constant(C), Code) :-
+    c_value_literal(C, Val),
+    format(atom(Code), '{ .tag = INSTR_UNIFY_CONSTANT, .val = ~w }', [Val]).
 wam_instruction_to_c_literal(call(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(execute(P), Code) :-
@@ -138,6 +159,34 @@ wam_line_to_c_instr(["put_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
     format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
+wam_line_to_c_instr(["get_structure", F, Ai], Instr) :-
+    clean_comma(F, CF), clean_comma(Ai, CAi),
+    c_reg_index(CAi, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_STRUCTURE, .pred = "~w", .reg_ai = ~w, .is_y_ai = ~w }', [CF, Idx, IsY]).
+wam_line_to_c_instr(["put_structure", F, Xn], Instr) :-
+    clean_comma(F, CF), clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_STRUCTURE, .pred = "~w", .reg_xn = ~w, .is_y_xn = ~w }', [CF, Idx, IsY]).
+wam_line_to_c_instr(["get_list", Ai], Instr) :-
+    clean_comma(Ai, CAi),
+    c_reg_index(CAi, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_GET_LIST, .reg_ai = ~w, .is_y_ai = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["put_list", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_LIST, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["unify_variable", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["unify_value", Xn], Instr) :-
+    clean_comma(Xn, CXn),
+    c_reg_index(CXn, IsY, Idx),
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_VALUE, .reg_xn = ~w, .is_y_xn = ~w }', [Idx, IsY]).
+wam_line_to_c_instr(["unify_constant", C], Instr) :-
+    clean_comma(C, CC),
+    c_value_literal(CC, Val),
+    format(atom(Instr), '{ .tag = INSTR_UNIFY_CONSTANT, .val = ~w }', [Val]).
 wam_line_to_c_instr(["call", P, N], Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
     format(atom(Instr), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [CP, CN]).
@@ -243,12 +292,9 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_GET_VALUE: {
                 WamValue *cell_xn = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
                 WamValue *cell_ai = resolve_reg(state, instr->reg_ai, instr->is_y_ai);
-                if (val_equal(*cell_xn, *cell_ai)) {
-                    state->P++;
-                    return true;
-                }
-                // TODO: full wam_unify() fallback
-                return false;
+                if (!wam_unify(state, cell_xn, cell_ai)) return false;
+                state->P++;
+                return true;
             }
             case INSTR_PUT_CONSTANT: {
                 WamValue *cell = resolve_reg(state, instr->reg, instr->is_y_reg);
@@ -326,15 +372,151 @@ compile_step_wam_to_c(_Options, CCode) :-
                 state->P++;
                 return true;
             }
-            case INSTR_GET_STRUCTURE:
-            case INSTR_GET_LIST:
-            case INSTR_PUT_STRUCTURE:
-            case INSTR_PUT_LIST:
-            case INSTR_UNIFY_VARIABLE:
-            case INSTR_UNIFY_VALUE:
+            case INSTR_GET_STRUCTURE: {
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
+                if (cell->tag == VAL_UNBOUND) {
+                    trail_binding(state, cell);
+                    WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
+                    *cell = s;
+                    
+                    const char *slash = strchr(instr->pred, '/');
+                    assert(slash != NULL && "Functor missing arity suffix");
+                    int arity = strtol(slash + 1, NULL, 10);
+                    
+                    // Invariant contract: We proactively pre-reserve capacity for the functor + all arity arguments.
+                    // Subsequent UNIFY_* instructions in write mode will push values sequentially via state->H++.
+                    // While UNIFY_* instructions have their own single-slot capacity guards, this pre-allocation 
+                    // ensures contiguous allocation and avoids multiple reallocs during the structure building sequence.
+                    int required = state->H + 1 + arity;
+                    if (required >= state->H_cap) {
+                        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+                        while (required >= state->H_cap) state->H_cap *= 2;
+                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    }
+                    state->H_array[state->H] = val_atom(instr->pred);
+                    state->H++;
+                    state->mode = MODE_WRITE;
+                } else if (cell->tag == VAL_STR) {
+                    WamValue *f = &state->H_array[cell->data.ref_addr];
+                    if (f->tag == VAL_ATOM && strcmp(f->data.atom, instr->pred) == 0) {
+                        state->S = cell->data.ref_addr + 1;
+                        state->mode = MODE_READ;
+                    } else { return false; }
+                } else { return false; }
+                state->P++;
+                return true;
+            }
+            case INSTR_PUT_STRUCTURE: {
+                WamValue s; s.tag = VAL_STR; s.data.ref_addr = state->H;
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                *cell = s;
+                
+                const char *slash = strchr(instr->pred, '/');
+                assert(slash != NULL && "Functor missing arity suffix");
+                int arity = strtol(slash + 1, NULL, 10);
+                
+                // Invariant contract: Proactively pre-reserve capacity for functor + arguments.
+                // UNIFY_* instructions will sequentially append to H.
+                int required = state->H + 1 + arity;
+                if (required >= state->H_cap) {
+                    if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+                    while (required >= state->H_cap) state->H_cap *= 2;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->H_array[state->H] = val_atom(instr->pred);
+                state->H++;
+                state->mode = MODE_WRITE;
+                state->P++;
+                return true;
+            }
+            case INSTR_GET_LIST: {
+                WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
+                if (cell->tag == VAL_UNBOUND) {
+                    trail_binding(state, cell);
+                    WamValue l; l.tag = VAL_LIST; l.data.ref_addr = state->H;
+                    *cell = l;
+                    
+                    // Invariant contract: Proactively pre-reserve capacity for [head|tail].
+                    // UNIFY_* instructions will sequentially append to H.
+                    int required = state->H + 2;
+                    if (required >= state->H_cap) {
+                        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+                        while (required >= state->H_cap) state->H_cap *= 2;
+                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    }
+                    state->mode = MODE_WRITE;
+                } else if (cell->tag == VAL_LIST) {
+                    state->S = cell->data.ref_addr;
+                    state->mode = MODE_READ;
+                } else { return false; }
+                state->P++;
+                return true;
+            }
+            case INSTR_PUT_LIST: {
+                WamValue l; l.tag = VAL_LIST; l.data.ref_addr = state->H;
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                *cell = l;
+                
+                // Invariant contract: Proactively pre-reserve capacity for [head|tail].
+                // UNIFY_* instructions will sequentially append to H.
+                int required = state->H + 2;
+                if (required >= state->H_cap) {
+                    if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+                    while (required >= state->H_cap) state->H_cap *= 2;
+                    state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                }
+                state->mode = MODE_WRITE;
+                state->P++;
+                return true;
+            }
+            case INSTR_UNIFY_VARIABLE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                if (state->mode == MODE_READ) {
+                    *cell = state->H_array[state->S];
+                    state->S++;
+                } else {
+                    WamValue ref = wam_make_ref(state);
+                    *cell = ref;
+                }
+                state->P++;
+                return true;
+            }
+            case INSTR_UNIFY_VALUE: {
+                WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
+                if (state->mode == MODE_READ) {
+                    if (!wam_unify(state, cell, &state->H_array[state->S])) return false;
+                    state->S++;
+                } else {
+                    if (state->H >= state->H_cap) {
+                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    }
+                    state->H_array[state->H] = *cell;
+                    state->H++;
+                }
+                state->P++;
+                return true;
+            }
             case INSTR_UNIFY_CONSTANT: {
-                // TODO: Full heap and structure allocation/unification
-                return false;
+                if (state->mode == MODE_READ) {
+                    WamValue *cell = wam_deref_ptr(state, &state->H_array[state->S]);
+                    if (cell->tag == VAL_UNBOUND) {
+                        trail_binding(state, cell);
+                        *cell = instr->val;
+                    } else if (!val_equal(*cell, instr->val)) {
+                        return false;
+                    }
+                    state->S++;
+                } else {
+                    if (state->H >= state->H_cap) {
+                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    }
+                    state->H_array[state->H] = instr->val;
+                    state->H++;
+                }
+                state->P++;
+                return true;
             }
             default: return false;
         }
