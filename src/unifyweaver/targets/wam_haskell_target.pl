@@ -2794,7 +2794,7 @@ build_predicate_loads(Predicates, Code) :-
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
-compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
+compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
@@ -2805,6 +2805,13 @@ compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
                     [kernel_functions=KernelFunctionsCode,
                      execute_foreign=ExecuteForeignCode],
                     BacktrackCode),
+    % Phase B1: conditional LMDB imports and functions
+    (   option(use_lmdb(true), Options)
+    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), ReadOnly,\n                                    openReadOnlyEnvironment, readOnlyTransaction,\n                                    getDatabase, defaultLimits)\nimport Database.LMDB.Simple.View (View, newView)\nimport qualified Database.LMDB.Simple.View as View\nimport Codec.Serialise (Serialise)",
+        generate_lmdb_functions(LmdbFunctions)
+    ;   LmdbImports = "",
+        LmdbFunctions = ""
+    ),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
@@ -2826,12 +2833,14 @@ import Control.DeepSeq (NFData(..), deepseq)
 import Control.Concurrent.Async (async, cancel, waitAny)
 import Control.Exception (evaluate)
 import System.IO.Unsafe (unsafePerformIO)
+~w
 import WamTypes
 
 ~w
 
 ~w
 
+~w
 ~w
 
 -- | Dereference an Unbound variable through the binding table.
@@ -2998,7 +3007,7 @@ resolveCallInstrs labels foreignPreds = map resolve
       in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
                                                                Just pc <- [Map.lookup label labels]])
     resolve i = i
-', [StepCode, BacktrackCode, RunCode]).
+', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -3339,8 +3348,13 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     % deepseq + parallel for seed-level parMap rdeepseq
     % async for Phase 4.4 race-to-cancel negation
     (   UseHM == true
-    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
-    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ->  BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ;   BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ),
+    % Phase B1: conditional LMDB dependency
+    (   option(use_lmdb(true), Options)
+    ->  format(string(Deps), "~w, lmdb-simple >= 0.4, serialise >= 0.2", [BaseDeps])
+    ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.
@@ -3494,6 +3508,59 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
         atomic_list_concat(AllLines, '\n', Body),
         format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
     ).
+
+%% generate_lmdb_functions(-Code)
+%  Generates the Haskell LMDB FactSource functions for Phase B1.
+%  Only called when use_lmdb(true).
+generate_lmdb_functions(Code) :-
+    Code = '
+-- | Phase B1: Create a FactSource backed by an LMDB database.
+-- Uses lmdb-simple View for pure concurrent reads compatible with parMap.
+-- The View is a consistent snapshot — all lookups see the same database
+-- state. Reads are zero-copy from mmap''d pages (LMDB uses mmap internally).
+--
+-- Key schema: Int (interned arg1)
+-- Value schema: [Int] (list of interned arg2 values for that arg1)
+-- One named LMDB database per predicate.
+lmdbFactSource :: FilePath -> String -> IO FactSource
+lmdbFactSource dbPath dbName = do
+    env <- openReadOnlyEnvironment dbPath defaultLimits
+             { mapSize = 1073741824, maxDatabases = 16, maxReaders = 126 }
+    (db, view) <- readOnlyTransaction env $ do
+      db <- getDatabase (Just dbName) :: Transaction ReadOnly (Database Int [Int])
+      v  <- View.newView db
+      return (db, v)
+    return FactSource
+      { fsScan       = return $ concatMap (\\(k, vs) -> [(k, v) | v <- vs])
+                                          (View.toList view)
+      , fsLookupArg1 = \\key -> return $ case View.lookup key view of
+                                           Just vs -> [(key, v) | v <- vs]
+                                           Nothing -> []
+      , fsClose      = return ()  -- GC handles env cleanup
+      }
+
+-- | Phase B1: Ingest a TSV file into an LMDB database.
+-- Reads the TSV, interns atoms, groups by arg1, and writes to LMDB.
+-- Called once during preprocessing, not at query time.
+ingestTsvToLmdb :: InternTable -> FilePath -> FilePath -> String -> IO ()
+ingestTsvToLmdb tbl tsvPath dbPath dbName = do
+    content <- readFile tsvPath
+    let ls = drop 1 (lines content)  -- skip header
+        pairs = [ (internAtomPure tbl a, internAtomPure tbl b)
+                | l <- ls, not (null l)
+                , let (a, rest) = break (== ''\\t'') l
+                , not (null rest)
+                , let b = drop 1 rest
+                , not (null b)
+                ]
+        grouped = IM.fromListWith (++) [(k, [v]) | (k, v) <- pairs]
+    env <- openEnvironment dbPath defaultLimits
+             { mapSize = 1073741824, maxDatabases = 16 }
+    readWriteTransaction env $ do
+      db <- getDatabase (Just dbName) :: Transaction ReadWrite (Database Int [Int])
+      mapM_ (\\(k, vs) -> put db k (Just vs)) (IM.toList grouped)
+    return ()
+'.
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
