@@ -389,29 +389,85 @@ The backend path activates for:
 
 ## Implementation phases
 
-### Phase B1: MmapFactSource (desktop/server)
+### Phase ordering rationale
 
-- Define the minimal binary format (header + key directory + data)
-- Implement `MmapFactSource` using `bytestring` + `mmap`
-- Add artifact builder (Prolog-side or standalone tool)
+The original plan had raw MmapFactSource (custom binary format) first,
+but we revised the ordering to **LMDB → SQLite → raw mmap** for
+practical reasons:
+
+1. **LMDB is a faster design path.** It handles storage layout, index
+   construction, and crash safety internally. We write a thin wrapper
+   instead of designing a binary format from scratch. The `lmdb-simple`
+   Haskell package wraps the mature C library.
+
+2. **LMDB delivers equivalent mmap performance.** LMDB uses mmap
+   internally — reads are zero-copy pointer dereferences into the OS
+   page cache, exactly like a raw mmap'd file. Concurrent readers use
+   MVCC with no locks. The performance profile is the same as raw mmap
+   but with less implementation risk.
+
+3. **The C# `.uwbr` format is not yet stable.** The preprocessed
+   artifacts proposal (PREPROCESSED_PREDICATE_ARTIFACTS.md) is still
+   draft v0.1. Implementing a consumer for an unstable format risks
+   rework. By the time we need cross-target artifact sharing, the
+   format will have stabilized and we can add a raw mmap consumer then.
+
+4. **SQLite provides the universal fallback.** It works everywhere
+   (desktop, Termux, Android, CI) and has mature tooling. It fills the
+   gap on platforms where LMDB's C dependency is inconvenient, though
+   LMDB itself is very portable.
+
+### Phase B1: LmdbFactSource (primary backend)
+
+- Implement `LmdbFactSource` using `lmdb-simple` (Haskell bindings to
+  the C library)
+- Store interned `(arg1, arg2)` pairs keyed by predicate name + arg1
+- Use LMDB's read-only transactions for parallelism safety (MVCC,
+  zero-lock concurrent readers)
+- Add fact ingestion tool (TSV → LMDB database)
 - Wire into `wcFactSources` registration
 - Benchmark against IntMap at 10k and 100k
+- Add `lmdb` to cabal dependencies (conditional on `use_lmdb(true)`)
 
-### Phase B2: SqliteFactSource (Termux/constrained)
+LMDB-specific advantages for this use case:
+- **mmap-backed**: reads are pointer dereferences, no allocation
+- **MVCC readers**: each parMap spark can hold its own read transaction
+  with no contention — better than the read-once-then-split strategy
+  needed for SQLite
+- **Sorted keys**: range scans and prefix lookups come for free
+- **Crash-safe**: ACID transactions protect against partial writes
+  during ingestion
+- **Small footprint**: the C library is ~40KB, no external daemon
 
-- Implement `SqliteFactSource` using `sqlite-simple`
-- Add read-once-then-split strategy for parallelism
-- Add fact ingestion tool (TSV → SQLite)
+### Phase B2: SqliteFactSource (universal fallback)
+
+- Implement `SqliteFactSource` using `sqlite-simple` or `direct-sqlite`
+- Add read-once-then-split strategy for parallelism (load into IntMap
+  before parMap section)
+- Add fact ingestion tool (TSV → SQLite database)
 - Wire into `wcFactSources` with environment-gated selection
 - Benchmark on Termux vs desktop
+- Embedding option: bundled SQLite amalgamation (~1MB binary cost) or
+  link to system `-lsqlite3`
 
-### Phase B3: DatomStore (future)
+### Phase B3: MmapFactSource (cross-target artifact consumer)
 
-- Implement triple-indexed IntMap store
+- Consume the C# `.uwbr` binary relation format once it stabilizes
+- Implement using `bytestring` + `mmap` (or `System.Posix.IO`)
+- Binary search over key directory for point lookups
+- Primarily for cross-target artifact sharing (C# builds artifacts,
+  Haskell consumes them)
+- Only needed when the artifact format is stable and the use case
+  (shared preprocessed data across targets) is proven
+
+### Phase B4: DatomStore (future, exploratory)
+
+- Implement triple-indexed IntMap store (EAV/AEV/AVE indexes)
 - Expose as FactBackend with immutable snapshot semantics
 - Explore integration with Datahike or custom Datalog engine
+- Consider LMDB as the backing store for persistent datom storage
 
-### Phase B4: Planner-driven backend selection
+### Phase B5: Planner-driven backend selection
 
 - Extend the compile-time planner to emit backend selection code
 - Add runtime capability detection
@@ -419,10 +475,10 @@ The backend path activates for:
 
 ## Dependencies
 
-- `PREPROCESSED_PREDICATE_ARTIFACTS.md` — artifact format and manifest
 - `WAM_HASKELL_FACT_ACCESS_SPEC.md` — FactSource interface (F4)
 - `WAM_HASKELL_FACT_ACCESS_PHILOSOPHY.md` — laziness and parallelism
-- C# `BinaryRelationArtifactProvider` — .uwbr format reference
+- `PREPROCESSED_PREDICATE_ARTIFACTS.md` — artifact format (Phase B3)
+- C# `BinaryRelationArtifactProvider` — .uwbr format reference (Phase B3)
 
 ## What this does not change
 
