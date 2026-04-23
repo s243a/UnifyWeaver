@@ -6,7 +6,11 @@
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
               [lower_predicate_to_elixir/4, classify_predicate/4,
-               extract_facts/3, extract_arg1_index/3]).
+               extract_facts/3, extract_arg1_index/3,
+               tier2_purity_eligible/3]).
+% For Tier-2 purity-gate tests — user-annotation producer reads
+% clause_body_analysis:order_independent/1 dynamic facts.
+:- use_module('../src/unifyweaver/core/clause_body_analysis').
 
 :- dynamic test_failed/0.
 
@@ -687,6 +691,59 @@ test_sqlite_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'SQLite adaptor has literal Exqlite references — will warn without dep')
     ).
 
+%% Tier-2 infrastructure tests (see docs/design/WAM_TIERED_LOWERING.md)
+%% These exercise precondition scaffolding only — PR2 wires
+%% par_wrap_segment/3 on top of them.
+
+test_tier2_wamstate_has_parallel_depth :-
+    Test = 'Tier-2 infra: WamState defstruct carries parallel_depth: 0',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'parallel_depth: 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'parallel_depth field missing from emitted WamState')
+    ).
+
+test_tier2_aggregate_helpers_emitted :-
+    Test = 'Tier-2 infra: WamRuntime emits in_forkable_aggregate_frame?/1 + merge_into_aggregate/2',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def in_forkable_aggregate_frame?(state)'),
+        sub_string(S, _, _, _, 'def merge_into_aggregate(state, branch_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate-frame helpers missing from emitted runtime')
+    ).
+
+test_tier2_aggregate_forkable_types :-
+    Test = 'Tier-2 infra: forkable-frame check covers findall + aggregate_all',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, ':findall -> true'),
+        sub_string(S, _, _, _, ':aggregate_all -> true')
+    ->  pass(Test)
+    ;   fail_test(Test, 'emitted forkable predicate does not cover both findall and aggregate_all')
+    ).
+
+test_tier2_purity_gate_rejects_unknown :-
+    Test = 'Tier-2 infra: purity gate fails for unknown predicate',
+    (   \+ tier2_purity_eligible(no_such_pred, 2, _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'gate should have rejected predicate with no purity certificate')
+    ).
+
+test_tier2_purity_gate_accepts_declared :-
+    Test = 'Tier-2 infra: purity gate accepts user-declared parallel predicate (confidence 1.0)',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_test_pred/2)),
+        (   tier2_purity_eligible(tier2_test_pred, 2, Cert),
+            Cert = purity_cert(pure, declared, Conf, _Reasons),
+            Conf >= 0.85
+        ->  pass(Test)
+        ;   fail_test(Test, 'gate did not accept declared parallel predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_test_pred/2))
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -744,5 +801,10 @@ run_tests :-
     test_ets_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_uses_indirect_module_resolution,
+    test_tier2_wamstate_has_parallel_depth,
+    test_tier2_aggregate_helpers_emitted,
+    test_tier2_aggregate_forkable_types,
+    test_tier2_purity_gate_rejects_unknown,
+    test_tier2_purity_gate_accepts_declared,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
