@@ -9,6 +9,7 @@
 #include <assert.h>
 
 #define WAM_HALT -1
+#define WAM_ERR_OOB -2
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 
@@ -85,7 +86,7 @@ typedef struct {
     WamValue val;
     int arity;
     char *pred;
-    char *label;
+    int target_pc;
 } Instruction;
 
 /* WAM state */
@@ -124,11 +125,11 @@ typedef struct {
     Instruction *code;
     int code_size;
     
-    /* Labels */
-    char **label_names;
-    int *label_pcs;
-    int label_count;
-    int label_cap;
+    /* Predicate Map (for CALL/EXECUTE) */
+    char **pred_names;
+    int *pred_pcs;
+    int pred_count;
+    int pred_cap;
 } WamState;
 
 /* Helpers */
@@ -143,6 +144,9 @@ static inline WamValue val_int(int n) {
 static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
 }
+// Creates a new unbound reference on the heap.
+// Note: This function allocates a cell in H_array and increments state->H.
+// This fulfills the 1-slot allocation invariant expected by UNIFY_* write-mode operations.
 static inline WamValue wam_make_ref(WamState *state) {
     if (state->H >= state->H_cap) {
         state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
@@ -222,10 +226,11 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             if (strcmp(d1->data.atom, d2->data.atom) != 0) return false;
         } else if (d1->tag == VAL_LIST) {
             if (pdl_top + 4 > 256) return false; // PDL overflow
-            pdl[pdl_top++] = &state->H_array[d2->data.ref_addr];
-            pdl[pdl_top++] = &state->H_array[d1->data.ref_addr];
+            // Push tail first, then head, so head is popped and unified first
             pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1];
             pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1];
+            pdl[pdl_top++] = &state->H_array[d2->data.ref_addr];
+            pdl[pdl_top++] = &state->H_array[d1->data.ref_addr];
         } else if (d1->tag == VAL_STR) {
             WamValue *f1 = &state->H_array[d1->data.ref_addr];
             WamValue *f2 = &state->H_array[d2->data.ref_addr];
@@ -237,7 +242,8 @@ static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
             int arity = strtol(slash + 1, NULL, 10);
             
             if (pdl_top + arity * 2 > 256) return false; // PDL overflow
-            for (int i = 0; i < arity; i++) {
+            // Push right-to-left so arguments are popped and unified left-to-right
+            for (int i = arity - 1; i >= 0; i--) {
                 pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1 + i];
                 pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1 + i];
             }
@@ -294,10 +300,22 @@ static inline void update_choice_point(WamState *state, int next_pc) {
         state->B_array[state->B - 1].next_pc = next_pc;
     }
 }
-static inline int resolve_label(WamState *state, const char *label) {
+
+static inline void wam_register_predicate(WamState *state, const char *pred, int pc) {
+    if (state->pred_count >= state->pred_cap) {
+        state->pred_cap = state->pred_cap ? state->pred_cap * 2 : WAM_INITIAL_CAP;
+        state->pred_names = realloc(state->pred_names, sizeof(char*) * state->pred_cap);
+        state->pred_pcs = realloc(state->pred_pcs, sizeof(int) * state->pred_cap);
+    }
+    state->pred_names[state->pred_count] = (char*)pred;
+    state->pred_pcs[state->pred_count] = pc;
+    state->pred_count++;
+}
+
+static inline int resolve_predicate(WamState *state, const char *pred) {
     // TODO: Optimize from O(n) to O(1) or O(log n) via hash map or bsearch
-    for (int i = 0; i < state->label_count; i++) {
-        if (strcmp(state->label_names[i], label) == 0) return state->label_pcs[i];
+    for (int i = 0; i < state->pred_count; i++) {
+        if (strcmp(state->pred_names[i], pred) == 0) return state->pred_pcs[i];
     }
     return -1;
 }
