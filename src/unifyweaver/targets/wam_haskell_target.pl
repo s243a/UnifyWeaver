@@ -2853,7 +2853,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), Transaction,\n                                    ReadOnly, ReadWrite,\n                                    openReadOnlyEnvironment, openEnvironment,\n                                    readOnlyTransaction, readWriteTransaction,\n                                    getDatabase, defaultLimits, get, put)\nimport Database.LMDB.Simple.Extra (toList)\nimport Codec.Serialise (Serialise)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
         generate_lmdb_functions(LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
@@ -3410,7 +3410,7 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     ),
     % Phase B1: conditional LMDB dependency
     (   option(use_lmdb(true), Options)
-    ->  format(string(Deps), "~w, lmdb-simple >= 0.4, serialise >= 0.2, directory >= 1.3", [BaseDeps])
+    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3", [BaseDeps])
     ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).

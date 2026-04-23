@@ -1200,8 +1200,8 @@ test_b1_lmdb_imports_present_when_enabled :-
     Test = 'B1: LMDB imports emitted when use_lmdb(true)',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "import Database.LMDB.Simple"),
-        sub_string(S, _, _, _, "import Database.LMDB.Simple.Extra")
+        sub_string(S, _, _, _, "import Database.LMDB.Raw"),
+        sub_string(S, _, _, _, "import Foreign.Ptr")
     ->  pass(Test)
     ;   fail_test(Test, 'LMDB imports not found when use_lmdb(true)')
     ).
@@ -1217,13 +1217,12 @@ test_b1_lmdb_absent_when_disabled :-
     ).
 
 test_b1_lmdb_cabal_dependency :-
-    Test = 'B1: cabal includes lmdb-simple when use_lmdb(true)',
+    Test = 'B1: cabal includes lmdb when use_lmdb(true)',
     (   wam_haskell_target:generate_cabal_file('test', false, [use_lmdb(true)], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "lmdb-simple"),
-        sub_string(S, _, _, _, "serialise")
+        sub_string(S, _, _, _, "lmdb >= 0.2.5")
     ->  pass(Test)
-    ;   fail_test(Test, 'lmdb-simple not in cabal deps when use_lmdb(true)')
+    ;   fail_test(Test, 'lmdb not in cabal deps when use_lmdb(true)')
     ).
 
 test_b1_no_lmdb_cabal_default :-
@@ -1235,15 +1234,15 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
-test_b1_lmdb_read_txn_for_parallelism :-
-    Test = 'B1: lmdbFactSource uses readOnlyTransaction for concurrent reads',
+test_b1_lmdb_raw_zero_copy_reads :-
+    Test = 'B1: lmdbRawEdgeLookup uses mdb_get for zero-copy reads',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "readOnlyTransaction"),
-        sub_string(S, _, _, _, "toList db"),
-        sub_string(S, _, _, _, "get db key")
+        sub_string(S, _, _, _, "mdb_get'"),
+        sub_string(S, _, _, _, "peekElemOff"),
+        sub_string(S, _, _, _, "MDB_INTEGERKEY")
     ->  pass(Test)
-    ;   fail_test(Test, 'readOnlyTransaction-based reads not found in lmdbFactSource')
+    ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
     ).
 
 run_tests :-
@@ -1349,7 +1348,7 @@ run_tests :-
     test_b1_lmdb_absent_when_disabled,
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
-    test_b1_lmdb_read_txn_for_parallelism,
+    test_b1_lmdb_raw_zero_copy_reads,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)
