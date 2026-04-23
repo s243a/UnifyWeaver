@@ -12,31 +12,48 @@ the WAM Haskell target's category-hierarchy benchmarks.
 ### 1.1 The shared Prolog pipeline
 
 The goal is that this declaration works unchanged regardless of
-which target implements the parser:
+which target implements the parser. **Logic (filter by cl_type,
+extract columns) lives in Prolog** — the leaf primitive only
+does the byte-level tokenization:
 
 ```prolog
 %% examples/streaming/enwiki_category_ingest.pl
 :- use_module(library(cross_target_glue/target_mapping)).
+
+%% Schema for the categorylinks table — used by row_field/3 to
+%% map column names to tuple positions at codegen time.
+:- mysql_schema(categorylinks,
+    [cl_from, cl_to, cl_sortkey, cl_timestamp,
+     cl_sortkey_prefix, cl_collation, cl_type]).
 
 :- declare_target(ingest_to_lmdb/3, python,
                   [streaming(true, text)]).
 
 process_dump(DumpPath, LmdbPath) :-
     forall(
-        parse_category_links(DumpPath, Child, Parent),
+        (   parse_mysql_rows(DumpPath, Row),
+            row_field(Row, cl_type, "subcat"),
+            row_field(Row, cl_from, Child),
+            row_field(Row, cl_to, Parent)
+        ),
         ingest_to_lmdb(LmdbPath, Child, Parent)
     ).
 ```
 
 The consumer (`ingest_to_lmdb`) is fixed as a Python predicate
 because Python has the best LMDB ergonomics. The *producer*
-(`parse_category_links`) is what we implement in multiple
-targets as a demo of reusability.
+(`parse_mysql_rows`) is what we implement in multiple targets as
+a demo of reusability. Crucially, the *producer is schema-agnostic*
+— it emits raw INSERT rows, one per MySQL table row. The filter
+to subcat links and the column extraction (cl_from → Child,
+cl_to → Parent) happen in Prolog, so switching from
+categorylinks to a different table is a Prolog change, not a
+parser rewrite.
 
 ### 1.2 Rust implementation (primary, Phase 2 path)
 
 ```prolog
-:- declare_target(parse_category_links/3, rust,
+:- declare_target(parse_mysql_rows/2, rust,
                   [streaming(true, text),
                    source(file),
                    leaf(true),
@@ -51,19 +68,22 @@ Leaf primitive at `src/unifyweaver/runtime/rust/mysql_stream/`:
 //   - State machine: SkipPreamble → SeekInsert → InValues → InTuple
 //                    → InField → InString → EscapeChar → ...
 //   - Type dispatch: quoted string | unquoted int | NULL | backtick ident
-//   - Yields (i32, String) tuples for cl_type='subcat' rows
+//   - Yields Vec<Field> per INSERT row — ALL columns, no filter
 
-pub fn iter_category_links(path: &str) -> impl Iterator<Item = (i32, String)> {
+pub enum Field { Int(i64), Str(String), Null }
+
+pub fn iter_mysql_rows(path: &str) -> impl Iterator<Item = Vec<Field>> {
     let file = File::open(path).expect("open dump");
     let gz = GzDecoder::new(file);
     MysqlInsertIter::new(BufReader::with_capacity(1 << 20, gz))
-        .filter_map(|t| match (t.get(0), t.get(1), t.get(6)) {
-            (Some(Int(from)), Some(Str(to)), Some(Str(typ)))
-              if typ == "subcat" => Some((*from as i32, to.clone())),
-            _ => None,
-        })
 }
 ```
+
+Notice what this primitive does *not* do: it doesn't know the
+categorylinks schema, doesn't filter by `cl_type`, doesn't select
+columns. Those are Prolog responsibilities. The same primitive
+binary serves any MySQL dump — categorylinks, revision, user,
+anything — because it's purely a tokenizer.
 
 **Why Rust here**: cleanest Phase 2 path via pyo3 + maturin, no
 runtime initialization cost (unlike Haskell/Go), the broadest
@@ -72,33 +92,33 @@ deployment story.
 ### 1.3 Haskell implementation (second demo)
 
 ```prolog
-:- declare_target(parse_category_links/3, haskell,
+:- declare_target(parse_mysql_rows/2, haskell,
                   [streaming(true, text),
                    source(file),
                    leaf(true),
                    cabal_package('mysql-stream')]).
 ```
 
-Leaf primitive uses `attoparsec` on `ByteString`:
+Leaf primitive uses `attoparsec` on `ByteString` — emits raw
+rows, no filtering or column selection:
 
 ```haskell
 -- src/unifyweaver/runtime/haskell/mysql-stream/src/MysqlStream.hs
-module MysqlStream (iterCategoryLinks) where
+module MysqlStream (iterMysqlRows, Field(..)) where
 
 import Data.Attoparsec.ByteString.Lazy as AL
 import qualified Data.ByteString.Lazy as BL
 import Codec.Compression.GZip (decompress)
 
-iterCategoryLinks :: FilePath -> IO [(Int, ByteString)]
-iterCategoryLinks path = do
+data Field = FInt !Int | FStr !ByteString | FNull
+
+iterMysqlRows :: FilePath -> IO [[Field]]
+iterMysqlRows path = do
     gz <- BL.readFile path
     let decoded = decompress gz
     case AL.parse mysqlDumpParser decoded of
-        AL.Done _ tuples -> return (filter subcatOnly tuples)
-        AL.Fail _ _ err  -> error $ "parse failed: " ++ err
-  where
-    subcatOnly (_, _, t) = t == "subcat"
-    ...
+        AL.Done _ rows  -> return rows
+        AL.Fail _ _ err -> error $ "parse failed: " ++ err
 ```
 
 **Why Haskell here**: existing toolchain in the repo,
@@ -110,30 +130,44 @@ library in any language, and it exercises the Haskell target's
 ### 1.4 AWK implementation (third demo — simple-tools showcase)
 
 ```prolog
-:- declare_target(parse_category_links/3, awk,
+:- declare_target(parse_mysql_rows/2, awk,
                   [streaming(true, text),
                    source(stdin),
                    leaf(true),
                    script('parse_mysql_inserts.awk')]).
 ```
 
-Leaf AWK script:
+Leaf AWK script — emits every row as TSV, no filtering:
 
 ```awk
 # src/unifyweaver/runtime/awk/parse_mysql_inserts.awk
-# Reads zcat output on stdin, writes TSV (child, parent) to stdout
-# for cl_type='subcat' rows.
+# Reads zcat output on stdin, writes every INSERT row as TSV.
+# No filter, no column projection — consumer handles those.
 
 BEGIN { FS = ""; RS = ";"; }
 
-/^INSERT INTO `categorylinks`/ {
-    # VALUES (...),(...),...  — each group is one row
-    while (match($0, /\(([0-9]+),'([^']*)',[^)]*,'subcat'\)/, arr)) {
-        print arr[1] "\t" arr[2]
+/^INSERT INTO/ {
+    # VALUES (...),(...),...  — each group is one row tuple
+    while (match($0, /\(([^)]*)\)/, arr)) {
+        split(arr[1], cols, /,(?=(?:[^\047]*\047[^\047]*\047)*[^\047]*$)/)
+        # Emit each column TAB-separated
+        for (i = 1; i <= length(cols); i++) {
+            printf "%s%s", (i>1 ? "\t" : ""), cols[i]
+        }
+        print ""
         $0 = substr($0, RSTART + RLENGTH)
     }
 }
 ```
+
+**Caveat**: the AWK regex above elides the full escape
+handling (embedded `\'`, etc.) and uses a negative-lookbehind
+approximation for splitting on unquoted commas. Realistic for
+simplewiki (clean data), approximate for enwiki (malformed
+historical rows exist). Production AWK use would need
+iterative refinement of the row tokenizer — which reinforces
+the point that tokenization belongs in compiled languages, not
+AWK, at scale.
 
 Orchestrated as:
 
@@ -211,10 +245,28 @@ real cross-product.
   parsing, but surprisingly competitive because the whole
   thing is bytecode-tight
 
-The *interesting* findings are likely the counterintuitive
-ones — where does the ordering break? What does pipe buffering
-do at different record sizes? Does GC in the Haskell producer
-dominate or hide?
+The single most interesting comparison cell is
+**`(Haskell, S1)` vs `(Rust, S1)`** — if `attoparsec` on a
+`ByteString` piped through `zcat` lands within 10% of Rust's
+`GzDecoder + BufReader`, that materially changes the "which
+target should I start with?" recommendation in favor of staying
+in the existing Haskell toolchain.
+
+### 1.6.1 Findings that would invalidate the design
+
+Counterintuitive outcomes worth watching for, each of which
+would falsify a specific design claim:
+
+| Finding | What it invalidates |
+|---------|--------------------|
+| **AWK beats Haskell at S1** | Would suggest tokenizer complexity doesn't favor type-safe parser libraries — the ceremony of `attoparsec` buys nothing at this workload shape. Revisit the "FFI-capable target preferred for authoring" rule (§philosophy). |
+| **Consumer CPU dominates parser CPU across all phases** | Would mean the transport-optimization framing is wrong: the real bottleneck is LMDB write throughput, not parsing. Phases 1.5 and 2 would offer no meaningful speedup. Revisit whether streaming optimization is worth any additional glue complexity at all for this workload. |
+| **S1.5 (binary) is not materially faster than S1 (text)** | Would suggest the pipe buffer, not text parsing, is the bottleneck. Enwiki dumps are largely ASCII-safe, so UTF-8 validation cost may be negligible, and `println!` may vectorize well. Revisit the "binary beats text" assumption in §philosophy; the CBOR→raw LMDB lesson may not transfer cleanly to pipe transport. |
+
+Any of these would be a genuinely useful result — the design
+should emerge strengthened by having its claims tested honestly.
+The *uninteresting* outcome is the one that confirms all the
+hypotheses; we'd learn little from that.
 
 **Fixed consumer constraint**: keeping the Python LMDB ingest
 side constant across all cells isolates the producer/transport

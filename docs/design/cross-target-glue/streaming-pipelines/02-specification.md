@@ -264,7 +264,36 @@ needed for the initial implementation.
 - **4.4.3** (multi-stream) only if per-row-type parallelism
   matters enough to justify the glue complexity.
 
-## 4.5 Virtual files (unifying abstraction)
+## 4.5 Virtual files (observability-first abstraction)
+
+### 4.5.1 What virtual files buy over Unix named pipes
+
+At Phase 1, `mkfifo` + shell redirection already gets you
+most of the transport topology. Virtual files only justify
+their ceremony when they add something Unix doesn't — and the
+primary thing they add is **uniform observability**. If the
+glue owns the abstraction, `observe(counters(...))` (spec §7)
+works without per-target instrumentation hooks.
+
+Concrete delta versus Unix primitives:
+
+| Capability | Unix `mkfifo` / `tee` | Virtual files |
+|------------|----------------------|--------------|
+| Transport between local processes | ✓ (pipe) | ✓ (same pipe) |
+| Fan-out to N consumers | ✓ (`tee`) | ✓ (glue inserts tee) |
+| Typed schema on the wire | ✗ (opaque bytes) | ✓ (`schema([...])`) |
+| Counter/throughput instrumentation | Manual per-consumer | ✓ (glue wraps transport) |
+| Switch disk-file ↔ pipe without code change | ✗ (requires rewrite) | ✓ (`backing(Auto/Disk/Pipe)`) |
+| Validation on shape mismatch | ✗ (runtime errors) | ✓ (at declare-time) |
+| Cross-target-agnostic reference | Path string only | Named + typed |
+
+The first three rows are table stakes. The last four are where
+the abstraction earns its keep. In a single-producer /
+single-consumer pipeline with no instrumentation, virtual files
+are equivalent to `mkfifo` plus a variable name; the ceremony
+doesn't pay off.
+
+### 4.5.2 Declaration shape
 
 The cleanest way to express multi-table streaming AND preserve
 composability with existing on-disk TSV data is to promote the
@@ -300,7 +329,7 @@ process_dump(DumpPath, LmdbPath) :-
     run_consumer(ingest_subcats_to_lmdb, [sink(LmdbPath)]).
 ```
 
-### 4.5.1 What a virtual file is
+### 4.5.3 What a virtual file is
 
 A named, typed data stream that can be backed by:
 
@@ -316,7 +345,7 @@ A named, typed data stream that can be backed by:
 The *consumer* doesn't know and doesn't need to know which
 backing the glue chose. Same Prolog, same call site.
 
-### 4.5.2 Glue responsibilities for virtual files
+### 4.5.4 Glue responsibilities for virtual files
 
 When the compiler encounters a pipeline that references virtual
 files, it picks the backing based on pipeline topology:
@@ -333,7 +362,7 @@ files, it picks the backing based on pipeline topology:
 The choice is transparent to the user code. A flag can force
 a specific backing for testing (`virtual_file(..., backing(disk))`).
 
-### 4.5.3 Why this unifies multi-table handling
+### 4.5.5 Why this unifies multi-table handling
 
 Sections 4.4.1–4.4.3 become special cases of virtual-file
 topology:
@@ -349,7 +378,7 @@ The spec doesn't need to pick one — the glue picks based on
 declarations, and the user describes *what* they want, not *how*
 it's transported.
 
-### 4.5.4 Why this matches existing conventions
+### 4.5.6 Why this matches existing conventions
 
 The benchmark data shape already encodes this mental model:
 
@@ -371,7 +400,7 @@ existing on-disk TSV benchmarks: the same consumer predicate
 works against a file written yesterday or a stream flowing live
 from a parser subprocess.
 
-### 4.5.5 Transpilation consequence
+### 4.5.7 Transpilation consequence
 
 When the Prolog references `'subcats.tsv'` and the glue chooses
 a named-pipe backing, the generated code on each side uses the
@@ -401,7 +430,7 @@ The glue lays down the named pipe (`mkfifo`), populates the
 environment variables, orchestrates the processes. Neither
 producer nor consumer knows it's not a real file.
 
-### 4.5.6 Deferred — first implementation may skip this
+### 4.5.8 Deferred — first implementation may skip this
 
 Virtual files are a significant feature beyond Phase S1. For
 the initial enwiki demo, 4.4.1 (separate predicates calling the

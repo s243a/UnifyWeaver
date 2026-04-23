@@ -72,10 +72,137 @@ The rule: if a predicate's body would be a byte-level state
 machine, it's a leaf primitive. If it's compositional logic over
 typed records, it's transpiled.
 
+**Corollary — leaf primitives should be minimal and general**:
+a primitive's job is *mechanism* (byte IO, tokenization,
+decompression), not *logic* (filter, extract, route). If the
+temptation is "just add one more filter to the Rust code," stop
+and ask whether that filter is really mechanism. Usually it's
+not.
+
+Applied to the MySQL dump parser: the Rust primitive emits
+*every* INSERT row as an untyped tuple. It doesn't filter on
+`cl_type='subcat'` and it doesn't pre-select columns — those
+are Prolog-side decisions:
+
+```prolog
+% Wrong shape — filter lives in Rust, primitive is a specialization
+:- declare_target(parse_category_subcats/3, rust, [leaf(true), ...]).
+
+% Right shape — primitive emits raw rows, Prolog filters
+:- declare_target(parse_mysql_rows/2, rust, [leaf(true), ...]).
+
+process_dump(DumpPath, LmdbPath) :-
+    forall(
+        (   parse_mysql_rows(DumpPath, Row),
+            row_field(Row, cl_type, "subcat"),
+            row_field(Row, cl_from, Child),
+            row_field(Row, cl_to, Parent)
+        ),
+        ingest_to_lmdb(LmdbPath, Child, Parent)
+    ).
+```
+
+Why this matters:
+
+1. **The same primitive serves many use cases.** Extracting
+   subcat links or article-category links or any other row
+   filter is a one-line change in Prolog, no Rust recompile.
+2. **Logic stays where it's transpilable.** Filters, joins,
+   column routing — these are what UnifyWeaver is *for*. If
+   they're trapped inside native code, the target abstraction
+   isn't earning its keep.
+3. **An optimized direct-write path remains possible later.**
+   If profiling shows the Prolog-side filter costs enough to
+   matter, we can add a specialized primitive that inlines a
+   specific filter (`parse_mysql_subcat_rows/3` with the
+   filter baked in). That's an *optimization*, not the
+   general path.
+
+### Declarative specialization (a later design question)
+
+An even more principled version of the optimized direct-write
+path: the user declares *what* to fuse in Prolog, and the
+transpiler emits the fused target code. Rough sketch:
+
+```prolog
+:- specialize(
+       process_dump/2,
+       fuse_to(rust),      % run the whole pipeline in one process
+       inline_filter(row_field(Row, cl_type, "subcat")),
+       inline_sink(lmdb_put/3)
+   ).
+```
+
+The compiler sees this specialization hint and emits a Rust
+program that:
+- Parses MySQL rows (from the existing leaf primitive)
+- Applies the filter inline (no pipe, no Prolog layer)
+- Writes directly to LMDB (no Python consumer process)
+
+This is analogous to GHC rewrite rules: Prolog describes *what*
+to fuse; the transpiler handles *how*.
+
+**Intentionally deferred to a later design phase**, for two
+reasons:
+
+1. **Generality**: the standard path — Prolog drives, targets
+   are transports between filters — must exist first and be
+   well-understood. Specializations are optimizations *over*
+   that baseline, not replacements for it. Shipping the
+   specialized path before the general one inverts the
+   design.
+2. **Transpiler complexity**: supporting declarative
+   specialization requires the transpiler to pattern-match on
+   Prolog pipelines, do target-specific fusion codegen
+   (embedding LMDB calls in Rust, embedding pyo3 exports, etc.),
+   and plumb schema contracts through the fusion boundary.
+   That's real work, not a syntactic tweak. The general path
+   defers it cleanly.
+
+Mentioned here so the eventual design has a landing place, not
+because it's on any near-term roadmap. First we ship the
+standard path and measure; specialization is motivated by
+profile data, not by speculation.
+
 This is the same rule the WAM Haskell target already follows for
 LMDB: `lmdbRawEdgeLookup` is a hand-written Haskell function, not
 transpiled Prolog. The `EdgeLookup = Int -> [Int]` type is the
 contract; everything above it is composed in Prolog.
+
+**Anti-example — what transpiled byte-level tokenization looks
+like, and why it fails**: imagine expressing MySQL INSERT
+tokenization as Prolog DCGs over character codes. The
+transpiled target code becomes something like:
+
+```prolog
+parse_string([0'\\, C | Rest], [Decoded | OutRest]) :- !,
+    decode_escape(C, Decoded),
+    parse_string(Rest, OutRest).
+parse_string([0'' | Rest], [], Rest) :- !.  % end quote
+parse_string([C | Rest], [C | OutRest]) :-
+    parse_string(Rest, OutRest).
+```
+
+Two costs, only one of which is the obvious one:
+
+1. **The obvious cost**: per-character pattern match, constant
+   allocation pressure, `char_code/2` calls — orders of
+   magnitude slower than a hand-written state machine.
+2. **The less obvious, larger cost**: *loss of stream fusion*.
+   A native tokenizer like `attoparsec` (Haskell) or a manual
+   `BufReader` state machine (Rust) fuses gzip decode →
+   tokenize → filter into a single pass, with no intermediate
+   allocation and automatic buffer reuse. Transpiled
+   character-by-character matching materializes every
+   intermediate form (the decoded string, the token list, the
+   filter residue), breaking fusion before any per-operation
+   cost is even counted.
+
+A 3 GB gzipped MySQL dump processed with stream fusion fits in
+a few MB of resident memory; processed with materialized
+intermediates, it doesn't fit in RAM at all. The rule isn't
+just a performance preference — transpiling a tokenizer is
+structurally the wrong shape for the workload.
 
 ## Three-phase transport evolution
 
@@ -110,6 +237,35 @@ Python reads with `struct.unpack` or a NumPy `fromfile`.
 of Phase 1 becomes noticeable. This is the LMDB CBOR→raw lesson
 applied to pipes: the speed-up is mostly eliminating per-record
 text parsing, not reducing IPC cost.
+
+### Phase 1.75 — Memory-mapped file handoff
+
+A middle transport that sits between binary pipe and
+in-process API. The producer writes packed binary to a file;
+the consumer `mmap`s that file and reads it as a typed byte
+array. Useful when the consumer benefits from random access or
+when the producer and consumer aren't coordinated in time
+(producer runs to completion, consumer runs later).
+
+- Throughput: ~1-5 GB/s (mmap is page-cache-bound)
+- Complexity: shared file path + agreed-upon layout
+- Cost per tuple: a single pointer dereference
+
+**Caveat**: mmap requires a seekable file descriptor —
+pipes don't work. The producer must materialize output to a
+real file. That's a limitation for true streaming (consumer
+can't start until producer finishes) but fits perfectly for
+the common case of "decode a dump once, query the result
+many times."
+
+**Appropriate for: one-time preprocessing where the output
+will be read repeatedly**. For the enwiki pipeline
+specifically: the Rust parser could mmap-write a packed
+binary output file (`subcats.bin` as `(i32, u32_length,
+utf8_bytes)` records or similar), and the Python LMDB
+ingester mmap-reads it. This skips the pipe buffer entirely
+and enables out-of-order / parallel reads if the consumer
+wants them.
 
 ### Phase 2 — API / in-process object stream
 
