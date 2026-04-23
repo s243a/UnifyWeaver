@@ -173,8 +173,8 @@ test_transitive_closure_kernel_function :-
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
     (   wam_haskell_target:render_kernel_function('closure/2'-Kernel, Code),
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure"),
-        %% Signature uses IntMap after atom interning
-        sub_string(Code, _, _, _, "IM.IntMap [Int] -> Int -> [Int]"),
+        %% Signature uses EdgeLookup after B1 abstraction
+        sub_string(Code, _, _, _, "EdgeLookup -> Int -> [Int]"),
         %% edge_pred placeholder resolved
         sub_string(Code, _, _, _, "Edge predicate: edge")
     ->  pass(Test)
@@ -189,9 +189,9 @@ test_transitive_closure_execute_foreign :-
         sub_string(Code, _, _, _, "executeForeign !ctx \"closure/2\" s ="),
         %% Single input register (reg 1)
         sub_string(Code, _, _, _, "IM.lookup 1 (wsRegs s)"),
-        %% config_facts_from resolved to edge pred name, now using wcFfiFacts
-        sub_string(Code, _, _, _, "edge_facts = fromMaybe IM.empty"),
-        sub_string(Code, _, _, _, "wcFfiFacts ctx"),
+        %% config_facts_from resolved — checks wcEdgeLookups first, falls back to wcFfiFacts
+        sub_string(Code, _, _, _, "edge_facts = case Map.lookup"),
+        sub_string(Code, _, _, _, "wcEdgeLookups ctx"),
         %% Native call: first arg is facts, input atom is already Int (interned)
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
         sub_string(Code, _, _, _, "r1I"),
@@ -1201,7 +1201,7 @@ test_b1_lmdb_imports_present_when_enabled :-
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "import Database.LMDB.Simple"),
-        sub_string(S, _, _, _, "import Database.LMDB.Simple.View")
+        sub_string(S, _, _, _, "import Database.LMDB.Simple.Extra")
     ->  pass(Test)
     ;   fail_test(Test, 'LMDB imports not found when use_lmdb(true)')
     ).
@@ -1235,15 +1235,15 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
-test_b1_lmdb_view_for_parallelism :-
-    Test = 'B1: lmdbFactSource uses View for pure concurrent reads',
+test_b1_lmdb_read_txn_for_parallelism :-
+    Test = 'B1: lmdbFactSource uses readOnlyTransaction for concurrent reads',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "View.lookup"),
-        sub_string(S, _, _, _, "View.toList"),
-        sub_string(S, _, _, _, "View.newView")
+        sub_string(S, _, _, _, "readOnlyTransaction"),
+        sub_string(S, _, _, _, "toList db"),
+        sub_string(S, _, _, _, "get db key")
     ->  pass(Test)
-    ;   fail_test(Test, 'View-based pure reads not found in lmdbFactSource')
+    ;   fail_test(Test, 'readOnlyTransaction-based reads not found in lmdbFactSource')
     ).
 
 run_tests :-
@@ -1349,7 +1349,7 @@ run_tests :-
     test_b1_lmdb_absent_when_disabled,
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
-    test_b1_lmdb_view_for_parallelism,
+    test_b1_lmdb_read_txn_for_parallelism,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

@@ -11,7 +11,7 @@
 -- Useful for path attribution: "which initial decision led to reaching
 -- this node?". Exercises the 4-output FFIStreamRetry path.
 nativeKernel_transitive_step_parent_distance
-  :: IM.IntMap [Int] -> Int -> [(Int, Int, Int, Int)]
+  :: EdgeLookup -> Int -> [(Int, Int, Int, Int)]
 nativeKernel_transitive_step_parent_distance edges source =
   bfs [(source, source, source, 0)] IS.empty []
   where
@@ -23,7 +23,7 @@ nativeKernel_transitive_step_parent_distance edges source =
       | IS.member node visited = bfs queue visited acc
       | otherwise =
           let visited' = IS.insert node visited
-              neighbors = IM.findWithDefault [] node edges
+              neighbors = edges node
               -- For each neighbor: parent is current node. Step is the first
               -- hop from source: if we're expanding from source itself, the
               -- step IS the neighbor. Otherwise, step propagates from the

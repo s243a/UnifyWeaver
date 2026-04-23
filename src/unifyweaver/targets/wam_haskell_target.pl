@@ -576,9 +576,12 @@ reg_default_value(vlist_atoms, 'VList []').
 %  Emit let-bindings for config_facts and config_int arguments.
 emit_config_let_bindings([]).
 emit_config_let_bindings([config_facts(FactKey)|Rest]) :-
-    % FFI facts are stored interned in wcFfiFacts (IntMap [Int])
-    format('      ~w_facts = fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx)~n',
-           [FactKey, FactKey]),
+    % FFI facts: check wcEdgeLookups first (LMDB-backed when available),
+    % fall back to wrapping wcFfiFacts IntMap as EdgeLookup.
+    format('      ~w_facts = case Map.lookup "~w" (wcEdgeLookups ctx) of~n', [FactKey, FactKey]),
+    format('        Just lkp -> lkp~n', []),
+    format('        Nothing  -> intMapEdgeLookup (fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx))~n',
+           [FactKey]),
     emit_config_let_bindings(Rest).
 emit_config_let_bindings([config_weighted_facts(FactKey)|Rest]) :-
     % Weighted FFI facts: IntMap [(Int, Double)] (target, weight pairs)
@@ -1745,6 +1748,10 @@ tsvFactSource tbl path = do
 
 -- | Phase F4: Wrap an existing strict IntMap as a FactSource.
 -- Used to bridge the current eager-load path into the FactSource interface.
+-- | Phase B1: Wrap an IntMap as an EdgeLookup (default, always available).
+intMapEdgeLookup :: IM.IntMap [Int] -> EdgeLookup
+intMapEdgeLookup im key = IM.findWithDefault [] key im
+
 intMapFactSource :: IM.IntMap [Int] -> FactSource
 intMapFactSource im = FactSource
   { fsScan       = return [(k, v) | (k, vs) <- IM.toList im, v <- vs]
@@ -2704,10 +2711,13 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
       hPutStrLn stderr "LMDB ingestion complete."
     else
       hPutStrLn stderr "LMDB database found, skipping ingestion."
-    -- Open LMDB as a FactSource for the WAM interpreter
+    -- Open LMDB as EdgeLookup for FFI kernels (on-demand mmap reads)
+    cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
+    -- Also open as FactSource for WAM interpreter path
     cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
         ContextCode =
-'            , wcFactSources   = Map.singleton "category_parent" cpFactSource'
+'            , wcFactSources   = Map.singleton "category_parent" cpFactSource
+            , wcEdgeLookups   = Map.singleton "category_parent" cpEdgeLookup'
     ;   SetupCode = '',
         ContextCode = '',
         ImportCode = ''
@@ -2843,7 +2853,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), ReadOnly,\n                                    openReadOnlyEnvironment, readOnlyTransaction,\n                                    getDatabase, defaultLimits)\nimport Database.LMDB.Simple.View (View, newView)\nimport qualified Database.LMDB.Simple.View as View\nimport Codec.Serialise (Serialise)",
+    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), Transaction,\n                                    ReadOnly, ReadWrite,\n                                    openReadOnlyEnvironment, openEnvironment,\n                                    readOnlyTransaction, readWriteTransaction,\n                                    getDatabase, defaultLimits, get, put)\nimport Database.LMDB.Simple.Extra (toList)\nimport Codec.Serialise (Serialise)",
         generate_lmdb_functions(LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
@@ -3255,9 +3265,14 @@ data WamContext = WamContext
   -- evaluated before parMap. Within each spark, streamFacts uses
   -- unsafePerformIO per-call — no cross-spark lazy IO sharing.
   , wcFactSources :: !(Map.Map String FactSource)
+  -- | Phase B1: LMDB-backed edge lookups for FFI kernels.
+  -- When populated, kernels use these instead of wcFfiFacts IntMaps.
+  -- Each entry is an EdgeLookup function (Int -> [Int]) that may be
+  -- backed by an IntMap (intMapEdgeLookup) or LMDB (lmdbEdgeLookup).
+  , wcEdgeLookups :: !(Map.Map String EdgeLookup)
   }
--- Note: no `deriving (Show)` because wcLoweredPredicates and
--- wcFactSources are function-valued and have no Show instance.
+-- Note: no `deriving (Show)` because wcLoweredPredicates,
+-- wcFactSources, and wcEdgeLookups are function-valued.
 -- and functions have no Show instance. Add a manual instance if needed.
 
 -- | Mutable state. Updated on every WAM step. Held separate from WamContext
@@ -3288,6 +3303,11 @@ data WamState = WamState
 --   X1-X99: 101-199
 --   Y1-Y99: 201-299
 type RegId = Int
+
+-- | Phase B1: abstract edge lookup function. Kernels use this instead
+-- of IM.IntMap [Int] directly, allowing the backing store to be either
+-- an in-memory IntMap or an LMDB database.
+type EdgeLookup = Int -> [Int]
 
 data Instruction
   = GetConstant Value !RegId
@@ -3354,6 +3374,7 @@ mkContext codeList labels =
     , wcFfiWeightedFacts = Map.empty
     , wcInlineFacts   = Map.empty
     , wcFactSources   = Map.empty
+    , wcEdgeLookups   = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,

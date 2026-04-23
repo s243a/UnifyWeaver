@@ -2,9 +2,9 @@
 -- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
 -- Atoms are interned at the FFI boundary (see executeForeign) so the
 -- hot loop uses IntMap + Int comparison instead of HashMap String hashing.
-nativeKernel_category_ancestor :: IM.IntMap [Int] -> Int -> Int -> Int -> Int -> [Int] -> [Int]
+nativeKernel_category_ancestor :: EdgeLookup -> Int -> Int -> Int -> Int -> [Int] -> [Int]
 nativeKernel_category_ancestor parents cat root maxDepth depth visited =
-  let directParents = IM.findWithDefault [] cat parents
+  let directParents = parents cat
       baseHits = [1 | p <- directParents, p == root]
       recHits = if depth >= maxDepth then [] else
         concatMap (\mid ->
