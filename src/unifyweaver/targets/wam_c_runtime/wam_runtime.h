@@ -52,6 +52,12 @@ typedef struct {
     WamValue y_regs[32];
 } EnvFrame;
 
+/* Wam Mode */
+typedef enum {
+    MODE_READ = 0,
+    MODE_WRITE = 1
+} WamMode;
+
 /* Instruction tags */
 typedef enum {
     INSTR_GET_CONSTANT, INSTR_GET_VARIABLE, INSTR_GET_VALUE,
@@ -88,6 +94,7 @@ typedef struct {
     int CP;   // Continuation Pointer
     int S;    // Structure Pointer
     int HB;   // Heap Backtrack Pointer
+    WamMode mode; // Read/Write mode for structure unification
     
     /* Registers: A and X registers share the same space typically */
     WamValue A[WAM_MAX_REGS];
@@ -173,6 +180,72 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
     state->TR_array[state->TR].cell = cell;
     state->TR_array[state->TR].old_val = *cell;
     state->TR++;
+}
+static inline WamValue* wam_deref_ptr(WamState *state, WamValue *v) {
+    while (v->tag == VAL_REF) {
+        WamValue *next = &state->H_array[v->data.ref_addr];
+        if (next->tag == VAL_UNBOUND) break;
+        if (next->tag == VAL_REF && next->data.ref_addr == v->data.ref_addr) break;
+        v = next;
+    }
+    return v;
+}
+static inline void wam_bind(WamState *state, WamValue *v1, WamValue *v2) {
+    trail_binding(state, v1);
+    *v1 = *v2;
+}
+static inline bool wam_unify(WamState *state, WamValue *v1, WamValue *v2) {
+    WamValue *pdl[256];
+    int pdl_top = 0;
+    
+    pdl[pdl_top++] = v2;
+    pdl[pdl_top++] = v1;
+    
+    while (pdl_top > 0) {
+        WamValue *d1 = wam_deref_ptr(state, pdl[--pdl_top]);
+        WamValue *d2 = wam_deref_ptr(state, pdl[--pdl_top]);
+        
+        if (d1 == d2) continue;
+        
+        if (d1->tag == VAL_UNBOUND || d2->tag == VAL_UNBOUND) {
+            WamValue *unbound = (d1->tag == VAL_UNBOUND) ? d1 : d2;
+            WamValue *other = (d1->tag == VAL_UNBOUND) ? d2 : d1;
+            wam_bind(state, unbound, other);
+            continue;
+        }
+        
+        if (d1->tag != d2->tag) return false;
+        
+        if (d1->tag == VAL_INT) {
+            if (d1->data.integer != d2->data.integer) return false;
+        } else if (d1->tag == VAL_ATOM) {
+            if (strcmp(d1->data.atom, d2->data.atom) != 0) return false;
+        } else if (d1->tag == VAL_LIST) {
+            if (pdl_top + 4 > 256) return false; // PDL overflow
+            pdl[pdl_top++] = &state->H_array[d2->data.ref_addr];
+            pdl[pdl_top++] = &state->H_array[d1->data.ref_addr];
+            pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1];
+            pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1];
+        } else if (d1->tag == VAL_STR) {
+            WamValue *f1 = &state->H_array[d1->data.ref_addr];
+            WamValue *f2 = &state->H_array[d2->data.ref_addr];
+            if (f1->tag != VAL_ATOM || f2->tag != VAL_ATOM) return false;
+            if (strcmp(f1->data.atom, f2->data.atom) != 0) return false;
+            
+            const char *slash = strchr(f1->data.atom, '/');
+            assert(slash != NULL && "Functor missing arity suffix");
+            int arity = strtol(slash + 1, NULL, 10);
+            
+            if (pdl_top + arity * 2 > 256) return false; // PDL overflow
+            for (int i = 0; i < arity; i++) {
+                pdl[pdl_top++] = &state->H_array[d2->data.ref_addr + 1 + i];
+                pdl[pdl_top++] = &state->H_array[d1->data.ref_addr + 1 + i];
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 static inline void push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
