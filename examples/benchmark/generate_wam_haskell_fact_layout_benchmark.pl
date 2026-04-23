@@ -40,8 +40,9 @@ main :-
 
 parse_layout('compiled', [fact_layout_policy(compiled_only)]) :- !.
 parse_layout('inline', [fact_count_threshold(10)]) :- !.
+parse_layout('lmdb', [use_lmdb(true)]) :- !.
 parse_layout(X, _) :-
-    format(user_error, 'Unknown layout: ~w (use compiled or inline)~n', [X]),
+    format(user_error, 'Unknown layout: ~w (use compiled, inline, or lmdb)~n', [X]),
     halt(1).
 
 %% power_sum_bound(+Cat, +Root, +NegN, -WeightSum)

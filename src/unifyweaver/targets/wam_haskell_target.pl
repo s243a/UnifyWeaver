@@ -2654,6 +2654,8 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ),
     % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
     generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
+    % Phase B1: generate LMDB setup and context wiring
+    generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , query_body=QueryBody
@@ -2662,6 +2664,9 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , facts_source=FactsSource
         , demand_metrics=DemandMetrics
         , inline_facts=InlineFactsWiring
+        , lmdb_setup=LmdbSetup
+        , lmdb_context=LmdbContext
+        , lmdb_import=LmdbImport
         ], Code).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)
@@ -2676,6 +2681,37 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
     format(string(Code),
            '            , wcInlineFacts   = Map.fromList [~w]',
            [EntriesStr]).
+
+%% generate_lmdb_wiring(+Options, -SetupCode, -ContextCode, -ImportCode)
+%  When use_lmdb(true), generates:
+%  - SetupCode: LMDB ingestion + FactSource creation at startup
+%  - ContextCode: wcFactSources wiring in the WamContext
+%  - ImportCode: System.Directory import for doesDirectoryExist
+%  Ingestion is idempotent — skips if the LMDB directory already exists.
+%  When not enabled, all are empty strings.
+generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
+    (   option(use_lmdb(true), Options)
+    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
+        SetupCode =
+'    -- Phase B1: LMDB fact source setup
+    let lmdbDir = factsDir ++ "/lmdb"
+    -- Ingest TSV into LMDB (idempotent — skips if directory exists)
+    lmdbExists <- doesDirectoryExist lmdbDir
+    if not lmdbExists then do
+      createDirectory lmdbDir
+      hPutStrLn stderr "Ingesting TSV into LMDB..."
+      ingestTsvToLmdb fullInternTable (factsDir ++ "/category_parent.tsv") lmdbDir "category_parent"
+      hPutStrLn stderr "LMDB ingestion complete."
+    else
+      hPutStrLn stderr "LMDB database found, skipping ingestion."
+    -- Open LMDB as a FactSource for the WAM interpreter
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
+        ContextCode =
+'            , wcFactSources   = Map.singleton "category_parent" cpFactSource'
+    ;   SetupCode = '',
+        ContextCode = '',
+        ImportCode = ''
+    ).
 
 %% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
 %  When demand filtering is enabled (kernels detected with an edge predicate),
@@ -3353,7 +3389,7 @@ generate_cabal_file(Name, UseHM, Options, Code) :-
     ),
     % Phase B1: conditional LMDB dependency
     (   option(use_lmdb(true), Options)
-    ->  format(string(Deps), "~w, lmdb-simple >= 0.4, serialise >= 0.2", [BaseDeps])
+    ->  format(string(Deps), "~w, lmdb-simple >= 0.4, serialise >= 0.2, directory >= 1.3", [BaseDeps])
     ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
