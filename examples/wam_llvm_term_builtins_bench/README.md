@@ -181,27 +181,37 @@ checks whether `@run_loop` returned `i1 true`, not the computed result.
 `bench_term_depth` has a conditional path that fails a guard under the
 broken aliasing, so `run_loop → false`.
 
-**Attempted fix** (rolled back in this branch's history): introduced
-`@wam_deref_value`, `@wam_bind_reg`, `@wam_get_reg_deref` helpers in
-`state.ll.mustache`; changed `put_variable` to allocate a heap cell
-and store `Ref{addr}` in both registers; routed all binding sites
-(`get_constant`, `get_value`, `builtin_is`, comparison builtins, type
-checks, `functor/arg/univ/copy_term`) through the new deref/bind
-helpers. Result: `bench_unify` started failing because `X = foo(a,b,c),
-X = foo(a,b,c)` now correctly binds A1 to the first compound on the
-first `=/2`, and the second `=/2` compares pointers on two structurally
-equal but physically distinct compounds — the existing `value_equals`
-is shallow (pointer compare), not structural. So the Ref fix exposes a
-latent gap in the unification implementation.
+**Progress on the fix** (this PR):
 
-A proper fix therefore needs both:
-  1. Ref-based put_variable (aliased heap cell); and
-  2. Structural unification in `value_equals` / builtin_unify, including
-     walking compound args recursively with cycle detection.
+  1. `value_equals` is now structural on compounds: same functor
+     pointer (functor globals are interned, so pointer equality = name
+     equality), same arity, recursively equal args. List cons-cells
+     fall out naturally. **Landed.**
 
-Out of scope for this PR; the state.ll.mustache helpers would have
-been useful infrastructure but are omitted until the unification story
-is settled.
+  2. Infrastructure helpers added in `state.ll.mustache`:
+     `@wam_heap_get`, `@wam_heap_set`, `@wam_deref_value` (follow Ref
+     chain), `@wam_get_reg_deref` (get + deref),
+     `@wam_bind_reg` (depth-1 Ref write-through). **Landed** but
+     currently unused by the main target code — available for future
+     Ref-based work.
+
+  3. Ref-based `put_variable` + binding-site migration: **attempted
+     and reverted.** Converting put_variable to allocate a shared heap
+     cell and all binding sites to use the deref/bind helpers caused
+     `bench_sum_medium` / `bench_sum_big` to FAIL (while
+     `bench_sum_small` still worked — the failure showed up only when
+     sum_ints recursed through a nested compound argument, i.e., clause
+     2 called a second time down the tree). Root cause not fully
+     diagnosed in this PR; likely interaction between the new
+     `@wam_trail_heap_binding` encoding and some heap-cell survival
+     across backtrack from the `integer/1` check in sum_ints clause 1.
+     Also the choice-point struct does not save the heap pointer, so
+     put_variable's heap-push is not rewound on backtrack — another
+     latent gap that the Ref scheme makes visible.
+
+The structural-equals + helper landing here is still useful: when the
+Ref-based put_variable eventually lands, it won't need to chase the
+shallow-equals regression, and the deref/bind helpers are ready.
 
 ### `put_constant` tag fix (landed in this PR)
 

@@ -61,18 +61,87 @@ define i1 @value_is_number(%Value %v) {
   ret i1 %result
 }
 
+; Structural equality on %Value.
+;
+;   Atomic / unbound (tag 0/1/2/5/6/7): tags match and payload bits match.
+;     Ref-vs-Ref payload compare succeeds only on the same heap slot —
+;     use @wam_deref_value before calling equals if you want to compare
+;     through Ref chains.
+;
+;   Compound (tag 3): same functor pointer, same arity, and recursively
+;     equal args. Two %Compound* values that happen to be the same
+;     pointer fast-path to true. Functor pointer equality works because
+;     every functor name is interned once into a single `@.fn_<name>`
+;     global — two compounds with the same functor name share that
+;     pointer. List cons-cells (functor ".", arity 2) fall through this
+;     path like any other compound.
+;
+; No occurs-check; no Ref-deref here (callers do that).
 define i1 @value_equals(%Value %a, %Value %b) {
 entry:
   %tag_a = extractvalue %Value %a, 0
   %tag_b = extractvalue %Value %b, 0
   %tags_eq = icmp eq i32 %tag_a, %tag_b
-  br i1 %tags_eq, label %check_payload, label %not_equal
+  br i1 %tags_eq, label %tag_match, label %not_equal
 
-check_payload:
+tag_match:
+  %is_compound = icmp eq i32 %tag_a, 3
+  br i1 %is_compound, label %compound_case, label %shallow_payload
+
+shallow_payload:
   %pay_a = extractvalue %Value %a, 1
   %pay_b = extractvalue %Value %b, 1
   %pay_eq = icmp eq i64 %pay_a, %pay_b
   ret i1 %pay_eq
+
+compound_case:
+  %pa = extractvalue %Value %a, 1
+  %pb = extractvalue %Value %b, 1
+  %same_ptr = icmp eq i64 %pa, %pb
+  br i1 %same_ptr, label %equal, label %deep_check
+
+deep_check:
+  %ap = inttoptr i64 %pa to %Compound*
+  %bp = inttoptr i64 %pb to %Compound*
+  %afn_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 0
+  %bfn_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 0
+  %afn = load i8*, i8** %afn_slot
+  %bfn = load i8*, i8** %bfn_slot
+  %fn_eq = icmp eq i8* %afn, %bfn
+  br i1 %fn_eq, label %check_arity, label %not_equal
+
+check_arity:
+  %aar_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 1
+  %bar_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 1
+  %aar = load i32, i32* %aar_slot
+  %bar = load i32, i32* %bar_slot
+  %ar_eq = icmp eq i32 %aar, %bar
+  br i1 %ar_eq, label %args_init, label %not_equal
+
+args_init:
+  %aargs_slot = getelementptr %Compound, %Compound* %ap, i32 0, i32 2
+  %bargs_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 2
+  %aargs = load %Value*, %Value** %aargs_slot
+  %bargs = load %Value*, %Value** %bargs_slot
+  %has_args = icmp sgt i32 %aar, 0
+  br i1 %has_args, label %loop, label %equal
+
+loop:
+  %idx = phi i32 [ 0, %args_init ], [ %next_idx, %step ]
+  %ae_ptr = getelementptr %Value, %Value* %aargs, i32 %idx
+  %ae = load %Value, %Value* %ae_ptr
+  %be_ptr = getelementptr %Value, %Value* %bargs, i32 %idx
+  %be = load %Value, %Value* %be_ptr
+  %arg_eq = call i1 @value_equals(%Value %ae, %Value %be)
+  br i1 %arg_eq, label %step, label %not_equal
+
+step:
+  %next_idx = add i32 %idx, 1
+  %done = icmp sge i32 %next_idx, %aar
+  br i1 %done, label %equal, label %loop
+
+equal:
+  ret i1 true
 
 not_equal:
   ret i1 false
