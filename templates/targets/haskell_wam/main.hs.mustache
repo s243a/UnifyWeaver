@@ -16,6 +16,7 @@ import WamTypes
 import WamRuntime
 import Predicates
 import qualified Lowered
+{{lmdb_import}}
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -140,6 +141,9 @@ main = do
     -- (like Wikipedia categories, ~95% reachable) the effect is small.
 {{demand_filter}}
 
+    -- Phase B1: LMDB fact source setup (conditional, empty when not enabled)
+{{lmdb_setup}}
+
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
     -- wcInternTable is the system-wide atom intern table (compile-time +
@@ -150,6 +154,7 @@ main = do
             , wcInternTable   = fullInternTable
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
 {{inline_facts}}
+{{lmdb_context}}
             }
 
     t2 <- getCurrentTime
