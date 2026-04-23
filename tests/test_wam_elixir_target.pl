@@ -323,8 +323,13 @@ test_phase_b_emits_inline_data_when_chosen :-
     phase_a_fixture_setup,
     wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
     lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    % Phase C (PR #1525) added first-arg indexing: the emitted `run/1`
+    % picks between `@facts` (unbound arg1) and the `@facts_by_arg1`
+    % indexed subset, binds the result to a local `facts` variable,
+    % then streams that. Assert the indexed shape, not the pre-Phase-C
+    % direct `stream_facts(state, @facts, 2)` call.
     (   sub_string(Code, _, _, _, '@facts ['),
-        sub_string(Code, _, _, _, 'WamRuntime.stream_facts(state, @facts, 2)'),
+        sub_string(Code, _, _, _, 'WamRuntime.stream_facts(state, facts, 2)'),
         \+ sub_string(Code, _, _, _, 'defp clause_')
     ->  pass(Test)
     ;   fail_test(Test, 'expected inline_data shape missing or leaked defp')
