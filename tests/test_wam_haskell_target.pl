@@ -1201,7 +1201,7 @@ test_b1_lmdb_imports_present_when_enabled :-
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "import Database.LMDB.Simple"),
-        sub_string(S, _, _, _, "import Database.LMDB.Simple.View")
+        sub_string(S, _, _, _, "import Database.LMDB.Simple.Extra")
     ->  pass(Test)
     ;   fail_test(Test, 'LMDB imports not found when use_lmdb(true)')
     ).
@@ -1235,15 +1235,15 @@ test_b1_no_lmdb_cabal_default :-
     ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
     ).
 
-test_b1_lmdb_view_for_parallelism :-
-    Test = 'B1: lmdbFactSource uses View for pure concurrent reads',
+test_b1_lmdb_read_txn_for_parallelism :-
+    Test = 'B1: lmdbFactSource uses readOnlyTransaction for concurrent reads',
     (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "View.lookup"),
-        sub_string(S, _, _, _, "View.toList"),
-        sub_string(S, _, _, _, "View.newView")
+        sub_string(S, _, _, _, "readOnlyTransaction"),
+        sub_string(S, _, _, _, "toList db"),
+        sub_string(S, _, _, _, "get db key")
     ->  pass(Test)
-    ;   fail_test(Test, 'View-based pure reads not found in lmdbFactSource')
+    ;   fail_test(Test, 'readOnlyTransaction-based reads not found in lmdbFactSource')
     ).
 
 run_tests :-
@@ -1349,7 +1349,7 @@ run_tests :-
     test_b1_lmdb_absent_when_disabled,
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
-    test_b1_lmdb_view_for_parallelism,
+    test_b1_lmdb_read_txn_for_parallelism,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

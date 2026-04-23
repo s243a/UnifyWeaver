@@ -10,16 +10,20 @@ lmdbFactSource :: FilePath -> String -> IO FactSource
 lmdbFactSource dbPath dbName = do
     env <- openReadOnlyEnvironment dbPath defaultLimits
              { mapSize = 1073741824, maxDatabases = 16, maxReaders = 126 }
-    (db, view) <- readOnlyTransaction env $ do
-      db <- getDatabase (Just dbName) :: Transaction ReadOnly (Database Int [Int])
-      v  <- View.newView db
-      return (db, v)
+    db <- readOnlyTransaction env $
+      getDatabase (Just dbName) :: IO (Database Int [Int])
+    -- View snapshot: pure interface backed by a read-only LMDB transaction.
+    -- All View.lookup calls see the same consistent snapshot.
+    let scan = readOnlyTransaction env $ toList db
+        lookupArg1 key = readOnlyTransaction env $ do
+          mval <- get db key
+          return $ case mval of
+            Just vs -> [(key, v) | v <- vs]
+            Nothing -> []
     return FactSource
-      { fsScan       = return $ concatMap (\(k, vs) -> [(k, v) | v <- vs])
-                                          (View.toList view)
-      , fsLookupArg1 = \key -> return $ case View.lookup key view of
-                                           Just vs -> [(key, v) | v <- vs]
-                                           Nothing -> []
+      { fsScan       = scan >>= \pairs ->
+                         return $ concatMap (\(k, vs) -> [(k, v) | v <- vs]) pairs
+      , fsLookupArg1 = lookupArg1
       , fsClose      = return ()  -- GC handles env cleanup
       }
 

@@ -2843,7 +2843,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), ReadOnly,\n                                    openReadOnlyEnvironment, readOnlyTransaction,\n                                    getDatabase, defaultLimits)\nimport Database.LMDB.Simple.View (View, newView)\nimport qualified Database.LMDB.Simple.View as View\nimport Codec.Serialise (Serialise)",
+    ->  LmdbImports = "import Database.LMDB.Simple (Environment, Database, Limits(..), Transaction,\n                                    ReadOnly, ReadWrite,\n                                    openReadOnlyEnvironment, openEnvironment,\n                                    readOnlyTransaction, readWriteTransaction,\n                                    getDatabase, defaultLimits, get, put)\nimport Database.LMDB.Simple.Extra (toList)\nimport Codec.Serialise (Serialise)",
         generate_lmdb_functions(LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
