@@ -140,8 +140,9 @@ correctness gate.
 clause segment body with its choice-point push and `try/catch` block.
 The emission decision for a segment happens at a single call site.
 
-A Tier-2 variant `par_wrap_segment/3` gates on three conditions, all
-derivable at emit time:
+A Tier-2 variant `par_wrap_segment/3` gates on three static conditions
+derivable at emit time, plus one **runtime** condition baked into the
+emitted wrapper:
 
 ```prolog
 par_wrap_segment(Pred/Arity, Segments, Options) :-
@@ -156,11 +157,24 @@ par_wrap_segment(Pred/Arity, Segments, Options) :-
     wrap_segment(Pred/Arity, Segments, Options).   % Tier 3 fallback.
 ```
 
+The static gates at emit time:
+
+- Kill-switch (`intra_query_parallel(false)`) absent.
+- Purity confidence ≥0.85 (matches Haskell).
+- Clause count ≥3 (min-branches cost gate).
+
 No `contains_cut/1` static check — cut safety comes from the runtime
 barrier pinned in the emitted wrapper (see "Cut semantics" below).
-Kill-switch (`intra_query_parallel(false)`), purity confidence gate
-(≥0.85 matching Haskell), and min-branches threshold (≥3) are all
-static.
+
+The runtime gate the emitted wrapper performs on every call:
+
+- **Forkable aggregate frame present.** Unless the current
+  `state.choice_points` has an aggregate-frame marker on it (from a
+  surrounding `findall` / `bagof` / `aggregate_all` / `sum`), the
+  wrapper falls back to sequential `wrap_segment` behaviour.
+
+See "Aggregate-frame gate" below for why this is a correctness
+requirement, not an optimisation.
 
 ### Cost gate: `forkMinBranches = 3`
 
@@ -176,6 +190,61 @@ C# query runtime uses in
 measured data before making a sensible default. Measurement-driven
 threshold tuning plugs into the existing `cost_aware` policy hook
 (PR #1559) when desktop-environment profiling lands.
+
+### Aggregate-frame gate (correctness, not optimisation)
+
+Tier 2 only forks when the calling context is a forkable aggregate
+frame — `findall`, `bagof`, `aggregate_all`, `sum`, `set`. Outside
+such a frame, the emitted wrapper falls back to sequential
+`wrap_segment` behaviour. Matches Haskell's
+`currentAggMergeStrategy` check in `forkOrSequential` exactly.
+
+This is **not an optimisation** — it is the correctness requirement
+that keeps `next_solution/1` enumeration working. Consider a
+≥3-clause pure predicate `parent/2`:
+
+- Called via `parent("a", Y)` + `next_solution/1` loop: no aggregate
+  frame on the CP stack → sequential `try_me_else` chain → every
+  solution is reachable by backtracking, same as today.
+- Called inside `findall(Y, parent("a", Y), Ys)`: aggregate frame
+  present → branches run in parallel, each runs to full exhaustion,
+  results merged by the aggregate. Caller gets the same solution
+  multiset a sequential implementation would produce.
+
+Without the gate, a direct-enumeration caller would hit
+`reduce_while + halt` first-win semantics and silently lose
+non-winning solutions. **That bug is the reason this gate is a
+precondition, not deferred work.**
+
+Requires runtime support — new predicates in
+`wam_elixir_target.pl`:
+
+- `WamRuntime.in_forkable_aggregate_frame?(state)` — CP-stack walk
+  looking for an aggregate-frame marker.
+- `WamRuntime.merge_into_aggregate(state, branch_results)` — feeds
+  fully-exhausted branch outputs into the surrounding aggregate
+  accumulator.
+
+Both land in the Tier-2 implementation PR; the WAM target doesn't
+have aggregate-frame markers yet, so building them is part of Tier-2
+scope.
+
+### Nested-fork suppression (prevent exponential spark explosion)
+
+Haskell's `runBranchForFork` documents this explicitly:
+
+> Suppress nested forks: redirect Par* to sequential equivalents
+> inside a branch. Only the OUTERMOST `ParTryMeElse` actually forks;
+> inner recursive calls use sequential choice points. Without this,
+> recursion depth D with branching factor B creates B^D nested
+> `parMap` sparks — exponential explosion.
+
+Elixir equivalent: `branch_state` gets `parallel_depth:` (0 at the
+outermost fork, +1 inside a branch). `par_wrap_segment`'s emitted
+wrapper checks the field — if `parallel_depth > 0`, emit sequential
+`wrap_segment` instead of forking again. Only the outermost
+aggregate's branches actually parallelise; recursive child calls
+stay sequential inside each branch.
 
 ### Cut semantics (decision: runtime barrier, not static filter)
 
@@ -211,33 +280,67 @@ aggregate collection will produce solutions that cut would have
 pruned under sequential evaluation. `forkMinBranches = 3` excludes
 the common cases (2-clause greens like `max/3`); the remaining
 divergence is accepted as the cost of Tier 2, same as Haskell.
+Called outside an aggregate (i.e. via direct `run/1` +
+`next_solution/1` enumeration), the predicate stays sequential via
+the aggregate-frame gate and cut semantics are unchanged from
+Tier 3.
 
 ### Shape of generated Tier-2 code
 
 ```elixir
 defp clause_main(state) do
-  # Pin cut barrier at fork — !/0 inside branches can only prune
-  # branch-local CPs, not sibling branches or the parent.
-  branch_state = %{state | cut_point: state.choice_points}
+  # Gate 1: only fork inside a forkable aggregate frame. A direct
+  # run/1 + next_solution/1 enumeration call has no aggregate frame
+  # on the CP stack → falls back to sequential (Tier 3 behaviour).
+  cond do
+    not WamRuntime.in_forkable_aggregate_frame?(state) ->
+      clause_main_sequential(state)
 
-  branches = [&clause_main_impl/1, &clause_k1_impl/1, &clause_k2_impl/1]
+    # Gate 2: suppress nested forks inside an already-forked branch.
+    # Recursion depth D × branching factor B otherwise creates B^D
+    # concurrent tasks. Inner calls use sequential CPs via the same
+    # par_wrap_segment check.
+    Map.get(state, :parallel_depth, 0) > 0 ->
+      clause_main_sequential(state)
 
-  branches
-  |> Task.async_stream(& &1.(branch_state),
-                       on_timeout: :kill_task,
-                       ordered: false,
-                       max_concurrency: System.schedulers_online())
-  |> Enum.reduce_while(:fail, fn
-    {:ok, {:ok, _} = ok}, _acc -> {:halt, ok}
-    _, acc -> {:cont, acc}
-  end)
+    true ->
+      # Pin cut barrier at fork — !/0 inside branches can only prune
+      # branch-local CPs, not sibling branches or the parent.
+      # Increment parallel_depth so child calls use sequential CPs.
+      branch_state = %{state |
+        cut_point: state.choice_points,
+        parallel_depth: Map.get(state, :parallel_depth, 0) + 1
+      }
+
+      branches = [&clause_main_impl/1, &clause_k1_impl/1, &clause_k2_impl/1]
+
+      # Each branch runs to full exhaustion, collecting every solution
+      # it can produce. Results are merged into the surrounding
+      # aggregate's accumulator (the caller was inside findall /
+      # bagof / aggregate_all).
+      branch_results =
+        branches
+        |> Task.async_stream(& &1.(branch_state),
+                             on_timeout: :kill_task,
+                             ordered: false,
+                             max_concurrency: System.schedulers_online())
+        |> Enum.flat_map(fn
+          {:ok, solutions} when is_list(solutions) -> solutions
+          _ -> []
+        end)
+
+      WamRuntime.merge_into_aggregate(state, branch_results)
+  end
 end
 ```
 
 `clause_main_impl/1`, `clause_k1_impl/1`, etc. are the
-currently-generated per-clause `defp`s, unchanged. The outer wrapper
-swaps from sequential `try/catch` to parallel fan-out + first-win
-with the pinned cut barrier.
+currently-generated per-clause `defp`s, unchanged. `clause_main_sequential/1`
+is the pre-Tier-2 `wrap_segment`-produced body — Tier 2 emits both
+forms so the runtime gates can choose. The outer wrapper adds three
+gates (aggregate frame, nesting depth, static preconditions already
+checked at emit time) around the parallel fan-out + cut-barrier
+pinning + full-exhaustion collection.
 
 ### Why BEAM processes specifically
 
@@ -253,32 +356,26 @@ with the pinned cut barrier.
 
 The following must hold before Tier 2 is a reasonable next PR:
 
-1. A concrete Elixir-side consumer of `purity_certificate.pl` exists
-   (even if only the wrapper predicate). Any target that wants Tier 2
-   needs to wire the certificate lookup.
-2. The CPS `throw/catch` semantics interacting with `Task.async_stream`
-   need verification: a branch that throws `{:fail, state}` must be
-   captured as "this alternative failed" without killing sibling
-   tasks. The `{:exit, reason}` vs `{:ok, value}` dichotomy of
-   `async_stream` maps onto this cleanly but needs testing.
+1. **Elixir-side purity-certificate consumer.** Import the module,
+   resolve `analyze_predicate_purity/2` at classify time, thread the
+   verdict into the `par_wrap_segment/3` gate.
+2. **Aggregate-frame support in the runtime.**
+   `WamRuntime.in_forkable_aggregate_frame?/1` (CP-stack walk looking
+   for an aggregate marker) plus `WamRuntime.merge_into_aggregate/2`
+   (feeds fully-exhausted branch outputs into the surrounding
+   aggregate accumulator). The WAM target does not have aggregate
+   markers yet; building them is part of Tier-2 scope.
+3. **Nested-fork suppression plumbing.** `parallel_depth` field on
+   `WamState` (or equivalent), incremented when fanning out,
+   consulted by `par_wrap_segment`'s emitted wrapper.
+4. **CPS `throw/catch` semantics verified under `Task.async_stream`.**
+   A branch that throws `{:fail, state}` must be captured as "this
+   alternative failed" without killing sibling tasks. The
+   `{:exit, reason}` vs `{:ok, value}` dichotomy of `async_stream`
+   maps onto this cleanly but needs a focused test.
 
 ### Deferred
 
-- **Aggregate-context runtime gate.** Haskell's `forkOrSequential`
-  falls back to sequential `TryMeElse` unless the current frame has
-  a forkable aggregate strategy (`MergeFindall`, `MergeSum`,
-  `MergeSet`). That check is runtime in Haskell because `ParTryMeElse`
-  fires in every call site of the interpreter loop. Elixir is a
-  lowered emitter — `par_wrap_segment` decides *per predicate at emit
-  time*, not per call site at runtime — so the aggregate-frame check
-  would require new runtime infrastructure
-  (`WamRuntime.in_forkable_aggregate_frame?/1` plus CP stack
-  inspection). `Enum.reduce_while` in the emitted wrapper already
-  provides once-semantics (`:halt` after first `{:ok, _}`), so the
-  worst case under Tier 2 without this gate is "briefly spun up
-  sibling tasks that get killed by `:kill_task` when the first
-  succeeds." Meaningful optimisation but safe to defer; add once
-  Tier 2 lands and measurement shows idle siblings are real overhead.
 - **Measurement.** Whether Tier 2 actually pays on realistic Elixir
   workloads requires runtime profiling — desktop-environment work.
 - **Cost-model knob for "worth parallelizing" beyond min-branches.**
@@ -286,6 +383,11 @@ The following must hold before Tier 2 is a reasonable next PR:
   5-clause predicate probed 10k times clearly does. Secondary
   threshold plugs into the same `cost_aware` policy hook
   (PR #1559) once measurement infrastructure exists.
+- **Richer aggregate strategies.** Haskell's `MergeFindall`,
+  `MergeSum`, `MergeSet`, etc. are distinct merge modes. The initial
+  Elixir implementation can ship with findall-style list collection
+  only and add `sum`/`set` specialisations later without changing
+  the gate shape.
 
 ## Relation to existing UnifyWeaver documents
 
