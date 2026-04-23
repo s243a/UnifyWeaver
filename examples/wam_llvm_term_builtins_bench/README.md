@@ -195,23 +195,29 @@ broken aliasing, so `run_loop → false`.
      currently unused by the main target code — available for future
      Ref-based work.
 
-  3. Ref-based `put_variable` + binding-site migration: **attempted
-     and reverted.** Converting put_variable to allocate a shared heap
-     cell and all binding sites to use the deref/bind helpers caused
-     `bench_sum_medium` / `bench_sum_big` to FAIL (while
-     `bench_sum_small` still worked — the failure showed up only when
-     sum_ints recursed through a nested compound argument, i.e., clause
-     2 called a second time down the tree). Root cause not fully
-     diagnosed in this PR; likely interaction between the new
-     `@wam_trail_heap_binding` encoding and some heap-cell survival
-     across backtrack from the `integer/1` check in sum_ints clause 1.
-     Also the choice-point struct does not save the heap pointer, so
-     put_variable's heap-push is not rewound on backtrack — another
-     latent gap that the Ref scheme makes visible.
+  3. `%ChoicePoint` extended with `saved_heap_top` (field 11), and
+     every CP-push site (`try_me_else`, `begin_aggregate`,
+     `wam_foreign_iter_init`) now saves it. `backtrack` rewinds
+     `heap_top` to the saved value after `unwind_trail`, so
+     put_variable heap pushes from a failed alternative do not leak
+     into the next clause's heap region. **Landed.**
 
-The structural-equals + helper landing here is still useful: when the
-Ref-based put_variable eventually lands, it won't need to chase the
-shallow-equals regression, and the deref/bind helpers are ready.
+  4. Ref-based `put_variable` + binding-site migration: **attempted
+     and reverted (again).** With (3) in place, the symptom changed
+     from "wrong answer" to "segfault on the first sum_small call",
+     deterministic and immediate. Root cause still not fully
+     diagnosed. Probable contributor: each reg-bind now produces
+     *two* trail entries (one via caller's `wam_trail_binding`, one
+     from `wam_bind_reg`'s heap-side trailing); the caller's entry is
+     a no-op on unwind (reg still holds Ref{H}) but it still consumes
+     a slot. Paired with deep recursion, the 256-entry trail buffer
+     may overflow with no bounds check. Out of scope for this PR.
+
+The structural-equals, Ref-aware helpers, and now CP-heap-top
+rewinding are the three pieces the future put_variable Ref fix will
+need. Two more pieces remain: trail-capacity growth (or tighter
+trailing) and a clean diagnosis of the segfault under the current
+helpers.
 
 ### `put_constant` tag fix (landed in this PR)
 

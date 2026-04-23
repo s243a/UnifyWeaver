@@ -53,7 +53,8 @@
     i32,                                   ; 7: agg_return_pc
     i8*,                                   ; 8: foreign_results (ptr to %Value array)
     i32,                                   ; 9: foreign_count (total results)
-    i32                                    ; 10: foreign_cursor (next to yield)
+    i32,                                   ; 10: foreign_cursor (next to yield)
+    i32                                    ; 11: saved heap_top — rewound on backtrack
 }
 
 ; === WAM State ===
