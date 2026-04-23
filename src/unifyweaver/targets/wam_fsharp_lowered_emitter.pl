@@ -266,8 +266,7 @@ emit_instrs_lm_fs([pc(_PC, try_me_else(ElseLabelStr))|Rest], SV, Ind, FP, LM) :-
 %       gets the warning and can fix the upstream WAM generator).
 emit_instrs_lm_fs([pc(PC, execute(PredStr))|Rest], SV, Ind, FP, _LM) :-
     (   Rest \= []
-    ->  format("~w// WARNING: execute(~w) is not the last instruction — "
-               "tail-call semantics violated; ~w instruction(s) unreachable~n",
+    ->  format("~w// WARNING: execute(~w) is not the last instruction — tail-call semantics violated; ~w instruction(s) unreachable~n",
                [Ind, PredStr, Rest])
     ;   true
     ),
@@ -339,7 +338,9 @@ emit_ite_block_fs([pc(PC, Instr)], SV, Ind, FP) :-
     emit_one_fs(Instr, PC, SV, SVout, Ind, FP),
     atom_concat(Ind, "    ", IndInner),
     (   is_terminal_instr_fs(Instr) -> true
-    ;   is_match_instr_fs(Instr)    -> format("~wSome ~w~n", [IndInner, SVout])
+    ;   is_match_instr_fs(Instr)    ->
+        format("~wSome ~w~n", [IndInner, SVout]),
+        format("~w| None -> None~n", [Ind])
     ;   format("~wSome ~w~n", [Ind, SVout])
     ).
 emit_ite_block_fs([pc(PC, Instr)|Rest], SV, Ind, FP) :-
@@ -452,8 +453,8 @@ emit_one_fs(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     % Bug fix: Atom "" was a silent wrong default; use failwith so the runtime
     % surfaces a register-not-bound error immediately rather than producing
     % a spurious Atom "" binding that propagates silently.
-    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (derefVar ~w.WsBindings (Map.tryFind ~w ~w.WsRegs |> Option.defaultWith (fun _ -> failwith \"GetVariable: source register not bound\"))) ~w.WsRegs }~n",
-           [I, SVout, SV, Xn, SV, Ai, SV, SV]).
+    format("~wlet ~w = putReg ~w (derefVar ~w.WsBindings (getReg ~w ~w |> Option.defaultWith (fun _ -> failwith \"GetVariable: source register not bound\"))) ~w~n",
+           [I, SVout, Xn, SV, Ai, SV, SV]).
 
 % GetConstant C Ai — can fail, delegate to step
 emit_one_fs(get_constant(CStr, AiStr), PC, SV, SVout, I, _FP) :-
@@ -473,8 +474,8 @@ emit_one_fs(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
 emit_one_fs(put_value(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (getReg ~w ~w |> Option.defaultWith (fun _ -> failwith \"PutValue: source register not bound\")) ~w.WsRegs }~n",
-           [I, SVout, SV, Ai, Xn, SV, SV]).
+    format("~wlet ~w = putReg ~w (getReg ~w ~w |> Option.defaultWith (fun _ -> failwith \"PutValue: source register not bound\")) ~w~n",
+           [I, SVout, Ai, Xn, SV, SV]).
 
 % PutVariable Xn Ai — always succeeds, inline (creates fresh Unbound)
 emit_one_fs(put_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
@@ -482,15 +483,15 @@ emit_one_fs(put_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     fresh_sv_fs(SV, SVout),
     format("~wlet vid_~w = ~w.WsVarCounter~n", [I, SVout, SV]),
     format("~wlet var_~w = Unbound vid_~w~n", [I, SVout, SVout]),
-    format("~wlet ~w = putReg ~w var_~w { ~w with WsRegs = Map.add ~w var_~w ~w.WsRegs; WsVarCounter = ~w.WsVarCounter + 1 }~n",
-           [I, SVout, Xn, SVout, SV, Ai, SVout, SV, SV]).
+    format("~wlet ~w = putReg ~w var_~w (putReg ~w var_~w { ~w with WsVarCounter = ~w.WsVarCounter + 1 })~n",
+           [I, SVout, Xn, SVout, Ai, SVout, SV, SV]).
 
 % PutConstant C Ai — always succeeds, inline
 emit_one_fs(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
     val_fs(CStr, FC), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
-    format("~wlet ~w = { ~w with WsRegs = Map.add ~w (~w) ~w.WsRegs }~n",
-           [I, SVout, SV, Ai, FC, SV]).
+    format("~wlet ~w = putReg ~w (~w) ~w~n",
+           [I, SVout, Ai, FC, SV]).
 
 % PutStructure, PutList, SetValue, SetConstant — delegate to step
 emit_one_fs(put_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-

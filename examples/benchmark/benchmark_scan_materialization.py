@@ -3,28 +3,32 @@
 Measure generic scan-family materialization planning in the C# query runtime.
 
 This harness exercises representative scan-heavy plans against the benchmark
-TSVs using streamed relation sources inside a temporary C# project:
+TSVs using preloaded, streamed, binary-artifact, or prebuilt binary-artifact
+relation sources inside a temporary C# project:
 
 - `scan`: plain `RelationScanNode`
+- `bound_scan`: parameterized `RelationScanNode` over one bound column
 - `pattern`: `PatternScanNode` with a bound category
 - `join`: `KeyJoinNode` over article/category and category-parent scans
+- `selective_join`: parameter seed joined against category-parent
 - `negation`: unary negation over scanned support relations
 - `aggregate`: grouped count aggregate over a scanned relation
 
 It is intended as a focused validation tool for the scan materialization
-planner rather than a cross-target benchmark.
+planner rather than a cross-target benchmark. It can also exercise a simple
+source-mode planner via `--source-modes auto,...`.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +65,17 @@ class Program
         _ => ScanRelationRetentionStrategy.Auto,
     };
 
+    static long CountDataRows(string path)
+    {
+        long count = 0;
+        foreach (var _ in File.ReadLines(path).Skip(1))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     static List<string[]> ReadDelimitedRows(string path, int expectedWidth)
     {
         return File.ReadLines(path)
@@ -68,15 +83,6 @@ class Program
             .Select(line => line.Split('	'))
             .Where(parts => parts.Length == expectedWidth)
             .ToList();
-    }
-
-    static void RegisterBinaryRelation(InMemoryRelationProvider provider, PredicateId predicate, string path)
-    {
-        provider.RegisterDelimitedSource(predicate, new DelimitedRelationSource(path, '	', 1, 2));
-        foreach (var parts in ReadDelimitedRows(path, 2))
-        {
-            provider.AddFact(predicate, parts[0], parts[1]);
-        }
     }
 
     static string SummarizeStrategies(QueryExecutionTrace trace, Func<QueryStrategyTrace, bool> predicate)
@@ -114,14 +120,26 @@ class Program
         var articlePath = args[2];
         var traceEnabled = Environment.GetEnvironmentVariable("UNIFYWEAVER_BENCH_TRACE") == "1";
         var scanStrategy = ParseScanStrategy(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_RETENTION_STRATEGY") ?? "auto");
+        if (!RelationSourceModePolicy.TryParse(Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE"), out var configuredSourceMode))
+        {
+            Console.Error.WriteLine($"Unknown UNIFYWEAVER_SCAN_SOURCE_MODE: {Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_SOURCE_MODE")}");
+            return 1;
+        }
 
-        var provider = new InMemoryRelationProvider();
+        var articleRowCount = CountDataRows(articlePath);
+        var edgeRowCount = CountDataRows(edgePath);
+        var sourceMode = RelationSourceModePolicy.ResolveScanBenchmarkMode(configuredSourceMode, mode, articleRowCount, edgeRowCount);
+
+        var artifactDir = Environment.GetEnvironmentVariable("UNIFYWEAVER_SCAN_ARTIFACT_DIR");
+        var configuredProvider = new ConfiguredDelimitedRelationProvider(sourceMode, artifactDir);
+        var memoryProvider = configuredProvider.MemoryProvider;
+        IRelationProvider provider = configuredProvider.Provider;
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
 
-        RegisterBinaryRelation(provider, edgeId, edgePath);
-        RegisterBinaryRelation(provider, articleId, articlePath);
+        configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(edgePath, '	', 1, 2), $"{edgeId.Name}_{edgeId.Arity}");
+        configuredProvider.RegisterBinaryRelation(articleId, new DelimitedRelationSource(articlePath, '	', 1, 2), $"{articleId.Name}_{articleId.Arity}");
 
         var articleRows = ReadDelimitedRows(articlePath, 2);
         var patternCategory = articleRows.Count > 0
@@ -142,7 +160,7 @@ class Program
 
         try
         {
-            RegisterBinaryRelation(provider, blockedId, blockedPath);
+            configuredProvider.RegisterBinaryRelation(blockedId, new DelimitedRelationSource(blockedPath, '	', 1, 2), $"{blockedId.Name}_{blockedId.Arity}");
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -155,6 +173,10 @@ class Program
                 "scan" => new QueryPlan(
                     scanOutId,
                     new RelationScanNode(articleId)),
+                "bound_scan" => new QueryPlan(
+                    patternOutId,
+                    new RelationScanNode(articleId),
+                    InputPositions: new int[] { 1 }),
                 "pattern" => new QueryPlan(
                     patternOutId,
                     new PatternScanNode(articleId, new object[] { Wildcard.Value, patternCategory })),
@@ -168,6 +190,16 @@ class Program
                         2,
                         2,
                         4)),
+                "selective_join" => new QueryPlan(
+                    joinOutId,
+                    new KeyJoinNode(
+                        new ParamSeedNode(new PredicateId("category_seed", 1), new int[] { 0 }, 1),
+                        new RelationScanNode(edgeId),
+                        new int[] { 0 },
+                        new int[] { 0 },
+                        1,
+                        2,
+                        3)),
                 "negation" => new QueryPlan(
                     negationOutId,
                     new NegationNode(
@@ -193,10 +225,15 @@ class Program
                 ScanRelationRetentionStrategy: scanStrategy));
 
             var stopwatch = Stopwatch.StartNew();
-            var rows = executor.Execute(plan, trace: trace).ToList();
+            var parameters = mode == "bound_scan" || mode == "selective_join"
+                ? new object[][] { new object[] { patternCategory } }
+                : null;
+            var rows = executor.Execute(plan, parameters: parameters, trace: trace).ToList();
             stopwatch.Stop();
 
             Console.Error.WriteLine($"mode={mode}");
+            Console.Error.WriteLine($"source_mode={RelationSourceModePolicy.ToConfigValue(configuredSourceMode)}");
+            Console.Error.WriteLine($"resolved_source_mode={RelationSourceModePolicy.ToConfigValue(sourceMode)}");
             Console.Error.WriteLine($"scan_retention_strategy_setting={scanStrategy}");
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
@@ -216,6 +253,7 @@ class Program
                     SummarizeStrategies(
                         trace,
                         strategy => strategy.Strategy.StartsWith("KeyJoin", StringComparison.Ordinal) ||
+                                    strategy.Strategy.StartsWith("IndexedRelationProvider", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanRelationRetention", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanMaterializationPlan", StringComparison.Ordinal)));
 
@@ -227,6 +265,13 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
+            if (sourceMode != RelationSourceMode.ArtifactPrebuilt)
+            {
+                if (!string.IsNullOrWhiteSpace(configuredProvider.ArtifactDirectory))
+                {
+                    try { Directory.Delete(configuredProvider.ArtifactDirectory, recursive: true); } catch { }
+                }
+            }
         }
     }
 }
@@ -237,6 +282,8 @@ class Program
 class BenchResult:
     scale: str
     mode: str
+    source_mode: str
+    resolved_source_mode: str
     strategy: str
     times: list[float]
     stderr: str
@@ -246,10 +293,14 @@ class BenchResult:
         return statistics.median(self.times)
 
 
+RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scales", default="300,10k")
     parser.add_argument("--modes", default="scan,pattern,join,negation,aggregate")
+    parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
@@ -294,32 +345,63 @@ def parse_metrics(stderr: str) -> dict[str, str]:
     return metrics
 
 
-def benchmark_mode(command: list[str], scale: str, mode: str, strategy: str, repetitions: int) -> BenchResult:
+def select_planner_summary(metrics: dict[str, str]) -> str:
+    operator = metrics.get("scan_operator_strategies", "")
+    if "KeyJoinIndexedRelationProvider" in operator or "IndexedRelationProviderLookup" in operator:
+        return operator
+    return metrics.get("scan_planner_strategies", "") or operator
+
+
+def benchmark_mode(
+    command: list[str],
+    scale: str,
+    mode: str,
+    source_mode: str,
+    strategy: str,
+    repetitions: int,
+) -> BenchResult:
     scale_dir = BENCH_DIR / scale
     edge_path = scale_dir / "category_parent.tsv"
     article_path = scale_dir / "article_category.tsv"
     env = os.environ.copy()
     env["UNIFYWEAVER_BENCH_TRACE"] = "1"
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
+    env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
+    if source_mode in {"artifact-prebuilt", "auto"}:
+        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 
     times: list[float] = []
     stderr = ""
     if repetitions > 0:
         run(command + [mode, str(edge_path), str(article_path)], env=env)
     for _ in range(repetitions):
-        started = time.perf_counter()
         result = run(command + [mode, str(edge_path), str(article_path)], env=env)
-        elapsed = time.perf_counter() - started
-        times.append(elapsed)
         stderr = result.stderr
+        metrics = parse_metrics(stderr)
+        elapsed_ms = metrics.get("elapsed_ms")
+        elapsed = float(elapsed_ms) / 1000.0 if elapsed_ms is not None else 0.0
+        times.append(elapsed)
+    metrics = parse_metrics(stderr)
+    resolved_source_mode = metrics.get("resolved_source_mode", source_mode)
 
-    return BenchResult(scale=scale, mode=mode, strategy=strategy, times=times, stderr=stderr)
+    return BenchResult(
+        scale=scale,
+        mode=mode,
+        source_mode=source_mode,
+        resolved_source_mode=resolved_source_mode,
+        strategy=strategy,
+        times=times,
+        stderr=stderr,
+    )
 
 
 def main() -> int:
     args = parse_args()
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
     modes = [part.strip() for part in args.modes.split(",") if part.strip()]
+    source_modes = [part.strip() for part in args.source_modes.split(",") if part.strip()]
     strategies = [part.strip() for part in args.strategies.split(",") if part.strip()]
 
     temp_ctx = None
@@ -334,32 +416,58 @@ def main() -> int:
         results: list[BenchResult] = []
         for scale in scales:
             for mode in modes:
-                for strategy in strategies:
-                    results.append(benchmark_mode(command, scale, mode, strategy, args.repetitions))
+                for source_mode in source_modes:
+                    for strategy in strategies:
+                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	strategy	median_s	min_s	max_s	rows	planner	phases")
-        grouped: dict[tuple[str, str], dict[str, BenchResult]] = {}
-        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.strategy)):
-            grouped.setdefault((result.scale, result.mode), {})[result.strategy] = result
+        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
+        grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
+        by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
+        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
+            grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
+            if result.strategy == "auto":
+                by_source_mode[(result.scale, result.mode, result.source_mode)] = result
             metrics = parse_metrics(result.stderr)
-            planner = metrics.get("scan_planner_strategies", "")
+            planner = select_planner_summary(metrics)
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
-                f"{result.scale}	{result.mode}	{result.strategy}	{result.median:.3f}	"
+                f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
                 f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{phases}"
             )
 
-        for scale, mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1])):
-            by_strategy = grouped[(scale, mode)]
+        for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
+            by_strategy = grouped[(scale, mode, source_mode)]
             auto = by_strategy.get("auto")
             best = min(by_strategy.values(), key=lambda item: item.median)
             if auto is not None:
-                print(f"{scale}	{mode}	best_strategy	{best.strategy}")
+                print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
                 ratio = auto.median / best.median if best.median else float('inf')
-                print(f"{scale}	{mode}	auto_vs_best	{ratio:.2f}x")
+                print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
                 auto_metrics = parse_metrics(auto.stderr)
-                print(f"{scale}	{mode}	auto_planner	{auto_metrics.get('scan_planner_strategies', '')}")
+                auto_planner = select_planner_summary(auto_metrics)
+                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
+
+        if "auto" in source_modes:
+            for scale in scales:
+                for mode in modes:
+                    auto = by_source_mode.get((scale, mode, "auto"))
+                    if auto is None:
+                        continue
+
+                    concrete = [
+                        result
+                        for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                        if result_scale == scale and result_mode == mode and result_source_mode != "auto"
+                    ]
+                    if not concrete:
+                        continue
+
+                    best = min(concrete, key=lambda item: item.median)
+                    ratio = auto.median / best.median if best.median else float("inf")
+                    print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
+                    print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
+                    print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)

@@ -4,6 +4,13 @@
 
 :- use_module('../src/unifyweaver/targets/wam_elixir_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
+:- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
+              [lower_predicate_to_elixir/4, classify_predicate/4,
+               extract_facts/3, extract_arg1_index/3,
+               tier2_purity_eligible/3]).
+% For Tier-2 purity-gate tests — user-annotation producer reads
+% clause_body_analysis:order_independent/1 dynamic facts.
+:- use_module('../src/unifyweaver/core/clause_body_analysis').
 
 :- dynamic test_failed/0.
 
@@ -172,6 +179,576 @@ test_functional_run_loop :-
     ;   fail_test(Test, 'run loop not recursive')
     ).
 
+%% Phase A fact-shape classification tests
+
+:- dynamic
+    phase_a_test:small_fact/2,
+    phase_a_test:big_fact/2,
+    phase_a_test:rule/2,
+    phase_a_test:variable_head/1.
+
+phase_a_fixture_setup :-
+    % Small fact-only predicate (4 clauses).
+    retractall(phase_a_test:small_fact(_, _)),
+    forall(member(X-Y, [a-1, b-2, c-3, d-4]),
+           assertz(phase_a_test:small_fact(X, Y))),
+    % Big fact-only predicate (150 clauses — above default threshold of 100).
+    retractall(phase_a_test:big_fact(_, _)),
+    forall(between(1, 150, I), (
+        atom_number(K, I),
+        assertz(phase_a_test:big_fact(K, I))
+    )),
+    % Rule-bearing predicate (non-fact-only).
+    retractall(phase_a_test:rule(_, _)),
+    assertz((phase_a_test:rule(X, Y) :- phase_a_test:small_fact(X, Y))),
+    % Variable-head fact (for first_arg_groundness=all_variable).
+    retractall(phase_a_test:variable_head(_)),
+    assertz((phase_a_test:variable_head(_X))).
+
+compile_and_segments(PredArity, Segments) :-
+    wam_target:compile_predicate_to_wam(phase_a_test:PredArity, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments).
+
+test_classify_small_fact_only :-
+    Test = 'Phase A: small fact-only predicate → compiled (below threshold)',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [],
+                       fact_shape_info(NCl, FactOnly, G, Layout)),
+    (   NCl == 4, FactOnly == true, G == all_ground, Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, classified(NCl, FactOnly, G, Layout))
+    ).
+
+test_classify_big_fact_only :-
+    Test = 'Phase A: big fact-only predicate → inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [],
+                       fact_shape_info(NCl, FactOnly, _G, Layout)),
+    (   NCl == 150, FactOnly == true, Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, classified(NCl, FactOnly, Layout))
+    ).
+
+test_classify_rule :-
+    Test = 'Phase A: rule-bearing predicate → compiled (not fact-only)',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs, [],
+                       fact_shape_info(_NCl, FactOnly, _G, Layout)),
+    (   FactOnly == false, Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, classified(FactOnly, Layout))
+    ).
+
+test_classify_variable_head :-
+    Test = 'Phase A: all-variable first arg → first_arg=all_variable',
+    phase_a_fixture_setup,
+    compile_and_segments(variable_head/1, Segs),
+    classify_predicate(variable_head/1, Segs, [],
+                       fact_shape_info(_, _, G, _)),
+    (   G == all_variable
+    ->  pass(Test)
+    ;   fail_test(Test, groundness(G))
+    ).
+
+test_classify_user_override_layout :-
+    Test = 'Phase A: user fact_layout/2 override wins over default',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    Opts = [fact_layout(small_fact/2, external_source(tsv("/tmp/x.tsv")))],
+    classify_predicate(small_fact/2, Segs, Opts,
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = external_source(_)
+    ->  pass(Test)
+    ;   fail_test(Test, layout(Layout))
+    ).
+
+test_classify_user_override_threshold :-
+    Test = 'Phase A: fact_count_threshold(1) promotes small fact set to inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [fact_count_threshold(1)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, layout(Layout))
+    ).
+
+test_shape_comment_in_generated_module :-
+    Test = 'Phase A: generated module carries fact-shape comment',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, 'Fact-shape classification'),
+        sub_string(Code, _, _, _, 'clauses=150'),
+        sub_string(Code, _, _, _, 'fact_only=true'),
+        sub_string(Code, _, _, _, 'layout=inline_data')
+    ->  pass(Test)
+    ;   fail_test(Test, 'comment missing or wrong content')
+    ).
+
+test_phase_a_preserves_compiled_output :-
+    Test = 'Phase A: small predicate with default threshold uses compiled defps',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    lower_predicate_to_elixir(small_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, 'defp clause_'),
+        sub_string(Code, _, _, _, 'def run(%WamRuntime.WamState{}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected compiled-shape output not present')
+    ).
+
+%% Phase B inline_data emission tests
+
+test_extract_facts_simple :-
+    Test = 'Phase B: extract_facts yields tuple list for fact-only predicate',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_facts(Segments, 2, Literal),
+    (   sub_string(Literal, _, _, _, '{"a", "1"}'),
+        sub_string(Literal, _, _, _, '{"d", "4"}')
+    ->  pass(Test)
+    ;   fail_test(Test, Literal)
+    ).
+
+test_phase_b_emits_inline_data_when_chosen :-
+    Test = 'Phase B: inline_data layout emits @facts and no defp clauses',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    % Phase C (PR #1525) added first-arg indexing: the emitted `run/1`
+    % picks between `@facts` (unbound arg1) and the `@facts_by_arg1`
+    % indexed subset, binds the result to a local `facts` variable,
+    % then streams that. Assert the indexed shape, not the pre-Phase-C
+    % direct `stream_facts(state, @facts, 2)` call.
+    (   sub_string(Code, _, _, _, '@facts ['),
+        sub_string(Code, _, _, _, 'WamRuntime.stream_facts(state, facts, 2)'),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected inline_data shape missing or leaked defp')
+    ).
+
+test_phase_b_variable_head_becomes_sentinel :-
+    Test = 'Phase B: variable head arg emits :_var sentinel',
+    phase_a_fixture_setup,
+    % Force variable_head/1 to inline_data via low threshold.
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    lower_predicate_to_elixir(variable_head/1, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    (   sub_string(Code, _, _, _, ':_var'),
+        sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'variable_head did not lower to :_var sentinel')
+    ).
+
+test_phase_b_fallback_on_unextractable :-
+    Test = 'Phase B: unextractable fact falls back to compiled (safe default)',
+    phase_a_fixture_setup,
+    % Inject a compound-head fact; extraction should fail and fall back.
+    retractall(phase_a_test:compound_head(_)),
+    assertz((phase_a_test:compound_head(foo(1, 2)))),
+    wam_target:compile_predicate_to_wam(phase_a_test:compound_head/1, [], WamCode),
+    % Force inline_data via override, but extraction should fail and
+    % lower_predicate_to_elixir/4 falls through to compiled.
+    lower_predicate_to_elixir(compound_head/1, WamCode,
+                              [module_name('TestMod'),
+                               fact_layout(compound_head/1, inline_data([]))], Code),
+    (   sub_string(Code, _, _, _, 'defp clause_'),
+        \+ sub_string(Code, _, _, _, '@facts [')
+    ->  pass(Test)
+    ;   fail_test(Test, 'expected fallback to compiled did not occur')
+    ).
+
+%% WAM constant quoting tests
+
+:- dynamic phase_a_test:comma_atom/2.
+
+test_quote_wam_constant_plain :-
+    Test = 'Quoting: identifier-like atom passes through unquoted',
+    wam_target:quote_wam_constant('foo_bar_123', Str),
+    (   Str == "foo_bar_123"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_quote_wam_constant_comma :-
+    Test = 'Quoting: atom containing comma is single-quoted',
+    wam_target:quote_wam_constant('Has,comma', Str),
+    (   Str == "'Has,comma'"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_quote_wam_constant_escape :-
+    Test = 'Quoting: atom containing single-quote is escaped',
+    wam_target:quote_wam_constant('it\'s', Str),
+    (   Str == "'it\\'s'"
+    ->  pass(Test)
+    ;   fail_test(Test, Str)
+    ).
+
+test_tokenize_unquoted :-
+    Test = 'Tokenizer: plain line splits on spaces and commas',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant foo, A1", Tokens),
+    (   Tokens == ["get_constant", "foo", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_tokenize_quoted_atom_with_comma :-
+    Test = 'Tokenizer: quoted atom containing comma stays one token',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'Has,comma', A1", Tokens),
+    (   Tokens == ["get_constant", "Has,comma", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_tokenize_quoted_atom_with_escape :-
+    Test = 'Tokenizer: quoted atom with \\\' escape unquotes to literal',
+    wam_elixir_lowered_emitter:tokenize_wam_line("    get_constant 'it\\'s', A1", Tokens),
+    (   Tokens == ["get_constant", "it's", "A1"]
+    ->  pass(Test)
+    ;   fail_test(Test, Tokens)
+    ).
+
+test_round_trip_comma_atom :-
+    Test = 'Round trip: atom with comma survives WAM-text -> tokenizer',
+    retractall(phase_a_test:comma_atom(_, _)),
+    assertz((phase_a_test:comma_atom('Has,comma', value))),
+    wam_target:compile_predicate_to_wam(phase_a_test:comma_atom/2, [], WamCode),
+    lower_predicate_to_elixir(comma_atom/2, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    % Should reach inline_data and emit the atom as an Elixir string.
+    (   sub_string(Code, _, _, _, '{"Has,comma", "value"}'),
+        \+ sub_string(Code, _, _, _, 'raw:')
+    ->  pass(Test)
+    ;   fail_test(Test, 'comma-atom round-trip failed')
+    ).
+
+%% Phase C first-argument indexing tests
+
+test_extract_arg1_index_ground :-
+    Test = 'Phase C: all-ground first arg → indexed map literal',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_arg1_index(Segments, 2, IndexResult),
+    (   IndexResult = indexed(Lit),
+        sub_string(Lit, _, _, _, '"a" => [{"a", "1"}]'),
+        sub_string(Lit, _, _, _, '"d" => [{"d", "4"}]')
+    ->  pass(Test)
+    ;   fail_test(Test, IndexResult)
+    ).
+
+test_extract_arg1_index_variable :-
+    Test = 'Phase C: variable first arg → no_index',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    extract_arg1_index(Segments, 1, IndexResult),
+    (   IndexResult == no_index
+    ->  pass(Test)
+    ;   fail_test(Test, IndexResult)
+    ).
+
+test_phase_c_indexed_module_emission :-
+    Test = 'Phase C: indexed predicate emits @facts_by_arg1 and dispatching run/1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode, [module_name('TestMod')], Code),
+    (   sub_string(Code, _, _, _, '@facts_by_arg1 %{'),
+        sub_string(Code, _, _, _, 'case arg1 do'),
+        sub_string(Code, _, _, _, 'Map.get(@facts_by_arg1, key, [])')
+    ->  pass(Test)
+    ;   fail_test(Test, 'indexed shape missing')
+    ).
+
+test_phase_c_index_policy_none :-
+    Test = 'Phase C: fact_index_policy(none) suppresses @facts_by_arg1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    lower_predicate_to_elixir(big_fact/2, WamCode,
+                              [module_name('TestMod'), fact_index_policy(none)], Code),
+    (   sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, '@facts_by_arg1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'index was not suppressed by policy(none)')
+    ).
+
+test_phase_c_variable_head_no_index :-
+    Test = 'Phase C: variable head uses flat-only inline_data (no index block)',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:variable_head/1, [], WamCode),
+    lower_predicate_to_elixir(variable_head/1, WamCode,
+                              [module_name('TestMod'), fact_count_threshold(0)], Code),
+    (   sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, '@facts_by_arg1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'variable-head emitted unexpected index')
+    ).
+
+%% Phase D external_source tests
+
+test_phase_d_emits_external_source_shape :-
+    Test = 'Phase D: fact_layout external_source emits FactSource-facade run/1',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    Opts = [module_name('TestMod'),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code),
+    (   sub_string(Code, _, _, _, '@pred_indicator "big_fact/2"'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSourceRegistry.lookup!'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSource.stream_all'),
+        sub_string(Code, _, _, _, 'WamRuntime.FactSource.lookup_by_arg1'),
+        \+ sub_string(Code, _, _, _, '@facts ['),
+        \+ sub_string(Code, _, _, _, 'defp clause_')
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source shape missing or bled through to other layouts')
+    ).
+
+test_phase_d_runtime_emits_fact_source :-
+    Test = 'Phase D: runtime assembly emits FactSource behaviour + Tsv adaptor + Registry',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource do'),
+        sub_string(RuntimeCode, _, _, _, '@callback open'),
+        sub_string(RuntimeCode, _, _, _, '@callback stream_all'),
+        sub_string(RuntimeCode, _, _, _, '@callback lookup_by_arg1'),
+        sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Tsv do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSourceRegistry do'),
+        sub_string(RuntimeCode, _, _, _, ':persistent_term')
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactSource runtime pieces missing')
+    ).
+
+test_phase_d_external_beats_inline_override :-
+    Test = 'Phase D: external_source user override preempts default inline_data',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    % big_fact defaults to inline_data (150 clauses > threshold 100).
+    % Explicit external_source must win.
+    Opts = [module_name('TestMod'),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code),
+    (   sub_string(Code, _, _, _, '(external_source)'),
+        \+ sub_string(Code, _, _, _, '(inline_data)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'external_source did not win over default inline_data')
+    ).
+
+%% Phase E pluggable layout policy tests
+
+test_phase_e_auto_matches_pre_phase_e :-
+    Test = 'Phase E: auto policy is equivalent to pre-Phase-E default',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [fact_layout_policy(auto)],
+                       fact_shape_info(_, _, _, Layout1)),
+    classify_predicate(big_fact/2, Segs, [],
+                       fact_shape_info(_, _, _, Layout2)),
+    (   Layout1 == Layout2, Layout1 = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, mismatch(Layout1, Layout2))
+    ).
+
+test_phase_e_compiled_only_forces_compiled :-
+    Test = 'Phase E: compiled_only policy forces big fact set to compiled',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs,
+                       [fact_layout_policy(compiled_only)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_inline_eager_ignores_threshold :-
+    Test = 'Phase E: inline_eager picks inline_data even below threshold',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs,
+                       [fact_layout_policy(inline_eager)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_inline_eager_respects_fact_only :-
+    Test = 'Phase E: inline_eager still falls to compiled for rule-bearing',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs,
+                       [fact_layout_policy(inline_eager)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_phase_e_user_override_preempts_policy :-
+    Test = 'Phase E: user fact_layout/2 preempts any policy',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    Opts = [fact_layout_policy(compiled_only),
+            fact_layout(big_fact/2, external_source(tsv_marker))],
+    classify_predicate(big_fact/2, Segs, Opts,
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = external_source(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+%% cost_aware policy tests
+
+test_cost_aware_promotes_big_fact_set :-
+    Test = 'cost_aware: 150-clause arity-2 (score 300) > default threshold 200 → inline_data',
+    phase_a_fixture_setup,
+    compile_and_segments(big_fact/2, Segs),
+    classify_predicate(big_fact/2, Segs, [fact_layout_policy(cost_aware)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_keeps_small_preds_compiled :-
+    Test = 'cost_aware: 4-clause arity-2 (score 8) < default threshold → compiled',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs, [fact_layout_policy(cost_aware)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_threshold_override :-
+    Test = 'cost_aware: fact_cost_threshold(5) promotes 4-clause predicate (score 8 > 5)',
+    phase_a_fixture_setup,
+    compile_and_segments(small_fact/2, Segs),
+    classify_predicate(small_fact/2, Segs,
+                       [fact_layout_policy(cost_aware), fact_cost_threshold(5)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout = inline_data(_)
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_cost_aware_respects_fact_only :-
+    Test = 'cost_aware: rule-bearing predicate stays compiled regardless of score',
+    phase_a_fixture_setup,
+    compile_and_segments(rule/2, Segs),
+    classify_predicate(rule/2, Segs,
+                       [fact_layout_policy(cost_aware), fact_cost_threshold(1)],
+                       fact_shape_info(_, _, _, Layout)),
+    (   Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, Layout)
+    ).
+
+test_ets_adaptor_emitted_in_runtime :-
+    Test = 'ETS adaptor: runtime assembly emits FactSource.Ets',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Ets do'),
+        sub_string(RuntimeCode, _, _, _, ':ets.tab2list'),
+        sub_string(RuntimeCode, _, _, _, ':ets.lookup')
+    ->  pass(Test)
+    ;   fail_test(Test, 'ETS adaptor missing from emitted runtime')
+    ).
+
+test_sqlite_adaptor_emitted_in_runtime :-
+    Test = 'SQLite adaptor: runtime assembly emits FactSource.Sqlite',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Sqlite do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defstruct [:db, :query_all, :query_by_arg1, :arity]'),
+        sub_string(RuntimeCode, _, _, _, 'query_by_arg1: q_by1')
+    ->  pass(Test)
+    ;   fail_test(Test, 'SQLite adaptor missing expected structure')
+    ).
+
+test_sqlite_adaptor_uses_indirect_module_resolution :-
+    Test = 'SQLite adaptor: uses Module.concat so runtime compiles without :exqlite',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Critical: the adaptor must NOT reference Exqlite.Sqlite3 as a
+    % literal module call — that would generate compile-time warnings
+    % in drivers without :exqlite. Module.concat/1 defers resolution
+    % to call time.
+    (   sub_string(RuntimeCode, _, _, _, 'Module.concat([Exqlite, Sqlite3])'),
+        sub_string(RuntimeCode, _, _, _, 'apply(mod,'),
+        % Sanity: no literal `Exqlite.Sqlite3.` call anywhere.
+        \+ sub_string(RuntimeCode, _, _, _, 'Exqlite.Sqlite3.open')
+    ->  pass(Test)
+    ;   fail_test(Test, 'SQLite adaptor has literal Exqlite references — will warn without dep')
+    ).
+
+%% Tier-2 infrastructure tests (see docs/design/WAM_TIERED_LOWERING.md)
+%% These exercise precondition scaffolding only — PR2 wires
+%% par_wrap_segment/3 on top of them.
+
+test_tier2_wamstate_has_parallel_depth :-
+    Test = 'Tier-2 infra: WamState defstruct carries parallel_depth: 0',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'parallel_depth: 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'parallel_depth field missing from emitted WamState')
+    ).
+
+test_tier2_aggregate_helpers_emitted :-
+    Test = 'Tier-2 infra: WamRuntime emits in_forkable_aggregate_frame?/1 + merge_into_aggregate/2',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def in_forkable_aggregate_frame?(state)'),
+        sub_string(S, _, _, _, 'def merge_into_aggregate(state, branch_results)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate-frame helpers missing from emitted runtime')
+    ).
+
+test_tier2_aggregate_forkable_types :-
+    Test = 'Tier-2 infra: forkable-frame check covers findall + aggregate_all',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, ':findall -> true'),
+        sub_string(S, _, _, _, ':aggregate_all -> true')
+    ->  pass(Test)
+    ;   fail_test(Test, 'emitted forkable predicate does not cover both findall and aggregate_all')
+    ).
+
+test_tier2_purity_gate_rejects_unknown :-
+    Test = 'Tier-2 infra: purity gate fails for unknown predicate',
+    (   \+ tier2_purity_eligible(no_such_pred, 2, _)
+    ->  pass(Test)
+    ;   fail_test(Test, 'gate should have rejected predicate with no purity certificate')
+    ).
+
+test_tier2_purity_gate_accepts_declared :-
+    Test = 'Tier-2 infra: purity gate accepts user-declared parallel predicate (confidence 1.0)',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_test_pred/2)),
+        (   tier2_purity_eligible(tier2_test_pred, 2, Cert),
+            Cert = purity_cert(pure, declared, Conf, _Reasons),
+            Conf >= 0.85
+        ->  pass(Test)
+        ;   fail_test(Test, 'gate did not accept declared parallel predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_test_pred/2))
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -190,5 +767,49 @@ run_tests :-
     test_elixir_idioms,
     test_immutable_state_updates,
     test_functional_run_loop,
+    test_classify_small_fact_only,
+    test_classify_big_fact_only,
+    test_classify_rule,
+    test_classify_variable_head,
+    test_classify_user_override_layout,
+    test_classify_user_override_threshold,
+    test_shape_comment_in_generated_module,
+    test_phase_a_preserves_compiled_output,
+    test_extract_facts_simple,
+    test_phase_b_emits_inline_data_when_chosen,
+    test_phase_b_variable_head_becomes_sentinel,
+    test_phase_b_fallback_on_unextractable,
+    test_quote_wam_constant_plain,
+    test_quote_wam_constant_comma,
+    test_quote_wam_constant_escape,
+    test_tokenize_unquoted,
+    test_tokenize_quoted_atom_with_comma,
+    test_tokenize_quoted_atom_with_escape,
+    test_round_trip_comma_atom,
+    test_extract_arg1_index_ground,
+    test_extract_arg1_index_variable,
+    test_phase_c_indexed_module_emission,
+    test_phase_c_index_policy_none,
+    test_phase_c_variable_head_no_index,
+    test_phase_d_emits_external_source_shape,
+    test_phase_d_runtime_emits_fact_source,
+    test_phase_d_external_beats_inline_override,
+    test_phase_e_auto_matches_pre_phase_e,
+    test_phase_e_compiled_only_forces_compiled,
+    test_phase_e_inline_eager_ignores_threshold,
+    test_phase_e_inline_eager_respects_fact_only,
+    test_phase_e_user_override_preempts_policy,
+    test_cost_aware_promotes_big_fact_set,
+    test_cost_aware_keeps_small_preds_compiled,
+    test_cost_aware_threshold_override,
+    test_cost_aware_respects_fact_only,
+    test_ets_adaptor_emitted_in_runtime,
+    test_sqlite_adaptor_emitted_in_runtime,
+    test_sqlite_adaptor_uses_indirect_module_resolution,
+    test_tier2_wamstate_has_parallel_depth,
+    test_tier2_aggregate_helpers_emitted,
+    test_tier2_aggregate_forkable_types,
+    test_tier2_purity_gate_rejects_unknown,
+    test_tier2_purity_gate_accepts_declared,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

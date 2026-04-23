@@ -167,3 +167,12 @@ CLAUDE.md
 # Local tools and subprojects (optional, not in repo)
 .local/
 users.json
+
+# Erlang crash dumps from Elixir benchmarks / tests
+erl_crash.dump
+
+# PR draft descriptions are ephemeral — the merged PR's GitHub
+# description is the canonical copy. Ignore them at repo root and in
+# the historical archive/pr_descriptions/ directory.
+/PR_*.md
+archive/pr_descriptions/PR_*.md

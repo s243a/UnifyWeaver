@@ -2,7 +2,15 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"runtime"
+	"sort"
 	"sync"
+)
+
+var (
+	_ = fmt.Sprintf
+	_ = runtime.GOMAXPROCS
+	_ sync.Locker = (*sync.Mutex)(nil)
 )
 
 {{step_method}}

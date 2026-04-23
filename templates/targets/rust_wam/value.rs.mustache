@@ -23,6 +23,9 @@ pub enum Value {
     Unbound(String),
     /// Boolean value
     Bool(bool),
+    /// Uninitialized register slot -- zero-cost sentinel for the register file.
+    /// Never appears in Prolog terms; only used internally by WamState.
+    Uninit,
 }
 
 impl Value {
@@ -103,6 +106,7 @@ impl PartialEq for Value {
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Ref(a), Value::Ref(b)) => a == b,
             (Value::Unbound(a), Value::Unbound(b)) => a == b,
+            (Value::Uninit, Value::Uninit) => true,
             _ => false,
         }
     }
@@ -133,6 +137,7 @@ impl fmt::Display for Value {
             }
             Value::Ref(addr) => write!(f, "ref({})", addr),
             Value::Unbound(name) => write!(f, "{}", name),
+            Value::Uninit => write!(f, "_uninit_"),
         }
     }
 }

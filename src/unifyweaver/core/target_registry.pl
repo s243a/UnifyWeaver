@@ -199,6 +199,7 @@ register_builtin_targets :-
     register_target(java, jvm, [compiled, streaming, enterprise]),
     register_target(scala, jvm, [compiled, streaming, functional]),
     register_target(clojure, jvm, [compiled, streaming, functional, lisp]),
+    register_target(wam_clojure, jvm, [compiled, streaming, functional, lisp, wam, choice_points, hybrid]),
     register_target(jython, jvm, [scripting, jvm_interop]),
     register_target(kotlin, jvm, [compiled, streaming, android, coroutines]),
     register_target(jamaica, jvm, [assembly, bytecode, macros, native_lowering, recursion, bindings, components]),
@@ -208,6 +209,7 @@ register_builtin_targets :-
     register_target(go, native, [compiled, streaming, concurrency, cross_platform]),
     register_target(rust, native, [compiled, streaming, memory_safe, performance]),
     register_target(c, native, [compiled, performance, low_level]),
+    register_target(wam_c, native, [compiled, performance, low_level, wam, manual_memory]),
 
     % JavaScript family - runtime selection via js_runtime_choice/2
     register_target(typescript, javascript, [types, async, modules, generics]),
@@ -241,6 +243,7 @@ register_builtin_targets :-
 target_module(go, go_target).
 target_module(rust, rust_target).
 target_module(c, c_target).
+target_module(wam_c, wam_c_target).
 target_module(csharp, csharp_target).
 target_module(csharp_native, csharp_native_target).
 target_module(fsharp, fsharp_target).
@@ -249,6 +252,7 @@ target_module(java, java_target).
 target_module(scala, scala_target).
 target_module(kotlin, kotlin_target).
 target_module(clojure, clojure_target).
+target_module(wam_clojure, wam_clojure_target).
 target_module(jython, jython_target).
 target_module(jamaica, jamaica_target).
 target_module(krakatau, krakatau_target).

@@ -224,6 +224,135 @@ re-doing the fusion.
 
 ---
 
+## Clojure WAM — current implementation status
+
+The Clojure hybrid/WAM target is not yet in the same maturity class as
+Haskell or Rust, but the runtime now has the right architectural shape
+for further optimization work.
+
+### Implemented so far
+
+| Area | Status | Notes |
+|---|---|---|
+| Shared code table | Done | All generated predicates dispatch into one shared instruction table with per-predicate start PCs |
+| One-time label resolution | Done | `call`, `execute`, `jump`, choice ops, and `switch_on_constant` are resolved at project load |
+| Indexed dispatch | Done | `switch_on_constant` is compiled into a direct lookup map in the runtime |
+| FFI controls | Partial | Explicit `foreign_predicates([...])` emits `call-foreign` stubs; `no_kernels(true)` and `foreign_lowering(false)` suppress stubs. Deterministic handlers work, and the optimized benchmark generator now emits a fact-backed `category_parent/2` graph handler plus a Clojure ancestor-hop traversal index for `kernels_on` benchmark runners |
+| Choice points | Partial | Saves persistent regs/env stack plus trail/heap/build boundaries; avoids binding snapshots and filtered register-map allocation, but still heavier than Haskell/Rust |
+| Environment frames | Done | `allocate`/`deallocate` use explicit environment frames for `Y` slots |
+| Cut semantics | Partial | Clause cut uses a cut barrier; `cut_ite` pops only the enclosing if-then-else CP |
+| Read-mode compound terms | Done | `get_structure`, `get_list`, `unify_*` support structure/list matching |
+| Write-mode compound terms | Done | `put_structure`, `put_list`, `set_*` build nested terms via a builder stack |
+| Benchmark generation | Partial | `generate_wam_clojure_optimized_benchmark.pl` emits optimized effective-distance Clojure WAM projects with `kernels_on`/`kernels_off` controls, fact-backed graph handler generation, and a result-producing traversal-index runner |
+| End-to-end verification | Partial | Generator tests, fact-backed foreign-handler JVM smoke, and standalone runtime smoke runner pass locally; large JVM benchmarks remain constrained in Termux |
+
+### Clojure-specific lessons from this phase
+
+1. Shared-table generation and pre-resolved control flow were worth doing
+   first. They match the Haskell/Rust shape and remove obvious runtime
+   string lookup costs.
+2. Choice-point snapshots cannot be reduced to `A` registers in the current
+   Clojure runtime. `X` registers are still needed across retry paths such as
+   generated if-then-else code. Because Clojure maps/vectors are persistent,
+   saving the full register map is cheaper than rebuilding a filtered `A`/`X`
+   snapshot at every choice point.
+3. Treating `!/0` and `cut_ite` as "clear all choice points" is incorrect.
+   The runtime now distinguishes clause-level cuts from soft cuts.
+4. The current runtime is still a bindings-centric approximation, not a full
+   heap/trail WAM. That keeps the implementation moving, but it also defines
+   the next real parity boundary.
+5. The standalone smoke suite now covers structure and list construction
+   across failing branches, including an env-mediated retry path. Nested
+   disjunction/cut shapes remain a generator-level gap rather than a runtime
+   optimization target.
+6. Clojure now has the same basic control vocabulary used by benchmark
+   matrices in other WAM targets: explicit foreign predicates can be marked,
+   and `no_kernels(true)` / `foreign_lowering(false)` force the pure WAM path.
+   Deterministic handlers can be wired through `clojure_foreign_handlers/1`.
+7. Clojure now has an optimized effective-distance project generator. It
+   establishes benchmark-matrix shape and kernel-mode controls without trying
+   to run large JVM benchmarks in Termux.
+8. The first Clojure graph-kernel path is now fact-backed rather than a
+   placeholder: `kernels_on` emits a Clojure set-backed `category_parent/2`
+   handler from `facts.pl`, while `kernels_off` keeps the pure WAM fallback.
+   Synthesizing the handler immediately after loading facts is important
+   because later optimization/loading steps can alter predicate visibility in
+   PlUnit contexts.
+9. Clojure WAM scaffold targets are now registered in the configurable
+   benchmark target matrix under `clojure-wam-scaffold`. They are listed and
+   resolvable, but intentionally skipped by the effective-distance runner
+   until Clojure emits the same result table as the mature Rust/Haskell/Go
+   benchmark paths.
+10. `clojure-wam-accumulated` now has a generated no-argument benchmark
+    entrypoint that emits the common effective-distance result table. On the
+    `dev` scale it matches `prolog-accumulated` by normalized output digest;
+    the remaining Clojure modes stay scaffold-only until they have equivalent
+    result-producing entrypoints.
+11. `clojure-wam-accumulated-no-kernels` is now also executable in the matrix.
+    On `dev`, both accumulated Clojure modes and `prolog-accumulated` produce
+    the same normalized digest, which gives a valid Clojure kernel-on/off
+    comparison surface.
+12. The seeded Clojure modes are executable too. All four Clojure
+    effective-distance modes now match `prolog-accumulated` on `dev` by
+    normalized digest:
+    `clojure-wam-accumulated`, `clojure-wam-accumulated-no-kernels`,
+    `clojure-wam-seeded`, and `clojure-wam-seeded-no-kernels`.
+13. The result-producing runner now distinguishes `kernels_on` and
+    `kernels_off`: `kernels_on` builds a native Clojure ancestor-hop index once
+    for the benchmark seed categories and roots, while `kernels_off` keeps the
+    on-demand recursive traversal path. Both modes still match
+    `prolog-accumulated` on `dev`.
+14. Clojure `call-foreign` now accepts deterministic output bindings from
+    handlers. Existing boolean handlers still work, while handlers can return
+    `{:bindings {2 "value"}}` to unify output argument registers before
+    returning to WAM code. This moves traversal kernels closer to the generic
+    Haskell/Rust hybrid FFI shape, but it is still single-result and does not
+    provide streaming/backtracking foreign solutions yet.
+15. Clojure `call-foreign` can now consume deterministic streams of foreign
+    solutions. A handler can return `{:solutions [{:bindings {...}} ...]}`;
+    the runtime binds the first viable solution and stores the remaining
+    solutions as foreign choice points. If later WAM code fails, backtracking
+    restores the pre-foreign state and tries the next solution. This is the
+    generic runtime surface needed before moving traversal kernels out of
+    runner-specific code.
+16. Clojure `kernels_on` now exposes `category_ancestor/4` through that
+    generic streaming `call-foreign` surface. The generated handler builds a
+    parent adjacency map from facts, returns multiple `{Ancestor, Hops}`
+    solutions via `:solutions`, and keeps `kernels_off` on the pure WAM path.
+    The effective-distance runner still has its runner-side traversal index,
+    but the WAM predicate surface now has the same shape needed to replace it.
+17. Clojure `kernels_on` effective-distance runner now consumes the generic
+    streaming `category_ancestor/4` foreign handler directly. The bespoke
+    runner-side `benchmark-ancestor-hops-index` materialization is gone;
+    `kernels_off` still uses the pure recursive runner path for comparison.
+18. Streamed foreign alternatives in Clojure now use a narrower choice-point
+    shape than ordinary WAM backtracking. Foreign choice points retain the
+    trail boundary, regs/env/stack, cut barrier, next-var-id, resume PC, and
+    remaining foreign results, but they no longer snapshot heap/unify/build
+    state that deterministic foreign handlers do not touch.
+19. Large Clojure benchmark scaffolds now externalize benchmark relation data
+    and foreign-kernel lookup tables into EDN sidecars instead of embedding
+    giant handler literals in generated source. This avoids JVM bytecode
+    `Method code too large` failures on larger scales and is the first concrete
+    Clojure step toward the same preprocessing/materialization direction that
+    already exists in the C# query runtime.
+
+### Highest-value remaining work
+
+1. Push the new Clojure benchmark sidecars toward a real preprocessed artifact
+   path so larger scales reuse compact adjacency data instead of reparsing EDN
+   into generic vectors and maps on every JVM start.
+2. Measure whether the slimmer foreign choice points improve the `dev`
+   Clojure benchmark timings enough to justify similar hot-state split work.
+3. Add proper heap/trail semantics instead of relying primarily on the
+   bindings table.
+4. Reduce choice-point snapshots toward the lighter Haskell/Rust model once
+   the remaining runtime state is better separated.
+5. Split hot runtime state from cold code/context data, following the same
+   optimization pattern that paid off heavily in Haskell.
+
+---
+
 ## Patterns that recurred across both targets
 
 These are the generalizable lessons — they'd apply to any WAM
@@ -277,6 +406,57 @@ Not every attempt was a win. Tracking these so we don't repeat them.
 
 ---
 
+## Phase E: System-wide atom interning (2026-04-20)
+
+**Branch:** `feat/wam-haskell-atom-interning`
+
+Changed `Value` from `Atom String` / `Str String [Value]` to `Atom !Int` /
+`Str !Int [Value]` with a system-wide `InternTable`. Compile-time atoms get
+reserved IDs (0-7: true, fail, [], ., "", member/2, +/2, **/2); runtime atoms
+from TSV data extend the table at load time.
+
+### Changes
+
+| Component | Before | After |
+|---|---|---|
+| `data Value` | `Atom String`, `Str String [Value]` | `Atom !Int`, `Str !Int [Value]` |
+| `SwitchOnConstantPc` | `Map.Map String Int` | `IM.IntMap Int` |
+| Atom equality | O(n) string compare | O(1) Int compare |
+| `WamContext` | `wcAtomIntern`/`wcAtomDeintern` maps | `wcInternTable :: !InternTable` |
+| FFI boundary | Map.lookup to intern/deintern | Identity (atoms already Int) |
+| `evalArith` | String-based operator names | Reverse-lookup via InternTable |
+| Lowered emitter | `Atom "string"` literals | `Atom <id>` via `intern_atom/2` |
+
+### Benchmark results — 10k scale (25k category_parent, 10k article_category)
+
+All configurations produce identical output: tuple_count=462, article_count=5192.
+
+| Configuration | Mean query_ms | vs Baseline |
+|---|---|---|
+| Baseline FFI (main, String atoms) | **555** | — |
+| Interned FFI (atom-interning, Int atoms) | **556** | ~0% |
+| Baseline WAM-only (main, String atoms) | **19,173** | — |
+| Interned WAM-only (atom-interning, Int atoms) | **15,546** | **-19% faster** |
+
+At 1k scale, both WAM-only paths were ~1550ms (within noise). The 19%
+improvement at 10k confirms atom interning scales with dataset size — more
+atoms mean more comparisons where Int beats String.
+
+The FFI path is unaffected because the native kernel already used `Int`
+comparison (via the old `wcAtomIntern` boundary table).
+
+### Bug fixes included in this branch
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| FFI query dispatch | `tuple_count=0` on effective-distance benchmark when kernels detected | Added `collectForeignSolutions` using `executeForeign` directly instead of running WAM code (where fact code was skipped) |
+| `collectSolutions` refactoring | Infinite loop on WAM-only path | Restored `run ctx` call after `backtrack` (WAM choice points need re-execution; only FFI StreamRetry CPs bind directly) |
+
+**Note:** The FFI query dispatch bug also affected main (pre-interning) and
+was fixed separately in commit `e5a8e866` on main.
+
+---
+
 ## Related documents
 
 - `docs/vision/HASKELL_TARGET_ROADMAP.md` — where this is going
@@ -285,3 +465,126 @@ Not every attempt was a win. Tracking these so we don't repeat them.
   now largely delivered
 - `docs/design/WAM_HASKELL_FFI_PROFILING_REPORT.md` — the profiling
   matrix that drove the Phase-D wins
+
+## Clojure benchmark preprocessing follow-up
+
+Recent Clojure hybrid WAM benchmark work exposed two practical
+lessons for externalized/preprocessed predicate data:
+
+1. Sidecar paths must be generation-time absolute for benchmark harnesses
+   that launch projects from a repository root rather than the generated
+   project directory. Relative sidecar paths were enough for direct
+   smoke runs but broke the cross-target matrix.
+2. Preprocessing policy should be declarative, not only a CLI switch.
+   The benchmark generator now lets `auto` honor an optional benchmark
+   predicate (`wam_clojure_benchmark_data_mode/1` or
+   `benchmark_data_mode/1`) before falling back to the scale-favoring
+   heuristic (`sidecar` above the current fact-volume threshold,
+   `inline` otherwise).
+
+That moves the Clojure benchmark path closer to the C# materialization
+direction: policy can live with the workload, while the default still
+favors scaling safely.
+
+The next Clojure benchmark step added an explicit `artifact` mode beside
+`sidecar` and `inline`. The first artifact shape precomputes
+`category_parent_by_child` and `article_category_by_article` EDN maps so
+the generated runner and `category_ancestor/4` foreign handler can skip
+their startup regrouping pass.
+
+Initial Termux `dev` measurements were mixed rather than a clear win:
+
+- `clojure-wam-accumulated`: `1.867s`
+- `clojure-wam-accumulated-artifact`: `1.852s`
+- `clojure-wam-seeded`: `1.846s`
+- `clojure-wam-seeded-artifact`: `2.250s`
+
+All outputs still matched digest `1659619c9d36`, but these numbers are
+not strong enough to justify changing the default heuristic away from
+`sidecar`. The artifact path is valuable as an explicit comparison mode
+and as groundwork for more compact non-EDN preprocessing, but it still
+needs better desktop measurements and probably a denser artifact format
+before it should become the default.
+
+The follow-up dense-artifact pass kept the public `artifact` mode stable
+but replaced those grouped EDN maps with grouped TSV sidecars:
+
+- `category_parent_by_child.tsv`
+- `article_category_by_article.tsv`
+
+That reduces artifact size and drops `edn/read-string` from the hot
+artifact path. The generated Clojure runner and the
+`category_parent/2` / `category_ancestor/4` foreign handlers now parse
+the grouped TSV files directly into vectors/maps at startup. `sidecar`
+remains the default-for-scale heuristic until repeated measurements on a
+desktop JVM show that the denser artifact format is consistently better
+than the simpler EDN row sidecars.
+
+The next follow-up made `artifact` mode selective by benchmark variant:
+
+- `accumulated` keeps the fully grouped artifact path
+- `seeded` keeps the grouped `category_parent_by_child.tsv` artifact for
+  traversal lookups but falls back to the simpler article row sidecar for
+  article/category ingestion
+
+On the small Termux `dev` matrix, that selective seeded path removed the
+earlier regression while preserving output parity:
+
+- `clojure-wam-accumulated`: `2.014s`
+- `clojure-wam-accumulated-artifact`: `1.988s`
+- `clojure-wam-seeded`: `2.254s`
+- `clojure-wam-seeded-artifact`: `2.130s`
+
+All outputs still matched digest `1659619c9d36`. The result is still not
+strong enough to justify changing the default heuristic away from
+`sidecar`, but it does show that Clojure artifact preprocessing should
+stay workload-sensitive instead of assuming one storage shape wins
+everywhere.
+
+The next refinement pushed that workload sensitivity one level deeper by
+adding per-relation benchmark predicates:
+
+- `wam_clojure_benchmark_relation_data_mode/2`
+- `benchmark_relation_data_mode/2`
+
+Supported relation keys are currently `article_category` and
+`category_parent`. These overrides sit on top of the public benchmark
+`artifact` mode and apply consistently to both the generated
+effective-distance runner and the Clojure foreign traversal handlers.
+
+That gives the benchmark workload a C#-style policy surface:
+
+- keep `category_parent` on the grouped artifact path when traversal
+  lookups benefit from it
+- keep `article_category` on row sidecars when startup regrouping is
+  cheaper than loading a grouped artifact
+
+Small Termux `dev` validation after adding the per-relation hook still
+matched digest `1659619c9d36` across:
+
+- `clojure-wam-accumulated`
+- `clojure-wam-accumulated-artifact`
+- `clojure-wam-seeded`
+- `clojure-wam-seeded-artifact`
+
+The timings are still noisy, but the code path is now flexible enough to
+move further measurement and policy tuning to desktop without changing
+the benchmark interface again.
+
+The follow-up manifest pass closes another pre-desktop gap by giving the
+Clojure benchmark sidecars a C#-style inspection surface. Sidecar-backed
+`sidecar` and `artifact` modes now emit
+`data/generated/wam_clojure_optimized_bench/manifest.edn` with:
+
+- artifact format/version
+- source facts path
+- benchmark variant, kernel mode, and top-level data mode
+- per-relation resolved mode
+- per-relation file name and physical format
+- row counts
+- supported access contracts
+
+This does not change runtime behavior. It makes the generated data
+layout explicit enough for desktop benchmarking, artifact invalidation
+work, and later provider-style loaders without forcing another change to
+the benchmark target names.

@@ -15,49 +15,49 @@ type StructCase struct {
 	Label   string
 }
 
-type GetConstant struct { C Value; Ai string }
+type GetConstant struct { C Value; Ai int }
 func (i *GetConstant) instrTag() {}
 
-type GetVariable struct { Xn string; Ai string }
+type GetVariable struct { Xn int; Ai int }
 func (i *GetVariable) instrTag() {}
 
-type GetValue struct { Xn string; Ai string }
+type GetValue struct { Xn int; Ai int }
 func (i *GetValue) instrTag() {}
 
-type GetStructure struct { Functor string; Ai string }
+type GetStructure struct { Functor string; Ai int }
 func (i *GetStructure) instrTag() {}
 
-type GetList struct { Ai string }
+type GetList struct { Ai int }
 func (i *GetList) instrTag() {}
 
-type UnifyVariable struct { Xn string }
+type UnifyVariable struct { Xn int }
 func (i *UnifyVariable) instrTag() {}
 
-type UnifyValue struct { Xn string }
+type UnifyValue struct { Xn int }
 func (i *UnifyValue) instrTag() {}
 
 type UnifyConstant struct { C Value }
 func (i *UnifyConstant) instrTag() {}
 
-type PutConstant struct { C Value; Ai string }
+type PutConstant struct { C Value; Ai int }
 func (i *PutConstant) instrTag() {}
 
-type PutVariable struct { Xn string; Ai string }
+type PutVariable struct { Xn int; Ai int }
 func (i *PutVariable) instrTag() {}
 
-type PutValue struct { Xn string; Ai string }
+type PutValue struct { Xn int; Ai int }
 func (i *PutValue) instrTag() {}
 
-type PutStructure struct { Functor string; Ai string }
+type PutStructure struct { Functor string; Ai int }
 func (i *PutStructure) instrTag() {}
 
-type PutList struct { Ai string }
+type PutList struct { Ai int }
 func (i *PutList) instrTag() {}
 
-type SetVariable struct { Xn string }
+type SetVariable struct { Xn int }
 func (i *SetVariable) instrTag() {}
 
-type SetValue struct { Xn string }
+type SetValue struct { Xn int }
 func (i *SetValue) instrTag() {}
 
 type SetConstant struct { C Value }
@@ -84,22 +84,37 @@ func (i *Execute) instrTag() {}
 type ExecutePc struct { TargetPC int }
 func (i *ExecutePc) instrTag() {}
 
+type Jump struct { Label string }
+func (i *Jump) instrTag() {}
+
+type JumpPc struct { TargetPC int }
+func (i *JumpPc) instrTag() {}
+
+type CutIte struct{}
+func (i *CutIte) instrTag() {}
+
+type BeginAggregate struct { AggType string; ValueReg int; ResultReg int }
+func (i *BeginAggregate) instrTag() {}
+
+type EndAggregate struct { ValueReg int }
+func (i *EndAggregate) instrTag() {}
+
 type Proceed struct{}
 func (i *Proceed) instrTag() {}
 
 type BuiltinCall struct { Op string; Arity int }
 func (i *BuiltinCall) instrTag() {}
 
-type TryMeElse struct { Label string }
+type TryMeElse struct { Label string; Arity int }
 func (i *TryMeElse) instrTag() {}
 
-type TryMeElsePc struct { NextPC int }
+type TryMeElsePc struct { NextPC int; Arity int }
 func (i *TryMeElsePc) instrTag() {}
 
-type RetryMeElse struct { Label string }
+type RetryMeElse struct { Label string; Arity int }
 func (i *RetryMeElse) instrTag() {}
 
-type RetryMeElsePc struct { NextPC int }
+type RetryMeElsePc struct { NextPC int; Arity int }
 func (i *RetryMeElsePc) instrTag() {}
 
 type TrustMe struct{}

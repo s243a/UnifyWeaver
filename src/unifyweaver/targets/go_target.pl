@@ -106,6 +106,9 @@
 
 % Track current compilation module context for module-qualified predicates
 :- dynamic current_compilation_module/1.
+:- discontiguous is_recursive_clause_go/2.
+:- discontiguous contains_call_to/2.
+:- discontiguous step_op_to_go/2.
 
 %% set_compilation_module(+Module)
 %  Set the current module context for clause lookup
@@ -8246,7 +8249,7 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
         )
     ).
 
-:- use_module('../core/semantic_compiler').
+:- use_module('../core/semantic_compiler', except([is_semantic_predicate/1])).
 
 %% semantic_compiler:semantic_dispatch(+Target, +Goal, +ProviderInfo, +VarMap, -Code)
 %  Target-specific implementation for semantic search.

@@ -14,6 +14,7 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_haskell_target').
+:- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
 :- use_module('../src/unifyweaver/core/purity_certificate').
 
@@ -52,7 +53,7 @@ test_haskell_functor_builtin_present :-
         %% Construct mode: allocates fresh Unbound cells.
         sub_string(S, _, _, _, "Unbound (c0 + i)"),
         %% Read mode: pattern matches Str and VList branches.
-        sub_string(S, _, _, _, "Str fn args -> Just (Atom fn, length args)")
+        sub_string(S, _, _, _, "Str fnId args -> Just (Atom fnId, length args)")
     ->  pass(Test)
     ;   fail_test(Test, 'Missing functor/3 step case patterns')
     ).
@@ -74,7 +75,7 @@ test_haskell_univ_builtin_present :-
         atom_string(Code, S),
         sub_string(S, _, _, _, "BuiltinCall \"=../2\""),
         %% Decompose mode: prepends functor atom to arg list.
-        sub_string(S, _, _, _, "VList (Atom fn : args)"),
+        sub_string(S, _, _, _, "VList (Atom fnId : args)"),
         %% Compose mode: rebuilds Str from list head+tail.
         sub_string(S, _, _, _, "(Atom fname : rest) -> Just (Str fname rest)")
     ->  pass(Test)
@@ -172,8 +173,8 @@ test_transitive_closure_kernel_function :-
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
     (   wam_haskell_target:render_kernel_function('closure/2'-Kernel, Code),
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure"),
-        %% Signature uses IntMap after atom interning
-        sub_string(Code, _, _, _, "IM.IntMap [Int] -> Int -> [Int]"),
+        %% Signature uses EdgeLookup after B1 abstraction
+        sub_string(Code, _, _, _, "EdgeLookup -> Int -> [Int]"),
         %% edge_pred placeholder resolved
         sub_string(Code, _, _, _, "Edge predicate: edge")
     ->  pass(Test)
@@ -188,18 +189,18 @@ test_transitive_closure_execute_foreign :-
         sub_string(Code, _, _, _, "executeForeign !ctx \"closure/2\" s ="),
         %% Single input register (reg 1)
         sub_string(Code, _, _, _, "IM.lookup 1 (wsRegs s)"),
-        %% config_facts_from resolved to edge pred name, now using wcFfiFacts
-        sub_string(Code, _, _, _, "edge_facts = fromMaybe IM.empty"),
-        sub_string(Code, _, _, _, "wcFfiFacts ctx"),
-        %% Native call: first arg is facts, second is interned atom lookup
+        %% config_facts_from resolved — checks wcEdgeLookups first, falls back to wcFfiFacts
+        sub_string(Code, _, _, _, "edge_facts = case Map.lookup"),
+        sub_string(Code, _, _, _, "wcEdgeLookups ctx"),
+        %% Native call: first arg is facts, input atom is already Int (interned)
         sub_string(Code, _, _, _, "nativeKernel_transitive_closure edge_facts"),
-        sub_string(Code, _, _, _, "Map.lookup r1S (wcAtomIntern ctx)"),
-        %% Output is atom: de-intern via wcAtomDeintern (rv_1 after
+        sub_string(Code, _, _, _, "r1I"),
+        %% Output is atom: directly use interned ID (rv_1 after
         %% routing single-output through the multi-output FFIStreamRetry path)
-        sub_string(Code, _, _, _, "Atom (fromMaybe \"\" (IM.lookup rv_1 (wcAtomDeintern ctx)))"),
-        %% Single-input case pattern (not tuple)
+        sub_string(Code, _, _, _, "Atom rv_1"),
+        %% Single-input case pattern: Atom r1I (Int, not String)
         sub_string(Code, _, _, _, "case r1 of"),
-        sub_string(Code, _, _, _, "Atom r1S ->")
+        sub_string(Code, _, _, _, "Atom r1I ->")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_closure2 executeForeign generation failed')
     ).
@@ -329,6 +330,17 @@ test_haskell_value_nfdata_instance :-
     ;   fail_test(Test, 'NFData Value instance missing')
     ).
 
+test_haskell_fork_min_branches_threshold :-
+    Test = 'WAM-Haskell: forkMinBranches threshold emitted in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "forkMinBranches :: Int"),
+        sub_string(S, _, _, _, "forkMinBranches = 3"),
+        sub_string(S, _, _, _, "length branches >= forkMinBranches")
+    ->  pass(Test)
+    ;   fail_test(Test, 'forkMinBranches threshold missing')
+    ).
+
 test_haskell_fork_helpers_present :-
     Test = 'WAM-Haskell: fork helpers (forkOrSequential, etc.) emitted in runtime',
     (   wam_haskell_target:compile_wam_runtime_to_haskell([], [], Code),
@@ -366,6 +378,180 @@ test_haskell_runtime_imports_parallel :-
         sub_string(S, _, _, _, "rdeepseq")
     ->  pass(Test)
     ;   fail_test(Test, 'parallel/deepseq imports missing from WamRuntime')
+    ).
+
+%% PutStructureDyn: runtime-parsed functors
+%% --------------------------------------------
+
+test_haskell_put_structure_dyn_in_types :-
+    Test = 'WAM-Haskell: PutStructureDyn constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "PutStructureDyn !RegId !RegId !RegId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn missing from Instruction type')
+    ).
+
+test_haskell_put_structure_dyn_step_handler :-
+    Test = 'WAM-Haskell: PutStructureDyn step handler present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (PutStructureDyn nameReg arityReg targetReg)"),
+        sub_string(S, _, _, _, "BuildStruct fnId targetReg (fromIntegral arity)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'PutStructureDyn step handler missing or incorrect')
+    ).
+
+test_haskell_put_structure_dyn_wam_parse :-
+    Test = 'WAM-Haskell: put_structure_dyn WAM text parsed',
+    (   wam_haskell_target:wam_instr_to_haskell(
+            ["put_structure_dyn", "A1,", "A2,", "A3"], Hs),
+        sub_string(Hs, _, _, _, "PutStructureDyn")
+    ->  pass(Test)
+    ;   fail_test(Test, 'put_structure_dyn WAM text not parsed')
+    ).
+
+%% Phase 4.3: findall/bag/set merge strategies
+%% --------------------------------------------
+
+test_haskell_findall_bag_set_forkable :-
+    Test = 'WAM-Haskell: isForkableStrategy covers findall/bag/set',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "isForkableStrategy MergeFindall   = True"),
+        sub_string(S, _, _, _, "isForkableStrategy MergeBag       = True"),
+        sub_string(S, _, _, _, "isForkableStrategy MergeSet       = True")
+    ->  pass(Test)
+    ;   fail_test(Test, 'findall/bag/set not forkable')
+    ).
+
+test_haskell_infer_collect_maps_to_findall :-
+    Test = 'WAM-Haskell: inferMergeStrategy "collect" = MergeFindall',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "inferMergeStrategy \"collect\" = MergeFindall")
+    ->  pass(Test)
+    ;   fail_test(Test, 'collect -> MergeFindall mapping missing')
+    ).
+
+test_haskell_apply_aggregation_set_dedup :-
+    Test = 'WAM-Haskell: applyAggregation "set" uses nub for dedup',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "applyAggregation \"set\" vals = VList (nub vals)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set dedup via nub missing')
+    ).
+
+test_haskell_apply_aggregation_bag :-
+    Test = 'WAM-Haskell: applyAggregation "bag" returns VList vals',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "applyAggregation \"bag\" vals = VList vals")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bag applyAggregation missing')
+    ).
+
+test_haskell_nub_import :-
+    Test = 'WAM-Haskell: Data.List import includes nub',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "nub")
+    ->  pass(Test)
+    ;   fail_test(Test, 'nub not imported from Data.List')
+    ).
+
+test_wam_bag_template_compiles :-
+    Test = 'WAM: aggregate_all(bag(X), ...) emits begin_aggregate bag',
+    (   retractall(user:bag_demo(_, _)),
+        assertz((user:bag_demo(Xs, Y) :-
+            aggregate_all(bag(X), member(X, Y), Xs))),
+        wam_target:compile_single_clause_wam(
+            bag_demo(Xs, Y)-(aggregate_all(bag(X), member(X, Y), Xs)),
+            [], Code),
+        sub_string(Code, _, _, _, "begin_aggregate bag")
+    ->  pass(Test)
+    ;   fail_test(Test, 'bag template did not compile to begin_aggregate bag')
+    ).
+
+test_wam_set_template_compiles :-
+    Test = 'WAM: aggregate_all(set(X), ...) emits begin_aggregate set',
+    (   retractall(user:set_demo(_, _)),
+        assertz((user:set_demo(Xs, Y) :-
+            aggregate_all(set(X), member(X, Y), Xs))),
+        wam_target:compile_single_clause_wam(
+            set_demo(Xs, Y)-(aggregate_all(set(X), member(X, Y), Xs)),
+            [], Code),
+        sub_string(Code, _, _, _, "begin_aggregate set")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set template did not compile to begin_aggregate set')
+    ).
+
+%% Phase 4.4: General negation + parallel negation
+%% --------------------------------------------
+
+test_haskell_negation_general_handler :-
+    Test = 'WAM-Haskell: general \\+/1 handler with run-based sub-execution',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        % General path: resolve goal key via lookupAtom and call run ctx snapshot
+        sub_string(S, _, _, _, "lookupAtom tbl fnId"),
+        sub_string(S, _, _, _, "case run ctx snapshot of")
+    ->  pass(Test)
+    ;   fail_test(Test, 'general \\+/1 handler missing run-based sub-execution')
+    ).
+
+test_haskell_negation_parallel_dispatch :-
+    Test = 'WAM-Haskell: \\+/1 dispatches to parallel for Par* goals',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runNegationParallel"),
+        sub_string(S, _, _, _, "ParTryMeElse elseLabel")
+    ->  pass(Test)
+    ;   fail_test(Test, '\\+/1 parallel dispatch for Par* missing')
+    ).
+
+test_haskell_negation_parallel_helper :-
+    Test = 'WAM-Haskell: runNegationParallel uses async race-to-cancel',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool"),
+        sub_string(S, _, _, _, "unsafePerformIO"),
+        sub_string(S, _, _, _, "raceToTrue")
+    ->  pass(Test)
+    ;   fail_test(Test, 'runNegationParallel race-to-cancel missing or incomplete')
+    ).
+
+test_haskell_race_to_true_helper :-
+    Test = 'WAM-Haskell: raceToTrue helper with async/waitAny/cancel',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "raceToTrue :: [IO Bool] -> IO Bool"),
+        sub_string(S, _, _, _, "waitAny"),
+        sub_string(S, _, _, _, "mapM_ cancel")
+    ->  pass(Test)
+    ;   fail_test(Test, 'raceToTrue helper missing')
+    ).
+
+test_haskell_async_imports :-
+    Test = 'WAM-Haskell: async/unsafePerformIO imports present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Control.Concurrent.Async"),
+        sub_string(S, _, _, _, "System.IO.Unsafe"),
+        sub_string(S, _, _, _, "Control.Exception (evaluate)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'async/unsafe imports missing')
+    ).
+
+test_haskell_negation_true_fail_fast_paths :-
+    Test = 'WAM-Haskell: \\+/1 has fast paths for true and fail atoms',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "aid == atomTrue -> Nothing"),
+        sub_string(S, _, _, _, "aid == atomFail -> Just (s { wsPC = wsPC s + 1 })")
+    ->  pass(Test)
+    ;   fail_test(Test, '\\+ true/fail fast paths missing')
     ).
 
 %% Phase 4.1: Par* instructions — type, step handlers, resolveCallInstrs
@@ -515,9 +701,553 @@ test_par_rewrite_preserves_non_choice_instrs :-
     ),
     retract(clause_body_analysis:order_independent(user:p41_mix/1)).
 
+%% Phase F1: Fact predicate classification tests
+%% -----------------------------------------------
+
+test_f1_fact_only_classification :-
+    Test = 'F1: fact-only predicate classified correctly',
+    (   retractall(user:f1_color(_)),
+        assert(user:(f1_color(red))),
+        assert(user:(f1_color(blue))),
+        assert(user:(f1_color(green))),
+        wam_target:compile_predicate_to_wam(f1_color/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_color/1, Lines, [], Info),
+        Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout),
+        NClauses == 3,
+        FactOnly == true,
+        FirstArg == all_ground,
+        Layout == compiled
+    ->  pass(Test)
+    ;   fail_test(Test, 'Incorrect classification for fact-only predicate')
+    ),
+    retractall(user:f1_color(_)).
+
+test_f1_rule_predicate_not_fact_only :-
+    Test = 'F1: rule predicate classified as not fact-only',
+    (   retractall(user:f1_anc(_, _)),
+        retractall(user:f1_par(_, _)),
+        assert(user:(f1_par(tom, bob))),
+        assert(user:(f1_anc(X, Y) :- user:f1_par(X, Y))),
+        assert(user:(f1_anc(X, Y) :- user:f1_par(X, Z), user:f1_anc(Z, Y))),
+        wam_target:compile_predicate_to_wam(f1_anc/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_anc/2, Lines, [], Info),
+        Info = fact_shape_info(_, FactOnly, _, _),
+        FactOnly == false
+    ->  pass(Test)
+    ;   fail_test(Test, 'Rule predicate should be fact_only=false')
+    ),
+    retractall(user:f1_anc(_, _)),
+    retractall(user:f1_par(_, _)).
+
+test_f1_two_arg_fact_groundness :-
+    Test = 'F1: 2-arg fact predicate has all_ground first arg',
+    (   retractall(user:f1_edge(_, _)),
+        assert(user:(f1_edge(a, b))),
+        assert(user:(f1_edge(b, c))),
+        wam_target:compile_predicate_to_wam(f1_edge/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_edge/2, Lines, [], Info),
+        Info = fact_shape_info(2, true, all_ground, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Two-arg fact should be fact_only=true, all_ground, compiled')
+    ),
+    retractall(user:f1_edge(_, _)).
+
+test_f1_variable_first_arg :-
+    Test = 'F1: variable first arg detected as mixed',
+    (   retractall(user:f1_vfact(_, _)),
+        assert(user:(f1_vfact(X, pizza) :- true)),
+        assert(user:(f1_vfact(bob, tacos) :- true)),
+        wam_target:compile_predicate_to_wam(f1_vfact/2, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_vfact/2, Lines, [], Info),
+        Info = fact_shape_info(_, true, FirstArg, _),
+        FirstArg == mixed
+    ->  pass(Test)
+    ;   fail_test(Test, 'Mixed first-arg groundness not detected')
+    ),
+    retractall(user:f1_vfact(_, _)).
+
+test_f1_layout_auto_above_threshold :-
+    Test = 'F1: auto policy picks inline_data above threshold',
+    (   retractall(user:f1_big(_)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            assert(user:f1_big(A))
+        )),
+        wam_target:compile_predicate_to_wam(f1_big/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_big/1, Lines, [fact_count_threshold(5)], Info),
+        Info = fact_shape_info(6, true, all_ground, inline_data([]))
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto policy should pick inline_data above threshold')
+    ),
+    retractall(user:f1_big(_)).
+
+test_f1_layout_compiled_below_threshold :-
+    Test = 'F1: auto policy keeps compiled below threshold',
+    (   retractall(user:f1_small(_)),
+        assert(user:f1_small(x)),
+        assert(user:f1_small(y)),
+        wam_target:compile_predicate_to_wam(f1_small/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_small/1, Lines, [fact_count_threshold(5)], Info),
+        Info = fact_shape_info(2, true, all_ground, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto policy should keep compiled below threshold')
+    ),
+    retractall(user:f1_small(_)).
+
+test_f1_layout_user_override :-
+    Test = 'F1: user fact_layout override respected',
+    (   retractall(user:f1_ov(_)),
+        assert(user:f1_ov(a)),
+        wam_target:compile_predicate_to_wam(f1_ov/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_ov/1, Lines,
+            [fact_layout(f1_ov/1, external_source(tsv("data.tsv")))], Info),
+        Info = fact_shape_info(_, _, _, external_source(tsv("data.tsv")))
+    ->  pass(Test)
+    ;   fail_test(Test, 'User override should take precedence')
+    ),
+    retractall(user:f1_ov(_)).
+
+test_f1_comment_in_predicates_hs :-
+    Test = 'F1: classification comment emitted in Predicates.hs',
+    (   retractall(user:f1_cp(_)),
+        assert(user:f1_cp(hello)),
+        assert(user:f1_cp(world)),
+        wam_haskell_target:compile_predicates_to_haskell([f1_cp/1], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Fact shape classification"),
+        sub_string(S, _, _, _, "f1_cp/1: fact_only=true")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Classification comment not found in Predicates.hs')
+    ),
+    retractall(user:f1_cp(_)).
+
+test_f1_segment_parser :-
+    Test = 'F1: split_wam_into_segments parses correctly',
+    (   Lines = [
+            "pred/1:",
+            "    get_constant foo, A1",
+            "    proceed",
+            "L_pred_1_2:",
+            "    get_constant bar, A1",
+            "    proceed"
+        ],
+        split_wam_into_segments(Lines, Segments),
+        length(Segments, 2),
+        Segments = ["pred/1"-Instrs1, "L_pred_1_2"-Instrs2],
+        member(get_constant("foo", "A1"), Instrs1),
+        member(proceed, Instrs1),
+        member(get_constant("bar", "A1"), Instrs2),
+        member(proceed, Instrs2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Segment parser produced wrong results')
+    ).
+
+test_f1_compiled_only_policy :-
+    Test = 'F1: compiled_only policy always returns compiled',
+    (   retractall(user:f1_co(_)),
+        forall(between(1, 200, I), (
+            atom_number(A, I),
+            assert(user:f1_co(A))
+        )),
+        wam_target:compile_predicate_to_wam(f1_co/1, [], WamCode),
+        atom_string(WamCode, WamStr),
+        split_string(WamStr, "\n", "", Lines),
+        classify_fact_predicate(f1_co/1, Lines,
+            [fact_layout_policy(compiled_only)], Info),
+        Info = fact_shape_info(_, true, _, compiled)
+    ->  pass(Test)
+    ;   fail_test(Test, 'compiled_only policy should always return compiled')
+    ),
+    retractall(user:f1_co(_)).
+
+%% Phase F2: FactStream choice point type tests
+%% -----------------------------------------------
+
+test_f2_fact_stream_in_builtin_state :-
+    Test = 'F2: FactStream constructor in BuiltinState type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "FactStream !Int !Int ![(Int, Int)] !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream constructor not found in BuiltinState')
+    ).
+
+test_f2_call_fact_stream_in_instruction :-
+    Test = 'F2: CallFactStream constructor in Instruction type',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "CallFactStream String !Int")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream constructor not found in Instruction type')
+    ).
+
+test_f2_stream_facts_function :-
+    Test = 'F2: streamFacts function present in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "streamFacts :: WamContext -> String -> WamState -> Maybe WamState")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts function not found in runtime')
+    ).
+
+test_f2_resume_fact_stream_handler :-
+    Test = 'F2: resumeBuiltin handles FactStream CPs',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream"),
+        sub_string(S, _, _, _, "FactStream var1 var2")
+    ->  pass(Test)
+    ;   fail_test(Test, 'resumeBuiltin FactStream handler not found')
+    ).
+
+test_f2_call_fact_stream_step_handler :-
+    Test = 'F2: step function handles CallFactStream',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (CallFactStream pred"),
+        sub_string(S, _, _, _, "streamFacts ctx pred")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream step handler not found')
+    ).
+
+test_f2_wc_inline_facts_field :-
+    Test = 'F2: wcInlineFacts field in WamContext',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "wcInlineFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcInlineFacts field not found in WamContext')
+    ).
+
+test_f2_stream_facts_filters_bound_a1 :-
+    Test = 'F2: streamFacts filters by bound A1',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        % Verify the filter logic: Atom aid case filters rows
+        sub_string(S, _, _, _, "Atom aid, Atom bid"),
+        sub_string(S, _, _, _, "Atom aid, _)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts bound-arg filtering logic not found')
+    ).
+
+test_f2_fact_stream_exhaustion_backtracks :-
+    Test = 'F2: FactStream empty rows triggers backtrack',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "resumeBuiltin (FactStream _ _ [] _) _ rest s"),
+        sub_string(S, _, _, _, "backtrack (s { wsCPs = rest")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactStream exhaustion backtrack not found')
+    ).
+
+%% Phase F3: inline_data emission tests
+%% -----------------------------------------------
+
+test_f3_inline_data_emits_call_fact_stream :-
+    Test = 'F3: inline_data predicate emits CallFactStream instruction',
+    (   retractall(user:f3_big(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(parent_, A, P),
+            assert(user:f3_big(A, P))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_big/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream not emitted for inline_data predicate')
+    ),
+    retractall(user:f3_big(_, _)).
+
+test_f3_inline_data_emits_fact_literal :-
+    Test = 'F3: inline_data predicate emits fact literal list',
+    (   retractall(user:f3_lit(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(val_, A, V),
+            assert(user:f3_lit(A, V))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_lit/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "f3LitFacts :: [(Int, Int)]"),
+        sub_string(S, _, _, _, "inline fact data")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact literal list not emitted in Predicates.hs')
+    ),
+    retractall(user:f3_lit(_, _)).
+
+test_f3_below_threshold_stays_compiled :-
+    Test = 'F3: below-threshold predicate stays compiled (no CallFactStream)',
+    (   retractall(user:f3_sm(_, _)),
+        assert(user:f3_sm(a, b)),
+        assert(user:f3_sm(c, d)),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_sm/2], [fact_count_threshold(5)], Code, _),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "CallFactStream")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Below-threshold predicate should not use CallFactStream')
+    ),
+    retractall(user:f3_sm(_, _)).
+
+test_f3_inline_defs_returned :-
+    Test = 'F3: compile_predicates_to_haskell returns InlineDefs',
+    (   retractall(user:f3_def(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(x_, A, X),
+            assert(user:f3_def(A, X))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [f3_def/2], [fact_count_threshold(5)], _, InlineDefs),
+        InlineDefs = [inline_fact(_, _, _)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'InlineDefs not returned for inline_data predicate')
+    ),
+    retractall(user:f3_def(_, _)).
+
+test_f3_fact_tuples_extracted :-
+    Test = 'F3: extract_fact_tuples_hs extracts interned pairs',
+    (   init_atom_intern_table,
+        Lines = [
+            "pred/2:",
+            "    switch_on_constant a:default",
+            "    try_me_else L_pred_2_2",
+            "    get_constant alpha, A1",
+            "    get_constant beta, A2",
+            "    proceed",
+            "L_pred_2_2:",
+            "    trust_me",
+            "    get_constant gamma, A1",
+            "    get_constant delta, A2",
+            "    proceed"
+        ],
+        split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, Tuples),
+        length(Tuples, 2),
+        Tuples = [(Id1a, Id1b), (Id2a, Id2b)],
+        integer(Id1a), integer(Id1b),
+        integer(Id2a), integer(Id2b),
+        Id1a \= Id2a  % different first args
+    ->  pass(Test)
+    ;   fail_test(Test, 'Fact tuple extraction failed')
+    ).
+
+test_f3_camel_case_list_name :-
+    Test = 'F3: haskell_fact_list_name generates camelCase',
+    (   haskell_fact_list_name("category_parent", Name1),
+        Name1 == 'categoryParentFacts',
+        haskell_fact_list_name("edge", Name2),
+        Name2 == 'edgeFacts'
+    ->  pass(Test)
+    ;   fail_test(Test, 'camelCase list name generation failed')
+    ).
+
+%% Phase F4: FactSource abstraction tests
+%% -----------------------------------------------
+
+test_f4_fact_source_type_present :-
+    Test = 'F4: FactSource record type in WamTypes',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "data FactSource = FactSource"),
+        sub_string(S, _, _, _, "fsScan"),
+        sub_string(S, _, _, _, "fsLookupArg1"),
+        sub_string(S, _, _, _, "fsClose")
+    ->  pass(Test)
+    ;   fail_test(Test, 'FactSource type not found in WamTypes')
+    ).
+
+test_f4_wc_fact_sources_field :-
+    Test = 'F4: wcFactSources field in WamContext',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "wcFactSources")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcFactSources field not found in WamContext')
+    ).
+
+test_f4_tsv_fact_source_function :-
+    Test = 'F4: tsvFactSource function in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "tsvFactSource :: InternTable -> FilePath -> IO FactSource")
+    ->  pass(Test)
+    ;   fail_test(Test, 'tsvFactSource function not found in runtime')
+    ).
+
+test_f4_intmap_fact_source_function :-
+    Test = 'F4: intMapFactSource function in runtime',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "intMapFactSource :: IM.IntMap [Int] -> FactSource")
+    ->  pass(Test)
+    ;   fail_test(Test, 'intMapFactSource function not found in runtime')
+    ).
+
+test_f4_stream_facts_fallback_to_fact_sources :-
+    Test = 'F4: streamFacts falls back to wcFactSources',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "wcFactSources ctx"),
+        sub_string(S, _, _, _, "fsLookupArg1 fs"),
+        sub_string(S, _, _, _, "fsScan fs")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFacts does not fall back to wcFactSources')
+    ).
+
+test_f4_stream_fact_rows_helper :-
+    Test = 'F4: streamFactRows helper present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "streamFactRows :: [(Int, Int)] -> WamState -> Maybe WamState")
+    ->  pass(Test)
+    ;   fail_test(Test, 'streamFactRows helper not found')
+    ).
+
+%% E2E: fact access wiring tests
+%% -----------------------------------------------
+
+test_e2e_inline_data_project_has_call_fact_stream :-
+    Test = 'E2E: inline_data project emits CallFactStream in allCode',
+    (   retractall(user:e2e_edge(_, _)),
+        forall(between(1, 6, I), (
+            atom_number(A, I),
+            atom_concat(src_, A, S),
+            atom_concat(dst_, A, D),
+            assert(user:e2e_edge(S, D))
+        )),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [e2e_edge/2], [fact_count_threshold(5)], Code, InlineDefs),
+        atom_string(Code, CS),
+        sub_string(CS, _, _, _, "CallFactStream"),
+        InlineDefs = [inline_fact(_, _, _)]
+    ->  pass(Test)
+    ;   fail_test(Test, 'CallFactStream not in allCode or InlineDefs missing')
+    ),
+    retractall(user:e2e_edge(_, _)).
+
+test_e2e_inline_facts_wiring_generated :-
+    Test = 'E2E: generate_inline_facts_wiring produces wcInlineFacts code',
+    (   InlineDefs = [inline_fact("my_pred", 'myPredFacts', "...")],
+        wam_haskell_target:generate_inline_facts_wiring(InlineDefs, Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "wcInlineFacts"),
+        sub_string(S, _, _, _, "\"my_pred\""),
+        sub_string(S, _, _, _, "myPredFacts")
+    ->  pass(Test)
+    ;   fail_test(Test, 'wcInlineFacts wiring code not generated correctly')
+    ).
+
+test_e2e_empty_inline_defs_no_wiring :-
+    Test = 'E2E: empty InlineDefs produces no wcInlineFacts wiring',
+    (   wam_haskell_target:generate_inline_facts_wiring([], Code),
+        Code == ''
+    ->  pass(Test)
+    ;   fail_test(Test, 'Empty InlineDefs should produce empty wiring code')
+    ).
+
+test_e2e_below_threshold_no_inline :-
+    Test = 'E2E: below-threshold project has no CallFactStream or inline facts',
+    (   retractall(user:e2e_sm(_, _)),
+        assert(user:e2e_sm(x, y)),
+        init_atom_intern_table,
+        wam_haskell_target:compile_predicates_to_haskell(
+            [e2e_sm/2], [fact_count_threshold(5)], Code, InlineDefs),
+        atom_string(Code, CS),
+        \+ sub_string(CS, _, _, _, "CallFactStream"),
+        InlineDefs == []
+    ->  pass(Test)
+    ;   fail_test(Test, 'Below-threshold should have no CallFactStream or InlineDefs')
+    ),
+    retractall(user:e2e_sm(_, _)).
+
+%% Phase B1: LMDB backend tests
+%% -----------------------------------------------
+
+test_b1_lmdb_functions_present_when_enabled :-
+    Test = 'B1: lmdbFactSource emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdbFactSource :: FilePath -> String -> IO FactSource"),
+        sub_string(S, _, _, _, "ingestTsvToLmdb")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB functions not found when use_lmdb(true)')
+    ).
+
+test_b1_lmdb_imports_present_when_enabled :-
+    Test = 'B1: LMDB imports emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "import Database.LMDB.Raw"),
+        sub_string(S, _, _, _, "import Foreign.Ptr")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB imports not found when use_lmdb(true)')
+    ).
+
+test_b1_lmdb_absent_when_disabled :-
+    Test = 'B1: no LMDB code when use_lmdb not set',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "lmdbFactSource"),
+        \+ sub_string(S, _, _, _, "import Database.LMDB")
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB code should not appear without use_lmdb(true)')
+    ).
+
+test_b1_lmdb_cabal_dependency :-
+    Test = 'B1: cabal includes lmdb when use_lmdb(true)',
+    (   wam_haskell_target:generate_cabal_file('test', false, [use_lmdb(true)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdb >= 0.2.5")
+    ->  pass(Test)
+    ;   fail_test(Test, 'lmdb not in cabal deps when use_lmdb(true)')
+    ).
+
+test_b1_no_lmdb_cabal_default :-
+    Test = 'B1: cabal excludes lmdb-simple by default',
+    (   wam_haskell_target:generate_cabal_file('test', false, [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "lmdb-simple")
+    ->  pass(Test)
+    ;   fail_test(Test, 'lmdb-simple should not appear in default cabal deps')
+    ).
+
+test_b1_lmdb_raw_zero_copy_reads :-
+    Test = 'B1: lmdbRawEdgeLookup uses mdb_get for zero-copy reads',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "mdb_get'"),
+        sub_string(S, _, _, _, "peekElemOff"),
+        sub_string(S, _, _, _, "MDB_INTEGERKEY")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
-    format('WAM-Haskell target: Phase 5+6+7+8 codegen tests~n'),
+    format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
     format('========================================~n~n'),
     test_haskell_helper_functions_present,
     test_haskell_functor_builtin_present,
@@ -541,9 +1271,29 @@ run_tests :-
     test_haskell_agg_frame_has_merge_strategy,
     test_haskell_infer_merge_strategy,
     test_haskell_value_nfdata_instance,
+    test_haskell_fork_min_branches_threshold,
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
     test_haskell_runtime_imports_parallel,
+    %% PutStructureDyn: runtime-parsed functors
+    test_haskell_put_structure_dyn_in_types,
+    test_haskell_put_structure_dyn_step_handler,
+    test_haskell_put_structure_dyn_wam_parse,
+    %% Phase 4.3: findall/bag/set merge strategies
+    test_haskell_findall_bag_set_forkable,
+    test_haskell_infer_collect_maps_to_findall,
+    test_haskell_apply_aggregation_set_dedup,
+    test_haskell_apply_aggregation_bag,
+    test_haskell_nub_import,
+    test_wam_bag_template_compiles,
+    test_wam_set_template_compiles,
+    %% Phase 4.4: General negation + parallel negation
+    test_haskell_negation_general_handler,
+    test_haskell_negation_parallel_dispatch,
+    test_haskell_negation_parallel_helper,
+    test_haskell_race_to_true_helper,
+    test_haskell_async_imports,
+    test_haskell_negation_true_fail_fast_paths,
     %% Phase 4.1: Par* instructions + certificate-driven emission
     test_haskell_par_instructions_in_types,
     test_haskell_par_step_handlers_present,
@@ -553,6 +1303,52 @@ run_tests :-
     test_no_par_emission_for_impure_body,
     test_intra_query_parallel_false_kill_switch,
     test_par_rewrite_preserves_non_choice_instrs,
+    %% Phase F1: Fact predicate classification
+    test_f1_fact_only_classification,
+    test_f1_rule_predicate_not_fact_only,
+    test_f1_two_arg_fact_groundness,
+    test_f1_variable_first_arg,
+    test_f1_layout_auto_above_threshold,
+    test_f1_layout_compiled_below_threshold,
+    test_f1_layout_user_override,
+    test_f1_comment_in_predicates_hs,
+    test_f1_segment_parser,
+    test_f1_compiled_only_policy,
+    %% Phase F2: FactStream choice point type
+    test_f2_fact_stream_in_builtin_state,
+    test_f2_call_fact_stream_in_instruction,
+    test_f2_stream_facts_function,
+    test_f2_resume_fact_stream_handler,
+    test_f2_call_fact_stream_step_handler,
+    test_f2_wc_inline_facts_field,
+    test_f2_stream_facts_filters_bound_a1,
+    test_f2_fact_stream_exhaustion_backtracks,
+    %% Phase F3: inline_data emission
+    test_f3_inline_data_emits_call_fact_stream,
+    test_f3_inline_data_emits_fact_literal,
+    test_f3_below_threshold_stays_compiled,
+    test_f3_inline_defs_returned,
+    test_f3_fact_tuples_extracted,
+    test_f3_camel_case_list_name,
+    %% Phase F4: FactSource abstraction
+    test_f4_fact_source_type_present,
+    test_f4_wc_fact_sources_field,
+    test_f4_tsv_fact_source_function,
+    test_f4_intmap_fact_source_function,
+    test_f4_stream_facts_fallback_to_fact_sources,
+    test_f4_stream_fact_rows_helper,
+    %% E2E: fact access wiring
+    test_e2e_inline_data_project_has_call_fact_stream,
+    test_e2e_inline_facts_wiring_generated,
+    test_e2e_empty_inline_defs_no_wiring,
+    test_e2e_below_threshold_no_inline,
+    %% Phase B1: LMDB backend
+    test_b1_lmdb_functions_present_when_enabled,
+    test_b1_lmdb_imports_present_when_enabled,
+    test_b1_lmdb_absent_when_disabled,
+    test_b1_lmdb_cabal_dependency,
+    test_b1_no_lmdb_cabal_default,
+    test_b1_lmdb_raw_zero_copy_reads,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

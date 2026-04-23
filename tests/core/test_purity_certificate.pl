@@ -477,4 +477,56 @@ test(warn_purity_contradictions_with_contradiction,
     % not an error). Output goes to user_error.
     warn_purity_contradictions(user:loud_pred/1).
 
+% ============================================================================
+% Phase P5: JSON serialization round-trips
+% ============================================================================
+
+test(json_round_trip_pure) :-
+    Cert = purity_cert(pure, declared, 1.0, [declared_by_user]),
+    cert_to_json(Cert, Json),
+    cert_from_json(Json, Cert2),
+    Cert2 = purity_cert(pure, declared, 1.0, [declared_by_user]).
+
+test(json_round_trip_impure) :-
+    Cert = purity_cert(impure([io_ops, database_mods]), analyzed(blacklist), 0.95, []),
+    cert_to_json(Cert, Json),
+    cert_from_json(Json, Cert2),
+    Cert2 = purity_cert(impure(Reasons), analyzed(blacklist), 0.95, Reasons),
+    msort(Reasons, Sorted),
+    msort([io_ops, database_mods], Sorted).
+
+test(json_round_trip_unknown_with_compound_reason) :-
+    Cert = purity_cert(unknown, inferred, 0.3, [unknown_builtin(my_op/2)]),
+    cert_to_json(Cert, Json),
+    cert_from_json(Json, Cert2),
+    Cert2 = purity_cert(unknown, inferred, 0.3, [unknown_builtin(my_op/2)]).
+
+test(json_round_trip_certified_source) :-
+    Cert = purity_cert(pure, certified(static_analysis), 0.9, [whitelisted]),
+    cert_to_json(Cert, Json),
+    cert_from_json(Json, Cert2),
+    Cert2 = purity_cert(pure, certified(static_analysis), 0.9, [whitelisted]), !.
+
+test(json_metadata_passthrough) :-
+    Cert = purity_cert(pure, declared, 1.0, []),
+    cert_to_json(Cert, _{subject: "foo/2", producer: "user_annotations"}, Json),
+    get_dict(subject, Json, "foo/2"),
+    get_dict(producer, Json, "user_annotations"),
+    get_dict(verdict, Json, "pure").
+
+test(json_missing_verdict_throws, [throws(error(cert_json_error(missing_verdict), _))]) :-
+    cert_from_json(_{proof: _{kind: "declared"}, confidence: 1.0}, _).
+
+test(json_confidence_out_of_range_throws, [throws(error(cert_json_error(confidence_out_of_range(2.0)), _))]) :-
+    cert_from_json(_{verdict: "pure", proof: _{kind: "declared"}, confidence: 2.0}, _).
+
+test(json_unknown_proof_kind_throws, [throws(error(cert_json_error(unknown_proof_kind("bogus")), _))]) :-
+    cert_from_json(_{verdict: "pure", proof: _{kind: "bogus"}, confidence: 1.0}, _).
+
+test(json_forward_compat_ignores_unknown_keys) :-
+    Json = _{verdict: "pure", proof: _{kind: "declared"},
+             confidence: 1.0, reasons: ["test"], foo: "bar", extra: 42},
+    cert_from_json(Json, Cert),
+    Cert = purity_cert(pure, declared, 1.0, [test]), !.
+
 :- end_tests(purity_certificate).

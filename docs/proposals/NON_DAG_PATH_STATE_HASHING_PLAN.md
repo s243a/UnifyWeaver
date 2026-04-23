@@ -155,18 +155,21 @@ Local survey:
 | negative additive weighted `Min` | 1k | 0.563s | 1.217s | yes | `16,522,183` dominance candidates |
 
 Counted-closure phase split after typed row buffering, pre-sized
-materialization, edge-state node-id preindexing, per-row timing removal, a
-compact `(target, depth)` buffered row shape, O(1) parent-linked
-visited-path extension, a dedicated counted-path traversal frame stack, and
-direct-write seed-batch materialization with a packed target/depth row buffer
-and node-id driven traversal/replay:
+materialization, edge-state node-id preindexing, node-id keyed retained-min
+tracking/flush, concrete-array `nodeValues` replay on the counted-path
+materialization path, cached boxed depth reuse for counted-path row
+construction, split `All` versus retained-min successor loops in the counted
+path hot traversal, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1) parent-linked visited-path extension, a dedicated
+counted-path traversal frame stack, and direct-write seed-batch materialization
+with a packed target/depth row buffer and node-id driven traversal/replay:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
-| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
-| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
-| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+| 300 | All | 95.476ms | 0.000ms | 52.799ms | n/a |
+| 300 | Min | 33.764ms | 0.000ms | 5.895ms | 4.619ms |
+| 1k | All | 62.974ms | 0.000ms | 27.954ms | n/a |
+| 1k | Min | 11.950ms | 0.000ms | 0.925ms | 1.835ms |
 
 Interpretation:
 
@@ -199,10 +202,47 @@ Interpretation:
 - the counted-path `All` staging buffer now stores targets and depths in
   parallel packed lists instead of shuttling a tiny struct per row, reducing
   replay overhead on the final materialization path
+- counted-path `All` now reports replay-shape survey phases and metrics:
+  `path_state_result_replay_setup`, `path_state_result_replay_write`,
+  `path_state_result_replay_batch_count`, and
+  `path_state_result_replay_max_batch_size`; on the current benchmark shape,
+  replay setup is small while replay writes dominate the remaining
+  materialization cost
+- counted-path `All` replay write is now further split into
+  `path_state_result_replay_value_lookup` and
+  `path_state_result_replay_row_alloc`; on the current benchmark shape, row
+  allocation is the larger write-side cost, with value lookup still visible
+- counted-path `All` row allocation is now documented as a broader runtime
+  boundary rather than a purely local replay-loop choice, because execution
+  surfaces, caches, wrappers, and tests all currently expect `object[]` rows
+- a late `object[]` materialization survey now maps the broader runtime
+  boundary layers where a narrower internal row shape would actually have to
+  land to matter: replayable sources, cached result containers, and row
+  wrapper/index abstractions
+- a row-container abstraction survey now identifies cached result containers
+  as the smallest useful prototype seam before attempting a broader
+  row-wrapper/index rewrite
 - counted-path traversal and buffered replay now operate on interned node ids
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
   materialization time
+- counted-path `Min` now keeps retained best depths keyed by interned target
+  node id until the final target-sorted flush, cutting object-key hashing and
+  reducing `best_known_flush_sort` plus final `Min` materialization cost while
+  preserving the deterministic ordering contract
+- counted-path replay/materialization now uses the concrete `object?[]`
+  node-value table directly instead of an `IReadOnlyList<object?>` view, which
+  trims lookup overhead on the hot replay path without changing output rows
+- counted-path row construction now reuses cached boxed depth objects for
+  common small path depths, reducing per-row boxing churn on the high-volume
+  `All` materialization path
+- counted-path traversal now uses a separate `All` hot-path successor loop so
+  the high-volume `All` case no longer pays retained-min dictionary and mode
+  branching checks on every successor candidate
+- counted-path cycle checks on the `All` hot path now reuse precomputed
+  node-id masks and fingerprints from edge-state construction, avoiding
+  repeated per-successor summary derivation while preserving exact
+  cycle-detection behavior
 - weighted `Min` fallback remains the only measured shape where generic
   frontier candidate indexing is directly relevant
 - the next optimization should not add another generic frontier index by

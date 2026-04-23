@@ -3,7 +3,7 @@
 -- Given a source node, returns all transitively reachable target nodes.
 -- Atoms are interned at the FFI boundary so the traversal uses IntMap
 -- and IntSet for O(log n) lookups without hashing.
-nativeKernel_transitive_closure :: IM.IntMap [Int] -> Int -> [Int]
+nativeKernel_transitive_closure :: EdgeLookup -> Int -> [Int]
 nativeKernel_transitive_closure edges source =
   go [source] IS.empty []
   where
@@ -12,6 +12,6 @@ nativeKernel_transitive_closure edges source =
       | IS.member node visited = go queue visited acc
       | otherwise =
           let visited' = IS.insert node visited
-              neighbors = IM.findWithDefault [] node edges
+              neighbors = edges node
               newTargets = filter (\n -> not (IS.member n visited')) neighbors
           in go (queue ++ newTargets) visited' (if node == source then acc else acc ++ [node])

@@ -161,16 +161,18 @@ python_wam_choicepoint_type :-
 python_wam_state_type :-
 	writeln(
 "class WamState:
-    __slots__ = ('regs', 'heap', 'stack', 'trail', 'pdl',
-                 'mode', 's', 'cp', 'b', 'e', 'cut_b',
+    __slots__ = ('regs', 'heap', 'heap_len', 'stack', 'trail', 'trail_len',
+                 'pdl', 'mode', 's', 'cp', 'b', 'e', 'cut_b',
                  'fail', 'halt', 'labels', 'code',
                  'var_counter', 'step_count', 'step_limit',
                  'foreign_predicates')
     def __init__(self):
         self.regs = [None] * 512       # A1→1, X1→101, Y1→201
-        self.heap = []                  # list of terms
+        self.heap = {}                  # dict keyed by int addr — O(1) put/get/trim
+        self.heap_len = 0               # cached heap length
         self.stack = []                 # environments + choice points
         self.trail = []                 # heap addresses to unbind on backtrack
+        self.trail_len = 0              # cached trail length
         self.pdl = []                   # unification push-down list
         self.mode = 'write'             # 'read' | 'write'
         self.s = 0                      # structure pointer
@@ -181,7 +183,7 @@ python_wam_state_type :-
         self.fail = False               # failure flag
         self.halt = False               # halt flag
         self.labels = {}                # label → PC mapping
-        self.code = []                  # instruction list
+        self.code = ()                  # instruction tuple (immutable after load)
         self.var_counter = 0            # fresh variable counter
         self.step_count = 0             # execution step counter
         self.step_limit = 0             # 0 = unlimited
@@ -218,8 +220,9 @@ def deref(val, state):
                 return val
             val = val.ref
         elif isinstance(val, Ref):
-            if val.addr < len(state.heap):
-                val = state.heap[val.addr]
+            h = state.heap.get(val.addr)
+            if h is not None:
+                val = h
             else:
                 return val
         else:
@@ -235,8 +238,10 @@ def trail_if_needed(addr, state):
         cp = state.stack[state.b]
         if isinstance(cp, ChoicePoint) and addr < cp.heap_top:
             state.trail.append(addr)
+            state.trail_len += 1
     else:
         state.trail.append(addr)
+        state.trail_len += 1
 
 def bind(v, val, state):
     \"\"\"Bind Var v to val, with trailing.\"\"\"
@@ -248,16 +253,21 @@ def bind(v, val, state):
 # ============================================================================
 
 def heap_put(state, term):
-    \"\"\"Append term to heap, return its address.\"\"\"
-    addr = len(state.heap)
-    state.heap.append(term)
+    \"\"\"Put term on heap at next address, return its address.\"\"\"
+    addr = state.heap_len
+    state.heap[addr] = term
+    state.heap_len += 1
     return addr
 
 def heap_get(state, addr):
     \"\"\"Read heap cell at addr.\"\"\"
-    if 0 <= addr < len(state.heap):
-        return state.heap[addr]
-    return None
+    return state.heap.get(addr)
+
+def heap_trim(state, mark):
+    \"\"\"Trim heap back to mark — O(k) where k = entries removed.\"\"\"
+    for i in range(mark, state.heap_len):
+        state.heap.pop(i, None)
+    state.heap_len = mark
 
 # ============================================================================
 # Unification (Robinson's algorithm, iterative with PDL)
@@ -321,8 +331,8 @@ def push_choice_point(state, n_args, next_clause):
         saved_e=state.e,
         saved_cp=state.cp,
         next_clause=next_clause,
-        trail_top=len(state.trail),
-        heap_top=len(state.heap),
+        trail_top=state.trail_len,
+        heap_top=state.heap_len,
         saved_b=state.b,
         cut_b=state.cut_b
     )
@@ -338,8 +348,8 @@ def restore_choice_point(state):
         return False
     # Undo trail bindings since trail_top
     unwind_trail(state, cp.trail_top)
-    # Truncate heap
-    del state.heap[cp.heap_top:]
+    # Trim heap (dict-based — remove entries >= mark, reset heap_len)
+    heap_trim(state, cp.heap_top)
     # Restore registers
     for i in range(len(cp.saved_regs)):
         state.regs[i] = cp.saved_regs[i]
@@ -361,13 +371,14 @@ def pop_choice_point(state):
 
 def unwind_trail(state, saved_top):
     \"\"\"Undo variable bindings recorded on the trail since saved_top.\"\"\"
-    while len(state.trail) > saved_top:
+    while state.trail_len > saved_top:
         addr = state.trail.pop()
+        state.trail_len -= 1
         if isinstance(addr, Var):
             addr.ref = None
-        elif isinstance(addr, int) and addr < len(state.heap):
-            cell = state.heap[addr]
-            if isinstance(cell, Var):
+        elif isinstance(addr, int):
+            cell = state.heap.get(addr)
+            if cell is not None and isinstance(cell, Var):
                 cell.ref = None
 
 # ============================================================================

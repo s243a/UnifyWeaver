@@ -58,6 +58,10 @@ traces, with focused validation available in
 grouped edge source, produces non-empty grouped rows, and reports
 `best_effective_plan`, `auto_strategy_select_ms`, and `auto_probe_ms` so
 override-label fallbacks and probe overhead do not distort the comparison.
+Seeded closure cache-hit timing is isolated by
+`benchmark_seeded_cache_hits.py`, which warms source/target seeded closure
+caches once and then reports in-process cache-hit latencies without the
+generation/build overhead of the smoke sequence.
 
 | Target | 300 art | 1K art | 5K art | 10K art |
 |--------|---------|--------|--------|---------|
@@ -114,6 +118,84 @@ python examples/benchmark/benchmark_effective_distance.py \
 
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
+
+### WAM-Clojure Benchmark Runner
+
+The Clojure hybrid-WAM target now has an optimized-project generator:
+
+```bash
+swipl -q -s examples/benchmark/generate_wam_clojure_optimized_benchmark.pl -- \
+  data/benchmark/dev/facts.pl /tmp/wam-clojure-bench seeded kernels_on sidecar
+```
+
+Supported modes:
+
+- `seeded` and `accumulated` select the same optimized Prolog predicate
+  generation path used by the mature WAM benchmark generators.
+- `kernels_on` emits a `category_parent/2` `call-foreign` stub and a
+  Clojure set-backed handler generated from the supplied `facts.pl`; the
+  result-producing runner also precomputes a native Clojure ancestor-hop index.
+- `kernels_off` forces the pure-WAM scaffold with `no_kernels(true)` and keeps
+  the result-producing runner on the on-demand traversal path.
+
+The generator accepts benchmark data modes:
+
+- `inline`: embed benchmark relations directly in the generated namespace
+- `sidecar`: externalize benchmark relation rows into EDN sidecars
+- `artifact`: externalize denser preprocessed grouped sidecars such as
+  `category_parent_by_child.tsv`, with the generator free to keep simpler
+  row sidecars on workload paths where they benchmark better
+- `auto`: honor an optional workload predicate
+  (`wam_clojure_benchmark_data_mode/1` or `benchmark_data_mode/1`) and
+  otherwise fall back to the current scale-favoring heuristic
+
+For finer control, a workload may also declare per-relation overrides:
+
+- `wam_clojure_benchmark_relation_data_mode/2`
+- `benchmark_relation_data_mode/2`
+
+Current relation keys are:
+
+- `article_category`
+- `category_parent`
+
+These are applied on top of `artifact` mode so a workload can, for
+example, keep `category_parent` on the grouped artifact path while
+forcing `article_category` back to row sidecars, or vice versa.
+
+Sidecar-backed modes also emit
+`data/generated/wam_clojure_optimized_bench/manifest.edn`. The manifest
+records the resolved top-level mode, per-relation storage policy, file
+format, row counts, and access contracts. It is intentionally small and
+EDN-readable so desktop validation can inspect the generated data layout
+without parsing generated Clojure source.
+
+The generated project supports two entry modes:
+
+- no arguments: emit the common effective-distance result table
+- predicate key plus EDN args: run the generated WAM predicate wrapper used by
+  smoke tests
+
+Larger Clojure benchmark runs should stay configurable because JVM startup and
+memory behavior are noisy in constrained Termux environments.
+
+The configurable benchmark matrix now treats all Clojure WAM effective-distance
+modes as result-producing `hybrid-wam` targets:
+
+- `clojure-wam-accumulated`
+- `clojure-wam-accumulated-no-kernels`
+- `clojure-wam-seeded`
+- `clojure-wam-seeded-no-kernels`
+
+These targets provide both seeded/accumulated and kernel-on/off comparisons.
+
+Artifact-vs-sidecar Clojure comparisons are available through the
+`clojure-wam-artifact` target set, which adds:
+
+- `clojure-wam-accumulated-artifact`
+- `clojure-wam-accumulated-no-kernels-artifact`
+- `clojure-wam-seeded-artifact`
+- `clojure-wam-seeded-no-kernels-artifact`
 
 ### Why Seeded Closures Win
 
@@ -963,6 +1045,9 @@ For the specific question of why end-to-end counted-path `Min` can still beat
 `All` even when `path_state_best_known_flush_sort` is prominent inside the
 `Min` run, see
 [`docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md`](../../docs/proposals/COUNTED_PATH_MIN_FLUSH_THEORY.md).
+For the separate ordering-contract question, including why benchmark hash
+normalization does not by itself justify sort-elision in the runtime, see
+[`docs/proposals/COUNTED_PATH_MIN_ORDERING_CONTRACT.md`](../../docs/proposals/COUNTED_PATH_MIN_ORDERING_CONTRACT.md).
 
 Command:
 
@@ -971,8 +1056,12 @@ python examples/benchmark/benchmark_shortest_path_to_root.py \
     --scales 300,1k --repetitions 3
 ```
 
-Latest local results after edge-state node-id preindexing, per-row timing
-removal, a compact `(target, depth)` buffered row shape, O(1)
+Latest local results after edge-state node-id preindexing, node-id keyed
+retained-min tracking/flush, concrete-array `nodeValues` replay on the counted
+path materialization path, cached boxed depth reuse for counted-path row
+construction, split `All` versus retained-min successor loops in the counted
+path hot traversal, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1)
 parent-linked visited-path extension, and a dedicated counted-path traversal
 frame stack with explicit initial capacity, direct-write seed-batch
 materialization into the destination output list, a packed target/depth
@@ -981,17 +1070,17 @@ tables:
 
 | Scale | All | Min | Speedup | Output Match | All Output Rows | Min Output Rows | All Successor Candidates | Min Successor Candidates |
 |-------|----:|----:|--------:|--------------|----------------:|----------------:|-------------------------:|-------------------------:|
-| 300 | 0.386s | 0.170s | 2.27x | match | 602,808 | 30,968 | 982,581 | 101,371 |
-| 1k | 0.270s | 0.131s | 2.07x | match | 352,522 | 10,328 | 592,698 | 38,196 |
+| 300 | 0.344s | 0.166s | 2.08x | match | 602,808 | 30,968 | 982,581 | 101,371 |
+| 1k | 0.262s | 0.124s | 2.11x | match | 352,522 | 10,328 | 592,698 | 38,196 |
 
 The same run reports the counted-closure phase split:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 |-------|------|----------:|-------------:|-----------------------:|----------------------:|
-| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
-| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
-| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
-| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+| 300 | All | 95.476ms | 0.000ms | 52.799ms | n/a |
+| 300 | Min | 33.764ms | 0.000ms | 5.895ms | 4.619ms |
+| 1k | All | 62.974ms | 0.000ms | 27.954ms | n/a |
+| 1k | Min | 11.950ms | 0.000ms | 0.925ms | 1.835ms |
 
 Additional path-state observations:
 
@@ -1030,6 +1119,40 @@ Additional path-state observations:
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
   materialization time.
+- counted-path `Min` now keeps retained best depths keyed by interned target
+  node id until the final target-sorted flush, cutting object-key hashing and
+  reducing `best_known_flush_sort` plus final `Min` materialization cost while
+  preserving the deterministic ordering contract.
+- counted-path `All` keeps sorted-seed grouping but currently preserves
+  per-seed traversal/discovery order during replay rather than target-sorting
+  rows; that contract is documented explicitly before any larger replay
+  simplification work.
+- counted-path `All` now reports replay-shape survey phases and metrics:
+  `path_state_result_replay_setup`, `path_state_result_replay_write`,
+  `path_state_result_replay_batch_count`, and
+  `path_state_result_replay_max_batch_size`, so replay tuning can target the
+  dominant write cost without violating the documented ordering contract.
+- counted-path `All` now also splits replay write into
+  `path_state_result_replay_value_lookup` and
+  `path_state_result_replay_row_alloc`; on the current benchmark shape, row
+  allocation is the larger share of replay write cost.
+- counted-path `All` row allocation is now documented as a broader runtime
+  boundary, not just a local replay-loop choice, because execution surfaces,
+  caches, wrappers, and test harnesses all currently traffic in `object[]`
+  rows.
+- counted-path replay/materialization now uses the concrete `object?[]`
+  node-value table directly instead of an `IReadOnlyList<object?>` view, which
+  trims lookup overhead on the hot replay path without changing output rows.
+- counted-path row construction now reuses cached boxed depth objects for
+  common small path depths, reducing per-row boxing churn on the high-volume
+  `All` materialization path.
+- counted-path traversal now uses a separate `All` hot-path successor loop so
+  the high-volume `All` case no longer pays retained-min dictionary and mode
+  branching checks on every successor candidate.
+- counted-path cycle checks on the `All` hot path now reuse precomputed
+  node-id masks and fingerprints from edge-state construction, keeping the
+  exact cycle test while removing repeated per-successor mask/fingerprint
+  derivation from the hottest successor loop.
 - This shape does not exercise the weighted `min_frontier_*` dominance
   candidate problem; generic frontier indexes would not address its primary
   cost. Further counted-closure work should target expansion/materialization

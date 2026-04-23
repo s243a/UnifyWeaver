@@ -23,12 +23,17 @@ host_target_triple(Triple) :-
     ;  Triple = 'x86_64-pc-linux-gnu'
     ).
 
-extract_instr_count(Src, P, C) :-
-    format(atom(Pat), "@~w_code = private constant \\[(?<n>\\d+) x %Instruction\\]", [P]),
-    re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
-extract_label_count(Src, P, C) :-
-    format(atom(Pat), "@~w_labels = private constant \\[(?<n>\\d+) x i32\\]", [P]),
-    re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
+extract_instr_count(Src, _P, C) :-
+    % After the cross-pred label fix, all wam-fallback predicates share
+    % @module_code / @module_labels. The pred-name argument is kept for
+    % backward source compatibility but is ignored in the match.
+    re_matchsub("@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
+                Src, M, []),
+    get_dict(n, M, NS), number_string(C, NS).
+extract_label_count(Src, _P, C) :-
+    re_matchsub("@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
+                Src, M, []),
+    get_dict(n, M, NS), number_string(C, NS).
 
 % === Test predicates ===
 
@@ -85,9 +90,9 @@ entry:
   %a2_0 = insertvalue %Value undef, i32 6, 0
   %a2 = insertvalue %Value %a2_0, i64 0, 1
   %vm = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
-      i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
       i32 ~w)
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
@@ -101,7 +106,7 @@ miss:
   ret i32 255
 }
 ',
-        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom, LC]),
+        [InputVal, IC, IC, IC, LC, LC, LC]),
     setup_call_cleanup(
         open(LLPath, append, Out),
         ( write(Out, '\n'), write(Out, DriverIR) ),
@@ -155,9 +160,9 @@ entry:
   %a2_0 = insertvalue %Value undef, i32 6, 0
   %a2 = insertvalue %Value %a2_0, i64 0, 1
   %vm = call %WamState* @wam_state_new(
-      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @~w_code, i32 0, i32 0),
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
-      i32* getelementptr ([~w x i32], [~w x i32]* @~w_labels, i32 0, i32 0),
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
       i32 ~w)
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
@@ -171,7 +176,7 @@ miss:
   ret i32 255
 }
 ',
-        [InputVal, IC, IC, PredAtom, IC, LC, LC, PredAtom, LC]),
+        [InputVal, IC, IC, IC, LC, LC, LC]),
     setup_call_cleanup(
         open(LLPath, append, Out),
         ( write(Out, '\n'), write(Out, DriverIR) ),

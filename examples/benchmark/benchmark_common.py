@@ -70,6 +70,12 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("wam-") and (shutil.which("swipl") is None or shutil.which("cargo") is None):
             print(f"skip {target}: swipl or cargo not found", file=sys.stderr)
             continue
+        if target.startswith("go-wam-") and (shutil.which("swipl") is None or shutil.which("go") is None):
+            print(f"skip {target}: swipl or go not found", file=sys.stderr)
+            continue
+        if target.startswith("clojure-wam-") and (shutil.which("swipl") is None or shutil.which("java") is None):
+            print(f"skip {target}: swipl or java not found", file=sys.stderr)
+            continue
         targets.append(target)
     return targets
 
@@ -268,6 +274,46 @@ def normalize_three_column_float_rows(
     for col1, col2, value in rows:
         normalized.append(f"{col1}\t{col2}\t{value:.{decimals}f}")
     return "\n".join(normalized)
+
+
+def three_column_parity_vs_reference(
+    normalized_output: str,
+    reference_path: Path,
+    *,
+    decimals: int = 6,
+) -> str:
+    """Compare a normalized three-column benchmark output against a
+    native-SWI reference TSV. Returns a short status string suitable for
+    a benchmark-table column:
+
+      - "match"       — byte-for-byte identical after normalization.
+      - "no-ref"      — reference_path does not exist.
+      - "diff:<N>/ours:<A>/ref:<B>"
+                      — N articles shared but with different deff values,
+                        A articles only in ours, B articles only in ref.
+    """
+    if not reference_path.exists():
+        return "no-ref"
+    try:
+        reference_raw = reference_path.read_text(encoding="utf-8")
+    except OSError:
+        return "no-ref"
+    reference_normalized = normalize_three_column_float_rows(
+        reference_raw, decimals=decimals
+    )
+    if normalized_output == reference_normalized:
+        return "match"
+
+    our_rows = normalized_output.splitlines()[1:]
+    ref_rows = reference_normalized.splitlines()[1:]
+    our_by_key = {row.split("\t")[0]: row for row in our_rows if "\t" in row}
+    ref_by_key = {row.split("\t")[0]: row for row in ref_rows if "\t" in row}
+
+    only_ours = len(set(our_by_key) - set(ref_by_key))
+    only_ref = len(set(ref_by_key) - set(our_by_key))
+    shared = set(our_by_key) & set(ref_by_key)
+    diff_rows = sum(1 for k in shared if our_by_key[k] != ref_by_key[k])
+    return f"diff:{diff_rows}/ours:{only_ours}/ref:{only_ref}"
 
 
 def group_results_by_scale(results: list[object], sort_key=scale_sort_key) -> list[tuple[str, list[object]]]:

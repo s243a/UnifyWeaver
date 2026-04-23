@@ -39,22 +39,25 @@ test_is_label_part_invalid :-
 % --- reg_id/2 tests ---
 
 test_reg_id_x_a :-
-    Test = 'reg_id/2: X and A registers',
-    (   reg_id("X1", IdX1), integer(IdX1), IdX1 = 1,
+    Test = 'reg_id/2: X and A registers (distinct ranges)',
+    (   reg_id("A1", IdA1), integer(IdA1), IdA1 = 1,
         reg_id("A2", IdA2), integer(IdA2), IdA2 = 2,
-        reg_id('X99', 99),
-        reg_id('A100', 100) % Valid syntactically although A1-A99 are more common
+        reg_id('A99', 99),
+        reg_id("X1", IdX1), integer(IdX1), IdX1 = 101,
+        reg_id("X2", 102),
+        reg_id('X99', 199),
+        IdA1 \= IdX1   % The bug this test guards against: A/X collision
     ->  pass(Test)
-    ;   fail_test(Test, 'failed mapping X/A registers')
+    ;   fail_test(Test, 'failed mapping X/A registers into distinct ranges')
     ).
 
 test_reg_id_y :-
-    Test = 'reg_id/2: Y registers',
-    (   reg_id("Y1", IdY1), integer(IdY1), IdY1 = 101,
-        reg_id("Y2", 102),
-        reg_id('Y99', 199)
+    Test = 'reg_id/2: Y registers (+200 offset)',
+    (   reg_id("Y1", IdY1), integer(IdY1), IdY1 = 201,
+        reg_id("Y2", 202),
+        reg_id('Y99', 299)
     ->  pass(Test)
-    ;   fail_test(Test, 'failed mapping Y registers with 100 offset')
+    ;   fail_test(Test, 'failed mapping Y registers with 200 offset')
     ).
 
 test_reg_id_fallback :-

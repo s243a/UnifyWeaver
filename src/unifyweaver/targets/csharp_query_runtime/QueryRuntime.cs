@@ -15,6 +15,7 @@ using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -76,6 +77,15 @@ namespace UnifyWeaver.QueryRuntime
         ExternalMaterialized
     }
 
+    public enum RelationSourceMode
+    {
+        Auto,
+        Preload,
+        Delimited,
+        Artifact,
+        ArtifactPrebuilt
+    }
+
     public enum ClosureRelationRetentionStrategy
     {
         Auto,
@@ -101,6 +111,91 @@ namespace UnifyWeaver.QueryRuntime
         int SkipRows = 1,
         int ExpectedWidth = 2);
 
+    public static class RelationSourceModePolicy
+    {
+        public static bool TryParse(string? value, out RelationSourceMode mode)
+        {
+            switch ((value ?? "preload").Trim().ToLowerInvariant())
+            {
+                case "auto":
+                    mode = RelationSourceMode.Auto;
+                    return true;
+                case "preload":
+                    mode = RelationSourceMode.Preload;
+                    return true;
+                case "delimited":
+                    mode = RelationSourceMode.Delimited;
+                    return true;
+                case "artifact":
+                    mode = RelationSourceMode.Artifact;
+                    return true;
+                case "artifact-prebuilt":
+                    mode = RelationSourceMode.ArtifactPrebuilt;
+                    return true;
+                default:
+                    mode = RelationSourceMode.Preload;
+                    return false;
+            }
+        }
+
+        public static string ToConfigValue(RelationSourceMode mode) => mode switch
+        {
+            RelationSourceMode.Auto => "auto",
+            RelationSourceMode.Preload => "preload",
+            RelationSourceMode.Delimited => "delimited",
+            RelationSourceMode.Artifact => "artifact",
+            RelationSourceMode.ArtifactPrebuilt => "artifact-prebuilt",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+        };
+
+        public static RelationSourceMode ResolveScanBenchmarkMode(
+            RelationSourceMode configuredMode,
+            string mode,
+            long articleRows,
+            long edgeRows)
+        {
+            if (configuredMode != RelationSourceMode.Auto)
+            {
+                return configuredMode;
+            }
+
+            var totalRows = articleRows + edgeRows;
+            return mode switch
+            {
+                "bound_scan" => RelationSourceMode.Artifact,
+                "selective_join" => RelationSourceMode.Artifact,
+                "join" when totalRows <= 5_000L => RelationSourceMode.ArtifactPrebuilt,
+                "join" => RelationSourceMode.Artifact,
+                _ => RelationSourceMode.Preload,
+            };
+        }
+    }
+
+    public sealed class BinaryRelationArtifactManifest
+    {
+        public const string CurrentFormat = "unifyweaver.binary_relation.v1";
+
+        public string Format { get; set; } = CurrentFormat;
+
+        public int Version { get; set; } = 1;
+
+        public string PredicateName { get; set; } = string.Empty;
+
+        public int Arity { get; set; } = 2;
+
+        public string DataPath { get; set; } = string.Empty;
+
+        public long RowCount { get; set; }
+
+        public string? SourcePath { get; set; }
+
+        public long? SourceLength { get; set; }
+
+        public string? SourceSha256 { get; set; }
+
+        public Dictionary<string, string> IndexPaths { get; set; } = new();
+    }
+
     public interface IReplayableRelationSource
     {
         IEnumerable<object[]> Stream();
@@ -115,6 +210,27 @@ namespace UnifyWeaver.QueryRuntime
     public interface IRetentionAwareRelationProvider : IRelationProvider
     {
         bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding);
+    }
+
+    public interface IIndexedRelationProvider : IRelationProvider
+    {
+        bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts);
+    }
+
+    public sealed record IndexedRelationBucket(object Key, IReadOnlyList<object[]> Rows);
+
+    /// <summary>
+    /// Supplies key-ordered row buckets for providers that already maintain
+    /// physical indexes over relation columns.
+    /// </summary>
+    public interface IIndexedRelationBucketProvider : IRelationProvider
+    {
+        bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets);
+    }
+
+    public interface IRelationCardinalityProvider : IRelationProvider
+    {
+        bool TryGetRelationCardinality(PredicateId predicate, out long rowCount);
     }
 
     /// <summary>
@@ -632,6 +748,7 @@ namespace UnifyWeaver.QueryRuntime
         double PairProbeCacheAdmissionMinCostPerProbe = 0,
         int SeededCacheAdmissionMinRows = 0,
         double SeededCacheAdmissionMinRowsPerSeed = 0,
+        bool CompactSeededCacheRows = false,
         /// <summary>
         /// Maximum number of fixpoint iterations before termination.
         /// Prevents non-convergence on cyclic graphs with counter-bearing
@@ -1531,6 +1648,1605 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public static class BinaryRelationArtifactBuilder
+    {
+        public static string BuildFromDelimited(
+            PredicateId predicate,
+            DelimitedRelationSource source,
+            string artifactDirectory,
+            string? artifactName = null)
+        {
+            if (artifactDirectory is null) throw new ArgumentNullException(nameof(artifactDirectory));
+            Directory.CreateDirectory(artifactDirectory);
+
+            artifactName ??= SanitizeArtifactName(predicate);
+            var dataPath = Path.Combine(artifactDirectory, artifactName + ".uwbr");
+            var manifestPath = Path.Combine(artifactDirectory, artifactName + ".uwbr.json");
+
+            var writeResult = BinaryRelationArtifactReader.WriteRows(dataPath, DelimitedRelationReader.ReadRows(source), source.ExpectedWidth);
+            var sourceInfo = File.Exists(source.InputPath)
+                ? new FileInfo(source.InputPath)
+                : null;
+            var manifest = new BinaryRelationArtifactManifest
+            {
+                PredicateName = predicate.Name,
+                Arity = Math.Max(2, source.ExpectedWidth),
+                DataPath = Path.GetFileName(dataPath),
+                RowCount = writeResult.RowCount,
+                SourcePath = source.InputPath,
+                SourceLength = sourceInfo?.Length,
+                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath),
+                IndexPaths = writeResult.IndexPaths
+            };
+
+            var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(manifestPath, json, Encoding.UTF8);
+            return manifestPath;
+        }
+
+        private static string SanitizeArtifactName(PredicateId predicate)
+        {
+            var raw = $"{predicate.Name}_{predicate.Arity}";
+            var builder = new StringBuilder(raw.Length);
+            foreach (var ch in raw)
+            {
+                builder.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
+            }
+
+            return builder.ToString();
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+    }
+
+    public static class BinaryRelationArtifactReader
+    {
+        private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWBR0001");
+        private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("UWBI0001");
+        private static readonly byte[] BucketRowsMagic = Encoding.ASCII.GetBytes("UWBB0001");
+        private static readonly byte[] IndexDirectoryMagic = Encoding.ASCII.GetBytes("UWBD0001");
+        private static readonly byte[] IndexDirectoryFooterMagic = Encoding.ASCII.GetBytes("UWBF0001");
+        private const int IndexDirectoryEntrySize = sizeof(ulong) + sizeof(long) + sizeof(int) + sizeof(long);
+        private const int MaxDirectoryLookupKeys = 256;
+
+        internal sealed record WriteResult(long RowCount, Dictionary<string, string> IndexPaths);
+
+        private sealed record IndexRowRef(long Offset, string[] Values);
+
+        private readonly record struct IndexDirectoryInfo(long TableOffset, int EntryCount);
+
+        private readonly record struct IndexDirectoryEntry(ulong Hash, long KeyOffset, int KeyLength, long EntryOffset);
+
+        public static BinaryRelationArtifactManifest LoadManifest(string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = JsonSerializer.Deserialize<BinaryRelationArtifactManifest>(File.ReadAllText(manifestPath, Encoding.UTF8))
+                ?? throw new InvalidDataException($"Binary relation artifact manifest is empty: {manifestPath}");
+            ValidateManifest(manifest, manifestPath);
+            return manifest;
+        }
+
+        public static IEnumerable<object[]> ReadRows(string manifestPath)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return ReadRows(manifest, manifestPath);
+        }
+
+        public static IEnumerable<object[]> ReadRows(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            return ReadRowsFromData(dataPath, manifest.Arity, manifest.RowCount);
+        }
+
+        internal static WriteResult WriteRows(string dataPath, IEnumerable<object[]> rows, int width)
+        {
+            if (dataPath is null) throw new ArgumentNullException(nameof(dataPath));
+            if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+            width = Math.Max(2, width);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dataPath)) ?? ".");
+            using var stream = new FileStream(dataPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            writer.Write(Magic);
+            writer.Write(1);
+            writer.Write(width);
+            writer.Write(0L);
+
+            long rowCount = 0;
+            var indexes = new Dictionary<int, Dictionary<string, List<IndexRowRef>>>();
+            for (var i = 0; i < width; i++)
+            {
+                indexes[i] = new Dictionary<string, List<IndexRowRef>>(StringComparer.Ordinal);
+            }
+
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < width)
+                {
+                    continue;
+                }
+
+                var rowOffset = stream.Position;
+                var values = new string[width];
+                for (var i = 0; i < width; i++)
+                {
+                    var value = row[i]?.ToString() ?? string.Empty;
+                    values[i] = value;
+                }
+
+                var rowRef = new IndexRowRef(rowOffset, values);
+                for (var i = 0; i < width; i++)
+                {
+                    var value = values[i];
+                    if (!indexes[i].TryGetValue(value, out var rowsForKey))
+                    {
+                        rowsForKey = new List<IndexRowRef>();
+                        indexes[i][value] = rowsForKey;
+                    }
+
+                    rowsForKey.Add(rowRef);
+                    WriteString(writer, values[i]);
+                }
+
+                rowCount++;
+            }
+
+            writer.Flush();
+            stream.Position = Magic.Length + sizeof(int) + sizeof(int);
+            writer.Write(rowCount);
+
+            var artifactDirectory = Path.GetDirectoryName(Path.GetFullPath(dataPath)) ?? ".";
+            var artifactName = Path.GetFileNameWithoutExtension(dataPath);
+            var indexPaths = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var kvp in indexes)
+            {
+                var indexPath = Path.Combine(artifactDirectory, $"{artifactName}.col{kvp.Key}.uwbri");
+                WriteIndex(indexPath, kvp.Key, kvp.Value);
+                var bucketRowsPath = Path.Combine(artifactDirectory, $"{artifactName}.col{kvp.Key}.uwbrb");
+                WriteBucketRows(bucketRowsPath, kvp.Key, width, kvp.Value);
+                indexPaths[kvp.Key.ToString(CultureInfo.InvariantCulture)] = Path.GetFileName(indexPath);
+            }
+
+            return new WriteResult(rowCount, indexPaths);
+        }
+
+        public static IEnumerable<object[]> LookupRows(string manifestPath, int columnIndex, IEnumerable<object> keys)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return LookupRows(manifest, manifestPath, columnIndex, keys);
+        }
+
+        public static IEnumerable<object[]> LookupRows(BinaryRelationArtifactManifest manifest, string manifestPath, int columnIndex, IEnumerable<object> keys)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            if (keys is null) throw new ArgumentNullException(nameof(keys));
+            if (columnIndex < 0 || columnIndex >= manifest.Arity)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+            if (!manifest.IndexPaths.TryGetValue(columnKey, out var indexPathValue))
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var indexPath = Path.IsPathRooted(indexPathValue)
+                ? indexPathValue
+                : Path.Combine(manifestDirectory, indexPathValue);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            var offsets = ReadOffsets(indexPath, columnIndex, keys.Select(key => key?.ToString() ?? string.Empty));
+            return ReadRowsAtOffsets(dataPath, manifest.Arity, offsets);
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(string manifestPath, int columnIndex)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return ReadBuckets(manifest, manifestPath, columnIndex);
+        }
+
+        public static IEnumerable<IndexedRelationBucket> ReadBuckets(BinaryRelationArtifactManifest manifest, string manifestPath, int columnIndex)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            if (columnIndex < 0 || columnIndex >= manifest.Arity)
+            {
+                return Enumerable.Empty<IndexedRelationBucket>();
+            }
+
+            var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+            if (!manifest.IndexPaths.TryGetValue(columnKey, out var indexPathValue))
+            {
+                return Enumerable.Empty<IndexedRelationBucket>();
+            }
+
+            var manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var indexPath = Path.IsPathRooted(indexPathValue)
+                ? indexPathValue
+                : Path.Combine(manifestDirectory, indexPathValue);
+            var bucketRowsPath = Path.ChangeExtension(indexPath, ".uwbrb");
+            if (File.Exists(bucketRowsPath))
+            {
+                return ReadBucketsFromBucketRows(bucketRowsPath, columnIndex, manifest.Arity);
+            }
+
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            return ReadBuckets(indexPath, dataPath, columnIndex, manifest.Arity);
+        }
+
+        public static bool TryReadBucketJoinRows(
+            string leftManifestPath,
+            int leftColumnIndex,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            string rightManifestPath,
+            int rightColumnIndex,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            KeyJoinNode join,
+            out IEnumerable<object[]> rows)
+        {
+            rows = Enumerable.Empty<object[]>();
+
+            var leftManifest = LoadManifest(leftManifestPath);
+            var rightManifest = LoadManifest(rightManifestPath);
+            if (!TryResolveBucketRowsPath(leftManifest, leftManifestPath, leftColumnIndex, out var leftBucketRowsPath) ||
+                !TryResolveBucketRowsPath(rightManifest, rightManifestPath, rightColumnIndex, out var rightBucketRowsPath))
+            {
+                return false;
+            }
+
+            rows = EnumerateBucketMergeJoinRows(
+                leftBucketRowsPath,
+                leftColumnIndex,
+                leftManifest.Arity,
+                leftPattern,
+                leftFilter,
+                rightBucketRowsPath,
+                rightColumnIndex,
+                rightManifest.Arity,
+                rightPattern,
+                rightFilter,
+                join);
+            return true;
+        }
+
+        private static IEnumerable<object[]> ReadRowsFromData(string dataPath, int expectedWidth, long expectedRows)
+        {
+            using var stream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(Magic.Length);
+            if (!magic.SequenceEqual(Magic))
+            {
+                throw new InvalidDataException($"Invalid binary relation artifact magic: {dataPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact version {version}: {dataPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Binary relation artifact width mismatch. Expected {expectedWidth}, found {width}: {dataPath}");
+            }
+
+            var rowCount = reader.ReadInt64();
+            if (expectedRows >= 0 && rowCount != expectedRows)
+            {
+                throw new InvalidDataException($"Binary relation artifact row-count mismatch. Expected {expectedRows}, found {rowCount}: {dataPath}");
+            }
+
+            for (var rowIndex = 0L; rowIndex < rowCount; rowIndex++)
+            {
+                var row = new object[width];
+                for (var i = 0; i < width; i++)
+                {
+                    row[i] = ReadString(reader);
+                }
+
+                yield return row;
+            }
+        }
+
+        private static IEnumerable<object[]> ReadRowsAtOffsets(string dataPath, int expectedWidth, IReadOnlyList<long> offsets)
+        {
+            if (offsets.Count == 0)
+            {
+                yield break;
+            }
+
+            using var stream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+            ValidateDataHeader(reader, dataPath, expectedWidth);
+
+            foreach (var offset in offsets)
+            {
+                stream.Position = offset;
+                var row = new object[expectedWidth];
+                for (var i = 0; i < expectedWidth; i++)
+                {
+                    row[i] = ReadString(reader);
+                }
+
+                yield return row;
+            }
+        }
+
+        private static void ValidateDataHeader(BinaryReader reader, string dataPath, int expectedWidth)
+        {
+            var magic = reader.ReadBytes(Magic.Length);
+            if (!magic.SequenceEqual(Magic))
+            {
+                throw new InvalidDataException($"Invalid binary relation artifact magic: {dataPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact version {version}: {dataPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Binary relation artifact width mismatch. Expected {expectedWidth}, found {width}: {dataPath}");
+            }
+
+            _ = reader.ReadInt64();
+        }
+
+        private static void WriteIndex(string indexPath, int columnIndex, Dictionary<string, List<IndexRowRef>> index)
+        {
+            using var stream = new FileStream(indexPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8);
+            writer.Write(IndexMagic);
+            writer.Write(1);
+            writer.Write(columnIndex);
+            writer.Write(index.Count);
+
+            var directoryEntries = new List<(string Key, long EntryOffset)>(index.Count);
+            foreach (var kvp in index.OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                directoryEntries.Add((kvp.Key, stream.Position));
+                WriteString(writer, kvp.Key);
+                writer.Write(kvp.Value.Count);
+                foreach (var row in kvp.Value)
+                {
+                    writer.Write(row.Offset);
+                }
+            }
+
+            WriteIndexDirectory(writer, directoryEntries);
+        }
+
+        private static void WriteBucketRows(string bucketRowsPath, int columnIndex, int width, Dictionary<string, List<IndexRowRef>> index)
+        {
+            using var stream = new FileStream(bucketRowsPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8);
+            writer.Write(BucketRowsMagic);
+            writer.Write(1);
+            writer.Write(columnIndex);
+            writer.Write(width);
+            writer.Write(index.Count);
+
+            foreach (var kvp in index.OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                WriteString(writer, kvp.Key);
+                writer.Write(kvp.Value.Count);
+                foreach (var row in kvp.Value)
+                {
+                    for (var i = 0; i < width; i++)
+                    {
+                        WriteString(writer, row.Values[i]);
+                    }
+                }
+            }
+        }
+
+        private static IReadOnlyList<long> ReadOffsets(string indexPath, int expectedColumnIndex, IEnumerable<string> keys)
+        {
+            var keySet = new HashSet<string>(keys, StringComparer.Ordinal);
+            if (keySet.Count == 0)
+            {
+                return Array.Empty<long>();
+            }
+
+            if (keySet.Count <= MaxDirectoryLookupKeys &&
+                TryReadOffsetsFromDirectory(indexPath, expectedColumnIndex, keySet, out var directoryOffsets))
+            {
+                return directoryOffsets;
+            }
+
+            return ReadOffsetsSequential(indexPath, expectedColumnIndex, keySet);
+        }
+
+        private static IReadOnlyList<long> ReadOffsetsSequential(string indexPath, int expectedColumnIndex, HashSet<string> keySet)
+        {
+            var offsets = new List<long>();
+            using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(IndexMagic.Length);
+            if (!magic.SequenceEqual(IndexMagic))
+            {
+                throw new InvalidDataException($"Invalid binary relation index artifact magic: {indexPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation index artifact version {version}: {indexPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Binary relation index column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {indexPath}");
+            }
+
+            var keyCount = reader.ReadInt32();
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(reader);
+                var offsetCount = reader.ReadInt32();
+                if (keySet.Contains(key))
+                {
+                    for (var j = 0; j < offsetCount; j++)
+                    {
+                        offsets.Add(reader.ReadInt64());
+                    }
+                }
+                else
+                {
+                    stream.Position += sizeof(long) * offsetCount;
+                }
+            }
+
+            return offsets;
+        }
+
+        private static IEnumerable<IndexedRelationBucket> ReadBuckets(string indexPath, string dataPath, int expectedColumnIndex, int expectedWidth)
+        {
+            using var indexStream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var indexReader = new BinaryReader(indexStream, Encoding.UTF8);
+            ValidateIndexHeader(indexReader, indexPath, expectedColumnIndex, out var keyCount);
+
+            using var dataStream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var dataReader = new BinaryReader(dataStream, Encoding.UTF8);
+            ValidateDataHeader(dataReader, dataPath, expectedWidth);
+
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(indexReader);
+                var offsetCount = indexReader.ReadInt32();
+                if (offsetCount < 0)
+                {
+                    throw new InvalidDataException($"Binary relation index offset count is negative for column {expectedColumnIndex}: {indexPath}");
+                }
+
+                var offsets = new long[offsetCount];
+                for (var j = 0; j < offsetCount; j++)
+                {
+                    offsets[j] = indexReader.ReadInt64();
+                }
+
+                var rows = new List<object[]>(offsetCount);
+                foreach (var offset in offsets)
+                {
+                    dataStream.Position = offset;
+                    var row = new object[expectedWidth];
+                    for (var column = 0; column < expectedWidth; column++)
+                    {
+                        row[column] = ReadString(dataReader);
+                    }
+
+                    rows.Add(row);
+                }
+
+                yield return new IndexedRelationBucket(key, rows);
+            }
+        }
+
+        private static IEnumerable<IndexedRelationBucket> ReadBucketsFromBucketRows(string bucketRowsPath, int expectedColumnIndex, int expectedWidth)
+        {
+            using var stream = new FileStream(bucketRowsPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(BucketRowsMagic.Length);
+            if (!magic.SequenceEqual(BucketRowsMagic))
+            {
+                throw new InvalidDataException($"Invalid binary relation bucket artifact magic: {bucketRowsPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation bucket artifact version {version}: {bucketRowsPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Binary relation bucket column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {bucketRowsPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Binary relation bucket width mismatch. Expected {expectedWidth}, found {width}: {bucketRowsPath}");
+            }
+
+            var keyCount = reader.ReadInt32();
+            if (keyCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation bucket key count is negative: {bucketRowsPath}");
+            }
+
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(reader);
+                var rowCount = reader.ReadInt32();
+                if (rowCount < 0)
+                {
+                    throw new InvalidDataException($"Binary relation bucket row count is negative: {bucketRowsPath}");
+                }
+
+                var rows = new List<object[]>(rowCount);
+                for (var rowIndex = 0; rowIndex < rowCount; rowIndex++)
+                {
+                    var row = new object[width];
+                    for (var column = 0; column < width; column++)
+                    {
+                        row[column] = ReadString(reader);
+                    }
+
+                    rows.Add(row);
+                }
+
+                yield return new IndexedRelationBucket(key, rows);
+            }
+        }
+
+        private static bool TryResolveBucketRowsPath(BinaryRelationArtifactManifest manifest, string manifestPath, int columnIndex, out string bucketRowsPath)
+        {
+            bucketRowsPath = string.Empty;
+            if (columnIndex < 0 || columnIndex >= manifest.Arity)
+            {
+                return false;
+            }
+
+            var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+            if (!manifest.IndexPaths.TryGetValue(columnKey, out var indexPathValue))
+            {
+                return false;
+            }
+
+            var manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var indexPath = Path.IsPathRooted(indexPathValue)
+                ? indexPathValue
+                : Path.Combine(manifestDirectory, indexPathValue);
+            var candidate = Path.ChangeExtension(indexPath, ".uwbrb");
+            if (!File.Exists(candidate))
+            {
+                return false;
+            }
+
+            bucketRowsPath = candidate;
+            return true;
+        }
+
+        private static IEnumerable<object[]> EnumerateBucketMergeJoinRows(
+            string leftBucketRowsPath,
+            int leftColumnIndex,
+            int leftWidth,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            string rightBucketRowsPath,
+            int rightColumnIndex,
+            int rightWidth,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            KeyJoinNode join)
+        {
+            using var leftCursor = new BucketRowsCursor(leftBucketRowsPath, leftColumnIndex, leftWidth);
+            using var rightCursor = new BucketRowsCursor(rightBucketRowsPath, rightColumnIndex, rightWidth);
+
+            var hasLeft = leftCursor.MoveNext();
+            var hasRight = rightCursor.MoveNext();
+            while (hasLeft && hasRight)
+            {
+                var comparison = string.CompareOrdinal(leftCursor.Key, rightCursor.Key);
+                if (comparison < 0)
+                {
+                    hasLeft = leftCursor.MoveNext();
+                    continue;
+                }
+
+                if (comparison > 0)
+                {
+                    hasRight = rightCursor.MoveNext();
+                    continue;
+                }
+
+                var leftRows = FilterBucketRowsForArtifactJoin(leftCursor.ReadRows(), leftPattern, leftFilter);
+                var rightRows = FilterBucketRowsForArtifactJoin(rightCursor.ReadRows(), rightPattern, rightFilter);
+                if (leftRows.Count != 0 && rightRows.Count != 0)
+                {
+                    foreach (var leftRow in leftRows)
+                    {
+                        foreach (var rightRow in rightRows)
+                        {
+                            yield return BuildArtifactJoinOutput(leftRow, rightRow, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+                }
+
+                hasLeft = leftCursor.MoveNext();
+                hasRight = rightCursor.MoveNext();
+            }
+        }
+
+        private sealed class BucketRowsCursor : IDisposable
+        {
+            private readonly FileStream _stream;
+            private readonly BinaryReader _reader;
+            private readonly int _width;
+            private int _remainingKeys;
+            private bool _rowsConsumed;
+
+            public BucketRowsCursor(string bucketRowsPath, int expectedColumnIndex, int expectedWidth)
+            {
+                _stream = new FileStream(bucketRowsPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+                _reader = new BinaryReader(_stream, Encoding.UTF8);
+
+                var magic = _reader.ReadBytes(BucketRowsMagic.Length);
+                if (!magic.SequenceEqual(BucketRowsMagic))
+                {
+                    throw new InvalidDataException($"Invalid binary relation bucket artifact magic: {bucketRowsPath}");
+                }
+
+                var version = _reader.ReadInt32();
+                if (version != 1)
+                {
+                    throw new InvalidDataException($"Unsupported binary relation bucket artifact version {version}: {bucketRowsPath}");
+                }
+
+                var columnIndex = _reader.ReadInt32();
+                if (columnIndex != expectedColumnIndex)
+                {
+                    throw new InvalidDataException($"Binary relation bucket column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {bucketRowsPath}");
+                }
+
+                _width = _reader.ReadInt32();
+                if (_width != expectedWidth)
+                {
+                    throw new InvalidDataException($"Binary relation bucket width mismatch. Expected {expectedWidth}, found {_width}: {bucketRowsPath}");
+                }
+
+                _remainingKeys = _reader.ReadInt32();
+                if (_remainingKeys < 0)
+                {
+                    throw new InvalidDataException($"Binary relation bucket key count is negative: {bucketRowsPath}");
+                }
+            }
+
+            public string Key { get; private set; } = string.Empty;
+
+            public int RowCount { get; private set; }
+
+            public bool MoveNext()
+            {
+                if (_remainingKeys <= 0)
+                {
+                    return false;
+                }
+
+                if (!_rowsConsumed)
+                {
+                    SkipRows();
+                }
+
+                Key = ReadString(_reader);
+                RowCount = _reader.ReadInt32();
+                if (RowCount < 0)
+                {
+                    throw new InvalidDataException("Binary relation bucket row count is negative.");
+                }
+
+                _remainingKeys--;
+                _rowsConsumed = false;
+                return true;
+            }
+
+            public IReadOnlyList<object[]> ReadRows()
+            {
+                if (_rowsConsumed)
+                {
+                    return Array.Empty<object[]>();
+                }
+
+                var rows = new List<object[]>(RowCount);
+                for (var rowIndex = 0; rowIndex < RowCount; rowIndex++)
+                {
+                    var row = new object[_width];
+                    for (var column = 0; column < _width; column++)
+                    {
+                        row[column] = ReadString(_reader);
+                    }
+
+                    rows.Add(row);
+                }
+
+                _rowsConsumed = true;
+                return rows;
+            }
+
+            public void Dispose()
+            {
+                _reader.Dispose();
+                _stream.Dispose();
+            }
+
+            private void SkipRows()
+            {
+                for (var rowIndex = 0; rowIndex < RowCount; rowIndex++)
+                {
+                    for (var column = 0; column < _width; column++)
+                    {
+                        SkipString(_reader);
+                    }
+                }
+
+                _rowsConsumed = true;
+            }
+        }
+
+        private static List<object[]> FilterBucketRowsForArtifactJoin(
+            IReadOnlyList<object[]> rows,
+            object[]? pattern,
+            Func<object[], bool>? filter)
+        {
+            var filtered = new List<object[]>(rows.Count);
+            foreach (var row in rows)
+            {
+                if (row is null)
+                {
+                    continue;
+                }
+
+                if (pattern is not null && !TupleMatchesPatternForArtifactJoin(row, pattern))
+                {
+                    continue;
+                }
+
+                if (filter is not null && !filter(row))
+                {
+                    continue;
+                }
+
+                filtered.Add(row);
+            }
+
+            return filtered;
+        }
+
+        private static bool TupleMatchesPatternForArtifactJoin(object[] tuple, object[] pattern)
+        {
+            var max = Math.Min(tuple.Length, pattern.Length);
+            for (var i = 0; i < max; i++)
+            {
+                var expected = pattern[i];
+                if (ReferenceEquals(expected, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                if (!Equals(tuple[i], expected))
+                {
+                    return false;
+                }
+            }
+
+            for (var i = max; i < pattern.Length; i++)
+            {
+                if (!ReferenceEquals(pattern[i], Wildcard.Value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static object[] BuildArtifactJoinOutput(object[] leftTuple, object[] rightTuple, int leftWidth, int rightWidth, int width)
+        {
+            var output = new object[width];
+            if (leftWidth > 0)
+            {
+                Array.Copy(leftTuple, output, Math.Min(leftWidth, leftTuple.Length));
+            }
+
+            if (rightWidth > 0)
+            {
+                Array.Copy(rightTuple, 0, output, leftWidth, Math.Min(rightWidth, rightTuple.Length));
+            }
+
+            return output;
+        }
+
+        private static void WriteIndexDirectory(BinaryWriter writer, IReadOnlyList<(string Key, long EntryOffset)> entries)
+        {
+            var stream = writer.BaseStream;
+            var directoryOffset = stream.Position;
+            var encodedEntries = entries
+                .Select(entry => (entry.Key, Hash: StableHash(entry.Key), KeyBytes: Encoding.UTF8.GetBytes(entry.Key), entry.EntryOffset))
+                .OrderBy(entry => entry.Hash)
+                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                .ToList();
+
+            writer.Write(IndexDirectoryMagic);
+            writer.Write(1);
+            writer.Write(encodedEntries.Count);
+
+            var tableOffset = stream.Position;
+            var tableLength = encodedEntries.Count * (sizeof(ulong) + sizeof(long) + sizeof(int) + sizeof(long));
+            var keysOffset = tableOffset + tableLength;
+            var nextKeyOffset = keysOffset;
+            foreach (var entry in encodedEntries)
+            {
+                writer.Write(entry.Hash);
+                writer.Write(nextKeyOffset);
+                writer.Write(entry.KeyBytes.Length);
+                writer.Write(entry.EntryOffset);
+                nextKeyOffset += entry.KeyBytes.Length;
+            }
+
+            foreach (var entry in encodedEntries)
+            {
+                writer.Write(entry.KeyBytes);
+            }
+
+            writer.Write(directoryOffset);
+            writer.Write(IndexDirectoryFooterMagic);
+        }
+
+        private static bool TryReadOffsetsFromDirectory(
+            string indexPath,
+            int expectedColumnIndex,
+            HashSet<string> keySet,
+            out IReadOnlyList<long> offsets)
+        {
+            offsets = Array.Empty<long>();
+            using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            ValidateIndexHeader(reader, indexPath, expectedColumnIndex);
+            if (!TryReadIndexDirectoryInfo(reader, indexPath, out var directory))
+            {
+                return false;
+            }
+
+            var result = new List<long>();
+            foreach (var key in keySet)
+            {
+                var hash = StableHash(key);
+                var index = LowerBoundByHash(reader, directory, hash);
+                while (index < directory.EntryCount)
+                {
+                    var entry = ReadIndexDirectoryEntry(reader, directory, index);
+                    if (entry.Hash != hash)
+                    {
+                        break;
+                    }
+
+                    if (ReadDirectoryKey(stream, entry) == key)
+                    {
+                        AddOffsetsFromIndexEntry(reader, indexPath, expectedColumnIndex, entry.EntryOffset, key, result);
+                        break;
+                    }
+
+                    index++;
+                }
+            }
+
+            offsets = result;
+            return true;
+        }
+
+        private static bool TryReadIndexDirectoryInfo(BinaryReader reader, string indexPath, out IndexDirectoryInfo directory)
+        {
+            directory = default;
+            var stream = reader.BaseStream;
+            var footerLength = sizeof(long) + IndexDirectoryFooterMagic.Length;
+            if (stream.Length < footerLength)
+            {
+                return false;
+            }
+
+            stream.Position = stream.Length - footerLength;
+            var directoryOffset = reader.ReadInt64();
+            var footerMagic = reader.ReadBytes(IndexDirectoryFooterMagic.Length);
+            if (!footerMagic.SequenceEqual(IndexDirectoryFooterMagic) ||
+                directoryOffset < IndexMagic.Length + sizeof(int) + sizeof(int) + sizeof(int) ||
+                directoryOffset >= stream.Length - footerLength)
+            {
+                return false;
+            }
+
+            stream.Position = directoryOffset;
+            var directoryMagic = reader.ReadBytes(IndexDirectoryMagic.Length);
+            if (!directoryMagic.SequenceEqual(IndexDirectoryMagic))
+            {
+                return false;
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation index directory version {version}: {indexPath}");
+            }
+
+            var entryCount = reader.ReadInt32();
+            if (entryCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index directory entry count is negative: {indexPath}");
+            }
+
+            var tableOffset = stream.Position;
+            directory = new IndexDirectoryInfo(tableOffset, entryCount);
+            return true;
+        }
+
+        private static IndexDirectoryEntry ReadIndexDirectoryEntry(BinaryReader reader, IndexDirectoryInfo directory, int index)
+        {
+            if (index < 0 || index >= directory.EntryCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+
+            var stream = reader.BaseStream;
+            stream.Position = directory.TableOffset + ((long)index * IndexDirectoryEntrySize);
+            var hash = reader.ReadUInt64();
+            var keyOffset = reader.ReadInt64();
+            var keyLength = reader.ReadInt32();
+            var entryOffset = reader.ReadInt64();
+            if (keyOffset < 0 || keyLength < 0 || entryOffset < 0)
+            {
+                throw new InvalidDataException("Binary relation index directory contains a negative offset or length.");
+            }
+
+            return new IndexDirectoryEntry(hash, keyOffset, keyLength, entryOffset);
+        }
+
+        private static void AddOffsetsFromIndexEntry(
+            BinaryReader reader,
+            string indexPath,
+            int expectedColumnIndex,
+            long entryOffset,
+            string expectedKey,
+            List<long> offsets)
+        {
+            var stream = reader.BaseStream;
+            stream.Position = entryOffset;
+            var key = ReadString(reader);
+            if (!string.Equals(key, expectedKey, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Binary relation index directory points to key '{key}', not '{expectedKey}': {indexPath}");
+            }
+
+            var offsetCount = reader.ReadInt32();
+            if (offsetCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index offset count is negative for column {expectedColumnIndex}: {indexPath}");
+            }
+
+            for (var i = 0; i < offsetCount; i++)
+            {
+                offsets.Add(reader.ReadInt64());
+            }
+        }
+
+        private static string ReadDirectoryKey(Stream stream, IndexDirectoryEntry entry)
+        {
+            stream.Position = entry.KeyOffset;
+            var bytes = new byte[entry.KeyLength];
+            var read = stream.Read(bytes, 0, bytes.Length);
+            if (read != bytes.Length)
+            {
+                throw new EndOfStreamException("Binary relation index directory ended while reading a key.");
+            }
+
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        private static int LowerBoundByHash(BinaryReader reader, IndexDirectoryInfo directory, ulong hash)
+        {
+            var lo = 0;
+            var hi = directory.EntryCount;
+            var stream = reader.BaseStream;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                stream.Position = directory.TableOffset + ((long)mid * IndexDirectoryEntrySize);
+                var midHash = reader.ReadUInt64();
+                if (midHash < hash)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            return lo;
+        }
+
+        private static void ValidateIndexHeader(BinaryReader reader, string indexPath, int expectedColumnIndex)
+        {
+            ValidateIndexHeader(reader, indexPath, expectedColumnIndex, out _);
+        }
+
+        private static void ValidateIndexHeader(BinaryReader reader, string indexPath, int expectedColumnIndex, out int keyCount)
+        {
+            var magic = reader.ReadBytes(IndexMagic.Length);
+            if (!magic.SequenceEqual(IndexMagic))
+            {
+                throw new InvalidDataException($"Invalid binary relation index artifact magic: {indexPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation index artifact version {version}: {indexPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Binary relation index column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {indexPath}");
+            }
+
+            keyCount = reader.ReadInt32();
+            if (keyCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation index key count is negative: {indexPath}");
+            }
+        }
+
+        private static ulong StableHash(string value)
+        {
+            const ulong offsetBasis = 14695981039346656037UL;
+            const ulong prime = 1099511628211UL;
+
+            var hash = offsetBasis;
+            var bytes = Encoding.UTF8.GetBytes(value);
+            foreach (var b in bytes)
+            {
+                hash ^= b;
+                hash *= prime;
+            }
+
+            return hash;
+        }
+
+        private static string ResolveDataPath(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            var dataPath = manifest.DataPath;
+            if (string.IsNullOrWhiteSpace(dataPath))
+            {
+                throw new InvalidDataException($"Binary relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            return Path.IsPathRooted(dataPath)
+                ? dataPath
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", dataPath);
+        }
+
+        private static void ValidateManifest(BinaryRelationArtifactManifest manifest, string manifestPath)
+        {
+            if (!string.Equals(manifest.Format, BinaryRelationArtifactManifest.CurrentFormat, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact format '{manifest.Format}': {manifestPath}");
+            }
+
+            if (manifest.Version != 1)
+            {
+                throw new InvalidDataException($"Unsupported binary relation artifact manifest version {manifest.Version}: {manifestPath}");
+            }
+
+            if (manifest.Arity < 1)
+            {
+                throw new InvalidDataException($"Binary relation artifact arity must be positive: {manifestPath}");
+            }
+
+            if (manifest.RowCount < 0)
+            {
+                throw new InvalidDataException($"Binary relation artifact row count must be non-negative: {manifestPath}");
+            }
+        }
+
+        private static void WriteString(BinaryWriter writer, string value)
+        {
+            var bytes = Encoding.UTF8.GetBytes(value);
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+
+        private static string ReadString(BinaryReader reader)
+        {
+            var length = reader.ReadInt32();
+            if (length < 0)
+            {
+                throw new InvalidDataException("Binary relation artifact contains a negative string length.");
+            }
+
+            var bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+            {
+                throw new EndOfStreamException("Binary relation artifact ended while reading a string field.");
+            }
+
+            return Encoding.UTF8.GetString(bytes);
+        }
+
+        private static void SkipString(BinaryReader reader)
+        {
+            var length = reader.ReadInt32();
+            if (length < 0)
+            {
+                throw new InvalidDataException("Binary relation artifact contains a negative string length.");
+            }
+
+            reader.BaseStream.Position += length;
+        }
+    }
+
+    public sealed class BinaryRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IIndexedRelationBucketProvider, IRelationCardinalityProvider
+    {
+        private readonly IRelationProvider? _fallback;
+        private readonly Dictionary<PredicateId, string> _manifestPaths = new();
+        private readonly Dictionary<PredicateId, IReplayableRelationSource> _replayableSources = new();
+
+        public BinaryRelationArtifactProvider(IRelationProvider? fallback = null)
+        {
+            _fallback = fallback;
+        }
+
+        public void RegisterArtifact(PredicateId predicate, string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+            if (!string.Equals(manifest.PredicateName, predicate.Name, StringComparison.Ordinal) ||
+                manifest.Arity != predicate.Arity)
+            {
+                throw new InvalidDataException($"Binary relation artifact manifest describes {manifest.PredicateName}/{manifest.Arity}, not {predicate}.");
+            }
+
+            _manifestPaths[predicate] = manifestPath;
+            _replayableSources.Remove(predicate);
+        }
+
+        public IEnumerable<object[]> GetFacts(PredicateId predicate)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                return BinaryRelationArtifactReader.ReadRows(manifestPath);
+            }
+
+            return _fallback?.GetFacts(predicate) ?? Array.Empty<object[]>();
+        }
+
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                if (preferredMode == RelationRetentionMode.Replayable)
+                {
+                    if (!_replayableSources.TryGetValue(predicate, out var source))
+                    {
+                        source = new ReplayableRelationSource(() => BinaryRelationArtifactReader.ReadRows(manifestPath));
+                        _replayableSources[predicate] = source;
+                    }
+
+                    binding = new RelationBinding(RelationRetentionMode.Replayable, ReplayableSource: source);
+                    return true;
+                }
+
+                if (preferredMode == RelationRetentionMode.ExternalMaterialized)
+                {
+                    binding = new RelationBinding(RelationRetentionMode.ExternalMaterialized);
+                    return true;
+                }
+            }
+
+            if (_fallback is IRetentionAwareRelationProvider retentionAwareFallback &&
+                retentionAwareFallback.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
+        }
+
+        public bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+                var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+                if (manifest.IndexPaths.ContainsKey(columnKey))
+                {
+                    facts = BinaryRelationArtifactReader.LookupRows(manifest, manifestPath, columnIndex, keys);
+                    return true;
+                }
+            }
+
+            if (_fallback is IIndexedRelationProvider indexedFallback &&
+                indexedFallback.TryLookupFacts(predicate, columnIndex, keys, out facts))
+            {
+                return true;
+            }
+
+            facts = default!;
+            return false;
+        }
+
+        public bool TryReadIndexedBuckets(PredicateId predicate, int columnIndex, out IEnumerable<IndexedRelationBucket> buckets)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+                var columnKey = columnIndex.ToString(CultureInfo.InvariantCulture);
+                if (manifest.IndexPaths.ContainsKey(columnKey))
+                {
+                    buckets = BinaryRelationArtifactReader.ReadBuckets(manifest, manifestPath, columnIndex);
+                    return true;
+                }
+            }
+
+            if (_fallback is IIndexedRelationBucketProvider bucketFallback &&
+                bucketFallback.TryReadIndexedBuckets(predicate, columnIndex, out buckets))
+            {
+                return true;
+            }
+
+            buckets = default!;
+            return false;
+        }
+
+        public bool TryReadBucketJoinRows(
+            PredicateId leftPredicate,
+            int leftColumnIndex,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            PredicateId rightPredicate,
+            int rightColumnIndex,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            KeyJoinNode join,
+            out IEnumerable<object[]> rows)
+        {
+            rows = Enumerable.Empty<object[]>();
+            if (!_manifestPaths.TryGetValue(leftPredicate, out var leftManifestPath) ||
+                !_manifestPaths.TryGetValue(rightPredicate, out var rightManifestPath))
+            {
+                return false;
+            }
+
+            return BinaryRelationArtifactReader.TryReadBucketJoinRows(
+                leftManifestPath,
+                leftColumnIndex,
+                leftPattern,
+                leftFilter,
+                rightManifestPath,
+                rightColumnIndex,
+                rightPattern,
+                rightFilter,
+                join,
+                out rows);
+        }
+
+        public bool TryGetRelationCardinality(PredicateId predicate, out long rowCount)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = BinaryRelationArtifactReader.LoadManifest(manifestPath);
+                rowCount = manifest.RowCount;
+                return true;
+            }
+
+            if (_fallback is IRelationCardinalityProvider cardinalityFallback &&
+                cardinalityFallback.TryGetRelationCardinality(predicate, out rowCount))
+            {
+                return true;
+            }
+
+            rowCount = 0;
+            return false;
+        }
+    }
+
+    internal sealed class CachedResultRows
+    {
+        private readonly IReadOnlyList<object[]>? _objectRows;
+        private readonly IReadOnlyList<object?>? _leftValues;
+        private readonly IReadOnlyList<object?>? _rightValues;
+        private readonly object? _seedValue;
+        private readonly object?[]? _nodeValues;
+        private readonly IReadOnlyList<int>? _targetNodeIds;
+        private readonly IReadOnlyList<int>? _depths;
+        private readonly Func<int, object>? _boxDepth;
+        private IReadOnlyList<object[]>? _materializedRows;
+
+        private CachedResultRows(IReadOnlyList<object[]> objectRows)
+        {
+            _objectRows = objectRows ?? throw new ArgumentNullException(nameof(objectRows));
+        }
+
+        private CachedResultRows(
+            IReadOnlyList<object?> leftValues,
+            IReadOnlyList<object?> rightValues)
+        {
+            if (leftValues is null) throw new ArgumentNullException(nameof(leftValues));
+            if (rightValues is null) throw new ArgumentNullException(nameof(rightValues));
+
+            if (leftValues.Count != rightValues.Count)
+            {
+                throw new ArgumentException("Binary row buffers must have the same row count.", nameof(rightValues));
+            }
+
+            _leftValues = leftValues;
+            _rightValues = rightValues;
+        }
+
+        private CachedResultRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth)
+        {
+            if (targetNodeIds is null) throw new ArgumentNullException(nameof(targetNodeIds));
+            if (depths is null) throw new ArgumentNullException(nameof(depths));
+
+            if (targetNodeIds.Count != depths.Count)
+            {
+                throw new ArgumentException("Target and depth buffers must have the same row count.", nameof(depths));
+            }
+
+            _seedValue = seedValue;
+            _nodeValues = nodeValues ?? throw new ArgumentNullException(nameof(nodeValues));
+            _targetNodeIds = targetNodeIds;
+            _depths = depths;
+            _boxDepth = boxDepth ?? throw new ArgumentNullException(nameof(boxDepth));
+        }
+
+        public static CachedResultRows FromObjectRows(IReadOnlyList<object[]> rows) => new(rows);
+
+        public static CachedResultRows FromBinaryRows(
+            IReadOnlyList<object?> leftValues,
+            IReadOnlyList<object?> rightValues) =>
+            new(leftValues, rightValues);
+
+        public static CachedResultRows FromPathAwareDepthRows(
+            object? seedValue,
+            object?[] nodeValues,
+            IReadOnlyList<int> targetNodeIds,
+            IReadOnlyList<int> depths,
+            Func<int, object> boxDepth) =>
+            new(seedValue, nodeValues, targetNodeIds, depths, boxDepth);
+
+        public int Count => _objectRows?.Count ?? _leftValues?.Count ?? _targetNodeIds?.Count ?? 0;
+
+        public IReadOnlyList<object[]> AsObjectRows()
+        {
+            if (_objectRows is not null)
+            {
+                return _objectRows;
+            }
+
+            if (_materializedRows is not null)
+            {
+                return _materializedRows;
+            }
+
+            var rows = new List<object[]>(Count);
+            AppendTo(rows);
+            if (_leftValues is null)
+            {
+                _materializedRows = rows;
+            }
+            return rows;
+        }
+
+        public IEnumerable<object[]> AsEnumerable()
+        {
+            if (_objectRows is not null)
+            {
+                return _objectRows;
+            }
+
+            if (_leftValues is not null)
+            {
+                return new BinaryRowsView(_leftValues, _rightValues!);
+            }
+
+            return AsObjectRows();
+        }
+
+        private sealed class BinaryRowsView :
+            IReadOnlyList<object[]>,
+            ICollection<object[]>
+        {
+            private readonly IReadOnlyList<object?> _leftValues;
+            private readonly IReadOnlyList<object?> _rightValues;
+
+            public BinaryRowsView(
+                IReadOnlyList<object?> leftValues,
+                IReadOnlyList<object?> rightValues)
+            {
+                _leftValues = leftValues;
+                _rightValues = rightValues;
+            }
+
+            public int Count => _leftValues.Count;
+
+            public bool IsReadOnly => true;
+
+            public object[] this[int index] => new object[] { _leftValues[index]!, _rightValues[index]! };
+
+            public IEnumerator<object[]> GetEnumerator()
+            {
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    yield return new object[] { _leftValues[i]!, _rightValues[i]! };
+                }
+            }
+
+            IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+            public void CopyTo(object[][] array, int arrayIndex)
+            {
+                if (array is null) throw new ArgumentNullException(nameof(array));
+
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    array[arrayIndex + i] = new object[] { _leftValues[i]!, _rightValues[i]! };
+                }
+            }
+
+            public bool Contains(object[] item)
+            {
+                if (item is null || item.Length < 2)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < _leftValues.Count; i++)
+                {
+                    if (Equals(_leftValues[i], item[0]) && Equals(_rightValues[i], item[1]))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            public void Add(object[] item) => throw new NotSupportedException();
+
+            public void Clear() => throw new NotSupportedException();
+
+            public bool Remove(object[] item) => throw new NotSupportedException();
+        }
+
+        public void AppendTo(
+            ICollection<object[]> output,
+            Action? recordOutputRow = null,
+            Action<TimeSpan>? addSetupElapsed = null,
+            Action<TimeSpan>? addRowAllocElapsed = null,
+            Action<TimeSpan>? addWriteElapsed = null)
+        {
+            if (output is null) throw new ArgumentNullException(nameof(output));
+
+            if (_objectRows is not null)
+            {
+                foreach (var row in _objectRows)
+                {
+                    output.Add(row);
+                    recordOutputRow?.Invoke();
+                }
+
+                return;
+            }
+
+            if (_leftValues is not null)
+            {
+                var leftValues = _leftValues;
+                var rightValues = _rightValues!;
+
+                if (output is List<object[]> binaryOutputList)
+                {
+                    var setupStarted = Stopwatch.GetTimestamp();
+                    var baseIndex = binaryOutputList.Count;
+                    CollectionsMarshal.SetCount(binaryOutputList, baseIndex + leftValues.Count);
+                    var span = CollectionsMarshal.AsSpan(binaryOutputList);
+                    addSetupElapsed?.Invoke(Stopwatch.GetElapsedTime(setupStarted));
+
+                    var writeStarted = Stopwatch.GetTimestamp();
+                    var rowAllocStarted = Stopwatch.GetTimestamp();
+                    for (var i = 0; i < leftValues.Count; i++)
+                    {
+                        span[baseIndex + i] = new object[] { leftValues[i]!, rightValues[i]! };
+                        recordOutputRow?.Invoke();
+                    }
+                    addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(rowAllocStarted));
+                    addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(writeStarted));
+                    return;
+                }
+
+                var binaryFallbackWriteStarted = Stopwatch.GetTimestamp();
+                var binaryFallbackRowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < leftValues.Count; i++)
+                {
+                    output.Add(new object[] { leftValues[i]!, rightValues[i]! });
+                    recordOutputRow?.Invoke();
+                }
+                addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(binaryFallbackRowAllocStarted));
+                addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(binaryFallbackWriteStarted));
+                return;
+            }
+
+            var nodeValues = _nodeValues!;
+            var targetNodeIds = _targetNodeIds!;
+            var depths = _depths!;
+            var boxDepth = _boxDepth!;
+            var seedValue = _seedValue!;
+
+            if (output is List<object[]> outputList)
+            {
+                var setupStarted = Stopwatch.GetTimestamp();
+                var baseIndex = outputList.Count;
+                CollectionsMarshal.SetCount(outputList, baseIndex + targetNodeIds.Count);
+                var span = CollectionsMarshal.AsSpan(outputList);
+                addSetupElapsed?.Invoke(Stopwatch.GetElapsedTime(setupStarted));
+
+                var writeStarted = Stopwatch.GetTimestamp();
+                var rowAllocStarted = Stopwatch.GetTimestamp();
+                for (var i = 0; i < targetNodeIds.Count; i++)
+                {
+                    span[baseIndex + i] = new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) };
+                    recordOutputRow?.Invoke();
+                }
+                addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(rowAllocStarted));
+                addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(writeStarted));
+                return;
+            }
+
+            var fallbackWriteStarted = Stopwatch.GetTimestamp();
+            var fallbackRowAllocStarted = Stopwatch.GetTimestamp();
+            for (var i = 0; i < targetNodeIds.Count; i++)
+            {
+                output.Add(new object[] { seedValue, nodeValues[targetNodeIds[i]]!, boxDepth(depths[i]) });
+                recordOutputRow?.Invoke();
+            }
+            addRowAllocElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackRowAllocStarted));
+            addWriteElapsed?.Invoke(Stopwatch.GetElapsedTime(fallbackWriteStarted));
+        }
+    }
+
     internal sealed class PathAwareSuccessorBucket
     {
         public PathAwareSuccessorBucket(object? source, int sourceNodeId)
@@ -1546,6 +3262,10 @@ namespace UnifyWeaver.QueryRuntime
         public List<object?> Targets { get; } = new();
 
         public List<int> TargetNodeIds { get; } = new();
+
+        public ulong TargetMaskA { get; set; }
+
+        public ulong TargetMaskB { get; set; }
     }
 
     internal sealed class PathAwareEdgeState
@@ -1554,14 +3274,20 @@ namespace UnifyWeaver.QueryRuntime
             IReadOnlyDictionary<object, PathAwareSuccessorBucket> successors,
             IReadOnlyList<object?> seeds,
             IReadOnlyList<int> seedNodeIds,
-            IReadOnlyList<object?> nodeValues,
-            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId)
+            object?[] nodeValues,
+            IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
+            ulong[] nodeMaskAs,
+            ulong[] nodeMaskBs,
+            ulong[] nodeFingerprints)
         {
             Successors = successors;
             Seeds = seeds;
             SeedNodeIds = seedNodeIds;
             NodeValues = nodeValues;
             BucketsByNodeId = bucketsByNodeId;
+            NodeMaskAs = nodeMaskAs;
+            NodeMaskBs = nodeMaskBs;
+            NodeFingerprints = nodeFingerprints;
         }
 
         public IReadOnlyDictionary<object, PathAwareSuccessorBucket> Successors { get; }
@@ -1570,9 +3296,15 @@ namespace UnifyWeaver.QueryRuntime
 
         public IReadOnlyList<int> SeedNodeIds { get; }
 
-        public IReadOnlyList<object?> NodeValues { get; }
+        public object?[] NodeValues { get; }
 
         public IReadOnlyList<PathAwareSuccessorBucket?> BucketsByNodeId { get; }
+
+        public ulong[] NodeMaskAs { get; }
+
+        public ulong[] NodeMaskBs { get; }
+
+        public ulong[] NodeFingerprints { get; }
     }
 
     internal sealed class PathAwareSccGraph
@@ -1724,10 +3456,72 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public sealed class ConfiguredDelimitedRelationProvider
+    {
+        public RelationSourceMode SourceMode { get; }
+
+        public InMemoryRelationProvider MemoryProvider { get; }
+
+        public BinaryRelationArtifactProvider? ArtifactProvider { get; }
+
+        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? MemoryProvider;
+
+        public string? ArtifactDirectory { get; }
+
+        public ConfiguredDelimitedRelationProvider(
+            RelationSourceMode sourceMode,
+            string? artifactDirectory = null,
+            InMemoryRelationProvider? memoryProvider = null)
+        {
+            if (sourceMode == RelationSourceMode.Auto)
+            {
+                throw new ArgumentException("Auto source mode must be resolved before provider construction.", nameof(sourceMode));
+            }
+
+            SourceMode = sourceMode;
+            MemoryProvider = memoryProvider ?? new InMemoryRelationProvider();
+
+            if (sourceMode == RelationSourceMode.Artifact || sourceMode == RelationSourceMode.ArtifactPrebuilt)
+            {
+                ArtifactDirectory = string.IsNullOrWhiteSpace(artifactDirectory)
+                    ? Path.Combine(Path.GetTempPath(), $"uw-rel-artifacts-{Guid.NewGuid():N}")
+                    : artifactDirectory;
+                ArtifactProvider = new BinaryRelationArtifactProvider(MemoryProvider);
+            }
+        }
+
+        public void RegisterBinaryRelation(PredicateId predicate, DelimitedRelationSource source, string? artifactName = null)
+        {
+            switch (SourceMode)
+            {
+                case RelationSourceMode.Preload:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    return;
+                case RelationSourceMode.Delimited:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    return;
+                case RelationSourceMode.Artifact:
+                case RelationSourceMode.ArtifactPrebuilt:
+                    if (ArtifactProvider is null || string.IsNullOrWhiteSpace(ArtifactDirectory))
+                    {
+                        throw new InvalidOperationException("Artifact mode requires an initialized artifact provider.");
+                    }
+
+                    var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
+                    ArtifactProvider.RegisterArtifact(predicate, manifestPath);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
+            }
+        }
+    }
+
     public sealed class QueryExecutor
     {
         private readonly IRelationProvider _provider;
         private static readonly object NullFactIndexKey = new();
+        private static readonly object[] SmallIntBoxes = CreateSmallIntBoxes(256);
         private static readonly RowWrapperComparer StructuralRowWrapperComparer = new(StructuralArrayComparer.Instance);
         private readonly EvaluationContext? _cacheContext;
         private readonly int _pairProbeCacheMaxEntries;
@@ -1736,6 +3530,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly double _pairProbeCacheAdmissionMinCostPerProbe;
         private readonly int _seededCacheAdmissionMinRows;
         private readonly double _seededCacheAdmissionMinRowsPerSeed;
+        private readonly bool _compactSeededCacheRows;
         private readonly int _maxFixpointIterations;
         private readonly DagRelationRetentionStrategy _dagRelationRetentionStrategy;
         private readonly ScanRelationRetentionStrategy _scanRelationRetentionStrategy;
@@ -1759,6 +3554,7 @@ namespace UnifyWeaver.QueryRuntime
             _pairProbeCacheAdmissionMinCostPerProbe = Math.Max(0d, options.PairProbeCacheAdmissionMinCostPerProbe);
             _seededCacheAdmissionMinRows = Math.Max(0, options.SeededCacheAdmissionMinRows);
             _seededCacheAdmissionMinRowsPerSeed = Math.Max(0d, options.SeededCacheAdmissionMinRowsPerSeed);
+            _compactSeededCacheRows = options.CompactSeededCacheRows;
             _maxFixpointIterations = Math.Max(0, options.MaxFixpointIterations);
             _dagRelationRetentionStrategy = options.DagRelationRetentionStrategy;
             _scanRelationRetentionStrategy = options.ScanRelationRetentionStrategy;
@@ -1770,6 +3566,24 @@ namespace UnifyWeaver.QueryRuntime
             _pathAwareSupportRelationRetentionStrategy = options.PathAwareSupportRelationRetentionStrategy;
             _pathAwareGroupedMinStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareGroupedMinStrategy);
             _pathAwareWeightSumStrategy = ToPathAwareGroupedSummaryStrategy(options.PathAwareWeightSumStrategy);
+        }
+
+        private static object[] CreateSmallIntBoxes(int count)
+        {
+            var values = new object[count];
+            for (var i = 0; i < count; i++)
+            {
+                values[i] = i;
+            }
+
+            return values;
+        }
+
+        private static object BoxCountedPathDepth(int value)
+        {
+            return (uint)value < (uint)SmallIntBoxes.Length
+                ? SmallIntBoxes[value]
+                : value;
         }
 
         public IEnumerable<object[]> Execute(
@@ -3375,6 +5189,75 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (leftIsScan || rightIsScan)
                 {
+                    if (joinKeyCount == 1)
+                    {
+                        if (leftIsScan && rightIsScan &&
+                            TryExecuteIndexedProviderBucketJoin(
+                                join,
+                                leftScanPredicate,
+                                leftScanPattern,
+                                leftScanFilter,
+                                join.LeftKeys[0],
+                                rightScanPredicate,
+                                rightScanPattern,
+                                rightScanFilter,
+                                join.RightKeys[0],
+                                out var indexedBucketRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderBuckets");
+                            foreach (var row in indexedBucketRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+
+                        if (rightIsScan &&
+                            TryExecuteIndexedProviderScanJoin(
+                                join,
+                                indexedScanOnLeft: false,
+                                scanPredicate: rightScanPredicate,
+                                scanPattern: rightScanPattern,
+                                scanFilter: rightScanFilter,
+                                scanKeyIndex: join.RightKeys[0],
+                                probeNode: join.Left,
+                                probeKeyIndex: join.LeftKeys[0],
+                                context,
+                                out var indexedRightRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderRight");
+                            foreach (var row in indexedRightRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+
+                        if (leftIsScan &&
+                            TryExecuteIndexedProviderScanJoin(
+                                join,
+                                indexedScanOnLeft: true,
+                                scanPredicate: leftScanPredicate,
+                                scanPattern: leftScanPattern,
+                                scanFilter: leftScanFilter,
+                                scanKeyIndex: join.LeftKeys[0],
+                                probeNode: join.Right,
+                                probeKeyIndex: join.RightKeys[0],
+                                context,
+                                out var indexedLeftRows))
+                        {
+                            trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderLeft");
+                            foreach (var row in indexedLeftRows)
+                            {
+                                yield return row;
+                            }
+
+                            yield break;
+                        }
+                    }
+
                     var useScanIndexStrategy = true;
                     if (leftIsScan != rightIsScan)
                     {
@@ -6220,7 +8103,33 @@ namespace UnifyWeaver.QueryRuntime
                 bucketsByNodeId[bucket.SourceNodeId] = bucket;
             }
 
-            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId);
+            var nodeMaskAs = new ulong[nodeIds.Count];
+            var nodeMaskBs = new ulong[nodeIds.Count];
+            var nodeFingerprints = new ulong[nodeIds.Count];
+            for (var i = 0; i < nodeIds.Count; i++)
+            {
+                nodeMaskAs[i] = ComputeVisitedMaskA(i);
+                nodeMaskBs[i] = ComputeVisitedMaskB(i);
+                nodeFingerprints[i] = ComputeVisitedFingerprint(i);
+            }
+
+            foreach (var bucket in successors.Values)
+            {
+                ulong targetMaskA = 0;
+                ulong targetMaskB = 0;
+                var targetNodeIds = bucket.TargetNodeIds;
+                for (var i = 0; i < targetNodeIds.Count; i++)
+                {
+                    var targetNodeId = targetNodeIds[i];
+                    targetMaskA |= nodeMaskAs[targetNodeId];
+                    targetMaskB |= nodeMaskBs[targetNodeId];
+                }
+
+                bucket.TargetMaskA = targetMaskA;
+                bucket.TargetMaskB = targetMaskB;
+            }
+
+            return new PathAwareEdgeState(successors, seeds, seedNodeIds, nodeValues, bucketsByNodeId, nodeMaskAs, nodeMaskBs, nodeFingerprints);
         }
 
         private static int GetOrAddPathAwareNodeId(
@@ -8601,10 +10510,9 @@ namespace UnifyWeaver.QueryRuntime
             if (parameters is null) throw new ArgumentNullException(nameof(parameters));
             if (context is null) throw new ArgumentNullException(nameof(context));
 
-            var facts = GetScanFactsList(scan.Relation, context, scan);
             if (inputPositions.Count == 0)
             {
-                return facts;
+                return GetScanFactsList(scan.Relation, context, scan);
             }
 
             if (parameters.Count == 0)
@@ -8615,7 +10523,6 @@ namespace UnifyWeaver.QueryRuntime
             if (inputPositions.Count == 1)
             {
                 var columnIndex = inputPositions[0];
-                var index = GetFactIndex(scan.Relation, columnIndex, facts, context);
                 var keys = new HashSet<object>();
 
                 foreach (var paramTuple in parameters)
@@ -8634,10 +10541,19 @@ namespace UnifyWeaver.QueryRuntime
                     keys.Add(value ?? NullFactIndexKey);
                 }
 
+                if (TryLookupIndexedFacts(scan.Relation, columnIndex, keys, out var indexedFacts))
+                {
+                    context.Trace?.RecordStrategy(scan, "IndexedRelationProviderLookup");
+                    return indexedFacts;
+                }
+
+                var scanFacts = GetScanFactsList(scan.Relation, context, scan);
+                var index = GetFactIndex(scan.Relation, columnIndex, scanFacts, context);
                 return EnumerateBuckets(index, keys);
             }
 
-            var joinIndex = GetJoinIndex(scan.Relation, inputPositions, facts, context);
+            var multiColumnFacts = GetScanFactsList(scan.Relation, context, scan);
+            var joinIndex = GetJoinIndex(scan.Relation, inputPositions, multiColumnFacts, context);
             var keySet = new HashSet<RowWrapper>(new RowWrapperComparer(StructuralArrayComparer.Instance));
 
             foreach (var paramTuple in parameters)
@@ -8650,6 +10566,277 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return EnumerateBuckets(joinIndex, keySet);
+        }
+
+        private bool TryLookupIndexedFacts(
+            PredicateId predicate,
+            int columnIndex,
+            IEnumerable<object> keys,
+            out IEnumerable<object[]> facts)
+        {
+            if (_provider is IIndexedRelationProvider indexedProvider &&
+                indexedProvider.TryLookupFacts(predicate, columnIndex, keys, out facts))
+            {
+                return true;
+            }
+
+            facts = default!;
+            return false;
+        }
+
+        private bool TryExecuteIndexedProviderBucketJoin(
+            KeyJoinNode join,
+            PredicateId leftPredicate,
+            object[]? leftPattern,
+            Func<object[], bool>? leftFilter,
+            int leftKeyIndex,
+            PredicateId rightPredicate,
+            object[]? rightPattern,
+            Func<object[], bool>? rightFilter,
+            int rightKeyIndex,
+            out IEnumerable<object[]> rows)
+        {
+            rows = default!;
+            if (_provider is BinaryRelationArtifactProvider binaryArtifactProvider &&
+                binaryArtifactProvider.TryReadBucketJoinRows(
+                    leftPredicate,
+                    leftKeyIndex,
+                    leftPattern,
+                    leftFilter,
+                    rightPredicate,
+                    rightKeyIndex,
+                    rightPattern,
+                    rightFilter,
+                    join,
+                    out rows))
+            {
+                return true;
+            }
+
+            if (_provider is not IIndexedRelationBucketProvider bucketProvider ||
+                !bucketProvider.TryReadIndexedBuckets(leftPredicate, leftKeyIndex, out var leftBuckets) ||
+                !bucketProvider.TryReadIndexedBuckets(rightPredicate, rightKeyIndex, out var rightBuckets))
+            {
+                return false;
+            }
+
+            var buildLeft = true;
+            if (_provider is IRelationCardinalityProvider cardinalityProvider &&
+                cardinalityProvider.TryGetRelationCardinality(leftPredicate, out var leftCount) &&
+                cardinalityProvider.TryGetRelationCardinality(rightPredicate, out var rightCount))
+            {
+                buildLeft = leftCount <= rightCount;
+            }
+
+            rows = buildLeft
+                ? EnumerateIndexedProviderBucketHashJoinRows(
+                    join,
+                    buildBuckets: leftBuckets,
+                    buildPattern: leftPattern,
+                    buildFilter: leftFilter,
+                    probeBuckets: rightBuckets,
+                    probePattern: rightPattern,
+                    probeFilter: rightFilter,
+                    buildOnLeft: true)
+                : EnumerateIndexedProviderBucketHashJoinRows(
+                    join,
+                    buildBuckets: rightBuckets,
+                    buildPattern: rightPattern,
+                    buildFilter: rightFilter,
+                    probeBuckets: leftBuckets,
+                    probePattern: leftPattern,
+                    probeFilter: leftFilter,
+                    buildOnLeft: false);
+            return true;
+        }
+
+        private static IEnumerable<object[]> EnumerateIndexedProviderBucketHashJoinRows(
+            KeyJoinNode join,
+            IEnumerable<IndexedRelationBucket> buildBuckets,
+            object[]? buildPattern,
+            Func<object[], bool>? buildFilter,
+            IEnumerable<IndexedRelationBucket> probeBuckets,
+            object[]? probePattern,
+            Func<object[], bool>? probeFilter,
+            bool buildOnLeft)
+        {
+            var buildIndex = new Dictionary<string, List<object[]>>(StringComparer.Ordinal);
+            foreach (var bucket in buildBuckets)
+            {
+                var buildRows = FilterBucketRows(bucket.Rows, buildPattern, buildFilter);
+                if (buildRows.Count == 0)
+                {
+                    continue;
+                }
+
+                buildIndex[bucket.Key?.ToString() ?? string.Empty] = buildRows;
+            }
+
+            foreach (var probeBucket in probeBuckets)
+            {
+                var key = probeBucket.Key?.ToString() ?? string.Empty;
+                if (!buildIndex.TryGetValue(key, out var buildRows))
+                {
+                    continue;
+                }
+
+                foreach (var probeRow in probeBucket.Rows)
+                {
+                    if (probeRow is null)
+                    {
+                        continue;
+                    }
+
+                    if (probePattern is not null && !TupleMatchesPattern(probeRow, probePattern))
+                    {
+                        continue;
+                    }
+
+                    if (probeFilter is not null && !probeFilter(probeRow))
+                    {
+                        continue;
+                    }
+
+                    foreach (var buildRow in buildRows)
+                    {
+                        yield return buildOnLeft
+                            ? BuildJoinOutput(buildRow, probeRow, join.LeftWidth, join.RightWidth, join.Width)
+                            : BuildJoinOutput(probeRow, buildRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+            }
+        }
+
+        private static List<object[]> FilterBucketRows(
+            IReadOnlyList<object[]> rows,
+            object[]? pattern,
+            Func<object[], bool>? filter)
+        {
+            var filtered = new List<object[]>(rows.Count);
+            foreach (var row in rows)
+            {
+                if (row is null)
+                {
+                    continue;
+                }
+
+                if (pattern is not null && !TupleMatchesPattern(row, pattern))
+                {
+                    continue;
+                }
+
+                if (filter is not null && !filter(row))
+                {
+                    continue;
+                }
+
+                filtered.Add(row);
+            }
+
+            return filtered;
+        }
+
+        private bool TryExecuteIndexedProviderScanJoin(
+            KeyJoinNode join,
+            bool indexedScanOnLeft,
+            PredicateId scanPredicate,
+            object[]? scanPattern,
+            Func<object[], bool>? scanFilter,
+            int scanKeyIndex,
+            PlanNode probeNode,
+            int probeKeyIndex,
+            EvaluationContext context,
+            out IEnumerable<object[]> rows)
+        {
+            rows = default!;
+            if (_provider is not IIndexedRelationProvider indexedProvider)
+            {
+                return false;
+            }
+
+            var probeRows = Evaluate(probeNode, context).Where(tuple => tuple is not null).ToList();
+            if (probeRows.Count == 0)
+            {
+                rows = Enumerable.Empty<object[]>();
+                return true;
+            }
+
+            var keys = new HashSet<object>();
+            foreach (var probeRow in probeRows)
+            {
+                var key = GetFactValue(probeRow, probeKeyIndex) ?? NullFactIndexKey;
+                keys.Add(key);
+            }
+
+            if (!indexedProvider.TryLookupFacts(scanPredicate, scanKeyIndex, keys, out var scanRows))
+            {
+                return false;
+            }
+
+            var buckets = new Dictionary<object, List<object[]>>();
+            foreach (var scanRow in scanRows)
+            {
+                if (scanRow is null)
+                {
+                    continue;
+                }
+
+                if (scanPattern is not null && !TupleMatchesPattern(scanRow, scanPattern))
+                {
+                    continue;
+                }
+
+                if (scanFilter is not null && !scanFilter(scanRow))
+                {
+                    continue;
+                }
+
+                var key = GetFactValue(scanRow, scanKeyIndex) ?? NullFactIndexKey;
+                if (!buckets.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    buckets[key] = bucket;
+                }
+
+                bucket.Add(scanRow);
+            }
+
+            rows = EnumerateIndexedProviderJoinRows(join, indexedScanOnLeft, probeRows, probeKeyIndex, buckets);
+            return true;
+        }
+
+        private static IEnumerable<object[]> EnumerateIndexedProviderJoinRows(
+            KeyJoinNode join,
+            bool indexedScanOnLeft,
+            IReadOnlyList<object[]> probeRows,
+            int probeKeyIndex,
+            Dictionary<object, List<object[]>> indexedBuckets)
+        {
+            foreach (var probeRow in probeRows)
+            {
+                if (probeRow is null)
+                {
+                    continue;
+                }
+
+                var key = GetFactValue(probeRow, probeKeyIndex) ?? NullFactIndexKey;
+                if (!indexedBuckets.TryGetValue(key, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var scanRow in bucket)
+                {
+                    if (indexedScanOnLeft)
+                    {
+                        yield return BuildJoinOutput(scanRow, probeRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                    else
+                    {
+                        yield return BuildJoinOutput(probeRow, scanRow, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+            }
         }
 
         private static IEnumerable<object[]> EnumerateBuckets(
@@ -8742,7 +10929,7 @@ namespace UnifyWeaver.QueryRuntime
                 if (context.TransitiveClosureResults.TryGetValue(cacheKey, out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosure", traceKey, hit: false, built: true);
@@ -8808,7 +10995,7 @@ namespace UnifyWeaver.QueryRuntime
                     trace?.RecordFixpointIteration(closure, predicate, iteration, delta.Count, totalRows.Count);
                 }
 
-                context.TransitiveClosureResults[cacheKey] = totalRows;
+                context.TransitiveClosureResults[cacheKey] = CachedResultRows.FromObjectRows(totalRows);
                 return totalRows;
             }
             finally
@@ -11400,6 +13587,10 @@ namespace UnifyWeaver.QueryRuntime
             trace?.RecordPhase(node, "path_state_row_creation", metrics.RowCreationElapsed);
             trace?.RecordPhase(node, "path_state_best_known_flush_sort", metrics.BestKnownFlushSortElapsed);
             trace?.RecordPhase(node, "path_state_result_materialization", metrics.ResultMaterializationElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_setup", metrics.ResultReplaySetupElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_write", metrics.ResultReplayWriteElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_value_lookup", metrics.ResultReplayValueLookupElapsed);
+            trace?.RecordPhase(node, "path_state_result_replay_row_alloc", metrics.ResultReplayRowAllocElapsed);
             trace?.AddMetric(node, "path_state_seed_count", metrics.SeedCount);
             trace?.AddMetric(node, "path_state_stack_pop_count", metrics.StackPopCount);
             trace?.AddMetric(node, "path_state_successor_candidate_count", metrics.SuccessorCandidateCount);
@@ -11408,8 +13599,10 @@ namespace UnifyWeaver.QueryRuntime
             trace?.AddMetric(node, "path_state_best_known_prune_count", metrics.BestKnownPruneCount);
             trace?.AddMetric(node, "path_state_enqueued_state_count", metrics.EnqueuedStateCount);
             trace?.AddMetric(node, "path_state_output_row_count", metrics.OutputRowCount);
+            trace?.AddMetric(node, "path_state_result_replay_batch_count", metrics.ResultReplayBatchCount);
             trace?.RecordMetric(node, "path_state_max_stack_size", metrics.MaxStackSize);
             trace?.RecordMetric(node, "path_state_max_path_length", metrics.MaxPathLength);
+            trace?.RecordMetric(node, "path_state_result_replay_max_batch_size", metrics.ResultReplayMaxBatchSize);
         }
 
         private IReadOnlyDictionary<object, Dictionary<object, int>> ExecuteSeedGroupedPathAwareDepthMinFallback(
@@ -12397,7 +14590,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < edgeState.Seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(edgeState.Seeds[i], edgeState.SeedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, edgeState.NodeMaskAs, edgeState.NodeMaskBs, edgeState.NodeFingerprints, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12468,7 +14661,7 @@ namespace UnifyWeaver.QueryRuntime
                 var traversalMetrics = trace is null ? null : new PathAwareTraversalMetrics();
                 for (var i = 0; i < seeds.Count; i++)
                 {
-                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
+                    AppendPathAwareRowsForSeed(seeds[i], seedNodeIds[i], edgeState.NodeValues, edgeState.BucketsByNodeId, edgeState.NodeMaskAs, edgeState.NodeMaskBs, edgeState.NodeFingerprints, closure.BaseDepth, closure.DepthIncrement, totalRows, closure.AccumulatorMode, closure.MaxDepth, traversalMetrics);
                 }
 
                 if (traversalMetrics is not null)
@@ -12487,8 +14680,11 @@ namespace UnifyWeaver.QueryRuntime
         private static void AppendPathAwareRowsForSeed(
             object? seed,
             int seedNodeId,
-            IReadOnlyList<object?> nodeValues,
+            object?[] nodeValues,
             IReadOnlyList<PathAwareSuccessorBucket?> bucketsByNodeId,
+            ulong[] nodeMaskAs,
+            ulong[] nodeMaskBs,
+            ulong[] nodeFingerprints,
             int baseDepth,
             int depthIncrement,
             ICollection<object[]> output,
@@ -12498,10 +14694,10 @@ namespace UnifyWeaver.QueryRuntime
         {
             metrics?.RecordSeed();
             var preserveAllPaths = accumulatorMode is TableMode.All or TableMode.Sum or TableMode.Count;
-            var bestKnown = preserveAllPaths ? null : new Dictionary<object?, int>();
+            var bestKnown = preserveAllPaths ? null : new Dictionary<int, int>();
             var bufferedRows = preserveAllPaths ? new PathAwareTargetDepthBuffer() : null;
 
-            var initialPath = CompactVisitedPath.Create(seedNodeId);
+            var initialPath = CompactVisitedPath.Create(seedNodeId, nodeMaskAs[seedNodeId], nodeMaskBs[seedNodeId], nodeFingerprints[seedNodeId]);
             var initialStackCapacity = maxDepth > 0
                 ? Math.Min(Math.Max(maxDepth + 1, 4), 256)
                 : 64;
@@ -12530,30 +14726,84 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
-                for (var i = bucket.Targets.Count - 1; i >= 0; i--)
+                var targetNodeIds = bucket.TargetNodeIds;
+                var bulkDepthSkipCandidateCount = 0;
+                if (depth != 0)
                 {
-                    metrics?.RecordSuccessorCandidate();
-                    var nextId = bucket.TargetNodeIds[i];
-                    if (visited.Contains(nextId))
+                    var nextDepth = checked(depth + depthIncrement);
+                    // If this bucket cannot intersect the current visited set,
+                    // every successor would fail only on depth, so we can skip
+                    // per-successor cycle probes while preserving counters.
+                    if (maxDepth > 0 &&
+                        nextDepth > maxDepth &&
+                        (((visited.MaskA & bucket.TargetMaskA) == 0) || ((visited.MaskB & bucket.TargetMaskB) == 0)))
                     {
-                        metrics?.RecordCycleSkip();
-                        continue;
+                        bulkDepthSkipCandidateCount = targetNodeIds.Count;
                     }
+                }
 
-                    var nextDepth = depth == 0
-                        ? baseDepth
-                        : checked(depth + depthIncrement);
+                if (bulkDepthSkipCandidateCount > 0)
+                {
+                    metrics?.AddSuccessorCandidates(bulkDepthSkipCandidateCount);
+                    metrics?.AddDepthSkips(bulkDepthSkipCandidateCount);
+                    continue;
+                }
 
-                    if (maxDepth > 0 && nextDepth > maxDepth)
+                if (bestKnown is null)
+                {
+                    for (var i = targetNodeIds.Count - 1; i >= 0; i--)
                     {
-                        metrics?.RecordDepthSkip();
-                        continue;
+                        metrics?.RecordSuccessorCandidate();
+                        var nextId = targetNodeIds[i];
+                        if (visited.Contains(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId]))
+                        {
+                            metrics?.RecordCycleSkip();
+                            continue;
+                        }
+
+                        var nextDepth = depth == 0
+                            ? baseDepth
+                            : checked(depth + depthIncrement);
+
+                        if (maxDepth > 0 && nextDepth > maxDepth)
+                        {
+                            metrics?.RecordDepthSkip();
+                            continue;
+                        }
+
+                        // Counted-path All preserves current per-seed traversal
+                        // discovery order during replay, including duplicates.
+                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
+
+                        var nextVisited = visited.Extend(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId], nodeFingerprints[nextId]);
+                        stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
+                        metrics?.RecordEnqueuedState(nextVisited.Count);
+                        metrics?.RecordStackSize(stack.Count);
                     }
-
-                    if (bestKnown is not null)
+                }
+                else
+                {
+                    for (var i = targetNodeIds.Count - 1; i >= 0; i--)
                     {
-                        var next = nodeValues[nextId];
-                        if (bestKnown.TryGetValue(next, out var bestDepth))
+                        metrics?.RecordSuccessorCandidate();
+                        var nextId = targetNodeIds[i];
+                        if (visited.Contains(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId]))
+                        {
+                            metrics?.RecordCycleSkip();
+                            continue;
+                        }
+
+                        var nextDepth = depth == 0
+                            ? baseDepth
+                            : checked(depth + depthIncrement);
+
+                        if (maxDepth > 0 && nextDepth > maxDepth)
+                        {
+                            metrics?.RecordDepthSkip();
+                            continue;
+                        }
+
+                        if (bestKnown.TryGetValue(nextId, out var bestDepth))
                         {
                             switch (accumulatorMode)
                             {
@@ -12577,17 +14827,13 @@ namespace UnifyWeaver.QueryRuntime
                             }
                         }
 
-                        bestKnown[next] = nextDepth;
-                    }
-                    else
-                    {
-                        RecordBufferedPathAwareDepthRow(bufferedRows!, nextId, nextDepth);
-                    }
+                        bestKnown[nextId] = nextDepth;
 
-                    var nextVisited = visited.Extend(nextId);
-                    stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
-                    metrics?.RecordEnqueuedState(nextVisited.Count);
-                    metrics?.RecordStackSize(stack.Count);
+                        var nextVisited = visited.Extend(nextId, nodeMaskAs[nextId], nodeMaskBs[nextId], nodeFingerprints[nextId]);
+                        stack.Push(new PathAwareTraversalFrame(nextId, nextDepth, nextVisited));
+                        metrics?.RecordEnqueuedState(nextVisited.Count);
+                        metrics?.RecordStackSize(stack.Count);
+                    }
                 }
             }
             metrics?.AddTraversalElapsed(Stopwatch.GetElapsedTime(traversalStarted));
@@ -12600,8 +14846,10 @@ namespace UnifyWeaver.QueryRuntime
             if (bestKnown is not null)
             {
                 var flushStarted = Stopwatch.GetTimestamp();
-                var bestRows = new List<KeyValuePair<object?, int>>(bestKnown);
-                bestRows.Sort((left, right) => CompareCacheSeedValues(left.Key, right.Key));
+                var bestRows = new List<int>(bestKnown.Keys);
+                // Min-mode retained rows are flushed in deterministic target order
+                // rather than traversal/discovery order.
+                bestRows.Sort((left, right) => CompareCacheSeedValues(nodeValues[left], nodeValues[right]));
                 metrics?.AddBestKnownFlushSortElapsed(Stopwatch.GetElapsedTime(flushStarted));
 
                 var materializationStarted = Stopwatch.GetTimestamp();
@@ -12610,9 +14858,9 @@ namespace UnifyWeaver.QueryRuntime
                     outputList.EnsureCapacity(outputList.Count + bestRows.Count);
                 }
 
-                foreach (var (target, depth) in bestRows)
+                foreach (var targetNodeId in bestRows)
                 {
-                    output.Add(new object[] { seed!, target!, depth });
+                    output.Add(new object[] { seed!, nodeValues[targetNodeId]!, bestKnown[targetNodeId] });
                     metrics?.RecordOutputRow();
                 }
                 metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(materializationStarted));
@@ -12629,35 +14877,25 @@ namespace UnifyWeaver.QueryRuntime
 
         private static void MaterializePathAwareDepthRows(
             object? seed,
-            IReadOnlyList<object?> nodeValues,
+            object?[] nodeValues,
             PathAwareTargetDepthBuffer rows,
             ICollection<object[]> output,
             PathAwareTraversalMetrics? metrics)
         {
+            metrics?.RecordResultReplayBatch(rows.Count);
             var started = Stopwatch.GetTimestamp();
-            if (output is List<object[]> outputList)
-            {
-                var baseIndex = outputList.Count;
-                CollectionsMarshal.SetCount(outputList, baseIndex + rows.Count);
-                var span = CollectionsMarshal.AsSpan(outputList);
-                var targetNodeIds = CollectionsMarshal.AsSpan(rows.TargetNodeIds);
-                var depths = CollectionsMarshal.AsSpan(rows.Depths);
-                for (var i = 0; i < rows.Count; i++)
-                {
-                    span[baseIndex + i] = new object[] { seed!, nodeValues[targetNodeIds[i]]!, depths[i] };
-                    metrics?.RecordOutputRow();
-                }
-                metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
-                return;
-            }
-
-            var fallbackTargetNodeIds = rows.TargetNodeIds;
-            var fallbackDepths = rows.Depths;
-            for (var i = 0; i < rows.Count; i++)
-            {
-                output.Add(new object[] { seed!, nodeValues[fallbackTargetNodeIds[i]]!, fallbackDepths[i] });
-                metrics?.RecordOutputRow();
-            }
+            Action? recordOutputRow = metrics is null ? null : metrics.RecordOutputRow;
+            Action<TimeSpan>? addSetupElapsed = metrics is null ? null : metrics.AddResultReplaySetupElapsed;
+            Action<TimeSpan>? addRowAllocElapsed = metrics is null ? null : metrics.AddResultReplayRowAllocElapsed;
+            Action<TimeSpan>? addWriteElapsed = metrics is null ? null : metrics.AddResultReplayWriteElapsed;
+            CachedResultRows
+                .FromPathAwareDepthRows(seed, nodeValues, rows.TargetNodeIds, rows.Depths, BoxCountedPathDepth)
+                .AppendTo(
+                    output,
+                    recordOutputRow,
+                    addSetupElapsed,
+                    addRowAllocElapsed,
+                    addWriteElapsed);
 
             metrics?.AddResultMaterializationElapsed(Stopwatch.GetElapsedTime(started));
         }
@@ -13987,6 +16225,14 @@ namespace UnifyWeaver.QueryRuntime
 
             public TimeSpan ResultMaterializationElapsed { get; private set; }
 
+            public TimeSpan ResultReplaySetupElapsed { get; private set; }
+
+            public TimeSpan ResultReplayWriteElapsed { get; private set; }
+
+            public TimeSpan ResultReplayValueLookupElapsed { get; private set; }
+
+            public TimeSpan ResultReplayRowAllocElapsed { get; private set; }
+
             public long SeedCount { get; private set; }
 
             public long StackPopCount { get; private set; }
@@ -14003,9 +16249,13 @@ namespace UnifyWeaver.QueryRuntime
 
             public long OutputRowCount { get; private set; }
 
+            public long ResultReplayBatchCount { get; private set; }
+
             public int MaxStackSize { get; private set; }
 
             public int MaxPathLength { get; private set; }
+
+            public int ResultReplayMaxBatchSize { get; private set; }
 
             public void AddTraversalElapsed(TimeSpan elapsed) => TraversalElapsed += elapsed;
 
@@ -14015,19 +16265,40 @@ namespace UnifyWeaver.QueryRuntime
 
             public void AddResultMaterializationElapsed(TimeSpan elapsed) => ResultMaterializationElapsed += elapsed;
 
+            public void AddResultReplaySetupElapsed(TimeSpan elapsed) => ResultReplaySetupElapsed += elapsed;
+
+            public void AddResultReplayWriteElapsed(TimeSpan elapsed) => ResultReplayWriteElapsed += elapsed;
+
+            public void AddResultReplayValueLookupElapsed(TimeSpan elapsed) => ResultReplayValueLookupElapsed += elapsed;
+
+            public void AddResultReplayRowAllocElapsed(TimeSpan elapsed) => ResultReplayRowAllocElapsed += elapsed;
+
             public void RecordSeed() => SeedCount++;
 
             public void RecordStackPop() => StackPopCount++;
 
             public void RecordSuccessorCandidate() => SuccessorCandidateCount++;
 
+            public void AddSuccessorCandidates(int count) => SuccessorCandidateCount += count;
+
             public void RecordCycleSkip() => CycleSkipCount++;
 
             public void RecordDepthSkip() => DepthSkipCount++;
 
+            public void AddDepthSkips(int count) => DepthSkipCount += count;
+
             public void RecordBestKnownPrune() => BestKnownPruneCount++;
 
             public void RecordOutputRow() => OutputRowCount++;
+
+            public void RecordResultReplayBatch(int size)
+            {
+                ResultReplayBatchCount++;
+                if (size > ResultReplayMaxBatchSize)
+                {
+                    ResultReplayMaxBatchSize = size;
+                }
+            }
 
             public void RecordEnqueuedState(int pathLength)
             {
@@ -14118,24 +16389,36 @@ namespace UnifyWeaver.QueryRuntime
 
             public static CompactVisitedPath Create(int nodeId)
             {
-                return new CompactVisitedPath(
-                    previous: null,
-                    nodeId: nodeId,
-                    1,
+                return Create(
+                    nodeId,
                     ComputeVisitedMaskA(nodeId),
                     ComputeVisitedMaskB(nodeId),
                     ComputeVisitedFingerprint(nodeId));
             }
 
+            public static CompactVisitedPath Create(int nodeId, ulong maskA, ulong maskB, ulong fingerprint)
+            {
+                return new CompactVisitedPath(
+                    previous: null,
+                    nodeId: nodeId,
+                    1,
+                    maskA,
+                    maskB,
+                    fingerprint);
+            }
+
             public bool Contains(int nodeId)
             {
-                var maskA = ComputeVisitedMaskA(nodeId);
+                return Contains(nodeId, ComputeVisitedMaskA(nodeId), ComputeVisitedMaskB(nodeId));
+            }
+
+            public bool Contains(int nodeId, ulong maskA, ulong maskB)
+            {
                 if ((MaskA & maskA) == 0)
                 {
                     return false;
                 }
 
-                var maskB = ComputeVisitedMaskB(nodeId);
                 if ((MaskB & maskB) == 0)
                 {
                     return false;
@@ -14154,13 +16437,22 @@ namespace UnifyWeaver.QueryRuntime
 
             public CompactVisitedPath Extend(int nodeId)
             {
+                return Extend(
+                    nodeId,
+                    ComputeVisitedMaskA(nodeId),
+                    ComputeVisitedMaskB(nodeId),
+                    ComputeVisitedFingerprint(nodeId));
+            }
+
+            public CompactVisitedPath Extend(int nodeId, ulong maskA, ulong maskB, ulong fingerprint)
+            {
                 return new CompactVisitedPath(
                     this,
                     nodeId,
                     Count + 1,
-                    MaskA | ComputeVisitedMaskA(nodeId),
-                    MaskB | ComputeVisitedMaskB(nodeId),
-                    Fingerprint ^ ComputeVisitedFingerprint(nodeId));
+                    MaskA | maskA,
+                    MaskB | maskB,
+                    Fingerprint ^ fingerprint);
             }
 
             public bool IsSubsetOf(CompactVisitedPath other)
@@ -17126,7 +19418,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeeded", traceKey, hit: false, built: true);
@@ -17160,7 +19452,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -17171,7 +19463,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17264,7 +19556,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -17275,7 +19567,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17336,7 +19628,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.GroupedTransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.GroupedTransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -17347,7 +19639,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -17544,7 +19836,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(flatSeedKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsObjectRows();
                 }
 
                 trace?.RecordCacheLookup("GroupedTransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
@@ -17578,7 +19870,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -17589,7 +19881,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            memoizedRows,
+                            CachedResultRows.FromObjectRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17685,7 +19977,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -17696,7 +19988,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(flatSeedKey),
-                            singleRows,
+                            CachedResultRows.FromObjectRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -17757,7 +20049,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.GroupedTransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.GroupedTransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -17768,7 +20060,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(flatSeedKey),
-                        totalRows,
+                        CachedResultRows.FromObjectRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19004,10 +21296,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
+                TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsEnumerable();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeeded", traceKey, hit: false, built: true);
@@ -19045,7 +21337,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var dagStoreBySeed))
                         {
-                            dagStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            dagStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, dagStoreBySeed);
                         }
 
@@ -19056,7 +21348,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             dagStoreBySeed,
                             new RowWrapper(seedsKey),
-                            dagRows,
+                            CacheSeededRows(dagRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19091,7 +21383,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -19102,7 +21394,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            memoizedRows,
+                            CacheSeededRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19181,7 +21473,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -19192,7 +21484,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            singleRows,
+                            CacheSeededRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19273,7 +21565,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.TransitiveClosureSeededResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.TransitiveClosureSeededResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -19284,7 +21576,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        totalRows,
+                        CacheSeededRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -19298,6 +21590,33 @@ namespace UnifyWeaver.QueryRuntime
             {
                 context.FixpointDepth--;
             }
+        }
+
+        private CachedResultRows CacheSeededRows(IReadOnlyList<object[]> rows) =>
+            _compactSeededCacheRows
+                ? CacheBinaryRows(rows)
+                : CachedResultRows.FromObjectRows(rows);
+
+        private static CachedResultRows CacheBinaryRows(IReadOnlyList<object[]> rows)
+        {
+            if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+            var leftValues = new object?[rows.Count];
+            var rightValues = new object?[rows.Count];
+
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var row = rows[i];
+                if (row is null || row.Length < 2)
+                {
+                    return CachedResultRows.FromObjectRows(rows);
+                }
+
+                leftValues[i] = row[0];
+                rightValues[i] = row[1];
+            }
+
+            return CachedResultRows.FromBinaryRows(leftValues, rightValues);
         }
 
         private static bool TryBuildDagReachabilityBitsets(
@@ -19458,10 +21777,10 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (canReuseSeededCache &&
                     context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var cachedBySeed) &&
-                    TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
+                TryGetLruRowWrapperCacheValue(cachedBySeed, new RowWrapper(seedsKey), out var cachedRows))
                 {
                     trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: true, built: false);
-                    return cachedRows;
+                    return cachedRows.AsEnumerable();
                 }
 
                 trace?.RecordCacheLookup("TransitiveClosureSeededByTarget", traceKey, hit: false, built: true);
@@ -19490,7 +21809,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var memoizedStoreBySeed))
                         {
-                            memoizedStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            memoizedStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, memoizedStoreBySeed);
                         }
 
@@ -19501,7 +21820,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             memoizedStoreBySeed,
                             new RowWrapper(seedsKey),
-                            memoizedRows,
+                            CacheSeededRows(memoizedRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19580,7 +21899,7 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var singleStoreBySeed))
                         {
-                            singleStoreBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                            singleStoreBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                             context.TransitiveClosureSeededByTargetResults.Add(cacheKey, singleStoreBySeed);
                         }
 
@@ -19591,7 +21910,7 @@ namespace UnifyWeaver.QueryRuntime
                         TryAdmitLruBoundedRowWrapperCacheEntry(
                             singleStoreBySeed,
                             new RowWrapper(seedsKey),
-                            singleRows,
+                            CacheSeededRows(singleRows),
                             _seededCacheMaxEntries,
                             admitSeededCache,
                             trace,
@@ -19672,7 +21991,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (!context.TransitiveClosureSeededByTargetResults.TryGetValue(cacheKey, out var storeBySeed))
                     {
-                        storeBySeed = new Dictionary<RowWrapper, IReadOnlyList<object[]>>(StructuralRowWrapperComparer);
+                        storeBySeed = new Dictionary<RowWrapper, CachedResultRows>(StructuralRowWrapperComparer);
                         context.TransitiveClosureSeededByTargetResults.Add(cacheKey, storeBySeed);
                     }
 
@@ -19683,7 +22002,7 @@ namespace UnifyWeaver.QueryRuntime
                     TryAdmitLruBoundedRowWrapperCacheEntry(
                         storeBySeed,
                         new RowWrapper(seedsKey),
-                        totalRows,
+                        CacheSeededRows(totalRows),
                         _seededCacheMaxEntries,
                         admitSeededCache,
                         trace,
@@ -21046,11 +23365,11 @@ namespace UnifyWeaver.QueryRuntime
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
                 TransitiveClosureResults = parent?.TransitiveClosureResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows>();
                 TransitiveClosureSeededResults = parent?.TransitiveClosureSeededResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>>();
                 TransitiveClosureSeededByTargetResults = parent?.TransitiveClosureSeededByTargetResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>>();
                 TransitiveClosurePairProbeResults = parent?.TransitiveClosurePairProbeResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>>();
                 GroupedTransitiveClosureResults = parent?.GroupedTransitiveClosureResults
@@ -21066,9 +23385,9 @@ namespace UnifyWeaver.QueryRuntime
                 SeedGroupedPathAwareAccumulationMinResults = parent?.SeedGroupedPathAwareAccumulationMinResults
                     ?? new Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>>();
                 GroupedTransitiveClosureSeededResults = parent?.GroupedTransitiveClosureSeededResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>>();
                 GroupedTransitiveClosureSeededByTargetResults = parent?.GroupedTransitiveClosureSeededByTargetResults
-                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>>();
+                    ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>>();
                 GroupedTransitiveClosurePairProbeResults = parent?.GroupedTransitiveClosurePairProbeResults
                     ?? new Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>>();
             }
@@ -21122,11 +23441,11 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), IReadOnlyList<object[]>> TransitiveClosureResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), CachedResultRows> TransitiveClosureResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>> TransitiveClosureSeededResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, IReadOnlyList<object[]>>> TransitiveClosureSeededByTargetResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, CachedResultRows>> TransitiveClosureSeededByTargetResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate), Dictionary<RowWrapper, bool>> TransitiveClosurePairProbeResults { get; }
 
@@ -21142,9 +23461,9 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<SeedGroupedPathAwareAccumulationMinNode, IReadOnlyList<object[]>> SeedGroupedPathAwareAccumulationMinResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>> GroupedTransitiveClosureSeededResults { get; }
 
-            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, IReadOnlyList<object[]>>> GroupedTransitiveClosureSeededByTargetResults { get; }
+            public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, CachedResultRows>> GroupedTransitiveClosureSeededByTargetResults { get; }
 
             public Dictionary<(PredicateId EdgeRelation, PredicateId Predicate, string Groups), Dictionary<RowWrapper, bool>> GroupedTransitiveClosurePairProbeResults { get; }
         }

@@ -1,0 +1,131 @@
+{
+  "benchmark": "WAM Cross-Target Benchmark",
+  "date": "2026-04-18",
+  "scale": 300,
+  "facts": {
+    "category_parent": 6004,
+    "article_category": 757,
+    "root_category": "Physics"
+  },
+  "methodology": {
+    "repetitions": "3 per query (median) unless noted; Haskell uses 10-run median",
+    "query_ms": "Time executing the Prolog query, excluding fact loading and initialization",
+    "total_ms": "Wall-clock time from program start to exit",
+    "platform_sandbox": "Linux 6.1.158 amd64 sandbox VM (SWI-Prolog, Rust WAM interpreter, native DFS)",
+    "platform_haskell": "WSL2 4-core host (Haskell WAM + FFI, Rust WAM + FFI hand-tuned)"
+  },
+  "effective_distance": {
+    "native_rust_dfs_pruned": {
+      "query_ms": 29,
+      "total_ms": 29,
+      "cores": 1,
+      "automatic": false,
+      "notes": "Native Rust DFS, skip paths longer than best-known distance"
+    },
+    "haskell_ffi_parallel": {
+      "query_ms": 32,
+      "total_ms": 75,
+      "cores": 4,
+      "automatic": true,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md, 10-run median, WSL2 host; parallelism over 386 seeds gives ~3.3x speedup"
+    },
+    "native_rust_dfs_unpruned": {
+      "query_ms": 81,
+      "total_ms": 81,
+      "cores": 1,
+      "automatic": false,
+      "notes": "Standard DFS with cycle detection and depth<=10; same algorithm as WAM without pruning"
+    },
+    "haskell_ffi_single_core": {
+      "query_ms": 107,
+      "total_ms": 193,
+      "cores": 1,
+      "automatic": true,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md, 10-run median, WSL2 host; FFI bypasses WAM interpreter for hot loop"
+    },
+    "rust_ffi_hand_tuned_phase_d": {
+      "total_ms": 126,
+      "cores": 1,
+      "automatic": false,
+      "notes": "From WAM_PERF_OPTIMIZATION_LOG.md; hand-inlined category_ancestor calls and fact lookups as native Rust. Uses FFI dispatch mechanism but kernels were written by hand, NOT automatic transpilation. Does not generalize."
+    },
+    "rust_wam_interpreter": {
+      "query_ms": 137,
+      "total_ms": 151,
+      "cores": 1,
+      "automatic": true,
+      "variant": "accumulated",
+      "notes": "generate_wam_effective_distance_benchmark.pl; full WAM instruction decode/dispatch; interpreter overhead > pruning benefit at this scale"
+    },
+    "swi_prolog_accumulated": {
+      "query_ms": 336,
+      "total_ms": 409,
+      "cores": 1,
+      "notes": "Reference SWI-Prolog implementation, optimized accumulated variant"
+    },
+    "swi_prolog_seeded": {
+      "total_ms": 428,
+      "cores": 1,
+      "notes": "Seeded variant, recomputes from each seed independently"
+    },
+    "go_wam": {
+      "status": "in_progress",
+      "notes": "Build OK after SharedWamCode fix; benchmark driver not yet wired up for fact loading"
+    },
+    "python_wam": {
+      "status": "in_progress",
+      "notes": "Runtime OK after module-qualified predicate fix; benchmark driver not yet connected"
+    }
+  },
+  "shortest_path": {
+    "swi_prolog": {
+      "scale_300": {"median_ms": 3273},
+      "scale_1k": {"median_ms": 2053},
+      "scale_5k": {"median_ms": 10710},
+      "scale_10k": {"median_ms": 21200},
+      "notes": "BFS with branch_pruning=auto"
+    }
+  },
+  "weighted_shortest_path": {
+    "swi_prolog": {
+      "variant": "min",
+      "scale_300": {"median_ms": 124},
+      "scale_1k": {"median_ms": 124},
+      "scale_5k": {"median_ms": 311},
+      "scale_10k": {"median_ms": 596},
+      "notes": "Dijkstra with semantic weights"
+    }
+  },
+  "larger_scales_swi_prolog": {
+    "effective_distance": {
+      "scale_300": {"seeded_ms": 428, "accumulated_ms": 409},
+      "scale_1k": {"seeded_ms": 337, "accumulated_ms": 281},
+      "scale_5k": {"seeded_ms": 1304, "accumulated_ms": 1017},
+      "scale_10k": {"seeded_ms": 3013, "accumulated_ms": 2505}
+    }
+  },
+  "dfs_baselines": {
+    "native_rust_unpruned": {
+      "query_ms": 81,
+      "description": "Standard DFS with cycle detection and depth<=10",
+      "notes": "Measured in sandbox; establishes baseline for WAM interpreter overhead comparison"
+    },
+    "native_rust_pruned": {
+      "query_ms": 29,
+      "description": "DFS skipping paths longer than best-known distance",
+      "notes": "Measured in sandbox; represents optimized native baseline"
+    }
+  },
+  "analysis": {
+    "wam_interpreter_vs_dfs": "WAM interpreter (137ms) is slower than unpruned DFS (81ms) — interpreter overhead outweighs pruning benefit at scale 300",
+    "haskell_ffi_vs_dfs": "Haskell FFI single-core (107ms query) competitive with native DFS because FFI bypasses WAM interpreter for hot category_parent/2 loop",
+    "haskell_parallel_advantage": "32ms (4-core) approaches pruned DFS (29ms) primarily from parallelism over 386 seeds (~3.3x speedup), not algorithmic improvement",
+    "unifyweaver_value": "Haskell 107ms single-core was AUTOMATICALLY generated from Prolog source — no hand-written graph code. Rust 126ms FFI required manual kernel fusion that does not generalize."
+  },
+  "bug_fixes": [
+    "Go emitter: added SharedWamCode/SharedWamLabels exported aliases in wam_go_target.pl",
+    "Rust lowered emitter: added escape_rust_string for builtin_call ops in wam_rust_lowered_emitter.pl",
+    "Go lowered emitter: added escape_go_string for builtin_call ops in wam_go_lowered_emitter.pl",
+    "Python target: added Module:Pred/Arity handling in compile_one_predicate in wam_python_target.pl"
+  ]
+}

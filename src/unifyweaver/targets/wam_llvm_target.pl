@@ -1178,6 +1178,11 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % llvm_foreign_kernel_spec/3 entry is compiled to a body of
     % WAM instructions ending in `call_foreign Kind, Arity`.
     retractall(functor_string_global(_, _)),
+    % Pre-register functor globals referenced directly by runtime
+    % helpers (e.g. =../2 needs the cons-cell functor "." and the
+    % empty-list atom "[]").
+    assert(functor_string_global(".", 2)),
+    assert(functor_string_global("[]", 3)),
     compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode),
 
     % Emit functor string globals collected during WAM compilation.
@@ -1331,37 +1336,70 @@ declare i32 @printf(i8*, ...)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
-%  Generate WASM export wrappers that expose predicates as i32-returning functions.
+%  Generate WASM export wrappers that expose predicates as i32-returning
+%  functions. Each wrapper delegates to the predicate's own `@<pred>()`
+%  function (emitted by compile_wam_predicate_to_llvm for WAM-fallback
+%  predicates, or by the native LLVM lowering for native predicates),
+%  which has the correct instruction-array + label-table bound.
+%  Arena state is rewound via @wam_cleanup after each call so successive
+%  bench calls don't leak.
 generate_wasm_exports([], "").
 generate_wasm_exports(Predicates, ExportCode) :-
+    number_predicates(Predicates, 0, NumberedPreds),
     findall(ExportFunc, (
-        member(PredIndicator, Predicates),
+        member(Idx-PredIndicator, NumberedPreds),
         (   PredIndicator = _:Pred/Arity -> true
         ;   PredIndicator = Pred/Arity
         ),
         atom_string(Pred, PredStr),
+        build_llvm_undef_args(Arity, ArgsList),
         format(atom(ExportFunc),
 '; WASM export: ~w/~w
 ; Visibility: dso_local ensures symbol is retained by wasm-ld.
-; The __export_name attribute maps to the WASM export name.
-define dso_local i32 @~w_wasm() #0 {
+define dso_local i32 @~w_wasm() #~w {
 entry:
-  %vm = call %WamState* @wam_state_new(
-    %Instruction* getelementptr ([0 x %Instruction], [0 x %Instruction]* null, i32 0, i32 0),
-    i32 0, i32* null, i32 0)
-  %result = call i1 @run_loop(%WamState* %vm)
+  %result = call i1 @~w(~w)
   call void @wam_cleanup()
   %ret = zext i1 %result to i32
   ret i32 %ret
-}', [PredStr, Arity, PredStr])
+}', [PredStr, Arity, PredStr, Idx, PredStr, ArgsList])
     ), ExportFuncs),
     atomic_list_concat(ExportFuncs, '\n\n', ExportFuncsStr),
-    % Add WASM export attribute group
+    findall(AttrGroup, (
+        member(Idx-PredIndicator, NumberedPreds),
+        (   PredIndicator = _:Pred/Arity -> true
+        ;   PredIndicator = Pred/Arity
+        ),
+        atom_string(Pred, PredStr),
+        format(atom(AttrGroup),
+'attributes #~w = { "wasm-export-name"="~w_wasm" }',
+            [Idx, PredStr])
+    ), AttrGroups),
+    atomic_list_concat(AttrGroups, '\n', AttrGroupsStr),
     format(atom(ExportCode),
 '~w
 
-; WASM export attributes
-attributes #0 = { "wasm-export-name"="query" }', [ExportFuncsStr]).
+; WASM export attributes (one group per exported wrapper)
+~w', [ExportFuncsStr, AttrGroupsStr]).
+
+%% number_predicates(+Preds, +Start, -Numbered)
+%  Pair each predicate with a zero-based index used as the LLVM
+%  attribute-group id for its WASM export wrapper.
+number_predicates([], _, []).
+number_predicates([P|Rest], N, [N-P|RestNum]) :-
+    N1 is N + 1,
+    number_predicates(Rest, N1, RestNum).
+
+%% build_llvm_undef_args(+Arity, -ArgsStr)
+%  Produce a comma-separated list of `%Value undef` (Arity copies).
+%  Used by bench-style wrappers that just need to invoke the predicate
+%  without binding its arguments.
+build_llvm_undef_args(0, '') :- !.
+build_llvm_undef_args(Arity, ArgsStr) :-
+    Arity > 0,
+    length(Undefs, Arity),
+    maplist(=('%Value undef'), Undefs),
+    atomic_list_concat(Undefs, ', ', ArgsStr).
 
 %% build_wam_wasm_module(+LLFile, +OutputName, -Commands)
 %  Generate shell commands to build a WASM module from the generated .ll file.
@@ -1410,45 +1448,272 @@ read_template_file(Path, Content) :-
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
-%  Collects all predicate code into lists, then joins once (O(n) concatenation).
+%
+%  Two-pass project-level compilation for WAM-fallback predicates:
+%
+%    Pass 1 (pass1_classify_predicates/4): classify each predicate as
+%      native / foreign-kernel / wam-fallback / failed. For wam-fallback
+%      and foreign-kernel preds, parse WAM to raw instruction parts +
+%      local labels and accumulate each predicate's cumulative start PC
+%      in a merged instruction array.
+%
+%    Label merge (build_merged_labels/2): shift every local label by
+%      its predicate's StartPC and union into a project-wide
+%      LabelName-AbsolutePC list. The entry label (e.g. 'sum_ints/3')
+%      lives at StartPC so cross-predicate `call sum_ints/3` resolves.
+%
+%    Pass 2 (pass2_emit_merged/5): re-encode every wam/foreign
+%      predicate's instructions against the merged LabelMap, emit ONE
+%      @module_code array + ONE @module_labels array, and per-predicate
+%      entry functions that share those globals but set their own start
+%      PC before calling @run_loop.
+%
+%  Prior to this, each wam-compiled predicate had its own @<pred>_code
+%  and @<pred>_labels arrays. An `execute sum_ints_args/5` inside
+%  sum_ints/3 looked up the label in sum_ints/3's local map, didn't
+%  find it, defaulted to index 0, and at runtime jumped to sum_ints/3's
+%  own first instruction — silent self-recursion. Same class of bug
+%  WAT had before PR #1476.
 compile_predicates_for_llvm(Predicates, Options, NativeCode, WamCode) :-
-    compile_predicates_collect(Predicates, Options, NativeParts, WamParts),
+    pass1_classify_predicates(Predicates, Options, 0, Classified),
+    build_merged_labels(Classified, NamePCPairs, LabelMap),
+    pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
+                      NativeParts, WamParts),
     atomic_list_concat(NativeParts, '\n\n', NativeCode),
     atomic_list_concat(WamParts, '\n\n', WamCode).
 
-compile_predicates_collect([], _, [], []).
-compile_predicates_collect([PredIndicator|Rest], Options, NativeParts, WamParts) :-
+%% pass1_classify_predicates(+Preds, +Options, +StartPC, -Classified)
+%
+%  Classified is a list of records (in input order):
+%    native(PredIndicator, Arity, PredCode)
+%       — native-lowered; emit PredCode as-is.
+%    wam(PredIndicator, Arity, RawInstrs, LocalLabels, StartPC, NumInstrs)
+%       — wam-fallback or foreign-kernel; goes into merged code.
+%    failed(PredIndicator, Arity)
+%       — both native + wam failed; emit a comment.
+%
+%  StartPC threads through wam/foreign records only; native/failed do
+%  not consume code slots.
+pass1_classify_predicates([], _, _, []).
+pass1_classify_predicates([PredIndicator|Rest], Options, StartPC,
+                          [Record | RestRecs]) :-
     (   PredIndicator = Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity, Module = user
     ),
-    compile_predicates_collect(Rest, Options, RestNative, RestWam),
-    (   % M5.6: foreign kernel lowering — check spec table first.
-        lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
+    (   lookup_foreign_kernel_spec(Pred, Arity, Kind, _Config)
     ->  format(user_error, '  ~w/~w: foreign kernel (~w)~n', [Pred, Arity, Kind]),
-        compile_foreign_kernel_predicate(Pred/Arity, Kind, Arity, Options, PredCode),
-        NativeParts = RestNative,
-        WamParts = [PredCode | RestWam]
-    ;   % Try native LLVM lowering
-        catch(
+        foreign_kernel_wam_text(Pred/Arity, Kind, Arity, Options, WamRaw),
+        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   catch(
             llvm_target:compile_predicate_to_llvm(Module:Pred/Arity, Options, PredCode),
             _, fail)
     ->  format(user_error, '  ~w/~w: native lowering~n', [Pred, Arity]),
-        NativeParts = [PredCode | RestNative],
-        WamParts = RestWam
-    ;   % Fall back to WAM compilation
-        option(wam_fallback(WamFB), Options, true),
+        Record = native(PredIndicator, Arity, PredCode),
+        NextPC = StartPC
+    ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
-        compile_wam_predicate_to_llvm(Pred/Arity, WamRaw, Options, PredCode)
+        catch(
+            wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamRaw),
+            _, fail)
     ->  format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
-        NativeParts = RestNative,
-        WamParts = [PredCode | RestWam]
-    ;   % Neither worked
-        format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
-        NativeParts = RestNative,
-        format(atom(FailComment), '; ~w/~w: compilation failed', [Pred, Arity]),
-        WamParts = [FailComment | RestWam]
+        parse_wam_to_pass1(Pred/Arity, WamRaw, Arity, StartPC, Record, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   format(user_error, '  ~w/~w: compilation failed~n', [Pred, Arity]),
+        Record = failed(PredIndicator, Arity),
+        NextPC = StartPC
+    ),
+    pass1_classify_predicates(Rest, Options, NextPC, RestRecs).
+
+%% parse_wam_to_pass1(+Pred/Arity, +WamCode, +Arity, +StartPC,
+%%                    -wam(...), -NumInstrs)
+%  Shared between wam-fallback and foreign-kernel classifications.
+parse_wam_to_pass1(Pred/Arity, WamCode, ArityOut, StartPC,
+                   wam(Pred/Arity, ArityOut, RawInstrs, LocalLabels,
+                       StartPC, NumInstrs),
+                   NumInstrs) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_pass1(Lines, 0, RawInstrs, LocalLabels),
+    length(RawInstrs, NumInstrs).
+
+%% foreign_kernel_wam_text(+Pred/Arity, +Kind, +Arity, +Options, -WamCode)
+%  Produce the WAM text for a foreign kernel predicate.
+foreign_kernel_wam_text(Pred/Arity, Kind, _Arity, _Options, WamCode) :-
+    wam_llvm_foreign_kind_id(Kind, _KindId),
+    allocate_foreign_instance_id(Pred/Arity, Kind, InstanceId),
+    format(atom(WamCode), '~w/~w:\ncall_foreign ~w, ~w\nproceed',
+           [Pred, Arity, Kind, InstanceId]).
+
+%% build_merged_labels(+Classified, -NamePCPairs, -LabelMap)
+%  Shift each wam/foreign predicate's local labels by its StartPC and
+%  accumulate into NamePCPairs (LabelName-AbsolutePC, in predicate
+%  order). LabelMap is the derived LabelName-Index view used by the
+%  literal-resolution passes (index = physical slot in @module_labels).
+%  At runtime, @wam_label_pc reads @module_labels[Index] to get the PC.
+build_merged_labels(Classified, NamePCPairs, LabelMap) :-
+    build_merged_labels_entries(Classified, NamePCPairs),
+    build_label_index_map(NamePCPairs, LabelMap).
+
+build_merged_labels_entries([], []).
+build_merged_labels_entries([wam(_, _, _, LocalLabels, StartPC, _)|Rest],
+                            Entries) :- !,
+    shift_labels(LocalLabels, StartPC, Shifted),
+    build_merged_labels_entries(Rest, RestEntries),
+    append(Shifted, RestEntries, Entries).
+build_merged_labels_entries([_|Rest], Entries) :-
+    build_merged_labels_entries(Rest, Entries).
+
+shift_labels([], _, []).
+shift_labels([Name-LocalPC|Rest], Shift, [Name-GlobalPC|RestShifted]) :-
+    GlobalPC is LocalPC + Shift,
+    shift_labels(Rest, Shift, RestShifted).
+
+%% pass2_emit_merged(+Classified, +GlobalLabels, +Options,
+%%                   -NativeParts, -WamParts)
+%  Emit:
+%    - native predicates verbatim (→ NativeParts)
+%    - one @module_code array + one @module_labels array covering all
+%      wam/foreign predicates
+%    - per-predicate entry functions that share those globals
+%    - resolved switch tables (one per switch instruction)
+%  All of these go into WamParts.
+pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
+                  NativeParts, WamParts) :-
+    partition_classified(Classified, NativeRecords, WamRecords, FailedRecords),
+    maplist([native(_,_,Code), Code]>>true, NativeRecords, NativeParts),
+    (   WamRecords == []
+    ->  MergedCode = '', EntryFuncs = '', SwitchDefs = ''
+    ;   emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
+                                MergedCode, EntryFuncs, SwitchDefs)
+    ),
+    maplist([failed(PI,A), C]>>format(atom(C),
+               '; ~w/~w: compilation failed', [PI, A]),
+            FailedRecords, FailedComments),
+    WamParts0 = [SwitchDefs, MergedCode, EntryFuncs | FailedComments],
+    exclude(==(''), WamParts0, WamParts).
+
+partition_classified([], [], [], []).
+partition_classified([native(PI,A,C)|Rest], [native(PI,A,C)|RN], RW, RF) :- !,
+    partition_classified(Rest, RN, RW, RF).
+partition_classified([wam(P,A,I,L,S,N)|Rest], RN, [wam(P,A,I,L,S,N)|RW], RF) :- !,
+    partition_classified(Rest, RN, RW, RF).
+partition_classified([failed(PI,A)|Rest], RN, RW, [failed(PI,A)|RF]) :-
+    partition_classified(Rest, RN, RW, RF).
+
+%% emit_merged_wam_section(+WamRecords, +GlobalLabels, +Options,
+%%                         -CodeGlobal, -EntryFuncs, -SwitchDefs)
+%
+%  Re-encodes every wam/foreign predicate's raw instruction parts
+%  against GlobalLabels, collects all literals into one big list, and
+%  produces:
+%    - CodeGlobal: @module_code = [N x %Instruction] [ ... ] + @module_labels
+%    - EntryFuncs: one `define i1 @<pred>(...)` per predicate, each
+%      setting start PC to its own StartPC before calling @run_loop
+%    - SwitchDefs: all switch-table globals referenced by the merged
+%      code (names are predicate-qualified already, collisions avoided)
+emit_merged_wam_section(WamRecords, LabelMap, NamePCPairs, Options,
+                        CodeGlobal, EntryFuncs, SwitchDefs) :-
+    resolve_all_wam_records(WamRecords, LabelMap, AllLiterals,
+                            AllSwitchDefs),
+    length(AllLiterals, InstrCount),
+    length(NamePCPairs, LabelCount),
+    (   InstrCount =:= 0
+    ->  CodeGlobal = '', EntryFuncs = '', SwitchDefs = ''
+    ;   maplist([Lit, E]>>format(atom(E), '  ~w', [Lit]),
+                AllLiterals, Entries),
+        atomic_list_concat(Entries, ',\n', EntriesStr),
+        ( NamePCPairs == []
+        -> LabelsStr = "  i32 0",
+           LabelArraySize = 1
+        ;  maplist([_-PC, E]>>format(atom(E), '  i32 ~w', [PC]),
+                   NamePCPairs, LabelRows),
+           atomic_list_concat(LabelRows, ',\n', LabelsStr),
+           LabelArraySize = LabelCount
+        ),
+        format(atom(CodeGlobal),
+'; === Merged WAM code and labels (project-level) ===
+@module_code = private constant [~w x %Instruction] [
+~w
+]
+
+@module_labels = private constant [~w x i32] [
+~w
+]',         [InstrCount, EntriesStr, LabelArraySize, LabelsStr]),
+        emit_all_entry_funcs(WamRecords, Options,
+                             InstrCount, LabelCount, LabelArraySize,
+                             EntryFuncs),
+        ( AllSwitchDefs == []
+        -> SwitchDefs = ''
+        ;  atomic_list_concat(AllSwitchDefs, '\n', SwitchDefs)
+        )
     ).
+
+%% resolve_all_wam_records(+Records, +GlobalLabels, -AllLiterals,
+%%                         -AllSwitchDefs)
+%  Resolves each record's raw instructions against GlobalLabels and
+%  concatenates the literal lists in predicate order. Switch-table
+%  names are predicate-qualified so flattening doesn't collide.
+resolve_all_wam_records([], _, [], []).
+resolve_all_wam_records([wam(Pred/_Arity, _, RawInstrs, _, _, _)|Rest],
+                        GlobalLabels, AllLiterals, AllSwitchDefs) :-
+    atom_string(Pred, PredStr),
+    maplist(resolve_llvm_literal(GlobalLabels), RawInstrs, Literals0),
+    resolve_switch_tables(Literals0, PredStr, 0, ResolvedLits, SwitchDefs),
+    resolve_all_wam_records(Rest, GlobalLabels, RestLits, RestDefs),
+    append(ResolvedLits, RestLits, AllLiterals),
+    append(SwitchDefs, RestDefs, AllSwitchDefs).
+
+%% emit_all_entry_funcs(+WamRecords, +Options,
+%%                      +InstrCount, +LabelCount, +LabelArraySize,
+%%                      -EntryFuncs)
+%  One `define i1 @<pred>(...)` per wam/foreign predicate. All share
+%  @module_code and @module_labels, setting PC = StartPC before
+%  invoking the run loop.
+emit_all_entry_funcs(WamRecords, _Options, InstrCount, LabelCount,
+                     LabelArraySize, EntryFuncs) :-
+    maplist(emit_one_entry_func(InstrCount, LabelCount, LabelArraySize),
+            WamRecords, Funcs),
+    atomic_list_concat(Funcs, '\n\n', EntryFuncs).
+
+emit_one_entry_func(InstrCount, LabelCount, LabelArraySize,
+                    wam(Pred/Arity, _, _, _, StartPC, _),
+                    Func) :-
+    atom_string(Pred, PredStr),
+    build_llvm_arg_setup(Arity, ArgSetup),
+    build_llvm_param_list(Arity, ParamList),
+    % Per-predicate start-PC global. External drivers that build their
+    % own VM (bypassing the entry function) need to know where the
+    % predicate starts in @module_code. The name matches the pattern
+    % used by test tooling for regex extraction.
+    format(atom(Func),
+'; WAM-compiled predicate: ~w/~w (merged module code, start PC ~w)
+@~w_start_pc = private constant i32 ~w
+
+define i1 @~w(~w) {
+entry:
+  %vm = call %WamState* @wam_state_new(
+    %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+    i32 ~w,
+    i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+    i32 ~w)
+  call void @wam_set_pc(%WamState* %vm, i32 ~w)
+~w
+  %result = call i1 @run_loop(%WamState* %vm)
+  ; Free the state before returning so repeated bench-loop invocations
+  ; (N thousand per workload) do not leak ~~85 KB per call.
+  call void @wam_state_free(%WamState* %vm)
+  ret i1 %result
+}',
+        [PredStr, Arity, StartPC,
+         PredStr, StartPC,
+         PredStr, ParamList,
+         InstrCount, InstrCount,
+         InstrCount,
+         LabelArraySize, LabelArraySize,
+         LabelCount,
+         StartPC,
+         ArgSetup]).
 
 %% compile_foreign_kernel_predicate(+PredArity, +Kind, +Arity, +Options, -PredCode).
 %
@@ -1531,6 +1796,8 @@ entry:
     i32 28, label %begin_aggregate
     i32 29, label %end_aggregate
     i32 30, label %call_foreign
+    i32 31, label %cut_ite
+    i32 32, label %jump
   ]
 
 ~w
@@ -1784,9 +2051,13 @@ uc.fail:
 % --- Body Construction Instructions ---
 
 wam_llvm_case('put_constant',
-'  ; op1 = constant value (packed), op2 = register index
-  %pc.reg_idx = trunc i64 %op2 to i32
-  %pc.val = insertvalue %Value undef, i32 0, 0
+'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
+  ; Lower 16 bits: register index. Upper bits: %Value tag.
+  ; 0 = Atom, 1 = Integer, 2 = Float, etc. See value.ll.mustache.
+  %pc.op2_32 = trunc i64 %op2 to i32
+  %pc.reg_idx = and i32 %pc.op2_32, 65535
+  %pc.tag_i32 = lshr i32 %pc.op2_32, 16
+  %pc.val = insertvalue %Value undef, i32 %pc.tag_i32, 0
   %pc.val2 = insertvalue %Value %pc.val, i64 %op1, 1
   call void @wam_trail_binding(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
@@ -2233,6 +2504,43 @@ cf.success:
 cf.fail:
   ret i1 false').
 
+% --- If-then-else control flow ---
+
+wam_llvm_case('cut_ite',
+'  ; Soft cut: pop only the most recent choice point (the ITE guard CP),
+  ; preserving any outer CPs. Unlike !/0 which zeros cp_count, cut_ite
+  ; decrements by 1 iff cp_count > 0.
+  %ci.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %ci.cpn = load i32, i32* %ci.cpn_ptr
+  %ci.has_cp = icmp sgt i32 %ci.cpn, 0
+  br i1 %ci.has_cp, label %ci.pop, label %ci.advance
+
+ci.pop:
+  %ci.new_cpn = sub i32 %ci.cpn, 1
+  store i32 %ci.new_cpn, i32* %ci.cpn_ptr
+  br label %ci.advance
+
+ci.advance:
+  call void @wam_inc_pc(%WamState* %vm)
+  ret i1 true').
+
+wam_llvm_case('jump',
+'  ; Unconditional jump: set PC to op1 (label-resolved absolute PC in
+  ; @module_labels). Used after the then-branch of if-then-else to
+  ; skip over the else-branch.
+  ; op1 itself is a label index — dereference via wam_label_pc.
+  %j.label = trunc i64 %op1 to i32
+  %j.target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %j.label)
+  %j.valid = icmp sge i32 %j.target_pc, 0
+  br i1 %j.valid, label %j.go, label %j.fail
+
+j.go:
+  call void @wam_set_pc(%WamState* %vm, i32 %j.target_pc)
+  ret i1 true
+
+j.fail:
+  ret i1 false').
+
 % ============================================================================
 % PHASE 3: Helper predicates → LLVM functions
 % ============================================================================
@@ -2244,11 +2552,13 @@ compile_wam_helpers_to_llvm(_Options, LLVMCode) :-
     compile_unwind_trail_to_llvm(UnwindCode),
     compile_execute_builtin_to_llvm(BuiltinCode),
     compile_eval_arith_to_llvm(ArithCode),
+    compile_copy_term_to_llvm(CopyTermCode),
     atomic_list_concat([
         BacktrackCode, '\n\n',
         UnwindCode, '\n\n',
         BuiltinCode, '\n\n',
-        ArithCode
+        ArithCode, '\n\n',
+        CopyTermCode
     ], LLVMCode).
 
 compile_backtrack_to_llvm(Code) :-
@@ -2390,6 +2700,10 @@ entry:
     i32 23, label %builtin_plus
     i32 24, label %builtin_unify
     i32 25, label %builtin_not_unify
+    i32 26, label %builtin_functor
+    i32 27, label %builtin_arg
+    i32 28, label %builtin_univ
+    i32 29, label %builtin_copy_term
   ]
 
 builtin_is:
@@ -2613,7 +2927,8 @@ pl.check:
 
 builtin_unify:
   ; =/2: unify A1 with A2. If either is unbound, bind it to the other.
-  ; If both are bound, check structural equality.
+  ; If both are bound, check structural equality (value_equals walks
+  ; compounds recursively).
   %uf.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %uf.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %uf.a1_unb = call i1 @value_is_unbound(%Value %uf.a1)
@@ -2656,6 +2971,454 @@ nu.both_bound:
 
 nu.fail:
   ret i1 false
+
+builtin_functor:
+  ; functor/3 — read mode only for now.
+  ; A1 = Term (expected bound), A2 = Name, A3 = Arity.
+  ;   If A1 is a Compound (tag 3): extract functor pointer + arity,
+  ;     then bind A2 = Atom(functor_ptr), A3 = Integer(arity).
+  ;   If A1 is an Atom (tag 0): bind A2 = A1, A3 = Integer(0).
+  ;   If A1 is an Integer (tag 1): bind A2 = A1, A3 = Integer(0).
+  ;   Otherwise (unbound / compound-construct mode / list): fail.
+  %fn.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fn.a1_tag = call i32 @value_tag(%Value %fn.a1)
+  switch i32 %fn.a1_tag, label %fn.fail [
+    i32 0, label %fn.atomic
+    i32 1, label %fn.atomic
+    i32 3, label %fn.compound
+  ]
+
+fn.compound:
+  %fn.cp_bits = call i64 @value_payload(%Value %fn.a1)
+  %fn.cp_ptr = inttoptr i64 %fn.cp_bits to %Compound*
+  %fn.fn_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 0
+  %fn.fn_i8 = load i8*, i8** %fn.fn_slot
+  %fn.ar_slot = getelementptr %Compound, %Compound* %fn.cp_ptr, i32 0, i32 1
+  %fn.ar = load i32, i32* %fn.ar_slot
+  %fn.ar_i64 = sext i32 %fn.ar to i64
+  %fn.name_val = call %Value @value_atom(i8* %fn.fn_i8)
+  %fn.ar_val = call %Value @value_integer(i64 %fn.ar_i64)
+  br label %fn.bind_both
+
+fn.atomic:
+  ; Atom or Integer: arity 0, name = the value itself.
+  %fn.ar0_val = call %Value @value_integer(i64 0)
+  br label %fn.bind_atomic
+
+fn.bind_atomic:
+  ; Bind A2 = A1 (as atomic name), A3 = 0
+  %fn.atm.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fn.atm.a2_unb = call i1 @value_is_unbound(%Value %fn.atm.a2)
+  br i1 %fn.atm.a2_unb, label %fn.atm.a2_bind, label %fn.atm.a2_check
+
+fn.atm.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.a1)
+  br label %fn.atm.a3
+
+fn.atm.a2_check:
+  %fn.atm.a2_eq = call i1 @value_equals(%Value %fn.atm.a2, %Value %fn.a1)
+  br i1 %fn.atm.a2_eq, label %fn.atm.a3, label %fn.fail
+
+fn.atm.a3:
+  %fn.atm.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.atm.a3_unb = call i1 @value_is_unbound(%Value %fn.atm.a3v)
+  br i1 %fn.atm.a3_unb, label %fn.atm.a3_bind, label %fn.atm.a3_check
+
+fn.atm.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar0_val)
+  ret i1 true
+
+fn.atm.a3_check:
+  %fn.atm.a3_eq = call i1 @value_equals(%Value %fn.atm.a3v, %Value %fn.ar0_val)
+  ret i1 %fn.atm.a3_eq
+
+fn.bind_both:
+  ; Bind A2 = Atom(functor_name_ptr)
+  %fn.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fn.a2_unb = call i1 @value_is_unbound(%Value %fn.a2)
+  br i1 %fn.a2_unb, label %fn.a2_bind, label %fn.a2_check
+
+fn.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.name_val)
+  br label %fn.a3
+
+fn.a2_check:
+  %fn.a2_eq = call i1 @value_equals(%Value %fn.a2, %Value %fn.name_val)
+  br i1 %fn.a2_eq, label %fn.a3, label %fn.fail
+
+fn.a3:
+  %fn.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.a3_unb = call i1 @value_is_unbound(%Value %fn.a3v)
+  br i1 %fn.a3_unb, label %fn.a3_bind, label %fn.a3_check
+
+fn.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar_val)
+  ret i1 true
+
+fn.a3_check:
+  %fn.a3_eq = call i1 @value_equals(%Value %fn.a3v, %Value %fn.ar_val)
+  ret i1 %fn.a3_eq
+
+fn.fail:
+  ret i1 false
+
+builtin_arg:
+  ; arg/3 — A1 = N (Integer, 1-based), A2 = Compound, A3 = Arg.
+  ; Extracts args[N-1] and unifies with A3. Fails if A1 is not Integer,
+  ; A2 is not Compound, or N is out of range.
+  %ag.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ag.a1_tag = call i32 @value_tag(%Value %ag.a1)
+  %ag.a1_is_int = icmp eq i32 %ag.a1_tag, 1
+  br i1 %ag.a1_is_int, label %ag.check_a2, label %ag.fail
+
+ag.check_a2:
+  %ag.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ag.a2_tag = call i32 @value_tag(%Value %ag.a2)
+  %ag.a2_is_cp = icmp eq i32 %ag.a2_tag, 3
+  br i1 %ag.a2_is_cp, label %ag.extract, label %ag.fail
+
+ag.extract:
+  %ag.n_i64 = call i64 @value_payload(%Value %ag.a1)
+  %ag.n = trunc i64 %ag.n_i64 to i32
+  %ag.cp_bits = call i64 @value_payload(%Value %ag.a2)
+  %ag.cp_ptr = inttoptr i64 %ag.cp_bits to %Compound*
+  %ag.ar_slot = getelementptr %Compound, %Compound* %ag.cp_ptr, i32 0, i32 1
+  %ag.ar = load i32, i32* %ag.ar_slot
+  %ag.n_ge1 = icmp sge i32 %ag.n, 1
+  %ag.n_le_ar = icmp sle i32 %ag.n, %ag.ar
+  %ag.n_ok = and i1 %ag.n_ge1, %ag.n_le_ar
+  br i1 %ag.n_ok, label %ag.load, label %ag.fail
+
+ag.load:
+  %ag.args_slot = getelementptr %Compound, %Compound* %ag.cp_ptr, i32 0, i32 2
+  %ag.args = load %Value*, %Value** %ag.args_slot
+  %ag.idx = sub i32 %ag.n, 1
+  %ag.arg_ptr = getelementptr %Value, %Value* %ag.args, i32 %ag.idx
+  %ag.arg_val = load %Value, %Value* %ag.arg_ptr
+  ; Unify A3 with args[N-1]
+  %ag.a3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %ag.a3_unb = call i1 @value_is_unbound(%Value %ag.a3)
+  br i1 %ag.a3_unb, label %ag.a3_bind, label %ag.a3_check
+
+ag.a3_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 2)
+  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %ag.arg_val)
+  ret i1 true
+
+ag.a3_check:
+  %ag.a3_eq = call i1 @value_equals(%Value %ag.a3, %Value %ag.arg_val)
+  ret i1 %ag.a3_eq
+
+ag.fail:
+  ret i1 false
+
+builtin_univ:
+  ; =../2 — decompose mode only (A1 bound).
+  ;   A1 = Term, A2 = List (typically unbound).
+  ;   If A1 is an atomic (tag 0/1/2): L = [A1]  — one cons cell.
+  ;   If A1 is a Compound (tag 3):    L = [functor_atom | args_as_values]
+  ;                                     — (arity+1) cons cells.
+  ;   Otherwise: fail. Compose mode (A1 unbound, A2 = list) is a
+  ;   follow-up — most benchmarks only exercise decompose.
+  ;
+  ; List repr: Prolog canonical cons cells as %Compound { ".", 2,
+  ; [head, tail] }. Empty list = Atom value for "[]". Each cons lives
+  ; in the arena (same allocator as put_structure) so @wam_cleanup
+  ; reclaims them on backtrack/return.
+  %u.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %u.a1_tag = call i32 @value_tag(%Value %u.a1)
+  switch i32 %u.a1_tag, label %u.fail [
+    i32 0, label %u.setup_atomic
+    i32 1, label %u.setup_atomic
+    i32 2, label %u.setup_atomic
+    i32 3, label %u.setup_compound
+    i32 6, label %u.compose
+  ]
+
+u.setup_atomic:
+  ; Single-element list: N=1. args-pointer and fn_val are unused on
+  ; this path; we still feed placeholders through the merge phi
+  ; because SSA requires every value used downstream to dominate the
+  ; use site.
+  br label %u.loop_init
+
+u.setup_compound:
+  ; Unpack Compound: element[0] = Atom(functor_ptr), element[i>=1] = args[i-1].
+  %u.cp_bits = call i64 @value_payload(%Value %u.a1)
+  %u.cp_ptr = inttoptr i64 %u.cp_bits to %Compound*
+  %u.ar_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 1
+  %u.arity = load i32, i32* %u.ar_slot
+  %u.args_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 2
+  %u.args_c = load %Value*, %Value** %u.args_slot
+  %u.fn_slot = getelementptr %Compound, %Compound* %u.cp_ptr, i32 0, i32 0
+  %u.fn_ptr = load i8*, i8** %u.fn_slot
+  %u.fn_val_c = call %Value @value_atom(i8* %u.fn_ptr)
+  br label %u.loop_init
+
+u.loop_init:
+  ; i counts DOWN from start_i to 0 inclusive, building cons cells
+  ; from the TAIL inward (last element first, innermost cons last).
+  ; start_i = 0 for atomic (one cell), = arity for compound ((arity+1)
+  ; cells). is_atomic picks element source in the loop body.
+  ; args and fn_val get merged through even though the atomic path
+  ; never reads them — SSA-dominance requirement.
+  %u.start_i = phi i32 [ 0, %u.setup_atomic ], [ %u.arity, %u.setup_compound ]
+  %u.is_atomic = phi i1 [ true, %u.setup_atomic ], [ false, %u.setup_compound ]
+  %u.args = phi %Value* [ null, %u.setup_atomic ], [ %u.args_c, %u.setup_compound ]
+  %u.fn_val = phi %Value [ zeroinitializer, %u.setup_atomic ], [ %u.fn_val_c, %u.setup_compound ]
+  call void @wam_arena_ensure()
+  %u.empty = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  br label %u.loop_body
+
+u.loop_body:
+  %u.i = phi i32 [ %u.start_i, %u.loop_init ], [ %u.i_next, %u.loop_continue ]
+  %u.tail = phi %Value [ %u.empty, %u.loop_init ], [ %u.cons_val, %u.loop_continue ]
+  ; Pick element[i]:
+  ;   atomic path: always A1 (i is guaranteed 0 here)
+  ;   compound path: i == 0 → functor atom; i >= 1 → args[i-1]
+  br i1 %u.is_atomic, label %u.elt_atomic, label %u.elt_compound_check
+
+u.elt_atomic:
+  br label %u.build_cons
+
+u.elt_compound_check:
+  %u.is_functor = icmp eq i32 %u.i, 0
+  br i1 %u.is_functor, label %u.elt_functor, label %u.elt_arg
+
+u.elt_functor:
+  br label %u.build_cons
+
+u.elt_arg:
+  %u.arg_idx = sub i32 %u.i, 1
+  %u.arg_ptr = getelementptr %Value, %Value* %u.args, i32 %u.arg_idx
+  %u.arg_val = load %Value, %Value* %u.arg_ptr
+  br label %u.build_cons
+
+u.build_cons:
+  %u.elt = phi %Value
+    [ %u.a1,      %u.elt_atomic ],
+    [ %u.fn_val,  %u.elt_functor ],
+    [ %u.arg_val, %u.elt_arg ]
+  ; Allocate %Compound + 2-element args array from the arena.
+  %u.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %u.cons_mem = call i8* @wam_arena_alloc(i64 %u.cp_size)
+  %u.cons = bitcast i8* %u.cons_mem to %Compound*
+  %u.cons_fn = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 0
+  store i8* getelementptr ([2 x i8], [2 x i8]* @.fn__2E, i32 0, i32 0), i8** %u.cons_fn
+  %u.cons_ar = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 1
+  store i32 2, i32* %u.cons_ar
+  %u.cargs_mem = call i8* @wam_arena_alloc(i64 32)
+  %u.cargs = bitcast i8* %u.cargs_mem to %Value*
+  %u.cons_args_slot = getelementptr %Compound, %Compound* %u.cons, i32 0, i32 2
+  store %Value* %u.cargs, %Value** %u.cons_args_slot
+  %u.ca0 = getelementptr %Value, %Value* %u.cargs, i32 0
+  store %Value %u.elt, %Value* %u.ca0
+  %u.ca1 = getelementptr %Value, %Value* %u.cargs, i32 1
+  store %Value %u.tail, %Value* %u.ca1
+  ; Wrap cons pointer as a Compound Value.
+  %u.cons_i64 = ptrtoint %Compound* %u.cons to i64
+  %u.cons_val0 = insertvalue %Value undef, i32 3, 0
+  %u.cons_val = insertvalue %Value %u.cons_val0, i64 %u.cons_i64, 1
+  %u.done = icmp eq i32 %u.i, 0
+  br i1 %u.done, label %u.bind_a2, label %u.loop_continue
+
+u.loop_continue:
+  %u.i_next = sub i32 %u.i, 1
+  br label %u.loop_body
+
+u.bind_a2:
+  %u.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.a2_unb = call i1 @value_is_unbound(%Value %u.a2)
+  br i1 %u.a2_unb, label %u.a2_bind, label %u.a2_check
+
+u.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %u.cons_val)
+  ret i1 true
+
+u.a2_check:
+  ; A2 already bound — limited support: accept iff structural-equal.
+  %u.a2_eq = call i1 @value_equals(%Value %u.a2, %Value %u.cons_val)
+  ret i1 %u.a2_eq
+
+u.fail:
+  ret i1 false
+
+u.compose:
+  ; =../2 compose mode: A1 is unbound, A2 must deref to a non-empty
+  ; cons list. Walk the list once to count elements and collect them
+  ; into a temp buffer on the arena, then construct a %Compound with
+  ; functor = element[0], args = element[1..].
+  ;
+  ; Special cases:
+  ;   - Empty list → fail (cannot build nameless compound).
+  ;   - Single element list [Atom] → bind A1 to the atom directly.
+  ;   - Single element list [Integer] / [Float] → bind A1 to that value.
+  ;   - Otherwise (>=2 elements): element[0] must be an Atom; build
+  ;     a compound with that functor and arity = length - 1.
+  %u.c.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.c.a2_tag = call i32 @value_tag(%Value %u.c.a2)
+  %u.c.a2_is_cp = icmp eq i32 %u.c.a2_tag, 3
+  br i1 %u.c.a2_is_cp, label %u.c.walk_init, label %u.fail
+
+u.c.walk_init:
+  ; First pass: count elements by walking cons cells.
+  ; Each cons is a %Compound { ".", 2, [head, tail] }. Empty list is
+  ; Atom("[]") with payload = ptrtoint(@.fn__5B_5D).
+  call void @wam_arena_ensure()
+  %u.c.empty_val = call %Value @value_atom(i8* getelementptr ([3 x i8], [3 x i8]* @.fn__5B_5D, i32 0, i32 0))
+  %u.c.empty_payload = call i64 @value_payload(%Value %u.c.empty_val)
+  br label %u.c.count_loop
+
+u.c.count_loop:
+  %u.c.count = phi i32 [ 0, %u.c.walk_init ], [ %u.c.count_next, %u.c.count_step ]
+  %u.c.cur = phi %Value [ %u.c.a2, %u.c.walk_init ], [ %u.c.next_tail, %u.c.count_step ]
+  %u.c.cur_tag = call i32 @value_tag(%Value %u.c.cur)
+  %u.c.is_cons = icmp eq i32 %u.c.cur_tag, 3
+  br i1 %u.c.is_cons, label %u.c.count_body, label %u.c.count_done
+
+u.c.count_body:
+  %u.c.cur_payload = call i64 @value_payload(%Value %u.c.cur)
+  %u.c.cur_ptr = inttoptr i64 %u.c.cur_payload to %Compound*
+  %u.c.cur_ar_slot = getelementptr %Compound, %Compound* %u.c.cur_ptr, i32 0, i32 1
+  %u.c.cur_ar = load i32, i32* %u.c.cur_ar_slot
+  %u.c.ar_ok = icmp eq i32 %u.c.cur_ar, 2
+  br i1 %u.c.ar_ok, label %u.c.count_step, label %u.fail
+
+u.c.count_step:
+  %u.c.cur_args_slot = getelementptr %Compound, %Compound* %u.c.cur_ptr, i32 0, i32 2
+  %u.c.cur_args = load %Value*, %Value** %u.c.cur_args_slot
+  %u.c.tail_ptr = getelementptr %Value, %Value* %u.c.cur_args, i32 1
+  %u.c.next_tail = load %Value, %Value* %u.c.tail_ptr
+  %u.c.count_next = add i32 %u.c.count, 1
+  br label %u.c.count_loop
+
+u.c.count_done:
+  ; cur should deref to the empty-list atom. Verify.
+  %u.c.end_is_atom = icmp eq i32 %u.c.cur_tag, 0
+  br i1 %u.c.end_is_atom, label %u.c.end_check, label %u.fail
+
+u.c.end_check:
+  %u.c.end_payload = call i64 @value_payload(%Value %u.c.cur)
+  %u.c.end_eq = icmp eq i64 %u.c.end_payload, %u.c.empty_payload
+  br i1 %u.c.end_eq, label %u.c.dispatch, label %u.fail
+
+u.c.dispatch:
+  ; count == 0 → fail; count == 1 → atomic bind; count >= 2 → compound.
+  %u.c.is_zero = icmp eq i32 %u.c.count, 0
+  br i1 %u.c.is_zero, label %u.fail, label %u.c.nonempty
+
+u.c.nonempty:
+  ; Collect elements into a temp buffer. Second pass walks again.
+  %u.c.count64 = zext i32 %u.c.count to i64
+  %u.c.buf_bytes = shl i64 %u.c.count64, 4
+  %u.c.buf_mem = call i8* @wam_arena_alloc(i64 %u.c.buf_bytes)
+  %u.c.buf = bitcast i8* %u.c.buf_mem to %Value*
+  br label %u.c.collect_loop
+
+u.c.collect_loop:
+  %u.c.ci = phi i32 [ 0, %u.c.nonempty ], [ %u.c.ci_next, %u.c.collect_step ]
+  %u.c.cc = phi %Value [ %u.c.a2, %u.c.nonempty ], [ %u.c.cc_tail, %u.c.collect_step ]
+  %u.c.done_c = icmp sge i32 %u.c.ci, %u.c.count
+  br i1 %u.c.done_c, label %u.c.build, label %u.c.collect_step
+
+u.c.collect_step:
+  %u.c.cc_payload = call i64 @value_payload(%Value %u.c.cc)
+  %u.c.cc_ptr = inttoptr i64 %u.c.cc_payload to %Compound*
+  %u.c.cc_args_slot = getelementptr %Compound, %Compound* %u.c.cc_ptr, i32 0, i32 2
+  %u.c.cc_args = load %Value*, %Value** %u.c.cc_args_slot
+  %u.c.head_ptr = getelementptr %Value, %Value* %u.c.cc_args, i32 0
+  %u.c.head = load %Value, %Value* %u.c.head_ptr
+  %u.c.buf_slot = getelementptr %Value, %Value* %u.c.buf, i32 %u.c.ci
+  store %Value %u.c.head, %Value* %u.c.buf_slot
+  %u.c.cc_tail_ptr = getelementptr %Value, %Value* %u.c.cc_args, i32 1
+  %u.c.cc_tail = load %Value, %Value* %u.c.cc_tail_ptr
+  %u.c.ci_next = add i32 %u.c.ci, 1
+  br label %u.c.collect_loop
+
+u.c.build:
+  %u.c.is_one = icmp eq i32 %u.c.count, 1
+  br i1 %u.c.is_one, label %u.c.bind_atomic, label %u.c.build_compound
+
+u.c.bind_atomic:
+  ; Single-element list → bind A1 directly to element[0].
+  %u.c.elem0_ptr = getelementptr %Value, %Value* %u.c.buf, i32 0
+  %u.c.elem0 = load %Value, %Value* %u.c.elem0_ptr
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %u.c.elem0)
+  ret i1 true
+
+u.c.build_compound:
+  ; element[0] must be an Atom (tag 0). Arity = count - 1.
+  %u.c.f_ptr = getelementptr %Value, %Value* %u.c.buf, i32 0
+  %u.c.f = load %Value, %Value* %u.c.f_ptr
+  %u.c.f_tag = call i32 @value_tag(%Value %u.c.f)
+  %u.c.f_is_atom = icmp eq i32 %u.c.f_tag, 0
+  br i1 %u.c.f_is_atom, label %u.c.alloc_compound, label %u.fail
+
+u.c.alloc_compound:
+  %u.c.new_arity = sub i32 %u.c.count, 1
+  %u.c.f_payload = call i64 @value_payload(%Value %u.c.f)
+  %u.c.f_ptr_i8 = inttoptr i64 %u.c.f_payload to i8*
+  %u.c.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %u.c.new_mem = call i8* @wam_arena_alloc(i64 %u.c.cp_size)
+  %u.c.new_cp = bitcast i8* %u.c.new_mem to %Compound*
+  %u.c.new_fn_slot = getelementptr %Compound, %Compound* %u.c.new_cp, i32 0, i32 0
+  store i8* %u.c.f_ptr_i8, i8** %u.c.new_fn_slot
+  %u.c.new_ar_slot = getelementptr %Compound, %Compound* %u.c.new_cp, i32 0, i32 1
+  store i32 %u.c.new_arity, i32* %u.c.new_ar_slot
+  %u.c.new_ar64 = zext i32 %u.c.new_arity to i64
+  %u.c.new_args_bytes = shl i64 %u.c.new_ar64, 4
+  %u.c.new_args_mem = call i8* @wam_arena_alloc(i64 %u.c.new_args_bytes)
+  %u.c.new_args = bitcast i8* %u.c.new_args_mem to %Value*
+  %u.c.new_args_slot = getelementptr %Compound, %Compound* %u.c.new_cp, i32 0, i32 2
+  store %Value* %u.c.new_args, %Value** %u.c.new_args_slot
+  br label %u.c.copy_loop
+
+u.c.copy_loop:
+  %u.c.ki = phi i32 [ 0, %u.c.alloc_compound ], [ %u.c.ki_next, %u.c.copy_step ]
+  %u.c.kd = icmp sge i32 %u.c.ki, %u.c.new_arity
+  br i1 %u.c.kd, label %u.c.bind_compound, label %u.c.copy_step
+
+u.c.copy_step:
+  %u.c.src_i = add i32 %u.c.ki, 1
+  %u.c.src_slot = getelementptr %Value, %Value* %u.c.buf, i32 %u.c.src_i
+  %u.c.src_v = load %Value, %Value* %u.c.src_slot
+  %u.c.dst_slot = getelementptr %Value, %Value* %u.c.new_args, i32 %u.c.ki
+  store %Value %u.c.src_v, %Value* %u.c.dst_slot
+  %u.c.ki_next = add i32 %u.c.ki, 1
+  br label %u.c.copy_loop
+
+u.c.bind_compound:
+  %u.c.new_i64 = ptrtoint %Compound* %u.c.new_cp to i64
+  %u.c.new_val0 = insertvalue %Value undef, i32 3, 0
+  %u.c.new_val = insertvalue %Value %u.c.new_val0, i64 %u.c.new_i64, 1
+  call void @wam_trail_binding(%WamState* %vm, i32 0)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %u.c.new_val)
+  ret i1 true
+
+builtin_copy_term:
+  ; copy_term/2 — A1 = source term, A2 = destination (typically unbound).
+  ; Calls @wam_copy_term_value to produce a fresh deep copy from the
+  ; arena, then unifies A2 with the result.
+  %ct.src = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ct.copy = call %Value @wam_copy_term_value(%WamState* %vm, %Value %ct.src)
+  %ct.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ct.a2_unb = call i1 @value_is_unbound(%Value %ct.a2)
+  br i1 %ct.a2_unb, label %ct.a2_bind, label %ct.a2_check
+
+ct.a2_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %ct.copy)
+  ret i1 true
+
+ct.a2_check:
+  %ct.a2_eq = call i1 @value_equals(%Value %ct.a2, %Value %ct.copy)
+  ret i1 %ct.a2_eq
 
 unknown:
   ret i1 false
@@ -2796,6 +3559,83 @@ do_abs:
 
 fail:
   ret i64 0
+}'.
+
+compile_copy_term_to_llvm(Code) :-
+    Code = '; Recursively copy a %Value, allocating fresh %Compound cells from
+; the arena for any compound encountered. Atomic values (Atom / Integer /
+; Float / Bool) are returned by value. Unbound values return a fresh
+; Unbound sentinel — a proper impl would use a variable-map to preserve
+; sharing and create fresh Refs, but the current bench corpus has no
+; shared unbound vars and this naive pass is enough for the flat and
+; nested compound cases. Cons-cell lists fall out automatically since
+; they are just compounds with functor "." / arity 2.
+define %Value @wam_copy_term_value(%WamState* %vm, %Value %v) {
+entry:
+  %tag = call i32 @value_tag(%Value %v)
+  switch i32 %tag, label %atomic [
+    i32 3, label %ct_compound
+    i32 6, label %ct_unbound
+  ]
+
+atomic:
+  ret %Value %v
+
+ct_unbound:
+  %fresh = call %Value @value_unbound(i8* null)
+  ret %Value %fresh
+
+ct_compound:
+  %cp_bits = call i64 @value_payload(%Value %v)
+  %cp_ptr = inttoptr i64 %cp_bits to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
+  %fn_ptr = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+
+  call void @wam_arena_ensure()
+  %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
+  %new_cp = bitcast i8* %new_mem to %Compound*
+  %new_fn = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 0
+  store i8* %fn_ptr, i8** %new_fn
+  %new_ar = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 1
+  store i32 %arity, i32* %new_ar
+
+  %ar64 = zext i32 %arity to i64
+  %args_bytes = shl i64 %ar64, 4
+  %new_args_mem = call i8* @wam_arena_alloc(i64 %args_bytes)
+  %new_args = bitcast i8* %new_args_mem to %Value*
+  %new_args_slot = getelementptr %Compound, %Compound* %new_cp, i32 0, i32 2
+  store %Value* %new_args, %Value** %new_args_slot
+
+  %has_args = icmp sgt i32 %arity, 0
+  br i1 %has_args, label %ct_loop_entry, label %ct_done
+
+ct_loop_entry:
+  br label %ct_loop
+
+ct_loop:
+  %i = phi i32 [ 0, %ct_loop_entry ], [ %i_next, %ct_loop_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i
+  %src_val = load %Value, %Value* %src_ptr
+  %dst_val = call %Value @wam_copy_term_value(%WamState* %vm, %Value %src_val)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i
+  store %Value %dst_val, %Value* %dst_ptr
+  %i_next = add i32 %i, 1
+  %more = icmp slt i32 %i_next, %arity
+  br i1 %more, label %ct_loop_step, label %ct_done
+
+ct_loop_step:
+  br label %ct_loop
+
+ct_done:
+  %new_i64 = ptrtoint %Compound* %new_cp to i64
+  %new_val0 = insertvalue %Value undef, i32 3, 0
+  %new_val = insertvalue %Value %new_val0, i64 %new_i64, 1
+  ret %Value %new_val
 }'.
 
 % ============================================================================
@@ -2960,17 +3800,33 @@ emit_functor_string_globals(IR) :-
     ).
 
 %% sanitize_functor_for_llvm(+Name, -Sanitized)
-%  Replace characters invalid in LLVM identifiers with descriptive names.
+%  Produce a bijective LLVM-identifier encoding of Name. Alphanumeric
+%  bytes pass through unchanged; everything else (including underscore)
+%  is hex-escaped as `_HH`. Bijectivity matters: two distinct functor
+%  strings must never collapse to the same LLVM global name, or we get
+%  `redefinition of global` when llc sees the bench module (which
+%  references e.g. both `+` and `*` as functors).
 sanitize_functor_for_llvm(Name, Sanitized) :-
     string_codes(Name, Codes),
-    maplist(sanitize_char, Codes, SanCodes),
+    sanitize_codes(Codes, SanCodes),
     string_codes(Sanitized, SanCodes).
 
-sanitize_char(C, C) :- C >= 0'a, C =< 0'z, !.
-sanitize_char(C, C) :- C >= 0'A, C =< 0'Z, !.
-sanitize_char(C, C) :- C >= 0'0, C =< 0'9, !.
-sanitize_char(0'_, 0'_) :- !.
-sanitize_char(_, 0'_).
+sanitize_codes([], []).
+sanitize_codes([C|Cs], [C|Out]) :-
+    ( C >= 0'a, C =< 0'z
+    ; C >= 0'A, C =< 0'Z
+    ; C >= 0'0, C =< 0'9
+    ), !,
+    sanitize_codes(Cs, Out).
+sanitize_codes([C|Cs], [0'_,H,L|Out]) :-
+    Hi is (C >> 4) /\ 0xF,
+    Lo is C /\ 0xF,
+    hex_digit(Hi, H),
+    hex_digit(Lo, L),
+    sanitize_codes(Cs, Out).
+
+hex_digit(N, C) :- N < 10, !, C is N + 0'0.
+hex_digit(N, C) :- C is N - 10 + 0'A.
 :- dynamic atom_table_entry/2.   % atom_table_entry(AtomName, Id)
 :- dynamic atom_table_next_id/1. % atom_table_next_id(NextId)
 atom_table_next_id(1).           % Start from 1; 0 reserved for empty
@@ -3024,6 +3880,10 @@ builtin_op_to_id('succ/2', 22).
 builtin_op_to_id('plus/3', 23).
 builtin_op_to_id('=/2', 24).
 builtin_op_to_id('\\=/2', 25).
+builtin_op_to_id('functor/3', 26).
+builtin_op_to_id('arg/3', 27).
+builtin_op_to_id('=../2', 28).
+builtin_op_to_id('copy_term/2', 29).
 builtin_op_to_id(_, 99).  % Unknown
 
 % ============================================================================
@@ -3316,6 +4176,10 @@ wam_line_to_llvm_literal_resolved(["retry_me_else", L], LabelMap, Lit) :- !,
     clean_comma(L, CL),
     lookup_label_index(CL, LabelMap, LabelIdx),
     format(atom(Lit), '%Instruction { i32 23, i64 ~w, i64 0 }', [LabelIdx]).
+wam_line_to_llvm_literal_resolved(["jump", L], LabelMap, Lit) :- !,
+    clean_comma(L, CL),
+    lookup_label_index(CL, LabelMap, LabelIdx),
+    format(atom(Lit), '%Instruction { i32 32, i64 ~w, i64 0 }', [LabelIdx]).
 % switch_on_constant: defer until compile_wam_predicate_to_llvm can
 % allocate a switch table global. Returns a switch_deferred(_) term.
 wam_line_to_llvm_literal_resolved(["switch_on_constant" | EntryParts], LabelMap,
@@ -3421,7 +4285,13 @@ wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
     llvm_pack_value_str(CC, PackedVal),
     atom_string(CAi, CAiAtom),
     reg_name_to_index(CAiAtom, RegIdx),
-    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }', [PackedVal, RegIdx]).
+    % Encode op2 = (tag << 16) | reg_idx. Integers get tag 1, atoms get
+    % tag 0. Previously the runtime hardcoded tag 0, which mis-tagged
+    % every integer constant — surface symptom was arg/3 having to accept
+    % tag 0 or 1 for its N argument.
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    Op2 is (Tag << 16) \/ RegIdx,
+    format(atom(Lit), '%Instruction { i32 8, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_line_to_llvm_literal(["put_variable", Xn, Ai], Lit) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     atom_string(CXn, CXnAtom), atom_string(CAi, CAiAtom),
@@ -3558,6 +4428,16 @@ wam_line_to_llvm_literal(["switch_on_structure"|_],
     '%Instruction { i32 26, i64 0, i64 0 }').  % nop fallthrough
 wam_line_to_llvm_literal(["switch_on_constant_a2"|_],
     '%Instruction { i32 27, i64 0, i64 0 }').  % nop fallthrough
+
+wam_line_to_llvm_literal(["cut_ite"],
+    '%Instruction { i32 31, i64 0, i64 0 }').
+
+% jump without a label map errors — label-referencing. Text parser that
+% produces label-free literals is only used for the non-resolved path
+% (unit-test fixtures). Throw so the bug is loud.
+wam_line_to_llvm_literal(["jump", _], _) :-
+    throw(error(label_resolution_required(jump, "provide a LabelMap"),
+                _)).
 
 wam_line_to_llvm_literal(Parts, Lit) :-
     atomic_list_concat(Parts, " ", Line),

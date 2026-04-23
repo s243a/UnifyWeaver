@@ -324,18 +324,21 @@ raw path-state traversal:
 | counted shortest path | 1k | 0.450s | 0.180s | 2.50x | 352,522 | 10,328 | 592,698 | 38,196 |
 
 Counted-closure phase split after typed row buffering, pre-sized
-materialization, edge-state node-id preindexing, per-row timing removal, a
-compact `(target, depth)` buffered row shape, O(1) parent-linked
-visited-path extension, a dedicated counted-path traversal frame stack, and
-direct-write seed-batch materialization with a packed target/depth row buffer
-and node-id driven traversal/replay:
+materialization, edge-state node-id preindexing, node-id keyed retained-min
+tracking/flush, concrete-array `nodeValues` replay on the counted-path
+materialization path, cached boxed depth reuse for counted-path row
+construction, split `All` versus retained-min successor loops in the counted
+path hot traversal, per-row timing removal, a compact `(target, depth)`
+buffered row shape, O(1) parent-linked visited-path extension, a dedicated
+counted-path traversal frame stack, and direct-write seed-batch materialization
+with a packed target/depth row buffer and node-id driven traversal/replay:
 
 | Scale | Mode | Traversal | Row Creation | Result Materialization | Best-Known Flush/Sort |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 300 | All | 129.728ms | 0.000ms | 66.206ms | n/a |
-| 300 | Min | 33.449ms | 0.000ms | 11.225ms | 13.307ms |
-| 1k | All | 60.561ms | 0.000ms | 40.608ms | n/a |
-| 1k | Min | 16.909ms | 0.000ms | 1.788ms | 6.684ms |
+| 300 | All | 102.950ms | 0.000ms | 47.579ms | n/a |
+| 300 | Min | 33.300ms | 0.000ms | 14.862ms | 5.522ms |
+| 1k | All | 50.315ms | 0.000ms | 39.439ms | n/a |
+| 1k | Min | 12.421ms | 0.000ms | 1.026ms | 1.875ms |
 
 Interpretation:
 
@@ -385,6 +388,19 @@ Interpretation:
   with edge-state lookup tables, avoiding repeated object-key dictionary
   lookups on the hot path while preserving exact output values at final
   materialization time
+- counted-path `Min` now keeps retained best depths keyed by interned target
+  node id until the final target-sorted flush, cutting object-key hashing and
+  reducing `best_known_flush_sort` plus final `Min` materialization cost while
+  preserving the deterministic ordering contract
+- counted-path replay/materialization now uses the concrete `object?[]`
+  node-value table directly instead of an `IReadOnlyList<object?>` view, which
+  trims lookup overhead on the hot replay path without changing output rows
+- counted-path row construction now reuses cached boxed depth objects for
+  common small path depths, reducing per-row boxing churn on the high-volume
+  `All` materialization path
+- counted-path traversal now uses a separate `All` hot-path successor loop so
+  the high-volume `All` case no longer pays retained-min dictionary and mode
+  branching checks on every successor candidate
 - the next broad optimization should avoid adding more generic frontier indexes
   until another dominance-heavy fallback shape appears; for counted closure,
   remaining work should target expansion/materialization overhead

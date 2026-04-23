@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import statistics
 import sys
 import tempfile
@@ -39,6 +40,7 @@ from benchmark_common import (
     digest_normalized_output,
     find_result,
     group_results_by_scale,
+    is_termux_environment,
     normalize_three_column_float_rows,
     print_match_status,
     print_result_table,
@@ -61,8 +63,14 @@ GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_RUST_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
+WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
+WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
+
+
+def default_scales_csv() -> str:
+    return "dev,10x" if is_termux_environment() else "300,1k,5k,10k"
 
 
 @dataclass
@@ -81,7 +89,7 @@ class RunResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scales", default="300,1k,5k,10k")
+    parser.add_argument("--scales", default=default_scales_csv())
     parser.add_argument(
         "--target-sets",
         default="",
@@ -98,7 +106,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
+    parser.add_argument(
+        "--allow-large-termux-scales",
+        action="store_true",
+        help="Allow scales beyond the Termux-safe smoke set (dev,10x).",
+    )
     return parser.parse_args()
+
+
+def validate_termux_scales(scales: list[str], allow_large: bool) -> None:
+    if not is_termux_environment() or allow_large:
+        return
+    safe_scales = {"dev", "10x"}
+    large_scales = [scale for scale in scales if scale not in safe_scales]
+    if large_scales:
+        joined = ",".join(large_scales)
+        raise ValueError(
+            f"large scales are disabled on Termux by default: {joined}. "
+            "Use --allow-large-termux-scales to override."
+        )
 
 
 def benchmark_temp_parent() -> Path:
@@ -190,6 +216,323 @@ def build_wam_rust_effective_distance(root: Path, scale: str, variant: str) -> l
     return [str(binary), str(scale_dir)]
 
 
+def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_go_{kernel_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    variant = "accumulated"
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_GO_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            variant,
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    go_cache = project_dir / ".gocache"
+    go_cache.mkdir(exist_ok=True)
+    env = dict(os.environ, GOCACHE=str(go_cache))
+    run_command(["go", "build", "-o", str(project_dir / "hybrid_ed_bench_go")], cwd=project_dir, env=env)
+    return [str(project_dir / "hybrid_ed_bench_go")]
+
+
+def clojure_classpath(project_dir: Path) -> str:
+    env_classpath = os.environ.get("CLASSPATH", "")
+    if env_classpath:
+        return ":".join([str(project_dir / "src"), env_classpath])
+    jar_paths = [
+        Path.home() / ".m2" / "repository" / "org" / "clojure" / "clojure" / "1.11.1" / "clojure-1.11.1.jar",
+        Path.home() / ".m2" / "repository" / "org" / "clojure" / "spec.alpha" / "0.3.218" / "spec.alpha-0.3.218.jar",
+        Path.home()
+        / ".m2"
+        / "repository"
+        / "org"
+        / "clojure"
+        / "core.specs.alpha"
+        / "0.2.62"
+        / "core.specs.alpha-0.2.62.jar",
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/clojure/1.11.1/clojure-1.11.1.jar"),
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/spec.alpha/0.3.218/spec.alpha-0.3.218.jar"),
+        Path("/data/data/com.termux/files/home/.m2/repository/org/clojure/core.specs.alpha/0.2.62/core.specs.alpha-0.2.62.jar"),
+    ]
+    existing_jars = [path for path in jar_paths if path.exists()]
+    if not existing_jars:
+        raise RuntimeError("Clojure jars not found; cannot run clojure-wam target")
+    return ":".join([str(project_dir / "src"), *(str(path) for path in existing_jars)])
+
+
+def build_wam_clojure_effective_distance(
+    root: Path, scale: str, variant: str, kernel_mode: str, data_mode: str = "sidecar"
+) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_clojure_{variant}_{kernel_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_CLOJURE_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            variant,
+            kernel_mode,
+            data_mode,
+        ],
+        cwd=ROOT,
+    )
+    return [
+        "java",
+        "-cp",
+        clojure_classpath(project_dir),
+        "clojure.main",
+        "-m",
+        "generated.wam_clojure_optimized_bench.core",
+    ]
+
+
+def parse_effective_distance_facts(facts_path: Path) -> tuple[list[tuple[str, str]], list[str]]:
+    article_categories: list[tuple[str, str]] = []
+    roots: list[str] = []
+    article_re = re.compile(r"^article_category\('((?:\\.|[^'])*)', '((?:\\.|[^'])*)'\)\.$")
+    root_re = re.compile(r"^root_category\('((?:\\.|[^'])*)'\)\.$")
+    with facts_path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            article_match = article_re.match(line)
+            if article_match:
+                article_categories.append(
+                    (unescape_prolog_atom(article_match.group(1)), unescape_prolog_atom(article_match.group(2)))
+                )
+                continue
+            root_match = root_re.match(line)
+            if root_match:
+                roots.append(unescape_prolog_atom(root_match.group(1)))
+    article_categories = sorted(set(article_categories))
+    roots = sorted(set(roots))
+    return article_categories, roots
+
+
+def unescape_prolog_atom(value: str) -> str:
+    return value.replace("\\'", "'").replace("\\\\", "\\")
+
+
+def go_string_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
+    return f'"{escaped}"'
+
+
+def extract_shared_wam_label(project_dir: Path, label: str) -> int:
+    lib_path = require_file(project_dir / "lib.go")
+    pattern = re.compile(rf'"{re.escape(label)}":\s*(\d+),')
+    content = lib_path.read_text(encoding="utf-8")
+    match = pattern.search(content)
+    if not match:
+        raise RuntimeError(f"could not find sharedWam label {label!r} in {lib_path}")
+    return int(match.group(1))
+
+
+def write_go_effective_distance_main(project_dir: Path, facts_path: Path) -> None:
+    article_categories, roots = parse_effective_distance_facts(facts_path)
+    category_ancestor_pc = extract_shared_wam_label(project_dir, "category_ancestor/4")
+    article_rows = "\n".join(
+        f"    {{Article: {go_string_literal(article)}, Category: {go_string_literal(category)}}},"
+        for article, category in article_categories
+    )
+    roots_literal = ", ".join(go_string_literal(root) for root in roots)
+    main_code = f"""package main
+
+import (
+    "fmt"
+    "math"
+    "os"
+    "sort"
+    "time"
+)
+
+const (
+    categoryAncestorStartPC = {category_ancestor_pc}
+    dimensionN = 5.0
+    inverseDimensionN = -1.0 / dimensionN
+)
+
+type articleCategoryPair struct {{
+    Article string
+    Category string
+}}
+
+type resultRow struct {{
+    Article string
+    Root string
+    Distance float64
+}}
+
+var benchmarkArticleCategories = []articleCategoryPair{{
+{article_rows}
+}}
+
+var benchmarkRoots = []string{{{roots_literal}}}
+
+func newBenchmarkVM(startPC int, args ...Value) *WamState {{
+    vm := NewWamState(sharedWamCode, sharedWamLabels)
+    setupSharedForeignPredicates(vm)
+    vm.PC = startPC
+    for i, arg := range args {{
+        vm.Regs[fmt.Sprintf("A%d", i+1)] = arg
+    }}
+    return vm
+}}
+
+func collectSolutions(startPC int, args ...Value) [][]Value {{
+    vm := newBenchmarkVM(startPC, args...)
+    solutions := make([][]Value, 0)
+    if !vm.Run() {{
+        return solutions
+    }}
+    solutions = append(solutions, append([]Value(nil), vm.CollectResults()...))
+    for vm.backtrack() {{
+        if !vm.Run() {{
+            break
+        }}
+        solutions = append(solutions, append([]Value(nil), vm.CollectResults()...))
+    }}
+    return solutions
+}}
+
+func atomName(v Value) string {{
+    if a, ok := v.(*Atom); ok {{
+        return a.Name
+    }}
+    if v == nil {{
+        return ""
+    }}
+    return v.String()
+}}
+
+func floatValue(v Value) (float64, bool) {{
+    switch t := v.(type) {{
+    case *Float:
+        return t.Val, true
+    case *Integer:
+        return float64(t.Val), true
+    default:
+        return 0, false
+    }}
+}}
+
+func hopsForCategoryRoot(category string, root string) []int {{
+    rows := collectSolutions(
+        categoryAncestorStartPC,
+        &Atom{{Name: category}},
+        &Atom{{Name: root}},
+        &Unbound{{Name: "hops"}},
+        &List{{Elements: []Value{{&Atom{{Name: category}}}}}},
+    )
+    hops := make([]int, 0, len(rows))
+    for _, row := range rows {{
+        if len(row) < 3 {{
+            continue
+        }}
+        switch t := row[2].(type) {{
+        case *Integer:
+            hops = append(hops, int(t.Val))
+        case *Float:
+            hops = append(hops, int(t.Val))
+        }}
+    }}
+    return hops
+}}
+
+func main() {{
+    started := time.Now()
+    articleCats := append([]articleCategoryPair(nil), benchmarkArticleCategories...)
+    roots := append([]string(nil), benchmarkRoots...)
+    loadMs := time.Since(started).Milliseconds()
+    if len(roots) == 0 {{
+        fmt.Fprintln(os.Stderr, "no root categories")
+        os.Exit(1)
+    }}
+
+    queryStart := time.Now()
+    articleToCategories := make(map[string][]string)
+    for _, pair := range articleCats {{
+        articleToCategories[pair.Article] = append(articleToCategories[pair.Article], pair.Category)
+    }}
+    articles := make([]string, 0, len(articleToCategories))
+    for article := range articleToCategories {{
+        articles = append(articles, article)
+    }}
+    sort.Strings(articles)
+    rows := make([]resultRow, 0)
+    rootCount := 0
+    tupleCount := 0
+    for _, root := range roots {{
+        rootCount++
+        for _, article := range articles {{
+            weightSum := 0.0
+            for _, category := range articleToCategories[article] {{
+                if category == root {{
+                    weightSum += 1.0
+                    continue
+                }}
+                hops := hopsForCategoryRoot(category, root)
+                tupleCount += len(hops)
+                for _, hop := range hops {{
+                    weightSum += math.Pow(float64(hop+1), -dimensionN)
+                }}
+            }}
+            if weightSum <= 0 {{
+                continue
+            }}
+            rows = append(rows, resultRow{{
+                Article: article,
+                Root: root,
+                Distance: math.Pow(weightSum, inverseDimensionN),
+            }})
+        }}
+    }}
+    queryMs := time.Since(queryStart).Milliseconds()
+
+    aggregationStart := time.Now()
+    sort.Slice(rows, func(i, j int) bool {{
+        if rows[i].Distance != rows[j].Distance {{
+            return rows[i].Distance < rows[j].Distance
+        }}
+        if rows[i].Root != rows[j].Root {{
+            return rows[i].Root < rows[j].Root
+        }}
+        return rows[i].Article < rows[j].Article
+    }})
+    aggregationMs := time.Since(aggregationStart).Milliseconds()
+    totalMs := time.Since(started).Milliseconds()
+
+    fmt.Println("article\\troot_category\\teffective_distance")
+    for _, row := range rows {{
+        fmt.Printf("%s\\t%s\\t%.6f\\n", row.Article, row.Root, row.Distance)
+    }}
+
+    fmt.Fprintf(os.Stderr, "mode=accumulated_go_wam\\n")
+    fmt.Fprintf(os.Stderr, "load_ms=%d\\n", loadMs)
+    fmt.Fprintf(os.Stderr, "query_ms=%d\\n", queryMs)
+    fmt.Fprintf(os.Stderr, "aggregation_ms=%d\\n", aggregationMs)
+    fmt.Fprintf(os.Stderr, "total_ms=%d\\n", totalMs)
+    fmt.Fprintf(os.Stderr, "root_count=%d\\n", rootCount)
+    fmt.Fprintf(os.Stderr, "tuple_count=%d\\n", tupleCount)
+    fmt.Fprintf(os.Stderr, "article_count=%d\\n", len(rows))
+}}
+"""
+    (project_dir / "main.go").write_text(main_code, encoding="utf-8")
+
+
 def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str) -> list[str]:
     project_dir = root / f"haskell_{mode}_{kernel_mode}"
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -243,7 +586,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-") or target.startswith("wam-"):
+        if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
             result = run_command(command, cwd=ROOT)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
@@ -297,7 +640,16 @@ def resolve_requested_targets(args: argparse.Namespace) -> list[str]:
         include_targets=include_targets,
         exclude_targets=exclude_targets,
     )
-    return available_targets(resolved)
+    runnable = []
+    for target in resolved:
+        if TARGETS[target].category == "hybrid-wam-scaffold":
+            print(
+                f"skip {target}: scaffold-only target; no result-producing effective-distance runner yet",
+                file=sys.stderr,
+            )
+            continue
+        runnable.append(target)
+    return available_targets(runnable)
 
 
 def main() -> int:
@@ -307,6 +659,7 @@ def main() -> int:
         return 0
 
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
+    validate_termux_scales(scales, args.allow_large_termux_scales)
     targets = resolve_requested_targets(args)
     if not targets:
         print("no benchmark targets available", file=sys.stderr)
@@ -333,6 +686,34 @@ def main() -> int:
                     command = build_wam_rust_effective_distance(temp_root, scale, "seeded")
                 elif target == "wam-rust-accumulated":
                     command = build_wam_rust_effective_distance(temp_root, scale, "accumulated")
+                elif target == "go-wam-accumulated":
+                    command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
+                elif target == "go-wam-accumulated-no-kernels":
+                    command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "clojure-wam-accumulated":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
+                elif target == "clojure-wam-accumulated-no-kernels":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_off")
+                elif target == "clojure-wam-accumulated-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_on", "artifact"
+                    )
+                elif target == "clojure-wam-accumulated-no-kernels-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_off", "artifact"
+                    )
+                elif target == "clojure-wam-seeded":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_on")
+                elif target == "clojure-wam-seeded-no-kernels":
+                    command = build_wam_clojure_effective_distance(temp_root, scale, "seeded", "kernels_off")
+                elif target == "clojure-wam-seeded-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "seeded", "kernels_on", "artifact"
+                    )
+                elif target == "clojure-wam-seeded-no-kernels-artifact":
+                    command = build_wam_clojure_effective_distance(
+                        temp_root, scale, "seeded", "kernels_off", "artifact"
+                    )
                 else:
                     command = commands[target]
                 results.append(benchmark_target(command, scale, args.repetitions, target))

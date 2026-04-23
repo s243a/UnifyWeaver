@@ -7,7 +7,7 @@
 -- Exercises the 3-output FFIStreamRetry path. Atoms (target, parent) are
 -- interned; distance is a plain Int.
 nativeKernel_transitive_parent_distance
-  :: IM.IntMap [Int] -> Int -> [(Int, Int, Int)]
+  :: EdgeLookup -> Int -> [(Int, Int, Int)]
 nativeKernel_transitive_parent_distance edges source =
   bfs [(source, source, 0)] IS.empty []
   where
@@ -17,7 +17,7 @@ nativeKernel_transitive_parent_distance edges source =
       | IS.member node visited = bfs queue visited acc
       | otherwise =
           let visited' = IS.insert node visited
-              neighbors = IM.findWithDefault [] node edges
+              neighbors = edges node
               -- Expanded frontier: each neighbor's parent is `node`
               expanded = [(n, node, dist + 1) | n <- neighbors,
                                                 not (IS.member n visited')]

@@ -227,16 +227,13 @@
   (call $set_halted (i32.const 0))
   (call $set_mode (i32.const 0))
   (global.set $env_base (i32.const 0))
-  ;; Reset aggregate and arg/3 iteration state — otherwise stale globals
-  ;; from a prior query corrupt detection logic across predicate
-  ;; invocations sharing the same WASM instance.
+  ;; Reset aggregate state — otherwise stale globals from a prior query
+  ;; corrupt detection logic across predicate invocations sharing the
+  ;; same WASM instance. (arg/3 iteration state moved to CP frames, so
+  ;; no global reset needed there.)
   (global.set $agg_active (i32.const 0))
   (global.set $agg_sum (i64.const 0))
   (global.set $agg_count (i32.const 0))
-  (global.set $arg_iter_active (i32.const 0))
-  (global.set $arg_iter_n (i32.const 0))
-  (global.set $arg_iter_arity (i32.const 0))
-  (global.set $arg_iter_t_addr (i32.const 0))
   ;; Zero all A/X registers (indices 0-63) to Unbound. This prevents
   ;; stale Ref cells from previous invocations leading to corrupted
   ;; heap addresses when put_structure uses bind_reg_deref.

@@ -3,6 +3,7 @@ module Main where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -15,6 +16,7 @@ import WamTypes
 import WamRuntime
 import Predicates
 import qualified Lowered
+{{lmdb_import}}
 
 -- | Load a TSV file, skip header, return pairs.
 loadTsvPairs :: FilePath -> IO [(String, String)]
@@ -42,8 +44,9 @@ buildFactIndex pairs = foldl (\m (a, b) -> Map.insertWith (++) a [(a, b)] m) Map
 
 -- | Build WAM instructions for indexed fact predicate.
 -- Returns (instructions, labels) to append to the code vector.
-buildFact2Code :: String -> [(String, String)] -> Int -> ([Instruction], [(String, Int)])
-buildFact2Code predName pairs startPC =
+-- The iAtom function interns a String to an atom ID at load time.
+buildFact2Code :: (String -> Int) -> String -> [(String, String)] -> Int -> ([Instruction], [(String, Int)])
+buildFact2Code iAtom predName pairs startPC =
     let groups = Map.toAscList (buildFactIndex pairs)
         -- SwitchOnConstant dispatch table
         (dispatchList, groupCode, groupLabels, _) = foldl buildGroup ([], [], [], startPC + 1) groups
@@ -53,7 +56,7 @@ buildFact2Code predName pairs startPC =
     buildGroup (disp, code, labels, pc) (key, facts) =
       let groupLabel = predName ++ "_g_" ++ key
           (fcode, flabels, nextPC) = buildFactGroup predName key facts pc
-      in (disp ++ [(Atom key, groupLabel)], code ++ fcode, labels ++ [(groupLabel, pc)] ++ flabels, nextPC)
+      in (disp ++ [(Atom (iAtom key), groupLabel)], code ++ fcode, labels ++ [(groupLabel, pc)] ++ flabels, nextPC)
 
     buildFactGroup _ _ [] pc = ([], [], pc)
     buildFactGroup pn key facts pc =
@@ -63,7 +66,7 @@ buildFact2Code predName pairs startPC =
                   if i == 0 then [TryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
                   else if i == n - 1 then [TrustMe]
                   else [RetryMeElse (pn ++ "_g_" ++ key ++ "_" ++ show (i+1))]
-                factInstrs = [GetConstant (Atom a) 1, GetConstant (Atom b) 2, Proceed]
+                factInstrs = [GetConstant (Atom (iAtom a)) 1, GetConstant (Atom (iAtom b)) 2, Proceed]
                 label = (pn ++ "_g_" ++ key ++ "_" ++ show i, curPC)
             in (choiceInstr ++ factInstrs, [label], curPC + length choiceInstr + length factInstrs)
           (allCode, allLabels, finalPC) = foldl (\(c, l, p) (i, f) ->
@@ -72,11 +75,11 @@ buildFact2Code predName pairs startPC =
       in (allCode, allLabels, finalPC)
 
 -- | Build WAM instructions for 1-column indexed fact predicate.
-buildFact1Code :: String -> [String] -> Int -> ([Instruction], [(String, Int)])
-buildFact1Code predName vals startPC =
-    let disp = [(Atom v, predName ++ "_" ++ show i) | (i, v) <- zip [0..] vals]
+buildFact1Code :: (String -> Int) -> String -> [String] -> Int -> ([Instruction], [(String, Int)])
+buildFact1Code iAtom predName vals startPC =
+    let disp = [(Atom (iAtom v), predName ++ "_" ++ show i) | (i, v) <- zip [0..] vals]
         switchInstr = SwitchOnConstant (Map.fromList disp)
-        factCode = concatMap (\(i, v) -> [GetConstant (Atom v) 1, Proceed]) (zip [0..] vals)
+        factCode = concatMap (\(i, v) -> [GetConstant (Atom (iAtom v)) 1, Proceed]) (zip [0..] vals)
         factLabels = [(predName ++ "_" ++ show i, startPC + 1 + i * 2) | i <- [0..length vals - 1]]
     in (switchInstr : factCode, (predName ++ "/1", startPC) : factLabels)
 
@@ -94,6 +97,20 @@ main = do
 
     t1 <- getCurrentTime
     let loadMs = round (diffUTCTime t1 t0 * 1000) :: Int
+
+    -- Build system-wide atom intern table. Extends the compile-time atom
+    -- table (from Predicates.hs) with runtime atoms from TSV data. All
+    -- atoms that reach the WAM interpreter or FFI kernels must be interned.
+    -- The hot loop uses Int comparison instead of String comparison.
+    let atomStrings =
+            [child | (child, _) <- categoryParents] ++
+            [parent | (_, parent) <- categoryParents] ++
+            [cat | (_, cat) <- articleCategories] ++
+            roots
+        !fullInternTable = foldl'
+            (\tbl s -> snd (internAtom tbl s))
+            compileTimeAtomTable atomStrings
+        iAtom s = internAtomPure fullInternTable s
 
     -- Build merged code: compiled predicates + runtime facts.
     -- When FFI handles fact lookups, the WAM-compiled fact code is pure
@@ -113,43 +130,31 @@ main = do
         n = 5.0 :: Double
         negN = -n
 
-    -- Build atom intern table. All atoms that may reach the FFI kernel
-    -- must have stable Int IDs: fact keys (children, parents), seed
-    -- categories, root atoms. Interning here happens once at startup;
-    -- the hot loop then uses IntMap + Int comparison instead of
-    -- HashMap + String hashing (~17% profiled savings).
-    --
-    -- Use a counter pair (map, next-id) in the fold so we don't call
-    -- Map.size on every insert — HashMap.size is O(n), which made the
-    -- original foldl' O(n^2) (~10% profiled time at 300 scale).
-    let atomStrings =
-            [child | (child, _) <- categoryParents] ++
-            [parent | (_, parent) <- categoryParents] ++
-            [cat | (_, cat) <- articleCategories] ++
-            roots
-        (!internMap, _) = foldl'
-            (\(!m, !i) s -> if Map.member s m
-                              then (m, i)
-                              else (Map.insert s i m, i + 1))
-            (Map.empty, 0 :: Int) atomStrings
-        !deinternMap = IM.fromList [(i, s) | (s, i) <- Map.toList internMap]
-        internAtom s = fromMaybe (-1) (Map.lookup s internMap)
-
     -- Build child -> [parents] index in interned form for the FFI fast path.
     let !parentsIndexInterned = IM.fromListWith (++)
-            [(internAtom child, [internAtom parent]) | (child, parent) <- categoryParents]
+            [(iAtom child, [iAtom parent]) | (child, parent) <- categoryParents]
+
+    -- Demand-driven pruning: compute the backward-reachable set from root,
+    -- then filter parentsIndex to only include edges to reachable parents.
+    -- This prunes branches that can never reach root, reducing DFS work.
+    -- On sparse graphs this eliminates most exploration; on dense graphs
+    -- (like Wikipedia categories, ~95% reachable) the effect is small.
+{{demand_filter}}
+
+    -- Phase B1: LMDB fact source setup (conditional, empty when not enabled)
+{{lmdb_setup}}
 
     -- Build the read-only WamContext ONCE before the seed loop. The hot
     -- WamState gets a fresh copy per seed; the cold context is shared.
-    -- wcFfiFacts/wcAtomIntern/wcAtomDeintern feed the FFI kernel path.
-    -- wcForeignFacts stays empty — callIndexedFact2 is not used when FFI
-    -- handles the fact predicate.
+    -- wcInternTable is the system-wide atom intern table (compile-time +
+    -- runtime atoms). wcFfiFacts feeds the FFI kernel path.
     let !ctx = (mkContext mergedCode mergedLabels)
             { wcForeignConfig = Map.singleton "max_depth" 10
             , wcLoweredPredicates = Lowered.loweredPredicates
-            , wcAtomIntern    = internMap
-            , wcAtomDeintern  = deinternMap
-            , wcFfiFacts      = Map.singleton "category_parent" parentsIndexInterned
+            , wcInternTable   = fullInternTable
+            , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
+{{inline_facts}}
+{{lmdb_context}}
             }
 
     t2 <- getCurrentTime
@@ -205,6 +210,7 @@ main = do
     hPutStrLn stderr $ "seed_count=" ++ show (length seedCats)
     hPutStrLn stderr $ "tuple_count=" ++ show (Map.size seedWeightSums)
     hPutStrLn stderr $ "article_count=" ++ show (length results)
+{{demand_metrics}}
 
 -- | Format a Double to 6 decimal places.
 showFFloat6 :: Double -> String
@@ -222,7 +228,7 @@ collectSolutions !ctx s0 hopsVarId =
       Nothing -> []
       Just s1 ->
         let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
-              Just v -> extractDouble (derefVar (wsBindings s1) v)
+              Just v -> extractDouble (wcInternTable ctx) (derefVar (wsBindings s1) v)
               Nothing -> Nothing
             hops = fromMaybe 0 hopsVal
             rest = case backtrack s1 of
@@ -232,9 +238,64 @@ collectSolutions !ctx s0 hopsVarId =
           Just _ -> hops : rest
           Nothing -> rest
 
+-- | Collect all Hops solutions via executeForeign dispatch.
+-- Used when the query predicate has an FFI kernel — bypasses WAM
+-- code and calls the native kernel directly. The first result comes
+-- from executeForeign; subsequent results via backtrack through the
+-- ChoicePoints that executeForeign created. After backtrack, the
+-- FFIStreamRetry handler binds the next result directly — no run needed.
+collectForeignSolutions :: WamContext -> String -> WamState -> Int -> [Double]
+collectForeignSolutions !ctx pred s0 hopsVarId =
+    case executeForeign ctx pred s0 of
+      Nothing -> []
+      Just s1 -> extractFfiAndBacktrack ctx pred s1 hopsVarId
+
+-- | Extract the hops value from an FFI result state, then backtrack for more.
+-- FFIStreamRetry choice points bind the next result directly on backtrack,
+-- so no run ctx is needed between results.
+extractFfiAndBacktrack :: WamContext -> String -> WamState -> Int -> [Double]
+extractFfiAndBacktrack !ctx pred s1 hopsVarId =
+    let hopsVal = case IM.lookup hopsVarId (wsBindings s1) of
+          Just v -> extractDouble (wcInternTable ctx) (derefVar (wsBindings s1) v)
+          Nothing -> Nothing
+        hops = fromMaybe 0 hopsVal
+        rest = case backtrack s1 of
+          Just s2 -> extractFfiAndBacktrack ctx pred s2 hopsVarId
+          Nothing -> []
+    in case hopsVal of
+      Just _ -> hops : rest
+      Nothing -> rest
+
 -- | Extract a Double from a Value.
-extractDouble :: Value -> Maybe Double
-extractDouble (Integer h) = Just (fromIntegral h)
-extractDouble (Float h) = Just h
-extractDouble (Atom str) = case reads str of [(h, "")] -> Just h; _ -> Nothing
-extractDouble _ = Nothing
+extractDouble :: InternTable -> Value -> Maybe Double
+extractDouble _ (Integer h) = Just (fromIntegral h)
+extractDouble _ (Float h) = Just h
+extractDouble tbl (Atom aid) = case reads (lookupAtom tbl aid) of [(h, "")] -> Just h; _ -> Nothing
+extractDouble _ _ = Nothing
+
+-- | Compute the backward-reachable demand set from a root node.
+-- Given a child→[parents] adjacency map, returns all nodes that can
+-- reach rootId via the edge relation (backward BFS fixpoint).
+computeDemandSet :: IM.IntMap [Int] -> Int -> IS.IntSet
+computeDemandSet parents rootId = bfs (IS.singleton rootId) (IS.singleton rootId)
+  where
+    -- Build reverse adjacency: parent → [children]
+    !reverseAdj = IM.foldlWithKey' (\m child ps ->
+        foldl' (\m' p -> IM.insertWith (++) p [child] m') m ps
+      ) IM.empty parents
+    bfs frontier visited
+      | IS.null frontier = visited
+      | otherwise =
+          let newNodes = IS.fromList
+                [ c | node <- IS.toList frontier
+                    , c <- IM.findWithDefault [] node reverseAdj
+                    , not (IS.member c visited) ]
+          in bfs newNodes (IS.union visited newNodes)
+
+-- | Filter a child→[parents] map to only include parents in the demand set.
+-- Removes edges to unreachable parents, and drops entries with no remaining parents.
+filterByDemand :: IS.IntSet -> IM.IntMap [Int] -> IM.IntMap [Int]
+filterByDemand demandSet = IM.mapMaybe $ \ps ->
+    case filter (`IS.member` demandSet) ps of
+      [] -> Nothing
+      ps' -> Just ps'

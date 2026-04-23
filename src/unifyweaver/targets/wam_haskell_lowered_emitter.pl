@@ -291,7 +291,7 @@ emit_one(deallocate, PC, SV, SVout, I, _FP) :-
 emit_one(get_variable(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
     fresh_sv(SV, SVout),
-    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (derefVar (wsBindings ~w) (fromMaybe (Atom \"\") (IM.lookup ~w (wsRegs ~w)))) (wsRegs ~w) }~n",
+    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (derefVar (wsBindings ~w) (fromMaybe (Atom atomEmpty) (IM.lookup ~w (wsRegs ~w)))) (wsRegs ~w) }~n",
            [I, SVout, SV, Xn, SV, Ai, SV, SV]).
 
 % GetConstant C Ai — can fail, use step
@@ -312,7 +312,7 @@ emit_one(get_value(XnStr, AiStr), PC, SV, SVout, I, _FP) :-
 emit_one(put_value(XnStr, AiStr), _, SV, SVout, I, _FP) :-
     reg_to_int(XnStr, Xn), reg_to_int(AiStr, Ai),
     fresh_sv(SV, SVout),
-    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (fromMaybe (Atom \"\") (getReg ~w ~w)) (wsRegs ~w) }~n",
+    format("~wlet ~w = ~w { wsRegs = IM.insert ~w (fromMaybe (Atom atomEmpty) (getReg ~w ~w)) (wsRegs ~w) }~n",
            [I, SVout, SV, Ai, Xn, SV, SV]).
 
 % PutVariable Xn Ai — always succeeds, inline (creates fresh Unbound)
@@ -334,9 +334,10 @@ emit_one(put_constant(CStr, AiStr), _, SV, SVout, I, _FP) :-
 emit_one(put_structure(FnStr, AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
     parse_functor(FnStr, FuncName, Arity),
+    wam_haskell_target:intern_atom(FuncName, FnId),
     fresh_sv(SV, SVout),
-    format("~w~w <- step ctx (~w { wsPC = ~w }) (PutStructure \"~w\" ~w ~w)~n",
-           [I, SVout, SV, PC, FuncName, Ai, Arity]).
+    format("~w~w <- step ctx (~w { wsPC = ~w }) (PutStructure ~w ~w ~w)~n",
+           [I, SVout, SV, PC, FnId, Ai, Arity]).
 
 emit_one(put_list(AiStr), PC, SV, SVout, I, _FP) :-
     reg_to_int(AiStr, Ai),
@@ -433,11 +434,13 @@ fresh_sv(Cur, Next) :-
     ).
 
 val_hs(Str, Hs) :-
-    (   number_string(N, Str), integer(N)
+    atom_string(Str, StrS),
+    (   number_string(N, StrS), integer(N)
     ->  format(atom(Hs), 'Integer ~w', [N])
-    ;   number_string(F, Str), float(F)
+    ;   number_string(F, StrS), float(F)
     ->  format(atom(Hs), 'Float ~w', [F])
-    ;   format(atom(Hs), 'Atom "~w"', [Str])
+    ;   wam_haskell_target:intern_atom(Str, AtomId),
+        format(atom(Hs), 'Atom ~w', [AtomId])
     ).
 
 reg_to_int(Reg, Int) :-

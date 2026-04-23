@@ -31,7 +31,19 @@
     compile_wam_runtime_to_haskell/3,    % +Options, +DetectedKernels, -HaskellCode
     write_wam_haskell_project/3,         % +Predicates, +Options, +ProjectDir
     wam_haskell_resolve_emit_mode/2,     % +Options, -Mode
-    wam_haskell_partition_predicates/5   % +Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList
+    wam_haskell_partition_predicates/5,  % +Mode, +Predicates, +DetectedKernels, -InterpretedList, -LoweredList
+    % Phase F1: fact predicate classification
+    classify_fact_predicate/4,           % +PredIndicator, +WamLines, +Options, -Info
+    haskell_fact_only/2,                 % +Segments, -Bool
+    haskell_first_arg_groundness/3,      % +Segments, +Arity, -Status
+    haskell_pick_layout/5,              % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
+    split_wam_into_segments/2,           % +Lines, -Segments
+    % Phase F3: inline_data emission
+    extract_fact_tuples_hs/2,            % +Segments, -Tuples
+    haskell_fact_list_name/2,            % +PredName, -ListName
+    init_atom_intern_table/0,            % reinitialize atom intern table
+    % E2E wiring
+    generate_inline_facts_wiring/2       % +InlineDefs, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -51,6 +63,53 @@
 % still see wam_haskell_lowerable/3 through this module.
 :- reexport('wam_haskell_lowered_emitter',
             [wam_haskell_lowerable/3, lower_predicate_to_haskell/4]).
+
+% ============================================================================
+% ATOM INTERNING TABLE (compile-time)
+% ============================================================================
+% Built during WAM → Haskell compilation. Maps atom strings to integer IDs.
+% Well-known atoms are pre-assigned: true=0, fail=1, []=2, .=3, ""=4.
+
+:- dynamic atom_intern_id/2.    % atom_intern_id(String, IntId)
+:- dynamic atom_intern_next/1.  % atom_intern_next(NextId)
+
+init_atom_intern_table :-
+    retractall(atom_intern_id(_, _)),
+    retractall(atom_intern_next(_)),
+    % Reserve well-known atoms
+    assertz(atom_intern_id("true", 0)),
+    assertz(atom_intern_id("fail", 1)),
+    assertz(atom_intern_id("[]", 2)),
+    assertz(atom_intern_id(".", 3)),
+    assertz(atom_intern_id("", 4)),
+    assertz(atom_intern_next(5)).
+
+%% intern_atom(+AtomStr, -Id) is det.
+%  Assigns a stable integer ID to the given atom string. Idempotent.
+intern_atom(AtomStr, Id) :-
+    atom_string(AtomStr, Str),
+    (   atom_intern_id(Str, Id0)
+    ->  Id = Id0
+    ;   retract(atom_intern_next(Next)),
+        Id = Next,
+        Next1 is Next + 1,
+        assertz(atom_intern_id(Str, Id)),
+        assertz(atom_intern_next(Next1))
+    ).
+
+%% emit_atom_table_haskell(-Code) is det.
+%  Emits the compile-time atom table as Haskell code.
+emit_atom_table_haskell(Code) :-
+    findall(Id-Str, atom_intern_id(Str, Id), Pairs),
+    sort(Pairs, Sorted),
+    maplist([Id-Str, Entry]>>(
+        format(string(Entry), '(~w, "~w")', [Id, Str])
+    ), Sorted, Entries),
+    atomic_list_concat(Entries, ', ', EntryStr),
+    length(Sorted, N),
+    format(string(Code),
+        'compileTimeAtomTable :: InternTable\ncompileTimeAtomTable = \n  let pairs = [~w]\n  in InternTable (Map.fromList [(s, i) | (i, s) <- pairs])\n                (IM.fromList pairs)\n                ~w\n',
+        [EntryStr, N]).
 
 %% ============================================================================
 %% emit_mode selector (Phase 1 of WAM-lowered Haskell path)
@@ -170,6 +229,197 @@ wam_haskell_predicate_wamcode(PredIndicator, WamCode) :-
     ;   PredIndicator = Pred/Arity
     ),
     wam_target:compile_predicate_to_wam(Pred/Arity, [], WamCode).
+
+% ============================================================================
+% PHASE F1: FACT PREDICATE CLASSIFICATION
+% ============================================================================
+% Classifies each predicate as fact-only or rule-bearing and selects a
+% layout strategy (compiled, inline_data, external_source). Ports the
+% Elixir classification pattern (WAM_FACT_SHAPE_SPEC.md) to the Haskell
+% target. In Phase F1 all predicates still emit as `compiled` — this is
+% classification infrastructure only, with no behaviour change.
+
+%% classify_fact_predicate(+PredIndicator, +WamLines, +Options, -Info)
+%  Info = fact_shape_info(NClauses, FactOnly, FirstArgGroundness, Layout).
+%  WamLines is a list of strings from splitting the WAM text on newlines.
+classify_fact_predicate(PredIndicator, WamLines, Options, Info) :-
+    split_wam_into_segments(WamLines, Segments),
+    length(Segments, NClauses),
+    haskell_fact_only(Segments, FactOnly),
+    (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
+    haskell_first_arg_groundness(Segments, Arity, FirstArg),
+    haskell_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout),
+    Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+%% split_wam_into_segments(+Lines, -Segments)
+%  Groups WAM text lines into Label-InstrList pairs. Each segment
+%  corresponds to one clause entry point. Instructions are parsed into
+%  terms like get_constant(C, Reg), call(P, N), etc.
+split_wam_into_segments([], []).
+split_wam_into_segments([Line|Rest], Segments) :-
+    tokenize_wam_line_hs(Line, Parts),
+    (   Parts == []
+    ->  split_wam_into_segments(Rest, Segments)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, LabelName),
+        extract_segment_instrs(Rest, Instrs, Remaining),
+        Segments = [LabelName-Instrs | RestSegs],
+        split_wam_into_segments(Remaining, RestSegs)
+    ;   % Instruction line before any label — skip
+        split_wam_into_segments(Rest, Segments)
+    ).
+
+%% extract_segment_instrs(+Lines, -Instrs, -Remaining)
+%  Collects parsed instructions until the next label or end of input.
+extract_segment_instrs([], [], []).
+extract_segment_instrs([Line|Rest], Instrs, Remaining) :-
+    tokenize_wam_line_hs(Line, Parts),
+    (   Parts == []
+    ->  extract_segment_instrs(Rest, Instrs, Remaining)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  Instrs = [], Remaining = [Line|Rest]
+    ;   (   parse_wam_instr_hs(Parts, Instr)
+        ->  Instrs = [Instr | RestInstrs],
+            extract_segment_instrs(Rest, RestInstrs, Remaining)
+        ;   % Unrecognized instruction — skip but continue
+            extract_segment_instrs(Rest, Instrs, Remaining)
+        )
+    ).
+
+%% tokenize_wam_line_hs(+Line, -Parts)
+%  Simple tokenizer: split on whitespace/comma, remove empties.
+%  Does not handle quoted atoms — sufficient for classification.
+tokenize_wam_line_hs(Line, Parts) :-
+    split_string(Line, " \t,", " \t,", Parts0),
+    delete(Parts0, "", Parts).
+
+%% parse_wam_instr_hs(+Parts, -Instr)
+%  Parse tokenized WAM line into a structured instruction term.
+%  Only instructions relevant to classification need to be recognized.
+parse_wam_instr_hs(["get_constant", C, Ai], get_constant(C, Ai)).
+parse_wam_instr_hs(["get_variable", Xn, Ai], get_variable(Xn, Ai)).
+parse_wam_instr_hs(["get_value", Xn, Ai], get_value(Xn, Ai)).
+parse_wam_instr_hs(["get_structure", F, Ai], get_structure(F, Ai)).
+parse_wam_instr_hs(["put_constant", C, Ai], put_constant(C, Ai)).
+parse_wam_instr_hs(["put_variable", Xn, Ai], put_variable(Xn, Ai)).
+parse_wam_instr_hs(["put_value", Xn, Ai], put_value(Xn, Ai)).
+parse_wam_instr_hs(["put_structure", F|_], put_structure(F)).
+parse_wam_instr_hs(["put_list", Ai], put_list(Ai)).
+parse_wam_instr_hs(["unify_variable", Xn], unify_variable(Xn)).
+parse_wam_instr_hs(["unify_value", Xn], unify_value(Xn)).
+parse_wam_instr_hs(["unify_constant", C], unify_constant(C)).
+parse_wam_instr_hs(["call", P, N], call(P, N)).
+parse_wam_instr_hs(["execute", P], execute(P)).
+parse_wam_instr_hs(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
+parse_wam_instr_hs(["proceed"], proceed).
+parse_wam_instr_hs(["try_me_else", L], try_me_else(L)).
+parse_wam_instr_hs(["retry_me_else", L], retry_me_else(L)).
+parse_wam_instr_hs(["trust_me"], trust_me).
+parse_wam_instr_hs(["allocate"], allocate).
+parse_wam_instr_hs(["deallocate"], deallocate).
+parse_wam_instr_hs(["switch_on_constant"|_], switch_on_constant).
+
+%% haskell_fact_only(+Segments, -Bool)
+%  `true` iff no clause has a body-level call instruction.
+%  Mirrors the Elixir fact_only/2 from wam_elixir_lowered_emitter.pl.
+haskell_fact_only(Segments, true) :-
+    forall(member(_-Instrs, Segments),
+           forall(member(Instr, Instrs),
+                  \+ haskell_is_body_call(Instr))), !.
+haskell_fact_only(_, false).
+
+haskell_is_body_call(call(_, _)).
+haskell_is_body_call(execute(_)).
+haskell_is_body_call(builtin_call(_, _)).
+
+%% haskell_first_arg_groundness(+Segments, +Arity, -Status)
+%  Status is one of: `none` (arity 0), `all_ground`, `all_variable`, `mixed`.
+haskell_first_arg_groundness(_Segments, 0, none) :- !.
+haskell_first_arg_groundness(Segments, Arity, Status) :-
+    Arity > 0,
+    maplist(haskell_clause_arg1_type, Segments, Types),
+    haskell_combine_groundness(Types, Status).
+
+%% haskell_clause_arg1_type(+Segment, -Type)
+%  Inspects the instructions in a clause segment for the A1 binding.
+haskell_clause_arg1_type(_-Instrs, Type) :-
+    (   member(get_constant(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_structure(_, "A1"), Instrs) -> Type = ground
+    ;   member(get_variable(_, "A1"), Instrs) -> Type = variable
+    ;   member(get_value(_, "A1"), Instrs)    -> Type = variable
+    ;   Type = unknown
+    ).
+
+haskell_combine_groundness(Types, all_ground)   :- forall(member(T, Types), T == ground), !.
+haskell_combine_groundness(Types, all_variable) :- forall(member(T, Types), T == variable), !.
+haskell_combine_groundness(_, mixed).
+
+%% haskell_pick_layout(+PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  User override via fact_layout/2 in Options always wins. Otherwise
+%  dispatches to the policy (default: auto). Same structure as the Elixir
+%  pick_layout but uses the user:fact_layout/2 multifile hook.
+:- multifile user:fact_layout/2.
+:- multifile user:wam_haskell_layout_policy/5.
+
+haskell_pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
+    option(fact_layout(PredIndicator, UserLayout), Options), !,
+    Layout = UserLayout.
+haskell_pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
+    catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
+    Layout = UserLayout.
+haskell_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_layout_policy(PolicyName), Options, auto),
+    haskell_layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    catch(user:wam_haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Layout0),
+          _, fail),
+    !,
+    (   nonvar(Layout0)
+    ->  Layout = Layout0
+    ;   haskell_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout)
+    ).
+haskell_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    haskell_builtin_layout_policy(Policy, PredIndicator, NClauses, FactOnly, Options, Layout).
+
+%% haskell_builtin_layout_policy(+Policy, +PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
+%  Built-in layout policies mirroring the Elixir target.
+%    auto          — fact-only ∧ count > threshold → inline_data, else compiled
+%    compiled_only — always compiled (regression bisection)
+%    inline_eager  — fact-only always → inline_data
+%    cost_aware    — factors in arity for the threshold
+haskell_builtin_layout_policy(auto, _Pred, NClauses, FactOnly, Options, Layout) :-
+    option(fact_count_threshold(Threshold), Options, 100),
+    (   FactOnly == true, NClauses > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+haskell_builtin_layout_policy(compiled_only, _, _, _, _, compiled).
+haskell_builtin_layout_policy(inline_eager, _, _, FactOnly, _, Layout) :-
+    (   FactOnly == true
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+haskell_builtin_layout_policy(cost_aware, _Pred/Arity, NClauses, FactOnly, Options, Layout) :-
+    option(fact_cost_threshold(Threshold), Options, 200),
+    Mult is max(1, Arity),
+    CostScore is NClauses * Mult,
+    (   FactOnly == true, CostScore > Threshold
+    ->  Layout = inline_data([])
+    ;   Layout = compiled
+    ).
+
+%% format_fact_shape_comment_hs(+PredIndicator, +Info, -Comment)
+%  Renders classification info as a Haskell comment line.
+format_fact_shape_comment_hs(PredIndicator, fact_shape_info(N, FO, FA, Layout), Comment) :-
+    (PredIndicator = _:P/A -> true ; PredIndicator = P/A),
+    format(string(Comment),
+           '-- ~w/~w: fact_only=~w, clauses=~w, first_arg=~w, layout=~w',
+           [P, A, FO, N, FA, Layout]).
+
+% ============================================================================
+% LOWERED EMISSION
+% ============================================================================
 
 %% lower_all(+LoweredList, +BasePCMap, +DetectedKernels, -LoweredEntries)
 %  Run the Phase 3+ emitter over each predicate in LoweredList, using
@@ -318,7 +568,7 @@ emit_input_let_bindings([input(RegN, Type)|Rest], Pos) :-
 reg_var_name(N, Name) :-
     format(atom(Name), 'r~w', [N]).
 
-reg_default_value(atom, 'Atom ""').
+reg_default_value(atom, 'Atom atomEmpty').
 reg_default_value(integer, 'Integer 0').
 reg_default_value(vlist_atoms, 'VList []').
 
@@ -326,9 +576,12 @@ reg_default_value(vlist_atoms, 'VList []').
 %  Emit let-bindings for config_facts and config_int arguments.
 emit_config_let_bindings([]).
 emit_config_let_bindings([config_facts(FactKey)|Rest]) :-
-    % FFI facts are stored interned in wcFfiFacts (IntMap [Int])
-    format('      ~w_facts = fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx)~n',
-           [FactKey, FactKey]),
+    % FFI facts: check wcEdgeLookups first (LMDB-backed when available),
+    % fall back to wrapping wcFfiFacts IntMap as EdgeLookup.
+    format('      ~w_facts = case Map.lookup "~w" (wcEdgeLookups ctx) of~n', [FactKey, FactKey]),
+    format('        Just lkp -> lkp~n', []),
+    format('        Nothing  -> intMapEdgeLookup (fromMaybe IM.empty $ Map.lookup "~w" (wcFfiFacts ctx))~n',
+           [FactKey]),
     emit_config_let_bindings(Rest).
 emit_config_let_bindings([config_weighted_facts(FactKey)|Rest]) :-
     % Weighted FFI facts: IntMap [(Int, Double)] (target, weight pairs)
@@ -363,16 +616,16 @@ emit_one_call_arg(reg(RegN), InputRegs) :-
 emit_one_call_arg(derived(length, RegN), InputRegs) :-
     member(input(RegN, _Type), InputRegs),
     reg_var_name(RegN, VarName),
-    format('(length [v | Atom v <- ~wL])', [VarName]).
+    format('(length [v | Atom v <- ~wL])', [VarName]).  % v is Int, just counting elements
 
 %% emit_reg_extraction(+VarName, +Type)
 %  Emit the extraction expression for a kernel call argument. Atoms and
 %  atom lists are interned via wcAtomIntern so the kernel operates on
 %  Int IDs instead of Strings (eliminates hashing in the hot loop).
 emit_reg_extraction(VarName, atom) :-
-    format('(fromMaybe (-1) (Map.lookup ~wS (wcAtomIntern ctx)))', [VarName]).
+    format('~wI', [VarName]).
 emit_reg_extraction(VarName, vlist_atoms) :-
-    format('[fromMaybe (-1) (Map.lookup v (wcAtomIntern ctx)) | Atom v <- ~wL]', [VarName]).
+    format('[v | Atom v <- ~wL]', [VarName]).
 emit_reg_extraction(VarName, integer) :-
     format('~wI', [VarName]).
 
@@ -419,7 +672,7 @@ emit_pattern_tuple([input(RegN, Type)|Rest], Pos) :-
     emit_pattern_tuple(Rest, rest).
 
 type_pattern(atom, VarName, Pattern) :-
-    format(atom(Pattern), 'Atom ~wS', [VarName]).
+    format(atom(Pattern), 'Atom ~wI', [VarName]).
 type_pattern(integer, VarName, Pattern) :-
     format(atom(Pattern), 'Integer ~wI', [VarName]).
 type_pattern(vlist_atoms, VarName, Pattern) :-
@@ -637,7 +890,7 @@ emit_multi_wrap_list([output(_, Type)|Rest], I) :-
 result_wrap_expr_for_rv(integer, I, Expr) :-
     format(atom(Expr), 'Integer (fromIntegral rv_~w)', [I]).
 result_wrap_expr_for_rv(atom, I, Expr) :-
-    format(atom(Expr), 'Atom (fromMaybe "" (IM.lookup rv_~w (wcAtomDeintern ctx)))', [I]).
+    format(atom(Expr), 'Atom rv_~w', [I]).
 result_wrap_expr_for_rv(float, I, Expr) :-
     format(atom(Expr), 'Float rv_~w', [I]).
 
@@ -647,7 +900,7 @@ result_wrap_expr_for_rv(float, I, Expr) :-
 %  be de-interned back to Strings before wrapping in the Atom constructor.
 %  For `integer` and `float`, no interning is involved.
 result_wrap_expr(integer, 'Integer (fromIntegral rv)').
-result_wrap_expr(atom, 'Atom (fromMaybe "" (IM.lookup rv (wcAtomDeintern ctx)))').
+result_wrap_expr(atom, 'Atom rv').
 result_wrap_expr(float, 'Float rv').
 
 %% detect_kernels(+Predicates, -DetectedKernels)
@@ -851,7 +1104,7 @@ wam_to_haskell(builtin_call('!/0', 0), Code) :-
 
 wam_to_haskell(builtin_call('is/2', 2), Code) :-
     Code = '  let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (Map.lookup "A2" (wsRegs s))
-      result = evalArith (wsBindings s) expr
+      result = evalArith (wcInternTable ctx) (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s)
   in case (lhs, result) of
     (Just (Unbound var), Just r) ->
@@ -882,8 +1135,8 @@ wam_to_haskell(builtin_call('length/2', 2), Code) :-
        _ -> Nothing'.
 
 wam_to_haskell(builtin_call('</2', 2), Code) :-
-    Code = '  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
+    Code = '  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A1" (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> Map.lookup "A2" (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing'.
@@ -942,9 +1195,9 @@ backtrack s = case wsCPs s of
 resumeBuiltin :: BuiltinState -> ChoicePoint -> [ChoicePoint] -> WamState -> Maybe WamState
 resumeBuiltin (FactRetry _ [] _) _ rest s =
   backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
-resumeBuiltin (FactRetry vid (v:vs) retPC) cp rest s =
-  let newBindings = IM.insert vid (Atom v) (cpBindings cp)
-      newRegs = IM.insert 2 (Atom v) (cpRegs cp)
+resumeBuiltin (FactRetry vid (vId:vs) retPC) cp rest s =
+  let newBindings = IM.insert vid (Atom vId) (cpBindings cp)
+      newRegs = IM.insert 2 (Atom vId) (cpRegs cp)
       newCPs = case vs of
         [] -> rest
         _  -> cp { cpBuiltin = Just (FactRetry vid vs retPC) } : rest
@@ -990,6 +1243,30 @@ resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest
       newCPs = case rest_tuples of
         [] -> rest
         _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars rest_tuples retPC) } : rest
+      diff = wsTrailLen s - cpTrailLen cp
+  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+            , wsCP = cpCP cp
+            , wsTrail = drop diff (wsTrail s)
+            , wsTrailLen = cpTrailLen cp
+            , wsHeap = take (cpHeapLen cp) (wsHeap s)
+            , wsHeapLen = cpHeapLen cp
+            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
+-- Phase F2: FactStream resume — iterate through inline fact tuples.
+-- Each (a1, a2) pair is unified against registers A1/A2. Variable IDs
+-- var1/var2 indicate which bindings to update (-1 = skip, already bound).
+resumeBuiltin (FactStream _ _ [] _) _ rest s =
+  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+resumeBuiltin (FactStream var1 var2 ((a1,a2):rows) retPC) cp rest s =
+  let newRegs0 = IM.insert 1 (Atom a1) (cpRegs cp)
+      newRegs  = IM.insert 2 (Atom a2) newRegs0
+      newBindings0 = if var1 == -1 then cpBindings cp
+                     else IM.insert var1 (Atom a1) (cpBindings cp)
+      newBindings  = if var2 == -1 then newBindings0
+                     else IM.insert var2 (Atom a2) newBindings0
+      newCPs = case rows of
+        [] -> rest
+        _  -> cp { cpBuiltin = Just (FactStream var1 var2 rows retPC) } : rest
       diff = wsTrailLen s - cpTrailLen cp
   in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
             , wsCP = cpCP cp
@@ -1071,6 +1348,19 @@ finalizeAggregate returnPC s = go (wsCPs s)
 -- Accepts either a Left label (pre-resolution) or Right targetPC
 -- (post-resolution) for the else branch. The "this branch" always
 -- starts at wsPC + 1 regardless of which variant fired.
+-- | Phase 4.5: minimum branch count below which the fork is not worth
+-- the spark overhead. With fewer than this many branches, the fork
+-- falls back to sequential TryMeElse. Default 3: a 2-clause predicate
+-- (like category_ancestor base+recursive) stays sequential; a
+-- multi-clause predicate with 3+ alternatives forks.
+--
+-- Rationale: parMap rdeepseq has fixed overhead per spark (~5-10μs on
+-- GHC 9.x). With 2 branches where one is trivial, the overhead exceeds
+-- the benefit. With 3+ balanced branches, the amortized overhead per
+-- branch drops below the per-branch work.
+forkMinBranches :: Int
+forkMinBranches = 3
+
 forkOrSequential :: WamContext -> WamState -> Either String Int -> Maybe WamState
 forkOrSequential !ctx s elseTarget =
   case currentAggMergeStrategy s of
@@ -1079,7 +1369,10 @@ forkOrSequential !ctx s elseTarget =
             Right pc -> pc
             Left lbl -> fromMaybe (-1) (Map.lookup lbl (wcLabels ctx))
       in if elsePC > 0
-         then Just (forkParBranches ctx s ms elsePC)
+         then let branches = enumerateParBranches ctx (wsPC s) elsePC
+              in if length branches >= forkMinBranches
+                 then Just (forkParBranches ctx s ms elsePC)
+                 else fallback  -- too few branches; overhead > benefit
          else fallback
     _ -> fallback
   where
@@ -1097,12 +1390,16 @@ currentAggMergeStrategy s = go (wsCPs s)
       Just af -> Just (afMergeStrategy af)
       Nothing -> go rest
 
--- | Phase 4.2 scope: only sum and count merge strategies fork.
--- Findall/bag/set land in Phase 4.3; race/negation in 4.4.
+-- | Forkable merge strategies: sum/count (Phase 4.2) +
+-- findall/bag/set (Phase 4.3). Race/negation (4.4) are handled
+-- outside the aggregate path and do not appear here.
 isForkableStrategy :: MergeStrategy -> Bool
 isForkableStrategy MergeSumInt    = True
 isForkableStrategy MergeSumDouble = True
 isForkableStrategy MergeCount     = True
+isForkableStrategy MergeFindall   = True
+isForkableStrategy MergeBag       = True
+isForkableStrategy MergeSet       = True
 isForkableStrategy _              = False
 
 -- | Enumerate the entry PCs of every branch in a Par* choice-point
@@ -1155,7 +1452,17 @@ enumerateParBranches ctx parPC elsePC =
 -- the outer level.
 runBranchForFork :: WamContext -> WamState -> Int -> [Value]
 runBranchForFork !ctx !parent !branchPC =
-    let branchInit = parent { wsPC = branchPC, wsAggAccum = [] }
+    let branchInit = parent
+          { wsPC = branchPC
+          , wsAggAccum = []
+          -- Protect parent CPs from being removed by !/0 inside the
+          -- branch. The branch''s wsCutBar is set to the parent''s
+          -- current CP depth so only CPs the branch itself creates
+          -- can be cut. Without this, a clause like
+          --   p(…) :- max_depth(M), length(V,D), D<M, !, …
+          -- would pop the parent''s aggregate-frame CP.
+          , wsCutBar = wsCPsLen parent
+          }
     in runBranchLoop branchInit
   where
     runBranchLoop !s
@@ -1176,11 +1483,37 @@ runBranchForFork !ctx !parent !branchPC =
                  in case backtrackInner (wsPC s + 1) s1 of
                       Just s2 -> runBranchLoop s2
                       Nothing -> wsAggAccum s1
-               _ -> case step ctx s instr of
-                      Just s2 -> runBranchLoop s2
-                      Nothing -> case backtrack s of
-                        Just s3 -> runBranchLoop s3
-                        Nothing -> wsAggAccum s
+               -- Suppress nested forks: redirect Par* to sequential
+               -- equivalents inside a branch. Only the OUTERMOST
+               -- ParTryMeElse (the one that triggered forkParBranches)
+               -- actually forks; inner recursive calls to the same
+               -- predicate use sequential choice points. Without this,
+               -- recursion depth D with branching factor B creates
+               -- B^D nested parMap sparks — exponential explosion.
+               _ -> let seqInstr = case instr of
+                         ParTryMeElse lbl   -> TryMeElse lbl
+                         ParTryMeElsePc p   -> TryMeElsePc p
+                         ParRetryMeElse lbl -> RetryMeElse lbl
+                         ParRetryMeElsePc p -> RetryMeElsePc p
+                         ParTrustMe         -> TrustMe
+                         other              -> other
+                    in case step ctx s seqInstr of
+                         Just s2 -> runBranchLoop s2
+                         Nothing ->
+                           -- Custom backtrack: if the top CP has an
+                           -- aggregate frame, DON''T call finalizeAggregate
+                           -- (which would clear wsAggAccum). Instead,
+                           -- return our accumulated values — the branch
+                           -- is done. Without this, the standard
+                           -- backtrack function wipes wsAggAccum by
+                           -- calling finalizeAggregate when it hits the
+                           -- aggregate-frame CP.
+                           case wsCPs s of
+                             (cp : _) | Just _ <- cpAggFrame cp ->
+                               wsAggAccum s
+                             _ -> case backtrack s of
+                               Just s3 -> runBranchLoop s3
+                               Nothing -> wsAggAccum s
 
 -- | Fork every branch of a Par* chain and merge their aggregate
 -- contributions via the outer aggregate''s strategy. Returns the
@@ -1220,6 +1553,49 @@ findOuterEndAggregate !ctx !startPC =
           EndAggregate _ -> pc + 1
           _              -> go (pc + 1) hi
 
+-- | Phase 4.4: parallel negation check with race-to-cancel.
+-- Spawn each branch as an async action; the first to return True
+-- (goal succeeded → negation fails) wins and all others are cancelled.
+-- If all branches return False, negation succeeds. Uses
+-- unsafePerformIO to keep the WAM run loop pure — safe because the
+-- branches are purity-certified and the only IO effect is thread
+-- management.
+-- {-# NOINLINE runNegationParallel #-}
+runNegationParallel :: WamContext -> WamState -> Int -> Int -> Bool
+runNegationParallel !ctx !s !entryPC !elsePC =
+    let branchPCs = enumerateParBranches ctx entryPC elsePC
+        branchAction pc = evaluate $
+          let snapshot = s { wsPC = pc + 1  -- skip past the Par* instruction
+                           , wsCP = 0
+                           , wsCutBar = 0 }
+          in case run ctx snapshot of
+               Just _  -> True
+               Nothing -> False
+    in if length branchPCs >= forkMinBranches
+       then unsafePerformIO (raceToTrue (map branchAction branchPCs))
+       else case run ctx (s { wsPC = entryPC, wsCP = 0, wsCutBar = 0 }) of
+              Just _  -> True
+              Nothing -> False
+
+-- | Run a list of IO Bool actions concurrently. Returns True as soon
+-- as any action returns True, cancelling all others. If every action
+-- returns False, returns False. Uses waitAny to poll completed
+-- asyncs and cancel to clean up.
+raceToTrue :: [IO Bool] -> IO Bool
+raceToTrue [] = return False
+raceToTrue actions = do
+    asyncs <- mapM async actions
+    result <- go asyncs
+    mapM_ cancel asyncs
+    return result
+  where
+    go [] = return False
+    go as = do
+      (completed, val) <- waitAny as
+      if val
+        then return True
+        else go (filter (/= completed) as)
+
 -- | Apply aggregation function to collected values.
 applyAggregation :: String -> [Value] -> Value
 applyAggregation "sum" vals =
@@ -1230,6 +1606,8 @@ applyAggregation "sum" vals =
   in if fromIntegral (round s :: Int) == s then Integer (round s) else Float s
 applyAggregation "count" vals = Integer (length vals)
 applyAggregation "collect" vals = VList vals
+applyAggregation "bag" vals = VList vals
+applyAggregation "set" vals = VList (nub vals)
 applyAggregation _ vals = VList vals
 
 -- ============================================================================
@@ -1250,36 +1628,136 @@ callIndexedFact2 !ctx pred s =
   in case Map.lookup basePred (wcForeignFacts ctx) of
     Nothing -> Nothing
     Just factIndex ->
-      let a1 = derefVar (wsBindings s) $ fromMaybe (Atom "") (IM.lookup 1 (wsRegs s))
+      let tbl = wcInternTable ctx
+          a1 = derefVar (wsBindings s) $ fromMaybe (Atom atomEmpty) (IM.lookup 1 (wsRegs s))
           a2 = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
       in case a1 of
-        Atom key -> case Map.lookup key factIndex of
+        Atom aid -> case Map.lookup (lookupAtom tbl aid) factIndex of
           Just (v:rest) -> case a2 of
             Unbound vid ->
-              let newRegs = IM.insert 2 (Atom v) (wsRegs s)
-                  newBindings = IM.insert vid (Atom v) (wsBindings s)
+              let vId = internAtomPure tbl v
+                  newRegs = IM.insert 2 (Atom vId) (wsRegs s)
+                  newBindings = IM.insert vid (Atom vId) (wsBindings s)
                   newTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
-                  newCPs = case rest of
+                  restIds = map (internAtomPure tbl) rest
+                  newCPs = case restIds of
                     [] -> wsCPs s  -- single match, no CP
                     _  -> ChoicePoint
                             { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
                             , cpCP = wsCP s, cpTrailLen = wsTrailLen s
                             , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
-                            , cpBuiltin = Just (FactRetry vid rest retPC)
+                            , cpBuiltin = Just (FactRetry vid restIds retPC)
                             } : wsCPs s
-                  newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+                  newCPsLen = case restIds of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
                          , wsTrail = newTrail, wsTrailLen = wsTrailLen s + 1
                          , wsCPs = newCPs, wsCPsLen = newCPsLen })
-            Atom existing ->
-              if existing == v then Just (s { wsPC = retPC })
-              else case filter (== existing) rest of
+            Atom existingId ->
+              let vId2 = internAtomPure tbl v
+                  restIds2 = map (internAtomPure tbl) rest
+              in if existingId == vId2 then Just (s { wsPC = retPC })
+              else case filter (== existingId) restIds2 of
                 (_:_) -> Just (s { wsPC = retPC })
                 [] -> Nothing
             _ -> Nothing
           _ -> Nothing
         _ -> Nothing
+
+-- | Phase F2/F4: Stream through fact tuples for a 2-arg predicate.
+-- Checks wcInlineFacts first (Phase F3 compiled literals), then falls
+-- back to wcFactSources (Phase F4 external sources via FactSource).
+-- The FactSource path uses unsafePerformIO to bridge IO into the pure
+-- WAM interpreter — safe because fact sources are read-only after the
+-- force barrier in Main.hs.
+streamFacts :: WamContext -> String -> WamState -> Maybe WamState
+streamFacts !ctx pred s =
+  case Map.lookup pred (wcInlineFacts ctx) of
+    Just rows@(_:_) -> streamFactRows rows s
+    _ -> case Map.lookup pred (wcFactSources ctx) of
+      Nothing -> Nothing
+      Just fs ->
+        let a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+            rows = unsafePerformIO $ case a1val of
+              Atom aid -> fsLookupArg1 fs aid
+              _        -> fsScan fs
+        in streamFactRows rows s
+
+-- | Core row-streaming logic shared by inline and external paths.
+streamFactRows :: [(Int, Int)] -> WamState -> Maybe WamState
+streamFactRows [] _ = Nothing
+streamFactRows rows s =
+  let retPC = wsCP s
+      a1val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 1 (wsRegs s))
+      a2val = derefVar (wsBindings s) $ fromMaybe (Unbound (-1)) (IM.lookup 2 (wsRegs s))
+      var1 = case a1val of { Unbound vid -> vid; _ -> -1 }
+      var2 = case a2val of { Unbound vid -> vid; _ -> -1 }
+      -- Filter rows by any bound arguments
+      filtered = case (a1val, a2val) of
+        (Atom aid, Atom bid) -> filter (\\(a, b) -> a == aid && b == bid) rows
+        (Atom aid, _)       -> filter (\\(a, _) -> a == aid) rows
+        (_, Atom bid)       -> filter (\\(_, b) -> b == bid) rows
+        _                   -> rows
+  in case filtered of
+    [] -> Nothing
+    ((a1,a2):rest) ->
+      let newRegs = IM.insert 2 (Atom a2) $ IM.insert 1 (Atom a1) (wsRegs s)
+          newBindings0 = if var1 == -1 then wsBindings s
+                         else IM.insert var1 (Atom a1) (wsBindings s)
+          newBindings  = if var2 == -1 then newBindings0
+                         else IM.insert var2 (Atom a2) newBindings0
+          newTrail0 = if var1 == -1 then wsTrail s
+                      else TrailEntry var1 (IM.lookup var1 (wsBindings s)) : wsTrail s
+          newTrail  = if var2 == -1 then newTrail0
+                      else TrailEntry var2 (IM.lookup var2 newBindings0) : newTrail0
+          trailAdded = (if var1 == -1 then 0 else 1) + (if var2 == -1 then 0 else 1)
+          newCPs = case rest of
+            [] -> wsCPs s
+            _  -> ChoicePoint
+                    { cpNextPC = retPC, cpRegs = wsRegs s, cpStack = wsStack s
+                    , cpCP = wsCP s, cpTrailLen = wsTrailLen s
+                    , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
+                    , cpCutBar = wsCutBar s, cpAggFrame = Nothing
+                    , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                    } : wsCPs s
+          newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
+      in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
+                 , wsTrail = newTrail, wsTrailLen = wsTrailLen s + trailAdded
+                 , wsCPs = newCPs, wsCPsLen = newCPsLen })
+
+-- | Phase F4: Build a FactSource from a TSV file with lazy IO.
+-- The file is parsed lazily on first fsScan/fsLookupArg1 call.
+-- The index (IntMap grouping by arg1) is built on first demand.
+tsvFactSource :: InternTable -> FilePath -> IO FactSource
+tsvFactSource tbl path = do
+    content <- readFile path  -- lazy IO
+    let ls = drop 1 (lines content)  -- skip header
+        rows = [ (internAtomPure tbl a, internAtomPure tbl b)
+               | l <- ls, not (null l)
+               , let (a, rest) = break (== ''\\t'') l
+               , not (null rest)
+               , let b = drop 1 rest  -- skip the tab
+               , not (null b)
+               ]
+        index = IM.fromListWith (++) [(k, [(k, v)]) | (k, v) <- rows]
+    return FactSource
+      { fsScan       = return rows
+      , fsLookupArg1 = \\key -> return $ IM.findWithDefault [] key index
+      , fsClose      = return ()
+      }
+
+-- | Phase F4: Wrap an existing strict IntMap as a FactSource.
+-- Used to bridge the current eager-load path into the FactSource interface.
+-- | Phase B1: Wrap an IntMap as an EdgeLookup (default, always available).
+intMapEdgeLookup :: IM.IntMap [Int] -> EdgeLookup
+intMapEdgeLookup im key = IM.findWithDefault [] key im
+
+intMapFactSource :: IM.IntMap [Int] -> FactSource
+intMapFactSource im = FactSource
+  { fsScan       = return [(k, v) | (k, vs) <- IM.toList im, v <- vs]
+  , fsLookupArg1 = \\key -> return $ map (\\v -> (key, v)) $ IM.findWithDefault [] key im
+  , fsClose      = return ()
+  }
 
 {{execute_foreign}}
 
@@ -1399,10 +1877,23 @@ step !ctx s (PutValue xn ai) =
     Just val -> Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert ai val (wsRegs s) })
     Nothing -> Nothing
 
-step !ctx s (PutStructure fn ai arity) =
+step !ctx s (PutStructure fnId ai arity) =
   Just (s { wsPC = wsPC s + 1
-          , wsBuilder = BuildStruct fn ai arity []
+          , wsBuilder = BuildStruct fnId ai arity []
           })
+
+-- PutStructureDyn: like PutStructure but functor name and arity come
+-- from registers at runtime. Used when the term shape is computed
+-- dynamically (e.g., after =../2 or functor/3 with variable args).
+step !ctx s (PutStructureDyn nameReg arityReg targetReg) =
+  let mName = derefVar (wsBindings s) <$> getReg nameReg s
+      mArity = derefVar (wsBindings s) <$> getReg arityReg s
+  in case (mName, mArity) of
+    (Just (Atom fnId), Just (Integer arity)) | arity >= 0 ->
+      Just (s { wsPC = wsPC s + 1
+              , wsBuilder = BuildStruct fnId targetReg (fromIntegral arity) []
+              })
+    _ -> Nothing  -- name must be an atom, arity a non-negative integer
 
 step !ctx s (PutList ai) =
   Just (s { wsPC = wsPC s + 1
@@ -1426,6 +1917,11 @@ step !ctx s (CallResolved pc _arity) =
 -- path — Nothing means no solutions (backtrack), never fallthrough.
 step !ctx s (CallForeign pred _arity) =
   executeForeign ctx pred (s { wsCP = wsPC s + 1 })
+
+-- Phase F2: FactStream call. Dispatches to streamFacts which iterates
+-- inline fact tuples from wcInlineFacts. Nothing = no matching facts.
+step !ctx s (CallFactStream pred _arity) =
+  streamFacts ctx pred (s { wsCP = wsPC s + 1 })
 
 -- Call dispatch for non-foreign, non-resolved predicates. Foreign predicates
 -- are handled by CallForeign (resolved at compile time), so executeForeign
@@ -1556,10 +2052,10 @@ step !ctx s (SwitchOnConstantPc table) =
   let val = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case val of
     Just (Unbound _) -> Just (s { wsPC = wsPC s + 1 })
-    Just (Atom key) -> case Map.lookup key table of
+    Just (Atom aid) -> case IM.lookup aid table of
       Just pc -> Just (s { wsPC = pc })
       Nothing -> Nothing
-    Just (Integer n) -> case Map.lookup (show n) table of
+    Just (Integer n) -> case IM.lookup n table of
       Just pc -> Just (s { wsPC = pc })
       Nothing -> Nothing
     _ -> Nothing
@@ -1607,7 +2103,7 @@ step !ctx s (BuiltinCall "number/1" _) =
 
 step !ctx s (BuiltinCall "is/2" _) =
   let expr = derefVar (wsBindings s) $ fromMaybe (Integer 0) (IM.lookup 2 (wsRegs s))
-      result = evalArith (wsBindings s) expr
+      result = evalArith (wcInternTable ctx) (wsBindings s) expr
       lhs = derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s)
   in case (lhs, result) of
     (Just (Unbound vid), Just r) ->
@@ -1641,22 +2137,68 @@ step !ctx s (BuiltinCall "length/2" _) =
     _ -> Nothing
 
 step !ctx s (BuiltinCall "</2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a < b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 step !ctx s (BuiltinCall "\\\\+/1" _) =
   let goal = IM.lookup 1 (wsRegs s) >>= derefHeap (wsHeap s)
+      tbl = wcInternTable ctx
   in case goal of
-    Just (Str fn [needle, haystack]) | "member" `isPrefixOf` fn ->
+    -- Fast path: \\+ member(X, L) — check functor name via reverse lookup
+    Just (Str fnId [needle, haystack]) | "member" `isPrefixOf` lookupAtom tbl fnId ->
       let n = derefVar (wsBindings s) needle
           h = derefVar (wsBindings s) haystack
           found = case h of
             VList items -> any (\\item -> derefVar (wsBindings s) item == n) items
             _ -> False
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
+    -- Fast path: \\+ true always fails, \\+ fail always succeeds
+    Just (Atom aid) | aid == atomTrue -> Nothing
+    Just (Atom aid) | aid == atomFail -> Just (s { wsPC = wsPC s + 1 })
+    -- General path: resolve the goal, snapshot-and-run.
+    -- Phase 4.4: if the goal''s entry instruction is ParTryMeElse,
+    -- fork branches in parallel via runNegationParallel.
+    Just (Str fnId args) ->
+      let goalKey = lookupAtom tbl fnId ++ "/" ++ show (length args)
+          dArgs = map (derefVar (wsBindings s)) args
+      in case Map.lookup goalKey (wcLabels ctx) of
+           Just pc ->
+             let snap = s { wsRegs = IM.fromList (zip [1..] dArgs) }
+                 (lo, hi) = bounds (wcCode ctx)
+             in if pc >= lo && pc <= hi
+                then case wcCode ctx ! pc of
+                  ParTryMeElse elseLabel ->
+                    let elsePC = fromMaybe (-1) (Map.lookup elseLabel (wcLabels ctx))
+                    in if runNegationParallel ctx snap pc elsePC
+                       then Nothing
+                       else Just (s { wsPC = wsPC s + 1 })
+                  ParTryMeElsePc elsePC ->
+                    if runNegationParallel ctx snap pc elsePC
+                    then Nothing
+                    else Just (s { wsPC = wsPC s + 1 })
+                  _ -> -- Sequential: just run normally
+                    let snapshot = snap { wsPC = pc, wsCP = 0, wsCutBar = 0 }
+                    in case run ctx snapshot of
+                         Just _  -> Nothing
+                         Nothing -> Just (s { wsPC = wsPC s + 1 })
+                else Just (s { wsPC = wsPC s + 1 })
+           Nothing -> Just (s { wsPC = wsPC s + 1 })  -- unknown pred; treat as failing goal
+    -- Atom as 0-arity goal (e.g. \\+ some_pred)
+    Just (Atom fnId) ->
+      let goalKey = lookupAtom tbl fnId ++ "/0"
+      in case Map.lookup goalKey (wcLabels ctx) of
+           Just pc ->
+             let snapshot = s { wsPC = pc
+                              , wsRegs = wsRegs s
+                              , wsCP = 0
+                              , wsCutBar = 0 }
+             in case run ctx snapshot of
+                  Just _  -> Nothing
+                  Nothing -> Just (s { wsPC = wsPC s + 1 })
+           Nothing -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
 -- SwitchOnConstant: dispatch on A1 value via O(log n) Map lookup
@@ -1672,8 +2214,8 @@ step !ctx s (SwitchOnConstant table) =
     Nothing -> Nothing
 
 step !ctx s (BuiltinCall ">/2" _) =
-  let v1 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
-      v2 = evalArith (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
+  let v1 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 1 (wsRegs s))
+      v2 = evalArith (wcInternTable ctx) (wsBindings s) =<< (derefVar (wsBindings s) <$> IM.lookup 2 (wsRegs s))
   in case (v1, v2) of
     (Just a, Just b) | a > b -> Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
@@ -1751,9 +2293,9 @@ step !_ctx s (BuiltinCall "functor/3" _) =
     Just tVal ->
       -- Read mode: extract functor name and arity.
       let mInfo = case tVal of
-            Str fn args -> Just (Atom fn, length args)
-            VList [] -> Just (Atom "[]", 0)
-            VList _ -> Just (Atom ".", 2)
+            Str fnId args -> Just (Atom fnId, length args)
+            VList [] -> Just (Atom atomNil, 0)
+            VList _ -> Just (Atom atomDot, 2)
             Atom _ -> Just (tVal, 0)
             Integer _ -> Just (tVal, 0)
             Float _ -> Just (tVal, 0)
@@ -1815,12 +2357,12 @@ step !_ctx s (BuiltinCall "=../2" _) =
     Just tVal ->
       -- Decompose mode: build list from T.
       let mList = case tVal of
-            Str fn args -> Just (VList (Atom fn : args))
+            Str fnId args -> Just (VList (Atom fnId : args))
             Atom _ -> Just (VList [tVal])
             Integer _ -> Just (VList [tVal])
             Float _ -> Just (VList [tVal])
-            VList [] -> Just (VList [Atom "[]"])
-            VList (x : xs) -> Just (VList [Atom ".", x, VList xs])
+            VList [] -> Just (VList [Atom atomNil])
+            VList (x : xs) -> Just (VList [Atom atomDot, x, VList xs])
             _ -> Nothing
       in case mList of
         Nothing -> Nothing
@@ -1895,6 +2437,8 @@ callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 %  - Predicates.hs: compiled predicates
 %  - Main.hs: benchmark driver
 write_wam_haskell_project(Predicates, Options, ProjectDir) :-
+    % Initialize the compile-time atom intern table with well-known atoms
+    init_atom_intern_table,
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'src', SrcDir),
     make_directory_path(SrcDir),
@@ -1945,8 +2489,11 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % lowered ones — so backtrack can land on alternate clauses that the
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
-    compile_predicates_to_haskell(Predicates, Options, PredsCode0),
-    apply_hashmap_rewrite(UseHM, generic, PredsCode0, PredsCode),
+    compile_predicates_to_haskell(Predicates, Options, PredsCode0, InlineDefs),
+    % Append compile-time atom table to Predicates.hs
+    emit_atom_table_haskell(AtomTableCode),
+    format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
+    apply_hashmap_rewrite(UseHM, generic, PredsCode0WithAtoms, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
 
@@ -1968,8 +2515,8 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     directory_file_path(ProjectDir, CabalFile, CabalPath),
     write_hs_file(CabalPath, CabalCode),
 
-    % Generate Main.hs
-    generate_main_hs(Predicates, DetectedKernels, Options, MainCode0),
+    % Generate Main.hs (InlineDefs from F3 → wcInlineFacts wiring)
+    generate_main_hs(Predicates, DetectedKernels, InlineDefs, Options, MainCode0),
     apply_hashmap_rewrite(UseHM, main, MainCode0, MainCode),
     directory_file_path(SrcDir, 'Main.hs', MainPath),
     write_hs_file(MainPath, MainCode),
@@ -2083,24 +2630,119 @@ emit_lowered_entries_rest([lowered(PredName, FuncName, _)|Rest]) :-
     format("    , (\"~w\", ~w)~n", [PredName, FuncName]),
     emit_lowered_entries_rest(Rest).
 
-%% generate_main_hs(+Predicates, +DetectedKernels, +Options, -Code)
+%% generate_main_hs(+Predicates, +DetectedKernels, +InlineDefs, +Options, -Code)
 %  Generates Main.hs — a benchmark driver for effective-distance.
 %  Reads main.hs.mustache and populates template variables.
+%  InlineDefs from Phase F3: list of inline_fact(PredName, ListName, _)
+%  terms that need wcInlineFacts wiring.
 %  Options:
 %    query_pred(Pred/Arity) — use a WAM-compiled aggregation predicate
 %      instead of the default collectSolutions loop. The predicate should
 %      accept (Cat, Root, WeightSum) and return the accumulated weight sum.
-generate_main_hs(_Predicates, DetectedKernels, Options, Code) :-
+generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
-    generate_query_body(Options, QueryBody),
+    % When kernels are detected, the query body should use executeForeign
+    % dispatch instead of running WAM code (fact code is skipped).
+    (   DetectedKernels \= []
+    ->  QueryOptions = [use_ffi(true)|Options]
+    ;   QueryOptions = Options
+    ),
+    generate_query_body(QueryOptions, QueryBody),
     generate_merged_code_build(DetectedKernels, Options, MergedCodeBuild),
+    generate_demand_filter(DetectedKernels, Options, DemandFilter, FactsSource),
+    (   DemandFilter \= ''
+    ->  DemandMetrics =
+'    hPutStrLn stderr $ "demand_set_size=" ++ show demandSize
+    hPutStrLn stderr $ "demand_total_nodes=" ++ show totalNodes
+    hPutStrLn stderr $ "demand_filtered_nodes=" ++ show filteredSize'
+    ;   DemandMetrics = ''
+    ),
+    % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
+    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
+    % Phase B1: generate LMDB setup and context wiring
+    generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , query_body=QueryBody
         , merged_code_build=MergedCodeBuild
+        , demand_filter=DemandFilter
+        , facts_source=FactsSource
+        , demand_metrics=DemandMetrics
+        , inline_facts=InlineFactsWiring
+        , lmdb_setup=LmdbSetup
+        , lmdb_context=LmdbContext
+        , lmdb_import=LmdbImport
         ], Code).
+
+%% generate_inline_facts_wiring(+InlineDefs, -Code)
+%  Generates the Haskell code to populate wcInlineFacts in the WamContext.
+%  Each inline_fact(PredName, ListName, _) becomes a Map entry.
+generate_inline_facts_wiring([], '') :- !.
+generate_inline_facts_wiring(InlineDefs, Code) :-
+    maplist([inline_fact(PredName, ListName, _), Entry]>>(
+        format(string(Entry), '("~w", ~w)', [PredName, ListName])
+    ), InlineDefs, Entries),
+    atomic_list_concat(Entries, ', ', EntriesStr),
+    format(string(Code),
+           '            , wcInlineFacts   = Map.fromList [~w]',
+           [EntriesStr]).
+
+%% generate_lmdb_wiring(+Options, -SetupCode, -ContextCode, -ImportCode)
+%  When use_lmdb(true), generates:
+%  - SetupCode: LMDB ingestion + FactSource creation at startup
+%  - ContextCode: wcFactSources wiring in the WamContext
+%  - ImportCode: System.Directory import for doesDirectoryExist
+%  Ingestion is idempotent — skips if the LMDB directory already exists.
+%  When not enabled, all are empty strings.
+generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
+    (   option(use_lmdb(true), Options)
+    ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
+        SetupCode =
+'    -- Phase B1: LMDB fact source setup
+    let lmdbDir = factsDir ++ "/lmdb"
+    -- Ingest TSV into LMDB (idempotent — skips if directory exists)
+    lmdbExists <- doesDirectoryExist lmdbDir
+    if not lmdbExists then do
+      createDirectory lmdbDir
+      hPutStrLn stderr "Ingesting TSV into LMDB..."
+      ingestTsvToLmdb fullInternTable (factsDir ++ "/category_parent.tsv") lmdbDir "category_parent"
+      hPutStrLn stderr "LMDB ingestion complete."
+    else
+      hPutStrLn stderr "LMDB database found, skipping ingestion."
+    -- Open LMDB as EdgeLookup for FFI kernels (on-demand mmap reads)
+    cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
+    -- Also open as FactSource for WAM interpreter path
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
+        ContextCode =
+'            , wcFactSources   = Map.singleton "category_parent" cpFactSource
+            , wcEdgeLookups   = Map.singleton "category_parent" cpEdgeLookup'
+    ;   SetupCode = '',
+        ContextCode = '',
+        ImportCode = ''
+    ).
+
+%% generate_demand_filter(+DetectedKernels, +Options, -FilterCode, -FactsSource)
+%  When demand filtering is enabled (kernels detected with an edge predicate),
+%  emit code to compute the demand set via backward BFS and filter the parents
+%  index. Otherwise emit nothing and use the unfiltered index.
+generate_demand_filter(DetectedKernels, Options, FilterCode, FactsSource) :-
+    (   option(demand_filter(false), Options)
+    ->  FilterCode = '',
+        FactsSource = 'parentsIndexInterned'
+    ;   DetectedKernels \= []
+    ->  FilterCode =
+'    let !rootId = iAtom root
+        !demandSet = computeDemandSet parentsIndexInterned rootId
+        !demandSize = IS.size demandSet
+        !totalNodes = IM.size parentsIndexInterned
+        !filteredParents = filterByDemand demandSet parentsIndexInterned
+        !filteredSize = IM.size filteredParents',
+        FactsSource = 'filteredParents'
+    ;   FilterCode = '',
+        FactsSource = 'parentsIndexInterned'
+    ).
 
 %% generate_merged_code_build(+DetectedKernels, +Options, -Code)
 %  Emit the merged-code construction block for Main.hs.
@@ -2123,11 +2765,11 @@ generate_merged_code_build(DetectedKernels, Options, Code) :-
         mergedLabels = allLabels'
     ;   Code =
 '    let baseLen = length allCode
-        (cpCode, cpLabels) = buildFact2Code "category_parent" categoryParents (baseLen + 1)
+        (cpCode, cpLabels) = buildFact2Code iAtom "category_parent" categoryParents (baseLen + 1)
         cpEnd = baseLen + length cpCode
-        (acCode, acLabels) = buildFact2Code "article_category" articleCategories (cpEnd + 1)
+        (acCode, acLabels) = buildFact2Code iAtom "article_category" articleCategories (cpEnd + 1)
         acEnd = cpEnd + length acCode
-        (rcCode, rcLabels) = buildFact1Code "root_category" roots (acEnd + 1)
+        (rcCode, rcLabels) = buildFact1Code iAtom "root_category" roots (acEnd + 1)
 
         mergedCodeRaw = allCode ++ cpCode ++ acCode ++ rcCode
         mergedLabels = Map.union allLabels
@@ -2143,11 +2785,18 @@ generate_query_body(Options, QueryBody) :-
     ->  % Optimized: call WAM-compiled aggregation predicate per seed.
         format(atom(QueryPred1), '~w', [QueryPred]),
         format(atom(QueryBody),
-'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
+'let { wsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "~w" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound wsVarId) ], wsCP = 0 } ; !result = case run ctx s0 of { Just s1 -> case IM.lookup wsVarId (wsBindings s1) of { Just v -> case extractDouble fullInternTable (derefVar (wsBindings s1) v) of { Just ws -> ws ; Nothing -> 0.0 } ; Nothing -> 0.0 } ; Nothing -> 0.0 } } in (cat, result)',
             [QueryPred1])
+    ;   member(use_ffi(true), Options)
+    ->  % FFI path: call executeForeign directly instead of running WAM code.
+        % When the query predicate has an FFI kernel, the WAM code's internal
+        % Call "category_parent/2" would fail (fact code is skipped). Use
+        % collectForeignSolutions which calls the native kernel directly.
+        QueryBody =
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectForeignSolutions ctx "category_ancestor/4" s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ;   % Default: collectSolutions loop for category_ancestor/4
         QueryBody =
-'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom cat), (2, Atom root), (3, Unbound hopsVarId), (4, VList [Atom cat]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
+'let { hopsVarId = 1000000 ; s0 = emptyState { wsPC = fromMaybe 1 $ Map.lookup "category_ancestor/4" mergedLabels, wsRegs = IM.fromList [ (1, Atom (iAtom cat)), (2, Atom (iAtom root)), (3, Unbound hopsVarId), (4, VList [Atom (iAtom cat)]) ], wsCP = 0 } ; !solutions = collectSolutions ctx s0 hopsVarId ; !weightSum = sum [((hops + 1) ** negN) | hops <- solutions] } in (cat, weightSum)'
     ).
 
 %% detected_kernel_keys(+DetectedKernels, -Keys)
@@ -2191,7 +2840,7 @@ build_predicate_loads(Predicates, Code) :-
     let allLabels = ~w', [CodeConcat, LabelUnion]).
 
 %% compile_wam_runtime_to_haskell(+Options, +DetectedKernels, -Code)
-compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
+compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
     step_function_haskell(StepCode),
     backtrack_haskell(BacktrackCodeTemplate),
     run_loop_haskell(RunCode),
@@ -2202,6 +2851,13 @@ compile_wam_runtime_to_haskell(_Options, DetectedKernels, Code) :-
                     [kernel_functions=KernelFunctionsCode,
                      execute_foreign=ExecuteForeignCode],
                     BacktrackCode),
+    % Phase B1: conditional LMDB imports and functions
+    (   option(use_lmdb(true), Options)
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
+        generate_lmdb_functions(LmdbFunctions)
+    ;   LmdbImports = "",
+        LmdbFunctions = ""
+    ),
     format(string(Code),
 '{-# LANGUAGE BangPatterns #-}
 module WamRuntime where
@@ -2211,19 +2867,26 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 import qualified Data.Set as Set
-import Data.List (isPrefixOf, foldl'')
+import Data.List (isPrefixOf, foldl'', nub)
 import Data.Maybe (fromMaybe)
 -- Phase 4.2: intra-query parallelism. parMap/rdeepseq spark the
 -- alternative clauses of a forkable ParTryMeElse choice point; the
 -- WamState NFData instance lives in WamTypes.
 import Control.Parallel.Strategies (parMap, rdeepseq)
 import Control.DeepSeq (NFData(..), deepseq)
+-- Phase 4.4: race-to-cancel for parallel negation. async/waitAny
+-- let us cancel remaining branches once one succeeds.
+import Control.Concurrent.Async (async, cancel, waitAny)
+import Control.Exception (evaluate)
+import System.IO.Unsafe (unsafePerformIO)
+~w
 import WamTypes
 
 ~w
 
 ~w
 
+~w
 ~w
 
 -- | Dereference an Unbound variable through the binding table.
@@ -2235,24 +2898,25 @@ derefVar bindings (Unbound vid) =
     Nothing  -> Unbound vid
 derefVar _ v = v
 
--- | Evaluate arithmetic expression.
-evalArith :: IM.IntMap Value -> Value -> Maybe Double
-evalArith _ (Integer n) = Just (fromIntegral n)
-evalArith _ (Float f) = Just f
-evalArith bindings (Atom s) = case reads s of
+-- | Evaluate arithmetic expression. InternTable needed for reverse
+-- lookup of atom strings (numeric atom parsing, operator names).
+evalArith :: InternTable -> IM.IntMap Value -> Value -> Maybe Double
+evalArith _ _ (Integer n) = Just (fromIntegral n)
+evalArith _ _ (Float f) = Just f
+evalArith tbl _ (Atom aid) = case reads (lookupAtom tbl aid) of
   [(n, "")] -> Just n
   _ -> Nothing
-evalArith bindings (Str op [a]) = do
-  va <- evalArith bindings (derefVar bindings a)
-  let bareOp = takeWhile (/= ''/'') op
+evalArith tbl bindings (Str opId [a]) = do
+  va <- evalArith tbl bindings (derefVar bindings a)
+  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
   case bareOp of
     "-" -> Just (negate va)
     "abs" -> Just (abs va)
     _ -> Nothing
-evalArith bindings (Str op [a, b]) = do
-  va <- evalArith bindings (derefVar bindings a)
-  vb <- evalArith bindings (derefVar bindings b)
-  let bareOp = takeWhile (/= ''/'') op
+evalArith tbl bindings (Str opId [a, b]) = do
+  va <- evalArith tbl bindings (derefVar bindings a)
+  vb <- evalArith tbl bindings (derefVar bindings b)
+  let bareOp = takeWhile (/= ''/'') (lookupAtom tbl opId)
   case bareOp of
     "+" -> Just (va + vb)
     "-" -> Just (va - vb)
@@ -2263,7 +2927,7 @@ evalArith bindings (Str op [a, b]) = do
     "//" -> if vb /= 0 then Just (fromIntegral (truncate va `div` truncate vb :: Int)) else Nothing
     "mod" -> if vb /= 0 then Just (fromIntegral (truncate va `mod` truncate vb :: Int)) else Nothing
     _ -> Nothing
-evalArith _ _ = Nothing
+evalArith _ _ _ = Nothing
 
 -- | Get register value. Y-registers (id >= 200) come from the env frame.
 {-# INLINE getReg #-}
@@ -2319,7 +2983,7 @@ addToBuilder val s = case wsBuilder s of
        then let [tl, hd] = args''   -- reversed because we cons-built
                 list = case tl of
                   VList items -> VList (hd : items)
-                  Atom "[]"  -> VList [hd]
+                  Atom aid | aid == atomNil -> VList [hd]
                   _           -> VList [hd, tl]
             in Just (s { wsPC = wsPC s + 1
                        , wsRegs = IM.insert ai list (wsRegs s)
@@ -2383,13 +3047,13 @@ resolveCallInstrs labels foreignPreds = map resolve
       Just pc -> ParRetryMeElsePc pc
       Nothing -> ParRetryMeElse label
     resolve (SwitchOnConstant table) =
-      let extractKey (Atom s) = s
-          extractKey (Integer n) = show n
-          extractKey v = show v
-      in SwitchOnConstantPc (Map.fromList [(extractKey v, pc) | (v, label) <- Map.toList table,
-                                                                 Just pc <- [Map.lookup label labels]])
+      let extractId (Atom aid) = aid
+          extractId (Integer n) = n  -- integers use their value directly as key
+          extractId _ = (-1)
+      in SwitchOnConstantPc (IM.fromList [(extractId v, pc) | (v, label) <- Map.toList table,
+                                                               Just pc <- [Map.lookup label labels]])
     resolve i = i
-', [StepCode, BacktrackCode, RunCode]).
+', [LmdbImports, StepCode, BacktrackCode, RunCode, LmdbFunctions]).
 
 %% generate_wam_types_hs(-Code)
 generate_wam_types_hs(Code) :-
@@ -2402,14 +3066,54 @@ import Data.Array (Array, listArray, (!), bounds)
 -- each forked branch''s contribution before the merge step.
 import Control.DeepSeq (NFData(..))
 
-data Value = Atom String
+-- | Core value type. Atoms and Str functor names are interned as Ints
+-- for O(1) equality. Use lookupAtom/internAtom via the InternTable in
+-- WamContext for String conversion.
+data Value = Atom !Int          -- interned atom ID
            | Integer !Int
            | Float !Double
            | VList [Value]
-           | Str String [Value]
-           | Unbound !Int   -- variable ID (interned via wsVarCounter)
+           | Str !Int [Value]   -- interned functor name, args
+           | Unbound !Int       -- variable ID (interned via wsVarCounter)
            | Ref Int
            deriving (Eq, Ord, Show)
+
+-- | Atom intern table. Built at compile time, extended at load time
+-- with runtime atoms (e.g., from TSV fact data). Read-only after
+-- construction — safe for parallelism (shared via WamContext).
+data InternTable = InternTable
+  { itForward :: !(Map.Map String Int)   -- String -> atom ID
+  , itReverse :: !(IM.IntMap String)     -- atom ID -> String
+  , itSize    :: !Int                    -- next available ID
+  } deriving (Show)
+
+emptyInternTable :: InternTable
+emptyInternTable = InternTable Map.empty IM.empty 0
+
+internAtom :: InternTable -> String -> (Int, InternTable)
+internAtom tbl s = case Map.lookup s (itForward tbl) of
+  Just aid -> (aid, tbl)
+  Nothing  -> let aid = itSize tbl
+              in (aid, tbl { itForward = Map.insert s aid (itForward tbl)
+                           , itReverse = IM.insert aid s (itReverse tbl)
+                           , itSize = aid + 1 })
+
+internAtomPure :: InternTable -> String -> Int
+internAtomPure tbl s = case Map.lookup s (itForward tbl) of
+  Just aid -> aid
+  Nothing  -> (-1)  -- should not happen for well-formed programs
+
+lookupAtom :: InternTable -> Int -> String
+lookupAtom tbl aid = IM.findWithDefault ("?atom_" ++ show aid) aid (itReverse tbl)
+
+-- | Well-known atom IDs. Reserved during compile-time atom collection.
+-- These MUST match the IDs assigned by the Prolog codegen.
+atomTrue, atomFail, atomNil, atomDot, atomEmpty :: Int
+atomTrue  = 0
+atomFail  = 1
+atomNil   = 2   -- "[]"
+atomDot   = 3   -- "."
+atomEmpty = 4   -- ""
 
 data EnvFrame = EnvFrame {-# UNPACK #-} !Int !(IM.IntMap Value)
               deriving (Show)
@@ -2432,13 +3136,17 @@ data ChoicePoint = ChoicePoint
 
 -- | Builtin state for choice points that need custom retry logic.
 data BuiltinState
-  = FactRetry !Int ![String] !Int  -- variable ID, remaining values, returnPC
+  = FactRetry !Int ![Int] !Int     -- variable ID, remaining interned atom IDs, returnPC
   | HopsRetry !Int ![Int] !Int     -- variable ID, remaining Hops values, returnPC
     -- Multi-output FFI kernel retry. Each remaining tuple is already
     -- wrapped as a list of Values (pre-interned / wrapped at call site).
     -- outRegs and outVars are parallel lists (same length as each tuple).
     -- outVars contains -1 for originally-bound outputs (no binding update).
   | FFIStreamRetry ![Int] ![Int] ![[Value]] !Int  -- outRegs, outVars, remaining tuples, returnPC
+    -- Phase F2: FactStream for inline_data fact predicates.
+    -- Iterates interned (arg1, arg2) tuples via backtracking.
+    -- var1/var2 are variable IDs for binding (-1 = already bound, skip).
+  | FactStream !Int !Int ![(Int, Int)] !Int  -- var1, var2, remaining rows, returnPC
   deriving (Show)
 
 -- | Aggregate frame for begin_aggregate/end_aggregate.
@@ -2487,6 +3195,7 @@ inferMergeStrategy "count" = MergeCount
 inferMergeStrategy "bag"   = MergeBag
 inferMergeStrategy "set"   = MergeSet
 inferMergeStrategy "findall" = MergeFindall
+inferMergeStrategy "collect" = MergeFindall
 inferMergeStrategy _       = MergeSequential
 
 -- | Phase 4.2: NFData instances so parMap rdeepseq can spark forked
@@ -2495,19 +3204,29 @@ inferMergeStrategy _       = MergeSequential
 -- aggregate values). Everything is first-order / strict already;
 -- these definitions just walk the structure to force evaluation.
 instance NFData Value where
-  rnf (Atom s)         = rnf s
+  rnf (Atom n)         = rnf n
   rnf (Integer n)      = rnf n
   rnf (Float f)        = rnf f
   rnf (VList xs)       = rnf xs
-  rnf (Str name args)  = rnf name `seq` rnf args
+  rnf (Str n args)     = rnf n `seq` rnf args
   rnf (Unbound n)      = rnf n
   rnf (Ref n)          = rnf n
 
 -- | Builder for PutStructure/PutList + SetValue/SetConstant sequences.
-data Builder = BuildStruct !String !Int !Int ![Value]  -- functor, target reg ID, arity, collected args
-             | BuildList !Int ![Value]                  -- target reg ID, collected [head, tail]
+data Builder = BuildStruct !Int !Int !Int ![Value]  -- interned functor ID, target reg ID, arity, collected args
+             | BuildList !Int ![Value]               -- target reg ID, collected [head, tail]
              | NoBuilder
              deriving (Show)
+
+-- | Phase F4: FactSource abstraction for external fact data.
+-- Mirrors the Elixir FactSource behaviour (fsScan, fsLookupArg1, fsClose).
+-- Concrete implementations: TsvFactSource (lazy IO), IntMapFactSource
+-- (wraps existing strict IntMap). MmapFactSource deferred to Phase F6.
+data FactSource = FactSource
+  { fsScan       :: IO [(Int, Int)]         -- full scan (lazy)
+  , fsLookupArg1 :: Int -> IO [(Int, Int)]  -- indexed by first arg
+  , fsClose      :: IO ()                   -- release resources
+  }
 
 -- | Read-only context. Threaded through the run loop / step function as
 -- a separate argument so it doesn''t pay the per-step record-update cost
@@ -2518,17 +3237,12 @@ data WamContext = WamContext
   , wcForeignFacts  :: !(Map.Map String (Map.Map String [String]))
   , wcForeignConfig :: !(Map.Map String Int)
   , wcLoweredPredicates :: !(Map.Map String (WamContext -> WamState -> Maybe WamState))
-  -- | Atom interning table for the FFI boundary. Populated at startup
-  -- with String -> Int IDs. Used by executeForeign to convert WAM-side
-  -- String atoms to Int keys before calling native kernels.
-  , wcAtomIntern    :: !(Map.Map String Int)
-  -- | Reverse intern table (Int -> String) for de-interning kernel
-  -- results that return Ints but need to be wrapped as Atom String.
-  , wcAtomDeintern  :: !(IM.IntMap String)
+  -- | System-wide atom intern table. Built at compile time, extended
+  -- at load time with runtime atoms. Used for Value → String display,
+  -- evalArith reverse lookup, and FFI boundary interning.
+  , wcInternTable   :: !InternTable
   -- | Fact indexes keyed by interned Int atoms. Used exclusively by the
   -- FFI kernel path. Populated per-kernel from edge_pred config.
-  -- Separate from wcForeignFacts so callIndexedFact2 (WAM path) is
-  -- unaffected.
   , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
   -- | Weighted fact indexes for kernels that need (target, weight)
   -- pairs per edge (e.g., weighted_shortest_path3 / Dijkstra). Used
@@ -2536,8 +3250,29 @@ data WamContext = WamContext
   -- sources — not wired into the default Main.hs template yet, so
   -- standalone benchmarks build this directly.
   , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
+  -- | Phase F2: inline fact data for FactStream predicates. Keyed by
+  -- predicate name (e.g., "category_parent"). Each entry is a list of
+  -- interned (arg1, arg2) tuples. Populated by Phase F3 code generation;
+  -- empty until then.
+  , wcInlineFacts :: !(Map.Map String [(Int, Int)])
+  -- | Phase F4: external fact sources keyed by predicate name.
+  -- Each entry is a FactSource adaptor (TsvFactSource, IntMapFactSource,
+  -- etc.) that provides scan and indexed lookup. Populated at startup
+  -- from fact_layout declarations.
+  -- Phase F5 strictness: the strict (!) annotation forces the Map spine
+  -- at construction. FactSource records are WHNF (IO actions are values).
+  -- The !ctx bang pattern in Main.hs ensures the entire WamContext is
+  -- evaluated before parMap. Within each spark, streamFacts uses
+  -- unsafePerformIO per-call — no cross-spark lazy IO sharing.
+  , wcFactSources :: !(Map.Map String FactSource)
+  -- | Phase B1: LMDB-backed edge lookups for FFI kernels.
+  -- When populated, kernels use these instead of wcFfiFacts IntMaps.
+  -- Each entry is an EdgeLookup function (Int -> [Int]) that may be
+  -- backed by an IntMap (intMapEdgeLookup) or LMDB (lmdbEdgeLookup).
+  , wcEdgeLookups :: !(Map.Map String EdgeLookup)
   }
--- Note: no `deriving (Show)` because wcLoweredPredicates is function-valued
+-- Note: no `deriving (Show)` because wcLoweredPredicates,
+-- wcFactSources, and wcEdgeLookups are function-valued.
 -- and functions have no Show instance. Add a manual instance if needed.
 
 -- | Mutable state. Updated on every WAM step. Held separate from WamContext
@@ -2569,6 +3304,11 @@ data WamState = WamState
 --   Y1-Y99: 201-299
 type RegId = Int
 
+-- | Phase B1: abstract edge lookup function. Kernels use this instead
+-- of IM.IntMap [Int] directly, allowing the backing store to be either
+-- an in-memory IntMap or an LMDB database.
+type EdgeLookup = Int -> [Int]
+
 data Instruction
   = GetConstant Value !RegId
   | GetVariable !RegId !RegId
@@ -2576,7 +3316,8 @@ data Instruction
   | PutConstant Value !RegId
   | PutVariable !RegId !RegId
   | PutValue !RegId !RegId
-  | PutStructure String !RegId !Int   -- functor, target reg, arity (pre-parsed)
+  | PutStructure !Int !RegId !Int     -- interned functor ID, target reg, arity
+  | PutStructureDyn !RegId !RegId !RegId  -- nameReg, arityReg, targetReg (runtime-parsed)
   | PutList !RegId
   | SetValue !RegId
   | SetConstant Value
@@ -2593,7 +3334,7 @@ data Instruction
   | Proceed
   | TryMeElsePc !Int                   -- post-resolution: direct PC for else branch
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
-  | SwitchOnConstantPc !(Map.Map String Int) -- post-resolution: atom string -> PC
+  | SwitchOnConstantPc !(IM.IntMap Int)      -- post-resolution: interned atom ID -> PC
   | BuiltinCall String !Int
   | TryMeElse String
   | RetryMeElse String
@@ -2612,6 +3353,7 @@ data Instruction
   | SwitchOnConstant (Map.Map Value String)   -- pre-built Map for O(log n) dispatch
   | BeginAggregate String !RegId !RegId   -- type, valueReg, resultReg
   | EndAggregate !RegId                   -- valueReg
+  | CallFactStream String !Int            -- Phase F2: predicate name, arity
   deriving (Show, Eq)
 
 -- | Build the read-only context from compiled code and labels. Called
@@ -2627,10 +3369,12 @@ mkContext codeList labels =
     , wcForeignFacts  = Map.empty
     , wcForeignConfig = Map.empty
     , wcLoweredPredicates = Map.empty
-    , wcAtomIntern    = Map.empty
-    , wcAtomDeintern  = IM.empty
+    , wcInternTable   = emptyInternTable
     , wcFfiFacts      = Map.empty
     , wcFfiWeightedFacts = Map.empty
+    , wcInlineFacts   = Map.empty
+    , wcFactSources   = Map.empty
+    , wcEdgeLookups   = Map.empty
     }
 
 -- | Create initial empty mutable state. The cold fields (code, labels,
@@ -2659,9 +3403,15 @@ emptyState = WamState
 %  Options: profiling(true) adds -prof -fprof-auto -rtsopts for GHC profiling.
 generate_cabal_file(Name, UseHM, Options, Code) :-
     % deepseq + parallel for seed-level parMap rdeepseq
+    % async for Phase 4.4 race-to-cancel negation
     (   UseHM == true
-    ->  Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2"
-    ;   Deps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2"
+    ->  BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, unordered-containers >= 0.2, hashable >= 1.2, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ;   BaseDeps = "base >= 4.12, containers >= 0.6, array, time >= 1.8, deepseq >= 1.4, parallel >= 3.2, async >= 2.2"
+    ),
+    % Phase B1: conditional LMDB dependency
+    (   option(use_lmdb(true), Options)
+    ->  format(string(Deps), "~w, lmdb >= 0.2.5, directory >= 1.3", [BaseDeps])
+    ;   Deps = BaseDeps
     ),
     % -threaded enables multi-core runtime (+RTS -N to use cores).
     % -rtsopts is needed so +RTS flags are accepted at runtime.
@@ -2686,17 +3436,36 @@ executable ~w
 
 %% compile_predicates_to_haskell(+Predicates, +Options, -Code)
 %  Compiles all predicates into a single merged code array and label map,
-%  with proper PC offsets for each predicate.
+%  with proper PC offsets for each predicate. Phase F1: also classifies
+%  each predicate and emits classification comments in Predicates.hs.
 compile_predicates_to_haskell(Predicates, Options, Code) :-
-    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels),
+    compile_predicates_to_haskell(Predicates, Options, Code, _InlineDefs).
+
+%% compile_predicates_to_haskell(+Predicates, +Options, -Code, -InlineDefs)
+%  Extended version that also returns inline fact definitions for Main.hs wiring.
+compile_predicates_to_haskell(Predicates, Options, Code, InlineDefs) :-
+    compile_predicates_merged(Predicates, 1, Options, AllInstrs, AllLabels, ShapeComments, InlineDefs),
     atomic_list_concat(AllInstrs, '\n    , ', InstrCode),
     atomic_list_concat(AllLabels, '\n    , ', LabelCode),
+    (   ShapeComments == []
+    ->  ShapeBlock = ""
+    ;   atomic_list_concat(ShapeComments, '\n', ShapeLines),
+        format(string(ShapeBlock), '\n-- Fact shape classification:\n~w\n', [ShapeLines])
+    ),
+    % Phase F3: collect inline fact literal definitions
+    (   InlineDefs == []
+    ->  InlineBlock = ""
+    ;   maplist([inline_fact(_, _, DefCode), DefCode]>>true, InlineDefs, DefCodes),
+        atomic_list_concat(DefCodes, '\n', InlineCode),
+        format(string(InlineBlock), '\n-- | Phase F3: inline fact data for FactStream predicates.\n~w\n', [InlineCode])
+    ),
     format(string(Code),
 'module Predicates where
 
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap.Strict as IM
 import WamTypes
-
+~w
 -- | Merged WAM code for all predicates.
 allCode :: [Instruction]
 allCode =
@@ -2708,10 +3477,10 @@ allLabels :: Map.Map String Int
 allLabels = Map.fromList
     [ ~w
     ]
-', [InstrCode, LabelCode]).
+~w', [ShapeBlock, InstrCode, LabelCode, InlineBlock]).
 
-compile_predicates_merged([], _, _, [], []).
-compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels) :-
+compile_predicates_merged([], _, _, [], [], [], []).
+compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
@@ -2719,14 +3488,89 @@ compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, All
     format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
-    % Phase 4.1: if the purity certificate says this predicate is
-    % safe to parallelize, rewrite its choice-point instructions
-    % (TryMeElse / RetryMeElse / TrustMe) to the Par* variants.
-    maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
-    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels),
+    % Phase F1: classify the predicate from WAM text
+    classify_fact_predicate(Pred/Arity, Lines, Options, ShapeInfo),
+    format_fact_shape_comment_hs(Pred/Arity, ShapeInfo, Comment),
+    format(user_error, '    ~w~n', [Comment]),
+    ShapeInfo = fact_shape_info(_, _, _, Layout),
+    % Phase F3: if inline_data, emit fact literal + CallFactStream instead of WAM
+    (   Layout = inline_data(_), Arity == 2
+    ->  split_wam_into_segments(Lines, Segments),
+        extract_fact_tuples_hs(Segments, FactTuples),
+        length(FactTuples, NTuples),
+        format(atom(PredNameAtom), '~w', [Pred]),
+        atom_string(PredNameAtom, PredNameStr),
+        haskell_fact_list_name(PredNameStr, ListName),
+        emit_inline_fact_literal(ListName, FactTuples, InlineDefCode),
+        format(string(LabelExpr), '("~w/~w", ~w)', [Pred, Arity, StartPC]),
+        format(string(InstrExpr), 'CallFactStream "~w" ~w', [Pred, Arity]),
+        InstrExprs = [InstrExpr],
+        LabelExprs = [LabelExpr],
+        NextPC is StartPC + 1,
+        InlineDefs = [inline_fact(PredNameStr, ListName, InlineDefCode)],
+        format(user_error, '    [F3] ~w/~w: emitting inline_data (~w tuples)~n',
+               [Pred, Arity, NTuples])
+    ;   % Normal compiled path
+        wam_lines_to_haskell(Lines, StartPC, InstrExprs0, LabelExprs, NextPC),
+        maybe_parallelize_instrs(PredIndicator, Options, InstrExprs0, InstrExprs),
+        InlineDefs = []
+    ),
+    compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments, RestInlineDefs),
     append(InstrExprs, RestInstrs, AllInstrs),
-    append(LabelExprs, RestLabels, AllLabels).
+    append(LabelExprs, RestLabels, AllLabels),
+    AllComments = [Comment | RestComments],
+    append(InlineDefs, RestInlineDefs, AllInlineDefs).
+
+%% extract_fact_tuples_hs(+Segments, -Tuples)
+%  Extracts (InternedA1, InternedA2) pairs from classified fact segments.
+%  Each segment should contain get_constant instructions for A1 and A2.
+%  Atoms are interned via the compile-time intern table.
+extract_fact_tuples_hs(Segments, Tuples) :-
+    findall((Id1, Id2), (
+        member(_-Instrs, Segments),
+        member(get_constant(Val1, "A1"), Instrs),
+        member(get_constant(Val2, "A2"), Instrs),
+        intern_atom(Val1, Id1),
+        intern_atom(Val2, Id2)
+    ), Tuples).
+
+%% haskell_fact_list_name(+PredName, -ListName)
+%  Generate a Haskell identifier for the inline fact list.
+%  e.g., "category_parent" -> "categoryParentFacts"
+haskell_fact_list_name(PredName, ListName) :-
+    split_string(PredName, "_", "", Parts),
+    Parts = [First|Rest],
+    maplist([In, Out]>>(
+        string_chars(In, [C|Cs]),
+        upcase_atom(C, UC),
+        atom_chars(UC, [UCC]),
+        string_chars(Out, [UCC|Cs])
+    ), Rest, CamelRest),
+    atomic_list_concat([First|CamelRest], '', CamelName),
+    format(atom(ListName), '~wFacts', [CamelName]).
+
+%% emit_inline_fact_literal(+ListName, +Tuples, -Code)
+%  Emits a Haskell top-level definition for an inline fact list with
+%  interned atom ID tuples.
+emit_inline_fact_literal(ListName, Tuples, Code) :-
+    maplist([(Id1, Id2), Entry]>>(
+        format(string(Entry), '(~w, ~w)', [Id1, Id2])
+    ), Tuples, Entries),
+    (   Entries = []
+    ->  format(string(Code), '~w :: [(Int, Int)]\n~w = []\n', [ListName, ListName])
+    ;   Entries = [First|Rest],
+        format(string(FirstLine), '    [ ~w', [First]),
+        maplist([E, L]>>format(string(L), '    , ~w', [E]), Rest, RestLines),
+        append([FirstLine], RestLines, AllLines),
+        atomic_list_concat(AllLines, '\n', Body),
+        format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
+    ).
+
+%% generate_lmdb_functions(-Code)
+%  Loads the LMDB FactSource functions from the Mustache template.
+%  Only called when use_lmdb(true).
+generate_lmdb_functions(Code) :-
+    read_kernel_template('lmdb_fact_source.hs.mustache', Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
@@ -2892,7 +3736,12 @@ wam_instr_to_haskell(["put_structure", FN, Ai], Hs) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     parse_functor_arity(CFN, Arity),
     reg_name_to_int(CAi, AiI),
-    format(string(Hs), 'PutStructure "~w" ~w ~w', [CFN, AiI, Arity]).
+    intern_atom(CFN, FnId),
+    format(string(Hs), 'PutStructure ~w ~w ~w', [FnId, AiI, Arity]).
+wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
+    clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
+    reg_name_to_int(CN, NI), reg_name_to_int(CA, AI), reg_name_to_int(CT, TI),
+    format(string(Hs), 'PutStructureDyn ~w ~w ~w', [NI, AI, TI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
@@ -2963,11 +3812,21 @@ parse_functor_arity(FN, Arity) :-
 %% wam_value_to_haskell(+WamVal, -HaskellExpr)
 %  Converts a WAM constant to a Haskell Value constructor.
 wam_value_to_haskell(Val, Hs) :-
-    (   number_string(N, Val), integer(N)
-    ->  format(string(Hs), 'Integer ~w', [N])
-    ;   number_string(F, Val), float(F)
-    ->  format(string(Hs), 'Float ~w', [F])
-    ;   format(string(Hs), 'Atom "~w"', [Val])
+    atom_string(Val, ValStr),
+    (   number_string(N, ValStr), integer(N)
+    ->  % Wrap negative integers in parens so Haskell parses correctly:
+        % Integer (-5) not Integer -5
+        (   N < 0
+        ->  format(string(Hs), 'Integer (~w)', [N])
+        ;   format(string(Hs), 'Integer ~w', [N])
+        )
+    ;   number_string(F, ValStr), float(F)
+    ->  (   F < 0
+        ->  format(string(Hs), 'Float (~w)', [F])
+        ;   format(string(Hs), 'Float ~w', [F])
+        )
+    ;   intern_atom(Val, AtomId),
+        format(string(Hs), 'Atom ~w', [AtomId])
     ).
 
 %% clean_comma(+Str, -Clean) — strip trailing comma
@@ -2988,7 +3847,8 @@ parse_switch_entries([Entry|Rest], [HsPair|HsRest]) :-
         sub_atom(CEntry, After, _, 0, Label),
         wam_value_to_haskell(Key, HsKey),
         format(string(HsPair), '(~w, "~w")', [HsKey, Label])
-    ;   format(string(HsPair), '(Atom "~w", "default")', [CEntry])
+    ;   intern_atom(CEntry, DefId),
+        format(string(HsPair), '(Atom ~w, "default")', [DefId])
     ),
     parse_switch_entries(Rest, HsRest).
 

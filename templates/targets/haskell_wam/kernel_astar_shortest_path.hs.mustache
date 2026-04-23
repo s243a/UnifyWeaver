@@ -51,7 +51,7 @@ nativeKernel_astar_shortest_path edges heur source target dim =
                   Nothing -> []
             | otherwise ->
                 let g = IM.findWithDefault (1/0) node gScores
-                    neighbors = IM.findWithDefault [] node edges
+                    neighbors = edges node
                     (queue'', gScores') = foldl' (relax g) (queue', gScores) neighbors
                 in astarLoop queue'' gScores'
   in astarLoop initQueue initG

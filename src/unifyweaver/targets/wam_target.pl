@@ -13,7 +13,10 @@
     compile_facts_to_wam/3,              % +Pred, +Arity, -WAMCode
     compile_wam_module/3,                % +Predicates, +Options, -WAMCode
     write_wam_program/2,                 % +Code, +Filename
-    init_wam_target/0                    % Initialize target
+    init_wam_target/0,                   % Initialize target
+    % WAM constant quoting — exported so downstream tokenizers can
+    % share the same rules (see wam_elixir_lowered_emitter:tokenize_wam_line/2).
+    quote_wam_constant/2                 % +Value, -QuotedString
 ]).
 
 :- use_module(library(lists)).
@@ -233,18 +236,89 @@ build_constant_index_on([Head-_|Rest], ArgPos, I, Pred, Arity, [Val-Label|RestEn
     build_constant_index_on(Rest, ArgPos, NextI, Pred, Arity, RestEntries).
 
 format_index_entries(Entries, Str) :-
-    maplist([K-V, S]>>format(atom(S), "~w:~w", [K, V]), Entries, Parts),
+    maplist([K-V, S]>>(quote_wam_constant(K, KStr),
+                       format(atom(S), "~w:~w", [KStr, V])),
+            Entries, Parts),
     atomic_list_concat(Parts, ', ', Str).
+
+% ---------------------------------------------------------------------------
+% Constant quoting
+% ---------------------------------------------------------------------------
+%
+% The symbolic WAM text uses ` `, `,`, and `\t` as token separators and
+% `:` as the key/label separator inside `switch_on_constant` entries.
+% Prolog atoms freely contain any of those characters, so a naive
+% `~w` serialisation produces output the downstream line tokenizer
+% cannot reparse (`get_constant Washington,_D.C., A1` splits on the
+% embedded comma and emits a `raw/1` catch-all).
+%
+% `quote_wam_constant/2` wraps constants that need quoting in
+% single quotes, escaping embedded `'` as `\'` and `\` as `\\`.
+% Unambiguous unquoted atoms (identifier-like, numeric) pass through
+% unchanged, keeping the common case readable.
+%
+% Downstream tokenizers (see `wam_elixir_lowered_emitter:tokenize_wam_line/2`)
+% must recognise the same quote syntax.
+
+%% quote_wam_constant(+Value, -QuotedString)
+%  Value is an atom, string, or number. QuotedString is a string
+%  suitable to embed after `get_constant`, `put_constant`, etc.
+quote_wam_constant(Value, Quoted) :-
+    (   number(Value)
+    ->  format(string(Quoted), "~w", [Value])
+    ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
+        (   constant_needs_quoting(Str)
+        ->  escape_for_wam_quoting(Str, Escaped),
+            format(string(Quoted), "'~w'", [Escaped])
+        ;   Quoted = Str
+        )
+    ).
+
+constant_needs_quoting("") :- !.
+constant_needs_quoting(Str) :-
+    string_chars(Str, Chars),
+    member(C, Chars),
+    separator_or_special_char(C), !.
+
+separator_or_special_char(' ').
+separator_or_special_char('\t').
+separator_or_special_char(',').
+separator_or_special_char(':').
+separator_or_special_char('\'').
+separator_or_special_char('\\').
+
+escape_for_wam_quoting(Str, Escaped) :-
+    string_chars(Str, Chars),
+    maplist(escape_wam_char, Chars, NestedChars),
+    append(NestedChars, EscChars),
+    string_chars(Escaped, EscChars).
+
+escape_wam_char('\\', ['\\', '\\']).
+escape_wam_char('\'', ['\\', '\'']).
+escape_wam_char(C, [C]).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
-    (   length(Goals, N), N > 1
+    % Force permanent variable allocation when the body contains a
+    % Call (including aggregate_all/findall whose inner goals contain
+    % Calls). Without this, a single-goal clause like
+    %   p(X,Y) :- aggregate_all(sum(W), q(X,…), Y).
+    % assigns X/Y to X-registers (< 200) which get clobbered by the
+    % inner Call to q.
+    % Expand aggregates so pre_assign_permanent_vars sees the inner
+    % goals. Variables shared between the head and the aggregate body
+    % must be permanent (Y-registers) because the inner Call clobbers
+    % X-registers.
+    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
+    (   ( length(ExpandedGoals, N), N > 1
+        ; goals_contain_call_or_aggregate(Goals)
+        )
     ->  % Pre-assign Yi registers, emit allocate before head so Yi
         % registers can be stored in the environment frame immediately.
-        pre_assign_permanent_vars(Goals, V0, V0a),
+        pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode),
         compile_goals(Goals, V1, yes, _, GoalsCode),
         format(string(Code), "    allocate~n~w~n~w", [HeadCode, GoalsCode])
@@ -256,13 +330,93 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
         format(string(Code), "~w~n~w", [HeadCode, BodyCode])
     ).
 
+%% goals_contain_call_or_aggregate(+Goals)
+%  True if any goal in the list is a Call to a user predicate or an
+%  aggregate_all/findall that internally produces Call instructions.
+%  Used to force permanent variable allocation in single-goal clauses
+%  that would otherwise skip it (since length(Goals) == 1).
+goals_contain_call_or_aggregate(Goals) :-
+    member(G, Goals),
+    ( G = aggregate_all(_, _, _)
+    ; G = findall(_, _, _)
+    ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
+    ),
+    !.
+
+is_builtin_goal(is).
+is_builtin_goal(=).
+is_builtin_goal(\=).
+is_builtin_goal(>).
+is_builtin_goal(<).
+is_builtin_goal(>=).
+is_builtin_goal(=<).
+is_builtin_goal(=:=).
+is_builtin_goal(=\=).
+is_builtin_goal(true).
+is_builtin_goal(fail).
+is_builtin_goal(write).
+is_builtin_goal(nl).
+is_builtin_goal(format).
+is_builtin_goal(member).
+is_builtin_goal(length).
+is_builtin_goal(append).
+is_builtin_goal((\+)).
+
+%% expand_aggregate_goals_for_perm_vars(+Goals, -Expanded)
+%  For permanent-variable detection, expand aggregate_all/findall into
+%  their inner goals + a synthetic "result" goal. This ensures
+%  variables shared between the clause head and the aggregate body
+%  are detected as permanent (appear in >1 "goal").
+expand_aggregate_goals_for_perm_vars([], []).
+expand_aggregate_goals_for_perm_vars([G|Rest], Expanded) :-
+    (   G = aggregate_all(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        % Add the aggregate itself as a separate "goal" so that
+        % variables appearing in the aggregate arguments AND in the
+        % inner body register as permanent (cross-goal).
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   G = findall(_Template, InnerGoal, _Result)
+    ->  flatten_conjunction(InnerGoal, InnerGoals),
+        append([G|InnerGoals], RestExpanded, Expanded)
+    ;   ( G = (_;_) ; G = (_->_) )
+    ->  % ITE / soft-cut: expose branch goals so variables shared
+        %  between the clause head and the ITE branches are detected as
+        %  permanent (they appear in the "later" expanded goals).
+        (   G = (If -> Then ; Else)
+        ->  flatten_conjunction(If,   IfGoals),
+            flatten_conjunction(Then, ThenGoals),
+            flatten_conjunction(Else, ElseGoals),
+            append(IfGoals, ThenGoals, IfThen),
+            append(IfThen,  ElseGoals, BranchGoals)
+        ;   G = (If -> Then)
+        ->  flatten_conjunction(If,  IfGoals),
+            flatten_conjunction(Then, ThenGoals),
+            append(IfGoals, ThenGoals, BranchGoals)
+        ;   G = (A ; B)
+        ->  flatten_conjunction(A, AGls),
+            flatten_conjunction(B, BGls),
+            append(AGls, BGls, BranchGoals)
+        ;   BranchGoals = [G]
+        ),
+        append([G|BranchGoals], RestExpanded, Expanded)
+    ;   Expanded = [G|RestExpanded]
+    ),
+    expand_aggregate_goals_for_perm_vars(Rest, RestExpanded).
+
 %% compile_multi_clause_wam(+Pred, +Arity, +Clauses, +Options, -Code)
 compile_multi_clause_wam(Pred, Arity, Clauses, Options, Code) :-
     length(Clauses, N),
-    compile_clauses_with_choice_points(Clauses, 1, N, Pred, Arity, Options, Code).
+    % Build a list of per-clause fragment strings, then atomic_list_concat
+    % once at the end. The previous nested format/3 recursion rebuilt the
+    % growing accumulator at each step — O(N²) for fact-only predicates
+    % with thousands of clauses (6009-clause category_parent/2 took ~85s
+    % before; ~3s after).
+    compile_clauses_fragments(Clauses, 1, N, Pred, Arity, Options, Fragments),
+    atomic_list_concat(Fragments, '\n', Code).
 
-compile_clauses_with_choice_points([], _, _, _, _, _, "").
-compile_clauses_with_choice_points([Head-Body|Rest], I, N, Pred, Arity, Options, Code) :-
+compile_clauses_fragments([], _, _, _, _, _, []).
+compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
+                         [Choice, HeadCode, BodyCode | RestFragments]) :-
     (   I == 1
     ->  format(string(Choice), "    try_me_else L_~w_~w_~w", [Pred, Arity, 2])
     ;   I == N
@@ -287,11 +441,7 @@ compile_clauses_with_choice_points([Head-Body|Rest], I, N, Pred, Arity, Options,
         )
     ),
     NextI is I + 1,
-    compile_clauses_with_choice_points(Rest, NextI, N, Pred, Arity, Options, RestCode),
-    (   RestCode == ""
-    ->  format(string(Code), "~w~n~w~n~w", [Choice, HeadCode, BodyCode])
-    ;   format(string(Code), "~w~n~w~n~w~n~w", [Choice, HeadCode, BodyCode, RestCode])
-    ).
+    compile_clauses_fragments(Rest, NextI, N, Pred, Arity, Options, RestFragments).
 
 %% compile_head_arguments(+Args, +ArgIndex, +VIn, -VOut, -Code)
 compile_head_arguments([], _, V, V, "").
@@ -316,7 +466,8 @@ compile_head_argument(Arg, I, V0, V1, Code) :-
             format(string(Code), "    get_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
-    ->  format(string(Code), "    get_constant ~w, A~w", [Arg, I]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(Code), "    get_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
     ;   is_list_term(Arg)
     ->  Arg = [H|T],
@@ -347,7 +498,8 @@ compile_unify_arguments([Arg|Rest], V0, Vf, Code) :-
             format(string(ArgCode), "    unify_variable ~w", [XReg])
         )
     ;   atomic(Arg)
-    ->  format(string(ArgCode), "    unify_constant ~w", [Arg]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(ArgCode), "    unify_constant ~w", [ArgStr]),
         V1 = V0
     ;   % Nested structure — emit unify_variable for a temp register,
         % then get_structure + unify_* for the nested sub-arguments.
@@ -552,6 +704,8 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = count       -> AggType = count, ValueVar = 1
     ;   Template = max(ValueVar) -> AggType = max
     ;   Template = min(ValueVar) -> AggType = min
+    ;   Template = bag(ValueVar) -> AggType = bag
+    ;   Template = set(ValueVar) -> AggType = set
     ;   AggType = collect, ValueVar = Template  % default: collect all values
     ),
     % Find or allocate the Result register (where output goes)
@@ -571,7 +725,13 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % Flatten the InnerGoal conjunction into a list of goals
     flatten_conjunction(InnerGoal, GoalList),
     % Compile each inner goal as a call (never TCO/execute) so control
-    % returns to end_aggregate after each solution
+    % returns to end_aggregate after each solution.
+    % Note: permanent variable allocation for inner-goal variables that
+    % survive across Calls is handled by the OUTER clause''s
+    % pre_assign_permanent_vars (via expand_aggregate_goals_for_perm_vars
+    % in compile_single_clause_wam). Do NOT add a second
+    % pre_assign_permanent_vars call here — it would reassign variables
+    % that already have Y-register slots from the outer pass.
     compile_inner_call_goals(GoalList, V2, Vf, InnerCode),
     (   InitValueCode \= ""
     ->  format(string(Code),
@@ -748,7 +908,8 @@ compile_put_argument(Arg, I, V0, V1, Code) :-
             format(string(Code), "    put_variable ~w, A~w", [XReg, I])
         )
     ;   atomic(Arg)
-    ->  format(string(Code), "    put_constant ~w, A~w", [Arg, I]),
+    ->  quote_wam_constant(Arg, ArgStr),
+        format(string(Code), "    put_constant ~w, A~w", [ArgStr, I]),
         V1 = V0
     ;   is_list_term(Arg)
     ->  Arg = [H|T],
@@ -794,7 +955,8 @@ compile_set_arguments([Arg|Rest], V0, Vf, Code) :-
     ;   atomic(Arg)
     ->  % For atomic sub-args, emit set_constant directly
         V1 = V0,
-        format(string(ArgCode), "    set_constant ~w", [Arg])
+        quote_wam_constant(Arg, ArgStr),
+        format(string(ArgCode), "    set_constant ~w", [ArgStr])
     ;   % Nested compound — recursively emit put_structure + set_* for sub-args
         compound(Arg)
     ->  Arg =.. [F|NestedArgs],

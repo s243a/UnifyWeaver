@@ -181,31 +181,31 @@ associative, no ordering concerns.
 
 ### Deferred
 
-- Findall/bag/set merges (Phase 4.3).
-- Race/negation (Phase 4.4).
-- Work-estimation threshold (Phase 4.5) — every parallel CP forks for now.
+- ~~Findall/bag/set merges (Phase 4.3).~~ **Delivered.**
+- ~~Race/negation (Phase 4.4).~~ **Delivered** (MVP: parMap-based, not async race-to-cancel).
+- ~~Work-estimation threshold (Phase 4.5)~~ **Delivered** (forkMinBranches = 3).
 
 ---
 
-## Phase 4.3: Findall/bag/set merge strategies
+## Phase 4.3: Findall/bag/set merge strategies ✓
+
+**Status: Delivered.**
 
 Extend the merge step to support list-collecting aggregates.
 
-### Changes
+### Changes (delivered)
 
-- `MergeFindall`: concatenate per-branch result lists. Order is
-  non-deterministic across forks but Prolog's findall doesn't
-  guarantee order.
-- `MergeBag` / `MergeSet`: same as findall, with optional
-  deduplication for set.
-- Aggregate-frame interaction: each parallel branch builds its own
-  `wsAggAccum`; the merge concatenates them.
-
-### Tests
-
-- Findall benchmark: parallel findall returns the same set of
-  solutions as sequential (after sorting).
-- Set/bag benchmarks: similar correctness comparison.
+- `MergeFindall`, `MergeBag`, `MergeSet` added to `isForkableStrategy`
+  (all return `True`, enabling forking).
+- `inferMergeStrategy "collect"` maps to `MergeFindall` (since
+  `findall/3` compiles via `compile_aggregate_all(collect-Template, ...)`).
+- `applyAggregation "bag"` returns `VList vals` (preserves duplicates).
+- `applyAggregation "set"` returns `VList (nub vals)` (deduplication
+  via `Data.List.nub`; O(n²) but correct for any `Eq` type).
+- `wam_target.pl`: `compile_aggregate_all` handles `bag(ValueVar)` and
+  `set(ValueVar)` template patterns, emitting `begin_aggregate bag` /
+  `begin_aggregate set`.
+- 7 codegen tests added.
 
 ### Deferred
 
@@ -214,40 +214,52 @@ Extend the merge step to support list-collecting aggregates.
 
 ---
 
-## Phase 4.4: Negation as race-to-cancel
+## Phase 4.4: Negation — general handler + parallel negation ✓
+
+**Status: Delivered (MVP).**
 
 `\+ Goal` succeeds iff `Goal` has no solutions. Under parallelism,
 all branches of `Goal` must fail. If any succeeds, the rest can be
 cancelled.
 
-### Why this is high-risk
+### What was delivered
 
-- Plain `par` has no cancellation. Need `Control.Concurrent.Async`.
-- Switching from `Strategies` to `async` for parallel branches is a
-  bigger refactor than it sounds — different exception handling,
-  different scheduling, different interop with GHC's spark pool.
-- Branch cancellation must clean up trail entries cleanly. Half-baked
-  bindings could corrupt the parent state.
+1. **General `\+` handler**: the `BuiltinCall "\\+/1"` step handler
+   now supports arbitrary goals (not just the `member/2` fast path).
+   It resolves the goal's functor/arity to a label, creates a snapshot
+   state, and calls `run ctx snapshot` — if `run` returns `Just`,
+   negation fails; if `Nothing`, negation succeeds.
 
-### Approach
+2. **Fast paths**: `\+ true` → fail, `\+ fail` → succeed, plus the
+   existing `\+ member(X, L)` fast path.
 
-- Replace `parMap rdeepseq` with `Async.race` / `Async.cancel` for
-  branches under negation.
-- Wrap branch execution in `withAsync` so cleanup is guaranteed even
-  if the branch fails.
-- Test extensively: this is the most likely source of subtle bugs.
+3. **Parallel negation via `runNegationParallel`**: when the goal's
+   entry instruction is `ParTryMeElse` (indicating a purity-certified
+   predicate with Par* choice points), branches are evaluated in
+   parallel via `parMap rdeepseq`. If any branch succeeds, negation
+   fails. Uses the same `forkMinBranches` threshold as aggregate fork.
 
-### Tests
+4. **4 codegen tests** verifying general handler, parallel dispatch,
+   `runNegationParallel` helper, and true/fail fast paths.
 
-- `\+ p(X)` over a parallelizable `p/1` returns the same answer as
-  sequential.
-- Cancellation actually fires (instrument with a counter; verify
-  branches don't all run to completion when one succeeds).
+### Design decision: parMap over async
+
+The original plan called for `Control.Concurrent.Async` with true
+race-to-cancel semantics. The MVP instead uses `parMap rdeepseq` —
+the same strategy as aggregate forking — because:
+
+- It keeps the runtime pure (no `unsafePerformIO` or IO-based run loop).
+- The purity certificate already guarantees branches are side-effect-free.
+- `parMap` evaluates all branches (no early cancellation), but for the
+  common case where most branches are similarly sized, the overhead is
+  acceptable.
+- True race-to-cancel (`async`-based) can be added as a future
+  optimization if profiling shows wasted work on negation branches.
 
 ### Deferred
 
-- Cross-branch cut (the spec defers this entirely; not implementing
-  in Phase 4 at all).
+- True race-to-cancel via `Control.Concurrent.Async` (optimization).
+- Cross-branch cut (the spec defers this entirely).
 
 ---
 

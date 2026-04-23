@@ -54,6 +54,56 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Rust benchmark with optimized accumulated helpers",
     ),
+    "go-wam-accumulated": TargetInfo(
+        "go-wam-accumulated",
+        "hybrid-wam",
+        "Hybrid WAM Go benchmark with optimized accumulated helpers and kernels enabled",
+    ),
+    "go-wam-accumulated-no-kernels": TargetInfo(
+        "go-wam-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Go benchmark with optimized accumulated helpers and no_kernels(true)",
+    ),
+    "clojure-wam-seeded": TargetInfo(
+        "clojure-wam-seeded",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers and kernels enabled",
+    ),
+    "clojure-wam-seeded-no-kernels": TargetInfo(
+        "clojure-wam-seeded-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers and no_kernels(true)",
+    ),
+    "clojure-wam-seeded-artifact": TargetInfo(
+        "clojure-wam-seeded-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers, kernels enabled, and preprocessed artifact data",
+    ),
+    "clojure-wam-seeded-no-kernels-artifact": TargetInfo(
+        "clojure-wam-seeded-no-kernels-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with seeded helpers, no_kernels(true), and preprocessed artifact data",
+    ),
+    "clojure-wam-accumulated": TargetInfo(
+        "clojure-wam-accumulated",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers and a result-producing runner",
+    ),
+    "clojure-wam-accumulated-no-kernels": TargetInfo(
+        "clojure-wam-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers and no_kernels(true)",
+    ),
+    "clojure-wam-accumulated-artifact": TargetInfo(
+        "clojure-wam-accumulated-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers, kernels enabled, and preprocessed artifact data",
+    ),
+    "clojure-wam-accumulated-no-kernels-artifact": TargetInfo(
+        "clojure-wam-accumulated-no-kernels-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Clojure generated project with optimized accumulated helpers, no_kernels(true), and preprocessed artifact data",
+    ),
     "haskell-pure-interp": TargetInfo(
         "haskell-pure-interp",
         "hybrid-wam",
@@ -78,6 +128,11 @@ TARGETS: dict[str, TargetInfo] = {
 
 
 TARGET_SETS: dict[str, list[str]] = {
+    "termux-smoke": [
+        "prolog-accumulated",
+        "go-wam-accumulated-no-kernels",
+        "go-dfs",
+    ],
     "optimized-prolog": [
         "prolog-seeded",
         "prolog-accumulated",
@@ -87,10 +142,33 @@ TARGET_SETS: dict[str, list[str]] = {
     "hybrid-wam": [
         "wam-rust-seeded",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
+        "go-wam-accumulated-no-kernels",
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-no-kernels",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
         "haskell-pure-interp",
         "haskell-interp-ffi",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+    ],
+    "clojure-wam-scaffold": [],
+    "clojure-wam": [
+        "clojure-wam-accumulated",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
+        "clojure-wam-accumulated-no-kernels",
+    ],
+    "clojure-wam-artifact": [
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-artifact",
+        "clojure-wam-accumulated-no-kernels",
+        "clojure-wam-accumulated-no-kernels-artifact",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-artifact",
+        "clojure-wam-seeded-no-kernels",
+        "clojure-wam-seeded-no-kernels-artifact",
     ],
     "direct-pipeline": [
         "rust-dfs",
@@ -103,6 +181,7 @@ TARGET_SETS: dict[str, list[str]] = {
     "portable-default": [
         "prolog-accumulated",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
         "haskell-lowered-ffi",
         "rust-dfs",
         "go-dfs",
@@ -110,6 +189,7 @@ TARGET_SETS: dict[str, list[str]] = {
     "desktop-default": [
         "prolog-accumulated",
         "wam-rust-accumulated",
+        "go-wam-accumulated",
         "haskell-lowered-ffi",
         "rust-dfs",
         "go-dfs",
@@ -122,7 +202,7 @@ TARGET_SETS["all"] = list(TARGETS.keys())
 
 
 def default_target_set_name() -> str:
-    return "portable-default" if is_termux_environment() else "desktop-default"
+    return "termux-smoke" if is_termux_environment() else "desktop-default"
 
 
 def parse_csv(value: str) -> list[str]:

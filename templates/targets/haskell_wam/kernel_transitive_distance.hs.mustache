@@ -7,7 +7,7 @@
 -- Atoms are interned at the FFI boundary so lookups are IntMap-based
 -- (no hashing in the hot loop). The returned target is an interned
 -- Int that the executeForeign wrapper will de-intern back to an atom.
-nativeKernel_transitive_distance :: IM.IntMap [Int] -> Int -> [(Int, Int)]
+nativeKernel_transitive_distance :: EdgeLookup -> Int -> [(Int, Int)]
 nativeKernel_transitive_distance edges source =
   bfs [(source, 0)] IS.empty []
   where
@@ -16,7 +16,7 @@ nativeKernel_transitive_distance edges source =
       | IS.member node visited = bfs queue visited acc
       | otherwise =
           let visited' = IS.insert node visited
-              neighbors = IM.findWithDefault [] node edges
+              neighbors = edges node
               expanded = [(n, dist + 1) | n <- neighbors,
                                           not (IS.member n visited')]
               -- Don't emit the source itself (distance 0 is trivial)

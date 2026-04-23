@@ -29,7 +29,7 @@
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
-:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2]).
+:- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
 :- discontiguous wam_elixir_case/2.
 
@@ -97,13 +97,12 @@ wam_elixir_case(get_value,
         end').
 
 wam_elixir_case(get_structure,
-'      {:get_structure, fn_name, ai} ->
+'      {:get_structure, fn_name, arity, ai} ->
         val = Map.get(state.regs, ai)
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
             new_heap = Map.put(state.heap, addr, {:str, fn_name})
-            arity = parse_functor_arity(fn_name)
             state
             |> trail_binding(ai)
             |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
@@ -113,7 +112,7 @@ wam_elixir_case(get_structure,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, fn_name, addr)
+            step_get_structure_ref(state, fn_name, arity, addr)
           true -> :fail
         end').
 
@@ -133,7 +132,7 @@ wam_elixir_case(get_list,
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
-            step_get_structure_ref(state, "./2", addr)
+            step_get_structure_ref(state, "./2", 2, addr)
           is_list(val) ->
             %{state | stack: [{:unify_ctx, val} | state.stack], pc: state.pc + 1}
           true -> :fail
@@ -163,7 +162,7 @@ wam_elixir_case(put_value,
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_structure,
-'      {:put_structure, fn_name, ai} ->
+'      {:put_structure, fn_name, arity, ai} ->
         addr = state.heap_len
         new_heap = Map.put(state.heap, addr, {:str, fn_name})
         state
@@ -171,7 +170,7 @@ wam_elixir_case(put_structure,
         |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
         |> Map.put(:heap, new_heap)
         |> Map.put(:heap_len, addr + 1)
-        |> Map.put(:stack, [{:write_ctx, parse_functor_arity(fn_name)} | state.stack])
+        |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
         |> Map.put(:pc, state.pc + 1)').
 
 wam_elixir_case(put_list,
@@ -225,18 +224,22 @@ wam_elixir_case(unify_constant,
 % --- Control Flow Instructions ---
 
 wam_elixir_case(call,
-'      {:call, p, _n} ->
-        # Note: Interpreter mode currently only supports intra-module calls via labels.
-        # Dynamic cross-module dispatch requires the lowered emitter and WamDispatcher.
-        new_cp = state.pc + 1
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:call, target_pc, _n} when is_integer(target_pc) ->
+        %{state | pc: target_pc, cp: state.pc + 1}
+      # Fallback: unresolved string label (cross-module/orphan).
+      {:call, p, _n} when is_binary(p) ->
         case Map.get(state.labels, p) do
           nil -> :fail
-          target_pc -> %{state | pc: target_pc, cp: new_cp}
+          target_pc -> %{state | pc: target_pc, cp: state.pc + 1}
         end').
 
 wam_elixir_case(execute,
-'      {:execute, p} ->
-        # Note: Interpreter mode currently only supports intra-module calls via labels.
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:execute, target_pc} when is_integer(target_pc) ->
+        %{state | pc: target_pc}
+      # Fallback: unresolved string label.
+      {:execute, p} when is_binary(p) ->
         case Map.get(state.labels, p) do
           nil -> :fail
           target_pc -> %{state | pc: target_pc}
@@ -248,27 +251,50 @@ wam_elixir_case(proceed,
 
 wam_elixir_case(allocate,
 '      {:allocate, _n} ->
-        new_env = %{cp: state.cp, regs: %{}}
-        %{state | stack: [new_env | state.stack], pc: state.pc + 1}').
+        # Save caller\'s Y-regs in the new env so the callee can freely
+        # use Y-reg slots (ids 201-299) without clobbering the caller.
+        {y_regs_saved, base_regs} = WamRuntime.split_y_regs(state.regs)
+        new_env = %{cp: state.cp, y_regs_saved: y_regs_saved}
+        %{state | stack: [new_env | state.stack], regs: base_regs, pc: state.pc + 1}').
 
 wam_elixir_case(deallocate,
 '      :deallocate ->
         case state.stack do
-          [env | rest] -> %{state | cp: env.cp, stack: rest, pc: state.pc + 1}
+          [env | rest] ->
+            # Discard current frame\'s Y-regs and restore the caller\'s.
+            {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
+            merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
+            %{state | cp: env.cp, stack: rest, regs: merged, pc: state.pc + 1}
           _ -> %{state | pc: state.pc + 1}
         end').
 
 % --- Choice Point Instructions ---
 
 wam_elixir_case(try_me_else,
-'      {:try_me_else, label} ->
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:try_me_else, target} when is_integer(target) ->
+        cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+               cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+        %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}
+      # Fallback: unresolved string label.
+      {:try_me_else, label} when is_binary(label) ->
         target = resolve_label(state, label)
         cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
                cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
         %{state | choice_points: [cp | state.choice_points], pc: state.pc + 1}').
 
 wam_elixir_case(retry_me_else,
-'      {:retry_me_else, label} ->
+'      # Fast path: label pre-resolved at codegen to integer PC.
+      {:retry_me_else, target} when is_integer(target) ->
+        case state.choice_points do
+          [_old | rest] ->
+            cp = %{pc: target, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
+                   cp: state.cp, trail: state.trail, trail_len: state.trail_len, stack: state.stack}
+            %{state | choice_points: [cp | rest], pc: state.pc + 1}
+          _ -> %{state | pc: state.pc + 1}
+        end
+      # Fallback: unresolved string label.
+      {:retry_me_else, label} when is_binary(label) ->
         target = resolve_label(state, label)
         case state.choice_points do
           [_old | rest] ->
@@ -307,7 +333,8 @@ compile_wam_helpers_to_elixir(_Options, Code) :-
     compile_backtrack_to_elixir(BTCode),
     compile_unwind_trail_to_elixir(UnwindCode),
     compile_utility_helpers_to_elixir(UtilCode),
-    atomic_list_concat([RunCode, '\n\n', BTCode, '\n\n', UnwindCode, '\n\n', UtilCode], Code).
+    compile_aggregate_helpers_to_elixir(AggCode),
+    atomic_list_concat([RunCode, '\n\n', BTCode, '\n\n', UnwindCode, '\n\n', UtilCode, '\n\n', AggCode], Code).
 
 compile_run_loop_to_elixir(Code) :-
     format(string(Code),
@@ -321,7 +348,7 @@ compile_run_loop_to_elixir(Code) :-
           :fail ->
             case backtrack(state) do
               :fail -> :fail
-              new_state -> run(new_state)
+              {:ok, new_state} -> run(new_state)
             end
           new_state -> run(new_state)
         end
@@ -352,10 +379,35 @@ compile_backtrack_to_elixir(Code) :-
         |> Map.put(:trail_len, cp.trail_len)
         |> Map.put(:choice_points, rest)
 
-        if is_function(cp.pc) do
-          cp.pc.(state)
-        else
-          {:ok, state}
+        cond do
+          is_function(cp.pc) ->
+            # The retried clause may throw {:fail, thrown_state} (its own
+            # guards failed, with CPs accumulated during its body) or
+            # {:return, result} (it succeeded). Translate back into the
+            # {:ok, state} | :fail contract so the caller does not need to
+            # know about clause-local control flow.
+            try do
+              cp.pc.(state)
+            catch
+              {:fail, thrown_state} -> backtrack(thrown_state)
+              {:return, result} -> result
+            end
+
+          match?({:fact_stream, _, _}, cp.pc) ->
+            # Phase-B fact-stream CP: resume iteration over the remaining
+            # tail of the fact list. The snapshot already restored regs /
+            # trail / heap to their pre-unify state, so resume_fact_stream
+            # just needs to attempt the next fact.
+            {:fact_stream, remaining, arity} = cp.pc
+            try do
+              resume_fact_stream(state, remaining, arity)
+            catch
+              {:fail, thrown_state} -> backtrack(thrown_state)
+              {:return, result} -> result
+            end
+
+          true ->
+            {:ok, state}
         end
     end
   end', []).
@@ -420,6 +472,134 @@ compile_utility_helpers_to_elixir(Code) :-
     end
   end
 
+  @doc """
+  Partition a regs map into {y_regs, other_regs} by reg-id range.
+  Y-registers use ids 201..299 (see wam_elixir_utils:reg_id/2).
+  Used by allocate/deallocate to isolate Y-regs per env frame —
+  without this, recursive calls to the same predicate clobber each
+  other\'s permanents.
+  """
+  def split_y_regs(regs) do
+    Enum.reduce(regs, {%{}, %{}}, fn {k, v}, {ys, others} ->
+      if is_integer(k) and k >= 201 and k < 300 do
+        {Map.put(ys, k, v), others}
+      else
+        {ys, Map.put(others, k, v)}
+      end
+    end)
+  end
+
+  @doc """
+  Rematerialise output A-registers from the caller\'s saved unbound vars.
+  Call after run(args) and after each next_solution/1 to get correct
+  values in state.regs — during a clause the A-regs are used as scratch
+  and may hold intermediate heap refs or foreign temporaries.
+  """
+  def materialise_args(state) do
+    Enum.reduce(state.arg_vars, state, fn {i, v}, s ->
+      %{s | regs: Map.put(s.regs, i, deref_var(s, v))}
+    end)
+  end
+
+  @doc """
+  Driver-facing next-solution helper: backtracks, then rematerialises
+  the A-regs for caller-supplied unbound args. Returns {:ok, state} or
+  :fail — matches the run/1 contract.
+  """
+  def next_solution(state) do
+    case backtrack(state) do
+      {:ok, s} -> {:ok, materialise_args(s)}
+      other -> other
+    end
+  end
+
+  @doc """
+  Terminal continuation for CPS-lowered predicates. When a clause\'s
+  `proceed` opcode runs, it tail-calls the continuation stored in
+  state.cp. At the top level of a driver-initiated call, state.cp is
+  this function — `run(args)` installs it before entering the clause
+  chain. All it does is wrap the final state in the run/1 success
+  contract.
+  """
+  def terminal_cp(state), do: {:ok, state}
+
+  @doc """
+  Phase-B fact-stream entry point. Called by an `inline_data`-layout
+  predicate\'s `run/1` with the module\'s `@facts` literal. Iterates the
+  list, attempts to unify each tuple with state.regs[1..arity], and on
+  success pushes a fact-stream CP (shape `{:fact_stream, remaining,
+  arity}`) so backtracking resumes at the next tuple. Emits the driver
+  contract via state.cp — same as a CPS-lowered clause after a
+  successful head unify.
+  """
+  def stream_facts(state, facts, arity) do
+    resume_fact_stream(state, facts, arity)
+  end
+
+  @doc """
+  Resume a fact-stream scan from the current list tail. Called both from
+  `stream_facts/3` (initial call) and from `backtrack/1` (after popping
+  a fact-stream CP). Empty list → `{:fail, state}` propagates to the
+  caller; caller\'s outer catch routes to `backtrack`.
+  """
+  def resume_fact_stream(state, [], _arity), do: throw({:fail, state})
+  def resume_fact_stream(state, [tuple | rest], arity) do
+    trail_mark = state.trail_len
+    case try_unify_fact_tuple(state, tuple, 1, arity) do
+      {:ok, bound_state} ->
+        # Push a CP snapshotting PRE-unify state. On later backtrack,
+        # unwind_trail(trail_mark) rolls back any bindings we just made.
+        cp = %{
+          pc: {:fact_stream, rest, arity},
+          regs: state.regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: trail_mark,
+          stack: state.stack
+        }
+        s_with_cp = %{bound_state | choice_points: [cp | bound_state.choice_points]}
+        s_with_cp.cp.(s_with_cp)
+
+      :fail ->
+        # Partial unify may have bound regs before failing — roll back
+        # to the pre-attempt trail mark so `rest` is tried on clean state.
+        cleaned = unwind_trail(state, trail_mark)
+        resume_fact_stream(cleaned, rest, arity)
+    end
+  end
+
+  defp try_unify_fact_tuple(state, _tuple, i, arity) when i > arity, do: {:ok, state}
+  defp try_unify_fact_tuple(state, tuple, i, arity) do
+    element = elem(tuple, i - 1)
+    case element do
+      :_var ->
+        # Head was a variable — any incoming value unifies trivially.
+        try_unify_fact_tuple(state, tuple, i + 1, arity)
+
+      value ->
+        reg_val = deref_var(state, Map.get(state.regs, i))
+        case reg_val do
+          {:unbound, _} ->
+            # Caller left this arg unbound. Bind it to the fact\'s value
+            # via put_reg so the trail records it and the binding is
+            # undoable on backtrack.
+            {:unbound, id} = reg_val
+            s2 = state
+                 |> trail_binding(id)
+                 |> put_reg(id, value)
+            try_unify_fact_tuple(s2, tuple, i + 1, arity)
+
+          bound when bound == value ->
+            try_unify_fact_tuple(state, tuple, i + 1, arity)
+
+          _ ->
+            :fail
+        end
+    end
+  end
+
   @doc "Read `len` consecutive heap cells starting at `start`."
   def heap_slice(_state, _start, 0), do: []
   def heap_slice(state, start, len) when len > 0 do
@@ -448,11 +628,10 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   def deref_var(_state, val), do: val
 
-  def step_get_structure_ref(state, fn_name, addr) do
+  def step_get_structure_ref(state, fn_name, arity, addr) do
     entry = Map.get(state.heap, addr)
     cond do
       entry == {:str, fn_name} ->
-        arity = parse_functor_arity(fn_name)
         args = heap_slice(state, addr + 1, arity)
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         %{state | stack: [{:unify_ctx, args} | state.stack], pc: new_pc}
@@ -584,8 +763,15 @@ compile_utility_helpers_to_elixir(Code) :-
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         if v1 < v2, do: %{state | pc: new_pc}, else: :fail
       {"length/2", 2} ->
-        list = get_reg(state, 1)
-        len = if is_list(list), do: length(list), else: throw(:fail)
+        # length walks the list. The list may be either a native Elixir
+        # list (driver-supplied, e.g. ["Classical_mechanics"]) or a
+        # heap-built `./2` chain (produced by put_list when the
+        # compiler constructs [Mid|Visited] from a mix of reg and heap
+        # values). Mixed recursion handles both forms; the empty list
+        # terminator is either Elixir `[]` or the atom string "[]".
+        list = deref_var(state, get_reg(state, 1))
+        len = wam_list_length(state, list)
+        if len == :fail, do: throw({:fail, state})
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         case unify(state, len, get_reg(state, 2)) do
           {:ok, s} -> %{s | pc: new_pc}
@@ -630,26 +816,75 @@ compile_utility_helpers_to_elixir(Code) :-
           :success -> :fail
         end
       {"member/2", 2} ->
-        item = get_reg(state, 1)
-        list = get_reg(state, 2)
+        # member walks the list. Like length/2, handles both native
+        # Elixir lists and heap-built `./2` chains produced by put_list.
+        item = deref_var(state, get_reg(state, 1))
+        list = deref_var(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        cond do
-          is_list(list) ->
-            if item in list, do: %{state | pc: new_pc}, else: :fail
-          true -> :fail
+        if wam_list_member?(state, item, list) do
+          %{state | pc: new_pc}
+        else
+          :fail
         end
+      {"!/0", 0} ->
+        # Cut: truncate choice_points back to the barrier set at
+        # predicate entry (saved by `allocate` into state.cut_point).
+        # Preserves caller CPs while clearing CPs pushed inside this
+        # clause body.
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | choice_points: state.cut_point, pc: new_pc}
       _ -> :fail
     end
   end
 
+  defp wam_list_length(_state, []), do: 0
+  defp wam_list_length(_state, "[]"), do: 0
+  defp wam_list_length(_state, list) when is_list(list), do: length(list)
+  defp wam_list_length(state, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, "./2"} ->
+        [_h, tail] = heap_slice(state, addr + 1, 2)
+        case wam_list_length(state, deref_var(state, tail)) do
+          :fail -> :fail
+          n -> n + 1
+        end
+      _ -> :fail
+    end
+  end
+  defp wam_list_length(_state, _), do: :fail
+
+  defp wam_list_member?(_state, _item, []), do: false
+  defp wam_list_member?(_state, _item, "[]"), do: false
+  defp wam_list_member?(_state, item, list) when is_list(list), do: item in list
+  defp wam_list_member?(state, item, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, "./2"} ->
+        [h, tail] = heap_slice(state, addr + 1, 2)
+        if deref_var(state, h) == item do
+          true
+        else
+          wam_list_member?(state, item, deref_var(state, tail))
+        end
+      _ -> false
+    end
+  end
+  defp wam_list_member?(_state, _item, _), do: false
+
   defp eval_arith(_state, n) when is_number(n), do: n
   defp eval_arith(_state, n) when is_binary(n) do
-    case Float.parse(n) do
-      {f, _} -> f
-      :error ->
-        case Integer.parse(n) do
-          {i, _} -> i
-          :error -> throw({:eval_error, n})
+    # Try integer first and only accept a full-match parse — otherwise
+    # `Integer.parse("1.5")` would swallow the `1` and drop the `.5`.
+    # Fall back to float only when the integer parse leaves a remainder
+    # (i.e. the input was `"1.5"` or `"3.14e2"`), not when the number is
+    # genuinely integral like `"1"`. Previous order (Float first) turned
+    # every integer head-constant into a float the moment `is/2`
+    # touched it, breaking drivers that expected `is_integer(hops)`.
+    case Integer.parse(n) do
+      {i, ""} -> i
+      _ ->
+        case Float.parse(n) do
+          {f, ""} -> f
+          _ -> throw({:eval_error, n})
         end
     end
   end
@@ -669,6 +904,75 @@ compile_utility_helpers_to_elixir(Code) :-
   end
   defp eval_arith(state, val), do: eval_arith(state, deref_var(state, val))', []).
 
+%% compile_aggregate_helpers_to_elixir(-Code)
+%
+%  Emits the Tier-2 aggregate-frame substrate: two runtime helpers that
+%  consume aggregate-frame choice points but don\'t produce them. See
+%  docs/design/WAM_TIERED_LOWERING.md for the full plan.
+%
+%  An "aggregate frame" is a choice point with an `:agg_type` field set
+%  to one of `:findall | :bagof | :setof | :aggregate_all | :sum | :count`.
+%  Aggregate wrappers (findall/3, bagof/3, etc.) push such a CP at entry
+%  and consume it at exit, accumulating solutions in the CP\'s `:agg_accum`
+%  list. Infrastructure PR: no wrapper pushes the marker yet; these
+%  helpers are dead code until PR2 adds Tier-2 emission and a later PR
+%  adds findall/bagof/aggregate_all.
+%
+%  `in_forkable_aggregate_frame?/1` answers "may a Tier-2 fan-out emit
+%  under the current CP stack?" — true only if the nearest aggregate
+%  frame is order-independent (findall/aggregate_all). bagof/setof have
+%  witness-variable semantics that forbid naive parallelisation.
+%
+%  `merge_into_aggregate/2` takes a state and a branch-results list,
+%  locates the nearest aggregate frame, and appends the results to its
+%  accumulator. Returns the updated state.
+compile_aggregate_helpers_to_elixir(Code) :-
+    format(string(Code),
+'  @doc """
+  True if the nearest aggregate frame on the CP stack is forkable
+  (findall / aggregate_all — both order-independent). Returns false
+  for bagof/setof (witness-variable dependency) and for an empty or
+  non-aggregate-bearing CP stack.
+
+  Consumed by the Tier-2 wrapper (`par_wrap_segment/3`, PR2) as a
+  correctness gate: outside a forkable aggregate, parallel fan-out
+  would strand solutions that the sequential `next_solution/1`
+  enumeration path would otherwise surface.
+  """
+  def in_forkable_aggregate_frame?(state) do
+    Enum.any?(state.choice_points, fn cp ->
+      case Map.get(cp, :agg_type) do
+        :findall -> true
+        :aggregate_all -> true
+        _ -> false
+      end
+    end)
+  end
+
+  @doc """
+  Append branch results to the nearest aggregate frame\'s accumulator.
+  Used by the Tier-2 wrapper after `Task.async_stream` fully exhausts
+  all branches — each branch produces a list of solutions, and the
+  wrapper hands the flattened list to this function before returning
+  the updated state to the aggregate-wrapper continuation.
+
+  If no aggregate frame is present (caller misuse — Tier-2 gate should
+  have prevented this), the state is returned unchanged.
+  """
+  def merge_into_aggregate(state, branch_results) when is_list(branch_results) do
+    {updated_cps, _merged} =
+      Enum.map_reduce(state.choice_points, false, fn cp, merged ->
+        cond do
+          merged -> {cp, merged}
+          Map.has_key?(cp, :agg_type) ->
+            prior = Map.get(cp, :agg_accum, [])
+            {Map.put(cp, :agg_accum, prior ++ branch_results), true}
+          true -> {cp, merged}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end', []).
+
 % ============================================================================
 % ASSEMBLY: Combine Phase 2 + Phase 3
 % ============================================================================
@@ -677,6 +981,7 @@ compile_utility_helpers_to_elixir(Code) :-
 compile_wam_runtime_to_elixir(Options, Code) :-
     compile_step_wam_to_elixir(Options, StepCode),
     compile_wam_helpers_to_elixir(Options, HelpersCode),
+    compile_fact_source_runtime_to_elixir(FactSourceCode),
     format(string(Code),
 'defmodule WamRuntime do
   @moduledoc "WAM Virtual Machine runtime - generated by UnifyWeaver"
@@ -688,13 +993,270 @@ compile_wam_runtime_to_elixir(Options, Code) :-
     # Phase A perf: O(1) append/read/replace instead of list O(n) operations.
     defstruct pc: 1, cp: :halt, regs: %{}, heap: %{}, heap_len: 0,
               trail: [], trail_len: 0,
-              choice_points: [], stack: [], code: {}, labels: %{}
+              choice_points: [], stack: [], code: {}, labels: %{},
+              # arg_vars is the list of {reg_id, unbound_tuple} for each
+              # caller-supplied unbound arg. Set by run(args) at entry so
+              # next_solution/1 can rematerialise output regs on every
+              # solution (A-regs get clobbered as scratch during clauses).
+              arg_vars: [],
+              # cut_point is the choice_points snapshot to restore on `!`.
+              # Saved to the env frame by `allocate`; restored by
+              # `deallocate`. A cut truncates state.choice_points back to
+              # this snapshot — clearing CPs pushed inside the current
+              # predicate body without touching the caller\'s CPs.
+              cut_point: [],
+              # parallel_depth counts how many Tier-2 parallel fan-outs
+              # are currently active on this branch of the search. The
+              # Tier-2 wrapper increments it when spawning Task.async_stream
+              # children and checks > 0 to short-circuit back to
+              # sequential — prevents B^D spark explosion on recursive
+              # predicates. See docs/design/WAM_TIERED_LOWERING.md.
+              parallel_depth: 0
   end
 
 ~w
 
 ~w
-end', [StepCode, HelpersCode]).
+end
+
+~w', [StepCode, HelpersCode, FactSourceCode]).
+
+%% compile_fact_source_runtime_to_elixir(-Code)
+%  Emits the Phase-D external_source runtime: FactSource behaviour,
+%  FactSource.Tsv adaptor, and FactSourceRegistry. Generic enough
+%  that future adaptors (SQLite, ETS, hash-table artifacts, etc.)
+%  plug in by implementing the behaviour — mirrors C# query runtime\'s
+%  IRetentionAwareRelationProvider + preprocessed-artifact direction.
+compile_fact_source_runtime_to_elixir(Code) :-
+    format(string(Code),
+'defmodule WamRuntime.FactSource do
+  @moduledoc """
+  Logical access contract for fact-only predicates backed by external
+  data. TSV today; SQLite / ETS / hash-table artifacts tomorrow.
+
+  Drivers register a concrete source for a predicate before calling
+  its `run/1`. The generated `external_source` layout looks the
+  source up by predicate indicator, then dispatches through this
+  module\'s facade which forwards to the struct\'s module.
+  """
+
+  @callback open(term(), pos_integer(), term()) :: struct()
+  @callback stream_all(struct(), term()) :: Enumerable.t()
+  @callback lookup_by_arg1(struct(), term(), term()) :: Enumerable.t()
+  @callback close(struct(), term()) :: :ok
+
+  @optional_callbacks close: 2
+
+  # Struct-based dispatch so the caller doesn\'t need to know which
+  # concrete module implements the behaviour.
+  def stream_all(%module{} = handle, state), do: module.stream_all(handle, state)
+  def lookup_by_arg1(%module{} = handle, key, state), do: module.lookup_by_arg1(handle, key, state)
+  def close(%module{} = handle, state) do
+    if function_exported?(module, :close, 2), do: module.close(handle, state), else: :ok
+  end
+end
+
+defmodule WamRuntime.FactSource.Tsv do
+  @moduledoc """
+  Two-column TSV fact source. Loads the file eagerly on `open/3`,
+  caches rows as a tuple list and a first-arg index map. Later
+  adaptors may stream or memory-map; the behaviour contract does
+  not require eager retention.
+
+  Spec fields:
+    path    — path to the TSV file (required)
+    arity   — number of columns per row (required; only 2 supported)
+    header  — :skip (default) discards the first line; :none keeps it
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:path, :arity, :rows, :by_arg1]
+
+  @impl true
+  def open(%{path: path, arity: arity} = spec, _pred_arity, _state) when arity == 2 do
+    header_mode = Map.get(spec, :header, :skip)
+
+    stream = File.stream!(path)
+
+    stream =
+      case header_mode do
+        :skip -> Stream.drop(stream, 1)
+        :none -> stream
+      end
+
+    rows =
+      stream
+      |> Enum.map(fn line ->
+        [a, b] = line |> String.trim_trailing("\n") |> String.split("\t", parts: 2)
+        {a, b}
+      end)
+
+    by_arg1 =
+      rows
+      |> Enum.reverse()
+      |> Enum.reduce(%{}, fn {a, _b} = tuple, acc ->
+        Map.update(acc, a, [tuple], &[tuple | &1])
+      end)
+
+    %__MODULE__{path: path, arity: arity, rows: rows, by_arg1: by_arg1}
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{rows: rows}, _state), do: rows
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{by_arg1: idx}, key, _state) do
+    Map.get(idx, key, [])
+  end
+
+  @impl true
+  def close(_handle, _state), do: :ok
+end
+
+defmodule WamRuntime.FactSource.Ets do
+  @moduledoc """
+  ETS-table fact source. Lightweight second adaptor that proves the
+  FactSource behaviour is generic — zero external deps (ETS ships
+  with OTP) and a storage shape meaningfully different from the
+  TSV adaptor\'s list-of-tuples. The driver populates the table
+  before registering the source; the adaptor just wraps the table
+  reference and forwards lookups.
+
+  Spec fields:
+    table   — ETS table identifier or named atom (required)
+    arity   — number of columns per tuple (required; only 2 supported)
+
+  Keying convention: arg1 is the ETS key. Use a :bag table if a
+  single arg1 can map to multiple tuples (e.g. `category_parent/2`);
+  :set tables are fine for unique-key predicates.
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:table, :arity]
+
+  @impl true
+  def open(%{table: table, arity: arity}, _pred_arity, _state) when arity == 2 do
+    %__MODULE__{table: table, arity: arity}
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{table: table}, _state), do: :ets.tab2list(table)
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{table: table}, key, _state) do
+    :ets.lookup(table, key)
+  end
+
+  @impl true
+  def close(_handle, _state), do: :ok
+end
+
+defmodule WamRuntime.FactSource.Sqlite do
+  @moduledoc """
+  SQLite fact source. Disk-backed artifact adaptor — the
+  "preprocessed-artifact" shape `PREPROCESSED_PREDICATE_ARTIFACTS.md`
+  describes for the C# side, but for Elixir. Predicates too large to
+  inline can live in a .sqlite file; the runtime prepares the two
+  queries once per source and steps them per call.
+
+  **Driver must add `:exqlite` to its own mix deps** before loading
+  this generated runtime. To keep the runtime dep-free for drivers
+  that don\'t use SQLite, this module references `Exqlite.Sqlite3`
+  indirectly via `Module.concat/1`; the reference is resolved at
+  call time, so compilation does not fail if `:exqlite` is absent
+  (you just get an `UndefinedFunctionError` when the adaptor is
+  actually used).
+
+  Spec fields:
+    path          — path to the .sqlite file (required)
+    query_all     — SQL returning all rows as 2-column result set
+                    (required; e.g. "SELECT a, b FROM cp")
+    query_by_arg1 — SQL with one bound parameter returning matching
+                    rows (required; e.g. "SELECT a, b FROM cp WHERE a = ?1")
+    arity         — number of columns per tuple (required; only 2 supported)
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:db, :query_all, :query_by_arg1, :arity]
+
+  # Resolve Exqlite.Sqlite3 indirectly so the runtime still compiles
+  # when the driver hasn\'t added :exqlite. Callers who never touch
+  # this adaptor pay zero cost; callers who do get a clear
+  # UndefinedFunctionError at open/3.
+  defp sqlite3_module, do: Module.concat([Exqlite, Sqlite3])
+
+  @impl true
+  def open(%{path: path, query_all: q_all, query_by_arg1: q_by1, arity: arity},
+           _pred_arity, _state) when arity == 2 do
+    mod = sqlite3_module()
+    {:ok, db} = apply(mod, :open, [path])
+    %__MODULE__{db: db, query_all: q_all, query_by_arg1: q_by1, arity: arity}
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{db: db, query_all: q_all}, _state) do
+    mod = sqlite3_module()
+    {:ok, stmt} = apply(mod, :prepare, [db, q_all])
+    try do
+      collect_rows(mod, db, stmt, [])
+    after
+      apply(mod, :release, [db, stmt])
+    end
+  end
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{db: db, query_by_arg1: q_by1}, key, _state) do
+    mod = sqlite3_module()
+    {:ok, stmt} = apply(mod, :prepare, [db, q_by1])
+    try do
+      :ok = apply(mod, :bind, [db, stmt, [key]])
+      collect_rows(mod, db, stmt, [])
+    after
+      apply(mod, :release, [db, stmt])
+    end
+  end
+
+  @impl true
+  def close(%__MODULE__{db: db}, _state) do
+    apply(sqlite3_module(), :close, [db])
+    :ok
+  end
+
+  defp collect_rows(mod, db, stmt, acc) do
+    case apply(mod, :step, [db, stmt]) do
+      :done -> Enum.reverse(acc)
+      {:row, row} -> collect_rows(mod, db, stmt, [List.to_tuple(row) | acc])
+      _other -> Enum.reverse(acc)
+    end
+  end
+end
+
+defmodule WamRuntime.FactSourceRegistry do
+  @moduledoc """
+  Predicate-indicator → source-handle map. Uses :persistent_term so
+  lookups are O(1) and lock-free from any process.
+  """
+
+  def register(pred_indicator, source) when is_binary(pred_indicator) do
+    :persistent_term.put({__MODULE__, pred_indicator}, source)
+  end
+
+  def lookup(pred_indicator) when is_binary(pred_indicator) do
+    :persistent_term.get({__MODULE__, pred_indicator}, nil)
+  end
+
+  def lookup!(pred_indicator) do
+    case lookup(pred_indicator) do
+      nil ->
+        raise "No FactSource registered for #{pred_indicator}. " <>
+              "Call WamRuntime.FactSourceRegistry.register/2 before calling Pred.run/1."
+
+      source ->
+        source
+    end
+  end
+
+  def unregister(pred_indicator) do
+    :persistent_term.erase({__MODULE__, pred_indicator})
+  end
+end', []).
 
 % ============================================================================
 % PREDICATE WRAPPER
@@ -721,114 +1283,172 @@ compile_wam_predicate_to_elixir(Pred/Arity, WamCode, _Options, Code) :-
 
   def run(args) do
     state = %WamRuntime.WamState{code: code(), labels: labels(), pc: 1}
-    state = Enum.with_index(args, 1)
-    |> Enum.reduce(state, fn {arg, i}, s ->
-      %{s | regs: Map.put(s.regs, i, arg)}
+    # Rewrite caller unbounds to fresh refs + track them in state.arg_vars
+    # (see lowered emitter run(args) for the full rationale).
+    {state, arg_vars} = Enum.with_index(args, 1)
+    |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+      case arg do
+        {:unbound, _} ->
+          v = {:unbound, make_ref()}
+          {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+        other ->
+          {%{s | regs: Map.put(s.regs, i, other)}, vars}
+      end
     end)
-    WamRuntime.run(state)
+    state = %{state | arg_vars: arg_vars}
+    case WamRuntime.run(state) do
+      {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+      other -> other
+    end
   end
 end', [PredStr, PredStr, Arity, InstrLiterals, LabelLiterals]).
 
 %% wam_code_to_elixir_instructions(+WamCodeStr, -InstrLiterals, -LabelLiterals)
+%  Two-pass: pass 1 collects labels → PC map; pass 2 emits instructions
+%  with label references pre-resolved to integer PCs where possible.
 wam_code_to_elixir_instructions(WamCode, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_elixir(Lines, 1, InstrParts, LabelParts),
+    collect_labels_pass(Lines, 1, LabelsList),
+    wam_lines_to_elixir(Lines, 1, LabelsList, InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, ', ', LabelLiterals).
 
-wam_lines_to_elixir([], _, [], []).
-wam_lines_to_elixir([Line|Rest], PC, Instrs, Labels) :-
+%% collect_labels_pass(+Lines, +StartPC, -LabelsList)
+%  Returns a list of LabelName-PC pairs (strings and integers).
+collect_labels_pass([], _, []).
+collect_labels_pass([Line|Rest], PC, Labels) :-
+    split_string(Line, " \t,", " \t,", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == [] -> collect_labels_pass(Rest, PC, Labels)
+    ;   CleanParts = [First|_], is_label_part(First)
+    ->  sub_string(First, 0, _, 1, LabelName),
+        Labels = [LabelName-PC | RestLabels],
+        collect_labels_pass(Rest, PC, RestLabels)
+    ;   NPC is PC + 1,
+        collect_labels_pass(Rest, NPC, Labels)
+    ).
+
+wam_lines_to_elixir([], _, _, [], []).
+wam_lines_to_elixir([Line|Rest], PC, LabelsList, Instrs, Labels) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
     (   CleanParts == []
-    ->  wam_lines_to_elixir(Rest, PC, Instrs, Labels)
+    ->  wam_lines_to_elixir(Rest, PC, LabelsList, Instrs, Labels)
     ;   CleanParts = [First|_],
         (   is_label_part(First)
         ->  sub_string(First, 0, _, 1, LabelName),
             format(string(LabelInsert), '"~w" => ~w', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
-            wam_lines_to_elixir(Rest, PC, Instrs, RestLabels)
-        ;   wam_line_to_elixir_instr(CleanParts, ElixirInstr),
+            wam_lines_to_elixir(Rest, PC, LabelsList, Instrs, RestLabels)
+        ;   wam_line_to_elixir_instr(CleanParts, LabelsList, ElixirInstr),
             format(string(InstrEntry), '      ~w,', [ElixirInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
-            wam_lines_to_elixir(Rest, NPC, RestInstrs, Labels)
+            wam_lines_to_elixir(Rest, NPC, LabelsList, RestInstrs, Labels)
         )
     ).
 
-wam_line_to_elixir_instr(["try_me_else", L], Instr) :-
+%% resolve_label(+LabelStr, +LabelsList, -Resolved)
+%  Finds the PC for LabelStr in LabelsList. On hit, Resolved is an integer.
+%  On miss (cross-module / orphan), Resolved is the original string — the
+%  runtime path through state.labels handles those.
+resolve_label(LabelStr, LabelsList, Resolved) :-
+    (   member(LabelStr-PC, LabelsList)
+    ->  Resolved = PC
+    ;   Resolved = LabelStr
+    ).
+
+wam_line_to_elixir_instr(["try_me_else", L], LabelsList, Instr) :-
     clean_comma(L, CL),
-    format(string(Instr), '{:try_me_else, "~w"}', [CL]).
-wam_line_to_elixir_instr(["retry_me_else", L], Instr) :-
+    resolve_label(CL, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:try_me_else, ~w}', [R])
+    ;   format(string(Instr), '{:try_me_else, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["retry_me_else", L], LabelsList, Instr) :-
     clean_comma(L, CL),
-    format(string(Instr), '{:retry_me_else, "~w"}', [CL]).
-wam_line_to_elixir_instr(["trust_me"], ':trust_me').
-wam_line_to_elixir_instr(["put_structure", F, Ai], Instr) :-
+    resolve_label(CL, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:retry_me_else, ~w}', [R])
+    ;   format(string(Instr), '{:retry_me_else, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["trust_me"], _, ':trust_me').
+wam_line_to_elixir_instr(["put_structure", F, Ai], _, Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:put_structure, "~w", ~w}', [CF, AiId]).
-wam_line_to_elixir_instr(["get_structure", F, Ai], Instr) :-
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:put_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
+wam_line_to_elixir_instr(["get_structure", F, Ai], _, Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi), reg_id(CAi, AiId),
-    format(string(Instr), '{:get_structure, "~w", ~w}', [CF, AiId]).
-wam_line_to_elixir_instr(["unify_variable", Xn], Instr) :-
+    parse_arity(CF, Arity),
+    format(string(Instr), '{:get_structure, "~w", ~w, ~w}', [CF, Arity, AiId]).
+wam_line_to_elixir_instr(["unify_variable", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:unify_variable, ~w}', [XnId]).
-wam_line_to_elixir_instr(["unify_value", Xn], Instr) :-
+wam_line_to_elixir_instr(["unify_value", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:unify_value, ~w}', [XnId]).
-wam_line_to_elixir_instr(["unify_constant", C], Instr) :-
+wam_line_to_elixir_instr(["unify_constant", C], _, Instr) :-
     clean_comma(C, CC),
     format(string(Instr), '{:unify_constant, "~w"}', [CC]).
-wam_line_to_elixir_instr(["set_variable", Xn], Instr) :-
+wam_line_to_elixir_instr(["set_variable", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:set_variable, ~w}', [XnId]).
-wam_line_to_elixir_instr(["set_value", Xn], Instr) :-
+wam_line_to_elixir_instr(["set_value", Xn], _, Instr) :-
     clean_comma(Xn, CXn), reg_id(CXn, XnId),
     format(string(Instr), '{:set_value, ~w}', [XnId]).
-wam_line_to_elixir_instr(["set_constant", C], Instr) :-
+wam_line_to_elixir_instr(["set_constant", C], _, Instr) :-
     clean_comma(C, CC),
     format(string(Instr), '{:set_constant, "~w"}', [CC]).
-wam_line_to_elixir_instr(["get_constant", C, Ai], Instr) :-
+wam_line_to_elixir_instr(["get_constant", C, Ai], _, Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:get_constant, "~w", ~w}', [CC, AiId]).
-wam_line_to_elixir_instr(["get_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["get_variable", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_variable, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["get_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["get_value", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:get_value, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["put_constant", C, Ai], Instr) :-
+wam_line_to_elixir_instr(["put_constant", C, Ai], _, Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi), reg_id(CAi, AiId),
     format(string(Instr), '{:put_constant, "~w", ~w}', [CC, AiId]).
-wam_line_to_elixir_instr(["put_variable", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["put_variable", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_variable, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["put_value", Xn, Ai], Instr) :-
-    clean_comma(Xn, CXn), clean_comma(Ai, CAi), 
+wam_line_to_elixir_instr(["put_value", Xn, Ai], _, Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     reg_id(CXn, XnId), reg_id(CAi, AiId),
     format(string(Instr), '{:put_value, ~w, ~w}', [XnId, AiId]).
-wam_line_to_elixir_instr(["proceed"], ':proceed').
-wam_line_to_elixir_instr(["call", P, N], Instr) :-
+wam_line_to_elixir_instr(["proceed"], _, ':proceed').
+wam_line_to_elixir_instr(["call", P, N], LabelsList, Instr) :-
     clean_comma(P, CP), clean_comma(N, CN),
-    format(string(Instr), '{:call, "~w", ~w}', [CP, CN]).
-wam_line_to_elixir_instr(["execute", P], Instr) :-
+    resolve_label(CP, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:call, ~w, ~w}', [R, CN])
+    ;   format(string(Instr), '{:call, "~w", ~w}', [R, CN])
+    ).
+wam_line_to_elixir_instr(["execute", P], LabelsList, Instr) :-
     clean_comma(P, CP),
-    format(string(Instr), '{:execute, "~w"}', [CP]).
-wam_line_to_elixir_instr(["allocate", N], Instr) :-
+    resolve_label(CP, LabelsList, R),
+    (   integer(R)
+    ->  format(string(Instr), '{:execute, ~w}', [R])
+    ;   format(string(Instr), '{:execute, "~w"}', [R])
+    ).
+wam_line_to_elixir_instr(["allocate", N], _, Instr) :-
     clean_comma(N, CN),
     format(string(Instr), '{:allocate, ~w}', [CN]).
-wam_line_to_elixir_instr(["deallocate"], ':deallocate').
-wam_line_to_elixir_instr(["builtin_call", Op, Ar], Instr) :-
+wam_line_to_elixir_instr(["deallocate"], _, ':deallocate').
+wam_line_to_elixir_instr(["builtin_call", Op, Ar], _, Instr) :-
     clean_comma(Op, COp), clean_comma(Ar, CAr),
     (   sub_atom(COp, 0, 1, _, '\\') % Handle \+ / 1
     ->  sub_atom(COp, 1, _, 0, Rest),
         format(string(Instr), '{:builtin_call, "\\\\~w", ~w}', [Rest, CAr])
     ;   format(string(Instr), '{:builtin_call, "~w", ~w}', [COp, CAr])
     ).
-wam_line_to_elixir_instr(Parts, Instr) :-
+wam_line_to_elixir_instr(Parts, _, Instr) :-
     atomic_list_concat(Parts, ' ', Combined),
     format(string(Instr), '{:raw, "~w"}', [Combined]).
 
@@ -909,5 +1529,15 @@ generate_elixir_dispatcher(Predicates, Options, Code) :-
   @moduledoc "Global dispatcher for dynamic WAM calls"
 
 ~w
-  def call(pred, _state), do: throw({:undefined_predicate, pred})
+  # Fallback: meta-calls (e.g. \\+ Goal) may target builtins whose
+  # module the compiler didn\'t register. Try the builtin table before
+  # declaring the predicate undefined.
+  def call(pred, state) do
+    arity = WamRuntime.parse_functor_arity(pred)
+    case WamRuntime.execute_builtin(state, pred, arity) do
+      :fail -> :fail
+      new_state when is_map(new_state) -> {:ok, new_state}
+      _ -> throw({:undefined_predicate, pred})
+    end
+  end
 end', [CasesStr]).
