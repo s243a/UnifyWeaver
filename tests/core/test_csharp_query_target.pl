@@ -234,6 +234,7 @@ test_csharp_query_target :-
         verify_join_ordering_rowcount_over_constargs_plan,
         verify_join_ordering_rowcount_over_connectivity_plan,
         verify_selection_plan,
+        verify_single_plan_codegen_avoids_duplicate_fact_population,
         verify_ground_relation_arg_plan,
         verify_multi_constant_pattern_scan_plan,
         verify_multi_constant_pattern_scan_pushdown_plan,
@@ -460,6 +461,7 @@ test_csharp_query_target :-
         verify_json_dynamic_source_plan,
         verify_json_nested_source_plan,
         verify_json_jsonpath_source_plan,
+        verify_json_jsonpath_source_avoids_configured_binary_relation,
         verify_json_schema_source_plan,
         verify_json_nested_schema_record_plan,
         verify_json_jsonl_source_plan,
@@ -1739,6 +1741,14 @@ verify_selection_plan :-
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_single_plan_codegen_avoids_duplicate_fact_population :-
+    csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    count_substring(Source, 'memoryProvider.AddFact(new PredicateId("test_fact", 2), "alice", "bob");', 1),
+    count_substring(Source, 'memoryProvider.AddFact(new PredicateId("test_fact", 2), "bob", "charlie");', 1),
+    count_substring(Source, 'var configuredProvider = BuildProvider();', 1),
+    count_substring(Source, 'return (configuredProvider.Provider, CachedPlan.Value);', 1).
 
 verify_ground_relation_arg_plan :-
     csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query)], Plan),
@@ -6226,6 +6236,19 @@ verify_json_jsonpath_source_plan_ :-
         'Charlie,Keyboard'
     ]).
 
+verify_json_jsonpath_source_avoids_configured_binary_relation :-
+    setup_call_cleanup(
+        setup_json_jsonpath_source,
+        verify_json_jsonpath_source_avoids_configured_binary_relation_(),
+        cleanup_json_jsonpath_source
+    ).
+
+verify_json_jsonpath_source_avoids_configured_binary_relation_ :-
+    csharp_query_target:build_query_plan(test_jsonpath_projection/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonColumnSelectorKind.JsonPath'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterBinaryRelation(').
+
 verify_json_schema_source_plan :-
     setup_call_cleanup(
         setup_json_schema_source,
@@ -8497,6 +8520,20 @@ to_atom(Value, Atom) :-
     (   atom(Value) -> Atom = Value
     ;   string(Value) -> atom_string(Atom, Value)
     ;   term_to_atom(Atom, Value)
+    ).
+
+count_substring(String, Needle, Count) :-
+    count_substring_(String, Needle, 0, Count).
+
+count_substring_(String, Needle, Acc, Count) :-
+    (   sub_string(String, Before, _, _, Needle)
+    ->  Needle \== "",
+        string_length(Needle, NeedleLen),
+        Start is Before + NeedleLen,
+        sub_string(String, Start, _, 0, Rest),
+        Acc1 is Acc + 1,
+        count_substring_(Rest, Needle, Acc1, Count)
+    ;   Count = Acc
     ).
 
 %% Option handling ---------------------------------------------------------
