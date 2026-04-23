@@ -2446,6 +2446,14 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % Determine map backend: HashMap (faster) or Map (default fallback)
     option(use_hashmap(UseHM), Options, true),
 
+    % Phase B1: split external_source (LMDB-backed) predicates from
+    % internal ones. External_source preds have no clauses-at-compile-
+    % time to inspect — their data lives in the database — so they
+    % must bypass kernel detection, lowering, PC computation, and WAM
+    % compilation. They still appear in `Predicates` so
+    % compile_predicates_to_haskell emits a skip-comment for each.
+    partition(pred_is_external_source(Options), Predicates, _ExternalPreds, InternalPreds),
+
     % Detect recursive kernels in the predicate list. Detected kernels
     % are handled by the FFI (executeForeign) at runtime and are excluded
     % from generic lowering. The detected kernel list is used to auto-
@@ -2455,7 +2463,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     (   option(no_kernels(true), Options)
     ->  DetectedKernels = [],
         format(user_error, '[WAM-Haskell] kernel detection suppressed~n', [])
-    ;   detect_kernels(Predicates, DetectedKernels),
+    ;   detect_kernels(InternalPreds, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-Haskell] detected kernels: ~w~n', [DetectedKeys])
@@ -2466,7 +2474,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % Resolve emit_mode and partition predicates. Detected kernels are
     % explicitly excluded from lowering (they use FFI via CallForeign).
     wam_haskell_resolve_emit_mode(Options, EmitMode),
-    wam_haskell_partition_predicates(EmitMode, Predicates, DetectedKernels, InterpretedList, LoweredList),
+    wam_haskell_partition_predicates(EmitMode, InternalPreds, DetectedKernels, InterpretedList, LoweredList),
     length(InterpretedList, NInterp),
     length(LoweredList, NLower),
     format(user_error,
@@ -2501,7 +2509,7 @@ write_wam_haskell_project(Predicates, Options, ProjectDir) :-
     % We first compute global base PCs matching the merged instruction
     % array so the lowered functions' PC references (wsCP for Call return
     % addresses, wsPC for step calls) are correct.
-    compute_base_pcs(Predicates, BasePCMap),
+    compute_base_pcs(InternalPreds, BasePCMap),
     lower_all(LoweredList, BasePCMap, DetectedKernels, LoweredEntries),
     generate_lowered_hs(LoweredEntries, LoweredCode0),
     apply_hashmap_rewrite(UseHM, generic, LoweredCode0, LoweredCode),
@@ -3479,11 +3487,58 @@ allLabels = Map.fromList
     ]
 ~w', [ShapeBlock, InstrCode, LabelCode, InlineBlock]).
 
+%% use_external_source(+Pred/Arity, +Options)
+%  True when this predicate's data lives in an external store (LMDB)
+%  rather than compiled WAM code. Default allow-list is [category_parent/2]
+%  because the LMDB ingestion wiring in generate_lmdb_wiring/4 is
+%  hardcoded to that predicate. Override with option
+%  lmdb_backed_facts([P1/A1, P2/A2, ...]) when additional predicates
+%  are also LMDB-ingested.
+use_external_source(Pred/Arity, Options) :-
+    option(use_lmdb(true), Options),
+    option(lmdb_backed_facts(LmdbPreds), Options, [category_parent/2]),
+    memberchk(Pred/Arity, LmdbPreds).
+
+%% pred_is_external_source(+Options, +PredIndicator)
+%  partition/4 adapter for use_external_source/2. Accepts either
+%  Module:Pred/Arity or Pred/Arity form.
+pred_is_external_source(Options, PredIndicator) :-
+    (   PredIndicator = _Module:Pred/Arity -> true
+    ;   PredIndicator = Pred/Arity
+    ),
+    use_external_source(Pred/Arity, Options).
+
 compile_predicates_merged([], _, _, [], [], [], []).
 compile_predicates_merged([PredIndicator|Rest], StartPC, Options, AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
     (   PredIndicator = _Module:Pred/Arity -> true
     ;   PredIndicator = Pred/Arity
     ),
+    % Phase B1 optimization: predicates whose data lives in an external
+    % store (LMDB) are resolved at runtime via wcEdgeLookups, so the
+    % WAM bytecode for each fact is dead weight. Skip compilation
+    % entirely for those.
+    (   use_external_source(Pred/Arity, Options)
+    ->  format(user_error,
+               '  ~w/~w: external_source — skipping WAM compilation (LMDB-backed)~n',
+               [Pred, Arity]),
+        format(string(Comment),
+               '-- ~w/~w: fact_only=true, layout=external_source (data in LMDB)',
+               [Pred, Arity]),
+        InstrExprs = [],
+        LabelExprs = [],
+        InlineDefs = [],
+        NextPC = StartPC,
+        compile_predicates_merged(Rest, NextPC, Options, RestInstrs, RestLabels, RestComments, RestInlineDefs),
+        append(InstrExprs, RestInstrs, AllInstrs),
+        append(LabelExprs, RestLabels, AllLabels),
+        AllComments = [Comment | RestComments],
+        append(InlineDefs, RestInlineDefs, AllInlineDefs)
+    ;   compile_predicates_merged_normal(PredIndicator, Pred, Arity, Rest, StartPC, Options,
+                                         AllInstrs, AllLabels, AllComments, AllInlineDefs)
+    ).
+
+compile_predicates_merged_normal(PredIndicator, Pred, Arity, Rest, StartPC, Options,
+                                 AllInstrs, AllLabels, AllComments, AllInlineDefs) :-
     wam_target:compile_predicate_to_wam(PredIndicator, [], WamCode),
     format(user_error, '  ~w/~w: compiled to WAM (PC=~w)~n', [Pred, Arity, StartPC]),
     atom_string(WamCode, WamStr),
