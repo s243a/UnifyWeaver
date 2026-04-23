@@ -1,59 +1,72 @@
--- | Phase B1: Create a FactSource backed by an LMDB database.
--- Uses lmdb-simple View for pure concurrent reads compatible with parMap.
--- The View is a consistent snapshot — all lookups see the same database
--- state. Reads are zero-copy from mmap'd pages (LMDB uses mmap internally).
+-- | Phase B1: Raw LMDB backend with packed binary Int32 values.
+-- Zero-copy reads: mdb_get' returns a pointer directly into the mmap'd
+-- region. Values are arrays of Int32 read via peekElemOff — no CBOR,
+-- no deserialization, no allocation per lookup.
 --
--- Key schema: Int (interned arg1)
--- Value schema: [Int] (list of interned arg2 values for that arg1)
--- One named LMDB database per predicate.
+-- Key schema: Int32 (interned atom ID, native byte order via MDB_INTEGERKEY)
+-- Value schema: packed [Int32] (array of interned arg2 values)
+
+-- | Open an LMDB environment and database handle for edge lookups.
+openLmdbEdgeStore :: FilePath -> IO (MDB_env, MDB_dbi')
+openLmdbEdgeStore path = do
+    env <- mdb_env_create
+    mdb_env_set_mapsize env (1024 * 1024 * 1024)  -- 1 GB
+    mdb_env_set_maxdbs env 1
+    mdb_env_set_maxreaders env 126
+    mdb_env_open env path []
+    txn <- mdb_txn_begin env Nothing False
+    dbi <- mdb_dbi_open' txn Nothing [MDB_CREATE, MDB_INTEGERKEY]
+    mdb_txn_commit txn
+    return (env, dbi)
+
+-- | Create an EdgeLookup backed by raw LMDB (zero-copy mmap reads).
+-- Uses a single long-lived read-only transaction opened at startup.
+-- The pointer from mdb_get' points directly into the mmap'd region
+-- and stays valid for the lifetime of the transaction. For a read-only
+-- database (facts don't change during queries), this is safe and
+-- eliminates per-lookup transaction overhead entirely.
+lmdbRawEdgeLookup :: MDB_txn -> MDB_dbi' -> EdgeLookup
+lmdbRawEdgeLookup txn dbi key = unsafePerformIO $
+    allocaBytes 4 $ \kp -> do
+      poke (castPtr kp :: Ptr Int32) (fromIntegral key :: Int32)
+      let kv = MDB_val 4 kp
+      result <- mdb_get' txn dbi kv
+      case result of
+        Nothing -> return []
+        Just (MDB_val sz ptr) -> do
+          let count = fromIntegral sz `div` 4
+          mapM (\i -> fromIntegral <$> (peekElemOff (castPtr ptr :: Ptr Int32) i)) [0..count-1]
+
+-- | Convenience: open LMDB and return an EdgeLookup with a long-lived
+-- read transaction. The transaction (and thus the mmap snapshot) stays
+-- open for the process lifetime. This is correct because the fact
+-- database is read-only during queries.
+openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
+openLmdbEdgeLookup dbPath _dbName = do
+    (env, dbi) <- openLmdbEdgeStore dbPath
+    txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
+    return (lmdbRawEdgeLookup txn dbi)
+
+-- | Create a FactSource backed by raw LMDB.
+-- fsScan is not implemented for raw LMDB (use IntMap path for scan).
+-- fsLookupArg1 uses the zero-copy EdgeLookup.
 lmdbFactSource :: FilePath -> String -> IO FactSource
-lmdbFactSource dbPath dbName = do
-    env <- openReadOnlyEnvironment dbPath defaultLimits
-             { mapSize = 1073741824, maxDatabases = 16, maxReaders = 126 }
-    db <- readOnlyTransaction env $
-      getDatabase (Just dbName) :: IO (Database Int [Int])
-    -- View snapshot: pure interface backed by a read-only LMDB transaction.
-    -- All View.lookup calls see the same consistent snapshot.
-    let scan = readOnlyTransaction env $ toList db
-        lookupArg1 key = readOnlyTransaction env $ do
-          mval <- get db key
-          return $ case mval of
-            Just vs -> [(key, v) | v <- vs]
-            Nothing -> []
+lmdbFactSource dbPath _dbName = do
+    (env, dbi) <- openLmdbEdgeStore dbPath
+    txn <- mdb_txn_begin env Nothing True  -- long-lived read txn
+    let lookup' = lmdbRawEdgeLookup txn dbi
     return FactSource
-      { fsScan       = scan >>= \pairs ->
-                         return $ concatMap (\(k, vs) -> [(k, v) | v <- vs]) pairs
-      , fsLookupArg1 = lookupArg1
-      , fsClose      = return ()  -- GC handles env cleanup
+      { fsScan       = return []  -- not supported for raw LMDB; use IntMap
+      , fsLookupArg1 = \key -> return $ map (\v -> (key, v)) (lookup' key)
+      , fsClose      = mdb_txn_abort txn >> mdb_env_close env
       }
 
--- | Phase B1: Create an EdgeLookup backed by LMDB (on-demand reads).
--- Each lookup does a readOnlyTransaction — MVCC safe for concurrent readers.
--- The mmap'd pages are loaded on demand by the OS; no eager materialization.
-lmdbEdgeLookup :: Environment ReadOnly -> Database Int [Int] -> EdgeLookup
-lmdbEdgeLookup env db key = unsafePerformIO $ readOnlyTransaction env $ do
-    mval <- get db key
-    return $ case mval of
-      Just vs -> vs
-      Nothing -> []
-
--- | Phase B1: Open an LMDB database and return an EdgeLookup.
--- Convenience wrapper that combines openReadOnlyEnvironment + getDatabase.
-openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
-openLmdbEdgeLookup dbPath dbName = do
-    env <- openReadOnlyEnvironment dbPath defaultLimits
-             { mapSize = 1073741824, maxDatabases = 16, maxReaders = 126 }
-    db <- readOnlyTransaction env $
-      getDatabase (Just dbName) :: IO (Database Int [Int])
-    return (lmdbEdgeLookup env db)
-
--- | Phase B1: Ingest a TSV file into an LMDB database.
--- Reads the TSV, interns atoms, groups by arg1, and writes to LMDB.
--- Called once during preprocessing, not at query time.
+-- | Ingest a TSV file into an LMDB database with packed binary values.
+-- Keys are sorted for MDB_APPEND (fast bulk insert).
 ingestTsvToLmdb :: InternTable -> FilePath -> FilePath -> String -> IO ()
-ingestTsvToLmdb tbl tsvPath dbPath dbName = do
+ingestTsvToLmdb tbl tsvPath dbPath _dbName = do
     content <- readFile tsvPath
-    let ls = drop 1 (lines content)  -- skip header
+    let ls = drop 1 (lines content)
         pairs = [ (internAtomPure tbl a, internAtomPure tbl b)
                 | l <- ls, not (null l)
                 , let (a, rest) = break (== '\t') l
@@ -61,10 +74,20 @@ ingestTsvToLmdb tbl tsvPath dbPath dbName = do
                 , let b = drop 1 rest
                 , not (null b)
                 ]
-        grouped = IM.fromListWith (++) [(k, [v]) | (k, v) <- pairs]
-    env <- openEnvironment dbPath defaultLimits
-             { mapSize = 1073741824, maxDatabases = 16 }
-    readWriteTransaction env $ do
-      db <- getDatabase (Just dbName) :: Transaction ReadWrite (Database Int [Int])
-      mapM_ (\(k, vs) -> put db k (Just vs)) (IM.toList grouped)
+        -- Group by arg1 and sort by key for MDB_APPEND
+        grouped = IM.toAscList $ IM.fromListWith (++) [(k, [v]) | (k, v) <- pairs]
+    (env, dbi) <- openLmdbEdgeStore dbPath
+    runInBoundThread $ do
+      txn <- mdb_txn_begin env Nothing False
+      let wflags = compileWriteFlags [MDB_APPEND]
+      forM_ grouped $ \(key, vals) ->
+        allocaBytes 4 $ \kp -> do
+          poke (castPtr kp :: Ptr Int32) (fromIntegral key :: Int32)
+          let kv = MDB_val 4 kp
+          let int32vals = map fromIntegral vals :: [Int32]
+          withArray int32vals $ \vp -> do
+            let vv = MDB_val (fromIntegral $ length int32vals * 4) (castPtr vp)
+            _ <- mdb_put' wflags txn dbi kv vv
+            return ()
+      mdb_txn_commit txn
     return ()
