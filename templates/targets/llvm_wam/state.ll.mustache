@@ -280,6 +280,107 @@ define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
   ret i32 %hs
 }
 
+; Load / store a heap slot by absolute index. Used by the Ref-aware
+; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
+; that put_variable uses as shared storage for aliased registers.
+define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
+  %v = load %Value, %Value* %slot
+  ret %Value %v
+}
+
+define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) {
+  %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %heap_arr = load %Value*, %Value** %heap_arr_ptr
+  %slot = getelementptr %Value, %Value* %heap_arr, i32 %addr
+  store %Value %val, %Value* %slot
+  ret void
+}
+
+; Follow a Ref chain to a terminal non-Ref value. If V is Ref{addr},
+; load heap[addr] and continue until we reach a non-Ref. Returns the
+; terminal value (unbound sentinel if the chain ends on an unbound
+; heap cell — lets `value_is_unbound` fire downstream). Bounded by 64
+; hops as a safety guard against malformed chains; if the limit is
+; exceeded, returns the last seen cell.
+define %Value @wam_deref_value(%WamState* %vm, %Value %v) {
+entry:
+  br label %loop
+loop:
+  %cur = phi %Value [ %v, %entry ], [ %next, %follow ]
+  %i = phi i32 [ 0, %entry ], [ %i_next, %follow ]
+  %tag = extractvalue %Value %cur, 0
+  %is_ref = icmp eq i32 %tag, 5
+  %hop_ok = icmp slt i32 %i, 64
+  %cont = and i1 %is_ref, %hop_ok
+  br i1 %cont, label %follow, label %done
+follow:
+  %addr_i64 = extractvalue %Value %cur, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %next = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  %i_next = add i32 %i, 1
+  br label %loop
+done:
+  ret %Value %cur
+}
+
+; Read a register's value with full Ref-dereferencing. Used by binding
+; sites that want to inspect "is this logically unbound?" — a Ref to
+; an unbound heap cell reads back as the Unbound sentinel here.
+define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
+  %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
+  ret %Value %d
+}
+
+; Bind a register to a value. If the register currently holds a Ref
+; (put_variable aliasing), write through to the referenced heap cell
+; AND record a trail entry so a subsequent backtrack unwinds the
+; binding. Caller is expected to have already trailed the register
+; slot itself (via wam_trail_binding) for the case where we write
+; directly to the reg. No Ref-chain following — put_variable creates
+; depth-1 Refs, and more exotic chains would also require the
+; structural-unify path to produce them.
+define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) {
+entry:
+  %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %tag = extractvalue %Value %cur, 0
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %heap_bind, label %reg_bind
+heap_bind:
+  %addr_i64 = extractvalue %Value %cur, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
+  call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val)
+  ret void
+reg_bind:
+  call void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val)
+  ret void
+}
+
+; Trail a heap-cell binding. Uses the high bit (0x40000000) of the
+; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
+; register indices (which are always 0-63). unwind_trail reads that
+; bit to pick reg_set vs heap_set on restore.
+define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) {
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_ptr
+  %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
+  %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
+  %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
+  %idx_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 0
+  %encoded = or i32 %addr, 1073741824
+  store i32 %encoded, i32* %idx_ptr
+  %val_ptr = getelementptr %TrailEntry, %TrailEntry* %entry_ptr, i32 0, i32 1
+  store %Value %old_val, %Value* %val_ptr
+  %new_ts = add i32 %ts, 1
+  store i32 %new_ts, i32* %ts_ptr
+  ret void
+}
+
 ; Set halted flag
 define void @wam_set_halted(%WamState* %vm, i1 %val) {
   %h_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 19

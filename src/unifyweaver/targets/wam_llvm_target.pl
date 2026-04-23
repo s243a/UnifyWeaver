@@ -2927,7 +2927,8 @@ pl.check:
 
 builtin_unify:
   ; =/2: unify A1 with A2. If either is unbound, bind it to the other.
-  ; If both are bound, check structural equality.
+  ; If both are bound, check structural equality (value_equals walks
+  ; compounds recursively).
   %uf.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %uf.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %uf.a1_unb = call i1 @value_is_unbound(%Value %uf.a1)
