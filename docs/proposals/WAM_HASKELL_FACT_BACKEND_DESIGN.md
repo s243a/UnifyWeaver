@@ -319,11 +319,33 @@ The AVE index gives O(log n) lookup by arg1.
 This is future work — the immediate priority is MmapFactSource and
 SqliteFactSource.
 
+## Why not LiteDB or bbolt?
+
+Other UnifyWeaver targets use LiteDB (C#) and bbolt (Go) as embedded
+databases. These are not viable for the Haskell target because they are
+tightly coupled to their host language runtimes — LiteDB is a .NET
+library with no C API, and bbolt is a Go library with no C API. There
+are no Haskell bindings for either, and FFI bridging to .NET or Go
+runtimes is impractical.
+
+The Haskell equivalents that fill the same niches:
+
+| C#/Go choice | Haskell equivalent | Why |
+|---|---|---|
+| LiteDB (C#, NoSQL) | **LMDB** (C lib, key-value, mmap-backed) | C FFI, zero-copy reads, parallelism-safe |
+| bbolt (Go, key-value) | **LMDB** or **RocksDB** (C libs) | Both have Haskell bindings via C FFI |
+
+LMDB is particularly interesting as a middle ground between raw mmap
+and SQLite: it is mmap-backed internally, supports concurrent readers
+with zero locking (MVCC), and has mature Haskell bindings
+(`lmdb-simple`). These are candidates for Phase B3 or later.
+
 ## Other backends to consider
 
 | Backend | Ecosystem | Use case | Priority |
 |---------|-----------|----------|----------|
-| **RocksDB/LMDB** | C/C++ via FFI | Sorted key-value, range scans | Medium — when range predicates matter |
+| **LMDB** | C via FFI (`lmdb-simple`) | Key-value, mmap-backed, zero-lock reads | Medium — LiteDB/bbolt equivalent for Haskell |
+| **RocksDB** | C++ via FFI | Sorted key-value, range scans | Medium — when range predicates matter |
 | **DuckDB** | C via FFI | Analytical queries, columnar | Low — overkill for point lookups |
 | **Redis** | Network | Shared hot lookups across workers | Low — network latency |
 | **Arrow/Parquet** | Cross-platform | Columnar batch scans | Low — better for Python/Rust |
