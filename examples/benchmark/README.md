@@ -106,13 +106,23 @@ The effective-distance harness also includes WAM-Rust benchmark targets:
   the merged WAM code vector. The measured driver still uses the stable
   Rust-side accumulation path until direct WAM aggregate-helper execution
   has separate runtime coverage.
+- `wam-rust-seeded-no-kernels` and `wam-rust-accumulated-no-kernels`
+  use the same generated WAM code but disable native recursive kernels.
+  These are intended for WAM fallback profiling; `total_steps` and
+  `total_backtracks` should be non-zero when the fallback path is exercised.
+  Use `WAM_SEED_LIMIT=<n>` or `WAM_SEED_FILTER=CatA|CatB` for bounded
+  fallback probes before running full-scale comparisons. Seed-limited runs
+  intentionally produce partial output and should not be used for output
+  completeness comparisons. These environment variables apply to the entire
+  benchmark invocation; when either is set, no-kernel parity and speedup lines
+  are treated as seed-subset probes rather than full-output comparisons.
 
 Example focused run:
 
 ```bash
 python examples/benchmark/benchmark_effective_distance.py \
   --scales dev \
-  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated \
+  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-accumulated-no-kernels \
   --repetitions 1
 ```
 
