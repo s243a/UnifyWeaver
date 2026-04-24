@@ -6174,6 +6174,8 @@ verify_dynamic_source_plan_ :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'DelimitedTextReader'),
     sub_string(Source, _, _, _, 'test_users.csv'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterBinaryRelation'),
     maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
 
 verify_tsv_dynamic_source_plan :-
@@ -6189,6 +6191,7 @@ verify_tsv_dynamic_source_plan_ :-
     sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
     sub_string(Source, _, _, _, 'new DelimitedRelationSource'),
     sub_string(Source, _, _, _, 'test_sales.tsv'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterBinaryRelation'),
     string_codes(TabLiteral, [39, 92, 116, 39]),
     sub_string(Source, _, _, _, TabLiteral),
     maybe_run_query_runtime(Plan, ['Laptop,1200', 'Mouse,25', 'Keyboard,75']).
