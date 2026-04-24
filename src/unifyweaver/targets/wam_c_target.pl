@@ -234,7 +234,7 @@ clean_comma(S, Clean) :-
 
 wam_lines_to_c_pass1([], _, []).
 wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
-    split_string(Line, " \t,", " \t,", Parts),
+    split_string(Line, " \t", " \t", Parts),  % comma intentionally excluded: entries are now space-separated
     delete(Parts, "", CleanParts),
     (   CleanParts == [] -> wam_lines_to_c_pass1(Rest, PC, LabelMap)
     ;   CleanParts = [First|_],
@@ -528,8 +528,11 @@ compile_step_wam_to_c(_Options, CCode) :-
                             return true;
                         }
                     }
+                } else if (cell->tag == VAL_LIST) {
+                    state->P++;
+                    return true; // VAL_LIST: no list index table yet, fall through to try_me_else chain
                 }
-                return false; // Not found in either index or unsupported type (e.g. VAL_LIST unsupported yet), fail
+                return false; // Not found in either index — fail and backtrack
             }
             case INSTR_GET_STRUCTURE: {
                 WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
