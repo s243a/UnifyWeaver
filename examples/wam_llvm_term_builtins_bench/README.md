@@ -202,22 +202,28 @@ broken aliasing, so `run_loop → false`.
      put_variable heap pushes from a failed alternative do not leak
      into the next clause's heap region. **Landed.**
 
-  4. Ref-based `put_variable` + binding-site migration: **attempted
-     and reverted (again).** With (3) in place, the symptom changed
-     from "wrong answer" to "segfault on the first sum_small call",
-     deterministic and immediate. Root cause still not fully
-     diagnosed. Probable contributor: each reg-bind now produces
-     *two* trail entries (one via caller's `wam_trail_binding`, one
-     from `wam_bind_reg`'s heap-side trailing); the caller's entry is
-     a no-op on unwind (reg still holds Ref{H}) but it still consumes
-     a slot. Paired with deep recursion, the 256-entry trail buffer
-     may overflow with no bounds check. Out of scope for this PR.
+  4. Trail initial capacity raised from 256 to 16 384 entries
+     (~384 KB per VM). Previously enough for the current Phase 0
+     bench corpus, but the Ref-based put_variable landing will double
+     trail traffic (one reg entry from the caller plus one heap entry
+     from `wam_bind_reg`), so the extra headroom removes trail
+     overflow as a blocker. Still no bounds check in
+     `wam_trail_binding` / `wam_trail_heap_binding`; if 16 384 turns
+     out to be insufficient a realloc path will be needed. **Landed.**
 
-The structural-equals, Ref-aware helpers, and now CP-heap-top
-rewinding are the three pieces the future put_variable Ref fix will
-need. Two more pieces remain: trail-capacity growth (or tighter
-trailing) and a clean diagnosis of the segfault under the current
-helpers.
+  5. Ref-based `put_variable` + binding-site migration: **attempted
+     and reverted (twice).** First attempt regressed
+     `bench_sum_medium/big` to wrong-answer FAIL; second attempt
+     (with CP heap rewinding in place) changed the symptom to a
+     deterministic segfault on first sum_small call. Root cause still
+     not fully diagnosed. Trail-capacity growth (step 4) rules out
+     one of the leading hypotheses, but there may be more. Separate
+     follow-up.
+
+The structural-equals, Ref-aware helpers, CP-heap-top rewinding, and
+trail headroom are the four pieces the future put_variable Ref fix
+will need. The remaining blocker is diagnostic: clean up whatever in
+the binding-site migration is segfaulting on deep recursion.
 
 ### `put_constant` tag fix (landed in this PR)
 
