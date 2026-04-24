@@ -27,6 +27,10 @@
     ensure_streaming_binary/2,      % +Pred/Arity, -BinaryPath
     ensure_streaming_script/2,      % +Pred/Arity, -ScriptPath
 
+    % Producer + consumer resolution
+    resolve_producer/2,             % +Pred/Arity, -Invocation
+    resolve_consumer/2,             % +Pred/Arity, -Invocation
+
     % Python runtime resolution
     resolve_python_exec/2,          % +Pred/Arity, -PythonExec
     detect_python_exec/3,           % +MinVersion, +PipPackages, -Exec
@@ -129,16 +133,86 @@ ensure_streaming_binary(Pred/Arity, BinaryPath) :-
     resolve_producer(Pred/Arity, producer(rust_binary, BinaryPath, _)).
 
 %% ============================================
-%% Consumer: Python script
+%% Consumer resolution — target-agnostic
 %% ============================================
+%
+%  resolve_consumer/2 parallels resolve_producer/2.  Returns:
+%
+%    consumer(Kind, Path, Options)
+%
+%  Kinds:
+%    python_script — Path is a .py file, invoked via a detected
+%                    Python interpreter (see resolve_python_exec/2)
+%    dotnet_dll    — Path is a compiled .NET DLL, invoked via
+%                    `dotnet path.dll`.  Project is built with
+%                    `dotnet build -c Release` if needed.
+%
+%  Adding another consumer target (JVM, Ruby, ...) means adding
+%  another clause here plus one in format_consumer_cmd/4.
 
-%% ensure_streaming_script(+Pred/Arity, -ScriptPath)
-%  Resolve a python+leaf declaration to an absolute script path.
-ensure_streaming_script(Pred/Arity, ScriptPath) :-
+%% resolve_consumer(+Pred/Arity, -Invocation)
+resolve_consumer(Pred/Arity, consumer(python_script, ScriptPath, Options)) :-
     predicate_target_options(Pred/Arity, python, Options),
     option(leaf(true), Options),
     option(script_path(RelPath), Options),
+    !,
     resolve_script_path(RelPath, ScriptPath).
+
+resolve_consumer(Pred/Arity, consumer(dotnet_dll, DllPath, Options)) :-
+    predicate_target_options(Pred/Arity, csharp, Options),
+    option(leaf(true), Options),
+    option(project_dir(RelDir), Options),
+    !,
+    resolve_script_path(RelDir, AbsDir),
+    ensure_dotnet_built(AbsDir, DllPath).
+
+%% ensure_streaming_script(+Pred/Arity, -ScriptPath)
+%  Legacy wrapper: python-only.  Prefer resolve_consumer/2.
+ensure_streaming_script(Pred/Arity, ScriptPath) :-
+    resolve_consumer(Pred/Arity, consumer(python_script, ScriptPath, _)).
+
+%% ensure_dotnet_built(+ProjectDir, -DllPath)
+%  Build `dotnet build -c Release` if the DLL is missing or older
+%  than the .csproj file.  Returns the path to the compiled DLL.
+%  Expects exactly one .csproj in the directory.
+ensure_dotnet_built(ProjectDir, DllPath) :-
+    find_csproj(ProjectDir, CsprojPath, BaseName),
+    find_dll_path(ProjectDir, BaseName, DllPath),
+    (   exists_file(DllPath),
+        exists_file(CsprojPath),
+        time_file(DllPath, BinTime),
+        time_file(CsprojPath, SrcTime),
+        BinTime >= SrcTime
+    ->  true
+    ;   format(user_error,
+               '[streaming_glue] dotnet build -c Release (~w)~n', [ProjectDir]),
+        format(atom(Cmd), 'cd "~w" && dotnet build -c Release', [ProjectDir]),
+        shell(Cmd, 0)
+    ).
+
+find_csproj(ProjectDir, CsprojPath, BaseName) :-
+    directory_files(ProjectDir, Files),
+    member(F, Files),
+    file_name_extension(BaseName, csproj, F),
+    !,
+    format(atom(CsprojPath), '~w/~w', [ProjectDir, F]).
+
+%% find_dll_path: locate bin/Release/netX.Y/<Base>.dll.
+%  The framework subdir (net8.0, net9.0, ...) is discovered by listing.
+find_dll_path(ProjectDir, BaseName, DllPath) :-
+    format(atom(ReleaseDir), '~w/bin/Release', [ProjectDir]),
+    (   exists_directory(ReleaseDir),
+        directory_files(ReleaseDir, Entries),
+        member(Entry, Entries),
+        sub_atom(Entry, 0, _, _, 'net'),
+        format(atom(TargetDir), '~w/~w', [ReleaseDir, Entry]),
+        exists_directory(TargetDir)
+    ->  format(atom(DllPath), '~w/~w.dll', [TargetDir, BaseName])
+    ;   % Not yet built — guess a default path; the build step will
+        % populate it.  We assume net9.0 as a sensible modern default.
+        format(atom(DllPath),
+               '~w/bin/Release/net9.0/~w.dll', [ProjectDir, BaseName])
+    ).
 
 %% ============================================
 %% Python runtime resolution
@@ -242,13 +316,13 @@ parse_version(V, Maj, Min) :-
 %
 generate_streaming_pipeline(Producer, Consumer, Opts, Script) :-
     resolve_producer(Producer, ProducerInv),
-    ensure_streaming_script(Consumer, ConsScript),
+    resolve_consumer(Consumer, ConsumerInv),
 
     option(producer_args(ProdArgs), Opts, []),
     option(consumer_args(ConsArgs), Opts, []),
     option(env(EnvPairs), Opts, []),
 
-    % Python interpreter resolution:
+    % Python interpreter resolution (used only for python_script consumers):
     %   1. explicit pipeline-level override: python_exec(X) in Opts
     %   2. consumer declaration's python_min_version + pip_packages
     %      satisfied by a detected interpreter
@@ -261,15 +335,15 @@ generate_streaming_pipeline(Producer, Consumer, Opts, Script) :-
     ),
 
     format_producer_cmd(ProducerInv, ProdArgs, ProdCmd),
-    format_args(ConsArgs, ConsArgStr),
+    format_consumer_cmd(ConsumerInv, ConsArgs, RealPython, ConsCmd),
     format_env(EnvPairs, EnvStr),
 
     format(string(Script),
 '#!/bin/bash
 # Generated by UnifyWeaver streaming_glue
 set -euo pipefail
-~w~w | ~w "~w"~w
-', [EnvStr, ProdCmd, RealPython, ConsScript, ConsArgStr]).
+~w~w | ~w
+', [EnvStr, ProdCmd, ConsCmd]).
 
 %% format_producer_cmd(+producer(Kind, Path, Opts), +Args, -CmdStr)
 %  Render the shell command for a producer based on its Kind. AWK
@@ -293,6 +367,18 @@ format_producer_cmd(producer(awk_script, Path, Opts), Args, Cmd) :-
 % Note on env format: format_env/2 emits `export NAME="value"; ...`
 % lines so the vars are visible to both ends of the pipe. A bare
 % `NAME=val cmd1 | cmd2` would only apply to cmd1.
+
+%% format_consumer_cmd(+consumer(Kind, Path, Opts), +Args, +PythonExec, -CmdStr)
+%  Render the shell command for a consumer based on its Kind.
+%  PythonExec is pre-resolved for python_script consumers and ignored
+%  otherwise.
+format_consumer_cmd(consumer(python_script, Path, _), Args, PythonExec, Cmd) :-
+    format_args(Args, ArgStr),
+    format(string(Cmd), '~w "~w"~w', [PythonExec, Path, ArgStr]).
+format_consumer_cmd(consumer(dotnet_dll, Path, Options), Args, _, Cmd) :-
+    option(dotnet_exec(Exec), Options, dotnet),
+    format_args(Args, ArgStr),
+    format(string(Cmd), '~w "~w"~w', [Exec, Path, ArgStr]).
 
 format_args([], "").
 format_args([A|Rest], Str) :-
