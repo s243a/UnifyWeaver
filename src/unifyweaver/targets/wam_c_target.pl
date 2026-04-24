@@ -777,6 +777,7 @@ int wam_run_predicate(WamState *state, const char *pred,
     int entry = resolve_predicate_hash(state, pred);
     if (entry < 0) return WAM_ERR_OOB;
     for (int i = 0; i < arity; i++) state->A[i] = args[i];
+    state->CP = WAM_HALT;
     state->P = entry;
     return wam_run(state);
 }

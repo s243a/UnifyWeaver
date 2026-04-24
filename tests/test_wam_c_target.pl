@@ -6,6 +6,7 @@
 :- use_module('../src/unifyweaver/targets/wam_target').
 
 :- dynamic test_failed/0.
+:- dynamic tests_already_ran/0.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -211,6 +212,113 @@ test_list_target_pc_emission :-
     ),
     retractall(user:wam_c_list_case(_)).
 
+test_generated_runtime_executable_smoke :-
+    Test = 'WAM-C: generated runtime executable smoke',
+    (   gcc_available
+    ->  (   run_generated_runtime_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'generated runtime executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
+gcc_available :-
+    catch(process_create(path(gcc), ['--version'],
+                         [stdout(null), stderr(null), process(Pid)]),
+          _, fail),
+    process_wait(Pid, exit(0)).
+
+run_generated_runtime_executable_smoke :-
+    WamCode = 'wam_c_exec_list/1:\n    switch_on_term 1 a:L_wam_c_exec_list_1_2 0 default\n    try_me_else L_wam_c_exec_list_1_2\n    get_list A1\n    unify_variable X1\n    unify_variable X2\n    proceed\nL_wam_c_exec_list_1_2:\n    trust_me\n    get_constant a, A1\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_exec_list/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_exec_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_exec_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke(ExePath).
+
+write_text_file(Path, Content) :-
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        format(Stream, '~w', [Content]),
+        close(Stream)
+    ).
+
+compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
+    IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
+    format(atom(Cmd),
+           'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -o ~w',
+           [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
+    catch(process_create(path(sh), ['-c', Cmd],
+                         [stdout(null), stderr(null), process(Pid)]),
+          _, fail),
+    process_wait(Pid, Status),
+    (   Status = exit(0)
+    ->  true
+    ;   format(user_error, 'gcc failed with status ~w~n', [Status]),
+        fail
+    ).
+
+run_c_smoke(ExePath) :-
+    format(atom(Cmd),
+           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 ~w',
+           [ExePath]),
+    catch(process_create(path(sh), ['-c', Cmd],
+                         [stdout(null), stderr(null), process(Pid)]),
+          _, fail),
+    process_wait(Pid, Status),
+    (   Status = exit(0)
+    ->  true
+    ;   format(user_error, 'generated executable failed with status ~w~n', [Status]),
+        fail
+    ).
+
+wam_c_exec_smoke_main(
+'#include <string.h>
+#include "wam_runtime.h"
+
+void setup_wam_c_exec_list_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_exec_list_1(&state);
+
+    const char *a1 = wam_intern_atom(&state, "runtime_atom");
+    const char *a2 = wam_intern_atom(&state, "runtime_atom");
+    if (a1 != a2 || strcmp(a1, "runtime_atom") != 0) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state.H;
+    state.H_array[state.H++] = val_atom("head");
+    state.H_array[state.H++] = val_atom("tail");
+
+    WamValue args[1] = { list };
+    int rc = wam_run_predicate(&state, "wam_c_exec_list/1", args, 1);
+    if (rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -248,6 +356,13 @@ implemented_case(unify_constant, 'case INSTR_UNIFY_CONSTANT').
 %% Test runner
 
 run_tests :-
+    (   tests_already_ran
+    ->  true
+    ;   assert(tests_already_ran),
+        run_tests_once
+    ).
+
+run_tests_once :-
     format('~n=== WAM-C Target Tests ===~n~n'),
     test_step_generation,
     test_helpers_generation,
@@ -266,6 +381,7 @@ run_tests :-
     test_c_while_loop,
     test_predicate_hash_registration,
     test_list_target_pc_emission,
+    test_generated_runtime_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
