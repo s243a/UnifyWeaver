@@ -1822,7 +1822,8 @@ wam_llvm_case('get_constant',
   br i1 %gc.is_unb, label %gc.bind, label %gc.check_eq
 
 gc.bind:
-  ; Unbound: bind to constant with proper tag.
+  ; Unbound: bind via wam_bind_reg so Ref-aliased regs update the
+  ; shared heap cell. wam_bind_reg also trails the heap entry.
   call void @wam_trail_binding(%WamState* %vm, i32 %gc.reg_idx)
   %gc.const_val = insertvalue %Value undef, i32 %gc.tag, 0
   %gc.const_v2 = insertvalue %Value %gc.const_val, i64 %op1, 1
@@ -1855,12 +1856,12 @@ wam_llvm_case('get_variable',
   ret i1 true').
 
 wam_llvm_case('get_value',
-'  ; op1 = Xn index, op2 = Ai index
+'  ; op1 = Xn index, op2 = Ai index — unify. Deref both sides for the
+  ; is_unbound check; bind via wam_bind_reg to propagate through Refs.
   %gval.ai = trunc i64 %op2 to i32
   %gval.xn = trunc i64 %op1 to i32
   %gval.va = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.ai)
   %gval.vx = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.xn)
-  ; Check if either is unbound
   %gval.a_unb = call i1 @value_is_unbound(%Value %gval.va)
   br i1 %gval.a_unb, label %gval.bind_a, label %gval.check_x
 
@@ -2329,6 +2330,12 @@ wam_llvm_case('try_me_else',
   store i32 0, i32* %tme.arr_ptr
   %tme.arpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 7
   store i32 0, i32* %tme.arpc_ptr
+  ; Save heap_top — restored on backtrack so put_variable heap pushes
+  ; from the failing clause do not leak into the next alternative.
+  %tme.hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %tme.hs = load i32, i32* %tme.hs_ptr
+  %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
+  store i32 %tme.hs, i32* %tme.sht_ptr
   ; Increment choice point count
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr
@@ -2451,6 +2458,12 @@ wam_llvm_case('begin_aggregate',
   store i32 %ba.res_reg, i32* %ba.arr_ptr
   %ba.arpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 7
   store i32 0, i32* %ba.arpc_ptr  ; placeholder, end_aggregate updates this
+
+  ; Save heap_top so unwind via wam_finalize_aggregate can rewind.
+  %ba.hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %ba.hs = load i32, i32* %ba.hs_ptr
+  %ba.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 11
+  store i32 %ba.hs, i32* %ba.sht_ptr
 
   ; Increment choice point count
   %ba.new_cpn = add i32 %ba.cpn, 1
@@ -2605,6 +2618,13 @@ restore:
   %tm = load i32, i32* %tm_ptr
   call void @unwind_trail(%WamState* %vm, i32 %tm)
 
+  ; Rewind heap_top to the saved value so put_variable allocations
+  ; from the failing alternative do not leak as garbage cells.
+  %saved_ht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 11
+  %saved_ht = load i32, i32* %saved_ht_ptr
+  %ht_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  store i32 %saved_ht, i32* %ht_ptr
+
   ; Restore registers
   %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
@@ -2707,7 +2727,7 @@ entry:
   ]
 
 builtin_is:
-  ; A1 is result, A2 is expression — evaluate A2 via eval_arith and unify with A1
+  ; A1 is result, A2 is expression. Reads dereffed; bind via bind_reg.
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %is.result = call i64 @eval_arith(%WamState* %vm, %Value %is.a2)
   %is.result_val = call %Value @value_integer(i64 %is.result)

@@ -3092,6 +3092,12 @@ entry:
   %cur_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 10
   store i32 %initial_cursor, i32* %cur_ptr
 
+  ; Save heap_top (field 11) — needed for backtrack to rewind properly.
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 11
+  store i32 %hs, i32* %sht_ptr
+
   ; Increment CP count
   %new_cpn = add i32 %cpn, 1
   store i32 %new_cpn, i32* %cpn_ptr
