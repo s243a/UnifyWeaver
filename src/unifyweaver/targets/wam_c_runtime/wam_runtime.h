@@ -96,6 +96,8 @@ typedef struct {
     int target_pc;
     HashEntry *hash_table;
     int hash_size;
+    HashEntry *s_hash_table;
+    int s_hash_size;
 } Instruction;
 
 /* WAM state */

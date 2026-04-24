@@ -273,18 +273,25 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
     ->  length(Entries, HashSize),
         format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .hash_size = ~w };', [PC, HashSize]),
         format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, Entries, 0, LabelMap, HashLines),
+        generate_hash_table_entries(PC, "hash_table", Entries, 0, LabelMap, HashLines),
         append([L0, L1], HashLines, CodeLines)
     ;   Parts = ["switch_on_structure" | Entries]
     ->  length(Entries, HashSize),
         format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .hash_size = ~w };', [PC, HashSize]),
         format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
-        generate_hash_table_entries(PC, Entries, 0, LabelMap, HashLines),
+        generate_hash_table_entries(PC, "hash_table", Entries, 0, LabelMap, HashLines),
         append([L0, L1], HashLines, CodeLines)
-    ;   Parts = ["switch_on_term" | _]
-    ->  % TODO: Implement switch_on_term
-        format(atom(L0), '    state->code[~w] = (Instruction){0}; // TODO: switch_on_term', [PC]),
-        CodeLines = [L0]
+    ;   Parts = ["switch_on_term", CLenStr | Rest1]
+    ->  number_string(CLen, CLenStr),
+        length(CEntries, CLen),
+        append(CEntries, [SLenStr | SEntries], Rest1),
+        number_string(SLen, SLenStr),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .hash_size = ~w, .s_hash_size = ~w };', [PC, CLen, SLen]),
+        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, CLen]),
+        format(atom(L2), '    state->code[~w].s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, SLen]),
+        generate_hash_table_entries(PC, "hash_table", CEntries, 0, LabelMap, CHashLines),
+        generate_hash_table_entries(PC, "s_hash_table", SEntries, 0, LabelMap, SHashLines),
+        append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
     ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, CInstr)
         ->  true
         ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
@@ -297,8 +304,8 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         CodeLines = [L0]
     ).
 
-generate_hash_table_entries(_, [], _, _, []).
-generate_hash_table_entries(PC, [Entry|Rest], Idx, LabelMap, [Line|RestLines]) :-
+generate_hash_table_entries(_, _, [], _, _, []).
+generate_hash_table_entries(PC, TableName, [Entry|Rest], Idx, LabelMap, [Line|RestLines]) :-
     split_string(Entry, ":", "", Parts),
     (   Parts = [KeyStr, LabelStr]
     ->  (   LabelStr == "default"
@@ -312,9 +319,9 @@ generate_hash_table_entries(PC, [Entry|Rest], Idx, LabelMap, [Line|RestLines]) :
         ;   atom_string(KeyAtom, KeyStr),
             c_value_literal(KeyAtom, ValLit)
         ),
-        format(atom(Line), '    state->code[~w].hash_table[~w] = (HashEntry){ ~w, ~w };', [PC, Idx, ValLit, TargetPC]),
+        format(atom(Line), '    state->code[~w].~w[~w] = (HashEntry){ ~w, ~w };', [PC, TableName, Idx, ValLit, TargetPC]),
         NextIdx is Idx + 1,
-        generate_hash_table_entries(PC, Rest, NextIdx, LabelMap, RestLines)
+        generate_hash_table_entries(PC, TableName, Rest, NextIdx, LabelMap, RestLines)
     ;   throw(error(wam_c_target_error(invalid_switch_entry(Entry)), _))
     ).
 
@@ -335,9 +342,13 @@ compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
 void setup_~w_~w(WamState* state) {
     if (state->code) {
         for (int i = 0; i < state->code_size; i++) {
-            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE) && state->code[i].hash_table) {
+            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE || state->code[i].tag == INSTR_SWITCH_ON_TERM) && state->code[i].hash_table) {
                 free(state->code[i].hash_table);
                 state->code[i].hash_table = NULL;
+            }
+            if (state->code[i].tag == INSTR_SWITCH_ON_TERM && state->code[i].s_hash_table) {
+                free(state->code[i].s_hash_table);
+                state->code[i].s_hash_table = NULL;
             }
         }
     }
@@ -463,8 +474,12 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_SWITCH_ON_CONSTANT: {
                 WamValue *cell = wam_deref_ptr(state, &state->A[0]); // A1 is register index 0 (or X1 in 1-based, A array is 0-indexed)
+                if (val_is_unbound(*cell)) {
+                    state->P++;
+                    return true; // Unbound variable falls through to the sequential try_me_else chain
+                }
                 if (cell->tag != VAL_ATOM && cell->tag != VAL_INT) {
-                    return false; // falls through to backtracking (variable case unimplemented, pending switch_on_term)
+                    return false; // Type mismatch, fail
                 }
                 for (int i = 0; i < instr->hash_size; i++) {
                     if (val_equal(*cell, instr->hash_table[i].key)) {
@@ -476,8 +491,12 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_SWITCH_ON_STRUCTURE: {
                 WamValue *cell = wam_deref_ptr(state, &state->A[0]);
+                if (val_is_unbound(*cell)) {
+                    state->P++;
+                    return true; // Unbound variable falls through to the sequential try_me_else chain
+                }
                 if (cell->tag != VAL_STR) {
-                    return false; // falls through to backtracking (variable case unimplemented, pending switch_on_term)
+                    return false; // Type mismatch, fail
                 }
                 WamValue *f = &state->H_array[cell->data.ref_addr];
                 for (int i = 0; i < instr->hash_size; i++) {
@@ -487,6 +506,30 @@ compile_step_wam_to_c(_Options, CCode) :-
                     }
                 }
                 return false; // Not found in index, fail
+            }
+            case INSTR_SWITCH_ON_TERM: {
+                WamValue *cell = wam_deref_ptr(state, &state->A[0]);
+                if (val_is_unbound(*cell)) {
+                    state->P++;
+                    return true; // Unbound variable falls through to the sequential try_me_else chain
+                }
+                if (cell->tag == VAL_ATOM || cell->tag == VAL_INT) {
+                    for (int i = 0; i < instr->hash_size; i++) {
+                        if (val_equal(*cell, instr->hash_table[i].key)) {
+                            state->P = instr->hash_table[i].target_pc;
+                            return true;
+                        }
+                    }
+                } else if (cell->tag == VAL_STR) {
+                    WamValue *f = &state->H_array[cell->data.ref_addr];
+                    for (int i = 0; i < instr->s_hash_size; i++) {
+                        if (val_equal(*f, instr->s_hash_table[i].key)) {
+                            state->P = instr->s_hash_table[i].target_pc;
+                            return true;
+                        }
+                    }
+                }
+                return false; // Not found in either index or unsupported type (e.g. VAL_LIST unsupported yet), fail
             }
             case INSTR_GET_STRUCTURE: {
                 WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
