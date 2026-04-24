@@ -4340,11 +4340,14 @@ dynamic_relation_block(Name, Arity, Metadata, Block) :-
     ).
 
 configured_binary_relation_block(NameStr, Arity, Metadata, Block) :-
-    Arity =:= 2,
-    can_emit_configured_binary_relation(Metadata, SourceLiteral),
+    can_emit_configured_delimited_relation(Arity, Metadata, SourceLiteral),
+    (   Arity =:= 2
+    ->  Method = 'RegisterBinaryRelation'
+    ;   Method = 'RegisterDelimitedRelation'
+    ),
     format(atom(Block),
-'            configuredProvider.RegisterBinaryRelation(new PredicateId(\"~w\", ~w), ~w, \"~w_~w\");',
-        [NameStr, Arity, SourceLiteral, NameStr, Arity]).
+'            configuredProvider.~w(new PredicateId(\"~w\", ~w), ~w, \"~w_~w\");',
+        [Method, NameStr, Arity, SourceLiteral, NameStr, Arity]).
 
 dynamic_reader_literal(Metadata, Arity, Literal) :-
     (   get_dict(record_format, Metadata, Format)
@@ -4379,7 +4382,7 @@ delimited_reader_literal(Metadata, Arity, Literal) :-
             })',
         [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity]).
 
-can_emit_configured_binary_relation(Metadata, Literal) :-
+can_emit_configured_delimited_relation(Arity, Metadata, Literal) :-
     (   get_dict(record_format, Metadata, Format0)
     ->  Format = Format0
     ;   Format = text_line
@@ -4400,7 +4403,7 @@ can_emit_configured_binary_relation(Metadata, Literal) :-
     ),
     QuoteStyle == none,
     csharp_literal(Path, PathLiteral),
-    format(atom(Literal), 'new DelimitedRelationSource(~w, ~w, ~w, 2)', [PathLiteral, FieldSepLiteral, SkipRows]).
+    format(atom(Literal), 'new DelimitedRelationSource(~w, ~w, ~w, ~w)', [PathLiteral, FieldSepLiteral, SkipRows, Arity]).
 
 json_reader_literal(Metadata, Arity, Literal) :-
     metadata_input_literal(Metadata, InputLiteral),

@@ -3515,6 +3515,30 @@ namespace UnifyWeaver.QueryRuntime
                     throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
             }
         }
+
+        public void RegisterDelimitedRelation(PredicateId predicate, DelimitedRelationSource source, string? artifactName = null)
+        {
+            if (source.ExpectedWidth == 2)
+            {
+                RegisterBinaryRelation(predicate, source, artifactName);
+                return;
+            }
+
+            switch (SourceMode)
+            {
+                case RelationSourceMode.Delimited:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    return;
+                case RelationSourceMode.Preload:
+                case RelationSourceMode.Artifact:
+                case RelationSourceMode.ArtifactPrebuilt:
+                    MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
+            }
+        }
     }
 
     public sealed class QueryExecutor
