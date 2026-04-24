@@ -142,17 +142,33 @@ wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
+c_value_literal(Str, Lit) :-
+    string(Str),
+    (   number_string(Int, Str),
+        integer(Int)
+    ->  c_value_literal(Int, Lit)
+    ;   atom_string(Atom, Str),
+        c_value_literal(Atom, Lit)
+    ).
 c_value_literal(Atom, Lit) :- atom(Atom), format(atom(Lit), 'val_atom("~w")', [Atom]).
 c_value_literal(Int, Lit) :- integer(Int), format(atom(Lit), 'val_int(~w)', [Int]).
 
+c_reg_index(RegStr, IsY, Idx) :-
+    string(RegStr),
+    atom_string(RegAtom, RegStr),
+    c_reg_index(RegAtom, IsY, Idx).
 c_reg_index(RegAtom, IsY, Idx) :-
     atom_chars(RegAtom, Chars),
     (   Chars = [Prefix|NumChars],
         (Prefix == 'a'; Prefix == 'x'; Prefix == 'A'; Prefix == 'X')
-    ->  IsY = 0, catch(number_chars(Idx, NumChars), _, fail)
+    ->  IsY = 0,
+        catch(number_chars(RegNo, NumChars), _, fail),
+        Idx is RegNo - 1
     ;   Chars = [Prefix|NumChars],
         (Prefix == 'y'; Prefix == 'Y')
-    ->  IsY = 1, catch(number_chars(Idx, NumChars), _, fail)
+    ->  IsY = 1,
+        catch(number_chars(RegNo, NumChars), _, fail),
+        Idx is RegNo - 1
     ;   throw(error(wam_c_target_error(unknown_register(RegAtom)), _))
     ).
 
@@ -257,7 +273,7 @@ wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, CodeSize, Instrs) :-
         ->  sub_string(First, 0, _, 1, LabelName),
             (   sub_string(LabelName, 0, 2, _, "L_")
             ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, Instrs)
-            ;   format(atom(PredReg), '    wam_register_predicate(state, "~w", ~w);', [LabelName, PC]),
+            ;   format(atom(PredReg), '    wam_register_predicate_hash(state, "~w", ~w);', [LabelName, PC]),
                 Instrs = [PredReg|RestInstrs],
                 wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, RestInstrs)
             )
@@ -284,9 +300,19 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
     ;   Parts = ["switch_on_term", CLenStr | Rest1]
     ->  number_string(CLen, CLenStr),
         length(CEntries, CLen),
-        append(CEntries, [SLenStr | SEntries], Rest1),
+        append(CEntries, [SLenStr | Rest2], Rest1),
         number_string(SLen, SLenStr),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .hash_size = ~w, .s_hash_size = ~w };', [PC, CLen, SLen]),
+        length(SEntries, SLen),
+        append(SEntries, [ListLabelStr], Rest2),
+        (   ListLabelStr == "none"
+        ->  ListPC = -1
+        ;   ListLabelStr == "default"
+        ->  ListPC is PC + 1
+        ;   member(ListLabelStr-ListPC, LabelMap)
+        ->  true
+        ;   ListPC = -1
+        ),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_TERM, .hash_size = ~w, .s_hash_size = ~w, .list_target_pc = ~w };', [PC, CLen, SLen, ListPC]),
         format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, CLen]),
         format(atom(L2), '    state->code[~w].s_hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, SLen]),
         generate_hash_table_entries(PC, "hash_table", CEntries, 0, LabelMap, CHashLines),
@@ -294,10 +320,10 @@ wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
         append([L0, L1, L2 | CHashLines], SHashLines, CodeLines)
     ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, CInstr)
         ->  true
-        ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
-        ->  CInstr = CInstr_NoArity
         ;   wam_line_to_c_instr(Parts, CInstr_NoMap)
         ->  CInstr = CInstr_NoMap
+        ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
+        ->  CInstr = CInstr_NoArity
         ;   CInstr = '{0}'
         ),
         format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
@@ -364,7 +390,7 @@ void setup_~w_~w(WamState* state) {
 % ============================================================================
 
 compile_step_wam_to_c(_Options, CCode) :-
-    format(string(CCode),
+    CCode =
 '    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
@@ -444,12 +470,12 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
             case INSTR_CALL: {
                 state->CP = state->P + 1;
-                int target = resolve_predicate(state, instr->pred);
+                int target = resolve_predicate_hash(state, instr->pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
             }
             case INSTR_EXECUTE: {
-                int target = resolve_predicate(state, instr->pred);
+                int target = resolve_predicate_hash(state, instr->pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
             }
@@ -529,8 +555,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                         }
                     }
                 } else if (cell->tag == VAL_LIST) {
-                    state->P++;
-                    return true; // VAL_LIST: no list index table yet, fall through to try_me_else chain
+                    if (instr->list_target_pc >= 0) {
+                        state->P = instr->list_target_pc;
+                    } else {
+                        state->P++;
+                    }
+                    return true;
                 }
                 return false; // Not found in either index — fail and backtrack
             }
@@ -542,7 +572,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                     *cell = s;
                     
                     // Note: instr->pred includes the arity suffix (e.g. "foo/2"), which is stored as the functor atom
-                    const char *slash = strchr(instr->pred, '/');
+                    const char *slash = strchr(instr->pred, ''/'');
                     assert(slash != NULL && "Functor missing arity suffix");
                     int arity = strtol(slash + 1, NULL, 10);
                     
@@ -574,7 +604,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 WamValue *cell = resolve_reg(state, instr->reg_xn, instr->is_y_xn);
                 *cell = s;
                 
-                const char *slash = strchr(instr->pred, '/');
+                const char *slash = strchr(instr->pred, ''/'');
                 assert(slash != NULL && "Functor missing arity suffix");
                 int arity = strtol(slash + 1, NULL, 10);
                 
@@ -701,10 +731,56 @@ compile_step_wam_to_c(_Options, CCode) :-
             }
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
-    }').
+    }'.
 
 compile_wam_helpers_to_c(_Options, CCode) :-
-    CCode = '#include "wam_runtime.h"\n\n// TODO: More C Helpers'.
+    CCode =
+'#include "wam_runtime.h"
+
+void wam_state_init(WamState *state) {
+    memset(state, 0, sizeof(WamState));
+    state->H_cap = WAM_INITIAL_CAP;
+    state->TR_cap = WAM_INITIAL_CAP;
+    state->B_cap = WAM_INITIAL_CAP;
+    state->E_cap = WAM_INITIAL_CAP;
+    state->E = -1;
+    state->H_array = malloc(sizeof(WamValue) * state->H_cap);
+    state->TR_array = malloc(sizeof(TrailEntry) * state->TR_cap);
+    state->B_array = malloc(sizeof(ChoicePoint) * state->B_cap);
+    state->E_array = malloc(sizeof(EnvFrame) * state->E_cap);
+}
+
+void wam_free_state(WamState *state) {
+    for (int i = 0; i < WAM_ATOM_HASH_SIZE; i++) {
+        AtomEntry *e = state->atom_table[i];
+        while (e) {
+            AtomEntry *next = e->next;
+            free(e->str);
+            free(e);
+            e = next;
+        }
+    }
+    for (int i = 0; i < state->code_size; i++) {
+        free(state->code[i].hash_table);
+        free(state->code[i].s_hash_table);
+    }
+    free(state->code);
+    free(state->H_array);
+    free(state->TR_array);
+    free(state->B_array);
+    free(state->E_array);
+    memset(state, 0, sizeof(WamState));
+}
+
+int wam_run_predicate(WamState *state, const char *pred,
+                      WamValue *args, int arity) {
+    int entry = resolve_predicate_hash(state, pred);
+    if (entry < 0) return WAM_ERR_OOB;
+    for (int i = 0; i < arity; i++) state->A[i] = args[i];
+    state->P = entry;
+    return wam_run(state);
+}
+'.
 
 compile_wam_runtime_to_c(Options, CCode) :-
     compile_step_wam_to_c(Options, StepCode),
