@@ -93,9 +93,9 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
-### WAM-Rust Benchmark Variants
+### WAM-Rust and WAM-Haskell Benchmark Variants
 
-The effective-distance harness also includes WAM-Rust benchmark targets:
+The effective-distance harness also includes hybrid WAM benchmark targets:
 
 - `wam-rust-seeded` compiles the base WAM predicates and uses the generated
   Rust benchmark driver to compute per-seed weight sums through the
@@ -116,13 +116,17 @@ The effective-distance harness also includes WAM-Rust benchmark targets:
   completeness comparisons. These environment variables apply to the entire
   benchmark invocation; when either is set, no-kernel parity and speedup lines
   are treated as seed-subset probes rather than full-output comparisons.
+- `haskell-wam-seeded` and `haskell-wam-accumulated` use the optimized
+  WAM-Haskell generator for the same effective-distance workload. They are
+  intended as a non-Rust hybrid comparison point and use Cabal new-style builds
+  so Hackage dependencies can be resolved when the local package cache is cold.
 
 Example focused run:
 
 ```bash
 python examples/benchmark/benchmark_effective_distance.py \
   --scales dev \
-  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-accumulated-no-kernels \
+  --targets prolog-accumulated,wam-rust-accumulated,haskell-wam-accumulated,wam-rust-accumulated-no-kernels \
   --repetitions 1
 ```
 
