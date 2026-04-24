@@ -3288,6 +3288,94 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
+    public sealed class DelimitedRelationArtifactProvider : IRetentionAwareRelationProvider, IRelationCardinalityProvider
+    {
+        private readonly IRelationProvider? _fallback;
+        private readonly Dictionary<PredicateId, string> _manifestPaths = new();
+        private readonly Dictionary<PredicateId, IReplayableRelationSource> _replayableSources = new();
+
+        public DelimitedRelationArtifactProvider(IRelationProvider? fallback = null)
+        {
+            _fallback = fallback;
+        }
+
+        public void RegisterArtifact(PredicateId predicate, string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = DelimitedRelationArtifactReader.LoadManifest(manifestPath);
+            if (!string.Equals(manifest.PredicateName, predicate.Name, StringComparison.Ordinal) ||
+                manifest.Arity != predicate.Arity)
+            {
+                throw new InvalidDataException($"Delimited relation artifact manifest describes {manifest.PredicateName}/{manifest.Arity}, not {predicate}.");
+            }
+
+            _manifestPaths[predicate] = manifestPath;
+            _replayableSources.Remove(predicate);
+        }
+
+        public IEnumerable<object[]> GetFacts(PredicateId predicate)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                return DelimitedRelationArtifactReader.ReadRows(manifestPath);
+            }
+
+            return _fallback?.GetFacts(predicate) ?? Array.Empty<object[]>();
+        }
+
+        public bool TryBindRelation(PredicateId predicate, RelationRetentionMode preferredMode, out RelationBinding binding)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                if (preferredMode == RelationRetentionMode.Replayable)
+                {
+                    if (!_replayableSources.TryGetValue(predicate, out var source))
+                    {
+                        source = new ReplayableRelationSource(() => DelimitedRelationArtifactReader.ReadRows(manifestPath));
+                        _replayableSources[predicate] = source;
+                    }
+
+                    binding = new RelationBinding(RelationRetentionMode.Replayable, ReplayableSource: source);
+                    return true;
+                }
+
+                if (preferredMode == RelationRetentionMode.ExternalMaterialized)
+                {
+                    binding = new RelationBinding(RelationRetentionMode.ExternalMaterialized);
+                    return true;
+                }
+            }
+
+            if (_fallback is IRetentionAwareRelationProvider retentionAwareFallback &&
+                retentionAwareFallback.TryBindRelation(predicate, preferredMode, out binding))
+            {
+                return true;
+            }
+
+            binding = default;
+            return false;
+        }
+
+        public bool TryGetRelationCardinality(PredicateId predicate, out long rowCount)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = DelimitedRelationArtifactReader.LoadManifest(manifestPath);
+                rowCount = manifest.RowCount;
+                return true;
+            }
+
+            if (_fallback is IRelationCardinalityProvider cardinalityFallback &&
+                cardinalityFallback.TryGetRelationCardinality(predicate, out rowCount))
+            {
+                return true;
+            }
+
+            rowCount = 0;
+            return false;
+        }
+    }
+
     internal sealed class CachedResultRows
     {
         private readonly IReadOnlyList<object[]>? _objectRows;
@@ -3774,7 +3862,9 @@ namespace UnifyWeaver.QueryRuntime
 
         public BinaryRelationArtifactProvider? ArtifactProvider { get; }
 
-        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? MemoryProvider;
+        public DelimitedRelationArtifactProvider? DelimitedArtifactProvider { get; }
+
+        public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? (IRelationProvider?)DelimitedArtifactProvider ?? MemoryProvider;
 
         public string? ArtifactDirectory { get; }
 
@@ -3796,7 +3886,8 @@ namespace UnifyWeaver.QueryRuntime
                 ArtifactDirectory = string.IsNullOrWhiteSpace(artifactDirectory)
                     ? Path.Combine(Path.GetTempPath(), $"uw-rel-artifacts-{Guid.NewGuid():N}")
                     : artifactDirectory;
-                ArtifactProvider = new BinaryRelationArtifactProvider(MemoryProvider);
+                DelimitedArtifactProvider = new DelimitedRelationArtifactProvider(MemoryProvider);
+                ArtifactProvider = new BinaryRelationArtifactProvider(DelimitedArtifactProvider);
             }
         }
 
@@ -3840,10 +3931,18 @@ namespace UnifyWeaver.QueryRuntime
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
                     return;
                 case RelationSourceMode.Preload:
-                case RelationSourceMode.Artifact:
-                case RelationSourceMode.ArtifactPrebuilt:
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
                     MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    return;
+                case RelationSourceMode.Artifact:
+                case RelationSourceMode.ArtifactPrebuilt:
+                    if (DelimitedArtifactProvider is null || string.IsNullOrWhiteSpace(ArtifactDirectory))
+                    {
+                        throw new InvalidOperationException("Artifact mode requires an initialized artifact provider.");
+                    }
+
+                    var manifestPath = DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
+                    DelimitedArtifactProvider.RegisterArtifact(predicate, manifestPath);
                     return;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
