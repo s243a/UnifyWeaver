@@ -318,12 +318,30 @@ defp clause_main(state) do
       # it can produce. Results are merged into the surrounding
       # aggregate's accumulator (the caller was inside findall /
       # bagof / aggregate_all).
+      #
+      # CRITICAL: the task function wraps each branch call in try/catch.
+      # CPS-lowered clause bodies signal failure via `throw({:fail, s})`
+      # and (optionally) early return via `throw({:return, r})`. A naked
+      # throw inside a Task.async_stream body escapes as `{:nocatch, _}`
+      # and CRASHES THE PARENT PROCESS — async_stream does not capture
+      # thrown values by default. The per-branch try/catch converts
+      # thrown values into return values so the stream emits a clean
+      # `{:ok, list}` per branch. Verified by
+      # `examples/debug_tier2_async_stream_throw_catch.exs`.
       branch_results =
         branches
-        |> Task.async_stream(& &1.(branch_state),
-                             on_timeout: :kill_task,
-                             ordered: false,
-                             max_concurrency: System.schedulers_online())
+        |> Task.async_stream(fn branch ->
+             try do
+               branch.(branch_state)
+             catch
+               {:fail, _state} -> []
+               {:return, result} when is_list(result) -> result
+               {:return, result} -> [result]
+             end
+           end,
+           on_timeout: :kill_task,
+           ordered: false,
+           max_concurrency: System.schedulers_online())
         |> Enum.flat_map(fn
           {:ok, solutions} when is_list(solutions) -> solutions
           _ -> []
@@ -369,10 +387,17 @@ The following must hold before Tier 2 is a reasonable next PR:
    `WamState` (or equivalent), incremented when fanning out,
    consulted by `par_wrap_segment`'s emitted wrapper.
 4. **CPS `throw/catch` semantics verified under `Task.async_stream`.**
-   A branch that throws `{:fail, state}` must be captured as "this
-   alternative failed" without killing sibling tasks. The
-   `{:exit, reason}` vs `{:ok, value}` dichotomy of `async_stream`
-   maps onto this cleanly but needs a focused test.
+   ✅ Verified — `examples/debug_tier2_async_stream_throw_catch.exs`
+   (OTP 28 / Elixir 1.19). Finding: `Task.async_stream` does NOT
+   capture thrown values from a task body. A naked `throw({:fail, s})`
+   escapes as `{:nocatch, _}` and exits the parent process through
+   task linking. The emission template (above) therefore wraps each
+   branch call-site in a `try/catch` **inside the task function** so
+   thrown values become return values (`{:fail, _}` → `[]`,
+   `{:return, r}` → `[r]` or `r` if already a list). With that
+   wrapper the stream emits one `{:ok, list}` per branch and siblings
+   mid-computation survive peer throws. This is general BEAM/OTP
+   behaviour, not termux-specific.
 
 ### Deferred
 
