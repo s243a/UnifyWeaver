@@ -113,7 +113,9 @@ The effective-distance harness also includes WAM-Rust benchmark targets:
   Use `WAM_SEED_LIMIT=<n>` or `WAM_SEED_FILTER=CatA|CatB` for bounded
   fallback probes before running full-scale comparisons. Seed-limited runs
   intentionally produce partial output and should not be used for output
-  completeness comparisons.
+  completeness comparisons. These environment variables apply to the entire
+  benchmark invocation; when either is set, no-kernel parity and speedup lines
+  are treated as seed-subset probes rather than full-output comparisons.
 
 Example focused run:
 

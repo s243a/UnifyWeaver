@@ -319,8 +319,8 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_prolog_root_accumulated", prolog_root_accumulated, qe)
         print_speedup(scale, "speedup_vs_wam_rust_seeded", wam_rust_seeded, qe)
         print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
-        print_speedup(scale, "speedup_vs_wam_rust_seeded_no_kernels", wam_rust_seeded_no_kernels, qe)
-        print_speedup(scale, "speedup_vs_wam_rust_accumulated_no_kernels", wam_rust_accumulated_no_kernels, qe)
+        print_no_kernel_speedup(scale, "speedup_vs_wam_rust_seeded_no_kernels", wam_rust_seeded_no_kernels, qe, seed_subset_probe)
+        print_no_kernel_speedup(scale, "speedup_vs_wam_rust_accumulated_no_kernels", wam_rust_accumulated_no_kernels, qe, seed_subset_probe)
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_speedup(scale, "speedup_vs_prolog_eff_semantic", prolog_eff_semantic, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
@@ -354,6 +354,18 @@ def print_no_kernel_match_status(
         print(f"{scale}\t{label}\tSKIPPED_SEED_SUBSET")
         return
     print_pair_match_status(scale, label, left, right)
+
+
+def print_no_kernel_speedup(
+    scale: str,
+    label: str,
+    faster_baseline: RunResult | None,
+    measured: RunResult | None,
+    seed_subset_probe: bool,
+) -> None:
+    if seed_subset_probe:
+        return
+    print_speedup(scale, label, faster_baseline, measured)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
