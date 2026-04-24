@@ -70,8 +70,15 @@ typedef enum {
     INSTR_CALL, INSTR_EXECUTE, INSTR_PROCEED,
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
-    INSTR_SWITCH_ON_CONSTANT, INSTR_BUILTIN_CALL
+    INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
+    INSTR_BUILTIN_CALL
 } WamInstrTag;
+
+/* Hash Entry for Indexing */
+typedef struct {
+    WamValue key;
+    int target_pc;
+} HashEntry;
 
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
@@ -87,6 +94,8 @@ typedef struct {
     int arity;
     char *pred;
     int target_pc;
+    HashEntry *hash_table;
+    int hash_size;
 } Instruction;
 
 /* WAM state */
