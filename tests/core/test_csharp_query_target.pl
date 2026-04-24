@@ -6186,8 +6186,10 @@ verify_tsv_dynamic_source_plan :-
 verify_tsv_dynamic_source_plan_ :-
     csharp_query_target:build_query_plan(test_sales_total/2, [target(csharp_query)], Plan),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
+    sub_string(Source, _, _, _, 'new DelimitedRelationSource'),
     sub_string(Source, _, _, _, 'test_sales.tsv'),
-    string_codes(TabLiteral, [0'@, 34, 9, 34]),
+    string_codes(TabLiteral, [39, 92, 116, 39]),
     sub_string(Source, _, _, _, TabLiteral),
     maybe_run_query_runtime(Plan, ['Laptop,1200', 'Mouse,25', 'Keyboard,75']).
 
