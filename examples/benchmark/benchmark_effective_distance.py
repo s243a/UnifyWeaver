@@ -51,6 +51,8 @@ BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
+# Use the variant-aware optimized Haskell WAM generator so seeded and
+# accumulated targets compile the same Prolog optimization surfaces as Rust.
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_optimized_benchmark.pl"
 SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_min_semantic_distance_benchmark.pl"
 EFF_SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_semantic_distance_benchmark.pl"
@@ -277,7 +279,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-") or target.startswith("wam-"):
+        if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("haskell-wam-"):
             result = run_command(command)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
@@ -455,7 +457,7 @@ def main() -> int:
                 continue
             elif target == "prolog-root-accumulated":
                 continue
-            # WAM-Rust variants are generated per scale because facts and
+            # Hybrid WAM variants are generated per scale because facts and
             # optional optimized helpers are loaded into the generated project.
             elif target == "wam-rust-seeded":
                 continue
