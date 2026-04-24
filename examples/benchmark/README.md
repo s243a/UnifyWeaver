@@ -163,12 +163,31 @@ These are applied on top of `artifact` mode so a workload can, for
 example, keep `category_parent` on the grouped artifact path while
 forcing `article_category` back to row sidecars, or vice versa.
 
+The generator also now honors the shared predicate-preprocessing
+declaration surface from
+`src/unifyweaver/core/predicate_preprocessing.pl`. For the current
+Clojure benchmark relations, declarations such as:
+
+- `preprocess(article_category/2, exact_hash_index([key([1]), values([2])])).`
+- `preprocess(category_parent/2, relation_rows([format(tsv_grouped)])).`
+
+are normalized onto the same `artifact` / `sidecar` / `inline` storage
+choices used by the benchmark-specific predicates. The current
+precedence is:
+
+1. benchmark-specific relation overrides
+2. shared `preprocess/2` declarations
+3. generator defaults for the selected top-level benchmark mode
+
 Sidecar-backed modes also emit
 `data/generated/wam_clojure_optimized_bench/manifest.edn`. The manifest
 records the resolved top-level mode, per-relation storage policy, file
-format, row counts, and access contracts. It is intentionally small and
-EDN-readable so desktop validation can inspect the generated data layout
-without parsing generated Clojure source.
+format, row counts, and access contracts. When a relation mode came from
+the shared `preprocess/2` layer, the manifest also records the
+originating declaration shape (`kind`, serialized `options`, normalized
+`format`, and normalized `access_contracts`). It is intentionally small
+and EDN-readable so desktop validation can inspect the generated data
+layout without parsing generated Clojure source.
 
 The generated project supports two entry modes:
 

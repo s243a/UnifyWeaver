@@ -588,3 +588,38 @@ This does not change runtime behavior. It makes the generated data
 layout explicit enough for desktop benchmarking, artifact invalidation
 work, and later provider-style loaders without forcing another change to
 the benchmark target names.
+
+The next follow-up starts lifting those Clojure benchmark storage-policy
+knobs into shared infrastructure. A new
+`src/unifyweaver/core/predicate_preprocessing.pl` layer now normalizes
+source-level `preprocess/2` declarations onto the same small storage
+surface used by the benchmark generator: `artifact`, `sidecar`, and
+`inline`.
+
+The Clojure effective-distance generator now consumes that shared
+declaration layer in addition to its existing benchmark-local predicates:
+
+- benchmark-local relation overrides still win first
+- shared `preprocess/2` declarations are the next policy source
+- generator defaults remain the final fallback
+
+That is a better match for the C# and Haskell direction than adding more
+one-off benchmark predicates. It turns the current Clojure artifact and
+sidecar work into a reusable seam for later cross-target preprocessing
+and artifact-provider work, while keeping the current benchmark
+interface stable.
+
+The next small extension makes that seam inspectable instead of only
+actionable. The shared preprocessing module now exposes normalized
+metadata for a declaration:
+
+- originating declaration kind
+- normalized physical format
+- normalized access contracts
+- preserved declaration options
+
+The Clojure benchmark manifest now includes that metadata whenever a
+relation's resolved mode came from the shared `preprocess/2` layer. That
+brings the current Clojure path closer to the C# provider/materializer
+shape: generated artifacts now carry both the chosen storage mode and
+the declaration intent that selected it.

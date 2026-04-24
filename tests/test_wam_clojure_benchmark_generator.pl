@@ -76,6 +76,31 @@ test(relation_data_mode_override_accumulated_parent_sidecar) :-
         maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2)
     ).
 
+test(shared_preprocess_override_seeded_article_artifact) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:preprocess(article_category/2,
+                                  exact_hash_index([key([1]), values([2])])))
+        ),
+        once((
+            unique_tmp_dir('tmp_wam_clojure_bench_shared_pre', TmpDir),
+            generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+            directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+            directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/manifest.edn', ManifestPath),
+            read_file_to_string(CorePath, CoreCode, []),
+            read_file_to_string(ManifestPath, Manifest, []),
+            assertion(sub_string(CoreCode, _, _, _, 'article_category_by_article.tsv')),
+            assertion(\+ sub_string(CoreCode, _, _, _, '(def benchmark-article-categories-delay')),
+            assertion(sub_string(Manifest, _, _, _, '"article_category" {:mode "artifact"')),
+            assertion(sub_string(Manifest, _, _, _, ':declaration {:source "shared_preprocess"')),
+            assertion(sub_string(Manifest, _, _, _, ':kind "exact_hash_index"')),
+            assertion(sub_string(Manifest, _, _, _, ':access_contracts ["arg_position_lookup(1)" "exact_key_lookup" "grouped_values_lookup([2])" "scan"]')),
+            assertion(sub_string(Manifest, _, _, _, ':options ["key([1])" "values([2])"]')),
+            delete_directory_and_contents(TmpDir)
+        )),
+        maybe_abolish_test_predicate(preprocess/2)
+    ).
+
 test(collect_seeded_predicates) :-
     collect_wam_predicates(seeded, Predicates),
     assertion(member(user:dimension_n/1, Predicates)),
@@ -107,6 +132,7 @@ test(generate_seeded_kernels_on_project) :-
         assertion(sub_string(Manifest, _, _, _, ':data_mode "sidecar"')),
         assertion(sub_string(Manifest, _, _, _, '"category_parent" {:mode "sidecar"')),
         assertion(sub_string(Manifest, _, _, _, ':row_count')),
+        assertion(\+ sub_string(Manifest, _, _, _, ':declaration {:source "shared_preprocess"')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
         assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
         assertion(sub_string(CoreCode, _, _, _, '(def benchmark-use-traversal-kernel? true)')),

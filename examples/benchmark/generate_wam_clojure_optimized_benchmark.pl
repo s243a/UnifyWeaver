@@ -14,6 +14,9 @@
 
 :- use_module('../../src/unifyweaver/targets/wam_clojure_target').
 :- use_module('../../src/unifyweaver/targets/prolog_target').
+:- use_module('../../src/unifyweaver/core/predicate_preprocessing',
+              [declared_preprocess/3,
+               declared_preprocess_metadata/4]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- discontiguous benchmark_article_category_by_article_artifact/1.
 :- discontiguous benchmark_category_parent_by_child_artifact/1.
@@ -465,8 +468,14 @@ benchmark_effective_relation_mode(Relation, DefaultMode, Mode) :-
     (   benchmark_relation_declared_data_mode(Relation, DeclaredMode),
         DeclaredMode \== auto
     ->  Mode = DeclaredMode
+    ;   benchmark_relation_predicate(Relation, PredIndicator),
+        declared_preprocess(PredIndicator, DeclaredMode, _Info)
+    ->  Mode = DeclaredMode
     ;   Mode = DefaultMode
     ).
+
+benchmark_relation_predicate(article_category, article_category/2).
+benchmark_relation_predicate(category_parent, category_parent/2).
 
 benchmark_derived_state_code(artifact, artifact, Code) :-
     Code = '(def benchmark-seed-categories-delay
@@ -622,14 +631,55 @@ benchmark_artifact_manifest(FactsPath, VariantAtom, KernelModeAtom, DataMode, Ma
 
 relation_manifest_entry(Relation, Mode, RowCount, Entry) :-
     relation_manifest_shape(Relation, Mode, FileName, Format, Access),
+    relation_manifest_preprocess_decl(Relation, DeclDecl),
     clj_string_literal_local(Relation, RelationLit),
     clj_string_literal_local(Mode, ModeLit),
     clj_string_literal_local(FileName, FileNameLit),
     clj_string_literal_local(Format, FormatLit),
     clj_string_literal_local(Access, AccessLit),
+    preprocess_decl_field(DeclDecl, DeclField),
     format(atom(Entry),
-           '~w {:mode ~w :file ~w :format ~w :row_count ~w :access ~w}',
-           [RelationLit, ModeLit, FileNameLit, FormatLit, RowCount, AccessLit]).
+           '~w {:mode ~w :file ~w :format ~w :row_count ~w :access ~w~w}',
+           [RelationLit, ModeLit, FileNameLit, FormatLit, RowCount, AccessLit, DeclField]).
+
+relation_manifest_preprocess_decl(Relation, Decl) :-
+    benchmark_relation_predicate(Relation, PredIndicator),
+    declared_preprocess_metadata(PredIndicator, Mode,
+                                 preprocess_info(Kind, Options),
+                                 Metadata),
+    !,
+    Decl = preprocess_decl(Mode, Kind, Options, Metadata).
+relation_manifest_preprocess_decl(_Relation, none).
+
+preprocess_decl_field(none, '').
+preprocess_decl_field(preprocess_decl(Mode, Kind, Options, Metadata), Field) :-
+    clj_string_literal_local(shared_preprocess, SourceLit),
+    clj_string_literal_local(Mode, ModeLit),
+    clj_string_literal_local(Kind, KindLit),
+    metadata_format_literal(Metadata, FormatLit),
+    metadata_access_contracts_literal(Metadata, AccessLit),
+    preprocess_options_literal(Options, OptionsLit),
+    format(atom(Field),
+           ' :declaration {:source ~w :mode ~w :kind ~w :format ~w :access_contracts ~w :options ~w}',
+           [SourceLit, ModeLit, KindLit, FormatLit, AccessLit, OptionsLit]).
+
+metadata_format_literal(Metadata, Literal) :-
+    clj_string_literal_local(Metadata.format, Literal).
+
+metadata_access_contracts_literal(Metadata, Literal) :-
+    maplist(term_string, Metadata.access_contracts, AccessStrings0),
+    sort(AccessStrings0, AccessStrings),
+    maplist(atom_string, AccessAtoms, AccessStrings),
+    maplist(clj_string_literal_local, AccessAtoms, AccessLiterals),
+    atomic_list_concat(AccessLiterals, ' ', AccessBody),
+    format(atom(Literal), '[~w]', [AccessBody]).
+
+preprocess_options_literal(Options, Literal) :-
+    maplist(term_string, Options, OptionStrings0),
+    maplist(atom_string, OptionAtoms, OptionStrings0),
+    maplist(clj_string_literal_local, OptionAtoms, OptionLiterals),
+    atomic_list_concat(OptionLiterals, ' ', OptionBody),
+    format(atom(Literal), '[~w]', [OptionBody]).
 
 relation_manifest_shape(article_category, artifact,
                         'article_category_by_article.tsv',
