@@ -271,6 +271,7 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
 
 
 def print_summary(results: list[RunResult]) -> None:
+    seed_subset_probe = wam_seed_subset_probe_enabled()
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
     for scale, entries in group_results_by_scale(results, sort_key=scale_sort_key):
         print_result_table(entries, scale)
@@ -301,12 +302,12 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_prolog_root_accumulated", qe, prolog_root_accumulated)
         print_pair_match_status(scale, "query_vs_wam_rust_seeded", qe, wam_rust_seeded)
         print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
-        print_pair_match_status(scale, "query_vs_wam_rust_seeded_no_kernels", qe, wam_rust_seeded_no_kernels)
-        print_pair_match_status(scale, "query_vs_wam_rust_accumulated_no_kernels", qe, wam_rust_accumulated_no_kernels)
+        print_no_kernel_match_status(scale, "query_vs_wam_rust_seeded_no_kernels", qe, wam_rust_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_match_status(scale, "query_vs_wam_rust_accumulated_no_kernels", qe, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "prolog_vs_wam_rust_seeded", prolog_accumulated, wam_rust_seeded)
         print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
-        print_pair_match_status(scale, "prolog_vs_wam_rust_seeded_no_kernels", prolog_accumulated, wam_rust_seeded_no_kernels)
-        print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated_no_kernels", prolog_accumulated, wam_rust_accumulated_no_kernels)
+        print_no_kernel_match_status(scale, "prolog_vs_wam_rust_seeded_no_kernels", prolog_accumulated, wam_rust_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_match_status(scale, "prolog_vs_wam_rust_accumulated_no_kernels", prolog_accumulated, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
         print_pair_match_status(scale, "query_vs_prolog_eff_semantic", qe, prolog_eff_semantic)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
@@ -334,6 +335,25 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "wam-rust-accumulated-no-kernels-metrics", wam_rust_accumulated_no_kernels)
         print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
         print_phase_metrics(scale, "prolog-eff-semantic-metrics", prolog_eff_semantic)
+
+
+def wam_seed_subset_probe_enabled() -> bool:
+    return bool(os.environ.get("WAM_SEED_LIMIT") or os.environ.get("WAM_SEED_FILTER"))
+
+
+def print_no_kernel_match_status(
+    scale: str,
+    label: str,
+    left: RunResult | None,
+    right: RunResult | None,
+    seed_subset_probe: bool,
+) -> None:
+    if not (left and right):
+        return
+    if seed_subset_probe:
+        print(f"{scale}\t{label}\tSKIPPED_SEED_SUBSET")
+        return
+    print_pair_match_status(scale, label, left, right)
 
 
 def scale_sort_key(scale: str) -> tuple[int, str]:
@@ -385,6 +405,8 @@ def main() -> int:
                 continue
             elif target == "prolog-root-accumulated":
                 continue
+            # WAM-Rust variants are generated per scale because facts and
+            # optional optimized helpers are loaded into the generated project.
             elif target == "wam-rust-seeded":
                 continue
             elif target == "wam-rust-accumulated":

@@ -796,10 +796,16 @@ fn main() {
         }
     }
     if let Ok(limit_raw) = std::env::var("WAM_SEED_LIMIT") {
-        if let Ok(limit) = limit_raw.parse::<usize>() {
-            if limit > 0 && seed_cats.len() > limit {
-                seed_cats.truncate(limit);
+        match limit_raw.parse::<usize>() {
+            Ok(limit) => {
+                if limit > 0 && seed_cats.len() > limit {
+                    seed_cats.truncate(limit);
+                }
             }
+            Err(_) => eprintln!(
+                "[WAM-Rust] WARNING: WAM_SEED_LIMIT={} is not a valid usize, ignoring",
+                limit_raw,
+            ),
         }
     }
     let seed_count = seed_cats.len();
