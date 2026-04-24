@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels,haskell-wam-seeded,haskell-wam-accumulated",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels,haskell-wam-seeded,haskell-wam-accumulated,haskell-wam-seeded-no-kernels,haskell-wam-accumulated-no-kernels",
     )
     parser.add_argument(
         "--repetitions",
@@ -316,6 +316,8 @@ def print_summary(results: list[RunResult]) -> None:
         wam_rust_accumulated_no_kernels = find_result(entries, "wam-rust-accumulated-no-kernels")
         haskell_wam_seeded = find_result(entries, "haskell-wam-seeded")
         haskell_wam_accumulated = find_result(entries, "haskell-wam-accumulated")
+        haskell_wam_seeded_no_kernels = find_result(entries, "haskell-wam-seeded-no-kernels")
+        haskell_wam_accumulated_no_kernels = find_result(entries, "haskell-wam-accumulated-no-kernels")
         prolog_semantic_min = find_result(entries, "prolog-semantic-min")
         prolog_eff_semantic = find_result(entries, "prolog-eff-semantic")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
@@ -334,14 +336,20 @@ def print_summary(results: list[RunResult]) -> None:
         print_no_kernel_match_status(scale, "query_vs_wam_rust_accumulated_no_kernels", qe, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "query_vs_haskell_wam_seeded", qe, haskell_wam_seeded)
         print_pair_match_status(scale, "query_vs_haskell_wam_accumulated", qe, haskell_wam_accumulated)
+        print_no_kernel_match_status(scale, "query_vs_haskell_wam_seeded_no_kernels", qe, haskell_wam_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_match_status(scale, "query_vs_haskell_wam_accumulated_no_kernels", qe, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "prolog_vs_wam_rust_seeded", prolog_accumulated, wam_rust_seeded)
         print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
         print_no_kernel_match_status(scale, "prolog_vs_wam_rust_seeded_no_kernels", prolog_accumulated, wam_rust_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "prolog_vs_wam_rust_accumulated_no_kernels", prolog_accumulated, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "prolog_vs_haskell_wam_seeded", prolog_accumulated, haskell_wam_seeded)
         print_pair_match_status(scale, "prolog_vs_haskell_wam_accumulated", prolog_accumulated, haskell_wam_accumulated)
+        print_no_kernel_match_status(scale, "prolog_vs_haskell_wam_seeded_no_kernels", prolog_accumulated, haskell_wam_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_match_status(scale, "prolog_vs_haskell_wam_accumulated_no_kernels", prolog_accumulated, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "wam_rust_vs_haskell_wam_seeded", wam_rust_seeded, haskell_wam_seeded)
         print_pair_match_status(scale, "wam_rust_vs_haskell_wam_accumulated", wam_rust_accumulated, haskell_wam_accumulated)
+        print_no_kernel_match_status(scale, "wam_rust_vs_haskell_wam_seeded_no_kernels", wam_rust_seeded_no_kernels, haskell_wam_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_match_status(scale, "wam_rust_vs_haskell_wam_accumulated_no_kernels", wam_rust_accumulated_no_kernels, haskell_wam_accumulated_no_kernels, seed_subset_probe)
         print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
         print_pair_match_status(scale, "query_vs_prolog_eff_semantic", qe, prolog_eff_semantic)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
@@ -357,8 +365,12 @@ def print_summary(results: list[RunResult]) -> None:
         print_no_kernel_speedup(scale, "speedup_vs_wam_rust_accumulated_no_kernels", wam_rust_accumulated_no_kernels, qe, seed_subset_probe)
         print_speedup(scale, "speedup_vs_haskell_wam_seeded", haskell_wam_seeded, qe)
         print_speedup(scale, "speedup_vs_haskell_wam_accumulated", haskell_wam_accumulated, qe)
+        print_no_kernel_speedup(scale, "speedup_vs_haskell_wam_seeded_no_kernels", haskell_wam_seeded_no_kernels, qe, seed_subset_probe)
+        print_no_kernel_speedup(scale, "speedup_vs_haskell_wam_accumulated_no_kernels", haskell_wam_accumulated_no_kernels, qe, seed_subset_probe)
         print_speedup(scale, "wam_rust_speedup_vs_haskell_seeded", haskell_wam_seeded, wam_rust_seeded)
         print_speedup(scale, "wam_rust_speedup_vs_haskell_accumulated", haskell_wam_accumulated, wam_rust_accumulated)
+        print_no_kernel_speedup(scale, "wam_rust_speedup_vs_haskell_seeded_no_kernels", haskell_wam_seeded_no_kernels, wam_rust_seeded_no_kernels, seed_subset_probe)
+        print_no_kernel_speedup(scale, "wam_rust_speedup_vs_haskell_accumulated_no_kernels", haskell_wam_accumulated_no_kernels, wam_rust_accumulated_no_kernels, seed_subset_probe)
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_speedup(scale, "speedup_vs_prolog_eff_semantic", prolog_eff_semantic, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
@@ -373,6 +385,8 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "wam-rust-accumulated-no-kernels-metrics", wam_rust_accumulated_no_kernels)
         print_phase_metrics(scale, "haskell-wam-seeded-metrics", haskell_wam_seeded)
         print_phase_metrics(scale, "haskell-wam-accumulated-metrics", haskell_wam_accumulated)
+        print_phase_metrics(scale, "haskell-wam-seeded-no-kernels-metrics", haskell_wam_seeded_no_kernels)
+        print_phase_metrics(scale, "haskell-wam-accumulated-no-kernels-metrics", haskell_wam_accumulated_no_kernels)
         print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
         print_phase_metrics(scale, "prolog-eff-semantic-metrics", prolog_eff_semantic)
 
@@ -471,6 +485,10 @@ def main() -> int:
                 continue
             elif target == "haskell-wam-accumulated":
                 continue
+            elif target == "haskell-wam-seeded-no-kernels":
+                continue
+            elif target == "haskell-wam-accumulated-no-kernels":
+                continue
             elif target == "prolog-semantic-min":
                 continue
             elif target == "prolog-eff-semantic":
@@ -503,6 +521,10 @@ def main() -> int:
                     command = build_haskell_wam_effective_distance(temp_root, scale, "seeded")
                 elif target == "haskell-wam-accumulated":
                     command = build_haskell_wam_effective_distance(temp_root, scale, "accumulated")
+                elif target == "haskell-wam-seeded-no-kernels":
+                    command = build_haskell_wam_effective_distance(temp_root, scale, "seeded_no_kernels")
+                elif target == "haskell-wam-accumulated-no-kernels":
+                    command = build_haskell_wam_effective_distance(temp_root, scale, "accumulated_no_kernels")
                 elif target == "prolog-semantic-min":
                     command = build_prolog_semantic_min(temp_root, scale)
                 elif target == "prolog-eff-semantic":

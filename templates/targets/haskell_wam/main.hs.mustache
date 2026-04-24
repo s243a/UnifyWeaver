@@ -7,7 +7,7 @@ import qualified Data.IntSet as IS
 import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import Control.Parallel.Strategies (parMap, rdeepseq)
@@ -37,6 +37,29 @@ splitOn _ [] = [""]
 splitOn d (c:cs)
   | c == d    = "" : splitOn d cs
   | otherwise = let (w:ws) = splitOn d cs in (c:w) : ws
+
+-- | Apply the same seed-subset controls as the Rust WAM benchmark driver.
+applySeedControls :: [String] -> IO ([String], Maybe String, Maybe String)
+applySeedControls seedCats0 = do
+    seedFilter <- lookupEnv "WAM_SEED_FILTER"
+    seedLimit <- lookupEnv "WAM_SEED_LIMIT"
+    let filtered = case seedFilter of
+          Nothing -> seedCats0
+          Just raw ->
+            let wanted = filter (not . null) $ map trim $ splitOn '|' raw
+            in if null wanted then seedCats0 else filter (`elem` wanted) seedCats0
+    limited <- case seedLimit of
+      Nothing -> return filtered
+      Just raw -> case reads raw :: [(Int, String)] of
+        [(limit, "")] | limit > 0 -> return (take limit filtered)
+        [(limit, "")] | limit <= 0 -> return filtered
+        _ -> do
+          hPutStrLn stderr $ "[WAM-Haskell] WARNING: WAM_SEED_LIMIT=" ++ raw ++ " is not a valid Int, ignoring"
+          return filtered
+    return (limited, seedLimit, seedFilter)
+  where
+    trim = f . f
+      where f = reverse . dropWhile (`elem` [' ', '\t', '\r', '\n'])
 
 -- | Build SwitchOnConstant dispatch table from grouped facts.
 buildFactIndex :: [(String, String)] -> Map.Map String [(String, String)]
@@ -125,10 +148,11 @@ main = do
         mergedCode = resolveCallInstrs mergedLabels foreignPreds mergedCodeRaw
 
     -- Collect seed categories
-    let seedCats = nub $ sort $ map snd articleCategories
+    let seedCatsAll = nub $ sort $ map snd articleCategories
         root = head roots
         n = 5.0 :: Double
         negN = -n
+    (seedCats, seedLimitMetric, seedFilterMetric) <- applySeedControls seedCatsAll
 
     -- Build child -> [parents] index in interned form for the FFI fast path.
     let !parentsIndexInterned = IM.fromListWith (++)
@@ -208,6 +232,8 @@ main = do
     hPutStrLn stderr $ "aggregation_ms=" ++ show aggMs
     hPutStrLn stderr $ "total_ms=" ++ show totalMs
     hPutStrLn stderr $ "seed_count=" ++ show (length seedCats)
+    maybe (return ()) (\v -> hPutStrLn stderr $ "seed_limit=" ++ v) seedLimitMetric
+    maybe (return ()) (\v -> hPutStrLn stderr $ "seed_filter=" ++ v) seedFilterMetric
     hPutStrLn stderr $ "tuple_count=" ++ show (Map.size seedWeightSums)
     hPutStrLn stderr $ "article_count=" ++ show (length results)
 {{demand_metrics}}
