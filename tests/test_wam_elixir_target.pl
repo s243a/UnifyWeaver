@@ -821,6 +821,74 @@ test_par_wrap_segment_rejects_impure :-
     ;   fail_test(Test, 'purity gate did not reject unknown predicate')
     ).
 
+%% switch_arm_targets(+Instrs, -Targets)
+%  Extract the non-default arm targets from the first segment's
+%  switch_on_constant instruction. Used by the switch-arm coverage
+%  test to confirm every switch target corresponds to a segment in
+%  the Segments list — the invariant par_wrap_segment/4 relies on
+%  to fan out all clause alternatives when first-arg indexing is
+%  present.
+%
+%  Each arm is represented as a string "Key:Target" (not a compound
+%  term), so splitting on ":" is required to extract the target.
+switch_arm_targets(Instrs, Targets) :-
+    member(_PC-switch_on_constant(Arms), Instrs),
+    !,
+    findall(TargetStr,
+            (  member(Arm, Arms),
+               split_string(Arm, ":", "", [_KeyStr, TargetStr]),
+               TargetStr \= "default"
+            ),
+            Targets).
+switch_arm_targets(_, []).
+
+test_switch_arm_targets_are_segments :-
+    Test = 'Tier-2 wrapper: switch_on_constant arm targets are all named segments (prereq 1)',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    Segments = [_-FirstInstrs | _],
+    switch_arm_targets(FirstInstrs, ArmTargets),
+    % Turn each segment name into an atom for comparison.
+    findall(Name, member(Name-_, Segments), SegNames),
+    % Every non-default arm target must appear as a segment name.
+    (   ArmTargets \= [],
+        forall(member(T, ArmTargets), memberchk(T, SegNames))
+    ->  pass(Test)
+    ;   format(atom(Reason),
+               'arm targets ~w not all in segment names ~w',
+               [ArmTargets, SegNames]),
+        fail_test(Test, Reason)
+    ).
+
+test_par_wrap_segment_covers_switch_targets :-
+    Test = 'Tier-2 wrapper: emitted branch list references every switch_on_constant target',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            atom_string(WamCode, WamStr),
+            split_string(WamStr, "\n", "", Lines),
+            wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+            Segments = [_-FirstInstrs | _],
+            switch_arm_targets(FirstInstrs, ArmTargets),
+            par_wrap_segment(small_fact/2, Segments, [], Code),
+            Code \= "",
+            % For each switch arm target, confirm the emitted super-wrapper
+            % references &clause_<camelCase(target)>_impl/1.
+            forall(member(Target, ArmTargets),
+                   (  wam_elixir_lowered_emitter:segment_func_name(Target, BaseFunc),
+                      format(string(ImplRef), '&~w_impl/1', [BaseFunc]),
+                      sub_string(Code, _, _, _, ImplRef)
+                   ))
+        ->  pass(Test)
+        ;   fail_test(Test, 'emitted branch list does not cover every switch_on_constant target')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
 test_par_wrap_segment_kill_switch :-
     Test = 'Tier-2 wrapper: intra_query_parallel(false) option forces fall-through',
     setup_call_cleanup(
@@ -900,6 +968,8 @@ run_tests :-
     test_par_wrap_segment_references_all_branches,
     test_par_wrap_segment_rejects_two_clauses,
     test_par_wrap_segment_rejects_impure,
+    test_switch_arm_targets_are_segments,
+    test_par_wrap_segment_covers_switch_targets,
     test_par_wrap_segment_kill_switch,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
