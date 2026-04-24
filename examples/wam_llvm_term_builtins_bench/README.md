@@ -212,18 +212,44 @@ broken aliasing, so `run_loop → false`.
      out to be insufficient a realloc path will be needed. **Landed.**
 
   5. Ref-based `put_variable` + binding-site migration: **attempted
-     and reverted (twice).** First attempt regressed
-     `bench_sum_medium/big` to wrong-answer FAIL; second attempt
-     (with CP heap rewinding in place) changed the symptom to a
-     deterministic segfault on first sum_small call. Root cause still
-     not fully diagnosed. Trail-capacity growth (step 4) rules out
-     one of the leading hypotheses, but there may be more. Separate
-     follow-up.
+     three times and reverted each time.** Third attempt (with all
+     four prerequisites above in place) finally diagnosed the root
+     cause, which is **not** in the Ref migration itself but in a
+     pre-existing WAM-LLVM register layout issue:
+
+     **Y-registers and X-registers share the same physical slots.**
+     `src/unifyweaver/bindings/llvm_wam_bindings.pl:73-85` maps both
+     `Yn` and `Xn` to index `n + 15` in the 32-slot `[32 x %Value]`
+     register array. Canonical WAM keeps Y-regs in per-call env
+     frames; this target flattened them into the X-reg space. As
+     long as Y-regs were treated as "just temporaries that happen to
+     survive allocate/deallocate", the naive put_variable scheme
+     (two independent Unbound structs in both regs) papered over the
+     issue — any inner-call trashing of outer's Y-regs got masked by
+     the aliasing that wasn't there.
+
+     With Ref-based put_variable, the Y-reg collisions become
+     visible: when an inner predicate does `get_variable Y3, A1`, it
+     writes the outer caller's Y3 slot. When the outer resumes after
+     the call and does `set_value Y3` (e.g. to pass the current
+     index to an arithmetic compound), it reads the trashed value.
+     `bench_sum_small` works by coincidence because the arg values
+     happen to equal the iteration indices (`f(1,2,3)` — arg at
+     position I equals I). `bench_sum_medium` breaks because
+     `g(2,3)` as an arg makes `arg_value != I`.
+
+     **Proper fix** needs Y-regs to live in per-call env frames,
+     with `allocate` reserving Y-slots, `deallocate` popping them,
+     and `get_variable Yn` / `set_value Yn` reading/writing the top
+     env frame's Y-array. That is a substantial refactor touching
+     `allocate`, `deallocate`, every Y-reg access in
+     `wam_line_to_llvm_literal`, and probably backtrack's register
+     restore. Out of scope for Phase 0 / initial Ref work.
 
 The structural-equals, Ref-aware helpers, CP-heap-top rewinding, and
-trail headroom are the four pieces the future put_variable Ref fix
-will need. The remaining blocker is diagnostic: clean up whatever in
-the binding-site migration is segfaulting on deep recursion.
+trail headroom remain useful — they will all be needed when the
+Y-reg env-frame refactor lands, after which the Ref-based
+put_variable migration can finally succeed.
 
 ### `put_constant` tag fix (landed in this PR)
 
