@@ -418,6 +418,66 @@ Prototype status:
   `UNIFYWEAVER_RELATION_SOURCE_MODE` plus `UNIFYWEAVER_RELATION_ARTIFACT_DIR`
   without re-implementing artifact registration in each generated template.
 
+### N-ary delimited artifact direction
+
+The current C# artifact implementation is deliberately binary. Wider
+delimited relations can now use the same runtime-configured source registration
+path, but `artifact` and `artifact-prebuilt` modes fall back to preloaded rows
+for arities other than 2. That is the correct interim behavior: it preserves
+answers and source-mode wiring without pretending the `.uwbr` sidecars support
+general row shapes.
+
+A general delimited artifact should be a new format revision, not an implicit
+reinterpretation of the binary files. The row file should keep the existing
+length-prefixed string-cell encoding, but record `arity > 0` as first-class
+metadata and avoid names that imply binary-only relations. A possible naming
+scheme is:
+
+- `.uwrel` for row data
+- `.uwrel.json` for the manifest
+- `.colN.uwreli` for single-column index entries
+- `.colsA_B.uwreli` for composite-key index entries
+- `.colsA_B.uwrelb` for sorted covering bucket sidecars
+
+The manifest needs to describe index coverage explicitly:
+
+```json
+{
+  "format": "unifyweaver.delimited-relation",
+  "version": 1,
+  "predicate": "sale_item/3",
+  "arity": 3,
+  "row_count": 100000,
+  "source_hash": "sha256:...",
+  "row_encoding": "length_prefixed_utf8_cells",
+  "indexes": [
+    { "columns": [0], "kind": "offset_directory" },
+    { "columns": [0, 1], "kind": "covering_bucket" }
+  ]
+}
+```
+
+The planner should request access by key shape rather than by artifact file:
+
+- full scan: any exact artifact can replay rows
+- single-column lookup: requires an index for `[column]`
+- composite lookup: requires an index for the exact bound column list
+- join bucket merge: requires sorted covering buckets for the join key columns
+- projection-heavy plans: prefer covering buckets only when they include all
+  columns needed downstream, otherwise account for row-file seeks
+
+The first implementation should target one measured case: a TSV relation with
+arity 3 and a composite lookup or join on columns `[0, 1]`. That exercises the
+real reason to go beyond binary artifacts without committing to every possible
+index combination. Builder defaults should remain conservative: emit the row
+file plus indexes only for columns the generated query or benchmark actually
+uses. A future declaration syntax can request additional indexes up front.
+
+Fallback policy stays the same as the current configured provider policy:
+binary artifacts use the proven binary path, N-ary artifacts are used only when
+the manifest supports the requested access, and unsupported or stale artifacts
+fall back to preload unless the caller explicitly asks to fail.
+
 ## Success Criteria
 
 - A valid artifact can replace runtime-built state for a narrow exact predicate
