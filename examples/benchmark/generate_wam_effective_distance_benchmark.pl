@@ -27,11 +27,13 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [seeded|accumulated]
+%%       <facts.pl> <output-dir> [seeded|accumulated|seeded_no_kernels|accumulated_no_kernels]
 %%
 %% Variants:
-%%   seeded      - base category_ancestor + host-side Rust accumulation
-%%   accumulated - Prolog-generated effective_distance_sum helpers compiled into WAM
+%%   seeded                 - base category_ancestor + host-side Rust accumulation
+%%   accumulated            - Prolog-generated effective_distance_sum helpers compiled into WAM
+%%   seeded_no_kernels      - seeded, with native recursive kernels disabled
+%%   accumulated_no_kernels - accumulated, with native recursive kernels disabled
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -45,7 +47,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir]
     ->  VariantAtom = seeded
     ;   format(user_error,
-            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir> [seeded|accumulated]~n',
+            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir> [seeded|accumulated|seeded_no_kernels|accumulated_no_kernels]~n',
             []),
         halt(1)
     ),
@@ -57,20 +59,24 @@ main :-
     halt(1).
 
 generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
-    parse_variant(VariantAtom, OptimizationOptions),
+    parse_variant(VariantAtom, BaseVariant, KernelMode, OptimizationOptions),
     % Load the benchmark workload to get predicate definitions
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
 
-    maybe_load_optimized_predicates(VariantAtom, OptimizationOptions),
-    collect_wam_predicates(VariantAtom, WamPredicates),
-    format(user_error, '[WAM-Rust] variant=~w predicates=~w~n',
-           [VariantAtom, WamPredicates]),
+    maybe_load_optimized_predicates(BaseVariant, OptimizationOptions),
+    collect_wam_predicates(BaseVariant, WamPredicates),
+    format(user_error, '[WAM-Rust] variant=~w base_variant=~w kernels=~w predicates=~w~n',
+           [VariantAtom, BaseVariant, KernelMode, WamPredicates]),
 
     % Auto-detect FFI kernels from predicate clauses
-    wam_rust_target:detect_kernels(WamPredicates, DetectedKernels),
+    (   KernelMode == kernels_off
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-Rust] native kernels disabled; using WAM fallback~n', [])
+    ;   wam_rust_target:detect_kernels(WamPredicates, DetectedKernels)
+    ),
     (   DetectedKernels \= []
     ->  pairs_keys(DetectedKernels, DetectedKeys),
         format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
@@ -99,12 +105,23 @@ generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
 
     format(user_error, '[WAM-Rust] Generated benchmark project at: ~w~n', [OutputDir]).
 
-parse_variant(seeded, [
+parse_variant(seeded, seeded, kernels_on, [
     dialect(swi),
     branch_pruning(false),
     min_closure(false)
 ]).
-parse_variant(accumulated, [
+parse_variant(accumulated, accumulated, kernels_on, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false),
+    seeded_accumulation(auto)
+]).
+parse_variant(seeded_no_kernels, seeded, kernels_off, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+parse_variant(accumulated_no_kernels, accumulated, kernels_off, [
     dialect(swi),
     branch_pruning(false),
     min_closure(false),
@@ -778,6 +795,13 @@ fn main() {
             seed_cats.retain(|cat| wanted.contains(cat));
         }
     }
+    if let Ok(limit_raw) = std::env::var("WAM_SEED_LIMIT") {
+        if let Ok(limit) = limit_raw.parse::<usize>() {
+            if limit > 0 && seed_cats.len() > limit {
+                seed_cats.truncate(limit);
+            }
+        }
+    }
     let seed_count = seed_cats.len();
 
     let root = roots[0].clone();
@@ -976,6 +1000,12 @@ fn main() {
     eprintln!("aggregation_ms={}", agg_ms);
     eprintln!("total_ms={}", total_ms);
     eprintln!("seed_count={}", seed_count);
+    if let Ok(seed_limit) = std::env::var("WAM_SEED_LIMIT") {
+        eprintln!("seed_limit={}", seed_limit);
+    }
+    if let Ok(seed_filter) = std::env::var("WAM_SEED_FILTER") {
+        eprintln!("seed_filter={}", seed_filter);
+    }
     eprintln!("tuple_count={}", seed_weight_sums.len());
     eprintln!("article_count={}", results.len());
     eprintln!("total_steps={}", total_steps);
