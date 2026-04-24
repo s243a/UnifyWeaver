@@ -2167,7 +2167,13 @@ wam_llvm_case('set_constant',
 % --- Control Instructions ---
 
 wam_llvm_case('allocate',
-'  ; Push environment frame: save CP on stack
+'  ; Push environment frame: save CP on stack and snapshot Y-regs.
+  ; Y-regs (regs[16..31]) share physical slots with X-regs in this
+  ; target; save/restore at allocate/deallocate boundaries gives each
+  ; clause its own isolated Y-space — an inner predicate writing its
+  ; Y-regs no longer clobbers the outer caller. Canonical WAM stores
+  ; Y-regs in env frames directly; we snapshot instead to keep every
+  ; other instruction body unchanged.
   %alloc.ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   %alloc.ss = load i32, i32* %alloc.ss_ptr
   %alloc.stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
@@ -2181,6 +2187,12 @@ wam_llvm_case('allocate',
   %alloc.cp_ext = zext i32 %alloc.cp to i64
   %alloc.aux_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 1
   store i64 %alloc.cp_ext, i64* %alloc.aux_ptr
+  ; Snapshot regs[16..31] (the Y-reg window) into the env frame.
+  %alloc.y_src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
+  %alloc.y_dst = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 3, i32 0
+  %alloc.y_src_i8 = bitcast %Value* %alloc.y_src to i8*
+  %alloc.y_dst_i8 = bitcast %Value* %alloc.y_dst to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 256, i1 false)
   ; Increment stack size
   %alloc.new_ss = add i32 %alloc.ss, 1
   store i32 %alloc.new_ss, i32* %alloc.ss_ptr
@@ -2222,6 +2234,14 @@ dealloc.restore:
   %dealloc.saved_cp = load i64, i64* %dealloc.aux_ptr
   %dealloc.cp = trunc i64 %dealloc.saved_cp to i32
   call void @wam_set_cp(%WamState* %vm, i32 %dealloc.cp)
+  ; Restore regs[16..31] (Y-reg window) from the env frame snapshot.
+  ; This is what makes Y-regs per-clause-local even though they share
+  ; physical slots with X-regs — see allocate for the save side.
+  %dealloc.y_src = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 3, i32 0
+  %dealloc.y_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
+  %dealloc.y_src_i8 = bitcast %Value* %dealloc.y_src to i8*
+  %dealloc.y_dst_i8 = bitcast %Value* %dealloc.y_dst to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 256, i1 false)
   ; Pop stack down to this frame (exclusive)
   store i32 %dealloc.prev_idx, i32* %dealloc.ss_ptr
   br label %dealloc.done

@@ -22,8 +22,10 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
   call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
-  ; Allocate stack (initial capacity 256)
-  %stack_mem = call i8* @malloc(i64 6144)  ; 256 * sizeof(StackEntry)
+  ; Allocate stack (initial capacity 256). StackEntry grew from 24 to
+  ; 280 bytes after the Y-save/restore refactor (16 %Value slots per
+  ; entry). Size: 256 * 280 = 71 680 B.
+  %stack_mem = call i8* @malloc(i64 71680)  ; 256 * sizeof(StackEntry)
   %stack_typed = bitcast i8* %stack_mem to %StackEntry*
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   store %StackEntry* %stack_typed, %StackEntry** %stack_ptr

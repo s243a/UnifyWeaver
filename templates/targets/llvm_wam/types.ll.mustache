@@ -33,7 +33,15 @@
 
 ; === Stack Entries ===
 ; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
-%StackEntry = type { i32, i64, %Value* }  ; type, aux (cp or n), data
+; y_save: for EnvFrame entries, snapshot of regs[16..31] at allocate time.
+; The LLVM target maps both Xn and Yn into the same `n+15` register index
+; (src/unifyweaver/bindings/llvm_wam_bindings.pl); without save/restore,
+; an inner predicate's `get_variable Y3, A1` clobbers the outer caller's
+; Y3 slot. allocate now snapshots regs[16..31] into y_save on push;
+; deallocate copies it back before popping. UnifyCtx / WriteCtx entries
+; do not use y_save but carry it as dead space (same struct type for
+; uniform pushes/pops).
+%StackEntry = type { i32, i64, %Value*, [16 x %Value] }  ; type, aux, data, y_save
 
 ; === Trail Entry ===
 %TrailEntry = type { i32, %Value }        ; register index, old value

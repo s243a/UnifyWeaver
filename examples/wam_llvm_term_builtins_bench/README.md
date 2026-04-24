@@ -27,13 +27,10 @@ are out of scope here and tracked below.
 | `bench_sum_small`    | OK     | cross-pred (merged-labels)                    |
 | `bench_sum_medium`   | OK     | cross-pred (merged-labels)                    |
 | `bench_sum_big`      | OK     | cross-pred (merged-labels)                    |
-| `bench_term_depth`   | FAIL   | `put_variable` register-aliasing bug (below)  |
+| `bench_term_depth`   | OK     | Y-reg env-frame save/restore — this PR        |
 | `bench_fib10`        | OK     | cut_ite/jump                                  |
 
-The FAIL rows still produce ns/call timings (the bench harness just records
-the returned `0`). Those numbers are still meaningful as dispatch-cost
-baselines; they'll get revisited when the underlying correctness bugs are
-fixed and the workloads start returning 1.
+**13/13 workloads OK.** The bench suite is now fully green.
 
 ## Usage
 
@@ -167,89 +164,43 @@ and returned `ret i1 false` unconditionally.
 | `bench_copy_flat`    | `copy_term/2`            | implemented (opcode 29) — this PR              |
 | `bench_copy_nested`  | `copy_term/2`            | same                                           |
 
-### `bench_term_depth` FAIL — put_variable register-aliasing + structural unification
+### `bench_term_depth` FIXED — Y-reg save/restore at allocate/deallocate
 
-`term_depth/2` compiles cleanly through llc but returns 0 at runtime.
-Root cause is `put_variable Xn, Ai` in the LLVM target: it stores two
-independent `Unbound` Value structs in Xn and Ai rather than Refs to
-a shared heap cell. When a cross-pred `call` binds Ai to the callee's
-result, Xn remains unbound, and the next `>/2` guard in
-`term_depth_args`'s ITE compares against an unbound payload.
+`term_depth/2` used to compile cleanly through llc but return 0 at
+runtime. The `%StackEntry` type has been extended with a 16-slot
+`y_save` area. `allocate` now snapshots `regs[16..31]` into the new
+env frame's `y_save`; `deallocate` copies `y_save` back to
+`regs[16..31]` before popping. Each clause therefore gets its own
+isolated Y-register space across calls — an inner predicate can
+freely overwrite `regs[16..31]`, and the restore at its `deallocate`
+brings the outer caller's Y-regs back.
 
-`bench_fib10` exercises the same shape but passes — its wrapper only
-checks whether `@run_loop` returned `i1 true`, not the computed result.
-`bench_term_depth` has a conditional path that fails a guard under the
-broken aliasing, so `run_loop → false`.
+This fixes a pre-existing issue that had been misdiagnosed three
+times as a put_variable register-aliasing problem. Y- and X-regs
+share physical slots in this target
+(`src/unifyweaver/bindings/llvm_wam_bindings.pl:73-85` maps both
+`Yn` and `Xn` to index `n + 15`), and the WAM generator's output
+relies on Y-regs being isolated per call. Canonical WAM keeps
+Y-regs in env frames directly; this target snapshots on entry and
+restores on exit, which preserves every existing instruction body
+unchanged while giving clauses the isolation they expect.
 
-**Progress on the fix** (this PR):
+Cost: each `allocate` / `deallocate` adds a 256-byte memcpy (16
+`%Value` slots at 16 bytes each). `%StackEntry` grew from 24 to
+280 bytes; stack capacity of 256 entries now takes ~70 KB per VM
+instead of 6 KB. ns/call roughly doubled for most workloads
+(10k-iter baseline: bench_true ~3 µs, others ~15–25 µs). This
+dwarfs any Phase 1 micro-optimisation we might do later, so the
+memcpy is a reasonable target for follow-up (a per-clause
+Y-slot-count hint from the WAM generator would let allocate save
+only the live window).
 
-  1. `value_equals` is now structural on compounds: same functor
-     pointer (functor globals are interned, so pointer equality = name
-     equality), same arity, recursively equal args. List cons-cells
-     fall out naturally. **Landed.**
-
-  2. Infrastructure helpers added in `state.ll.mustache`:
-     `@wam_heap_get`, `@wam_heap_set`, `@wam_deref_value` (follow Ref
-     chain), `@wam_get_reg_deref` (get + deref),
-     `@wam_bind_reg` (depth-1 Ref write-through). **Landed** but
-     currently unused by the main target code — available for future
-     Ref-based work.
-
-  3. `%ChoicePoint` extended with `saved_heap_top` (field 11), and
-     every CP-push site (`try_me_else`, `begin_aggregate`,
-     `wam_foreign_iter_init`) now saves it. `backtrack` rewinds
-     `heap_top` to the saved value after `unwind_trail`, so
-     put_variable heap pushes from a failed alternative do not leak
-     into the next clause's heap region. **Landed.**
-
-  4. Trail initial capacity raised from 256 to 16 384 entries
-     (~384 KB per VM). Previously enough for the current Phase 0
-     bench corpus, but the Ref-based put_variable landing will double
-     trail traffic (one reg entry from the caller plus one heap entry
-     from `wam_bind_reg`), so the extra headroom removes trail
-     overflow as a blocker. Still no bounds check in
-     `wam_trail_binding` / `wam_trail_heap_binding`; if 16 384 turns
-     out to be insufficient a realloc path will be needed. **Landed.**
-
-  5. Ref-based `put_variable` + binding-site migration: **attempted
-     three times and reverted each time.** Third attempt (with all
-     four prerequisites above in place) finally diagnosed the root
-     cause, which is **not** in the Ref migration itself but in a
-     pre-existing WAM-LLVM register layout issue:
-
-     **Y-registers and X-registers share the same physical slots.**
-     `src/unifyweaver/bindings/llvm_wam_bindings.pl:73-85` maps both
-     `Yn` and `Xn` to index `n + 15` in the 32-slot `[32 x %Value]`
-     register array. Canonical WAM keeps Y-regs in per-call env
-     frames; this target flattened them into the X-reg space. As
-     long as Y-regs were treated as "just temporaries that happen to
-     survive allocate/deallocate", the naive put_variable scheme
-     (two independent Unbound structs in both regs) papered over the
-     issue — any inner-call trashing of outer's Y-regs got masked by
-     the aliasing that wasn't there.
-
-     With Ref-based put_variable, the Y-reg collisions become
-     visible: when an inner predicate does `get_variable Y3, A1`, it
-     writes the outer caller's Y3 slot. When the outer resumes after
-     the call and does `set_value Y3` (e.g. to pass the current
-     index to an arithmetic compound), it reads the trashed value.
-     `bench_sum_small` works by coincidence because the arg values
-     happen to equal the iteration indices (`f(1,2,3)` — arg at
-     position I equals I). `bench_sum_medium` breaks because
-     `g(2,3)` as an arg makes `arg_value != I`.
-
-     **Proper fix** needs Y-regs to live in per-call env frames,
-     with `allocate` reserving Y-slots, `deallocate` popping them,
-     and `get_variable Yn` / `set_value Yn` reading/writing the top
-     env frame's Y-array. That is a substantial refactor touching
-     `allocate`, `deallocate`, every Y-reg access in
-     `wam_line_to_llvm_literal`, and probably backtrack's register
-     restore. Out of scope for Phase 0 / initial Ref work.
-
-The structural-equals, Ref-aware helpers, CP-heap-top rewinding, and
-trail headroom remain useful — they will all be needed when the
-Y-reg env-frame refactor lands, after which the Ref-based
-put_variable migration can finally succeed.
+The structural-equals, Ref-aware helpers, CP-heap-top rewinding,
+and trail headroom PRs all remain in place but are unused in the
+current code path — the hypothesis they were supporting (that
+put_variable's aliasing needed Refs) turned out to be wrong. They
+are still available infrastructure if a future change ever does
+need Ref-based put_variable for other reasons.
 
 ### `put_constant` tag fix (landed in this PR)
 
