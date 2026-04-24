@@ -187,19 +187,13 @@ build_term_index([Head-_|Rest], I, Pred, Arity, [Type|RestTypes],
     ).
 
 format_switch_on_term(ConstEntries, StructEntries, IndexCode) :-
-    (   ConstEntries \= []
-    ->  format_index_entries(ConstEntries, CStr),
-        ConstPart = CStr
-    ;   ConstPart = "none"
-    ),
-    (   StructEntries \= []
-    ->  format_index_entries(StructEntries, SStr),
-        StructPart = SStr
-    ;   StructPart = "none"
-    ),
+    length(ConstEntries, CLen),
+    length(StructEntries, SLen),
+    format_index_entries(ConstEntries, CStr),
+    format_index_entries(StructEntries, SStr),
     format(string(IndexCode),
-           "    switch_on_term constant:~w, structure:~w",
-           [ConstPart, StructPart]).
+           "    switch_on_term ~w ~w ~w ~w",
+           [CLen, CStr, SLen, SStr]).
 
 %% build_second_arg_index(+Pred, +Arity, +Clauses, -IndexCode)
 %  When first-arg indexing fails (e.g., all variable first args),
@@ -239,7 +233,7 @@ format_index_entries(Entries, Str) :-
     maplist([K-V, S]>>(quote_wam_constant(K, KStr),
                        format(atom(S), "~w:~w", [KStr, V])),
             Entries, Parts),
-    atomic_list_concat(Parts, ', ', Str).
+    atomic_list_concat(Parts, ' ', Str).
 
 % ---------------------------------------------------------------------------
 % Constant quoting
