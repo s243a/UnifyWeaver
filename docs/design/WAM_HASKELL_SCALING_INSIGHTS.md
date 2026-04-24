@@ -61,6 +61,46 @@ With 2GB available RAM on this WSL instance:
 The `EdgeLookup = Int -> [Int]` abstraction makes the transition
 seamless — the kernel code is identical for both backends.
 
+### Crossover measured at 10M edges (enwiki)
+
+**The projected crossover happened.** Running the standalone
+`enwiki-dfs-benchmark` (at `examples/benchmark/enwiki_dfs_benchmark/`)
+against the full enwiki subcat graph (9,932,244 edges across 2,626,951
+distinct keys, ingested via the streaming pipeline), with 10,000
+random seeds sampled via reservoir-sampling and a fixed RNG:
+
+| Backend | Per-seed mean | Throughput | Ratio |
+|---------|--------------:|-----------:|------:|
+| IntMap (all edges in GHC heap) | 0.166 ms | 6,039 seeds/sec | 1.00× |
+| LMDB raw (long-lived read txn, dupsort cursor) | 0.159 ms | 6,278 seeds/sec | **0.96×** |
+
+At enwiki scale, **LMDB is slightly faster than IntMap** — flipping the
+ratio from 1.29× at 10k and 1.05× at 100k_cats. Both backends visit
+identical nodes (50,163 total across 10k seeds, avg 5.02 per seed,
+max depth 3-4), confirming apples-to-apples comparison.
+
+Startup cost is dramatically different:
+- **LMDB**: ~4s (reservoir sample over 2.6M distinct keys)
+- **IntMap**: ~51s (same reservoir sample plus loading 9.93M edges
+  into the GHC heap)
+
+That 47s load penalty is itself evidence of why the crossover
+happened: materializing the graph into `IntMap [Int]` pays a
+real cost at 10M edges that the mmap'd LMDB sidesteps entirely.
+
+### Updated scaling table
+
+| Scale | Edges | IntMap | LMDB (warm) | Ratio |
+|-------|------:|-------:|------------:|------:|
+| simplewiki 10k | ~25k | 532 ms | 684 ms | 1.29× IntMap wins |
+| 100k_cats | ~197k | 172,000 ms | 181,263 ms | 1.05× IntMap wins |
+| **enwiki 10k seeds** | **~10M** | **1,656 ms** | **1,593 ms** | **0.96× LMDB wins** |
+
+The LMDB advantage is modest at 10M (4%), but it's measured and
+consistent with the scaling prediction. At larger scales —
+full-enwiki query workloads, or more aggressive IntMap filling
+— the gap should widen further in LMDB's favor.
+
 ## Why Haskell is uniquely suited for this
 
 ### The in-memory story: persistent data structures
