@@ -55,6 +55,11 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
             continue
+        if target.startswith("haskell-wam-") and (
+            shutil.which("swipl") is None or shutil.which("cabal") is None or shutil.which("ghc") is None
+        ):
+            print(f"skip {target}: swipl, cabal, or ghc not found", file=sys.stderr)
+            continue
         if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
             print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
             continue
