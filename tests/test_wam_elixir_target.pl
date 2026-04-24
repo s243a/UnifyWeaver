@@ -7,7 +7,7 @@
 :- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
               [lower_predicate_to_elixir/4, classify_predicate/4,
                extract_facts/3, extract_arg1_index/3,
-               tier2_purity_eligible/3]).
+               tier2_purity_eligible/3, par_wrap_segment/4]).
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
@@ -749,6 +749,91 @@ test_tier2_purity_gate_accepts_declared :-
         retract(clause_body_analysis:order_independent(user:tier2_test_pred/2))
     ).
 
+%% par_wrap_segment/4 tests — exercise the three static gates (purity,
+%% clause count, kill-switch) plus the shape of the emitted super-wrapper.
+
+three_segment_fixture([
+    'clause_start'-[1-try_me_else(l_b), 2-proceed],
+    'l_b'-[3-retry_me_else(l_c), 4-proceed],
+    'l_c'-[5-trust_me, 6-proceed]
+]).
+
+two_segment_fixture([
+    'clause_start'-[1-try_me_else(l_b), 2-proceed],
+    'l_b'-[3-trust_me, 4-proceed]
+]).
+
+test_par_wrap_segment_emits_super_wrapper :-
+    Test = 'Tier-2 wrapper: 3-clause declared-pure predicate emits cond-based super-wrapper',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            Code \= "",
+            sub_string(Code, _, _, _, 'defp clause_main(state) do'),
+            sub_string(Code, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
+            sub_string(Code, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(Code, _, _, _, 'cut_point: state.choice_points'),
+            sub_string(Code, _, _, _, 'Task.async_stream'),
+            sub_string(Code, _, _, _, 'try do'),
+            sub_string(Code, _, _, _, '{:fail, _state} -> []'),
+            sub_string(Code, _, _, _, 'WamRuntime.merge_into_aggregate(state, branch_results)')
+        ->  pass(Test)
+        ;   fail_test(Test, 'super-wrapper shape missing')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_references_all_branches :-
+    Test = 'Tier-2 wrapper: branch list references every clause _impl function',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            sub_string(Code, _, _, _, '&clause_ClauseStart_impl/1'),
+            sub_string(Code, _, _, _, '&clause_LB_impl/1'),
+            sub_string(Code, _, _, _, '&clause_LC_impl/1')
+        ->  pass(Test)
+        ;   fail_test(Test, 'branch list does not reference all three clause _impl functions')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_rejects_two_clauses :-
+    Test = 'Tier-2 wrapper: 2-clause predicate falls through (clause-count gate)',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure2/2)),
+        (   two_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure2/2, Segs, [], Code),
+            Code == ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'clause-count gate did not reject 2-clause predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure2/2))
+    ).
+
+test_par_wrap_segment_rejects_impure :-
+    Test = 'Tier-2 wrapper: impure predicate falls through (no certificate)',
+    three_segment_fixture(Segs),
+    par_wrap_segment(no_such_pred/2, Segs, [], Code),
+    (   Code == ""
+    ->  pass(Test)
+    ;   fail_test(Test, 'purity gate did not reject unknown predicate')
+    ).
+
+test_par_wrap_segment_kill_switch :-
+    Test = 'Tier-2 wrapper: intra_query_parallel(false) option forces fall-through',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [intra_query_parallel(false)], Code),
+            Code == ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'kill-switch did not force fall-through')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -811,5 +896,10 @@ run_tests :-
     test_tier2_aggregate_forkable_types,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
+    test_par_wrap_segment_emits_super_wrapper,
+    test_par_wrap_segment_references_all_branches,
+    test_par_wrap_segment_rejects_two_clauses,
+    test_par_wrap_segment_rejects_impure,
+    test_par_wrap_segment_kill_switch,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
