@@ -22,9 +22,14 @@
     % Phase C first-argument indexing.
     extract_arg1_index/3,         % +Segments, +Arity, -IndexResult
     % Tier-2 purity gate (see docs/design/WAM_TIERED_LOWERING.md).
-    % Consumed by `par_wrap_segment/3` (PR2) to decide whether a
-    % predicate is eligible for host-native parallel emission.
-    tier2_purity_eligible/3       % +Pred, +Arity, -Cert
+    % Consumed by `par_wrap_segment/4` to decide whether a predicate
+    % is eligible for host-native parallel emission.
+    tier2_purity_eligible/3,      % +Pred, +Arity, -Cert
+    % Tier-2 super-wrapper emitter. Takes clause segments + options,
+    % emits either the cond-based Task.async_stream fan-out or an
+    % empty string (gates rejected). Not wired into the main emission
+    % path yet — live hook-up is a follow-on PR.
+    par_wrap_segment/4            % +Pred/Arity, +Segments, +Options, -Code
 ]).
 
 :- use_module(library(lists)).
@@ -890,6 +895,102 @@ lower_instr_list([], _, _, []).
 lower_instr_list([PC-Instr|Rest], Labels, FuncName, [Expr|Exprs]) :-
     wam_elixir_lower_instr(Instr, PC, Labels, FuncName, Expr),
     lower_instr_list(Rest, Labels, FuncName, Exprs).
+
+% ============================================================================
+% TIER-2 SUPER-WRAPPER EMITTER
+% ============================================================================
+%
+% `par_wrap_segment/4` is the emitter-side analogue of Haskell\'s
+% `parWrapSegment` (purity_certificate Phase P4). It replaces the
+% sequential clause-chain entry point with a `cond`-based super-wrapper
+% that:
+%
+%   - checks `in_forkable_aggregate_frame?/1` — outside a forkable
+%     aggregate (findall / aggregate_all), falls back to sequential;
+%   - checks `parallel_depth > 0` — nested forks suppressed, fall back;
+%   - otherwise pins the cut barrier, increments parallel_depth, fans
+%     out via `Task.async_stream` with a per-branch try/catch so CPS
+%     throws convert to return values (see
+%     `examples/debug_tier2_async_stream_throw_catch.exs` — naked throws
+%     crash the parent process on any BEAM node, not just termux), and
+%     hands full-exhaustion branch results to `merge_into_aggregate/2`.
+%
+% Three static gates at Prolog level:
+%   1. `intra_query_parallel(false)` option absent — runtime kill-switch.
+%   2. `tier2_purity_eligible/3` succeeds (purity ≥ 0.85, verdict pure).
+%   3. Segment count ≥ 3 — matches Haskell\'s `forkMinBranches`.
+%
+% Live wiring (rename existing clause funcs to `*_impl` suffix, emit
+% `clause_main_sequential` orchestrator, route callers through the
+% super-wrapper) is a follow-on PR. This predicate is exported + tested
+% but not yet called from `lower_predicate_to_elixir/4`.
+
+%% par_wrap_segment(+Pred/Arity, +Segments, +Options, -Code)
+%  On gate-pass: Code is the emitted Elixir super-wrapper. On
+%  gate-reject: Code is the empty string `""` — caller (future wiring
+%  PR) falls back to the existing sequential emission path.
+par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
+    \+ option(intra_query_parallel(false), Options),
+    tier2_purity_eligible(Pred, Arity, _Cert),
+    length(Segments, N), N >= 3,
+    !,
+    maplist([Name-_Instrs, ImplFunc]>>(
+        segment_func_name(Name, BaseFunc),
+        format(string(ImplFunc), '~w_impl', [BaseFunc])
+    ), Segments, BranchImplFuncs),
+    emit_par_tier2_wrapper(BranchImplFuncs, Code).
+par_wrap_segment(_Pred, _Segments, _Options, "").
+
+%% emit_par_tier2_wrapper(+BranchImplFuncs, -Code)
+%  Formats the `cond`-based super-wrapper per the template in
+%  `docs/design/WAM_TIERED_LOWERING.md`. BranchImplFuncs is the list
+%  of per-clause `_impl` function names; the caller delegates to
+%  `clause_main_sequential/1` on gate-miss. Both that sequential
+%  orchestrator and the `_impl` functions are the wiring PR\'s
+%  concern — this predicate emits the super-wrapper shell only.
+emit_par_tier2_wrapper(BranchImplFuncs, Code) :-
+    maplist([F, Ref]>>format(string(Ref), '&~w/1', [F]),
+            BranchImplFuncs, BranchRefs),
+    atomic_list_concat(BranchRefs, ', ', BranchListInner),
+    format(string(Code),
+'  defp clause_main(state) do
+    cond do
+      not WamRuntime.in_forkable_aggregate_frame?(state) ->
+        clause_main_sequential(state)
+
+      Map.get(state, :parallel_depth, 0) > 0 ->
+        clause_main_sequential(state)
+
+      true ->
+        branch_state = %{state |
+          cut_point: state.choice_points,
+          parallel_depth: Map.get(state, :parallel_depth, 0) + 1
+        }
+
+        branches = [~w]
+
+        branch_results =
+          branches
+          |> Task.async_stream(fn branch ->
+               try do
+                 branch.(branch_state)
+               catch
+                 {:fail, _state} -> []
+                 {:return, result} when is_list(result) -> result
+                 {:return, result} -> [result]
+               end
+             end,
+             on_timeout: :kill_task,
+             ordered: false,
+             max_concurrency: System.schedulers_online())
+          |> Enum.flat_map(fn
+            {:ok, solutions} when is_list(solutions) -> solutions
+            _ -> []
+          end)
+
+        WamRuntime.merge_into_aggregate(state, branch_results)
+    end
+  end', [BranchListInner]).
 
 % ============================================================================
 % INSTRUCTION PARSING
