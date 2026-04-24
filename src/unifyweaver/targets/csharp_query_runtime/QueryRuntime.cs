@@ -196,6 +196,117 @@ namespace UnifyWeaver.QueryRuntime
         public Dictionary<string, string> IndexPaths { get; set; } = new();
     }
 
+    public sealed class DelimitedRelationArtifactManifest
+    {
+        public const string CurrentFormat = "unifyweaver.delimited-relation";
+
+        public string Format { get; set; } = CurrentFormat;
+
+        public int Version { get; set; } = 1;
+
+        public string PredicateName { get; set; } = string.Empty;
+
+        public int Arity { get; set; }
+
+        public string DataPath { get; set; } = string.Empty;
+
+        public long RowCount { get; set; }
+
+        public string RowEncoding { get; set; } = "length_prefixed_utf8_cells";
+
+        public string? SourcePath { get; set; }
+
+        public long? SourceLength { get; set; }
+
+        public string? SourceSha256 { get; set; }
+
+        public List<DelimitedRelationArtifactIndexManifest> Indexes { get; set; } = new();
+
+        public void Validate(string manifestPath)
+        {
+            if (!string.Equals(Format, CurrentFormat, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Unsupported delimited relation artifact format '{Format}': {manifestPath}");
+            }
+
+            if (Version != 1)
+            {
+                throw new InvalidDataException($"Unsupported delimited relation artifact manifest version {Version}: {manifestPath}");
+            }
+
+            if (string.IsNullOrWhiteSpace(PredicateName))
+            {
+                throw new InvalidDataException($"Delimited relation artifact manifest has no predicate name: {manifestPath}");
+            }
+
+            if (Arity <= 0)
+            {
+                throw new InvalidDataException($"Delimited relation artifact arity must be positive: {manifestPath}");
+            }
+
+            if (string.IsNullOrWhiteSpace(DataPath))
+            {
+                throw new InvalidDataException($"Delimited relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            if (RowCount < 0)
+            {
+                throw new InvalidDataException($"Delimited relation artifact row count must be non-negative: {manifestPath}");
+            }
+
+            if (!string.Equals(RowEncoding, "length_prefixed_utf8_cells", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Unsupported delimited relation row encoding '{RowEncoding}': {manifestPath}");
+            }
+
+            foreach (var index in Indexes)
+            {
+                index.Validate(Arity, manifestPath);
+            }
+        }
+    }
+
+    public sealed class DelimitedRelationArtifactIndexManifest
+    {
+        public List<int> Columns { get; set; } = new();
+
+        public string Kind { get; set; } = string.Empty;
+
+        public string Path { get; set; } = string.Empty;
+
+        public void Validate(int arity, string manifestPath)
+        {
+            if (Columns.Count == 0)
+            {
+                throw new InvalidDataException($"Delimited relation artifact index has no columns: {manifestPath}");
+            }
+
+            var seen = new HashSet<int>();
+            foreach (var column in Columns)
+            {
+                if (column < 0 || column >= arity)
+                {
+                    throw new InvalidDataException($"Delimited relation artifact index column {column} is outside arity {arity}: {manifestPath}");
+                }
+
+                if (!seen.Add(column))
+                {
+                    throw new InvalidDataException($"Delimited relation artifact index repeats column {column}: {manifestPath}");
+                }
+            }
+
+            if (Kind is not ("offset_directory" or "covering_bucket"))
+            {
+                throw new InvalidDataException($"Unsupported delimited relation artifact index kind '{Kind}': {manifestPath}");
+            }
+
+            if (string.IsNullOrWhiteSpace(Path))
+            {
+                throw new InvalidDataException($"Delimited relation artifact index has no path: {manifestPath}");
+            }
+        }
+    }
+
     public interface IReplayableRelationSource
     {
         IEnumerable<object[]> Stream();
@@ -1701,6 +1812,205 @@ namespace UnifyWeaver.QueryRuntime
             using var stream = File.OpenRead(path);
             var hash = SHA256.HashData(stream);
             return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+    }
+
+    public static class DelimitedRelationArtifactBuilder
+    {
+        public static string BuildFromDelimited(
+            PredicateId predicate,
+            DelimitedRelationSource source,
+            string artifactDirectory,
+            string? artifactName = null)
+        {
+            if (artifactDirectory is null) throw new ArgumentNullException(nameof(artifactDirectory));
+            Directory.CreateDirectory(artifactDirectory);
+
+            artifactName ??= SanitizeArtifactName(predicate);
+            var dataPath = Path.Combine(artifactDirectory, artifactName + ".uwdr");
+            var manifestPath = Path.Combine(artifactDirectory, artifactName + ".uwdr.json");
+
+            var writeResult = DelimitedRelationArtifactReader.WriteRows(dataPath, DelimitedRelationReader.ReadRows(source), source.ExpectedWidth);
+            var sourceInfo = File.Exists(source.InputPath)
+                ? new FileInfo(source.InputPath)
+                : null;
+            var manifest = new DelimitedRelationArtifactManifest
+            {
+                PredicateName = predicate.Name,
+                Arity = Math.Max(2, source.ExpectedWidth),
+                DataPath = Path.GetFileName(dataPath),
+                RowCount = writeResult.RowCount,
+                SourcePath = source.InputPath,
+                SourceLength = sourceInfo?.Length,
+                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath)
+            };
+
+            var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(manifestPath, json, Encoding.UTF8);
+            return manifestPath;
+        }
+
+        private static string SanitizeArtifactName(PredicateId predicate)
+        {
+            var raw = $"{predicate.Name}_{predicate.Arity}";
+            var builder = new StringBuilder(raw.Length);
+            foreach (var ch in raw)
+            {
+                builder.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
+            }
+
+            return builder.ToString();
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using var stream = File.OpenRead(path);
+            var hash = SHA256.HashData(stream);
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+    }
+
+    public static class DelimitedRelationArtifactReader
+    {
+        private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWDR0001");
+
+        internal sealed record WriteResult(long RowCount);
+
+        public static DelimitedRelationArtifactManifest LoadManifest(string manifestPath)
+        {
+            if (manifestPath is null) throw new ArgumentNullException(nameof(manifestPath));
+            var manifest = JsonSerializer.Deserialize<DelimitedRelationArtifactManifest>(File.ReadAllText(manifestPath, Encoding.UTF8))
+                ?? throw new InvalidDataException($"Delimited relation artifact manifest is empty: {manifestPath}");
+            manifest.Validate(manifestPath);
+            return manifest;
+        }
+
+        public static IEnumerable<object[]> ReadRows(string manifestPath)
+        {
+            var manifest = LoadManifest(manifestPath);
+            return ReadRows(manifest, manifestPath);
+        }
+
+        public static IEnumerable<object[]> ReadRows(DelimitedRelationArtifactManifest manifest, string manifestPath)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            manifest.Validate(manifestPath);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            return ReadRowsFromData(dataPath, manifest.Arity, manifest.RowCount);
+        }
+
+        internal static WriteResult WriteRows(string dataPath, IEnumerable<object[]> rows, int width)
+        {
+            if (dataPath is null) throw new ArgumentNullException(nameof(dataPath));
+            if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+            width = Math.Max(2, width);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dataPath)) ?? ".");
+            using var stream = new FileStream(dataPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            writer.Write(Magic);
+            writer.Write(1);
+            writer.Write(width);
+            writer.Write(0L);
+
+            long rowCount = 0;
+            foreach (var row in rows)
+            {
+                if (row is null || row.Length < width)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i < width; i++)
+                {
+                    WriteString(writer, row[i]?.ToString() ?? string.Empty);
+                }
+
+                rowCount++;
+            }
+
+            writer.Flush();
+            stream.Position = Magic.Length + sizeof(int) + sizeof(int);
+            writer.Write(rowCount);
+            return new WriteResult(rowCount);
+        }
+
+        private static IEnumerable<object[]> ReadRowsFromData(string dataPath, int expectedWidth, long expectedRows)
+        {
+            using var stream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(Magic.Length);
+            if (!magic.SequenceEqual(Magic))
+            {
+                throw new InvalidDataException($"Invalid delimited relation artifact magic: {dataPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported delimited relation artifact version {version}: {dataPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Delimited relation artifact width mismatch. Expected {expectedWidth}, found {width}: {dataPath}");
+            }
+
+            var rowCount = reader.ReadInt64();
+            if (expectedRows >= 0 && rowCount != expectedRows)
+            {
+                throw new InvalidDataException($"Delimited relation artifact row-count mismatch. Expected {expectedRows}, found {rowCount}: {dataPath}");
+            }
+
+            for (var rowIndex = 0L; rowIndex < rowCount; rowIndex++)
+            {
+                var row = new object[width];
+                for (var i = 0; i < width; i++)
+                {
+                    row[i] = ReadString(reader);
+                }
+
+                yield return row;
+            }
+        }
+
+        private static string ResolveDataPath(DelimitedRelationArtifactManifest manifest, string manifestPath)
+        {
+            var dataPath = manifest.DataPath;
+            if (string.IsNullOrWhiteSpace(dataPath))
+            {
+                throw new InvalidDataException($"Delimited relation artifact manifest has no data path: {manifestPath}");
+            }
+
+            return Path.IsPathRooted(dataPath)
+                ? dataPath
+                : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".", dataPath);
+        }
+
+        private static void WriteString(BinaryWriter writer, string value)
+        {
+            var bytes = Encoding.UTF8.GetBytes(value);
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+
+        private static string ReadString(BinaryReader reader)
+        {
+            var length = reader.ReadInt32();
+            if (length < 0)
+            {
+                throw new InvalidDataException("Delimited relation artifact contains a negative string length.");
+            }
+
+            var bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+            {
+                throw new EndOfStreamException("Delimited relation artifact ended while reading a string field.");
+            }
+
+            return Encoding.UTF8.GetString(bytes);
         }
     }
 
