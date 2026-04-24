@@ -100,6 +100,44 @@ The proposed boundary has three layers:
    distance metadata. Approximate artifacts must not masquerade as exact
    relation providers.
 
+   For exact artifacts, the target-neutral manifest seam should also preserve
+   the declaration intent that selected the physical layout. The current
+   Clojure benchmark path is the first proving ground for this narrower schema:
+
+   ```json
+   {
+     "predicate": "article_category/2",
+     "resolved_mode": "artifact",
+     "file_format": "grouped_tsv_arg1",
+     "access": ["scan", "arg1_grouped_lookup"],
+     "declaration": {
+       "source": "shared_preprocess",
+       "mode": "artifact",
+       "kind": "exact_hash_index",
+       "format": "exact_hash_index",
+       "access_contracts": [
+         "exact_key_lookup",
+         "arg_position_lookup(1)",
+         "grouped_values_lookup([2])",
+         "scan"
+       ],
+       "options": ["key([1])", "values([2])"]
+     }
+   }
+   ```
+
+   Not every runtime needs to emit the exact same file names or storage
+   encodings. The important cross-target seam is:
+
+   - resolved storage mode
+   - physical format
+   - supported runtime access contracts
+   - originating preprocess declaration kind/options
+   - source and schema invalidation metadata
+
+   That is enough for a planner or provider to explain both what artifact was
+   chosen and why it was considered semantically valid.
+
 3. Runtime access layer
 
    The runtime opens artifacts through a narrow provider interface and asks for
@@ -324,6 +362,44 @@ implementation:
 
 The exact syntax is intentionally open. The important fields are predicate,
 access pattern, exactness, invalidation inputs, and fallback.
+
+## Shared Manifest Schema Notes
+
+The current C# prototype and the current Clojure benchmark generator are using
+different concrete manifest encodings, but they are already converging on the
+same logical fields. A small shared schema should standardize the metadata
+shape before attempting a common binary format:
+
+- `predicate`
+- `resolved_mode`
+- `artifact_kind` or declaration `kind`
+- `format_version`
+- `physical_format`
+- `exactness`
+- `source_hash`
+- `schema_hash`
+- `target_capabilities`
+- `access`
+- `declaration`
+  - `source`
+  - `mode`
+  - `kind`
+  - `format`
+  - `access_contracts`
+  - `options`
+- `files`
+
+This should stay intentionally target-neutral:
+
+- C# may keep JSON and binary sidecars.
+- Clojure may keep EDN manifests with TSV or EDN sidecars.
+- Haskell may eventually pair this with LMDB, mmap, or FactSource-backed
+  providers.
+- Elixir `external_source` can consume the same declaration metadata even if
+  the first runtime adaptor is TSV, ETS, or SQLite.
+
+The shared declaration layer should therefore stabilize before the physical
+artifact formats do.
 
 ## Build And Invalidation Lifecycle
 

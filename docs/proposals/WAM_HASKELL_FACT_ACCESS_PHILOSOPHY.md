@@ -231,6 +231,16 @@ SQLite isn't good at multi-process access means the materialization
 planner must account for concurrency when choosing a layout — not just
 access pattern and scale.
 
+The current Clojure benchmark artifact manifest work is also useful
+here. It is the first local implementation that records both resolved
+storage mode and the originating shared preprocess declaration metadata.
+That is the right seam for Haskell and Elixir too: parallelism planning
+should not only know that a predicate is "external", but whether the
+chosen artifact advertises scan-only access, arg1 lookup, grouped
+adjacency, or some stronger exact-key contract, and whether that
+contract came from a declaration that remains valid for the current
+runtime environment.
+
 **The feedback loop:**
 
 ```
