@@ -160,6 +160,10 @@ c_reg_index(RegAtom, IsY, Idx) :-
 % PHASE 2b: wam_predicate -> C Array
 % ============================================================================
 
+% wam_line_to_c_instr/2, /3, /4
+% Note: wam_line_to_c_instr has 2-arity, 3-arity, and 4-arity clauses.
+% The 4-arity clauses are used for branch instructions (like try_me_else) that require the predicate's Arity.
+% Non-branch instructions safely fall back to the 3-arity or 2-arity catch-alls during pass 2.
 wam_line_to_c_instr(["get_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
@@ -243,33 +247,75 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
         )
     ).
 
-wam_lines_to_c_pass2([], _, _, _, []).
-wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, Instrs) :-
+wam_lines_to_c_pass2([], PC, _, _, PC, []).
+wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, CodeSize, Instrs) :-
     split_string(Line, " \t,", " \t,", Parts),
     delete(Parts, "", CleanParts),
-    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, Instrs)
+    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, Instrs)
     ;   CleanParts = [First|_],
         (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             (   sub_string(LabelName, 0, 2, _, "L_")
-            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, Instrs)
+            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, Instrs)
             ;   format(atom(PredReg), '    wam_register_predicate(state, "~w", ~w);', [LabelName, PC]),
                 Instrs = [PredReg|RestInstrs],
-                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, RestInstrs)
+                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, CodeSize, RestInstrs)
             )
-        ;   (   wam_line_to_c_instr(CleanParts, LabelMap, Arity, CInstr)
-            ->  true
-            ;   wam_line_to_c_instr(CleanParts, LabelMap, CInstr_NoArity)
-            ->  CInstr = CInstr_NoArity
-            ;   wam_line_to_c_instr(CleanParts, CInstr_NoMap)
-            ->  CInstr = CInstr_NoMap
-            ;   CInstr = '{0}'
-            ),
-            format(atom(InstrEntry), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
+        ;   wam_generate_c_instruction(PC, CleanParts, LabelMap, Arity, CodeLines),
             NPC is PC + 1,
-            Instrs = [InstrEntry|RestInstrs],
-            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, RestInstrs)
+            append(CodeLines, RestInstrs, Instrs),
+            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, CodeSize, RestInstrs)
         )
+    ).
+
+wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
+    (   (Parts = ["switch_on_constant" | Entries] ; Parts = ["switch_on_constant_a2" | Entries])
+    ->  length(Entries, HashSize),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .hash_size = ~w };', [PC, HashSize]),
+        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
+        generate_hash_table_entries(PC, Entries, 0, LabelMap, HashLines),
+        append([L0, L1], HashLines, CodeLines)
+    ;   Parts = ["switch_on_structure" | Entries]
+    ->  length(Entries, HashSize),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_STRUCTURE, .hash_size = ~w };', [PC, HashSize]),
+        format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
+        generate_hash_table_entries(PC, Entries, 0, LabelMap, HashLines),
+        append([L0, L1], HashLines, CodeLines)
+    ;   Parts = ["switch_on_term" | _]
+    ->  % TODO: Implement switch_on_term
+        format(atom(L0), '    state->code[~w] = (Instruction){0}; // TODO: switch_on_term', [PC]),
+        CodeLines = [L0]
+    ;   (   wam_line_to_c_instr(Parts, LabelMap, Arity, CInstr)
+        ->  true
+        ;   wam_line_to_c_instr(Parts, LabelMap, CInstr_NoArity)
+        ->  CInstr = CInstr_NoArity
+        ;   wam_line_to_c_instr(Parts, CInstr_NoMap)
+        ->  CInstr = CInstr_NoMap
+        ;   CInstr = '{0}'
+        ),
+        format(atom(L0), '    state->code[~w] = (Instruction)~w;', [PC, CInstr]),
+        CodeLines = [L0]
+    ).
+
+generate_hash_table_entries(_, [], _, _, []).
+generate_hash_table_entries(PC, [Entry|Rest], Idx, LabelMap, [Line|RestLines]) :-
+    split_string(Entry, ":", "", Parts),
+    (   Parts = [KeyStr, LabelStr]
+    ->  (   LabelStr == "default"
+        ->  TargetPC is PC + 1
+        ;   member(LabelStr-TargetPC, LabelMap)
+        ->  true
+        ;   TargetPC = -1
+        ),
+        (   number_string(KeyNum, KeyStr), integer(KeyNum)
+        ->  c_value_literal(KeyNum, ValLit)
+        ;   atom_string(KeyAtom, KeyStr),
+            c_value_literal(KeyAtom, ValLit)
+        ),
+        format(atom(Line), '    state->code[~w].hash_table[~w] = (HashEntry){ ~w, ~w };', [PC, Idx, ValLit, TargetPC]),
+        NextIdx is Idx + 1,
+        generate_hash_table_entries(PC, Rest, NextIdx, LabelMap, RestLines)
+    ;   throw(error(wam_c_target_error(invalid_switch_entry(Entry)), _))
     ).
 
 compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
@@ -281,15 +327,20 @@ compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
     % We parse it line-by-line into structural C literals.
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_c_pass1(Lines, 0, LabelMap),
-    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, InstrParts),
+    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, CodeSize, InstrParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
-    
-    % Calculate required code_size dynamically
-    length(InstrParts, CodeSize),
     
     format(atom(CCode), 
 '/* WAM-compiled predicate: ~w/~w */
 void setup_~w_~w(WamState* state) {
+    if (state->code) {
+        for (int i = 0; i < state->code_size; i++) {
+            if ((state->code[i].tag == INSTR_SWITCH_ON_CONSTANT || state->code[i].tag == INSTR_SWITCH_ON_STRUCTURE) && state->code[i].hash_table) {
+                free(state->code[i].hash_table);
+                state->code[i].hash_table = NULL;
+            }
+        }
+    }
     if (!state->code || state->code_size < ~w) {
         state->code_size = ~w;
         state->code = realloc(state->code, sizeof(Instruction) * state->code_size);
@@ -409,6 +460,33 @@ compile_step_wam_to_c(_Options, CCode) :-
                 pop_choice_point(state);
                 state->P++;
                 return true;
+            }
+            case INSTR_SWITCH_ON_CONSTANT: {
+                WamValue *cell = wam_deref_ptr(state, &state->A[0]); // A1 is register index 0 (or X1 in 1-based, A array is 0-indexed)
+                if (cell->tag != VAL_ATOM && cell->tag != VAL_INT) {
+                    return false; // falls through to backtracking (variable case unimplemented, pending switch_on_term)
+                }
+                for (int i = 0; i < instr->hash_size; i++) {
+                    if (val_equal(*cell, instr->hash_table[i].key)) {
+                        state->P = instr->hash_table[i].target_pc;
+                        return true;
+                    }
+                }
+                return false; // Not found in index, fail
+            }
+            case INSTR_SWITCH_ON_STRUCTURE: {
+                WamValue *cell = wam_deref_ptr(state, &state->A[0]);
+                if (cell->tag != VAL_STR) {
+                    return false; // falls through to backtracking (variable case unimplemented, pending switch_on_term)
+                }
+                WamValue *f = &state->H_array[cell->data.ref_addr];
+                for (int i = 0; i < instr->hash_size; i++) {
+                    if (val_equal(*f, instr->hash_table[i].key)) {
+                        state->P = instr->hash_table[i].target_pc;
+                        return true;
+                    }
+                }
+                return false; // Not found in index, fail
             }
             case INSTR_GET_STRUCTURE: {
                 WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->reg_ai, instr->is_y_ai));
