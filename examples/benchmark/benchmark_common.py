@@ -55,6 +55,11 @@ def available_targets(requested: list[str]) -> list[str]:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
             continue
+        if target.startswith("haskell-wam-") and (
+            shutil.which("swipl") is None or shutil.which("cabal") is None or shutil.which("ghc") is None
+        ):
+            print(f"skip {target}: swipl, cabal, or ghc not found", file=sys.stderr)
+            continue
         if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
             print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
             continue
@@ -210,12 +215,20 @@ def build_go_binary(
 
 
 def build_haskell_project(project_dir: Path, executable_name: str) -> list[str]:
-    run_command(["cabal", "build", f"exe:{executable_name}"], cwd=project_dir)
-    result = run_command(["cabal", "list-bin", f"exe:{executable_name}"], cwd=project_dir)
-    binary = result.stdout.strip()
-    if not binary:
+    run_command(["cabal", "v2-build", f"exe:{executable_name}"], cwd=project_dir)
+    binary = find_cabal_binary(project_dir, executable_name)
+    return [str(binary)]
+
+
+def find_cabal_binary(project_dir: Path, executable_name: str) -> Path:
+    candidates = [
+        path
+        for path in (project_dir / "dist-newstyle").rglob(executable_name)
+        if path.is_file() and os.access(path, os.X_OK)
+    ]
+    if not candidates:
         raise RuntimeError(f"could not resolve cabal binary for {executable_name}")
-    return [binary]
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def digest_normalized_output(normalized: str) -> tuple[str, int]:

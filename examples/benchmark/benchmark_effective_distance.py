@@ -30,6 +30,7 @@ from benchmark_common import (
     available_targets,
     build_csharp_package,
     build_go_binary,
+    build_haskell_project,
     build_rust_binary,
     digest_normalized_output,
     find_result,
@@ -50,6 +51,9 @@ BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
+# Use the variant-aware optimized Haskell WAM generator so seeded and
+# accumulated targets compile the same Prolog optimization surfaces as Rust.
+WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_optimized_benchmark.pl"
 SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_min_semantic_distance_benchmark.pl"
 EFF_SEMANTIC_PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_semantic_distance_benchmark.pl"
 EDGE_WEIGHT_SCRIPT = ROOT / "examples" / "benchmark" / "precompute_edge_weights.py"
@@ -79,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--targets",
         default="csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-accumulated",
-        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels",
+        help="Comma-separated targets: csharp-query,csharp-dfs,rust-dfs,go-dfs,prolog-seeded,prolog-pruned,prolog-accumulated,prolog-article-accumulated,prolog-root-accumulated,wam-rust-seeded,wam-rust-accumulated,wam-rust-seeded-no-kernels,wam-rust-accumulated-no-kernels,haskell-wam-seeded,haskell-wam-accumulated",
     )
     parser.add_argument(
         "--repetitions",
@@ -247,13 +251,35 @@ def build_wam_rust_effective_distance(root: Path, scale: str, variant: str) -> l
     return [str(binary), str(scale_dir)]
 
 
+def build_haskell_wam_effective_distance(root: Path, scale: str, variant: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"haskell_wam_{variant}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_HASKELL_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            variant,
+        ],
+        cwd=ROOT,
+    )
+    return build_haskell_project(project_dir, "wam-haskell-bench") + [
+        str(require_file(BENCH_DIR / scale / "category_parent.tsv").parent)
+    ]
+
+
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
     times: list[float] = []
     last_stdout = ""
     last_stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        if target.startswith("prolog-") or target.startswith("wam-"):
+        if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("haskell-wam-"):
             result = run_command(command)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
@@ -288,6 +314,8 @@ def print_summary(results: list[RunResult]) -> None:
         wam_rust_accumulated = find_result(entries, "wam-rust-accumulated")
         wam_rust_seeded_no_kernels = find_result(entries, "wam-rust-seeded-no-kernels")
         wam_rust_accumulated_no_kernels = find_result(entries, "wam-rust-accumulated-no-kernels")
+        haskell_wam_seeded = find_result(entries, "haskell-wam-seeded")
+        haskell_wam_accumulated = find_result(entries, "haskell-wam-accumulated")
         prolog_semantic_min = find_result(entries, "prolog-semantic-min")
         prolog_eff_semantic = find_result(entries, "prolog-eff-semantic")
         dfs_like = [item for item in entries if item.target in {"csharp-dfs", "rust-dfs", "go-dfs"}]
@@ -304,10 +332,16 @@ def print_summary(results: list[RunResult]) -> None:
         print_pair_match_status(scale, "query_vs_wam_rust_accumulated", qe, wam_rust_accumulated)
         print_no_kernel_match_status(scale, "query_vs_wam_rust_seeded_no_kernels", qe, wam_rust_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "query_vs_wam_rust_accumulated_no_kernels", qe, wam_rust_accumulated_no_kernels, seed_subset_probe)
+        print_pair_match_status(scale, "query_vs_haskell_wam_seeded", qe, haskell_wam_seeded)
+        print_pair_match_status(scale, "query_vs_haskell_wam_accumulated", qe, haskell_wam_accumulated)
         print_pair_match_status(scale, "prolog_vs_wam_rust_seeded", prolog_accumulated, wam_rust_seeded)
         print_pair_match_status(scale, "prolog_vs_wam_rust_accumulated", prolog_accumulated, wam_rust_accumulated)
         print_no_kernel_match_status(scale, "prolog_vs_wam_rust_seeded_no_kernels", prolog_accumulated, wam_rust_seeded_no_kernels, seed_subset_probe)
         print_no_kernel_match_status(scale, "prolog_vs_wam_rust_accumulated_no_kernels", prolog_accumulated, wam_rust_accumulated_no_kernels, seed_subset_probe)
+        print_pair_match_status(scale, "prolog_vs_haskell_wam_seeded", prolog_accumulated, haskell_wam_seeded)
+        print_pair_match_status(scale, "prolog_vs_haskell_wam_accumulated", prolog_accumulated, haskell_wam_accumulated)
+        print_pair_match_status(scale, "wam_rust_vs_haskell_wam_seeded", wam_rust_seeded, haskell_wam_seeded)
+        print_pair_match_status(scale, "wam_rust_vs_haskell_wam_accumulated", wam_rust_accumulated, haskell_wam_accumulated)
         print_pair_match_status(scale, "query_vs_prolog_semantic_min", qe, prolog_semantic_min)
         print_pair_match_status(scale, "query_vs_prolog_eff_semantic", qe, prolog_eff_semantic)
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
@@ -321,6 +355,10 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_wam_rust_accumulated", wam_rust_accumulated, qe)
         print_no_kernel_speedup(scale, "speedup_vs_wam_rust_seeded_no_kernels", wam_rust_seeded_no_kernels, qe, seed_subset_probe)
         print_no_kernel_speedup(scale, "speedup_vs_wam_rust_accumulated_no_kernels", wam_rust_accumulated_no_kernels, qe, seed_subset_probe)
+        print_speedup(scale, "speedup_vs_haskell_wam_seeded", haskell_wam_seeded, qe)
+        print_speedup(scale, "speedup_vs_haskell_wam_accumulated", haskell_wam_accumulated, qe)
+        print_speedup(scale, "wam_rust_speedup_vs_haskell_seeded", haskell_wam_seeded, wam_rust_seeded)
+        print_speedup(scale, "wam_rust_speedup_vs_haskell_accumulated", haskell_wam_accumulated, wam_rust_accumulated)
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_speedup(scale, "speedup_vs_prolog_eff_semantic", prolog_eff_semantic, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
@@ -333,6 +371,8 @@ def print_summary(results: list[RunResult]) -> None:
         print_phase_metrics(scale, "wam-rust-accumulated-metrics", wam_rust_accumulated)
         print_phase_metrics(scale, "wam-rust-seeded-no-kernels-metrics", wam_rust_seeded_no_kernels)
         print_phase_metrics(scale, "wam-rust-accumulated-no-kernels-metrics", wam_rust_accumulated_no_kernels)
+        print_phase_metrics(scale, "haskell-wam-seeded-metrics", haskell_wam_seeded)
+        print_phase_metrics(scale, "haskell-wam-accumulated-metrics", haskell_wam_accumulated)
         print_phase_metrics(scale, "prolog-semantic-min-metrics", prolog_semantic_min)
         print_phase_metrics(scale, "prolog-eff-semantic-metrics", prolog_eff_semantic)
 
@@ -417,7 +457,7 @@ def main() -> int:
                 continue
             elif target == "prolog-root-accumulated":
                 continue
-            # WAM-Rust variants are generated per scale because facts and
+            # Hybrid WAM variants are generated per scale because facts and
             # optional optimized helpers are loaded into the generated project.
             elif target == "wam-rust-seeded":
                 continue
@@ -426,6 +466,10 @@ def main() -> int:
             elif target == "wam-rust-seeded-no-kernels":
                 continue
             elif target == "wam-rust-accumulated-no-kernels":
+                continue
+            elif target == "haskell-wam-seeded":
+                continue
+            elif target == "haskell-wam-accumulated":
                 continue
             elif target == "prolog-semantic-min":
                 continue
@@ -455,6 +499,10 @@ def main() -> int:
                     command = build_wam_rust_effective_distance(temp_root, scale, "seeded_no_kernels")
                 elif target == "wam-rust-accumulated-no-kernels":
                     command = build_wam_rust_effective_distance(temp_root, scale, "accumulated_no_kernels")
+                elif target == "haskell-wam-seeded":
+                    command = build_haskell_wam_effective_distance(temp_root, scale, "seeded")
+                elif target == "haskell-wam-accumulated":
+                    command = build_haskell_wam_effective_distance(temp_root, scale, "accumulated")
                 elif target == "prolog-semantic-min":
                     command = build_prolog_semantic_min(temp_root, scale)
                 elif target == "prolog-eff-semantic":
