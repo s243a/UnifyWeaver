@@ -910,6 +910,11 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
     end
   end', [FuncName, FallbackFunc, BodyCode]).
 
+% Suffix is unused here because trust_me / none clauses have no
+% try_me_else fallback label to resolve through segment_func_name/3
+% — only the try_me_else / retry_me_else arms above need it. Suffix
+% still flows into BodyCode via lower_instr_list/5, so any
+% switch_on_constant inside the body picks the right `_impl` target.
 wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
     format(string(Code),
 '  defp ~w(state) do
@@ -967,10 +972,11 @@ lower_instr_list([PC-Instr|Rest], Labels, FuncName, Suffix, [Expr|Exprs]) :-
 %   2. `tier2_purity_eligible/3` succeeds (purity ≥ 0.85, verdict pure).
 %   3. Segment count ≥ 3 — matches Haskell\'s `forkMinBranches`.
 %
-% Live wiring (rename existing clause funcs to `*_impl` suffix, emit
-% `clause_main_sequential` orchestrator, route callers through the
-% super-wrapper) is a follow-on PR. This predicate is exported + tested
-% but not yet called from `lower_predicate_to_elixir/4`.
+% Wired into `render_compiled_module/8` via the `Suffix` parameter
+% threaded through the segment-emission pipeline. On gate-pass the
+% super-wrapper takes the canonical `clause_main` slot and per-clause
+% bodies are emitted as `clause_X_impl`; on gate-reject Suffix=""
+% and output is byte-for-byte identical to pre-wiring.
 
 %% par_wrap_segment(+Pred/Arity, +Segments, +Options, -Code)
 %  On gate-pass: Code is the emitted Elixir super-wrapper. On
@@ -1001,6 +1007,13 @@ par_wrap_segment(_Pred, _Segments, _Options, "").
 %  name + "_impl" — the sequential fallback target. BranchImplFuncs
 %  is the list of per-clause `_impl` function names that the
 %  parallel fan-out dispatches across.
+%
+%  Both gate-miss `cond` arms (`not in_forkable_aggregate_frame?` and
+%  `parallel_depth > 0`) intentionally call the same EntryImplFunc:
+%  outside a forkable aggregate or under a nested fork, the only safe
+%  option is to fall back to sequential evaluation via the renamed
+%  clause chain. Two arms rather than a combined predicate so each
+%  fall-through reason stays self-documenting in the emitted Elixir.
 emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
     maplist([F, Ref]>>format(string(Ref), '&~w/1', [F]),
             BranchImplFuncs, BranchRefs),
