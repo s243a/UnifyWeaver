@@ -794,9 +794,14 @@ test_par_wrap_segment_emits_super_wrapper :-
         (   three_segment_fixture(Segs),
             par_wrap_segment(tier2_pure3/2, Segs, [], Code),
             Code \= "",
-            sub_string(Code, _, _, _, 'defp clause_main(state) do'),
+            % Entry func name derives from the first segment; fixture
+            % uses 'clause_start' atom so segment_func_name emits
+            % 'clause_ClauseStart'. Assertion checks the surface shape,
+            % not a specific hard-coded name.
+            sub_string(Code, _, _, _, 'defp clause_ClauseStart(state) do'),
             sub_string(Code, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
             sub_string(Code, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(Code, _, _, _, 'clause_ClauseStart_impl(state)'),
             sub_string(Code, _, _, _, 'cut_point: state.choice_points'),
             sub_string(Code, _, _, _, 'Task.async_stream'),
             sub_string(Code, _, _, _, 'try do'),
@@ -935,6 +940,67 @@ maybe_abolish_test_predicate(Name/Arity) :-
 contains_string(Haystack, Needle) :-
     once(sub_string(Haystack, _, _, _, Needle)).
 
+%% Wiring tests — exercise the full lower_predicate_to_elixir/4 entry
+%% point (not par_wrap_segment/4 in isolation). small_fact/2 has 4
+%% ground clauses, classified `compiled` under the default threshold,
+%% so it routes through render_compiled_module/8 where the wiring lives.
+
+test_wiring_emits_tier2_eligible_attr :-
+    Test = 'Wiring: gate-pass emits @tier2_eligible true module attribute',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, '@tier2_eligible true')
+        ->  pass(Test)
+        ;   fail_test(Test, '@tier2_eligible attribute not emitted on gate-pass')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_wiring_clause_main_is_super_wrapper_on_gate_pass :-
+    Test = 'Wiring: gate-pass — surface entry is the super-wrapper, not the first clause body',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Structural shape: a `cond do` super-wrapper signature is
+            % present (uniquely identifies the Tier-2 wrapper), and at
+            % least one `defp clause_X_impl(state) do` body is emitted
+            % — confirming the rename happened. Name is not hardcoded
+            % because the entry func name derives from the first
+            % segment label, which varies per compiled predicate.
+            sub_string(S, _, _, _, 'cond do'),
+            sub_string(S, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
+            sub_string(S, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(S, _, _, _, '_impl(state) do')
+        ->  pass(Test)
+        ;   fail_test(Test, 'super-wrapper signature or _impl body absent on gate-pass')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_wiring_gate_reject_preserves_naming :-
+    Test = 'Wiring: gate-reject leaves clause names unchanged (no _impl, no @tier2_eligible)',
+    % No order_independent declaration → purity gate rejects.
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    lower_predicate_to_elixir(small_fact/2, WamCode,
+                              [module_name('TestMod')], Code),
+    atom_string(Code, S),
+    (   \+ sub_string(S, _, _, _, '_impl'),
+        \+ sub_string(S, _, _, _, '@tier2_eligible'),
+        \+ sub_string(S, _, _, _, 'in_forkable_aggregate_frame?')
+    ->  pass(Test)
+    ;   fail_test(Test, 'gate-reject path leaked _impl, @tier2_eligible, or super-wrapper signature into output')
+    ).
+
 %% Test runner
 
 run_tests :-
@@ -1005,5 +1071,8 @@ run_tests :-
     test_switch_arm_targets_are_segments,
     test_par_wrap_segment_covers_switch_targets,
     test_par_wrap_segment_kill_switch,
+    test_wiring_emits_tier2_eligible_attr,
+    test_wiring_clause_main_is_super_wrapper_on_gate_pass,
+    test_wiring_gate_reject_preserves_naming,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
