@@ -226,7 +226,7 @@ main = do
     hFlush stdout
 
     -- Metrics to stderr
-    hPutStrLn stderr $ "mode=wam_haskell_accumulated"
+    hPutStrLn stderr $ "mode={{benchmark_mode}}"
     hPutStrLn stderr $ "load_ms=" ++ show loadMs
     hPutStrLn stderr $ "query_ms=" ++ show queryMs
     hPutStrLn stderr $ "aggregation_ms=" ++ show aggMs
