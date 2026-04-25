@@ -770,9 +770,14 @@ test_par_wrap_segment_emits_super_wrapper :-
         (   three_segment_fixture(Segs),
             par_wrap_segment(tier2_pure3/2, Segs, [], Code),
             Code \= "",
-            sub_string(Code, _, _, _, 'defp clause_main(state) do'),
+            % Entry func name derives from the first segment; fixture
+            % uses 'clause_start' atom so segment_func_name emits
+            % 'clause_ClauseStart'. Assertion checks the surface shape,
+            % not a specific hard-coded name.
+            sub_string(Code, _, _, _, 'defp clause_ClauseStart(state) do'),
             sub_string(Code, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
             sub_string(Code, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(Code, _, _, _, 'clause_ClauseStart_impl(state)'),
             sub_string(Code, _, _, _, 'cut_point: state.choice_points'),
             sub_string(Code, _, _, _, 'Task.async_stream'),
             sub_string(Code, _, _, _, 'try do'),

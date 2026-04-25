@@ -9,7 +9,7 @@
 
 :- module(wam_elixir_lowered_emitter, [
     lower_predicate_to_elixir/4,  % +PredIndicator, +WamCode, +Options, -Code
-    wam_elixir_lower_instr/5,     % +Instr, +PC, +Labels, +FuncName, -Code
+    wam_elixir_lower_instr/6,     % +Instr, +PC, +Labels, +FuncName, +Suffix, -Code
     % Phase A fact-shape classification (see docs/proposals/WAM_FACT_SHAPE_*.md).
     % Emitter-internal for now; may move to its own module once other
     % targets adopt the same classification.
@@ -73,8 +73,8 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
         choose_index(Segments, Arity, Options, IndexResult)
     ->  render_inline_data_module(CamelMod, CamelPred, PredStr, Arity,
                                   ShapeComment, FactsLiteral, IndexResult, Code)
-    ;   render_compiled_module(CamelMod, CamelPred, PredStr, Arity,
-                               ShapeComment, Segments, Labels, Code)
+    ;   render_compiled_module(CamelMod, CamelPred, Pred/Arity, PredStr,
+                               ShapeComment, Segments, Labels, Options, Code)
     ).
 
 %% choose_index(+Segments, +Arity, +Options, -IndexResult)
@@ -91,16 +91,37 @@ choose_index(Segments, Arity, Options, IndexResult) :-
     ;   catch(extract_arg1_index(Segments, Arity, IndexResult), _, IndexResult = no_index)
     ).
 
-render_compiled_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
-                       Segments, Labels, Code) :-
-    generate_all_segments(Segments, Labels, FuncCodes),
+render_compiled_module(CamelMod, CamelPred, PredIndicator, PredStr, ShapeComment,
+                       Segments, Labels, Options, Code) :-
+    PredIndicator = Pred/Arity,
+    % Tier-2 decision point: if par_wrap_segment/4 emits a super-wrapper,
+    % the per-clause bodies need to live under `_impl`-suffixed names so
+    % the canonical `clause_main` slot can be taken by the super-wrapper.
+    % When the gate rejects, Tier2Wrapper = "" and Suffix = "" — every
+    % emitted byte is byte-for-byte identical to the pre-wiring output.
+    par_wrap_segment(Pred/Arity, Segments, Options, Tier2Wrapper),
+    (   Tier2Wrapper == ""
+    ->  Suffix = "",
+        Tier2Extras = "",
+        Tier2ModAttr = ""
+    ;   Suffix = "_impl",
+        % The super-wrapper (Tier2Wrapper) already calls the
+        % `*_impl` entry directly from its gate-miss cond arms, so
+        % no separate sequential alias is emitted here.
+        Tier2Extras = Tier2Wrapper,
+        Tier2ModAttr = '  @tier2_eligible true\n'
+    ),
+    generate_all_segments(Segments, Labels, Suffix, FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
+    % `def run(state)` always delegates to `clause_main` — which is the
+    % super-wrapper under Tier 2, or the first clause's body pre-Tier-2.
+    % Both end up at the same surface name.
     Segments = [FirstSegName-_|_],
-    segment_func_name(FirstSegName, FirstFunc),
+    segment_func_name(FirstSegName, "", FirstFunc),
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w"
-
+~w
 ~w
 
   # run/1 is a plain tail call into the first clause segment. No
@@ -140,7 +161,10 @@ render_compiled_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
   end
 
 ~w
-end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, FirstFunc, CamelPred, FuncsBody]).
+
+~w
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, Tier2ModAttr,
+       FirstFunc, CamelPred, FuncsBody, Tier2Extras]).
 
 render_inline_data_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
                           FactsLiteral, IndexResult, Code) :-
@@ -664,16 +688,21 @@ extract_segment_body([Line|Rest], PC, Body, Next, NPC) :-
         extract_segment_body(Rest, PC1, RestBody, Next, NPC)
     ).
 
-generate_all_segments(Segments, Labels, SegCodes) :-
+generate_all_segments(Segments, Labels, Suffix, SegCodes) :-
     % Build a list of per-segment code-lists and flatten with append/2
     % at the end. The previous recursive append(ThisSegCodes,
     % RestCodes, _) was O(N²) over segment count — noticeable on
     % predicates with thousands of fact clauses.
-    maplist(generate_one_segment(Labels), Segments, SegCodesNested),
+    %
+    % Suffix is threaded through so Tier-2-eligible predicates can
+    % emit `clause_X_impl` names while the surface `clause_X` slot is
+    % taken by the super-wrapper. For the default Suffix="" path every
+    % emitted byte is byte-for-byte identical to the pre-wiring output.
+    maplist(generate_one_segment(Labels, Suffix), Segments, SegCodesNested),
     append(SegCodesNested, SegCodes).
 
-generate_one_segment(Labels, Name-Instrs, ThisSegCodes) :-
-    segment_func_name(Name, FuncName),
+generate_one_segment(Labels, Suffix, Name-Instrs, ThisSegCodes) :-
+    segment_func_name(Name, Suffix, FuncName),
     classify_segment_head(Instrs, HeadType, BodyInstrs),
     % CPS split: every non-tail `call P, N` terminates a sub-segment;
     % subsequent instrs go into a fresh continuation function. This lets
@@ -681,7 +710,7 @@ generate_one_segment(Labels, Name-Instrs, ThisSegCodes) :-
     % post-call code (which Elixir would otherwise have on a collapsed
     % tail-call stack).
     split_body_at_calls(BodyInstrs, SubSegs),
-    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, ThisSegCodes).
+    emit_sub_segments(SubSegs, FuncName, HeadType, Labels, Suffix, ThisSegCodes).
 
 %% split_body_at_calls(+Instrs, -SubSegs)
 %  Splits a flat instr list into sub-segment lists, cutting after every
@@ -700,27 +729,32 @@ split_body_at_calls_([PC-call(P, N) | Rest], AccRev, [Seg | RestSegs]) :-
 split_body_at_calls_([Instr | Rest], AccRev, Segs) :-
     split_body_at_calls_(Rest, [Instr | AccRev], Segs).
 
-%% emit_sub_segments(+SubSegs, +BaseFunc, +HeadType, +Labels, -Codes)
+%% emit_sub_segments(+SubSegs, +BaseFunc, +HeadType, +Labels, +Suffix, -Codes)
 %  Emits one `defp` per sub-segment. The first uses wrap_segment (with
 %  CP push for try_me_else / retry_me_else). Subsequent sub-segments are
 %  plain `defp BaseFunc_kN(state) do ... end` continuations. Every
 %  sub-segment except the last ends with a tail call to the next
 %  continuation; the last ends with its natural tail (execute/proceed).
-emit_sub_segments([OnlySeg], BaseFunc, HeadType, Labels, [Code]) :-
-    lower_instr_list(OnlySeg, Labels, BaseFunc, Exprs),
+%
+%  Suffix propagates to wrap_segment (for FallbackFunc resolution) and
+%  to lower_instr_list (so switch_on_constant arms pick up the right
+%  target names). BaseFunc is already suffixed by the caller, so the
+%  `_kN` continuation format produces e.g. `clause_main_impl_k1`.
+emit_sub_segments([OnlySeg], BaseFunc, HeadType, Labels, Suffix, [Code]) :-
+    lower_instr_list(OnlySeg, Labels, BaseFunc, Suffix, Exprs),
     atomic_list_concat(Exprs, '\n', BodyCode),
-    wrap_segment(BaseFunc, HeadType, BodyCode, Code).
+    wrap_segment(BaseFunc, HeadType, BodyCode, Suffix, Code).
 
-emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Labels, [FirstCode | MoreCodes]) :-
+emit_sub_segments([FirstSeg | MoreSegs], BaseFunc, HeadType, Labels, Suffix, [FirstCode | MoreCodes]) :-
     MoreSegs = [_|_],
     format(string(NextFunc), '~w_k1', [BaseFunc]),
-    lower_seg_with_continuation(FirstSeg, NextFunc, Labels, BaseFunc, FirstBody),
-    wrap_segment(BaseFunc, HeadType, FirstBody, FirstCode),
-    emit_cont_segments(MoreSegs, BaseFunc, 1, Labels, MoreCodes).
+    lower_seg_with_continuation(FirstSeg, NextFunc, Labels, BaseFunc, Suffix, FirstBody),
+    wrap_segment(BaseFunc, HeadType, FirstBody, Suffix, FirstCode),
+    emit_cont_segments(MoreSegs, BaseFunc, 1, Labels, Suffix, MoreCodes).
 
-emit_cont_segments([FinalSeg], BaseFunc, Idx, Labels, [Code]) :-
+emit_cont_segments([FinalSeg], BaseFunc, Idx, Labels, Suffix, [Code]) :-
     format(string(FuncName), '~w_k~w', [BaseFunc, Idx]),
-    lower_instr_list(FinalSeg, Labels, FuncName, Exprs),
+    lower_instr_list(FinalSeg, Labels, FuncName, Suffix, Exprs),
     atomic_list_concat(Exprs, '\n', BodyCode),
     format(string(Code),
 '  defp ~w(state) do
@@ -734,12 +768,12 @@ emit_cont_segments([FinalSeg], BaseFunc, Idx, Labels, [Code]) :-
         end
     end
   end', [FuncName, BodyCode]).
-emit_cont_segments([Seg | More], BaseFunc, Idx, Labels, [Code | RestCodes]) :-
+emit_cont_segments([Seg | More], BaseFunc, Idx, Labels, Suffix, [Code | RestCodes]) :-
     More = [_|_],
     format(string(FuncName), '~w_k~w', [BaseFunc, Idx]),
     NextIdx is Idx + 1,
     format(string(NextFunc), '~w_k~w', [BaseFunc, NextIdx]),
-    lower_seg_with_continuation(Seg, NextFunc, Labels, FuncName, Body),
+    lower_seg_with_continuation(Seg, NextFunc, Labels, FuncName, Suffix, Body),
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -752,16 +786,16 @@ emit_cont_segments([Seg | More], BaseFunc, Idx, Labels, [Code | RestCodes]) :-
         end
     end
   end', [FuncName, Body]),
-    emit_cont_segments(More, BaseFunc, NextIdx, Labels, RestCodes).
+    emit_cont_segments(More, BaseFunc, NextIdx, Labels, Suffix, RestCodes).
 
-%% lower_seg_with_continuation(+Instrs, +NextFunc, +Labels, +FuncName, -Body)
+%% lower_seg_with_continuation(+Instrs, +NextFunc, +Labels, +FuncName, +Suffix, -Body)
 %  Lowers a sub-segment that ends with `call P, N`. The body is the
 %  ordinary lowering of the pre-call instrs, followed by a tail-call that
 %  stores NextFunc in state.cp so the called predicate\'s `proceed`
 %  routes control back to NextFunc rather than collapsing the stack.
-lower_seg_with_continuation(Instrs, NextFunc, Labels, FuncName, Body) :-
+lower_seg_with_continuation(Instrs, NextFunc, Labels, FuncName, Suffix, Body) :-
     append(InitInstrs, [_PC-call(P, _N)], Instrs),
-    lower_instr_list(InitInstrs, Labels, FuncName, InitExprs),
+    lower_instr_list(InitInstrs, Labels, FuncName, Suffix, InitExprs),
     format(string(TailCallCode),
 '    state = %{state | cp: &~w/1}
     WamDispatcher.call("~w", state)', [NextFunc, P]),
@@ -793,17 +827,17 @@ split_last_colon(Entry, Key, Label) :-
 %  try_me_else chain). For any key with multiple entries OR a single
 %  "default" entry: fall through to :ok, letting the surrounding
 %  try_me_else / retry_me_else chain handle the choice non-deterministically.
-build_switch_arms(Entries, ArmsStr) :-
+build_switch_arms(Entries, Suffix, ArmsStr) :-
     maplist([E,K-L]>>split_last_colon(E, K, L), Entries, Pairs),
     keysort(Pairs, SortedPairs),
     group_pairs_by_key(SortedPairs, Groups),
-    maplist(build_switch_arm_group, Groups, Arms),
+    maplist(build_switch_arm_group(Suffix), Groups, Arms),
     atomic_list_concat(Arms, '\n          ', ArmsStr).
 
-build_switch_arm_group(Key-Labels, Arm) :-
+build_switch_arm_group(Suffix, Key-Labels, Arm) :-
     (   Labels = [OnlyLabel],
         OnlyLabel \== "default"
-    ->  segment_func_name(OnlyLabel, LocalFunc),
+    ->  segment_func_name(OnlyLabel, Suffix, LocalFunc),
         % Drop the outer try_me_else CP (pushed just before this switch):
         % we are deterministically dispatching to LocalFunc, so the outer
         % CP — which points at that same clause — would cause a duplicate
@@ -816,9 +850,22 @@ build_switch_arm_group(Key-Labels, Arm) :-
     ).
 
 segment_func_name("clause_start", "clause_main") :- !.
-segment_func_name(Label, Name) :- 
+segment_func_name(Label, Name) :-
     camel_case(Label, Camel),
     format(string(Name), "clause_~w", [Camel]).
+
+%% segment_func_name(+Label, +Suffix, -Name)
+%  Suffix-aware variant used when the Tier-2 super-wrapper has taken
+%  the canonical `clause_main` name and the per-clause bodies need to
+%  live under an `_impl`-suffixed name (see
+%  docs/proposals/WAM_ELIXIR_TIER2_WIRING.md). For Suffix="" the result
+%  is identical to segment_func_name/2 — byte-for-byte regression
+%  check is the existing test suite.
+segment_func_name(Label, Suffix, Name) :-
+    segment_func_name(Label, BaseName),
+    (   Suffix == "" -> Name = BaseName
+    ;   format(string(Name), "~w~w", [BaseName, Suffix])
+    ).
 
 classify_segment_head(Instrs, HeadType, BodyInstrs) :-
     (   select(_PC-try_me_else(L), Instrs, BodyInstrs) -> HeadType = try_me_else(L)
@@ -827,8 +874,8 @@ classify_segment_head(Instrs, HeadType, BodyInstrs) :-
     ;   HeadType = none, BodyInstrs = Instrs
     ), !.
 
-wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
-    segment_func_name(L, FallbackFunc),
+wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
     cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
@@ -845,8 +892,8 @@ wrap_segment(FuncName, try_me_else(L), BodyCode, Code) :-
     end
   end', [FuncName, FallbackFunc, BodyCode]).
 
-wrap_segment(FuncName, retry_me_else(L), BodyCode, Code) :-
-    segment_func_name(L, FallbackFunc),
+wrap_segment(FuncName, retry_me_else(L), BodyCode, Suffix, Code) :-
+    segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
 '  defp ~w(state) do
     cp = %{pc: &~w/1, regs: state.regs, heap: state.heap, heap_len: state.heap_len,
@@ -863,7 +910,7 @@ wrap_segment(FuncName, retry_me_else(L), BodyCode, Code) :-
     end
   end', [FuncName, FallbackFunc, BodyCode]).
 
-wrap_segment(FuncName, trust_me, BodyCode, Code) :-
+wrap_segment(FuncName, trust_me, BodyCode, _Suffix, Code) :-
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -877,7 +924,7 @@ wrap_segment(FuncName, trust_me, BodyCode, Code) :-
     end
   end', [FuncName, BodyCode]).
 
-wrap_segment(FuncName, none, BodyCode, Code) :-
+wrap_segment(FuncName, none, BodyCode, _Suffix, Code) :-
     format(string(Code),
 '  defp ~w(state) do
     try do
@@ -891,10 +938,10 @@ wrap_segment(FuncName, none, BodyCode, Code) :-
     end
   end', [FuncName, BodyCode]).
 
-lower_instr_list([], _, _, []).
-lower_instr_list([PC-Instr|Rest], Labels, FuncName, [Expr|Exprs]) :-
-    wam_elixir_lower_instr(Instr, PC, Labels, FuncName, Expr),
-    lower_instr_list(Rest, Labels, FuncName, Exprs).
+lower_instr_list([], _, _, _, []).
+lower_instr_list([PC-Instr|Rest], Labels, FuncName, Suffix, [Expr|Exprs]) :-
+    wam_elixir_lower_instr(Instr, PC, Labels, FuncName, Suffix, Expr),
+    lower_instr_list(Rest, Labels, FuncName, Suffix, Exprs).
 
 % ============================================================================
 % TIER-2 SUPER-WRAPPER EMITTER
@@ -927,39 +974,45 @@ lower_instr_list([PC-Instr|Rest], Labels, FuncName, [Expr|Exprs]) :-
 
 %% par_wrap_segment(+Pred/Arity, +Segments, +Options, -Code)
 %  On gate-pass: Code is the emitted Elixir super-wrapper. On
-%  gate-reject: Code is the empty string `""` — caller (future wiring
-%  PR) falls back to the existing sequential emission path.
+%  gate-reject: Code is the empty string `""`.
+%
+%  The super-wrapper\'s function name matches the FIRST segment\'s
+%  no-suffix name — so `run/1`\'s existing tail call into the first
+%  segment reaches the super-wrapper, and the per-clause bodies
+%  (emitted under `_impl`-suffixed names by the generate_all_segments
+%  flow) are reachable via the super-wrapper\'s cond arms.
 par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
     \+ option(intra_query_parallel(false), Options),
     tier2_purity_eligible(Pred, Arity, _Cert),
     length(Segments, N), N >= 3,
     !,
-    maplist([Name-_Instrs, ImplFunc]>>(
-        segment_func_name(Name, BaseFunc),
-        format(string(ImplFunc), '~w_impl', [BaseFunc])
-    ), Segments, BranchImplFuncs),
-    emit_par_tier2_wrapper(BranchImplFuncs, Code).
+    Segments = [FirstName-_|_],
+    segment_func_name(FirstName, "", EntryFunc),
+    segment_func_name(FirstName, "_impl", EntryImplFunc),
+    maplist([Name-_Instrs, ImplFunc]>>segment_func_name(Name, "_impl", ImplFunc),
+            Segments, BranchImplFuncs),
+    emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code).
 par_wrap_segment(_Pred, _Segments, _Options, "").
 
-%% emit_par_tier2_wrapper(+BranchImplFuncs, -Code)
+%% emit_par_tier2_wrapper(+EntryFunc, +EntryImplFunc, +BranchImplFuncs, -Code)
 %  Formats the `cond`-based super-wrapper per the template in
-%  `docs/design/WAM_TIERED_LOWERING.md`. BranchImplFuncs is the list
-%  of per-clause `_impl` function names; the caller delegates to
-%  `clause_main_sequential/1` on gate-miss. Both that sequential
-%  orchestrator and the `_impl` functions are the wiring PR\'s
-%  concern — this predicate emits the super-wrapper shell only.
-emit_par_tier2_wrapper(BranchImplFuncs, Code) :-
+%  `docs/design/WAM_TIERED_LOWERING.md`. EntryFunc is the no-suffix
+%  surface name (what `run/1` delegates to). EntryImplFunc is that
+%  name + "_impl" — the sequential fallback target. BranchImplFuncs
+%  is the list of per-clause `_impl` function names that the
+%  parallel fan-out dispatches across.
+emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
     maplist([F, Ref]>>format(string(Ref), '&~w/1', [F]),
             BranchImplFuncs, BranchRefs),
     atomic_list_concat(BranchRefs, ', ', BranchListInner),
     format(string(Code),
-'  defp clause_main(state) do
+'  defp ~w(state) do
     cond do
       not WamRuntime.in_forkable_aggregate_frame?(state) ->
-        clause_main_sequential(state)
+        ~w(state)
 
       Map.get(state, :parallel_depth, 0) > 0 ->
-        clause_main_sequential(state)
+        ~w(state)
 
       true ->
         branch_state = %{state |
@@ -990,7 +1043,8 @@ emit_par_tier2_wrapper(BranchImplFuncs, Code) :-
 
         WamRuntime.merge_into_aggregate(state, branch_results)
     end
-  end', [BranchListInner]).
+  end',
+    [EntryFunc, EntryImplFunc, EntryImplFunc, BranchListInner]).
 
 % ============================================================================
 % INSTRUCTION PARSING
@@ -1030,7 +1084,7 @@ instr_from_parts(Parts, raw(Combined)) :-
 % INSTRUCTION LOWERING
 % ============================================================================
 
-wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
@@ -1042,13 +1096,13 @@ wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, Code) :
       true -> throw({:fail, state})
     end', [Ai, C, C]).
 
-wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = state |> WamRuntime.trail_binding(~w) |> WamRuntime.put_reg(~w, val)', [Ai, Xn, Xn]).
 
-wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val_a = WamRuntime.deref_var(state, Map.get(state.regs, ~w))
@@ -1058,7 +1112,7 @@ wam_elixir_lower_instr(get_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
       :fail -> throw({:fail, state})
     end', [Ai, Xn]).
 
-wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = state.heap_len
@@ -1069,7 +1123,7 @@ wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, Code) 
     |> Map.put(:heap, new_heap)
     |> Map.put(:heap_len, addr + 1)', [F, Ai, Ai]).
 
-wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     parse_arity(F, Arity),
     format(string(Code),
@@ -1093,7 +1147,7 @@ wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, Code) 
       true -> throw({:fail, state})
     end', [Ai, F, Ai, Ai, Arity, F, Arity]).
 
-wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    state = case WamRuntime.step_unify_variable(state, ~w) do
@@ -1101,7 +1155,7 @@ wam_elixir_lower_instr(unify_variable(XnName), _PC, _Labels, _FuncName, Code) :-
       s -> s
     end', [Xn]).
 
-wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    state = case WamRuntime.step_unify_value(state, ~w) do
@@ -1109,23 +1163,23 @@ wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, _FuncName, Code) :-
       s -> s
     end', [Xn]).
 
-wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code),
 '    state = case WamRuntime.step_unify_constant(state, "~w") do
       :fail -> throw({:fail, state})
       s -> s
     end', [C]).
 
-wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(retry_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(trust_me, _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(trust_me, _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
 
-wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    # Save caller\'s Y-regs so the callee can freely overwrite
     # slots 201-299 without corrupting the outer frame. Also snapshot
     # the current choice_points as the new cut barrier so `!` inside
@@ -1136,7 +1190,7 @@ wam_elixir_lower_instr(allocate, _PC, _Labels, _FuncName, Code) :-
     state = %{state | stack: [new_env | state.stack], regs: base_regs,
                       cut_point: state.choice_points}'.
 
-wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    state = case state.stack do
       [env | rest] ->
         {_callee_ys, base_regs} = WamRuntime.split_y_regs(state.regs)
@@ -1146,7 +1200,7 @@ wam_elixir_lower_instr(deallocate, _PC, _Labels, _FuncName, Code) :-
       _ -> state
     end'.
 
-wam_elixir_lower_instr(call(P, _N), PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(call(P, _N), PC, _Labels, _FuncName, _Suffix, Code) :-
     NPC is PC + 1,
     format(string(Code),
 '    state = case WamDispatcher.call("~w", state) do
@@ -1154,22 +1208,22 @@ wam_elixir_lower_instr(call(P, _N), PC, _Labels, _FuncName, Code) :-
       :fail -> throw({:fail, state})
     end', [P, NPC]).
 
-wam_elixir_lower_instr(execute(P), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(execute(P), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code),
 '    WamDispatcher.call("~w", state)', [P]).
 
-wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code),
 '    state = case WamRuntime.execute_builtin(state, "~w", ~w) do
       :fail -> throw({:fail, state})
       s -> s
     end', [Op, Ar]).
 
-wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     format(string(Code), '    state = %{state | regs: Map.put(state.regs, ~w, "~w")}', [Ai, C]).
 
-wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    fresh = {:unbound, make_ref()}
@@ -1178,7 +1232,7 @@ wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, _FuncName, Co
     |> WamRuntime.put_reg(~w, fresh)
     |> WamRuntime.put_reg(~w, fresh)', [Xn, Xn, Ai]).
 
-wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
     format(string(Code),
 '    val = WamRuntime.get_reg(state, ~w)
@@ -1186,7 +1240,7 @@ wam_elixir_lower_instr(put_value(XnName, AiName), _PC, _Labels, _FuncName, Code)
     |> WamRuntime.trail_binding(~w)
     |> Map.put(:regs, Map.put(state.regs, ~w, val))', [Xn, Ai, Ai]).
 
-wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = state.heap_len
@@ -1197,7 +1251,7 @@ wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, Code) :-
     |> Map.put(:heap, new_heap)
     |> Map.put(:heap_len, addr + 1)', [Ai, Ai]).
 
-wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
@@ -1223,7 +1277,7 @@ wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, Code) :-
       true -> throw({:fail, state})
     end', [Ai, Ai, Ai]).
 
-wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    addr = state.heap_len
@@ -1234,20 +1288,20 @@ wam_elixir_lower_instr(set_variable(XnName), _PC, _Labels, _FuncName, Code) :-
     |> Map.put(:heap, new_heap)
     |> Map.put(:heap_len, addr + 1)', [Xn]).
 
-wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn),
     format(string(Code),
 '    val = WamRuntime.get_reg(state, ~w)
     addr = state.heap_len
     state = %{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}', [Xn]).
 
-wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code),
 '    addr = state.heap_len
     state = %{state | heap: Map.put(state.heap, addr, "~w"), heap_len: addr + 1}', [C]).
 
-wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Code) :-
-    build_switch_arms(Entries, ArmsStr),
+wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
     case val do
@@ -1259,8 +1313,8 @@ wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Cod
         end
     end', [ArmsStr]).
 
-wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, Code) :-
-    build_switch_arms(Entries, ArmsStr),
+wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
+    build_switch_arms(Entries, Suffix, ArmsStr),
     format(string(Code),
 '    val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
     case val do
@@ -1272,14 +1326,14 @@ wam_elixir_lower_instr(switch_on_constant_a2(Entries), _PC, _Labels, _FuncName, 
         end
     end', [ArmsStr]).
 
-wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, _Suffix, Code) :-
     % CPS: proceed = tail-call the continuation stored in state.cp. The
     % caller\'s post-call code (or the driver\'s terminal_cp) lives in
     % state.cp — this tail call invokes it. BEAM TCO collapses the stack
     % so deep recursion doesn\'t grow it.
     Code = '    state.cp.(state)'.
 
-wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, Code) :-
+wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).
 
 %% pred_to_module(+PredStr, -ModuleName)
