@@ -518,6 +518,30 @@ test_phase_d_emits_external_source_shape :-
     ;   fail_test(Test, 'external_source shape missing or bled through to other layouts')
     ).
 
+test_phase_d_external_source_preserves_shared_preprocess_metadata :-
+    Test = 'Phase D: external_source preserves shared preprocess metadata in generated module',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    setup_call_cleanup(
+        assertz(user:preprocess(big_fact/2, exact_hash_index([key([1]), values([2])]))),
+        (   Opts = [module_name('TestMod'),
+                    fact_layout(big_fact/2, external_source(tsv_marker))],
+            once(lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code)),
+            contains_string(Code, '@external_source_spec "tsv_marker"'),
+            contains_string(Code, '@external_source_metadata %{source_spec: @external_source_spec, preprocess: %{'),
+            contains_string(Code, 'source: "shared_preprocess"'),
+            contains_string(Code, 'mode: "artifact"'),
+            contains_string(Code, 'kind: "exact_hash_index"'),
+            contains_string(Code, 'format: "exact_hash_index"'),
+            contains_string(Code, 'access_contracts: ["arg_position_lookup(1)", "exact_key_lookup", "grouped_values_lookup([2])", "scan"]'),
+            contains_string(Code, 'options: ["key([1])", "values([2])"]'),
+            contains_string(Code, 'def external_source_metadata, do: @external_source_metadata')
+        ->  pass(Test)
+        ;   fail_test(Test, 'shared preprocess metadata missing from external_source module')
+        ),
+        maybe_abolish_test_predicate(preprocess/2)
+    ).
+
 test_phase_d_runtime_emits_fact_source :-
     Test = 'Phase D: runtime assembly emits FactSource behaviour + Tsv adaptor + Registry',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -907,6 +931,15 @@ test_par_wrap_segment_kill_switch :-
         retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
     ).
 
+maybe_abolish_test_predicate(Name/Arity) :-
+    (   current_predicate(user:Name/Arity)
+    ->  abolish(user:Name/Arity)
+    ;   true
+    ).
+
+contains_string(Haystack, Needle) :-
+    once(sub_string(Haystack, _, _, _, Needle)).
+
 %% Wiring tests — exercise the full lower_predicate_to_elixir/4 entry
 %% point (not par_wrap_segment/4 in isolation). small_fact/2 has 4
 %% ground clauses, classified `compiled` under the default threshold,
@@ -1011,6 +1044,7 @@ run_tests :-
     test_phase_c_index_policy_none,
     test_phase_c_variable_head_no_index,
     test_phase_d_emits_external_source_shape,
+    test_phase_d_external_source_preserves_shared_preprocess_metadata,
     test_phase_d_runtime_emits_fact_source,
     test_phase_d_external_beats_inline_override,
     test_phase_e_auto_matches_pre_phase_e,

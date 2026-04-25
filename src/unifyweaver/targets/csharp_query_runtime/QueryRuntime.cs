@@ -1842,7 +1842,8 @@ namespace UnifyWeaver.QueryRuntime
                 RowCount = writeResult.RowCount,
                 SourcePath = source.InputPath,
                 SourceLength = sourceInfo?.Length,
-                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath)
+                SourceSha256 = sourceInfo is null ? null : ComputeSha256(source.InputPath),
+                Indexes = writeResult.Indexes
             };
 
             var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
@@ -1873,8 +1874,9 @@ namespace UnifyWeaver.QueryRuntime
     public static class DelimitedRelationArtifactReader
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("UWDR0001");
+        private static readonly byte[] IndexMagic = Encoding.ASCII.GetBytes("UWDI0001");
 
-        internal sealed record WriteResult(long RowCount);
+        internal sealed record WriteResult(long RowCount, List<DelimitedRelationArtifactIndexManifest> Indexes);
 
         public static DelimitedRelationArtifactManifest LoadManifest(string manifestPath)
         {
@@ -1914,6 +1916,12 @@ namespace UnifyWeaver.QueryRuntime
             writer.Write(0L);
 
             long rowCount = 0;
+            var indexes = new Dictionary<int, Dictionary<string, List<long>>>();
+            for (var i = 0; i < width; i++)
+            {
+                indexes[i] = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+            }
+
             foreach (var row in rows)
             {
                 if (row is null || row.Length < width)
@@ -1921,9 +1929,18 @@ namespace UnifyWeaver.QueryRuntime
                     continue;
                 }
 
+                var rowOffset = stream.Position;
                 for (var i = 0; i < width; i++)
                 {
-                    WriteString(writer, row[i]?.ToString() ?? string.Empty);
+                    var value = row[i]?.ToString() ?? string.Empty;
+                    if (!indexes[i].TryGetValue(value, out var offsets))
+                    {
+                        offsets = new List<long>();
+                        indexes[i][value] = offsets;
+                    }
+
+                    offsets.Add(rowOffset);
+                    WriteString(writer, value);
                 }
 
                 rowCount++;
@@ -1932,7 +1949,55 @@ namespace UnifyWeaver.QueryRuntime
             writer.Flush();
             stream.Position = Magic.Length + sizeof(int) + sizeof(int);
             writer.Write(rowCount);
-            return new WriteResult(rowCount);
+
+            var artifactDirectory = Path.GetDirectoryName(Path.GetFullPath(dataPath)) ?? ".";
+            var artifactName = Path.GetFileNameWithoutExtension(dataPath);
+            var indexManifests = new List<DelimitedRelationArtifactIndexManifest>(width);
+            foreach (var kvp in indexes)
+            {
+                var indexPath = Path.Combine(artifactDirectory, $"{artifactName}.col{kvp.Key}.uwdri");
+                WriteIndex(indexPath, kvp.Key, kvp.Value);
+                indexManifests.Add(new DelimitedRelationArtifactIndexManifest
+                {
+                    Columns = new List<int> { kvp.Key },
+                    Kind = "offset_directory",
+                    Path = Path.GetFileName(indexPath)
+                });
+            }
+
+            return new WriteResult(rowCount, indexManifests);
+        }
+
+        public static IEnumerable<object[]> LookupRows(
+            DelimitedRelationArtifactManifest manifest,
+            string manifestPath,
+            int columnIndex,
+            IEnumerable<object> keys)
+        {
+            if (manifest is null) throw new ArgumentNullException(nameof(manifest));
+            if (keys is null) throw new ArgumentNullException(nameof(keys));
+            manifest.Validate(manifestPath);
+            if (columnIndex < 0 || columnIndex >= manifest.Arity)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var index = manifest.Indexes.FirstOrDefault(candidate =>
+                candidate.Columns.Count == 1 &&
+                candidate.Columns[0] == columnIndex &&
+                string.Equals(candidate.Kind, "offset_directory", StringComparison.Ordinal));
+            if (index is null)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var indexPath = Path.IsPathRooted(index.Path)
+                ? index.Path
+                : Path.Combine(manifestDirectory, index.Path);
+            var dataPath = ResolveDataPath(manifest, manifestPath);
+            var offsets = ReadOffsets(indexPath, columnIndex, keys.Select(key => key?.ToString() ?? string.Empty));
+            return ReadRowsAtOffsets(dataPath, manifest.Arity, offsets);
         }
 
         private static IEnumerable<object[]> ReadRowsFromData(string dataPath, int expectedWidth, long expectedRows)
@@ -1974,6 +2039,134 @@ namespace UnifyWeaver.QueryRuntime
 
                 yield return row;
             }
+        }
+
+        private static IEnumerable<object[]> ReadRowsAtOffsets(string dataPath, int expectedWidth, IReadOnlyList<long> offsets)
+        {
+            if (offsets.Count == 0)
+            {
+                yield break;
+            }
+
+            using var stream = new FileStream(dataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.RandomAccess);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+            ValidateDataHeader(reader, dataPath, expectedWidth);
+
+            foreach (var offset in offsets)
+            {
+                stream.Position = offset;
+                var row = new object[expectedWidth];
+                for (var i = 0; i < expectedWidth; i++)
+                {
+                    row[i] = ReadString(reader);
+                }
+
+                yield return row;
+            }
+        }
+
+        private static void ValidateDataHeader(BinaryReader reader, string dataPath, int expectedWidth)
+        {
+            var magic = reader.ReadBytes(Magic.Length);
+            if (!magic.SequenceEqual(Magic))
+            {
+                throw new InvalidDataException($"Invalid delimited relation artifact magic: {dataPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported delimited relation artifact version {version}: {dataPath}");
+            }
+
+            var width = reader.ReadInt32();
+            if (width != expectedWidth)
+            {
+                throw new InvalidDataException($"Delimited relation artifact width mismatch. Expected {expectedWidth}, found {width}: {dataPath}");
+            }
+
+            _ = reader.ReadInt64();
+        }
+
+        private static void WriteIndex(string indexPath, int columnIndex, Dictionary<string, List<long>> index)
+        {
+            using var stream = new FileStream(indexPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8);
+            writer.Write(IndexMagic);
+            writer.Write(1);
+            writer.Write(columnIndex);
+            writer.Write(index.Count);
+
+            foreach (var kvp in index.OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                WriteString(writer, kvp.Key);
+                writer.Write(kvp.Value.Count);
+                foreach (var offset in kvp.Value)
+                {
+                    writer.Write(offset);
+                }
+            }
+        }
+
+        private static IReadOnlyList<long> ReadOffsets(string indexPath, int expectedColumnIndex, IEnumerable<string> keys)
+        {
+            var keySet = new HashSet<string>(keys, StringComparer.Ordinal);
+            if (keySet.Count == 0)
+            {
+                return Array.Empty<long>();
+            }
+
+            var offsets = new List<long>();
+            using var stream = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            var magic = reader.ReadBytes(IndexMagic.Length);
+            if (!magic.SequenceEqual(IndexMagic))
+            {
+                throw new InvalidDataException($"Invalid delimited relation index artifact magic: {indexPath}");
+            }
+
+            var version = reader.ReadInt32();
+            if (version != 1)
+            {
+                throw new InvalidDataException($"Unsupported delimited relation index artifact version {version}: {indexPath}");
+            }
+
+            var columnIndex = reader.ReadInt32();
+            if (columnIndex != expectedColumnIndex)
+            {
+                throw new InvalidDataException($"Delimited relation index column mismatch. Expected {expectedColumnIndex}, found {columnIndex}: {indexPath}");
+            }
+
+            var keyCount = reader.ReadInt32();
+            if (keyCount < 0)
+            {
+                throw new InvalidDataException($"Delimited relation index key count is negative: {indexPath}");
+            }
+
+            for (var i = 0; i < keyCount; i++)
+            {
+                var key = ReadString(reader);
+                var offsetCount = reader.ReadInt32();
+                if (offsetCount < 0)
+                {
+                    throw new InvalidDataException($"Delimited relation index offset count is negative for column {expectedColumnIndex}: {indexPath}");
+                }
+
+                if (keySet.Contains(key))
+                {
+                    for (var j = 0; j < offsetCount; j++)
+                    {
+                        offsets.Add(reader.ReadInt64());
+                    }
+                }
+                else
+                {
+                    stream.Position += sizeof(long) * offsetCount;
+                }
+            }
+
+            return offsets;
         }
 
         private static string ResolveDataPath(DelimitedRelationArtifactManifest manifest, string manifestPath)
@@ -3288,7 +3481,7 @@ namespace UnifyWeaver.QueryRuntime
         }
     }
 
-    public sealed class DelimitedRelationArtifactProvider : IRetentionAwareRelationProvider, IRelationCardinalityProvider
+    public sealed class DelimitedRelationArtifactProvider : IRetentionAwareRelationProvider, IIndexedRelationProvider, IRelationCardinalityProvider
     {
         private readonly IRelationProvider? _fallback;
         private readonly Dictionary<PredicateId, string> _manifestPaths = new();
@@ -3353,6 +3546,31 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             binding = default;
+            return false;
+        }
+
+        public bool TryLookupFacts(PredicateId predicate, int columnIndex, IEnumerable<object> keys, out IEnumerable<object[]> facts)
+        {
+            if (_manifestPaths.TryGetValue(predicate, out var manifestPath))
+            {
+                var manifest = DelimitedRelationArtifactReader.LoadManifest(manifestPath);
+                if (manifest.Indexes.Any(index =>
+                    index.Columns.Count == 1 &&
+                    index.Columns[0] == columnIndex &&
+                    string.Equals(index.Kind, "offset_directory", StringComparison.Ordinal)))
+                {
+                    facts = DelimitedRelationArtifactReader.LookupRows(manifest, manifestPath, columnIndex, keys);
+                    return true;
+                }
+            }
+
+            if (_fallback is IIndexedRelationProvider indexedFallback &&
+                indexedFallback.TryLookupFacts(predicate, columnIndex, keys, out facts))
+            {
+                return true;
+            }
+
+            facts = default!;
             return false;
         }
 

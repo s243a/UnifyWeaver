@@ -37,6 +37,8 @@
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module('wam_elixir_utils', [reg_id/2, is_label_part/1, camel_case/2, parse_arity/2]).
 :- use_module('../core/purity_certificate', [analyze_predicate_purity/2]).
+:- use_module('../core/predicate_preprocessing',
+              [declared_preprocess_metadata/4]).
 
 % ============================================================================
 % MAIN ENTRY POINT
@@ -67,7 +69,10 @@ lower_predicate_to_elixir(Pred/Arity, WamCode, Options, Code) :-
     Info = fact_shape_info(_, _, _, Layout),
     (   Layout = external_source(_)
     ->  render_external_source_module(CamelMod, CamelPred, PredStr, Arity,
-                                      ShapeComment, Code)
+                                      ShapeComment, Layout, Code)
+    ;   Layout = external_source(_, _)
+    ->  render_external_source_module(CamelMod, CamelPred, PredStr, Arity,
+                                      ShapeComment, Layout, Code)
     ;   Layout = inline_data(_),
         catch(extract_facts(Segments, Arity, FactsLiteral), _, fail),
         choose_index(Segments, Arity, Options, IndexResult)
@@ -242,20 +247,25 @@ inline_data_run1_body(indexed(_), Arity, Body) :-
 ', [Arity]).
 
 %% render_external_source_module(+CamelMod, +CamelPred, +PredStr, +Arity,
-%%                               +ShapeComment, -Code)
+%%                               +ShapeComment, +Layout, -Code)
 %  Phase-D external_source layout: no inline facts. `run/1` looks the
 %  source up in the FactSourceRegistry (drivers must register before
 %  calling), then dispatches to stream_all/lookup_by_arg1 through the
 %  FactSource behaviour facade. The SourceSpec the user passed in
-%  fact_layout/2 is opaque to the emitter — it is only consulted at
-%  runtime via the registry, which decouples the generated code from
-%  the concrete source implementation (TSV today; SQLite / ETS /
-%  preprocessed artifacts tomorrow).
-render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment, Code) :-
+%  fact_layout/2 remains opaque to the runtime adaptor path, but the
+%  generated module now also exposes any shared preprocess declaration
+%  metadata that was attached to the layout so manifest- / provider-like
+%  tooling can inspect the intended access contract.
+render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
+                              Layout, Code) :-
     format(string(PredIndicator), '~w/~w', [PredStr, Arity]),
+    external_source_layout_parts(Layout, SourceSpec, Metadata),
+    external_source_metadata_block(SourceSpec, Metadata, MetadataBlock),
     format(string(Code),
 'defmodule ~w.~w do
   @moduledoc "Lowered WAM-compiled predicate: ~w/~w (external_source)"
+
+~w
 
 ~w
 
@@ -301,7 +311,51 @@ render_external_source_module(CamelMod, CamelPred, PredStr, Arity, ShapeComment,
         :fail
     end
   end
-end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, PredIndicator, Arity, CamelPred]).
+end', [CamelMod, CamelPred, PredStr, Arity, ShapeComment, MetadataBlock,
+       PredIndicator, Arity, CamelPred]).
+
+external_source_layout_parts(external_source(SourceSpec), SourceSpec, none).
+external_source_layout_parts(external_source(SourceSpec, Metadata), SourceSpec, Metadata).
+
+external_source_metadata_block(SourceSpec, Metadata, Block) :-
+    elixir_term_string_literal(SourceSpec, SourceSpecLit),
+    external_source_preprocess_map(Metadata, PreprocessMap),
+    format(string(Block),
+'  @external_source_spec ~w
+  @external_source_metadata %{source_spec: @external_source_spec, preprocess: ~w}
+  def external_source_metadata, do: @external_source_metadata',
+           [SourceSpecLit, PreprocessMap]).
+
+external_source_preprocess_map(none, 'nil').
+external_source_preprocess_map(preprocess_metadata(Source, Mode, Kind, Format,
+                                                   AccessContracts, Options),
+                               MapLiteral) :-
+    elixir_term_string_literal(Source, SourceLit),
+    elixir_term_string_literal(Mode, ModeLit),
+    elixir_term_string_literal(Kind, KindLit),
+    elixir_term_string_literal(Format, FormatLit),
+    elixir_string_list_literal(AccessContracts, AccessLit),
+    elixir_string_list_literal(Options, OptionsLit),
+    format(string(MapLiteral),
+           '%{source: ~w, mode: ~w, kind: ~w, format: ~w, access_contracts: ~w, options: ~w}',
+           [SourceLit, ModeLit, KindLit, FormatLit, AccessLit, OptionsLit]).
+
+elixir_string_list_literal(Terms, Literal) :-
+    maplist(elixir_term_string_literal, Terms, Literals),
+    sort(Literals, SortedLiterals),
+    atomic_list_concat(SortedLiterals, ', ', Body),
+    format(atom(Literal), '[~w]', [Body]).
+
+elixir_term_string_literal(Term, Literal) :-
+    term_string(Term, TermString),
+    escape_elixir_string(TermString, Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
+
+escape_elixir_string(In, Out) :-
+    split_string(In, "\\", "", Parts1),
+    atomic_list_concat(Parts1, "\\\\", Tmp1),
+    split_string(Tmp1, "\"", "", Parts2),
+    atomic_list_concat(Parts2, "\\\"", Out).
 
 % ============================================================================
 % PHASE A: FACT-SHAPE CLASSIFICATION
@@ -372,14 +426,30 @@ combine_groundness(_, mixed).
 %  but callers can select a different built-in or register their own
 %  via the multifile `user:wam_elixir_layout_policy/5` hook.
 pick_layout(PredIndicator, _NClauses, _FactOnly, Options, Layout) :-
-    option(fact_layout(PredIndicator, UserLayout), Options), !,
-    Layout = UserLayout.
+    option(fact_layout(PredIndicator, UserLayout0), Options), !,
+    augment_layout_metadata(PredIndicator, UserLayout0, Layout).
 pick_layout(PredIndicator, _NClauses, _FactOnly, _Options, Layout) :-
-    catch(user:fact_layout(PredIndicator, UserLayout), _, fail), !,
-    Layout = UserLayout.
+    catch(user:fact_layout(PredIndicator, UserLayout0), _, fail), !,
+    augment_layout_metadata(PredIndicator, UserLayout0, Layout).
 pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout) :-
     option(fact_layout_policy(PolicyName), Options, auto),
-    layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout).
+    layout_policy(PolicyName, PredIndicator, NClauses, FactOnly, Options, Layout0),
+    augment_layout_metadata(PredIndicator, Layout0, Layout).
+
+augment_layout_metadata(_PredIndicator, external_source(SourceSpec, Metadata),
+                        external_source(SourceSpec, Metadata)) :-
+    !.
+augment_layout_metadata(PredIndicator, external_source(SourceSpec),
+                        external_source(SourceSpec, MetadataTerm)) :-
+    declared_preprocess_metadata(PredIndicator, Mode,
+                                 preprocess_info(Kind, Options),
+                                 Metadata),
+    !,
+    MetadataTerm = preprocess_metadata(shared_preprocess, Mode, Kind,
+                                       Metadata.format,
+                                       Metadata.access_contracts,
+                                       Options).
+augment_layout_metadata(_PredIndicator, Layout, Layout).
 
 %% layout_policy(+Policy, +PredIndicator, +NClauses, +FactOnly, +Options, -Layout)
 %  Phase-E pluggable layout selector. Three built-in policies:

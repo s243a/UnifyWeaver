@@ -2651,6 +2651,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
+    option(benchmark_mode(Mode), Options, wam_haskell_accumulated),
     % When kernels are detected, the query body should use executeForeign
     % dispatch instead of running WAM code (fact code is skipped).
     (   DetectedKernels \= []
@@ -2673,6 +2674,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
+        , benchmark_mode=Mode
         , query_body=QueryBody
         , merged_code_build=MergedCodeBuild
         , demand_filter=DemandFilter

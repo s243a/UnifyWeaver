@@ -93,9 +93,9 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
-### WAM-Rust Benchmark Variants
+### WAM-Rust and WAM-Haskell Benchmark Variants
 
-The effective-distance harness also includes WAM-Rust benchmark targets:
+The effective-distance harness also includes hybrid WAM benchmark targets:
 
 - `wam-rust-seeded` compiles the base WAM predicates and uses the generated
   Rust benchmark driver to compute per-seed weight sums through the
@@ -106,15 +106,38 @@ The effective-distance harness also includes WAM-Rust benchmark targets:
   the merged WAM code vector. The measured driver still uses the stable
   Rust-side accumulation path until direct WAM aggregate-helper execution
   has separate runtime coverage.
+- `wam-rust-seeded-no-kernels` and `wam-rust-accumulated-no-kernels`
+  use the same generated WAM code but disable native recursive kernels.
+  These are intended for WAM fallback profiling; `total_steps` and
+  `total_backtracks` should be non-zero when the fallback path is exercised.
+  Use `WAM_SEED_LIMIT=<n>` or `WAM_SEED_FILTER=CatA|CatB` for bounded
+  fallback probes before running full-scale comparisons. Seed-limited runs
+  intentionally produce partial output and should not be used for output
+  completeness comparisons. These environment variables apply to the entire
+  benchmark invocation; when either is set, no-kernel parity and speedup lines
+  are treated as seed-subset probes rather than full-output comparisons.
+- `haskell-wam-seeded` and `haskell-wam-accumulated` use the optimized
+  WAM-Haskell generator for the same effective-distance workload. They are
+  intended as a non-Rust hybrid comparison point and use Cabal new-style builds
+  so Hackage dependencies can be resolved when the local package cache is cold.
+- `haskell-wam-seeded-no-kernels` and
+  `haskell-wam-accumulated-no-kernels` mirror the Rust no-kernel targets by
+  passing `no_kernels(true)` to the WAM-Haskell target. Use these for pure-WAM
+  fallback comparisons; use the non-`no-kernels` targets for native-kernel
+  hybrid comparisons.
 
 Example focused run:
 
 ```bash
 python examples/benchmark/benchmark_effective_distance.py \
   --scales dev \
-  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated \
+  --targets prolog-accumulated,wam-rust-accumulated,haskell-wam-accumulated,wam-rust-accumulated-no-kernels,haskell-wam-accumulated-no-kernels \
   --repetitions 1
 ```
+
+Set `HASKELL_RTS` to pass runtime-system options to generated Haskell WAM
+executables, for example `HASKELL_RTS="+RTS -N2 -RTS"` to allow two GHC
+capabilities. Leaving it unset preserves the default single-capability run.
 
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
