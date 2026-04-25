@@ -1004,10 +1004,13 @@ compile_aggregate_helpers_to_elixir(Code) :-
                          merge_into_aggregate/2 also writes here for
                          the Tier-2 parallel-fan-out path.
 
-  state.cp is captured as :agg_return_cp so finalise tail-calls back
-  to the caller\'s continuation. The .pc field is set to nil because
-  aggregate frames have no failure target — backtrack/1 routes them
-  to finalise instead of resuming a clause.
+  state.cp is captured as :cp; finalise restores it then tail-calls
+  via the restored state.cp (no separate :agg_return_cp field — the
+  proposal §4.1 listed one, but they would always equal :cp at push
+  time, so the duplication was dropped during implementation).
+  The .pc field is set to nil because aggregate frames have no
+  failure target — backtrack/1 routes them to finalise instead of
+  resuming a clause.
   """
   def push_aggregate_frame(state, agg_type, value_reg, result_reg) do
     cp = %{
@@ -1022,8 +1025,7 @@ compile_aggregate_helpers_to_elixir(Code) :-
       agg_type: agg_type,
       agg_value_reg: value_reg,
       agg_result_reg: result_reg,
-      agg_accum: [],
-      agg_return_cp: state.cp
+      agg_accum: []
     }
     %{state | choice_points: [cp | state.choice_points]}
   end
@@ -1042,6 +1044,10 @@ compile_aggregate_helpers_to_elixir(Code) :-
 
   If no aggregate frame is present, returns state unchanged (caller
   misuse — emitter should always pair end_aggregate with begin).
+
+  Walk cost: O(N) in choice-point depth per call. Acceptable for
+  Phase 1; if Phase 3 profiling shows this dominates, an
+  agg_frame_idx field on state can collapse it to O(1).
   """
   def aggregate_collect(state, value_reg) do
     val = deref_var(state, Map.get(state.regs, value_reg))
@@ -1060,8 +1066,9 @@ compile_aggregate_helpers_to_elixir(Code) :-
 
   @doc """
   Reduce :agg_accum per :agg_type, bind the result to :agg_result_reg,
-  restore the pre-aggregate snapshot, and tail-call :agg_return_cp.
-  Called by backtrack/1 when the popped CP carries :agg_type.
+  restore the pre-aggregate snapshot, and tail-call the saved
+  continuation (the restored state.cp). Called by backtrack/1 when
+  the popped CP carries :agg_type.
 
   :collect / :findall / :aggregate_all → reversed list (preserves
   enumeration order for sequential; non-deterministic for the
@@ -1070,6 +1077,16 @@ compile_aggregate_helpers_to_elixir(Code) :-
 
   :sum / :count / :max / :min mirror compile_aggregate_all/5\'s
   alphabet. :bag is collect-with-duplicates; :set deduplicates.
+
+  Empty-accumulator semantics:
+    :collect/:findall/:aggregate_all/:bag/:set → []
+    :sum   → 0     (Enum.sum identity)
+    :count → 0     (length identity)
+    :max/:min → throws {:fail, state} — no identity exists, and
+                returning nil would silently propagate as a non-WAM
+                value into downstream get_constant unification. Fail
+                is the canonical Prolog semantics for max/min over
+                an empty bag.
   """
   def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
     accum_rev = Enum.reverse(agg_cp.agg_accum)
@@ -1079,8 +1096,10 @@ compile_aggregate_helpers_to_elixir(Code) :-
         :set -> Enum.uniq(accum_rev)
         :sum -> Enum.sum(accum_rev)
         :count -> length(accum_rev)
-        :max -> Enum.max(accum_rev, fn -> nil end)
-        :min -> Enum.min(accum_rev, fn -> nil end)
+        :max ->
+          if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
+        :min ->
+          if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
       end
     restored = %{state |
       regs: Map.put(agg_cp.regs, agg_cp.agg_result_reg, result),
@@ -1092,7 +1111,7 @@ compile_aggregate_helpers_to_elixir(Code) :-
       cp: agg_cp.cp,
       choice_points: rest_cps
     }
-    agg_cp.agg_return_cp.(restored)
+    restored.cp.(restored)
   end', []).
 
 % ============================================================================

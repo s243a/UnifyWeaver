@@ -764,13 +764,19 @@ test_findall_substrate_emits_push_aggregate_frame :-
     (   compile_wam_runtime_to_elixir([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'def push_aggregate_frame(state, agg_type, value_reg, result_reg)'),
-        % CP must capture all snapshot fields finalise needs to restore.
+        % CP must capture aggregate-specific fields.
         sub_string(S, _, _, _, 'agg_type: agg_type'),
         sub_string(S, _, _, _, 'agg_value_reg: value_reg'),
         sub_string(S, _, _, _, 'agg_result_reg: result_reg'),
         sub_string(S, _, _, _, 'agg_accum: []'),
-        sub_string(S, _, _, _, 'agg_return_cp: state.cp'),
-        % And the standard CP snapshot fields so backtrack can restore.
+        % Plus the standard CP snapshot fields finalise restores.
+        % `cp:` here doubles as the post-finalise continuation — the
+        % proposal §4.1 listed a separate :agg_return_cp field but it
+        % always equalled state.cp at push time, so it was dropped
+        % during implementation. The docstring on the emitted helper
+        % explains the deviation; finalise_aggregate's tail-call uses
+        % `restored.cp.(restored)` (asserted in the finalise test).
+        sub_string(S, _, _, _, 'cp: state.cp'),
         sub_string(S, _, _, _, 'trail_len: state.trail_len'),
         sub_string(S, _, _, _, 'heap_len: state.heap_len')
     ->  pass(Test)
@@ -803,15 +809,23 @@ test_findall_substrate_emits_finalise_aggregate :-
         sub_string(S, _, _, _, ':set -> Enum.uniq'),
         sub_string(S, _, _, _, ':sum -> Enum.sum'),
         sub_string(S, _, _, _, ':count -> length'),
-        sub_string(S, _, _, _, ':max -> Enum.max'),
-        sub_string(S, _, _, _, ':min -> Enum.min'),
+        % :max / :min throw {:fail, state} on empty accumulator
+        % (canonical Prolog semantics — no identity exists).
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)'),
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)'),
         % Must bind the result into agg_result_reg, restore from
-        % snapshot, and tail-call the saved continuation.
+        % snapshot, and tail-call the restored state.cp (no
+        % separate :agg_return_cp — see push_aggregate_frame test).
         sub_string(S, _, _, _, 'Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)'),
-        sub_string(S, _, _, _, 'agg_cp.agg_return_cp.(restored)')
+        sub_string(S, _, _, _, 'restored.cp.(restored)')
     ->  pass(Test)
     ;   fail_test(Test, 'finalise_aggregate absent or missing required aggregator handling')
     ).
+
+%% Note: aggregate_collect/2 with no aggregate frame on the stack is
+%% a documented safety contract (returns state unchanged). Coverage
+%% deferred to Phase 3 runtime tests, where a fixture state with an
+%% empty CP stack can exercise the contract end-to-end.
 
 test_findall_substrate_backtrack_routes_aggregate_frames :-
     Test = 'Findall substrate: backtrack/1 dispatches aggregate frames to finalise_aggregate',
