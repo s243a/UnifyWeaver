@@ -127,6 +127,29 @@ ETS, memory-mapped hash tables, and the preprocessed-artifact
 direction already in motion on the C# side without touching the
 emitter (see `PREPROCESSED_PREDICATE_ARTIFACTS.md`, PR #1548).
 
+Follow-up direction:
+
+- `external_source` should stop being only a raw `SourceSpec` carrier.
+- When a shared `preprocess/2` declaration exists, the emitted module
+  should also preserve normalized preprocess metadata:
+  - declaration source
+  - resolved mode
+  - declaration kind
+  - normalized format
+  - normalized access contracts
+  - serialized options
+- The first implementation seam is generated module metadata, not a
+  runtime behaviour change. That keeps TSV / ETS / SQLite adaptors
+  stable while making Elixir a consumer of the same declaration layer
+  used by the newer Clojure artifact manifest work.
+- Near-term storage decision: keep the Elixir runtime on the current
+  TSV / ETS / SQLite adaptor set for now. LMDB is now confirmed viable
+  in Termux via a Rust-side exact-artifact probe, but that is better
+  treated as a shared artifact/provider backend first than as an
+  Elixir-only binding commitment. The Elixir target should consume the
+  shared preprocess metadata seam now and defer a direct LMDB adaptor
+  until the artifact/provider boundary is a little more stable.
+
 Work:
 
 - Define the `FactSource` behaviour in `wam_elixir_target.pl`:
