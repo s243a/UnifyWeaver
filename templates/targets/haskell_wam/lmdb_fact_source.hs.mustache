@@ -19,6 +19,19 @@ openLmdbEdgeStore path = do
     mdb_txn_commit txn
     return (env, dbi)
 
+-- | Open the raw packed Int32 store read-only.
+openLmdbRawReadonlyStore :: FilePath -> Maybe String -> IO (MDB_env, MDB_dbi')
+openLmdbRawReadonlyStore dbPath dbName = do
+    env <- mdb_env_create
+    mdb_env_set_mapsize env (1024 * 1024 * 1024)
+    mdb_env_set_maxdbs env 4
+    mdb_env_set_maxreaders env 126
+    mdb_env_open env dbPath [MDB_RDONLY]
+    txn <- mdb_txn_begin env Nothing True
+    dbi <- mdb_dbi_open' txn dbName [MDB_INTEGERKEY]
+    mdb_txn_abort txn
+    return (env, dbi)
+
 -- | Create an EdgeLookup backed by raw LMDB (zero-copy mmap reads).
 -- Uses a single long-lived read-only transaction opened at startup.
 -- The pointer from mdb_get' points directly into the mmap'd region
@@ -43,21 +56,139 @@ lmdbRawEdgeLookup txn dbi key = unsafePerformIO $
 -- database is read-only during queries.
 openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
 openLmdbEdgeLookup dbPath _dbName = do
-    (env, dbi) <- openLmdbEdgeStore dbPath
+    (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
     txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
     return (lmdbRawEdgeLookup txn dbi)
 
+-- | Scan all rows from the raw Int32 LMDB store.
+scanRawIntPairs :: MDB_txn -> MDB_dbi' -> IO [(Int, Int)]
+scanRawIntPairs txn dbi = do
+    cursor <- mdb_cursor_open' txn dbi
+    rows <- alloca $ \kvPtr -> alloca $ \vvPtr -> do
+      let loop step acc = do
+            found <- mdb_cursor_get' step cursor kvPtr vvPtr
+            if not found
+              then return (reverse acc)
+              else do
+                MDB_val keySz keyPtr <- peek kvPtr
+                MDB_val valSz valPtr <- peek vvPtr
+                if keySz < 4
+                  then loop MDB_NEXT acc
+                  else do
+                    key <- fromIntegral <$> peekElemOff (castPtr keyPtr :: Ptr Int32) 0
+                    let count = fromIntegral valSz `div` 4
+                    vals <- mapM (\i -> fromIntegral <$> peekElemOff (castPtr valPtr :: Ptr Int32) i) [0..count-1]
+                    loop MDB_NEXT (reverse [(key, v) | v <- vals] ++ acc)
+      loop MDB_FIRST []
+    mdb_cursor_close' cursor
+    return rows
+
 -- | Create a FactSource backed by raw LMDB.
--- fsScan is not implemented for raw LMDB (use IntMap path for scan).
--- fsLookupArg1 uses the zero-copy EdgeLookup.
+-- fsScan walks the packed values via a cursor; fsLookupArg1 uses the
+-- zero-copy EdgeLookup.
 lmdbFactSource :: FilePath -> String -> IO FactSource
 lmdbFactSource dbPath _dbName = do
-    (env, dbi) <- openLmdbEdgeStore dbPath
+    (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
     txn <- mdb_txn_begin env Nothing True  -- long-lived read txn
     let lookup' = lmdbRawEdgeLookup txn dbi
     return FactSource
-      { fsScan       = return []  -- not supported for raw LMDB; use IntMap
+      { fsScan       = scanRawIntPairs txn dbi
       , fsLookupArg1 = \key -> return $ map (\v -> (key, v)) (lookup' key)
+      , fsClose      = mdb_txn_abort txn >> mdb_env_close env
+      }
+
+-- | Read the minimal manifest fields needed by the prototype relation
+-- artifact contract.
+readLmdbArtifactManifest :: FilePath -> IO (String, Bool)
+readLmdbArtifactManifest artifactDir = do
+    content <- readFile (artifactDir ++ "/manifest.json")
+    let ls = lines content
+        dbName = fromMaybe "main" $ firstManifestField "db_name" ls
+        dupsort = case firstManifestField "dupsort" ls of
+          Just "true" -> True
+          _ -> False
+    return (dbName, dupsort)
+
+firstManifestField :: String -> [String] -> Maybe String
+firstManifestField field ls =
+    case [parseManifestScalar (drop (length prefix) trimmed)
+         | line <- ls
+         , let trimmed = dropWhile (`elem` [' ', '\t']) line
+         , let prefix = "\"" ++ field ++ "\":"
+         , prefix `isPrefixOf` trimmed
+         ] of
+      (v:_) -> Just v
+      _ -> Nothing
+
+parseManifestScalar :: String -> String
+parseManifestScalar raw =
+    case dropWhile (`elem` [' ', '\t']) raw of
+      ('"':rest) -> takeWhile (/= '"') rest
+      rest -> takeWhile (`notElem` [',', '}', ' ']) rest
+
+-- | Open a UTF-8 LMDB relation artifact from its manifest metadata.
+openLmdbUtf8StoreFromManifest :: FilePath -> IO (MDB_env, MDB_txn, MDB_dbi', Bool)
+openLmdbUtf8StoreFromManifest artifactDir = do
+    (dbName, dupsort) <- readLmdbArtifactManifest artifactDir
+    env <- mdb_env_create
+    mdb_env_set_mapsize env (1024 * 1024 * 1024)
+    mdb_env_set_maxdbs env 16
+    mdb_env_set_maxreaders env 126
+    mdb_env_open env artifactDir [MDB_RDONLY]
+    txn <- mdb_txn_begin env Nothing True
+    let dbFlags = if dupsort then [MDB_DUPSORT] else []
+    dbi <- mdb_dbi_open' txn (Just dbName) dbFlags
+    return (env, txn, dbi, dupsort)
+
+lookupUtf8Values :: MDB_txn -> MDB_dbi' -> Bool -> String -> IO [String]
+lookupUtf8Values txn dbi dupsort key =
+    withCStringLen key $ \(keyPtr, keyLen) -> do
+      cursor <- mdb_cursor_open' txn dbi
+      values <- alloca $ \kvPtr -> alloca $ \vvPtr -> do
+        poke kvPtr (MDB_val (fromIntegral keyLen) (castPtr keyPtr))
+        let collect acc = do
+              MDB_val valSz valPtr <- peek vvPtr
+              value <- peekCStringLen (castPtr valPtr, fromIntegral valSz)
+              if dupsort
+                then do
+                  more <- mdb_cursor_get' MDB_NEXT_DUP cursor kvPtr vvPtr
+                  if more then collect (value:acc) else return (reverse (value:acc))
+                else return (reverse (value:acc))
+        found <- mdb_cursor_get' MDB_SET cursor kvPtr vvPtr
+        if found then collect [] else return []
+      mdb_cursor_close' cursor
+      return values
+
+scanUtf8Pairs :: MDB_txn -> MDB_dbi' -> InternTable -> IO [(Int, Int)]
+scanUtf8Pairs txn dbi tbl = do
+    cursor <- mdb_cursor_open' txn dbi
+    rows <- alloca $ \kvPtr -> alloca $ \vvPtr -> do
+      let loop step acc = do
+            found <- mdb_cursor_get' step cursor kvPtr vvPtr
+            if not found
+              then return (reverse acc)
+              else do
+                MDB_val keySz keyPtr <- peek kvPtr
+                MDB_val valSz valPtr <- peek vvPtr
+                key <- peekCStringLen (castPtr keyPtr, fromIntegral keySz)
+                value <- peekCStringLen (castPtr valPtr, fromIntegral valSz)
+                let pair = (internAtomPure tbl key, internAtomPure tbl value)
+                loop MDB_NEXT (pair : acc)
+      loop MDB_FIRST []
+    mdb_cursor_close' cursor
+    return rows
+
+-- | Create a FactSource backed by the LMDB relation-artifact prototype.
+-- Reads UTF-8 key/value rows using the manifest to find the named DB.
+lmdbFactSourceFromManifest :: InternTable -> FilePath -> IO FactSource
+lmdbFactSourceFromManifest tbl artifactDir = do
+    (env, txn, dbi, dupsort) <- openLmdbUtf8StoreFromManifest artifactDir
+    return FactSource
+      { fsScan       = scanUtf8Pairs txn dbi tbl
+      , fsLookupArg1 = \key -> do
+            let atomKey = lookupAtom tbl key
+            values <- lookupUtf8Values txn dbi dupsort atomKey
+            return $ map (\v -> (key, internAtomPure tbl v)) values
       , fsClose      = mdb_txn_abort txn >> mdb_env_close env
       }
 

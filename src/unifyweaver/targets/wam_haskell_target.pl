@@ -2709,8 +2709,16 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
     ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
-        SetupCode =
-'    -- Phase B1: LMDB fact source setup
+        (   option(lmdb_fact_source_manifest(ManifestDir0), Options)
+        ->  format(string(FactSourceOpen),
+'    cpFactSource <- lmdbFactSourceFromManifest fullInternTable "~w"',
+                   [ManifestDir0])
+        ;   FactSourceOpen =
+'    -- Also open as FactSource for WAM interpreter path
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+        ),
+        format(string(SetupCode),
+'    -- Phase B1/B2: LMDB fact source setup
     let lmdbDir = factsDir ++ "/lmdb"
     -- Ingest TSV into LMDB (idempotent — skips if directory exists)
     lmdbExists <- doesDirectoryExist lmdbDir
@@ -2723,8 +2731,8 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
       hPutStrLn stderr "LMDB database found, skipping ingestion."
     -- Open LMDB as EdgeLookup for FFI kernels (on-demand mmap reads)
     cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
-    -- Also open as FactSource for WAM interpreter path
-    cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
+~w',
+                  [FactSourceOpen]),
         ContextCode =
 '            , wcFactSources   = Map.singleton "category_parent" cpFactSource
             , wcEdgeLookups   = Map.singleton "category_parent" cpEdgeLookup'
@@ -2863,7 +2871,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
         generate_lmdb_functions(LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
