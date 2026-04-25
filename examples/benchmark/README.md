@@ -135,6 +135,10 @@ python examples/benchmark/benchmark_effective_distance.py \
   --repetitions 1
 ```
 
+Set `HASKELL_RTS` to pass runtime-system options to generated Haskell WAM
+executables, for example `HASKELL_RTS="+RTS -N2 -RTS"` to allow two GHC
+capabilities. Leaving it unset preserves the default single-capability run.
+
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
 

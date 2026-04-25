@@ -268,9 +268,13 @@ def build_haskell_wam_effective_distance(root: Path, scale: str, variant: str) -
         ],
         cwd=ROOT,
     )
-    return build_haskell_project(project_dir, "wam-haskell-bench") + [
+    command = build_haskell_project(project_dir, "wam-haskell-bench") + [
         str(require_file(BENCH_DIR / scale / "category_parent.tsv").parent)
     ]
+    haskell_rts = os.environ.get("HASKELL_RTS", "").strip()
+    if haskell_rts:
+        command.extend(haskell_rts.split())
+    return command
 
 
 def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
