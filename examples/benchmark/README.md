@@ -120,13 +120,18 @@ The effective-distance harness also includes hybrid WAM benchmark targets:
   WAM-Haskell generator for the same effective-distance workload. They are
   intended as a non-Rust hybrid comparison point and use Cabal new-style builds
   so Hackage dependencies can be resolved when the local package cache is cold.
+- `haskell-wam-seeded-no-kernels` and
+  `haskell-wam-accumulated-no-kernels` mirror the Rust no-kernel targets by
+  passing `no_kernels(true)` to the WAM-Haskell target. Use these for pure-WAM
+  fallback comparisons; use the non-`no-kernels` targets for native-kernel
+  hybrid comparisons.
 
 Example focused run:
 
 ```bash
 python examples/benchmark/benchmark_effective_distance.py \
   --scales dev \
-  --targets prolog-accumulated,wam-rust-accumulated,haskell-wam-accumulated,wam-rust-accumulated-no-kernels \
+  --targets prolog-accumulated,wam-rust-accumulated,haskell-wam-accumulated,wam-rust-accumulated-no-kernels,haskell-wam-accumulated-no-kernels \
   --repetitions 1
 ```
 
