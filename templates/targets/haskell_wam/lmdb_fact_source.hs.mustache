@@ -1,21 +1,46 @@
--- | Phase B1: Raw LMDB backend with packed binary Int32 values.
--- Zero-copy reads: mdb_get' returns a pointer directly into the mmap'd
--- region. Values are arrays of Int32 read via peekElemOff — no CBOR,
--- no deserialization, no allocation per lookup.
+-- | LMDB-backed edge lookup.  Two layout variants are supported,
+-- selected at codegen time via the lmdb_layout option:
 --
--- Key schema: Int32 (interned atom ID, native byte order via MDB_INTEGERKEY)
--- Value schema: packed [Int32] (array of interned arg2 values)
+--   - default (no lmdb_dupsort flag): WAM-native ingest format.
+--     Single unnamed default db with MDB_INTEGERKEY.  Each key has a
+--     single value: a packed array of Int32s holding all parents for
+--     that key.  Reader: one mdb_get' returns the whole array.
+--
+--   - dupsort (lmdb_dupsort flag set): streaming-pipeline ingest format.
+--     Named "main" subdb with MDB_DUPSORT + MDB_INTEGERKEY.  Multiple
+--     entries per key, each holding one Int32 parent value.  Reader:
+--     cursor MDB_SET + MDB_NEXT_DUP iteration.
+--
+-- Both variants are zero-copy: mdb_get'/peekElemOff read directly from
+-- the mmap'd region, no per-lookup allocation or deserialization.
 
 -- | Open an LMDB environment and database handle for edge lookups.
 openLmdbEdgeStore :: FilePath -> IO (MDB_env, MDB_dbi')
 openLmdbEdgeStore path = do
     env <- mdb_env_create
-    mdb_env_set_mapsize env (1024 * 1024 * 1024)  -- 1 GB
+    mdb_env_set_mapsize env (2 * 1024 * 1024 * 1024)  -- 2 GB
+{{#lmdb_dupsort}}
+    mdb_env_set_maxdbs env 4
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
     mdb_env_set_maxdbs env 1
+{{/lmdb_dupsort}}
     mdb_env_set_maxreaders env 126
+{{#lmdb_dupsort}}
+    mdb_env_open env path [MDB_RDONLY]
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
     mdb_env_open env path []
-    txn <- mdb_txn_begin env Nothing False
+{{/lmdb_dupsort}}
+    txn <- mdb_txn_begin env Nothing
+{{#lmdb_dupsort}}
+                          True  -- read-only for dupsort layout
+    dbi <- mdb_dbi_open' txn (Just "main") [MDB_DUPSORT]
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
+                          False
     dbi <- mdb_dbi_open' txn Nothing [MDB_CREATE, MDB_INTEGERKEY]
+{{/lmdb_dupsort}}
     mdb_txn_commit txn
     return (env, dbi)
 
@@ -25,6 +50,7 @@ openLmdbEdgeStore path = do
 -- and stays valid for the lifetime of the transaction. For a read-only
 -- database (facts don't change during queries), this is safe and
 -- eliminates per-lookup transaction overhead entirely.
+{{^lmdb_dupsort}}
 lmdbRawEdgeLookup :: MDB_txn -> MDB_dbi' -> EdgeLookup
 lmdbRawEdgeLookup txn dbi key = unsafePerformIO $
     allocaBytes 4 $ \kp -> do
@@ -36,6 +62,38 @@ lmdbRawEdgeLookup txn dbi key = unsafePerformIO $
         Just (MDB_val sz ptr) -> do
           let count = fromIntegral sz `div` 4
           mapM (\i -> fromIntegral <$> (peekElemOff (castPtr ptr :: Ptr Int32) i)) [0..count-1]
+{{/lmdb_dupsort}}
+{{#lmdb_dupsort}}
+-- | Dupsort EdgeLookup: cursor-based iteration over duplicate values.
+-- A single shared cursor is held by closure capture for the process
+-- lifetime.  NOT thread-safe; the WAM benchmark drives parMap rdeepseq
+-- across seeds, but each seed's DFS is sequential and reuses the
+-- cursor.  For multi-threaded readers, allocate one cursor per thread.
+lmdbRawEdgeLookup :: MDB_cursor' -> EdgeLookup
+lmdbRawEdgeLookup cursor key = unsafePerformIO $
+    allocaBytes 4 $ \kp -> do
+      poke (castPtr kp :: Ptr Int32) (fromIntegral key :: Int32)
+      alloca $ \kvPtr -> alloca $ \dvPtr -> do
+        poke kvPtr (MDB_val 4 kp)
+        found <- mdb_cursor_get' MDB_SET cursor kvPtr dvPtr
+        if not found
+          then return []
+          else collectDups kvPtr dvPtr
+  where
+    collectDups kvPtr dvPtr = do
+      v <- readInt32Val dvPtr
+      more <- mdb_cursor_get' MDB_NEXT_DUP cursor kvPtr dvPtr
+      if more
+        then do rest <- collectDups kvPtr dvPtr
+                return (v : rest)
+        else return [v]
+
+    readInt32Val ptr = do
+      MDB_val sz dataPtr <- peek ptr
+      if sz >= 4
+        then fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Int32) 0
+        else return 0
+{{/lmdb_dupsort}}
 
 -- | Convenience: open LMDB and return an EdgeLookup with a long-lived
 -- read transaction. The transaction (and thus the mmap snapshot) stays
@@ -45,7 +103,13 @@ openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
 openLmdbEdgeLookup dbPath _dbName = do
     (env, dbi) <- openLmdbEdgeStore dbPath
     txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
+{{#lmdb_dupsort}}
+    cursor <- mdb_cursor_open' txn dbi
+    return (lmdbRawEdgeLookup cursor)
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
     return (lmdbRawEdgeLookup txn dbi)
+{{/lmdb_dupsort}}
 
 -- | Create a FactSource backed by raw LMDB.
 -- fsScan is not implemented for raw LMDB (use IntMap path for scan).
@@ -54,13 +118,20 @@ lmdbFactSource :: FilePath -> String -> IO FactSource
 lmdbFactSource dbPath _dbName = do
     (env, dbi) <- openLmdbEdgeStore dbPath
     txn <- mdb_txn_begin env Nothing True  -- long-lived read txn
+{{#lmdb_dupsort}}
+    cursor <- mdb_cursor_open' txn dbi
+    let lookup' = lmdbRawEdgeLookup cursor
+{{/lmdb_dupsort}}
+{{^lmdb_dupsort}}
     let lookup' = lmdbRawEdgeLookup txn dbi
+{{/lmdb_dupsort}}
     return FactSource
       { fsScan       = return []  -- not supported for raw LMDB; use IntMap
       , fsLookupArg1 = \key -> return $ map (\v -> (key, v)) (lookup' key)
       , fsClose      = mdb_txn_abort txn >> mdb_env_close env
       }
 
+{{^lmdb_dupsort}}
 -- | Ingest a TSV file into an LMDB database with packed binary values.
 -- Keys are sorted for MDB_APPEND (fast bulk insert).
 ingestTsvToLmdb :: InternTable -> FilePath -> FilePath -> String -> IO ()
@@ -91,3 +162,12 @@ ingestTsvToLmdb tbl tsvPath dbPath _dbName = do
             return ()
       mdb_txn_commit txn
     return ()
+{{/lmdb_dupsort}}
+{{#lmdb_dupsort}}
+-- | Dupsort layout uses the streaming pipeline's ingester (Rust/Python
+-- mysql_stream + ingest_to_lmdb).  No in-process ingest function in the
+-- WAM target — the LMDB is built externally before the WAM runs.
+ingestTsvToLmdb :: InternTable -> FilePath -> FilePath -> String -> IO ()
+ingestTsvToLmdb _ _ _ _ = error
+    "ingestTsvToLmdb: not supported for dupsort layout (LMDB built externally)"
+{{/lmdb_dupsort}}

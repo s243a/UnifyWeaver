@@ -2672,6 +2672,14 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
     % Phase B1: generate LMDB setup and context wiring
     generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
+    % Int-atom-seeds path: when use_lmdb(true) and seeds come pre-interned
+    % as int32 IDs from the LMDB ingest pipeline, skip the TSV-based
+    % seed loading and string interning.  Gated by section blocks in the
+    % template; this just exposes the flag to the renderer.
+    (   option(int_atom_seeds(true), Options)
+    ->  IntAtomSeeds = true
+    ;   IntAtomSeeds = false
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2684,6 +2692,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_setup=LmdbSetup
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
+        , int_atom_seeds=IntAtomSeeds
         ], Code).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)
@@ -2709,8 +2718,22 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
     ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
-        SetupCode =
-'    -- Phase B1: LMDB fact source setup
+        % dupsort layout: LMDB is built externally by the streaming
+        % pipeline (no in-process ingest). default layout: WAM-native
+        % ingest from TSV at startup if missing.
+        (   option(lmdb_layout(dupsort), Options)
+        ->  SetupCode =
+'    -- Phase B1: LMDB fact source setup (dupsort layout, externally ingested)
+    let lmdbDir = factsDir ++ "/lmdb"
+    lmdbExists <- doesDirectoryExist lmdbDir
+    if not lmdbExists then
+      error ("LMDB not found at " ++ lmdbDir ++ "; build it via the streaming pipeline first")
+    else
+      hPutStrLn stderr "LMDB database found (dupsort layout)."
+    cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+        ;   SetupCode =
+'    -- Phase B1: LMDB fact source setup (WAM-native packed-Int32 layout)
     let lmdbDir = factsDir ++ "/lmdb"
     -- Ingest TSV into LMDB (idempotent — skips if directory exists)
     lmdbExists <- doesDirectoryExist lmdbDir
@@ -2721,10 +2744,9 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
       hPutStrLn stderr "LMDB ingestion complete."
     else
       hPutStrLn stderr "LMDB database found, skipping ingestion."
-    -- Open LMDB as EdgeLookup for FFI kernels (on-demand mmap reads)
     cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
-    -- Also open as FactSource for WAM interpreter path
-    cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+        ),
         ContextCode =
 '            , wcFactSources   = Map.singleton "category_parent" cpFactSource
             , wcEdgeLookups   = Map.singleton "category_parent" cpEdgeLookup'
@@ -2863,8 +2885,8 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
-        generate_lmdb_functions(LmdbFunctions)
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
+        generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
     ),
@@ -3623,11 +3645,23 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
         format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
     ).
 
-%% generate_lmdb_functions(-Code)
-%  Loads the LMDB FactSource functions from the Mustache template.
+%% generate_lmdb_functions(+Options, -Code)
+%  Loads the LMDB FactSource functions from the Mustache template,
+%  rendering the layout-specific section blocks.
 %  Only called when use_lmdb(true).
-generate_lmdb_functions(Code) :-
-    read_kernel_template('lmdb_fact_source.hs.mustache', Code).
+%
+%  Options:
+%    lmdb_layout(default) — packed-Int32 array per key (WAM-native ingest)
+%    lmdb_layout(dupsort) — named "main" subdb with MDB_DUPSORT, one
+%                           entry per (key, value) pair (streaming-
+%                           pipeline ingest)
+generate_lmdb_functions(Options, Code) :-
+    read_kernel_template('lmdb_fact_source.hs.mustache', Template),
+    (   option(lmdb_layout(dupsort), Options)
+    ->  Dupsort = true
+    ;   Dupsort = false
+    ),
+    render_template(Template, [lmdb_dupsort=Dupsort], Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
