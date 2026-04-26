@@ -3,7 +3,7 @@
 --
 -- Usage:
 --   enwiki-dfs <lmdb-path> <backend> <n-seeds>
---   backend = intmap | lmdb
+--   backend = intmap | lmdb | lmdb_cached
 --
 -- Samples N random seeds (from a list of valid keys in the LMDB,
 -- using a fixed RNG seed for reproducibility), runs a depth-limited
@@ -14,6 +14,8 @@
 module Main where
 
 import Control.Monad (forM, forM_, when)
+import Control.Parallel.Strategies (parMap, rdeepseq)
+import Control.DeepSeq (NFData(..), deepseq)
 import Data.IORef
 import Data.Int (Int32)
 import qualified Data.IntSet as IS
@@ -29,6 +31,7 @@ import Database.LMDB.Raw
 import Common
 import qualified IntMapBackend as IM
 import qualified LmdbBackend as L
+import qualified LmdbCachedBackend as LC
 
 maxDfsDepth :: Int
 maxDfsDepth = 12
@@ -51,8 +54,9 @@ main = do
 
         -- Open the selected backend and run DFS for each seed.
         edges <- case backend of
-          "intmap" -> IM.openIntMapFromLmdb dbPath
-          "lmdb"   -> L.openLmdbBackend dbPath
+          "intmap"      -> IM.openIntMapFromLmdb dbPath
+          "lmdb"        -> L.openLmdbBackend dbPath
+          "lmdb_cached" -> LC.openLmdbCachedBackend dbPath
           _ -> do
             putStrLn $ "unknown backend: " ++ backend
             exitFailure
@@ -65,12 +69,13 @@ main = do
         putStrLn "[main] measuring..."
         -- Time the whole sweep.  Individual per-seed timings are below
         -- clock resolution for fast queries and produce garbage stats.
-        -- The reliable number is total-time ÷ seed-count.
+        -- The reliable number is total-time ÷ seed-count.  parMap with
+        -- rdeepseq forces each BenchResult fully so sparks complete
+        -- before the timing endpoint.  Run with +RTS -N to exercise
+        -- multiple cores; +RTS -N1 stays sequential.
         (brs, elapsed) <- timeIt $ do
-          rs <- forM keys $ \k -> do
-                  let !br = dfsFromSeed edges maxDfsDepth k
-                  return br
-          return rs
+          let !rs = parMap rdeepseq (dfsFromSeed edges maxDfsDepth) keys
+          rs `deepseq` return rs
 
         let !totalVisited = foldl' (\a br -> a + brVisited br) 0 brs
             !maxDepthSeen = foldl' (\a br -> max a (brMaxDepth br)) 0 brs
@@ -89,7 +94,7 @@ main = do
         putStrLn $ "  max_depth_observed:    " ++ show maxDepthSeen
 
       _ -> do
-        putStrLn "usage: enwiki-dfs <lmdb-path> <intmap|lmdb> <n-seeds>"
+        putStrLn "usage: enwiki-dfs <lmdb-path> <intmap|lmdb|lmdb_cached> <n-seeds>"
         exitFailure
 
 -- | Sample N distinct keys from an LMDB database via reservoir sampling.

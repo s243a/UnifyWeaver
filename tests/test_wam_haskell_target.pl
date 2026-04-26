@@ -1373,6 +1373,43 @@ test_b1_lmdb_default_layout_no_cursor_cache :-
     ;   fail_test(Test, 'Default layout unexpectedly emitted dupsort cache code')
     ).
 
+test_b1_lmdb_cache_memoize_emitted :-
+    Test = 'B1: lmdb_cache_mode(memoize) emits memoising EdgeLookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(memoize)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "LmdbResultCache"),
+        sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Memoising EdgeLookup not emitted')
+    ).
+
+test_b1_lmdb_cache_memoize_not_emitted_without_dupsort :-
+    Test = 'B1: lmdb_cache_mode(memoize) ignored without dupsort layout',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_cache_mode(memoize)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "LmdbResultCache"),
+        \+ sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Memoising EdgeLookup unexpectedly emitted without dupsort')
+    ).
+
+test_b1_lmdb_dupsort_alone_no_memoize :-
+    Test = 'B1: dupsort without lmdb_cache_mode does not emit memoising lookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "LmdbResultCache"),
+        \+ sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Memoising EdgeLookup unexpectedly emitted without cache_mode')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
@@ -1482,6 +1519,9 @@ run_tests :-
     test_b1_lmdb_manifest_wiring_option_present,
     test_b1_lmdb_dupsort_per_thread_cursor,
     test_b1_lmdb_default_layout_no_cursor_cache,
+    test_b1_lmdb_cache_memoize_emitted,
+    test_b1_lmdb_cache_memoize_not_emitted_without_dupsort,
+    test_b1_lmdb_dupsort_alone_no_memoize,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,

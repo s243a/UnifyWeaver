@@ -59,7 +59,12 @@ openLmdbRawReadonlyStore dbPath dbName = do
     env <- mdb_env_create
     mdb_env_set_mapsize env (1024 * 1024 * 1024)
     mdb_env_set_maxdbs env 4
-    mdb_env_set_maxreaders env 126
+    -- Maxreaders: each parMap-driven Haskell thread that does a
+    -- cache miss opens a new read txn (one slot).  GHC's spark
+    -- scheduler under -N>1 with rdeepseq can produce many distinct
+    -- ThreadIds per spark batch (well above the OS thread count),
+    -- so we size generously.  LMDB hard cap is 32767.
+    mdb_env_set_maxreaders env 4096
     mdb_env_open env dbPath [MDB_RDONLY]
     txn <- mdb_txn_begin env Nothing True
 {{#lmdb_dupsort}}
@@ -150,6 +155,56 @@ lmdbRawEdgeLookup env dbi cache key = unsafePerformIO $ do
         else return 0
 {{/lmdb_dupsort}}
 
+{{#lmdb_cache_memoize}}
+-- | Demand-driven memoising wrapper around the dupsort EdgeLookup.
+-- Each (key, [neighbours]) pair is fetched from LMDB at most once.
+-- Subsequent lookups for the same key — by the same seed or any
+-- parallel seed that shares an ancestor — read the pure IntMap with
+-- no FFI and no IORef contention.  This recovers most of the
+-- pure-IntMap parallelism profile on workloads with subgraph overlap
+-- (deeper paths, more seeds, queries that share root regions) while
+-- keeping LMDB as the authoritative data source for datasets too
+-- large to load fully.
+--
+-- The cache infrastructure (one IORef read per call + atomic write
+-- per miss) costs a few hundred ns per lookup, so on workloads with
+-- minimal subgraph overlap (random shallow seeds) this can be slower
+-- than the bare dupsort path.  Use only when you expect cache reuse.
+--
+-- WARNING — parallelism interaction: under +RTS -N>1 the shared
+-- atomicModifyIORef' on every miss serialises writes across cores.
+-- On workloads with low hit rate this produces a NET REGRESSION vs
+-- the bare dupsort path (measured: 7x slowdown at -N4 on the 1000-
+-- seed enwiki benchmark, where there is essentially no subgraph
+-- overlap).  This option targets workloads with substantial overlap
+-- (deeper paths, more seeds sharing root regions, repeated queries).
+-- A two-level cache (per-HEC L1 + sharded L2) would mitigate the
+-- contention; see the WAM Haskell benchmark notes for the planned
+-- follow-up.
+type LmdbResultCache = IORef (IM.IntMap [Int])
+
+newLmdbResultCache :: IO LmdbResultCache
+newLmdbResultCache = newIORef IM.empty
+
+lmdbCachedEdgeLookup
+    :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> LmdbResultCache
+    -> EdgeLookup
+lmdbCachedEdgeLookup env dbi cursorCache resultCache key = unsafePerformIO $ do
+    -- Fast path: pure IntMap hit.  No FFI, no synchronisation.
+    cache <- readIORef resultCache
+    case IM.lookup key cache of
+      Just vs -> return vs
+      Nothing -> do
+        -- Slow path: cache miss.  Use the underlying dupsort lookup
+        -- (which itself uses a per-thread cursor) and memoise the
+        -- result.  If two threads race on the same key, the second
+        -- write overwrites with identical immutable dupsort data —
+        -- harmless and cheaper than a check-then-set.
+        let !vs = lmdbRawEdgeLookup env dbi cursorCache key
+        atomicModifyIORef' resultCache (\m -> (IM.insert key vs m, ()))
+        return vs
+{{/lmdb_cache_memoize}}
+
 -- | Convenience: open LMDB and return an EdgeLookup with a long-lived
 -- read transaction. The transaction (and thus the mmap snapshot) stays
 -- open for the process lifetime. This is correct because the fact
@@ -160,8 +215,16 @@ openLmdbEdgeLookup dbPath _dbName = do
 {{#lmdb_dupsort}}
     -- Per-thread (txn, cursor) cache; entries are populated lazily
     -- on the first lookup from each parMap worker thread.
-    cache <- newDupsortCursorCache
-    return (lmdbRawEdgeLookup env dbi cache)
+    cursorCache <- newDupsortCursorCache
+{{#lmdb_cache_memoize}}
+    -- Result memoisation cache (demand-driven): each key's neighbours
+    -- are fetched from LMDB at most once and shared across all threads.
+    resultCache <- newLmdbResultCache
+    return (lmdbCachedEdgeLookup env dbi cursorCache resultCache)
+{{/lmdb_cache_memoize}}
+{{^lmdb_cache_memoize}}
+    return (lmdbRawEdgeLookup env dbi cursorCache)
+{{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
     txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
@@ -201,8 +264,15 @@ lmdbFactSource dbPath _dbName = do
 {{#lmdb_dupsort}}
     -- Lookups go through a per-thread cursor cache (independent of
     -- the scan txn above so parMap workers can run in parallel).
-    cache <- newDupsortCursorCache
-    let lookup' = lmdbRawEdgeLookup env dbi cache
+    cursorCache <- newDupsortCursorCache
+{{#lmdb_cache_memoize}}
+    -- Result memoisation cache; each key fetched from LMDB at most once.
+    resultCache <- newLmdbResultCache
+    let lookup' = lmdbCachedEdgeLookup env dbi cursorCache resultCache
+{{/lmdb_cache_memoize}}
+{{^lmdb_cache_memoize}}
+    let lookup' = lmdbRawEdgeLookup env dbi cursorCache
+{{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
     let lookup' = lmdbRawEdgeLookup txn dbi
