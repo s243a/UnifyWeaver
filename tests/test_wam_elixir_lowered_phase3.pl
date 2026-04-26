@@ -86,17 +86,48 @@ elixir_available :-
 :- dynamic user:phase3_smoke_p/1.
 :- dynamic user:phase3_smoke_findall/1.
 
+% Inner goals are NOT module-qualified — `findall(X, user:p(X), L)`
+% triggers a known WAM-compiler bug (Finding 1 from #1647): the
+% inner call compiles as a `:/2` builtin that overwrites A1 with the
+% module-name string before end_aggregate reads value_reg=A1. Out of
+% scope for Phase 3 of the Elixir track.
+%
+% Scenario 1: 3-clause sequential findall (the original Phase 3a smoke).
 user:phase3_smoke_p('a').
 user:phase3_smoke_p('b').
 user:phase3_smoke_p('c').
-% Inner goal is NOT module-qualified — `findall(X, user:phase3_smoke_p(X), L)`
-% triggers a known bug where compile_aggregate_all/5 emits the inner
-% call as a `:/2` builtin that overwrites A1 with the module name
-% string before end_aggregate reads it (value_reg defaults to A1
-% when Template is a bare variable). The bug is in wam_target.pl's
-% compile_findall — out of scope for Phase 3 of the Elixir track,
-% noted as a follow-up finding for the WAM compiler.
 user:phase3_smoke_findall(L) :- findall(X, phase3_smoke_p(X), L).
+
+% Scenario 2: empty-result findall.
+%   findall(X, fail, L) → L = []. fail/0 hits the execute_builtin
+%   catch-all (returns :fail), the lowering throws fail, backtrack
+%   pops the agg frame and finalises with accum=[] → empty list.
+user:phase3_findall_fail(L) :- findall(X, fail, L).
+
+% Scenario 3: aggregate_all(count, ..., N) → integer length of accum.
+user:phase3_pn(1).
+user:phase3_pn(2).
+user:phase3_pn(3).
+user:phase3_count(N) :- aggregate_all(count, phase3_pn(X), N).
+
+% Scenario 4: aggregate_all(max(X), fail, M) → predicate fails.
+%   accum is empty when finalise_aggregate hits the :max branch;
+%   per the substrate's empty-aggregator semantics (PR #1627 review
+%   round), :max throws {:fail, state} which propagates up to run/1's
+%   outer catch, which returns :fail. Validates the deviation from
+%   proposal §6 risk #6 documented in WAM_ELIXIR_TIER2_FINDALL.md §0.
+user:phase3_max_empty(M) :- aggregate_all(max(X), fail, M).
+
+% Scenarios 5–8: aggregator coverage on non-empty accum. Each uses
+% the existing 3-clause phase3_smoke_p/1 fixture — no new fact
+% predicates needed. Together these cover the four
+% finalise_aggregate branches that hadn't run end-to-end yet:
+% :bag (collect-with-duplicates), :set (Enum.uniq), :max non-empty
+% (Enum.max), :min non-empty (Enum.min).
+user:phase3_bag(B) :- aggregate_all(bag(X), phase3_smoke_p(X), B).
+user:phase3_set(S) :- aggregate_all(set(X), phase3_smoke_p(X), S).
+user:phase3_max(M) :- aggregate_all(max(X), phase3_smoke_p(X), M).
+user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
 
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
@@ -123,14 +154,51 @@ unique_project_dir(Dir) :-
     format(atom(Name), 'uw_elixir_findall_smoke_~w', [Stamp]),
     directory_file_path(Root, Name, Dir).
 
-%% Generate the test project and the driver .exs script. Predicates
-%% must include both the findall caller and the inner predicate
-%% (the dispatcher needs to route phase3_smoke_p/1 calls).
+%% phase3_predicates(-List)
+%  All predicates compiled into the smoke project. Each is a
+%  Module:Pred/Arity term. The order matters only for dispatcher
+%  registration — the runtime resolves by name, not position.
+phase3_predicates([
+    user:phase3_smoke_p/1,
+    user:phase3_smoke_findall/1,
+    user:phase3_findall_fail/1,
+    user:phase3_pn/1,
+    user:phase3_count/1,
+    user:phase3_max_empty/1,
+    user:phase3_bag/1,
+    user:phase3_set/1,
+    user:phase3_max/1,
+    user:phase3_min/1
+]).
+
+%% phase3_driver_invocations(-Lines)
+%  Each scenario gets one line that calls the predicate with an
+%  unbound argument and one line that IO.inspect's the result with
+%  a unique label. The label is the parsing key on the swipl side.
+phase3_driver_invocations([
+    'r1 = Phase3Smoke.Phase3SmokeFindall.run([{:unbound, make_ref()}])',
+    'IO.inspect(r1, label: "SCENARIO_FINDALL_THREE", charlists: :as_lists)',
+    'r2 = Phase3Smoke.Phase3FindallFail.run([{:unbound, make_ref()}])',
+    'IO.inspect(r2, label: "SCENARIO_FINDALL_EMPTY", charlists: :as_lists)',
+    'r3 = Phase3Smoke.Phase3Count.run([{:unbound, make_ref()}])',
+    'IO.inspect(r3, label: "SCENARIO_AGG_COUNT", charlists: :as_lists)',
+    'r4 = Phase3Smoke.Phase3MaxEmpty.run([{:unbound, make_ref()}])',
+    'IO.inspect(r4, label: "SCENARIO_AGG_MAX_EMPTY", charlists: :as_lists)',
+    'r5 = Phase3Smoke.Phase3Bag.run([{:unbound, make_ref()}])',
+    'IO.inspect(r5, label: "SCENARIO_AGG_BAG", charlists: :as_lists)',
+    'r6 = Phase3Smoke.Phase3Set.run([{:unbound, make_ref()}])',
+    'IO.inspect(r6, label: "SCENARIO_AGG_SET", charlists: :as_lists)',
+    'r7 = Phase3Smoke.Phase3Max.run([{:unbound, make_ref()}])',
+    'IO.inspect(r7, label: "SCENARIO_AGG_MAX", charlists: :as_lists)',
+    'r8 = Phase3Smoke.Phase3Min.run([{:unbound, make_ref()}])',
+    'IO.inspect(r8, label: "SCENARIO_AGG_MIN", charlists: :as_lists)'
+]).
+
+%% Generate the test project. Predicates and driver invocations are
+%% read from phase3_predicates/1 and phase3_driver_invocations/1 so
+%% adding a scenario is one fixture + two driver lines + one assertion.
 write_smoke_project(ProjectDir) :-
-    Predicates = [
-        user:phase3_smoke_p/1,
-        user:phase3_smoke_findall/1
-    ],
+    phase3_predicates(Predicates),
     findall(P/A-WamCode, (
         member(M:P/A, Predicates),
         wam_target:compile_predicate_to_wam(M:P/A, [], WamCode)
@@ -140,10 +208,10 @@ write_smoke_project(ProjectDir) :-
     % super-wrapper fires (because the parent findall pushed an agg
     % frame, so in_forkable_aggregate_frame? returns true), and the
     % parallel arm returns from merge_into_aggregate instead of throwing
-    % fail to drive finalise — materialising proposal §6 risk #2.
-    % Phase 3 validates sequential first; the parallel path needs the
-    % branch-local-accum protocol from Haskell's wam_haskell_target.pl
-    % :1502-1516, deferred to Phase 4.
+    % fail to drive finalise — materialising proposal §6 risk #2 (Finding
+    % 2 from #1647). Phase 3 validates sequential first; the parallel
+    % path needs the branch-local-accum protocol from Haskell's
+    % wam_haskell_target.pl:1502-1516, deferred to Phase 4.
     Options = [
         module_name('phase3_smoke'),
         emit_mode(lowered),
@@ -152,21 +220,22 @@ write_smoke_project(ProjectDir) :-
     write_wam_elixir_project(PredWamPairs, Options, ProjectDir),
     write_smoke_driver(ProjectDir).
 
-%% The driver loads the runtime + dispatcher + predicate files and
-%% calls the findall predicate with one unbound argument. IO.inspect
-%% the result so we can parse stdout from the swipl side.
+%% The driver loads the runtime + dispatcher + every predicate file
+%% and runs every scenario from phase3_driver_invocations/1.
 write_smoke_driver(ProjectDir) :-
     directory_file_path(ProjectDir, 'smoke_driver.exs', DriverPath),
+    phase3_predicates(Predicates),
+    phase3_driver_invocations(Invocations),
     open(DriverPath, write, S),
     format(S, 'Code.require_file("lib/wam_runtime.ex", __DIR__)~n', []),
     format(S, 'Code.require_file("lib/wam_dispatcher.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/phase3_smoke_p.ex", __DIR__)~n', []),
-    format(S, 'Code.require_file("lib/phase3_smoke_findall.ex", __DIR__)~n', []),
+    forall(member(_:P/_, Predicates), (
+        atom_string(P, PStr),
+        format(S, 'Code.require_file("lib/~w.ex", __DIR__)~n', [PStr])
+    )),
     format(S, '~n', []),
-    % Pass an unbound var so run/1 returns the materialised binding.
-    format(S, 'unbound_l = {:unbound, make_ref()}~n', []),
-    format(S, 'result = Phase3Smoke.Phase3SmokeFindall.run([unbound_l])~n', []),
-    format(S, 'IO.inspect(result, label: "FINDALL_RESULT", charlists: :as_lists)~n', []),
+    forall(member(Line, Invocations),
+           format(S, '~w~n', [Line])),
     close(S).
 
 %% Run `elixir smoke_driver.exs` and capture stdout/stderr.
@@ -183,40 +252,126 @@ run_smoke_driver(ProjectDir, StdOut, StdErr, ExitCode) :-
     close(ErrStream),
     process_wait(PID, exit(ExitCode)).
 
-%% Assert the driver output contains the three values [a, b, c]
-%% (in any order, since fail-driven enumeration order is well-defined
-%% but we don't care about it for the smoke — only that all three
-%% solutions are present).
-assert_findall_result(StdOut) :-
-    sub_string(StdOut, _, _, _, "FINDALL_RESULT"),
-    sub_string(StdOut, _, _, _, "\"a\""),
-    sub_string(StdOut, _, _, _, "\"b\""),
-    sub_string(StdOut, _, _, _, "\"c\"").
+%% Per-scenario assertions. Each takes the full StdOut from one
+%% elixir invocation and checks for its scenario's label + expected
+%% shape. Scenarios share the project + the elixir process for
+%% performance — one ~3s elixir cold-start covers all scenarios.
 
-test_findall_smoke_three_clauses :-
-    Test = 'Phase 3 smoke: findall(X, phase3_smoke_p(X), L) → L contains [a, b, c]',
-    unique_project_dir(ProjectDir),
-    setup_call_cleanup(
-        write_smoke_project(ProjectDir),
-        (   run_smoke_driver(ProjectDir, StdOut, StdErr, ExitCode),
-            (   ExitCode == 0,
-                assert_findall_result(StdOut)
-            ->  pass(Test)
-            ;   format(atom(Reason),
-                       'exit=~w stdout=~w stderr=~w',
-                       [ExitCode, StdOut, StdErr]),
-                fail_test(Test, Reason)
-            )
-        ),
-        catch(delete_directory_and_contents(ProjectDir), _, true)
+%% scope_after_label(+StdOut, +Label, -Window)
+%  Returns a substring of StdOut starting at Label and ending at the
+%  next SCENARIO_ label (or end of stream). Avoids a scenario's
+%  assertion accidentally matching another scenario's output.
+scope_after_label(StdOut, Label, Window) :-
+    sub_string(StdOut, LabelOffset, _, _, Label),
+    AfterLabel is LabelOffset + 1,
+    string_length(StdOut, TotalLen),
+    Remaining is TotalLen - AfterLabel,
+    sub_string(StdOut, AfterLabel, Remaining, 0, Tail),
+    (   sub_string(Tail, NextLabel, _, _, "SCENARIO_")
+    ->  sub_string(Tail, 0, NextLabel, _, Window)
+    ;   Window = Tail
     ).
 
-%% Test runner
+assert_scenario_findall_three(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_THREE", W),
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_findall_empty(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_EMPTY", W),
+    % Empty list materialises as `{:ok, [[]]}` — outer list wraps
+    % the run/1 args, inner [] is the empty findall result.
+    sub_string(W, _, _, _, "[]").
+
+assert_scenario_agg_count(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_COUNT", W),
+    % Count of 3 phase3_pn/1 facts.
+    sub_string(W, _, _, _, "3").
+
+assert_scenario_agg_max_empty(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_MAX_EMPTY", W),
+    % :max on empty accum throws fail → run/1's outer catch
+    % returns :fail. The IO.inspect output is bare `:fail`.
+    sub_string(W, _, _, _, ":fail").
+
+assert_scenario_agg_bag(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_BAG", W),
+    % :bag returns the reversed accumulator — same as :findall.
+    % All three values present in the scenario's stdout window.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_set(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_SET", W),
+    % :set applies Enum.uniq. Three distinct values in, three out.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_max(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_MAX", W),
+    % Enum.max on string list is lex order — max("a","b","c") = "c".
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_min(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_MIN", W),
+    % Enum.min on string list — min("a","b","c") = "a".
+    sub_string(W, _, _, _, "\"a\"").
+
+%% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
+
+run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
+    (   ExitCode == 0,
+        call(Assertion, StdOut)
+    ->  pass(Test)
+    ;   format(atom(Reason),
+               'exit=~w assertion failed; stderr=~w',
+               [ExitCode, StdErr]),
+        fail_test(Test, Reason)
+    ).
+
+run_all_scenarios(StdOut, StdErr, ExitCode) :-
+    run_scenario('Phase 3: findall(X, phase3_smoke_p(X), L) → [a, b, c]',
+                 assert_scenario_findall_three,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: findall(X, fail, L) → []',
+                 assert_scenario_findall_empty,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(count, phase3_pn(X), N) → N = 3',
+                 assert_scenario_agg_count,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(max(X), fail, M) → :fail (empty bag, no identity)',
+                 assert_scenario_agg_max_empty,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(bag(X), phase3_smoke_p(X), B) → [a, b, c]',
+                 assert_scenario_agg_bag,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(set(X), phase3_smoke_p(X), S) → [a, b, c] (uniq)',
+                 assert_scenario_agg_set,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(max(X), phase3_smoke_p(X), M) → "c" (lex max)',
+                 assert_scenario_agg_max,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(min(X), phase3_smoke_p(X), M) → "a" (lex min)',
+                 assert_scenario_agg_min,
+                 StdOut, StdErr, ExitCode).
+
+%% Test runner — single project, single elixir invocation, all
+%% assertions on the captured stdout.
 
 run_tests :-
     format('~n=== WAM-Elixir Lowered Phase 3 Runtime Smoke ===~n~n'),
     (   elixir_available
-    ->  test_findall_smoke_three_clauses
+    ->  unique_project_dir(ProjectDir),
+        setup_call_cleanup(
+            write_smoke_project(ProjectDir),
+            (   run_smoke_driver(ProjectDir, StdOut, StdErr, ExitCode),
+                run_all_scenarios(StdOut, StdErr, ExitCode)
+            ),
+            catch(delete_directory_and_contents(ProjectDir), _, true)
+        )
     ;   format('% elixir not on PATH — skipping Phase 3 runtime tests~n'),
         format('~n=== Phase 3 Runtime Smoke Skipped ===~n')
     ),
