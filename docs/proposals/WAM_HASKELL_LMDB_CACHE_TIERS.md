@@ -1,17 +1,29 @@
 # WAM Haskell LMDB Cache Tiers
 
-**Status:** Phases 1 + 2 shipped (PR #1640, PR #1641); Phase 3 pending
+**Status:** Phases 1 + 2 shipped (PR #1640, PR #1641, PR #1652); Phase 3 pending
 **Author:** John William Creighton (@s243a)
 **Date:** 2026-04-25 (proposed); updated 2026-04-26
 
 > **Update (2026-04-26):** Phases 1 (`per_hec`) and 2 (`sharded` +
-> `two_level`) are shipped, with one notable design deviation from
-> the original proposal: **L2 is a single shared lock-free `IOArray`
-> rather than a 16-way sharded structure**.  See "Implementation
-> notes — what changed during build" below for the rationale.
-> The proposal text retains the original sharded sketch as the
-> historical record; the *Implementation notes* and *Measured
-> results* sections describe what actually shipped.
+> `two_level`) are shipped, with three notable deviations from the
+> original proposal:
+>
+> 1. **L2 is a single shared lock-free `IOArray`** rather than a
+>    16-way sharded structure (correctness preserved by atomic
+>    pointer writes + read-only LMDB).
+> 2. **`sharded` beats `two_level` on Wikipedia-style DFS workloads**
+>    at enwiki-10k.  The proposal predicted `two_level` would be
+>    workload-portable best; in practice, when cross-thread reuse
+>    dominates (all threads converge on a common root), the
+>    per-HEC L1 layer in `two_level` adds overhead without catching
+>    additional FFI savings.
+> 3. **L1 uses an `IOArray` with overwrite-on-collision** rather
+>    than the `IntMap` originally sketched — `IM.insert` was 42% of
+>    total time in the first implementation.
+>
+> See "Implementation notes — what changed during build" and
+> "Measured results" below.  The proposal text retains the original
+> design as the historical record.
 
 ## Summary
 
@@ -115,13 +127,18 @@ Heuristics for choosing a tier without statistics:
 - **L1 only** when each spark visits many keys but sparks rarely
   share keys with each other. Per-spark DFS over disjoint subgraphs
   is the canonical example.
-- **L2 only** when sparks heavily share keys (e.g. all queries
-  drill toward a common root) and `-N` is small (≤ 2). With few
-  threads the L1 memory duplication wastes more than the L2
-  contention costs.
-- **L1 + L2** when both overlap dimensions are present and
-  `-N` ≥ 4. The L1 absorbs the hot path; the L2 picks up cross-HEC
-  hits the L1s would otherwise miss.
+- **L2 only (`sharded`)** when sparks heavily share keys (e.g. all
+  queries drill toward a common root). The original proposal
+  scoped this to "few threads"; **enwiki-10k measurement (PR #1652)
+  shows it is the right choice at any -N when cross-thread reuse
+  dominates**, because the lock-free L2 already costs nothing per
+  hit and the per-HEC L1 layer just adds a redundant lookup.  Use
+  `sharded` for category / taxonomy / ontology DFS workloads.
+- **L1 + L2 (`two_level`)** when *both* dimensions of reuse are
+  present — each spark re-touches *its own* working set AND
+  threads share keys with each other.  In practice this is rarer
+  than the proposal initially assumed; on Wikipedia-style graphs
+  the cross-thread axis dominates, so plain `sharded` wins.
 
 When statistics are available (next section), the optimiser computes
 expected cache hit rates and picks the tier whose total cost is
@@ -562,6 +579,52 @@ mandatory (without it, parallel GC dominates — see
 seeds is too small to differentiate the cache modes statistically;
 the hypothesis "advantage scales with workload" is consistent with
 both data points but not yet decisively tested at enwiki scale.
+
+### Phase 2 follow-up — enwiki-10k validation (PR #1652)
+
+10000-seed enwiki run (warm, alternating, 3 rounds, +RTS -N4 -A32M),
+testing the "advantage scales with workload" hypothesis at the
+larger graph:
+
+| Mode | -N4 avg query_ms | vs BASE |
+|---|---|---|
+| BASE | ~137ms | 1.00× |
+| L1 (per_hec) | ~130ms | 1.05× |
+| **L2 (sharded)** | **~124ms** | **1.10×** |
+| two_level | ~130ms | 1.05× |
+
+**Surprise — `two_level` does *not* pull ahead at enwiki-10k; it
+ties L1.**  The proposal anticipated `two_level` would dominate at
+larger scale because both intra- and cross-thread reuse would be
+present.  In practice the Wikipedia category-DFS workload has
+**predominantly cross-thread reuse**: every parMap worker drives
+its seeds through the same shared ancestor chain leading to the
+common root.  The per-HEC L1 layer in `two_level` therefore mostly
+caches keys that the *shared* layer would have caught anyway, while
+adding one extra read per call.  On this workload class, plain
+`sharded` is the sweet spot.
+
+**Updated recommendation:**
+
+| Workload shape | Recommended mode |
+|---|---|
+| Small / no reuse | `none` (bare dupsort) |
+| Each thread re-touches its own keys (intra-thread reuse dominates) | `per_hec` |
+| **Threads converge on shared roots / common ancestors** (cross-thread reuse dominates) | **`sharded`** |
+| Both intra- and cross-thread reuse present | `two_level` |
+
+The proposal originally suggested `two_level` as the
+workload-portable default.  Enwiki-10k shows that in graph
+traversals with strong shared-root structure (the common case for
+category / taxonomy / ontology graphs), `sharded` is faster
+because L2 catches the shared-ancestor hits and L1 just adds
+overhead.  For workloads that re-touch *thread-local* working sets
+(e.g. per-seed memoised computation that doesn't share with other
+seeds), `two_level` can still win.
+
+The principled fix is the cost-analysis hook in Phase 3 below —
+auto-select based on observed reuse pattern.  Until then, the
+documented heuristic is a workload-shape guide.
 
 ### Memory cost on a constrained host (~5 GB RAM, 2.5 GB available)
 
