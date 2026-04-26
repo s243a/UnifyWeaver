@@ -124,12 +124,13 @@ getOrOpenDupsortCursor env dbi cache = do
           (\m' -> (Map.insert tid (txn, c) m', ()))
         return c
 
--- | Dupsort EdgeLookup: cursor-based iteration over duplicate values.
--- Thread-safe: each calling thread gets its own (txn, cursor) from
--- the per-thread cache.  parMap workloads see no shared mutable state
--- and run without the shared-cursor assertion failure.
-lmdbRawEdgeLookup :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> EdgeLookup
-lmdbRawEdgeLookup env dbi cache key = unsafePerformIO $ do
+-- | Dupsort EdgeLookup IO body.  The pure EdgeLookup variant wraps
+-- this in unsafePerformIO; callers like the L1 cache that are
+-- already in IO can call this directly to avoid the nested
+-- unsafePerformIO unwrap on the hot path.
+{-# INLINE lmdbRawEdgeLookupIO #-}
+lmdbRawEdgeLookupIO :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> Int -> IO [Int]
+lmdbRawEdgeLookupIO env dbi cache key = do
     cursor <- getOrOpenDupsortCursor env dbi cache
     allocaBytes 4 $ \kp -> do
       poke (castPtr kp :: Ptr Int32) (fromIntegral key :: Int32)
@@ -153,6 +154,14 @@ lmdbRawEdgeLookup env dbi cache key = unsafePerformIO $ do
       if sz >= 4
         then fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Int32) 0
         else return 0
+
+-- | Dupsort EdgeLookup: cursor-based iteration over duplicate values.
+-- Thread-safe: each calling thread gets its own (txn, cursor) from
+-- the per-thread cache.  parMap workloads see no shared mutable state
+-- and run without the shared-cursor assertion failure.
+lmdbRawEdgeLookup :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> EdgeLookup
+lmdbRawEdgeLookup env dbi cache key =
+    unsafePerformIO (lmdbRawEdgeLookupIO env dbi cache key)
 {{/lmdb_dupsort}}
 
 {{#lmdb_cache_memoize}}
@@ -320,7 +329,10 @@ lmdbL1EdgeLookup env dbi cursorCache l1reg key = unsafePerformIO $ do
     case h of
       Just vs -> return vs
       Nothing -> do
-        let !vs = lmdbRawEdgeLookup env dbi cursorCache key
+        -- Call the IO-direct fallback rather than the unsafePerformIO-
+        -- wrapped lmdbRawEdgeLookup; we're already inside an IO action,
+        -- and avoiding the nested unwrap saves overhead per miss.
+        !vs <- lmdbRawEdgeLookupIO env dbi cursorCache key
         l1Insert l1 key vs
         return vs
 {{/lmdb_cache_l1}}
