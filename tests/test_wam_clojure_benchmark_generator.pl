@@ -76,6 +76,33 @@ test(relation_data_mode_override_accumulated_parent_sidecar) :-
         maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2)
     ).
 
+test(relation_data_mode_override_seeded_parent_lmdb, [condition(lmdb_helper_toolchain_available)]) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:wam_clojure_benchmark_relation_data_mode(category_parent, lmdb))
+        ),
+        once((
+            unique_tmp_dir('tmp_wam_clojure_bench_rel_parent_lmdb', TmpDir),
+            generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+            directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+            directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/manifest.edn', ManifestPath),
+            directory_file_path(TmpDir, 'data/generated/wam_clojure_optimized_bench/category_parent_lmdb/manifest.json', LmdbManifestPath),
+            directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+            directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+            read_file_to_string(CorePath, CoreCode, []),
+            read_file_to_string(ManifestPath, Manifest, []),
+            assertion(exists_file(LmdbManifestPath)),
+            assertion(exists_file(ReaderJarPath)),
+            assertion(exists_file(NativeLibPath)),
+            assertion(sub_string(CoreCode, _, _, _, 'generated.lmdb.LmdbArtifactReader/open')),
+            assertion(sub_string(CoreCode, _, _, _, 'category_parent_lmdb')),
+            assertion(sub_string(Manifest, _, _, _, '"category_parent" {:mode "lmdb"')),
+            assertion(sub_string(Manifest, _, _, _, ':file "category_parent_lmdb/manifest.json"')),
+            delete_directory_and_contents(TmpDir)
+        )),
+        maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2)
+    ).
+
 test(shared_preprocess_override_seeded_article_artifact) :-
     setup_call_cleanup(
         ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
@@ -247,6 +274,27 @@ test(generated_category_parent_handler_executes, [condition(clojure_available)])
         delete_directory_and_contents(TmpDir)
     )).
 
+test(generated_category_parent_lmdb_handler_executes,
+     [condition((clojure_available, lmdb_helper_toolchain_available))]) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:wam_clojure_benchmark_relation_data_mode(category_parent, lmdb))
+        ),
+        once((
+            unique_tmp_dir('tmp_wam_clojure_bench_exec_lmdb', TmpDir),
+            generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+            run_clojure_predicate(TmpDir, 'category_parent/2',
+                                  ['Abstraction', 'Thought'], "true"),
+            run_clojure_predicate(TmpDir, 'category_parent/2',
+                                  ['Abstraction', 'NotAParent'], "false"),
+            run_clojure_predicate(TmpDir, 'category_ancestor/4',
+                                  ['Abstraction', 'Cognition', raw('{:var 1000}'), visited(['Abstraction'])],
+                                  "true"),
+            delete_directory_and_contents(TmpDir)
+        )),
+        maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2)
+    ).
+
 :- end_tests(wam_clojure_benchmark_generator).
 
 unique_tmp_dir(Prefix, TmpDir) :-
@@ -255,11 +303,15 @@ unique_tmp_dir(Prefix, TmpDir) :-
     format(atom(TmpDir), '~w_~w', [Prefix, Stamp]).
 
 run_clojure_predicate(ProjectDir, PredKey, Args, Output) :-
-    find_clojure_classpath(ClassPath),
+    project_clojure_classpath(ProjectDir, ClassPath),
+    project_java_library_path_args(ProjectDir, JavaLibArgs),
     maplist(clojure_edn_arg, Args, EdnArgs),
+    append(JavaLibArgs,
+           ['-cp', ClassPath, 'clojure.main', '-m',
+            'generated.wam_clojure_optimized_bench.core', PredKey|EdnArgs],
+           JavaArgs),
     process_create(path(java),
-                   ['-cp', ClassPath, 'clojure.main', '-m',
-                    'generated.wam_clojure_optimized_bench.core', PredKey|EdnArgs],
+                   JavaArgs,
                    [ cwd(ProjectDir),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
@@ -299,6 +351,30 @@ visited_list_edn([Atom|Rest], Edn) :-
 
 clojure_available :-
     find_clojure_classpath(_).
+
+lmdb_helper_toolchain_available :-
+    absolute_file_name(path(cargo), _, [access(execute)]),
+    absolute_file_name(path(javac), _, [access(execute)]),
+    absolute_file_name(path(jar), _, [access(execute)]),
+    absolute_file_name(path(gcc), _, [access(execute)]).
+
+project_clojure_classpath(ProjectDir, ClassPath) :-
+    find_clojure_classpath(BaseClassPath),
+    absolute_file_name(ProjectDir, AbsoluteProjectDir),
+    directory_file_path(AbsoluteProjectDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+    (   exists_file(ReaderJarPath)
+    ->  atomic_list_concat([ReaderJarPath, BaseClassPath], :, ClassPath)
+    ;   ClassPath = BaseClassPath
+    ).
+
+project_java_library_path_args(ProjectDir, Args) :-
+    absolute_file_name(ProjectDir, AbsoluteProjectDir),
+    directory_file_path(AbsoluteProjectDir, 'lib', LibDir),
+    (   exists_directory(LibDir)
+    ->  format(atom(Arg), '-Djava.library.path=~w', [LibDir]),
+        Args = [Arg]
+    ;   Args = []
+    ).
 
 find_clojure_classpath(ClassPath) :-
     findall(Path,

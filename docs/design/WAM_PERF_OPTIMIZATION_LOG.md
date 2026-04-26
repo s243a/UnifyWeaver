@@ -623,3 +623,22 @@ relation's resolved mode came from the shared `preprocess/2` layer. That
 brings the current Clojure path closer to the C# provider/materializer
 shape: generated artifacts now carry both the chosen storage mode and
 the declaration intent that selected it.
+
+The next Clojure step is no longer just metadata. The benchmark
+generator now supports an opt-in per-relation `lmdb` mode for
+`category_parent`. When that override is selected, generation:
+
+- writes a flat `category_parent.tsv` source file
+- builds a real LMDB dupsort artifact for `category_parent/2`
+- packages the shared JVM LMDB reader into
+  `lib/lmdb-artifact-reader.jar`
+- builds `lib/liblmdb_artifact_jni.so`
+- switches the generated Clojure `category_parent/2` and
+  `category_ancestor/4` foreign handlers to use
+  `generated.lmdb.LmdbArtifactReader`
+
+The generated benchmark runner also knows how to put that helper jar on
+the Java classpath and expose the JNI library path when the project is
+launched. The current integration is deliberately narrow: only
+`category_parent` can opt into LMDB, and the existing EDN / grouped-TSV
+paths remain the stable defaults and fallbacks.
