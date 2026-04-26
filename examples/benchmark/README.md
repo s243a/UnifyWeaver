@@ -213,6 +213,21 @@ reader reuse to a thread-local L1 `arg1` memoization layer on top of the
 same native store seam. Leaving the predicate unset preserves the
 default `none` policy.
 
+Additional experimental policies are available for the same relation:
+
+- `shared`
+- `two_level`
+
+These keep the same LMDB storage mode but change the JVM-side cache
+composition:
+
+- `shared`: shared `arg1` cache above the thread-local native reader
+- `two_level`: thread-local L1 plus shared L2
+
+Use these as explicit workload overrides for now. The relative value of
+`none`, `memoize`, `shared`, and `two_level` should be measured on a
+desktop JVM rather than treated as settled from Termux timings.
+
 The generator also now honors the shared predicate-preprocessing
 declaration surface from
 `src/unifyweaver/core/predicate_preprocessing.pl`. For the current

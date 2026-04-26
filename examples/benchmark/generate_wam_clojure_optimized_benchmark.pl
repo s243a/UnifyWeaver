@@ -249,7 +249,7 @@ benchmark_relation_declared_cache_policy(Relation, Policy) :-
     current_predicate(user:Name/2),
     Goal =.. [Name, Relation, DeclaredPolicy],
     once(call(user:Goal)),
-    memberchk(DeclaredPolicy, [none, memoize]),
+    memberchk(DeclaredPolicy, [none, memoize, shared, two_level]),
     Policy = DeclaredPolicy.
 
 benchmark_relation_cache_policy(_Relation, Mode, none) :-
@@ -322,6 +322,14 @@ category_parent_handler_code(inline, HandlerCode) :-
 lmdb_reader_open_expr(ArtifactDirPath, memoize, Expr) :-
     format(string(Expr),
            "(generated.lmdb.LmdbArtifactReader/openMemoized (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [ArtifactDirPath]).
+lmdb_reader_open_expr(ArtifactDirPath, shared, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openSharedCached (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [ArtifactDirPath]).
+lmdb_reader_open_expr(ArtifactDirPath, two_level, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openTwoLevel (java.nio.file.Paths/get ~w (make-array String 0)))",
            [ArtifactDirPath]).
 lmdb_reader_open_expr(ArtifactDirPath, none, Expr) :-
     format(string(Expr),
@@ -628,6 +636,16 @@ benchmark_category_parents_code(inline, _ParentCachePolicy, _DataDirLiteral, ben
 
 lmdb_reader_open_expr_runtime(memoize, Expr) :-
     Expr = '(generated.lmdb.LmdbArtifactReader/openMemoized
+                   (java.nio.file.Paths/get
+                     (str benchmark-data-dir "/category_parent_lmdb")
+                     (make-array String 0)))'.
+lmdb_reader_open_expr_runtime(shared, Expr) :-
+    Expr = '(generated.lmdb.LmdbArtifactReader/openSharedCached
+                   (java.nio.file.Paths/get
+                     (str benchmark-data-dir "/category_parent_lmdb")
+                     (make-array String 0)))'.
+lmdb_reader_open_expr_runtime(two_level, Expr) :-
+    Expr = '(generated.lmdb.LmdbArtifactReader/openTwoLevel
                    (java.nio.file.Paths/get
                      (str benchmark-data-dir "/category_parent_lmdb")
                      (make-array String 0)))'.

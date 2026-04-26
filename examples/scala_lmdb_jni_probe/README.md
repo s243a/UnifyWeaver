@@ -60,5 +60,7 @@ clojure_lmdb_jni_probe_ok lookup=a	1,a	2 scan_count=3 db=edge/2
 - the reader also exposes an optional `openMemoized(...)` constructor
   that adds a thread-local `arg1` memoization layer above the native
   store seam
+- the reader also exposes `openSharedCached(...)` and `openTwoLevel(...)`
+  for narrow shared-cache experiments above the same seam
 - LMDB access itself is done through JNI against the native `liblmdb`
 - this is still a probe, not yet a generated target integration
