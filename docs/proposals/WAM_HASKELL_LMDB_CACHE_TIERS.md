@@ -1,8 +1,17 @@
 # WAM Haskell LMDB Cache Tiers
 
-**Status:** Proposed (Phase 0 — design)
+**Status:** Phases 1 + 2 shipped (PR #1640, PR #1641); Phase 3 pending
 **Author:** John William Creighton (@s243a)
-**Date:** 2026-04-25
+**Date:** 2026-04-25 (proposed); updated 2026-04-26
+
+> **Update (2026-04-26):** Phases 1 (`per_hec`) and 2 (`sharded` +
+> `two_level`) are shipped, with one notable design deviation from
+> the original proposal: **L2 is a single shared lock-free `IOArray`
+> rather than a 16-way sharded structure**.  See "Implementation
+> notes — what changed during build" below for the rationale.
+> The proposal text retains the original sharded sketch as the
+> historical record; the *Implementation notes* and *Measured
+> results* sections describe what actually shipped.
 
 ## Summary
 
@@ -433,6 +442,133 @@ all modes are within 20% of `none`.
 This phase has its own design doc (the C# materialisation work it
 ties into is referenced in
 [`WAM_HASKELL_FACT_ACCESS_PHILOSOPHY.md`](./WAM_HASKELL_FACT_ACCESS_PHILOSOPHY.md#alignment-with-the-broader-system)).
+
+## Implementation notes — what changed during build
+
+This section records the deviations between the proposal text above
+and the implementation that actually shipped in PR #1640 (Phase 1)
+and PR #1641 (Phase 2).  The rest of the proposal is preserved as
+originally written; this is the diff.
+
+### L1 — IOArray instead of IORef IntMap
+
+The proposal sketch used `IORef (IntMap [Int])` per HEC.  Profiling
+the first implementation showed `IM.insert` consuming **42% of
+total time** — every cache miss allocated ~10 IntMap tree nodes
+under copy-on-write.  Replaced with `IOArray Int L1Entry` indexed
+by `key .&. (cap - 1)` with overwrite-on-collision.  No allocation
+per write, just a single `writeArray`.  Net: L1 went from **~145 ms
+@ -N1 to ~62 ms** on the 1000-seed enwiki workload (2.3× faster
+implementation).
+
+### L1 — capability index instead of `Map ThreadId`
+
+The proposal had an `IORef (Map ThreadId L1Cache)` registry.  The
+shipped implementation pre-allocates `Array Int L1Cache` with one
+entry per capability and uses `threadCapability` to index it
+directly.  No `Map.lookup` on the hot path.  Cleaner and slightly
+faster.
+
+### L2 — single shared lock-free IOArray instead of sharded locks
+
+The proposal specified 16 shards each protected by `atomicModifyIORef'`
+to distribute contention.  The shipped implementation is **one
+shared `IOArray`, lock-free**, because:
+
+1. GHC's `IOArray` pointer writes are atomic on x86_64 (and most
+   modern ISAs) — readers see either the old or the new pointer,
+   never a torn write.
+2. Every cached value is correct (LMDB is read-only during queries),
+   so when two threads race to write the same slot, both stored
+   values are equally valid.  The "winner" overwrites; correctness
+   is preserved either way.
+
+This eliminates both the per-shard `atomicModifyIORef'` overhead
+*and* the sharding bookkeeping.  Simpler and faster than the
+proposal's design.  The original sharded sketch (lines 259–307
+above) is preserved as the design rationale; the shipped code is
+the racy-write version.
+
+### IO-direct fallback to skip nested `unsafePerformIO`
+
+Both `lmdbL1EdgeLookup` and `lmdbRawEdgeLookup` are
+`unsafePerformIO`-wrapped.  On a cache miss the L1 wrapper used to
+unwrap `unsafePerformIO` twice (once for itself, once for the
+fallback).  Split `lmdbRawEdgeLookup` into an IO version
+(`lmdbRawEdgeLookupIO`) and a pure wrapper; the cache wrappers call
+the IO version directly to avoid the nested unwrap.  Trimmed ~5 ms
+off `-N4` enwiki.
+
+### Memory-aware default L2 capacity
+
+Per the design feedback, `defaultL2Capacity` reads
+`/proc/meminfo` `MemAvailable` and computes
+`min(half-available, available - 500MB) / 32` entries, bounded
+`[1024, 1M]` and rounded down to a power of two.  Falls back to
+1 GB / 32 = 32M, then bounded.  On non-Linux, defaults straight to
+1 GB / 32 → 1M cap.  User override via
+`lmdb_cache_l2_capacity_bytes/1` is **pending Phase 3**.
+
+### `memoize` is now a deprecated synonym for `sharded`
+
+PR #1637's `lmdb_cache_mode(memoize)` (shared `IORef (IntMap ...)`)
+regressed 7× at `-N4` because every miss took
+`atomicModifyIORef'`.  Phase 2 unified that path with the new
+`sharded` mode (lock-free IOArray); the option is preserved as a
+deprecated synonym so existing code compiles, but the underlying
+implementation is the new IOArray.
+
+## Measured results (consolidated)
+
+All numbers warm-cache, alternating-order trials, `+RTS -A32M`
+mandatory (without it, parallel GC dominates — see
+`docs/design/WAM_HASKELL_BENCHMARK_STRATEGY.md`).
+
+### Phase 1 — IOArray + capability index + IO-direct (PR #1640)
+
+1000-seed enwiki, root 97688913 reachable from all measured seeds:
+
+| Mode | -N1 | -N4 |
+|---|---|---|
+| BASE | ~62ms | ~31ms |
+| L1 IntMap (initial impl) | ~145ms | ~46ms |
+| L1 IOArray | ~62ms | ~32ms |
+| **L1 IOArray + IO-direct (shipped)** | **~62ms** | **~27ms** |
+
+**Phase 1 acceptance met**: L1 beats BASE at -N4 by ~13%.
+
+### Phase 2 — L2 + two_level (PR #1641)
+
+5000-seed simplewiki, all reaching root 265340:
+
+| Mode | -N4 avg query_ms | vs BASE |
+|---|---|---|
+| BASE | ~62ms | 1.00× |
+| L1 (per_hec) | ~52ms | 1.19× |
+| L2 (sharded) | ~51ms | 1.22× |
+| **two_level** | **~49ms** | **1.27×** |
+
+1000-seed enwiki, four-way at -N4 (within-noise variance):
+
+| Mode | avg query_ms |
+|---|---|
+| BASE | ~28ms |
+| L1 | ~26ms |
+| L2 | ~25ms |
+| two_level | ~29ms |
+
+**Phase 2 acceptance**: simplewiki shows the expected ordering
+(`two_level` ≥ `sharded` ≥ `per_hec` > `none`).  Enwiki at 1000
+seeds is too small to differentiate the cache modes statistically;
+the hypothesis "advantage scales with workload" is consistent with
+both data points but not yet decisively tested at enwiki scale.
+
+### Memory cost on a constrained host (~5 GB RAM, 2.5 GB available)
+
+Process RSS during simplewiki run, all four modes: **~80 MB total**,
+of which the L2 IOArray (1M slots × 8 bytes) accounts for ~8 MB.
+The 1 TB `VmSize` is the LMDB `mdb_env_set_mapsize` reservation;
+only touched pages count against physical memory.
 
 ## Open questions
 
