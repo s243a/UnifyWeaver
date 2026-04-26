@@ -648,3 +648,36 @@ Follow-up design work for the next Clojure LMDB phases now lives in
 captures the Clojure-specific philosophy, specification, and
 implementation sequencing, and explicitly references the recent Haskell
 LMDB cache and reader commits that should guide the next Clojure steps.
+
+The first implementation step from that plan is now in place too. The
+JVM helper behind the Clojure LMDB benchmark path no longer opens LMDB
+from scratch on every lookup. `LmdbArtifactReader` now fronts a
+thread-local native store seam:
+
+- one LMDB read transaction per thread
+- one dupsort cursor per thread
+- owned `LmdbRow` objects still cross the JNI boundary
+- generated Clojure code keeps the same call surface
+
+This matches the spirit of the recent Haskell progression:
+
+- split raw reader mechanics from wrapper policy first
+- add thread-local reader reuse next
+- keep memoization as a separate later layer
+
+That later layer is now in place too, but still narrowly. The Clojure
+benchmark generator now accepts an opt-in relation-local cache policy
+for LMDB-backed `category_parent`:
+
+- `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize)`
+- `benchmark_relation_cache_policy(category_parent, memoize)`
+
+When selected, generated Clojure projects keep the same `lmdb` storage
+mode and reader seam, but switch to `LmdbArtifactReader.openMemoized`.
+The memoization layer is thread-local and lives in the Java wrapper,
+not in the native store object:
+
+- one native store per thread still owns the LMDB transaction/cursor
+- one thread-local L1 map caches `lookupArg1` results by key
+- scan behavior is unchanged
+- shared L2 caching is still deferred

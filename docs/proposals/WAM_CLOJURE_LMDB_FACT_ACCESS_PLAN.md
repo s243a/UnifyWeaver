@@ -67,12 +67,20 @@ What is implemented today:
   handlers can consume `generated.lmdb.LmdbArtifactReader`
 - the benchmark launcher can place the helper jar on the Java classpath
   and the JNI library directory on `java.library.path`
+- the JVM helper now keeps one native LMDB store per thread through a
+  thread-local seam, so repeated lookups on the same thread reuse the
+  same read transaction / cursor state instead of reopening LMDB on
+  every lookup
+- an optional relation-local cache policy may now enable thread-local L1
+  memoization for `category_parent` lookup overlap:
+  - `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize)`
+  - `benchmark_relation_cache_policy(category_parent, memoize)`
 
 This is intentionally narrow:
 
 - only `category_parent` uses LMDB today
 - the existing EDN and grouped-TSV paths remain the stable defaults
-- there is no reader pooling, L1 cache, or shared cache policy yet
+- there is no shared L2 cache policy yet
 
 ## Specification
 
@@ -159,38 +167,35 @@ cursor state is the safe unit of reuse.
 
 ### Phase C1: Documentation and seam cleanup
 
-Status: **partly done**
+Status: **done**
 
 Done already:
 
 - shared artifact metadata seam exists
 - JVM LMDB row API exists
 - Clojure benchmark generator can consume LMDB for `category_parent`
-
-Next:
-
-1. add a dedicated JVM-side reader reuse abstraction instead of using
-   direct `LmdbArtifactReader/open` calls inline in generated Clojure
-2. describe that seam in the Clojure docs and in the artifact metadata
-   guidance
+- dedicated JVM-side reader seam is documented
+- generated projects package the helper jar and native library locally
 
 ### Phase C2: Thread-local reader reuse
 
-Status: **not started**
+Status: **done**
 
 Goal:
 
 - avoid repeated open/setup cost on hot lookup paths
 
-Implementation shape:
+Implemented shape:
 
-1. introduce a JVM helper that maintains thread-local reader state
-2. keep one read txn / cursor pair per thread
-3. expose the same logical API:
+1. `LmdbArtifactReader` now fronts a thread-local native store seam
+2. each thread owns its own LMDB read transaction / dupsort cursor
+   state
+3. the logical API stayed stable:
    - `lookupArg1`
    - `scan`
-4. switch generated Clojure `category_parent/2` and
-   `category_ancestor/4` handlers to that helper
+4. generated Clojure `category_parent/2` and `category_ancestor/4`
+   handlers still call the same reader API, but now benefit from
+   thread-local reuse underneath it
 
 Validation:
 
@@ -198,9 +203,14 @@ Validation:
 - generated-project predicate execution tests
 - no-argument benchmark digest parity
 
+Remaining gap:
+
+- the reader seam is still embedded in the JVM helper package rather
+  than exposed as a more explicit “reader pool” type
+
 ### Phase C3: Optional L1 memoization
 
-Status: **not started**
+Status: **done**
 
 Goal:
 
@@ -213,10 +223,21 @@ Important constraint:
 
 Implementation shape:
 
-1. add an explicit no-cache vs L1 policy choice
-2. prefer thread-local / per-thread memoization first
-3. keep policy local to `category_parent`
-4. benchmark overlap-heavy vs low-overlap workloads separately
+Implemented shape:
+
+1. `category_parent` now supports an explicit relation-local cache
+   policy choice while staying on the same `lmdb` storage mode
+2. the first policy is `memoize`, implemented as thread-local `arg1`
+   memoization in `LmdbArtifactReader`
+3. memoization remains outside `LmdbArtifactStore`, so raw native reader
+   lifecycle is still separate from cache behavior
+4. generated foreign handlers and the benchmark runner select
+   `openMemoized` only when the cache-policy override is present
+
+Current default:
+
+- no cache policy override means `none`
+- LMDB storage mode still works without L1 enabled
 
 Reference:
 
@@ -254,10 +275,10 @@ Possible future work:
 
 The next Clojure LMDB work should be:
 
-1. a cleaner reader seam
-2. thread-local reader reuse
-3. optional L1 memoization only after that
-4. shared caches later
+1. tighten the explicit JVM-side reader abstraction around the now
+   working thread-local native-store seam
+2. optional L1 memoization only after that
+3. shared caches later
 
 That is the clearest lesson from the recent Haskell commits, and it is
 the safest way to improve the current Clojure target without mixing up
