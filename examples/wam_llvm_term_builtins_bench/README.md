@@ -24,13 +24,43 @@ are out of scope here and tracked below.
 | `bench_univ_decomp`  | OK     | `=../2` decompose                             |
 | `bench_copy_flat`    | OK     | `copy_term/2` — this PR                       |
 | `bench_copy_nested`  | OK     | `copy_term/2` deep copy — this PR             |
-| `bench_sum_small`    | OK     | cross-pred (merged-labels)                    |
-| `bench_sum_medium`   | OK     | cross-pred (merged-labels)                    |
-| `bench_sum_big`      | OK     | cross-pred (merged-labels)                    |
-| `bench_term_depth`   | OK     | Y-reg env-frame save/restore — this PR        |
-| `bench_fib10`        | OK     | cut_ite/jump                                  |
+| `bench_sum_small`    | OK     | cross-pred + Ref-aliased put_variable         |
+| `bench_sum_medium`   | FAIL\* | nested compound recursion — see below         |
+| `bench_sum_big`      | FAIL\* | nested compound recursion — see below         |
+| `bench_term_depth`   | FAIL\* | nested compound recursion + ITE — see below   |
+| `bench_fib10`        | OK     | cut_ite/jump + Ref-aliased put_variable       |
 
-**13/13 workloads OK.** The bench suite is now fully green.
+**10/13 workloads OK with correctness assertions.** The 3 FAILs all
+involve `sum_ints` / `term_depth_args` recursing into a nested
+compound argument (e.g. `f(1, g(2, 3), 4)` where `g(2, 3)` is itself
+walked). The predicate completes but produces a wrong value — the
+final assertion `sum_ints(..., 0, 10)` fails because the accumulator
+result is not what was expected.
+
+The Ref-aliased `put_variable` fix (this PR's predecessor commit)
+correctly handles `bench_sum_small` (3 integer leaves, no nesting) and
+`bench_fib10` (deep recursion with no cross-compound walk). It does
+not yet handle the case where `sum_ints/3` is `call`-invoked from
+within `sum_ints_args/5`'s clause 2 to walk a nested compound — the
+inner call's TCO chain returns control to the caller's continuation,
+but the outer accumulator (`Acc1` on the caller's `Y7` slot via a
+shared heap cell) does not reflect the fully-summed inner total in
+the way the tail-call iteration expects.
+
+Probe-level findings (from `examples/wam_llvm_term_builtins_probe/`):
+
+  - `sum_ints(g(2, 3), 0, ?)` → 5 ✓ (direct call from a wrapper)
+  - `sum_ints(f(1, 2, 3), 0, ?)` → 6 ✓ (no nesting)
+  - `sum_ints(f(g(2)), 0, ?)` → fails for all V ✗ (nested)
+  - `sum_ints(f(1, g(2)), 0, ?)` → fails for all V ✗ (nested)
+
+Working theory: the `fcbe9c9a` Y-reg save/restore at
+allocate/deallocate may now be redundant or interacting badly with
+the new Ref-aliased state; backtracking still does not pop env frames
+between a `try_me_else` CP and the failure (a known stale-frame
+issue), and the combination of stale frames + heap-Ref-shared
+accumulators across the nested-call boundary is suspect. Needs
+follow-up investigation.
 
 ## Usage
 
