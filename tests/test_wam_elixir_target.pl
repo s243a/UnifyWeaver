@@ -910,7 +910,11 @@ test_findall_instr_end_to_end_lowering :-
     lower_predicate_to_elixir(has_findall/1, WamCode,
                               [module_name('TestMod')], Code),
     atom_string(Code, S),
-    (   sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :findall'),
+    (   % :findall (translated from WAM-emitted :collect) must appear
+        % in the push call — confirms the collect→findall translation
+        % survives the full WAM compile → parse → lower pipeline, not
+        % just the unit-level lowering test above.
+        sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :findall'),
         sub_string(S, _, _, _, 'WamRuntime.aggregate_collect(state'),
         sub_string(S, _, _, _, 'throw({:fail, state})')
     ->  pass(Test)

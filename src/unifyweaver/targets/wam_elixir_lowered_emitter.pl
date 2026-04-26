@@ -1431,6 +1431,15 @@ wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg),
 '    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w)',
         [AggType, ValReg, ResReg]).
 
+% Control flow note: the throw({:fail, state}) here is caught by the
+% enclosing wrap_segment\'s try/catch, which calls WamRuntime.backtrack
+% on the thrown state. backtrack/1 sees the aggregate CP at the top of
+% choice_points (pushed by the matching begin_aggregate), checks
+% Map.get(cp, :agg_type), and routes to finalise_aggregate/4 — which
+% binds the aggregated result and tail-calls the saved continuation.
+% The control flow is non-obvious from the emitted Elixir alone: throw →
+% segment catch → backtrack → finalise. See WAM_ELIXIR_TIER2_FINDALL.md
+% §3.3 (LLVM precedent) and §4.4 (backtrack extension).
 wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(ValueReg, ValReg),
     format(string(Code),
