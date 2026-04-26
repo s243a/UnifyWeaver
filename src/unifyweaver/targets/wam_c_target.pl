@@ -162,8 +162,13 @@ c_reg_index(RegStr, IsY, Idx) :-
 c_reg_index(RegAtom, IsY, Idx) :-
     atom_chars(RegAtom, Chars),
     (   Chars = [Prefix|NumChars],
-        (Prefix == 'a'; Prefix == 'x'; Prefix == 'A'; Prefix == 'X')
+        (Prefix == 'a'; Prefix == 'A')
     ->  IsY = 0,
+        catch(number_chars(RegNo, NumChars), _, fail),
+        Idx is RegNo - 1
+    ;   Chars = [Prefix|NumChars],
+        (Prefix == 'x'; Prefix == 'X')
+    ->  IsY = 2,
         catch(number_chars(RegNo, NumChars), _, fail),
         Idx is RegNo - 1
     ;   Chars = [Prefix|NumChars],
@@ -190,10 +195,22 @@ wam_line_to_c_instr(["get_variable", Xn, Ai], Instr) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
     c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
     format(atom(Instr), '{ .tag = INSTR_GET_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+wam_line_to_c_instr(["get_value", Xn, Ai], Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
+    format(atom(Instr), '{ .tag = INSTR_GET_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["put_constant", C, Ai], Instr) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     c_value_literal(CC, Val), c_reg_index(CAi, IsY, Idx),
     format(atom(Instr), '{ .tag = INSTR_PUT_CONSTANT, .val = ~w, .reg = ~w, .is_y_reg = ~w }', [Val, Idx, IsY]).
+wam_line_to_c_instr(["put_variable", Xn, Ai], Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_VARIABLE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
+wam_line_to_c_instr(["put_value", Xn, Ai], Instr) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    c_reg_index(CXn, IsY_Xn, XIdx), c_reg_index(CAi, IsY_Ai, AIdx),
+    format(atom(Instr), '{ .tag = INSTR_PUT_VALUE, .reg_xn = ~w, .is_y_xn = ~w, .reg_ai = ~w, .is_y_ai = ~w }', [XIdx, IsY_Xn, AIdx, IsY_Ai]).
 wam_line_to_c_instr(["get_structure", F, Ai], Instr) :-
     clean_comma(F, CF), clean_comma(Ai, CAi),
     c_reg_index(CAi, IsY, Idx),

@@ -260,6 +260,16 @@ test_builtin_call_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_builtin_executable_smoke :-
+    Test = 'WAM-C: real Prolog builtin executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_builtin_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog builtin executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -322,6 +332,32 @@ run_builtin_call_executable_smoke :-
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
+
+run_real_prolog_builtin_executable_smoke :-
+    assertz((user:wam_c_real_builtin(X, Y) :- atom(X), Y is 7)),
+    (   compile_predicate_to_wam(user:wam_c_real_builtin/2, [], WamCode),
+        sub_string(WamCode, _, _, _, 'builtin_call atom/1, 1'),
+        sub_string(WamCode, _, _, _, 'builtin_call is/2, 2'),
+        compile_wam_predicate_to_c(user:wam_c_real_builtin/2, WamCode, [], PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_builtin_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_builtin_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_real_builtin(_, _))
+    ;   retractall(user:wam_c_real_builtin(_, _)),
+        fail
+    ).
 
 write_text_file(Path, Content) :-
     setup_call_cleanup(
@@ -475,6 +511,36 @@ int main(void) {
 }
 ').
 
+wam_c_real_builtin_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_real_builtin_2(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_real_builtin_2(&state);
+
+    WamValue ok_args[2] = { val_atom("a"), val_unbound("Y") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_real_builtin/2", ok_args, 2);
+    if (ok_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue fail_args[2] = { val_int(3), val_unbound("Y") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_real_builtin/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -542,6 +608,7 @@ run_tests_once :-
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
     test_builtin_call_executable_smoke,
+    test_real_prolog_builtin_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 

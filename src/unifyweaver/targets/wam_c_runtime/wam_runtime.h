@@ -270,9 +270,12 @@ static inline bool val_equal(WamValue v1, WamValue v2) {
     return false;
 }
 static inline WamValue* resolve_reg(WamState *state, int reg_idx, int is_y) {
-    if (is_y) {
+    if (is_y == 1) {
         assert(state->E >= 0 && "Y-register accessed with empty environment stack");
         return &state->E_array[state->E].y_regs[reg_idx];
+    }
+    if (is_y == 2) {
+        return &state->X[reg_idx];
     }
     return &state->A[reg_idx];
 }
