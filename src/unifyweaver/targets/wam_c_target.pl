@@ -120,6 +120,8 @@ wam_instruction_to_c_literal(call(P, N), Code) :-
     format(atom(Code), '{ .tag = INSTR_CALL, .pred = "~w", .arity = ~w }', [P, N]).
 wam_instruction_to_c_literal(execute(P), Code) :-
     format(atom(Code), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [P]).
+wam_instruction_to_c_literal(builtin_call(Op, N), Code) :-
+    format(atom(Code), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [Op, N]).
 wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
@@ -226,6 +228,9 @@ wam_line_to_c_instr(["call", P, N], Instr) :-
 wam_line_to_c_instr(["execute", P], Instr) :-
     clean_comma(P, CP),
     format(atom(Instr), '{ .tag = INSTR_EXECUTE, .pred = "~w" }', [CP]).
+wam_line_to_c_instr(["builtin_call", Op, N], Instr) :-
+    clean_comma(Op, COp), clean_comma(N, CN),
+    format(atom(Instr), '{ .tag = INSTR_BUILTIN_CALL, .pred = "~w", .arity = ~w }', [COp, CN]).
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
@@ -477,6 +482,13 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_EXECUTE: {
                 int target = resolve_predicate_hash(state, instr->pred);
                 if (target >= 0) { state->P = target; return true; }
+                return false;
+            }
+            case INSTR_BUILTIN_CALL: {
+                if (wam_execute_builtin(state, instr->pred, instr->arity)) {
+                    state->P++;
+                    return true;
+                }
                 return false;
             }
             case INSTR_TRY_ME_ELSE: {
@@ -780,6 +792,91 @@ int wam_run_predicate(WamState *state, const char *pred,
     state->CP = WAM_HALT;
     state->P = entry;
     return wam_run(state);
+}
+
+static bool wam_eval_arith(WamState *state, WamValue value, int *out) {
+    WamValue *cell = wam_deref_ptr(state, &value);
+    if (cell->tag == VAL_INT) {
+        *out = cell->data.integer;
+        return true;
+    }
+    if (cell->tag != VAL_STR) return false;
+
+    int addr = cell->data.ref_addr;
+    WamValue *functor = &state->H_array[addr];
+    if (functor->tag != VAL_ATOM) return false;
+
+    int lhs = 0;
+    int rhs = 0;
+    if (!wam_eval_arith(state, state->H_array[addr + 1], &lhs)) return false;
+    if (!wam_eval_arith(state, state->H_array[addr + 2], &rhs)) return false;
+
+    if (strcmp(functor->data.atom, "+/2") == 0) {
+        *out = lhs + rhs;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "-/2") == 0) {
+        *out = lhs - rhs;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "*/2") == 0) {
+        *out = lhs * rhs;
+        return true;
+    }
+    if (strcmp(functor->data.atom, "//2") == 0 || strcmp(functor->data.atom, "div/2") == 0) {
+        if (rhs == 0) return false;
+        *out = lhs / rhs;
+        return true;
+    }
+    return false;
+}
+
+bool wam_execute_builtin(WamState *state, const char *op, int arity) {
+    if (strcmp(op, "true/0") == 0 && arity == 0) return true;
+    if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
+    if (strcmp(op, "!/0") == 0 && arity == 0) {
+        state->B = 0;
+        return true;
+    }
+
+    if (strcmp(op, "=/2") == 0 && arity == 2) {
+        return wam_unify(state, &state->A[0], &state->A[1]);
+    }
+
+    if (arity == 1) {
+        WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+        if (strcmp(op, "atom/1") == 0) return a1->tag == VAL_ATOM;
+        if (strcmp(op, "integer/1") == 0) return a1->tag == VAL_INT;
+        if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT;
+        if (strcmp(op, "float/1") == 0) return false;
+        if (strcmp(op, "var/1") == 0) return val_is_unbound(*a1);
+        if (strcmp(op, "nonvar/1") == 0) return !val_is_unbound(*a1);
+        if (strcmp(op, "compound/1") == 0) return a1->tag == VAL_STR || a1->tag == VAL_LIST;
+        if (strcmp(op, "is_list/1") == 0) return a1->tag == VAL_LIST;
+    }
+
+    if (strcmp(op, "is/2") == 0 && arity == 2) {
+        int result = 0;
+        if (!wam_eval_arith(state, state->A[1], &result)) return false;
+        WamValue value = val_int(result);
+        return wam_unify(state, &state->A[0], &value);
+    }
+
+    if (arity == 2) {
+        int lhs = 0;
+        int rhs = 0;
+        if (!wam_eval_arith(state, state->A[0], &lhs)) return false;
+        if (!wam_eval_arith(state, state->A[1], &rhs)) return false;
+
+        if (strcmp(op, ">/2") == 0) return lhs > rhs;
+        if (strcmp(op, "</2") == 0) return lhs < rhs;
+        if (strcmp(op, ">=/2") == 0) return lhs >= rhs;
+        if (strcmp(op, "=</2") == 0) return lhs <= rhs;
+        if (strcmp(op, "=:=/2") == 0) return lhs == rhs;
+        if (strcmp(op, "=\\\\=/2") == 0) return lhs != rhs;
+    }
+
+    return false;
 }
 '.
 

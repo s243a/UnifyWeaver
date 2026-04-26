@@ -161,6 +161,7 @@ int wam_run(WamState* state);
 void wam_state_init(WamState *state);
 void wam_free_state(WamState *state);
 int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int arity);
+bool wam_execute_builtin(WamState *state, const char *op, int arity);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
