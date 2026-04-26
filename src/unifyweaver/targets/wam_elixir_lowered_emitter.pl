@@ -1160,6 +1160,8 @@ instr_from_parts(["set_constant", C], set_constant(C)).
 instr_from_parts(["switch_on_constant"|Entries], switch_on_constant(Entries)).
 instr_from_parts(["switch_on_constant_a2"|Entries], switch_on_constant_a2(Entries)).
 instr_from_parts(["proceed"], proceed).
+instr_from_parts(["begin_aggregate", Type, ValReg, ResReg], begin_aggregate(Type, ValReg, ResReg)).
+instr_from_parts(["end_aggregate", ValReg], end_aggregate(ValReg)).
 instr_from_parts(Parts, raw(Combined)) :-
     atomic_list_concat(Parts, ' ', Combined).
 
@@ -1415,6 +1417,50 @@ wam_elixir_lower_instr(proceed, _PC, _Labels, _FuncName, _Suffix, Code) :-
     % state.cp — this tail call invokes it. BEAM TCO collapses the stack
     % so deep recursion doesn\'t grow it.
     Code = '    state.cp.(state)'.
+
+% begin_aggregate / end_aggregate lowering — Phase 2 of the findall
+% implementation per docs/proposals/WAM_ELIXIR_TIER2_FINDALL.md §4.2/§4.3.
+% Substrate helpers live in WamRuntime (PR #1627).
+
+wam_elixir_lower_instr(begin_aggregate(AggTypeStr, ValueReg, ResultReg),
+                       _PC, _Labels, _FuncName, _Suffix, Code) :-
+    agg_type_atom(AggTypeStr, AggType),
+    reg_id(ValueReg, ValReg),
+    reg_id(ResultReg, ResReg),
+    format(string(Code),
+'    state = WamRuntime.push_aggregate_frame(state, :~w, ~w, ~w)',
+        [AggType, ValReg, ResReg]).
+
+% Control flow note: the throw({:fail, state}) here is caught by the
+% enclosing wrap_segment\'s try/catch, which calls WamRuntime.backtrack
+% on the thrown state. backtrack/1 sees the aggregate CP at the top of
+% choice_points (pushed by the matching begin_aggregate), checks
+% Map.get(cp, :agg_type), and routes to finalise_aggregate/4 — which
+% binds the aggregated result and tail-calls the saved continuation.
+% The control flow is non-obvious from the emitted Elixir alone: throw →
+% segment catch → backtrack → finalise. See WAM_ELIXIR_TIER2_FINDALL.md
+% §3.3 (LLVM precedent) and §4.4 (backtrack extension).
+wam_elixir_lower_instr(end_aggregate(ValueReg), _PC, _Labels, _FuncName, _Suffix, Code) :-
+    reg_id(ValueReg, ValReg),
+    format(string(Code),
+'    state = WamRuntime.aggregate_collect(state, ~w)
+    throw({:fail, state})', [ValReg]).
+
+%% agg_type_atom(+Str, -Atom)
+%  Translates the WAM-text aggregator name to the Elixir runtime atom.
+%
+%  The WAM compiler emits `:collect` for findall/3 (via the
+%  `collect-Template` wrapper in compile_findall/5). The Tier-2 gate
+%  `in_forkable_aggregate_frame?/1` (PR #1586) only recognises
+%  `:findall` and `:aggregate_all` as forkable, so we translate
+%  `collect → findall` at the emission site rather than broadening the
+%  substrate. Decision per WAM_ELIXIR_TIER2_FINDALL.md §6.4 and §9 Q5.
+%
+%  All other aggregator atoms (sum/count/max/min/bag/set/aggregate_all)
+%  pass through unchanged — finalise_aggregate/4 (PR #1627) handles the
+%  full alphabet.
+agg_type_atom("collect", findall) :- !.
+agg_type_atom(Str, Atom) :- atom_string(Atom, Str).
 
 wam_elixir_lower_instr(raw(Combined), _PC, _Labels, _FuncName, _Suffix, Code) :-
     format(string(Code), '    # raw: ~w\n    raise "TODO: ~w"', [Combined, Combined]).

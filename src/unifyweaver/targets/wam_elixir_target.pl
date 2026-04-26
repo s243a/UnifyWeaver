@@ -947,9 +947,19 @@ compile_aggregate_helpers_to_elixir(Code) :-
   for bagof/setof (witness-variable dependency) and for an empty or
   non-aggregate-bearing CP stack.
 
-  Consumed by the Tier-2 wrapper (`par_wrap_segment/3`, PR2) as a
-  correctness gate: outside a forkable aggregate, parallel fan-out
-  would strand solutions that the sequential `next_solution/1`
+  Note on the alphabet: the WAM compiler\'s compile_aggregate_all/5
+  emits `:collect` for findall/3 (via the collect-Template wrapper
+  in compile_findall/5), but the Elixir target translates
+  `collect → findall` at the begin_aggregate emission site
+  (agg_type_atom/2 in wam_elixir_lowered_emitter.pl, per
+  WAM_ELIXIR_TIER2_FINDALL.md §6.4). Consequently the only
+  forkable atoms this function ever sees in emitted modules are
+  `:findall` and `:aggregate_all` — `:collect` never reaches the
+  runtime substrate.
+
+  Consumed by the Tier-2 wrapper (`par_wrap_segment/4`, PR #1608)
+  as a correctness gate: outside a forkable aggregate, parallel
+  fan-out would strand solutions that the sequential
   enumeration path would otherwise surface.
   """
   def in_forkable_aggregate_frame?(state) do
