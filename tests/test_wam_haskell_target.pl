@@ -1441,6 +1441,51 @@ test_b1_lmdb_cache_default_no_l2 :-
     ;   fail_test(Test, 'L2 unexpectedly emitted in default mode')
     ).
 
+test_b1_lmdb_cache_l2_capacity_override :-
+    Test = 'B1: lmdb_cache_l2_capacity_bytes overrides auto-detect',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded),
+             lmdb_cache_l2_capacity_bytes(67108864)], [], Code),  % 64 MB
+        atom_string(Code, S),
+        % override branch emits a constant-return defaultL2Capacity
+        sub_string(S, _, _, _, "user-specified"),
+        sub_string(S, _, _, _, "67108864 `div` 32"),
+        % the auto-detect branch should NOT be emitted
+        \+ sub_string(S, _, _, _, "l2MemoryBudgetBytes")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 capacity override not emitted as expected')
+    ).
+
+test_b1_lmdb_cache_l2_capacity_default_when_unset :-
+    Test = 'B1: L2 capacity falls back to auto-detect when not specified',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "l2MemoryBudgetBytes"),
+        \+ sub_string(S, _, _, _, "user-specified")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto-detect path not emitted by default')
+    ).
+
+test_b1_lmdb_cache_l2_capacity_ignored_without_l2 :-
+    Test = 'B1: lmdb_cache_l2_capacity_bytes ignored when L2 not active',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(per_hec),
+             lmdb_cache_l2_capacity_bytes(67108864)], [], Code),
+        atom_string(Code, S),
+        % L2 is not active (per_hec only) so override should not fire
+        \+ sub_string(S, _, _, _, "user-specified"),
+        \+ sub_string(S, _, _, _, "67108864")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 override unexpectedly emitted without L2')
+    ).
+
 test_b1_lmdb_dupsort_alone_no_memoize :-
     Test = 'B1: dupsort without lmdb_cache_mode does not emit memoising lookup',
     (   compile_wam_runtime_to_haskell(
@@ -1617,6 +1662,9 @@ run_tests :-
     test_b1_lmdb_cache_sharded_emitted,
     test_b1_lmdb_cache_two_level_emitted,
     test_b1_lmdb_cache_default_no_l2,
+    test_b1_lmdb_cache_l2_capacity_override,
+    test_b1_lmdb_cache_l2_capacity_default_when_unset,
+    test_b1_lmdb_cache_l2_capacity_ignored_without_l2,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
