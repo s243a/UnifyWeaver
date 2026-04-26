@@ -118,6 +118,17 @@ user:phase3_count(N) :- aggregate_all(count, phase3_pn(X), N).
 %   proposal §6 risk #6 documented in WAM_ELIXIR_TIER2_FINDALL.md §0.
 user:phase3_max_empty(M) :- aggregate_all(max(X), fail, M).
 
+% Scenarios 5–8: aggregator coverage on non-empty accum. Each uses
+% the existing 3-clause phase3_smoke_p/1 fixture — no new fact
+% predicates needed. Together these cover the four
+% finalise_aggregate branches that hadn't run end-to-end yet:
+% :bag (collect-with-duplicates), :set (Enum.uniq), :max non-empty
+% (Enum.max), :min non-empty (Enum.min).
+user:phase3_bag(B) :- aggregate_all(bag(X), phase3_smoke_p(X), B).
+user:phase3_set(S) :- aggregate_all(set(X), phase3_smoke_p(X), S).
+user:phase3_max(M) :- aggregate_all(max(X), phase3_smoke_p(X), M).
+user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
+
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
 tmp_root_candidate(Root) :-
@@ -153,7 +164,11 @@ phase3_predicates([
     user:phase3_findall_fail/1,
     user:phase3_pn/1,
     user:phase3_count/1,
-    user:phase3_max_empty/1
+    user:phase3_max_empty/1,
+    user:phase3_bag/1,
+    user:phase3_set/1,
+    user:phase3_max/1,
+    user:phase3_min/1
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -168,7 +183,15 @@ phase3_driver_invocations([
     'r3 = Phase3Smoke.Phase3Count.run([{:unbound, make_ref()}])',
     'IO.inspect(r3, label: "SCENARIO_AGG_COUNT", charlists: :as_lists)',
     'r4 = Phase3Smoke.Phase3MaxEmpty.run([{:unbound, make_ref()}])',
-    'IO.inspect(r4, label: "SCENARIO_AGG_MAX_EMPTY", charlists: :as_lists)'
+    'IO.inspect(r4, label: "SCENARIO_AGG_MAX_EMPTY", charlists: :as_lists)',
+    'r5 = Phase3Smoke.Phase3Bag.run([{:unbound, make_ref()}])',
+    'IO.inspect(r5, label: "SCENARIO_AGG_BAG", charlists: :as_lists)',
+    'r6 = Phase3Smoke.Phase3Set.run([{:unbound, make_ref()}])',
+    'IO.inspect(r6, label: "SCENARIO_AGG_SET", charlists: :as_lists)',
+    'r7 = Phase3Smoke.Phase3Max.run([{:unbound, make_ref()}])',
+    'IO.inspect(r7, label: "SCENARIO_AGG_MAX", charlists: :as_lists)',
+    'r8 = Phase3Smoke.Phase3Min.run([{:unbound, make_ref()}])',
+    'IO.inspect(r8, label: "SCENARIO_AGG_MIN", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -272,6 +295,31 @@ assert_scenario_agg_max_empty(StdOut) :-
     % returns :fail. The IO.inspect output is bare `:fail`.
     sub_string(W, _, _, _, ":fail").
 
+assert_scenario_agg_bag(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_BAG", W),
+    % :bag returns the reversed accumulator — same as :findall.
+    % All three values present in the scenario's stdout window.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_set(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_SET", W),
+    % :set applies Enum.uniq. Three distinct values in, three out.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_max(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_MAX", W),
+    % Enum.max on string list is lex order — max("a","b","c") = "c".
+    sub_string(W, _, _, _, "\"c\"").
+
+assert_scenario_agg_min(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_AGG_MIN", W),
+    % Enum.min on string list — min("a","b","c") = "a".
+    sub_string(W, _, _, _, "\"a\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -296,6 +344,18 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3: aggregate_all(max(X), fail, M) → :fail (empty bag, no identity)',
                  assert_scenario_agg_max_empty,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(bag(X), phase3_smoke_p(X), B) → [a, b, c]',
+                 assert_scenario_agg_bag,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(set(X), phase3_smoke_p(X), S) → [a, b, c] (uniq)',
+                 assert_scenario_agg_set,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(max(X), phase3_smoke_p(X), M) → "c" (lex max)',
+                 assert_scenario_agg_max,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: aggregate_all(min(X), phase3_smoke_p(X), M) → "a" (lex min)',
+                 assert_scenario_agg_min,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all
