@@ -8,7 +8,7 @@ use std::env;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 type DynError = Box<dyn Error>;
 
@@ -302,6 +302,7 @@ fn file_sha256(path: &Path) -> Result<String, DynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

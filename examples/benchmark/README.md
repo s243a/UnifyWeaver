@@ -186,6 +186,21 @@ These are applied on top of `artifact` mode so a workload can, for
 example, keep `category_parent` on the grouped artifact path while
 forcing `article_category` back to row sidecars, or vice versa.
 
+`category_parent` also now accepts an opt-in `lmdb` override. In that
+mode the generator:
+
+- writes a `category_parent/2` LMDB dupsort artifact under
+  `data/generated/wam_clojure_optimized_bench/category_parent_lmdb/`
+- packages the JVM reader helper as
+  `lib/lmdb-artifact-reader.jar`
+- builds the JNI shim as `lib/liblmdb_artifact_jni.so`
+- places that helper jar on the runtime classpath when the benchmark
+  harness launches the generated Clojure project
+
+This keeps the public benchmark target names stable while letting a
+workload compare grouped TSV against LMDB-backed exact arg1 lookups for
+the hottest traversal relation.
+
 The generator also now honors the shared predicate-preprocessing
 declaration surface from
 `src/unifyweaver/core/predicate_preprocessing.pl`. For the current

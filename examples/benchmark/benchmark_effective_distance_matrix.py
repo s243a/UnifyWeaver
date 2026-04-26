@@ -244,8 +244,13 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
 
 def clojure_classpath(project_dir: Path) -> str:
     env_classpath = os.environ.get("CLASSPATH", "")
+    helper_jar = project_dir / "lib" / "lmdb-artifact-reader.jar"
     if env_classpath:
-        return ":".join([str(project_dir / "src"), env_classpath])
+        parts = [str(project_dir / "src")]
+        if helper_jar.exists():
+            parts.append(str(helper_jar))
+        parts.append(env_classpath)
+        return ":".join(parts)
     jar_paths = [
         Path.home() / ".m2" / "repository" / "org" / "clojure" / "clojure" / "1.11.1" / "clojure-1.11.1.jar",
         Path.home() / ".m2" / "repository" / "org" / "clojure" / "spec.alpha" / "0.3.218" / "spec.alpha-0.3.218.jar",
@@ -264,7 +269,11 @@ def clojure_classpath(project_dir: Path) -> str:
     existing_jars = [path for path in jar_paths if path.exists()]
     if not existing_jars:
         raise RuntimeError("Clojure jars not found; cannot run clojure-wam target")
-    return ":".join([str(project_dir / "src"), *(str(path) for path in existing_jars)])
+    parts = [str(project_dir / "src")]
+    if helper_jar.exists():
+        parts.append(str(helper_jar))
+    parts.extend(str(path) for path in existing_jars)
+    return ":".join(parts)
 
 
 def build_wam_clojure_effective_distance(
@@ -288,14 +297,20 @@ def build_wam_clojure_effective_distance(
         ],
         cwd=ROOT,
     )
-    return [
-        "java",
-        "-cp",
-        clojure_classpath(project_dir),
-        "clojure.main",
-        "-m",
-        "generated.wam_clojure_optimized_bench.core",
-    ]
+    command = ["java"]
+    native_lib_dir = project_dir / "lib"
+    if native_lib_dir.exists():
+        command.append(f"-Djava.library.path={native_lib_dir}")
+    command.extend(
+        [
+            "-cp",
+            clojure_classpath(project_dir),
+            "clojure.main",
+            "-m",
+            "generated.wam_clojure_optimized_bench.core",
+        ]
+    )
+    return command
 
 
 def parse_effective_distance_facts(facts_path: Path) -> tuple[list[tuple[str, str]], list[str]]:

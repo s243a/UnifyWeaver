@@ -18,6 +18,7 @@
               [declared_preprocess/3,
                declared_preprocess_metadata/4]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- use_module(library(process), [process_create/3, process_wait/2]).
 :- discontiguous benchmark_article_category_by_article_artifact/1.
 :- discontiguous benchmark_category_parent_by_child_artifact/1.
 
@@ -41,6 +42,16 @@ benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
     file_directory_name(ThisFile, Here),
     directory_file_path(Here, 'effective_distance.pl', Path).
+
+benchmark_repo_root(Root) :-
+    source_file(benchmark_repo_root(_), ThisFile),
+    file_directory_name(ThisFile, BenchDir),
+    file_directory_name(BenchDir, ExamplesDir),
+    file_directory_name(ExamplesDir, Root).
+
+benchmark_repo_path(RelativePath, AbsolutePath) :-
+    benchmark_repo_root(Root),
+    directory_file_path(Root, RelativePath, AbsolutePath).
 
 main :-
     current_prolog_flag(argv, Argv),
@@ -211,7 +222,7 @@ benchmark_declared_data_mode(Mode) :-
     current_predicate(user:Name/1),
     Goal =.. [Name, DeclaredMode],
     once(call(user:Goal)),
-    memberchk(DeclaredMode, [auto, sidecar, artifact, inline]),
+    memberchk(DeclaredMode, [auto, sidecar, artifact, inline, lmdb]),
     Mode = DeclaredMode.
 
 benchmark_relation_declared_data_mode(Relation, Mode) :-
@@ -222,7 +233,7 @@ benchmark_relation_declared_data_mode(Relation, Mode) :-
     current_predicate(user:Name/2),
     Goal =.. [Name, Relation, DeclaredMode],
     once(call(user:Goal)),
-    memberchk(DeclaredMode, [auto, sidecar, artifact, inline]),
+    memberchk(DeclaredMode, [auto, sidecar, artifact, inline, lmdb]),
     Mode = DeclaredMode.
 
 benchmark_fact_volume(RowCount) :-
@@ -250,6 +261,11 @@ category_parent_handler_code(OutputDir, artifact, HandlerCode) :-
     format(string(HandlerCode),
            "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp ~w) \"\\\\r?\\\\n\"))))] (fn [args] (let [child (nth args 0) parent (nth args 1)] (boolean (some #(= parent %) (get @parents-by-child-delay child []))))))",
            [CategoryParentMapPath]).
+category_parent_handler_code(OutputDir, lmdb, HandlerCode) :-
+    benchmark_sidecar_subdir_literal(OutputDir, 'category_parent_lmdb', ArtifactDirPath),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay (generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0))))] (fn [args] (let [child (nth args 0) parent (nth args 1) rows (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay child)] (boolean (some (fn [^generated.lmdb.LmdbRow row] (= parent (.value row))) rows)))))",
+           [ArtifactDirPath]).
 category_parent_handler_code(_OutputDir, inline, HandlerCode) :-
     category_parent_handler_code(inline, HandlerCode).
 category_parent_handler_code(sidecar, HandlerCode) :-
@@ -287,6 +303,12 @@ category_ancestor_handler_code(OutputDir, artifact, HandlerCode) :-
     format(string(HandlerCode),
            "(let [parents-by-child-delay (delay (into {} (keep (fn [line] (when-not (.isEmpty ^String line) (let [parts (vec (.split ^String line \"\\\\t\")) child (first parts) parents (subvec parts 1)] [child parents]))) (.split ^String (slurp ~w) \"\\\\r?\\\\n\")))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (get @parents-by-child-delay category [])] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
            [CategoryParentMapPath, MaxDepth]).
+category_ancestor_handler_code(OutputDir, lmdb, HandlerCode) :-
+    benchmark_max_depth_literal(MaxDepth),
+    benchmark_sidecar_subdir_literal(OutputDir, 'category_parent_lmdb', ArtifactDirPath),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay (generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0)))) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) parent-values (fn [category] (mapv (fn [^generated.lmdb.LmdbRow row] (.value row)) (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay category))) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (parent-values category)] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] {:solutions (vec solutions)})))",
+           [ArtifactDirPath, MaxDepth]).
 category_ancestor_handler_code(_OutputDir, inline, HandlerCode) :-
     category_ancestor_handler_code(inline, HandlerCode).
 category_ancestor_handler_code(sidecar, HandlerCode) :-
@@ -480,6 +502,8 @@ benchmark_relation_predicate(category_parent, category_parent/2).
 benchmark_derived_state_code(artifact, artifact, Code) :-
     Code = '(def benchmark-seed-categories-delay
   (delay (sort (set (mapcat identity (vals @benchmark-article-categories-by-article-delay))))))'.
+benchmark_derived_state_code(artifact, lmdb, Code) :-
+    benchmark_derived_state_code(artifact, artifact, Code).
 benchmark_derived_state_code(sidecar, artifact, Code) :-
     Code = '(def benchmark-article-categories-by-article-delay
   (delay
@@ -490,6 +514,8 @@ benchmark_derived_state_code(sidecar, artifact, Code) :-
 
 (def benchmark-seed-categories-delay
   (delay (sort (set (map second @benchmark-article-categories-delay)))))'.
+benchmark_derived_state_code(sidecar, lmdb, Code) :-
+    benchmark_derived_state_code(sidecar, artifact, Code).
 benchmark_derived_state_code(_ArticleMode, _ParentMode, Code) :-
     Code = '(def benchmark-parents-by-child-delay
   (delay
@@ -541,6 +567,17 @@ benchmark_category_parents_code(artifact, _DataDirLiteral, _BenchmarkData, Code)
                       parents (subvec parts 1)]
                   [child parents]))))
       (.split ^String (slurp (str benchmark-data-dir "/category_parent_by_child.tsv")) "\\r?\\n"))))'.
+benchmark_category_parents_code(lmdb, _DataDirLiteral, _BenchmarkData, Code) :-
+    Code = '(def benchmark-parents-by-child-delay
+  (delay
+    (let [reader (generated.lmdb.LmdbArtifactReader/open
+                   (java.nio.file.Paths/get
+                     (str benchmark-data-dir "/category_parent_lmdb")
+                     (make-array String 0)))]
+      (reduce (fn [acc ^generated.lmdb.LmdbRow row]
+                (update acc (.key row) (fnil conj []) (.value row)))
+              {}
+              (.scan ^generated.lmdb.LmdbArtifactReader reader)))))'.
 benchmark_category_parents_code(inline, _DataDirLiteral, benchmark_data(_, CategoryParents, _, _, _, _, _, _), Code) :-
     format(string(Code),
            "(def benchmark-category-parents-delay (delay [~s]))",
@@ -566,15 +603,19 @@ maybe_write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelMod
 maybe_write_benchmark_sidecar_files(_, _, _, _, inline, _).
 
 write_benchmark_sidecar_files(OutputDir, FactsPath, VariantAtom, KernelModeAtom, DataMode, BenchmarkData) :-
+    benchmark_effective_data_modes(VariantAtom, DataMode, _ArticleMode, ParentMode),
     benchmark_sidecar_dir(OutputDir, DataDir),
     make_directory_path(DataDir),
     write_benchmark_sidecar_file(DataDir, 'article_category.edn', BenchmarkData, benchmark_article_category_edn),
     write_benchmark_sidecar_file(DataDir, 'article_category_by_article.tsv', BenchmarkData, benchmark_article_category_by_article_artifact),
     write_benchmark_sidecar_file(DataDir, 'category_parent.edn', BenchmarkData, benchmark_category_parent_edn),
     write_benchmark_sidecar_file(DataDir, 'category_parent_by_child.tsv', BenchmarkData, benchmark_category_parent_by_child_artifact),
+    write_benchmark_sidecar_file(DataDir, 'category_parent.tsv', BenchmarkData, benchmark_category_parent_rows_tsv),
     write_benchmark_sidecar_file(DataDir, 'root_category.edn', BenchmarkData, benchmark_root_category_edn),
+    maybe_write_category_parent_lmdb_artifact(DataDir, ParentMode),
     benchmark_artifact_manifest(FactsPath, VariantAtom, KernelModeAtom, DataMode, Manifest),
-    write_benchmark_sidecar_content(DataDir, 'manifest.edn', Manifest).
+    write_benchmark_sidecar_content(DataDir, 'manifest.edn', Manifest),
+    maybe_prepare_clojure_lmdb_runtime_support(OutputDir, ParentMode).
 
 benchmark_sidecar_dir(OutputDir, DataDir) :-
     directory_file_path(OutputDir, 'data', DataRoot),
@@ -590,6 +631,12 @@ benchmark_sidecar_file_path_literal(OutputDir, FileName, Literal) :-
     benchmark_sidecar_dir(OutputDir, DataDir),
     directory_file_path(DataDir, FileName, FilePath),
     absolute_file_name(FilePath, AbsolutePath),
+    clj_string_literal_local(AbsolutePath, Literal).
+
+benchmark_sidecar_subdir_literal(OutputDir, DirName, Literal) :-
+    benchmark_sidecar_dir(OutputDir, DataDir),
+    directory_file_path(DataDir, DirName, DirPath),
+    absolute_file_name(DirPath, AbsolutePath),
     clj_string_literal_local(AbsolutePath, Literal).
 
 write_benchmark_sidecar_file(DataDir, FileName, BenchmarkData, Builder) :-
@@ -693,6 +740,10 @@ relation_manifest_shape(category_parent, artifact,
                         'category_parent_by_child.tsv',
                         'grouped_tsv_arg1',
                         'arg1_lookup,scan_grouped') :- !.
+relation_manifest_shape(category_parent, lmdb,
+                        'category_parent_lmdb/manifest.json',
+                        'lmdb_dupsort_btree',
+                        'arg1_lookup,arg1_multi_lookup,scan') :- !.
 relation_manifest_shape(category_parent, _,
                         'category_parent.edn',
                         'edn_rows',
@@ -788,6 +839,19 @@ category_parent_bucket_artifact_line(Child, Line) :-
             Parents0),
     sort(Parents0, Parents),
     atomic_list_concat([Child|Parents], '\t', Line).
+
+benchmark_category_parent_rows_tsv(Content) :-
+    findall(Child-Parent,
+            current_category_parent_fact(Child, Parent),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    maplist(category_parent_row_tsv_line, Pairs, Lines),
+    atomic_list_concat(Lines, '\n', Content).
+benchmark_category_parent_rows_tsv(_, Content) :-
+    benchmark_category_parent_rows_tsv(Content).
+
+category_parent_row_tsv_line(Child-Parent, Line) :-
+    atomic_list_concat([Child, Parent], '\t', Line).
 
 benchmark_root_category_edn(benchmark_data(_, _, _, _, _, Content, _, _), Content).
 
@@ -904,3 +968,73 @@ power_sum_bound(Cat, Root, NegN, WeightSum) :-
          H is Hops + 1,
          W is H ** NegN),
         WeightSum).
+
+maybe_write_category_parent_lmdb_artifact(_DataDir, ParentMode) :-
+    ParentMode \== lmdb,
+    !.
+maybe_write_category_parent_lmdb_artifact(DataDir, lmdb) :-
+    directory_file_path(DataDir, 'category_parent.tsv', TsvPath),
+    directory_file_path(DataDir, 'category_parent_lmdb', ArtifactDir),
+    make_directory_path(ArtifactDir),
+    benchmark_repo_path('examples/lmdb_relation_artifact/Cargo.toml', CargoManifest),
+    process_create(path(cargo),
+                   ['run', '--quiet',
+                    '--manifest-path', CargoManifest,
+                    '--', 'build', 'category_parent/2',
+                    TsvPath, ArtifactDir, '--dupsort'],
+                   [process(PID)]),
+    process_wait(PID, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   throw(error(cargo_lmdb_artifact_build_failed(Status, TsvPath, ArtifactDir), _))
+    ).
+
+maybe_prepare_clojure_lmdb_runtime_support(_OutputDir, ParentMode) :-
+    ParentMode \== lmdb,
+    !.
+maybe_prepare_clojure_lmdb_runtime_support(OutputDir, lmdb) :-
+    absolute_file_name(OutputDir, AbsoluteOutputDir),
+    directory_file_path(AbsoluteOutputDir, 'classes', ClassesDir),
+    directory_file_path(AbsoluteOutputDir, 'lib', LibDir),
+    directory_file_path(AbsoluteOutputDir, '.jni', JniDir),
+    make_directory_path(ClassesDir),
+    make_directory_path(LibDir),
+    make_directory_path(JniDir),
+    lmdb_helper_java_sources(JavaSources),
+    atomic_list_concat(JavaSources, ' ', JavaSourceArgs),
+    format(atom(JavacCmd),
+           'javac -d "~w" -h "~w" ~w',
+           [ClassesDir, JniDir, JavaSourceArgs]),
+    run_shell_command_or_throw(AbsoluteOutputDir, JavacCmd, javac_lmdb_helper_failed),
+    format(atom(JarCmd),
+           'jar --create --file "~w/lmdb-artifact-reader.jar" -C "~w" generated/lmdb',
+           [LibDir, ClassesDir]),
+    run_shell_command_or_throw(AbsoluteOutputDir, JarCmd, jar_lmdb_helper_failed),
+    benchmark_repo_path('examples/scala_lmdb_jni_probe/native/lmdb_artifact_jni.c', NativeSource),
+    format(atom(GccCmd),
+           'JAVAC_REAL=$(readlink -f "$(command -v javac)") && JAVA_HOME_DIR=$(CDPATH= cd -- "$(dirname "$JAVAC_REAL")/.." && pwd) && cat "~w" | gcc -x c -shared -fPIC -include stddef.h -I"$JAVA_HOME_DIR/include" -I"$JAVA_HOME_DIR/include/linux" -I/data/data/com.termux/files/usr/include -L/data/data/com.termux/files/usr/lib -o "~w/liblmdb_artifact_jni.so" - -llmdb',
+           [NativeSource, LibDir]),
+    run_shell_command_or_throw(AbsoluteOutputDir, GccCmd, gcc_lmdb_helper_failed).
+
+lmdb_helper_java_sources(JavaSources) :-
+    maplist(lmdb_helper_java_source_path,
+            [ 'LmdbRow.java',
+              'LmdbArtifactManifest.java',
+              'LmdbArtifactReader.java',
+              'LmdbArtifactJNI.java'
+            ],
+            JavaSources).
+
+lmdb_helper_java_source_path(FileName, QuotedPath) :-
+    benchmark_repo_path('examples/scala_lmdb_jni_probe/src/main/java/generated/lmdb', JavaDir),
+    directory_file_path(JavaDir, FileName, SourcePath),
+    format(atom(QuotedPath), '"~w"', [SourcePath]).
+
+run_shell_command_or_throw(Cwd, Command, ErrorFunctor) :-
+    process_create(path(sh), ['-c', Command], [cwd(Cwd), process(PID)]),
+    process_wait(PID, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   Error =.. [ErrorFunctor, Status, Command],
+        throw(error(Error, _))
+    ).
