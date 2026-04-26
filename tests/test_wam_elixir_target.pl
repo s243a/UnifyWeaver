@@ -753,6 +753,97 @@ test_tier2_aggregate_forkable_types :-
     ;   fail_test(Test, 'emitted forkable predicate does not cover both findall and aggregate_all')
     ).
 
+%% Findall substrate (Phase 1) — exercises the runtime helpers added
+%% per docs/proposals/WAM_ELIXIR_TIER2_FINDALL.md §4. End-to-end findall
+%% execution waits on Phase 2 (begin_aggregate/end_aggregate instruction
+%% lowering) and Phase 3 (integration tests). These are emit-and-grep
+%% checks on the emitted Elixir source.
+
+test_findall_substrate_emits_push_aggregate_frame :-
+    Test = 'Findall substrate: WamRuntime emits push_aggregate_frame/4 with correct CP shape',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def push_aggregate_frame(state, agg_type, value_reg, result_reg)'),
+        % CP must capture aggregate-specific fields.
+        sub_string(S, _, _, _, 'agg_type: agg_type'),
+        sub_string(S, _, _, _, 'agg_value_reg: value_reg'),
+        sub_string(S, _, _, _, 'agg_result_reg: result_reg'),
+        sub_string(S, _, _, _, 'agg_accum: []'),
+        % Plus the standard CP snapshot fields finalise restores.
+        % `cp:` here doubles as the post-finalise continuation — the
+        % proposal §4.1 listed a separate :agg_return_cp field but it
+        % always equalled state.cp at push time, so it was dropped
+        % during implementation. The docstring on the emitted helper
+        % explains the deviation; finalise_aggregate's tail-call uses
+        % `restored.cp.(restored)` (asserted in the finalise test).
+        sub_string(S, _, _, _, 'cp: state.cp'),
+        sub_string(S, _, _, _, 'trail_len: state.trail_len'),
+        sub_string(S, _, _, _, 'heap_len: state.heap_len')
+    ->  pass(Test)
+    ;   fail_test(Test, 'push_aggregate_frame absent or missing required CP fields')
+    ).
+
+test_findall_substrate_emits_aggregate_collect :-
+    Test = 'Findall substrate: WamRuntime emits aggregate_collect/2 (deref + prepend to nearest agg frame)',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def aggregate_collect(state, value_reg)'),
+        % Must deref the value register before capturing.
+        sub_string(S, _, _, _, 'val = deref_var(state, Map.get(state.regs, value_reg))'),
+        % Must prepend (O(1)) to the nearest aggregate frame's accum.
+        sub_string(S, _, _, _, '[val | prior]')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate_collect absent or missing deref/prepend logic')
+    ).
+
+test_findall_substrate_emits_finalise_aggregate :-
+    Test = 'Findall substrate: WamRuntime emits finalise_aggregate/4 covering all aggregator types',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def finalise_aggregate(state, agg_cp, rest_cps, agg_type)'),
+        % Reverses accumulator (we prepend in collect for O(1)).
+        sub_string(S, _, _, _, 'Enum.reverse(agg_cp.agg_accum)'),
+        % All aggregator atoms emitted by compile_aggregate_all/5 must
+        % be handled — see wam_target.pl:712 for the alphabet.
+        sub_string(S, _, _, _, ':collect, :findall, :aggregate_all, :bag'),
+        sub_string(S, _, _, _, ':set -> Enum.uniq'),
+        sub_string(S, _, _, _, ':sum -> Enum.sum'),
+        sub_string(S, _, _, _, ':count -> length'),
+        % :max / :min throw {:fail, state} on empty accumulator
+        % (canonical Prolog semantics — no identity exists).
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)'),
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)'),
+        % Must bind the result into agg_result_reg, restore from
+        % snapshot, and tail-call the restored state.cp (no
+        % separate :agg_return_cp — see push_aggregate_frame test).
+        sub_string(S, _, _, _, 'Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)'),
+        sub_string(S, _, _, _, 'restored.cp.(restored)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'finalise_aggregate absent or missing required aggregator handling')
+    ).
+
+%% Note: aggregate_collect/2 with no aggregate frame on the stack is
+%% a documented safety contract (returns state unchanged). Coverage
+%% deferred to Phase 3 runtime tests, where a fixture state with an
+%% empty CP stack can exercise the contract end-to-end.
+
+test_findall_substrate_backtrack_routes_aggregate_frames :-
+    Test = 'Findall substrate: backtrack/1 dispatches aggregate frames to finalise_aggregate',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        % The dispatcher arm: presence of :agg_type on the popped CP
+        % routes to finalise instead of the ordinary unwind path.
+        sub_string(S, _, _, _, 'case Map.get(cp, :agg_type) do'),
+        sub_string(S, _, _, _, 'nil ->'),
+        sub_string(S, _, _, _, 'backtrack_ordinary(state, cp, rest)'),
+        sub_string(S, _, _, _, 'agg_type ->'),
+        sub_string(S, _, _, _, 'finalise_aggregate(state, cp, rest, agg_type)'),
+        % And the existing ordinary path must still exist as a defp.
+        sub_string(S, _, _, _, 'defp backtrack_ordinary(state, cp, rest)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'backtrack/1 does not dispatch on :agg_type or backtrack_ordinary missing')
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -1062,6 +1153,10 @@ run_tests :-
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
+    test_findall_substrate_emits_push_aggregate_frame,
+    test_findall_substrate_emits_aggregate_collect,
+    test_findall_substrate_emits_finalise_aggregate,
+    test_findall_substrate_backtrack_routes_aggregate_frames,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,
