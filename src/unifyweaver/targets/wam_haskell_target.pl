@@ -2898,7 +2898,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
@@ -3668,52 +3668,94 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %    lmdb_layout(dupsort) — named "main" subdb with MDB_DUPSORT, one
 %                           entry per (key, value) pair (streaming-
 %                           pipeline ingest)
-%    lmdb_cache_mode(memoize) — Phase 2 spelling: shared demand-driven
-%                           IntMap memoisation across all parMap worker
-%                           threads.  See PARALLELISM CAVEAT below.
+%    lmdb_cache_mode(memoize) — DEPRECATED synonym for sharded.  Kept
+%                           for backwards compatibility with PR #1637.
+%                           Internally identical to the sharded mode
+%                           it was renamed to.  See PARALLELISM
+%                           CAVEAT below — the original IntMap-based
+%                           memoize regressed under -N>1; the new
+%                           IOArray-based sharded mode does not.
 %
-%    lmdb_cache_mode(per_hec) — Phase 1 (this option): per-HEC L1 cache.
-%                           Each Haskell thread (HEC under +RTS -N)
-%                           owns its own IntMap with no synchronisation
-%                           on the hot path — zero CAS, zero cross-core
-%                           contention.  Trade-off: cache hits don't
-%                           share across threads, so a key seen by two
-%                           workers pays the LMDB miss twice.  Right
-%                           call when intra-thread reuse dominates
-%                           (most DFS-style workloads).
+%    lmdb_cache_mode(per_hec) — Phase 1 — per-HEC L1 cache (PR #1640).
+%                           Each capability owns its own mutable
+%                           IOArray with no synchronisation on the
+%                           hot path.  Trade-off: cache hits don't
+%                           share across threads, so a key seen by
+%                           two workers pays the LMDB miss twice.
+%                           Right call when intra-thread reuse
+%                           dominates (most DFS-style workloads).
+%
+%    lmdb_cache_mode(sharded) — Phase 2 — shared L2 cache.  A single
+%                           IOArray shared across all HECs.  Lock-
+%                           free racy writes (correct because LMDB
+%                           is read-only).  Cross-HEC sharing without
+%                           atomicModifyIORef contention.  Memory
+%                           budget computed from /proc/meminfo on
+%                           Linux: min(half-available, available -
+%                           500 MB), bounded [1024, 1M] entries.
+%
+%    lmdb_cache_mode(two_level) — Phase 2 — L1 + L2 composed.  Per-
+%                           HEC L1 in front of shared L2.  L1 hits
+%                           skip L2; L2 hits promote to L1; LMDB
+%                           misses fill both.  The workload-portable
+%                           choice: low-overlap workloads mostly hit
+%                           L1, high-overlap workloads benefit from
+%                           cross-HEC sharing via L2.
 %
 %    All cache modes are gated by lmdb_layout(dupsort); ignored
-%    otherwise.  Modes are mutually exclusive — see
-%    docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md for the L2 and
-%    two_level modes planned for Phase 2.
+%    otherwise.  Modes are mutually exclusive; precedence when
+%    multiple flags are set is two_level > sharded > memoize >
+%    per_hec.
 %
-%    PARALLELISM CAVEAT (memoize): under +RTS -N>1 the shared
-%    atomicModifyIORef' write per miss serialises across cores.  On
-%    low-hit-rate workloads this produces a net regression vs the
-%    bare dupsort path (measured 7x slowdown at -N4 on a random-seed
-%    enwiki workload).  Use per_hec instead unless your workload has
-%    confirmed cross-thread cache overlap.
+%    PARALLELISM CAVEAT (legacy memoize): the original IntMap-based
+%    memoize cache (PR #1637) used atomicModifyIORef' on every miss,
+%    which serialised across cores and regressed 7x at -N4 on
+%    low-hit-rate workloads.  The current sharded implementation
+%    uses a lock-free IOArray and does not have this problem.  The
+%    PARALLELISM CAVEAT applies only if you explicitly want the
+%    legacy behaviour.
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
     (   option(lmdb_layout(dupsort), Options)
     ->  Dupsort = true
     ;   Dupsort = false
     ),
-    (   option(lmdb_cache_mode(memoize), Options),
+    % Two-level wins over all single-tier modes; sharded next; then
+    % per_hec; the deprecated memoize is treated like sharded for
+    % the new IOArray implementation (older IntMap is gone).
+    (   option(lmdb_cache_mode(Mode), Options),
+        member(Mode, [two_level, sharded, per_hec, memoize]),
         Dupsort == true
-    ->  CacheMemoize = true
-    ;   CacheMemoize = false
+    ->  ChosenMode = Mode
+    ;   ChosenMode = none
     ),
-    (   option(lmdb_cache_mode(per_hec), Options),
-        Dupsort == true,
-        CacheMemoize == false
+    % Mode → flag mapping for the template:
+    %   two_level  → l1 + l2 + two_level
+    %   sharded    → l2
+    %   memoize    → l2 (deprecated synonym; same impl)
+    %   per_hec    → l1
+    %   none       → no cache
+    (   (ChosenMode == per_hec ; ChosenMode == two_level)
     ->  CacheL1 = true
     ;   CacheL1 = false
     ),
+    (   (ChosenMode == sharded ; ChosenMode == memoize ; ChosenMode == two_level)
+    ->  CacheL2 = true
+    ;   CacheL2 = false
+    ),
+    (   ChosenMode == two_level
+    ->  CacheTwoLevel = true
+    ;   CacheTwoLevel = false
+    ),
+    % Legacy memoize section in the template is not used in Phase 2;
+    % the sharded IOArray implementation lives under lmdb_cache_l2.
+    CacheMemoize   = false,
     render_template(Template,
                     [lmdb_dupsort=Dupsort,
                      lmdb_cache_memoize=CacheMemoize,
-                     lmdb_cache_l1=CacheL1],
+                     lmdb_cache_l1=CacheL1,
+                     lmdb_cache_l2=CacheL2,
+                     lmdb_cache_two_level=CacheTwoLevel],
                     Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)

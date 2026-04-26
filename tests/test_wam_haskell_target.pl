@@ -1374,16 +1374,19 @@ test_b1_lmdb_default_layout_no_cursor_cache :-
     ).
 
 test_b1_lmdb_cache_memoize_emitted :-
-    Test = 'B1: lmdb_cache_mode(memoize) emits memoising EdgeLookup',
+    Test = 'B1: lmdb_cache_mode(memoize) maps to L2 (deprecated synonym)',
     (   compile_wam_runtime_to_haskell(
             [use_lmdb(true),
              lmdb_layout(dupsort),
              lmdb_cache_mode(memoize)], [], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, "LmdbResultCache"),
-        sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+        % Phase 2: memoize is a deprecated synonym for sharded; both
+        % emit L2 (lock-free IOArray cache).  The legacy IntMap-based
+        % memoize code path is gone.
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup")
     ->  pass(Test)
-    ;   fail_test(Test, 'Memoising EdgeLookup not emitted')
+    ;   fail_test(Test, 'L2 EdgeLookup not emitted for memoize mode')
     ).
 
 test_b1_lmdb_cache_memoize_not_emitted_without_dupsort :-
@@ -1391,11 +1394,51 @@ test_b1_lmdb_cache_memoize_not_emitted_without_dupsort :-
     (   compile_wam_runtime_to_haskell(
             [use_lmdb(true), lmdb_cache_mode(memoize)], [], Code),
         atom_string(Code, S),
-        \+ sub_string(S, _, _, _, "LmdbResultCache"),
-        \+ sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
     ->  pass(Test)
     ;   fail_test(Test,
-            'Memoising EdgeLookup unexpectedly emitted without dupsort')
+            'L2 EdgeLookup unexpectedly emitted without dupsort')
+    ).
+
+test_b1_lmdb_cache_sharded_emitted :-
+    Test = 'B1: lmdb_cache_mode(sharded) emits L2 EdgeLookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
+        sub_string(S, _, _, _, "defaultL2Capacity"),
+        sub_string(S, _, _, _, "newL2Cache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 EdgeLookup not emitted for sharded mode')
+    ).
+
+test_b1_lmdb_cache_two_level_emitted :-
+    Test = 'B1: lmdb_cache_mode(two_level) emits both L1 and L2',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(two_level)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbTwoLevelEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'two_level EdgeLookup not emitted')
+    ).
+
+test_b1_lmdb_cache_default_no_l2 :-
+    Test = 'B1: default (no cache_mode) does not emit L2',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 unexpectedly emitted in default mode')
     ).
 
 test_b1_lmdb_dupsort_alone_no_memoize :-
@@ -1438,16 +1481,18 @@ test_b1_lmdb_cache_l1_not_emitted_without_dupsort :-
     ).
 
 test_b1_lmdb_cache_modes_mutually_exclusive :-
-    Test = 'B1: per_hec and memoize are mutually exclusive (memoize wins)',
+    Test = 'B1: cache modes are mutually exclusive (first option wins)',
     (   compile_wam_runtime_to_haskell(
             [use_lmdb(true),
              lmdb_layout(dupsort),
              lmdb_cache_mode(memoize),
              lmdb_cache_mode(per_hec)], [], Code),
         atom_string(Code, S),
-        % memoize takes precedence when both are set; L1 should not
-        % be emitted in that case (keeps Phase 1 single-mode invariant)
-        sub_string(S, _, _, _, "lmdbCachedEdgeLookup"),
+        % memoize is the first option, and it now maps to L2 (sharded);
+        % L1 should not be emitted alongside.  The legacy
+        % lmdbCachedEdgeLookup is gone — Phase 2 unified memoize and
+        % sharded under the IOArray L2 implementation.
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
         \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
     ->  pass(Test)
     ;   fail_test(Test,
@@ -1569,6 +1614,9 @@ run_tests :-
     test_b1_lmdb_cache_l1_emitted,
     test_b1_lmdb_cache_l1_not_emitted_without_dupsort,
     test_b1_lmdb_cache_modes_mutually_exclusive,
+    test_b1_lmdb_cache_sharded_emitted,
+    test_b1_lmdb_cache_two_level_emitted,
+    test_b1_lmdb_cache_default_no_l2,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
