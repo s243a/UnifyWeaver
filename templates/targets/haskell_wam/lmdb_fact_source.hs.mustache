@@ -223,75 +223,99 @@ lmdbCachedEdgeLookup env dbi cursorCache resultCache key = unsafePerformIO $ do
 -- reuse (most DFS-style workloads).  If your workload has heavy
 -- cross-thread overlap, the future L2 / two_level modes will
 -- recover those hits.
+-- Each L1Cache is a fixed-size mutable IOArray indexed by
+-- (key .&. (capacity - 1)) — overwrite-on-collision semantics.  We
+-- store (key, vs) so a hit can verify the stored key matches the
+-- looked-up key (different keys can map to the same slot).  This
+-- replaces a persistent IntMap because profiling on the 1000-seed
+-- enwiki workload showed `IM.insert` consuming 42% of total time —
+-- copy-on-write tree updates allocate ~10 nodes per call.  IOArray
+-- writes are O(1) with no allocation; we trade some hits for far
+-- cheaper writes.
 data L1Cache = L1Cache
-    { l1Map      :: {-# UNPACK #-} !(IORef (IM.IntMap [Int]))
-    , l1Capacity :: {-# UNPACK #-} !Int
+    { l1Arr      :: {-# UNPACK #-} !(IOA.IOArray Int L1Entry)
+    , l1Capacity :: {-# UNPACK #-} !Int  -- must be a power of two
     }
 
--- | Registry mapping each Haskell ThreadId to its own L1Cache.
--- Same Map ThreadId pattern as DupsortCursorCache (PR #1632) — IORef
--- + atomicModifyIORef' rather than MVar so we don't need a new
--- concurrency primitive.  Each thread only ever modifies its own
--- ThreadId entry, so the CAS is uncontended in the steady state.
-type L1Registry = IORef (Map.Map ThreadId L1Cache)
+data L1Entry
+    = L1Empty
+    | L1Entry {-# UNPACK #-} !Int [Int]   -- stored key + values
 
--- | Default L1 capacity per HEC.  At ~80 bytes per IntMap entry
--- this is ~80 KiB per HEC, ~320 KiB at -N4 — negligible vs the
--- LMDB working set.  The user can override via
+-- | Registry of one L1Cache per Haskell capability (HEC).  Indexed
+-- 0..numCapabilities-1.  Pre-allocated at startup via
+-- getNumCapabilities, so the hot-path lookup is a single O(1) array
+-- index — no Map.lookup, no IORef-on-the-registry indirection.
+-- threadCapability tells us which slot is "ours" without any ThreadId
+-- ↔ slot mapping table.
+type L1Registry = A.Array Int L1Cache
+
+-- | Default L1 capacity per HEC.  Must be a power of two so we can
+-- use bit-and instead of mod for the slot index.  4096 entries × ~24
+-- bytes per L1Entry = ~96 KiB per HEC, ~384 KiB at -N4 — negligible
+-- vs the LMDB working set.  The user can override via
 -- lmdb_cache_l1_capacity(N) in the Prolog options if needed.
 defaultL1Capacity :: Int
-defaultL1Capacity = 1024
+defaultL1Capacity = 4096
 
-newL1Registry :: IO L1Registry
-newL1Registry = newIORef Map.empty
+-- | Allocate one L1Cache per capability.  Each cache is a fresh
+-- IOArray of L1Empty entries.  Different capabilities get
+-- independent arrays so per-capability writes never touch each
+-- other's cache lines.
+newL1Registry :: Int -> IO L1Registry
+newL1Registry cap = do
+    n <- getNumCapabilities
+    caches <- mapM (\_ -> do
+                       arr <- IOA.newArray (0, cap - 1) L1Empty
+                       return (L1Cache arr cap))
+                   [0 .. n - 1]
+    return $! A.listArray (0, n - 1) caches
 
--- | Look up or lazily allocate this thread's L1 cache.  First call
--- per thread does an atomicModifyIORef' insert; subsequent calls
--- read lock-free (we never overwrite our own slot once initialised).
-getOrAllocL1 :: L1Registry -> Int -> IO L1Cache
-getOrAllocL1 reg cap = do
+-- | Look up this thread's L1 cache.  Hot-path cost: one myThreadId
+-- + one threadCapability + one array index.  No Map.lookup, no
+-- IORef on the registry, no atomic ops.
+{-# INLINE getL1ForCap #-}
+getL1ForCap :: L1Registry -> IO L1Cache
+getL1ForCap reg = do
     tid <- myThreadId
-    m   <- readIORef reg
-    case Map.lookup tid m of
-      Just c  -> return c
-      Nothing -> do
-        ref <- newIORef IM.empty
-        let c = L1Cache ref cap
-        atomicModifyIORef' reg (\m' -> (Map.insert tid c m', ()))
-        return c
+    (capId, _bound) <- threadCapability tid
+    return $! reg A.! capId
 
--- | L1 lookup: thread-local IORef read, no synchronisation.
+-- | L1 lookup: O(1) array read with collision check.  Different
+-- keys can map to the same slot (key .&. mask); a hit requires the
+-- stored key to match.  Returns Nothing on empty slot or key mismatch.
+{-# INLINE l1Lookup #-}
 l1Lookup :: L1Cache -> Int -> IO (Maybe [Int])
-l1Lookup (L1Cache ref _) key = do
-    m <- readIORef ref
-    return $! IM.lookup key m
+l1Lookup (L1Cache arr cap) key = do
+    let !idx = key .&. (cap - 1)
+    e <- IOA.readArray arr idx
+    case e of
+      L1Entry k vs | k == key -> return (Just vs)
+      _                       -> return Nothing
 
--- | L1 insert with capacity-based overwrite.  When the cache is at
--- capacity we drop one entry (the smallest key — cheap, deterministic
--- per-thread; LRU is overkill at this scale and harder under a
--- non-atomic IORef).  This bounds memory at l1Capacity entries.
+-- | L1 insert: O(1) array write with overwrite-on-collision.  No
+-- allocation per write (just slot overwrite); replaces the previous
+-- IntMap.insert which allocated ~10 tree nodes per call (42% of
+-- total runtime in the original profile).
+{-# INLINE l1Insert #-}
 l1Insert :: L1Cache -> Int -> [Int] -> IO ()
-l1Insert (L1Cache ref cap) key vs = do
-    m <- readIORef ref
-    let !m' | IM.size m >= cap = IM.insert key vs (evictOneL1 m)
-            | otherwise        = IM.insert key vs m
-    writeIORef ref m'
-
--- | Evict one entry.  Drop the smallest key — IM.deleteMin is O(log n)
--- and avoids the hot-path cost of tracking access order for LRU.
-evictOneL1 :: IM.IntMap [Int] -> IM.IntMap [Int]
-evictOneL1 m = case IM.minViewWithKey m of
-    Just (_, m') -> m'
-    Nothing      -> m  -- impossible if size >= cap >= 1
+l1Insert (L1Cache arr cap) key vs = do
+    let !idx = key .&. (cap - 1)
+    IOA.writeArray arr idx (L1Entry key vs)
 
 -- | L1-wrapped EdgeLookup.  On hit, returns the cached neighbours
 -- with no FFI or synchronisation.  On miss, falls through to the
 -- per-thread-cursor dupsort lookup and populates the L1 entry.
+--
+-- Hot-path cost: getL1ForCap (myThreadId + threadCapability + array
+-- index) + l1Lookup (readIORef + IM.lookup).  No Map.lookup, no
+-- atomicModifyIORef on the registry.  The per-capability cache is
+-- mutated only by its own HEC thread, so writeIORef is safe.
+{-# INLINE lmdbL1EdgeLookup #-}
 lmdbL1EdgeLookup
-    :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> L1Registry -> Int
+    :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> L1Registry
     -> EdgeLookup
-lmdbL1EdgeLookup env dbi cursorCache l1reg cap key = unsafePerformIO $ do
-    l1 <- getOrAllocL1 l1reg cap
+lmdbL1EdgeLookup env dbi cursorCache l1reg key = unsafePerformIO $ do
+    l1 <- getL1ForCap l1reg
     h  <- l1Lookup l1 key
     case h of
       Just vs -> return vs
@@ -320,10 +344,11 @@ openLmdbEdgeLookup dbPath _dbName = do
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
 {{#lmdb_cache_l1}}
-    -- Per-HEC L1 cache; each Haskell thread owns its own IntMap
-    -- with no synchronisation on the hot path.
-    l1reg <- newL1Registry
-    return (lmdbL1EdgeLookup env dbi cursorCache l1reg defaultL1Capacity)
+    -- Per-HEC L1 cache; each capability owns its own IntMap with
+    -- no synchronisation on the hot path.  Pre-allocated for
+    -- numCapabilities slots so the lookup is O(1) array indexing.
+    l1reg <- newL1Registry defaultL1Capacity
+    return (lmdbL1EdgeLookup env dbi cursorCache l1reg)
 {{/lmdb_cache_l1}}
 {{^lmdb_cache_l1}}
     return (lmdbRawEdgeLookup env dbi cursorCache)
@@ -376,9 +401,9 @@ lmdbFactSource dbPath _dbName = do
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
 {{#lmdb_cache_l1}}
-    -- Per-HEC L1 cache; thread-local IORefs, no synchronisation.
-    l1reg <- newL1Registry
-    let lookup' = lmdbL1EdgeLookup env dbi cursorCache l1reg defaultL1Capacity
+    -- Per-capability L1 cache; one IORef per HEC, no synchronisation.
+    l1reg <- newL1Registry defaultL1Capacity
+    let lookup' = lmdbL1EdgeLookup env dbi cursorCache l1reg
 {{/lmdb_cache_l1}}
 {{^lmdb_cache_l1}}
     let lookup' = lmdbRawEdgeLookup env dbi cursorCache

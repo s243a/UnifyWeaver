@@ -2898,7 +2898,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
