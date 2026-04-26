@@ -3668,13 +3668,32 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %    lmdb_layout(dupsort) — named "main" subdb with MDB_DUPSORT, one
 %                           entry per (key, value) pair (streaming-
 %                           pipeline ingest)
+%    lmdb_cache_mode(memoize) — opt-in: wrap the dupsort EdgeLookup with
+%                           a demand-driven IntMap memoisation layer.
+%                           Each (key, [neighbours]) pair is fetched
+%                           from LMDB at most once and shared across
+%                           all parMap worker threads.  Pays off on
+%                           workloads with subgraph overlap (deeper
+%                           paths, shared root regions); on random
+%                           shallow seeds the cache infrastructure
+%                           overhead can exceed the FFI savings.
+%                           Only meaningful when lmdb_layout(dupsort);
+%                           ignored otherwise.
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
     (   option(lmdb_layout(dupsort), Options)
     ->  Dupsort = true
     ;   Dupsort = false
     ),
-    render_template(Template, [lmdb_dupsort=Dupsort], Code).
+    (   option(lmdb_cache_mode(memoize), Options),
+        Dupsort == true
+    ->  CacheMemoize = true
+    ;   CacheMemoize = false
+    ),
+    render_template(Template,
+                    [lmdb_dupsort=Dupsort,
+                     lmdb_cache_memoize=CacheMemoize],
+                    Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
