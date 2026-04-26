@@ -1813,21 +1813,23 @@ compile_llvm_step_case(CaseCode) :-
 % --- Head Unification Instructions ---
 
 wam_llvm_case('get_constant',
-'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx
+'  ; op1 = constant value (packed), op2 = (tag << 16) | reg_idx.
+  ; Deref the register so a put_variable-aliased Ref reads as its
+  ; underlying heap-stored value (Unbound for fresh vars). Bind via
+  ; wam_bind_reg so the shared heap cell — and any other Y/A registers
+  ; aliased to it — updates atomically.
   %gc.op2_32 = trunc i64 %op2 to i32
   %gc.reg_idx = and i32 %gc.op2_32, 65535
   %gc.tag = lshr i32 %gc.op2_32, 16
-  %gc.current = call %Value @wam_get_reg(%WamState* %vm, i32 %gc.reg_idx)
+  %gc.current = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gc.reg_idx)
   %gc.is_unb = call i1 @value_is_unbound(%Value %gc.current)
   br i1 %gc.is_unb, label %gc.bind, label %gc.check_eq
 
 gc.bind:
-  ; Unbound: bind via wam_bind_reg so Ref-aliased regs update the
-  ; shared heap cell. wam_bind_reg also trails the heap entry.
   call void @wam_trail_binding(%WamState* %vm, i32 %gc.reg_idx)
   %gc.const_val = insertvalue %Value undef, i32 %gc.tag, 0
   %gc.const_v2 = insertvalue %Value %gc.const_val, i64 %op1, 1
-  call void @wam_set_reg(%WamState* %vm, i32 %gc.reg_idx, %Value %gc.const_v2)
+  call void @wam_bind_reg(%WamState* %vm, i32 %gc.reg_idx, %Value %gc.const_v2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -1860,14 +1862,14 @@ wam_llvm_case('get_value',
   ; is_unbound check; bind via wam_bind_reg to propagate through Refs.
   %gval.ai = trunc i64 %op2 to i32
   %gval.xn = trunc i64 %op1 to i32
-  %gval.va = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.ai)
-  %gval.vx = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.xn)
+  %gval.va = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gval.ai)
+  %gval.vx = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gval.xn)
   %gval.a_unb = call i1 @value_is_unbound(%Value %gval.va)
   br i1 %gval.a_unb, label %gval.bind_a, label %gval.check_x
 
 gval.bind_a:
   call void @wam_trail_binding(%WamState* %vm, i32 %gval.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.vx)
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.vx)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -1877,7 +1879,7 @@ gval.check_x:
 
 gval.bind_x:
   call void @wam_trail_binding(%WamState* %vm, i32 %gval.xn)
-  call void @wam_set_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.va)
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.va)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -2067,16 +2069,22 @@ wam_llvm_case('put_constant',
 
 wam_llvm_case('put_variable',
 '  ; op1 = Xn index, op2 = Ai index
+  ; Allocate a fresh heap cell holding Unbound, then place Ref{addr}
+  ; into BOTH Xn and Ai so they alias through the heap. Subsequent
+  ; binding builtins (functor/3, arg/3, is/2, =/2, get_value) write
+  ; through the Ref via wam_bind_reg, and both registers see the bound
+  ; value via deref. Without this aliasing, binding Ai leaves Xn
+  ; stuck on a stale Unbound sentinel — the bug that caused
+  ; sum_ints / fib / term_depth to compute wrong results.
   %pv.xn = trunc i64 %op1 to i32
   %pv.ai = trunc i64 %op2 to i32
-  ; Create unbound variable
-  %pv.pc = call i32 @wam_get_pc(%WamState* %vm)
-  %pv.pc_ext = zext i32 %pv.pc to i64
-  %pv.var = call %Value @value_unbound(i8* null)
+  %pv.unb = call %Value @value_unbound(i8* null)
+  %pv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pv.unb)
+  %pv.ref = call %Value @value_ref(i32 %pv.addr)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.xn)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.ai)
-  call void @wam_set_reg(%WamState* %vm, i32 %pv.xn, %Value %pv.var)
-  call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.var)
+  call void @wam_set_reg(%WamState* %vm, i32 %pv.xn, %Value %pv.ref)
+  call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -2691,12 +2699,26 @@ unwind_one:
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %te = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %new_ts
-  ; Restore old value to register
   %reg_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 0
-  %reg_idx = load i32, i32* %reg_ptr
+  %enc_idx = load i32, i32* %reg_ptr
   %old_val_ptr = getelementptr %TrailEntry, %TrailEntry* %te, i32 0, i32 1
   %old_val = load %Value, %Value* %old_val_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 %reg_idx, %Value %old_val)
+  ; Dispatch on the high-bit sentinel set by wam_trail_heap_binding
+  ; (0x40000000): if set, the entry encodes a heap address; otherwise
+  ; it is a plain register index. Without this dispatch, heap-trail
+  ; entries get treated as register indices, corrupting memory beyond
+  ; the regs array.
+  %heap_mask = and i32 %enc_idx, 1073741824
+  %is_heap = icmp ne i32 %heap_mask, 0
+  br i1 %is_heap, label %unwind_heap, label %unwind_reg
+
+unwind_heap:
+  %heap_addr = and i32 %enc_idx, 1073741823
+  call void @wam_heap_set(%WamState* %vm, i32 %heap_addr, %Value %old_val)
+  br label %loop
+
+unwind_reg:
+  call void @wam_set_reg(%WamState* %vm, i32 %enc_idx, %Value %old_val)
   br label %loop
 
 done:
@@ -2747,74 +2769,76 @@ entry:
   ]
 
 builtin_is:
-  ; A1 is result, A2 is expression. Reads dereffed; bind via bind_reg.
+  ; A1 is result, A2 is expression. Reads dereffed via eval_arith;
+  ; deref A1 to detect Ref-aliased unbound; bind via wam_bind_reg so
+  ; aliased registers update through the shared heap cell.
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
   %is.result = call i64 @eval_arith(%WamState* %vm, %Value %is.a2)
   %is.result_val = call %Value @value_integer(i64 %is.result)
-  %is.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %is.a1_unb = call i1 @value_is_unbound(%Value %is.a1)
+  %is.a1d = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %is.a1_unb = call i1 @value_is_unbound(%Value %is.a1d)
   br i1 %is.a1_unb, label %is.do_bind, label %is.check_eq
 
 is.do_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %is.result_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %is.result_val)
   ret i1 true
 
 is.check_eq:
-  %is.eq = call i1 @value_equals(%Value %is.a1, %Value %is.result_val)
+  %is.eq = call i1 @value_equals(%Value %is.a1d, %Value %is.result_val)
   ret i1 %is.eq
 
 builtin_gt:
-  %gt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %gt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %gt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %gt.v1 = call i64 @value_payload(%Value %gt.a1)
   %gt.v2 = call i64 @value_payload(%Value %gt.a2)
   %gt.r = icmp sgt i64 %gt.v1, %gt.v2
   ret i1 %gt.r
 
 builtin_lt:
-  %lt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %lt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %lt.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %lt.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %lt.v1 = call i64 @value_payload(%Value %lt.a1)
   %lt.v2 = call i64 @value_payload(%Value %lt.a2)
   %lt.r = icmp slt i64 %lt.v1, %lt.v2
   ret i1 %lt.r
 
 builtin_ge:
-  %ge.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %ge.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ge.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ge.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %ge.v1 = call i64 @value_payload(%Value %ge.a1)
   %ge.v2 = call i64 @value_payload(%Value %ge.a2)
   %ge.r = icmp sge i64 %ge.v1, %ge.v2
   ret i1 %ge.r
 
 builtin_le:
-  %le.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %le.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %le.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %le.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %le.v1 = call i64 @value_payload(%Value %le.a1)
   %le.v2 = call i64 @value_payload(%Value %le.a2)
   %le.r = icmp sle i64 %le.v1, %le.v2
   ret i1 %le.r
 
 builtin_arith_eq:
-  %aeq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %aeq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %aeq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %aeq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %aeq.v1 = call i64 @value_payload(%Value %aeq.a1)
   %aeq.v2 = call i64 @value_payload(%Value %aeq.a2)
   %aeq.r = icmp eq i64 %aeq.v1, %aeq.v2
   ret i1 %aeq.r
 
 builtin_arith_ne:
-  %ane.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %ane.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ane.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ane.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %ane.v1 = call i64 @value_payload(%Value %ane.a1)
   %ane.v2 = call i64 @value_payload(%Value %ane.a2)
   %ane.r = icmp ne i64 %ane.v1, %ane.v2
   ret i1 %ane.r
 
 builtin_eq:
-  %eq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %eq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %eq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %eq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %eq.r = call i1 @value_equals(%Value %eq.a1, %Value %eq.a2)
   ret i1 %eq.r
 
@@ -2831,37 +2855,37 @@ builtin_cut:
   ret i1 true
 
 builtin_integer_check:
-  %ic.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ic.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ic.tag = call i32 @value_tag(%Value %ic.a1)
   %ic.r = icmp eq i32 %ic.tag, 1
   ret i1 %ic.r
 
 builtin_var:
-  %var.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %var.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %var.r = call i1 @value_is_unbound(%Value %var.a1)
   ret i1 %var.r
 
 builtin_nonvar:
-  %nv.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nv.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %nv.r = call i1 @value_is_unbound(%Value %nv.a1)
   %nv.nr = xor i1 %nv.r, true
   ret i1 %nv.nr
 
 builtin_atom_check:
-  %ac.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ac.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ac.tag = call i32 @value_tag(%Value %ac.a1)
   %ac.r = icmp eq i32 %ac.tag, 0
   ret i1 %ac.r
 
 builtin_float_check:
-  %fc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %fc.tag = call i32 @value_tag(%Value %fc.a1)
   %fc.r = icmp eq i32 %fc.tag, 2
   ret i1 %fc.r
 
 builtin_number_check:
   ; number/1: true if integer (tag=1) or float (tag=2)
-  %nc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %nc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %nc.tag = call i32 @value_tag(%Value %nc.a1)
   %nc.is_int = icmp eq i32 %nc.tag, 1
   %nc.is_flt = icmp eq i32 %nc.tag, 2
@@ -2869,29 +2893,29 @@ builtin_number_check:
   ret i1 %nc.r
 
 builtin_compound_check:
-  %cc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %cc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %cc.tag = call i32 @value_tag(%Value %cc.a1)
   %cc.r = icmp eq i32 %cc.tag, 3
   ret i1 %cc.r
 
 builtin_is_list_check:
   ; is_list/1: true if list (tag=4) or the empty list atom []
-  %ilc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ilc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ilc.tag = call i32 @value_tag(%Value %ilc.a1)
   %ilc.r = icmp eq i32 %ilc.tag, 4
   ret i1 %ilc.r
 
 builtin_neq:
   ; \\==/2: not structurally equal
-  %neq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %neq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %neq.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %neq.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %neq.eq = call i1 @value_equals(%Value %neq.a1, %Value %neq.a2)
   %neq.r = xor i1 %neq.eq, true
   ret i1 %neq.r
 
 builtin_write:
   ; write/1: print A1 payload as integer via printf. No-op on WASM.
-  %wr.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %wr.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %wr.tag = call i32 @value_tag(%Value %wr.a1)
   %wr.pay = call i64 @value_payload(%Value %wr.a1)
   %wr.is_int = icmp eq i32 %wr.tag, 1
@@ -2914,7 +2938,7 @@ builtin_nl:
 
 builtin_succ:
   ; succ/2: A2 is A1 + 1 (or A1 is A2 - 1 if A1 unbound)
-  %sc.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %sc.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %sc.a1_unb = call i1 @value_is_unbound(%Value %sc.a1)
   br i1 %sc.a1_unb, label %sc.reverse, label %sc.forward
 
@@ -2922,13 +2946,13 @@ sc.forward:
   %sc.v1 = call i64 @value_payload(%Value %sc.a1)
   %sc.v2 = add i64 %sc.v1, 1
   %sc.r2 = call %Value @value_integer(i64 %sc.v2)
-  %sc.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sc.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %sc.a2_unb = call i1 @value_is_unbound(%Value %sc.a2)
   br i1 %sc.a2_unb, label %sc.bind2, label %sc.check2
 
 sc.bind2:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %sc.r2)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %sc.r2)
   ret i1 true
 
 sc.check2:
@@ -2936,29 +2960,29 @@ sc.check2:
   ret i1 %sc.eq2
 
 sc.reverse:
-  %sc.a2r = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %sc.a2r = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %sc.v2r = call i64 @value_payload(%Value %sc.a2r)
   %sc.v1r = sub i64 %sc.v2r, 1
   %sc.r1 = call %Value @value_integer(i64 %sc.v1r)
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %sc.r1)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %sc.r1)
   ret i1 true
 
 builtin_plus:
   ; plus/3: A3 is A1 + A2 (or reverse if A3 bound)
-  %pl.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %pl.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %pl.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %pl.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %pl.v1 = call i64 @value_payload(%Value %pl.a1)
   %pl.v2 = call i64 @value_payload(%Value %pl.a2)
   %pl.sum = add i64 %pl.v1, %pl.v2
   %pl.r = call %Value @value_integer(i64 %pl.sum)
-  %pl.a3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %pl.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
   %pl.a3_unb = call i1 @value_is_unbound(%Value %pl.a3)
   br i1 %pl.a3_unb, label %pl.bind, label %pl.check
 
 pl.bind:
   call void @wam_trail_binding(%WamState* %vm, i32 2)
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %pl.r)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %pl.r)
   ret i1 true
 
 pl.check:
@@ -2967,16 +2991,18 @@ pl.check:
 
 builtin_unify:
   ; =/2: unify A1 with A2. If either is unbound, bind it to the other.
-  ; If both are bound, check structural equality (value_equals walks
-  ; compounds recursively).
-  %uf.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %uf.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  ; Use deref-reads so Ref-aliased operands resolve to their heap-stored
+  ; value before the unbound check, and route binding through
+  ; wam_bind_reg so the heap cell (not just the local reg slot) is
+  ; updated — keeping put_variable-aliased Y/A regs in sync.
+  %uf.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %uf.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %uf.a1_unb = call i1 @value_is_unbound(%Value %uf.a1)
   br i1 %uf.a1_unb, label %uf.bind_a1, label %uf.check_a2
 
 uf.bind_a1:
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %uf.a2)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %uf.a2)
   ret i1 true
 
 uf.check_a2:
@@ -2985,7 +3011,7 @@ uf.check_a2:
 
 uf.bind_a2:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %uf.a1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %uf.a1)
   ret i1 true
 
 uf.both_bound:
@@ -2995,8 +3021,8 @@ uf.both_bound:
 builtin_not_unify:
   ; not-unify: succeeds if A1 and A2 do NOT unify.
   ; Simplified: fails if either is unbound (would unify), checks inequality if both bound.
-  %nu.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
-  %nu.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %nu.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %nu.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %nu.a1_unb = call i1 @value_is_unbound(%Value %nu.a1)
   br i1 %nu.a1_unb, label %nu.fail, label %nu.check_a2
 
@@ -3020,7 +3046,7 @@ builtin_functor:
   ;   If A1 is an Atom (tag 0): bind A2 = A1, A3 = Integer(0).
   ;   If A1 is an Integer (tag 1): bind A2 = A1, A3 = Integer(0).
   ;   Otherwise (unbound / compound-construct mode / list): fail.
-  %fn.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %fn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %fn.a1_tag = call i32 @value_tag(%Value %fn.a1)
   switch i32 %fn.a1_tag, label %fn.fail [
     i32 0, label %fn.atomic
@@ -3046,14 +3072,16 @@ fn.atomic:
   br label %fn.bind_atomic
 
 fn.bind_atomic:
-  ; Bind A2 = A1 (as atomic name), A3 = 0
-  %fn.atm.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  ; Bind A2 = A1 (as atomic name), A3 = 0. Use deref+wam_bind_reg so
+  ; put_variable-aliased Y/A registers update through their shared
+  ; heap cell, not just the local register slot.
+  %fn.atm.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %fn.atm.a2_unb = call i1 @value_is_unbound(%Value %fn.atm.a2)
   br i1 %fn.atm.a2_unb, label %fn.atm.a2_bind, label %fn.atm.a2_check
 
 fn.atm.a2_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.a1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %fn.a1)
   br label %fn.atm.a3
 
 fn.atm.a2_check:
@@ -3061,13 +3089,13 @@ fn.atm.a2_check:
   br i1 %fn.atm.a2_eq, label %fn.atm.a3, label %fn.fail
 
 fn.atm.a3:
-  %fn.atm.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.atm.a3v = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
   %fn.atm.a3_unb = call i1 @value_is_unbound(%Value %fn.atm.a3v)
   br i1 %fn.atm.a3_unb, label %fn.atm.a3_bind, label %fn.atm.a3_check
 
 fn.atm.a3_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 2)
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar0_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %fn.ar0_val)
   ret i1 true
 
 fn.atm.a3_check:
@@ -3076,13 +3104,13 @@ fn.atm.a3_check:
 
 fn.bind_both:
   ; Bind A2 = Atom(functor_name_ptr)
-  %fn.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %fn.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %fn.a2_unb = call i1 @value_is_unbound(%Value %fn.a2)
   br i1 %fn.a2_unb, label %fn.a2_bind, label %fn.a2_check
 
 fn.a2_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %fn.name_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %fn.name_val)
   br label %fn.a3
 
 fn.a2_check:
@@ -3090,13 +3118,13 @@ fn.a2_check:
   br i1 %fn.a2_eq, label %fn.a3, label %fn.fail
 
 fn.a3:
-  %fn.a3v = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  %fn.a3v = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
   %fn.a3_unb = call i1 @value_is_unbound(%Value %fn.a3v)
   br i1 %fn.a3_unb, label %fn.a3_bind, label %fn.a3_check
 
 fn.a3_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 2)
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %fn.ar_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %fn.ar_val)
   ret i1 true
 
 fn.a3_check:
@@ -3110,13 +3138,13 @@ builtin_arg:
   ; arg/3 — A1 = N (Integer, 1-based), A2 = Compound, A3 = Arg.
   ; Extracts args[N-1] and unifies with A3. Fails if A1 is not Integer,
   ; A2 is not Compound, or N is out of range.
-  %ag.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ag.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ag.a1_tag = call i32 @value_tag(%Value %ag.a1)
   %ag.a1_is_int = icmp eq i32 %ag.a1_tag, 1
   br i1 %ag.a1_is_int, label %ag.check_a2, label %ag.fail
 
 ag.check_a2:
-  %ag.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ag.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %ag.a2_tag = call i32 @value_tag(%Value %ag.a2)
   %ag.a2_is_cp = icmp eq i32 %ag.a2_tag, 3
   br i1 %ag.a2_is_cp, label %ag.extract, label %ag.fail
@@ -3139,14 +3167,16 @@ ag.load:
   %ag.idx = sub i32 %ag.n, 1
   %ag.arg_ptr = getelementptr %Value, %Value* %ag.args, i32 %ag.idx
   %ag.arg_val = load %Value, %Value* %ag.arg_ptr
-  ; Unify A3 with args[N-1]
-  %ag.a3 = call %Value @wam_get_reg(%WamState* %vm, i32 2)
+  ; Unify A3 with args[N-1]. Deref first so a put_variable-aliased A3
+  ; reads as Unbound (its heap cell), and bind via wam_bind_reg so the
+  ; heap cell — which the aliased Y-reg also Refs — gets the value.
+  %ag.a3 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
   %ag.a3_unb = call i1 @value_is_unbound(%Value %ag.a3)
   br i1 %ag.a3_unb, label %ag.a3_bind, label %ag.a3_check
 
 ag.a3_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 2)
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %ag.arg_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %ag.arg_val)
   ret i1 true
 
 ag.a3_check:
@@ -3169,7 +3199,7 @@ builtin_univ:
   ; [head, tail] }. Empty list = Atom value for "[]". Each cons lives
   ; in the arena (same allocator as put_structure) so @wam_cleanup
   ; reclaims them on backtrack/return.
-  %u.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %u.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %u.a1_tag = call i32 @value_tag(%Value %u.a1)
   switch i32 %u.a1_tag, label %u.fail [
     i32 0, label %u.setup_atomic
@@ -3271,13 +3301,13 @@ u.loop_continue:
   br label %u.loop_body
 
 u.bind_a2:
-  %u.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %u.a2_unb = call i1 @value_is_unbound(%Value %u.a2)
   br i1 %u.a2_unb, label %u.a2_bind, label %u.a2_check
 
 u.a2_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %u.cons_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %u.cons_val)
   ret i1 true
 
 u.a2_check:
@@ -3300,7 +3330,7 @@ u.compose:
   ;   - Single element list [Integer] / [Float] → bind A1 to that value.
   ;   - Otherwise (>=2 elements): element[0] must be an Atom; build
   ;     a compound with that functor and arity = length - 1.
-  %u.c.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %u.c.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %u.c.a2_tag = call i32 @value_tag(%Value %u.c.a2)
   %u.c.a2_is_cp = icmp eq i32 %u.c.a2_tag, 3
   br i1 %u.c.a2_is_cp, label %u.c.walk_init, label %u.fail
@@ -3444,16 +3474,19 @@ u.c.bind_compound:
 builtin_copy_term:
   ; copy_term/2 — A1 = source term, A2 = destination (typically unbound).
   ; Calls @wam_copy_term_value to produce a fresh deep copy from the
-  ; arena, then unifies A2 with the result.
-  %ct.src = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  ; arena, then unifies A2 with the result. Deref both regs so any
+  ; put_variable-aliased Ref reads through to the heap-stored value,
+  ; and write the copy back via wam_bind_reg so aliased Y/A registers
+  ; both observe the new term.
+  %ct.src = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %ct.copy = call %Value @wam_copy_term_value(%WamState* %vm, %Value %ct.src)
-  %ct.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %ct.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
   %ct.a2_unb = call i1 @value_is_unbound(%Value %ct.a2)
   br i1 %ct.a2_unb, label %ct.a2_bind, label %ct.a2_check
 
 ct.a2_bind:
   call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %ct.copy)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %ct.copy)
   ret i1 true
 
 ct.a2_check:
@@ -3469,8 +3502,14 @@ compile_eval_arith_to_llvm(Code) :-
 ; Takes a Value, returns the integer payload.
 ; For compound ops (tag=3), extracts functor and recursively evaluates args.
 ; For register refs (tag=6 unbound with name starting A/X), dereferences.
-define i64 @eval_arith(%WamState* %vm, %Value %expr) {
+define i64 @eval_arith(%WamState* %vm, %Value %expr_raw) {
 entry:
+  ; Follow Ref chains so put_variable-aliased operands resolve to their
+  ; heap-stored value before we dispatch on tag. Without this, a Ref
+  ; payload (the heap address) gets returned via the `fail` path and
+  ; arithmetic computes garbage for any operand that came through a
+  ; put_variable + bind site.
+  %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
   %tag = call i32 @value_tag(%Value %expr)
   switch i32 %tag, label %fail [
     i32 1, label %return_int

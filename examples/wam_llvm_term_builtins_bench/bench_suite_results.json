@@ -1,19 +1,19 @@
 {
   "engine": "wam-llvm-native-aarch64",
-  "iterations": 10000,
+  "iterations": 1000,
   "results": [
-    {"workload": "bench_true", "ns_per_call": 10963.41, "ok": true},
-    {"workload": "bench_is_arith", "ns_per_call": 21657.48, "ok": true},
-    {"workload": "bench_unify", "ns_per_call": 23810.62, "ok": true},
-    {"workload": "bench_functor_read", "ns_per_call": 24618.52, "ok": true},
-    {"workload": "bench_arg_read", "ns_per_call": 24440.21, "ok": true},
-    {"workload": "bench_univ_decomp", "ns_per_call": 20878.68, "ok": true},
-    {"workload": "bench_copy_flat", "ns_per_call": 22329.18, "ok": true},
-    {"workload": "bench_copy_nested", "ns_per_call": 22774.69, "ok": true},
-    {"workload": "bench_sum_small", "ns_per_call": 28124.76, "ok": false},
-    {"workload": "bench_sum_medium", "ns_per_call": 25811.35, "ok": false},
-    {"workload": "bench_sum_big", "ns_per_call": 30875.29, "ok": false},
-    {"workload": "bench_term_depth", "ns_per_call": 27007.36, "ok": false},
-    {"workload": "bench_fib10", "ns_per_call": 25656.40, "ok": false}
+    {"workload": "bench_true", "ns_per_call": 6705.94, "ok": true},
+    {"workload": "bench_is_arith", "ns_per_call": 12111.88, "ok": true},
+    {"workload": "bench_unify", "ns_per_call": 10445.00, "ok": true},
+    {"workload": "bench_functor_read", "ns_per_call": 9005.10, "ok": true},
+    {"workload": "bench_arg_read", "ns_per_call": 8807.19, "ok": true},
+    {"workload": "bench_univ_decomp", "ns_per_call": 10819.84, "ok": true},
+    {"workload": "bench_copy_flat", "ns_per_call": 9150.78, "ok": true},
+    {"workload": "bench_copy_nested", "ns_per_call": 9653.12, "ok": true},
+    {"workload": "bench_sum_small", "ns_per_call": 12189.17, "ok": true},
+    {"workload": "bench_sum_medium", "ns_per_call": 10743.70, "ok": false},
+    {"workload": "bench_sum_big", "ns_per_call": 10659.32, "ok": false},
+    {"workload": "bench_term_depth", "ns_per_call": 10108.49, "ok": false},
+    {"workload": "bench_fib10", "ns_per_call": 391580.31, "ok": true}
   ]
 }

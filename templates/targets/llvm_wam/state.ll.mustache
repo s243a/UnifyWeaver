@@ -34,15 +34,19 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
   store i32 256, i32* %sc_ptr
 
-  ; Allocate heap (initial capacity 4096)
-  %heap_mem = call i8* @malloc(i64 65536)  ; 4096 * sizeof(Value)
+  ; Allocate heap (initial capacity 65536). Bumped from 4096 to give
+  ; the Ref-based put_variable headroom: each fresh variable consumes a
+  ; heap cell, and recursive predicates can push thousands per
+  ; invocation. No bounds check in wam_heap_push yet, so growing the
+  ; cap pre-emptively beats a silent overrun.
+  %heap_mem = call i8* @malloc(i64 1048576)  ; 65536 * sizeof(Value)
   %heap_typed = bitcast i8* %heap_mem to %Value*
   %hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   store %Value* %heap_typed, %Value** %hp_ptr
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   store i32 0, i32* %hs_ptr
   %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
-  store i32 4096, i32* %hc_ptr
+  store i32 65536, i32* %hc_ptr
 
   ; Allocate trail (initial capacity 16384 entries, ~384 KB).
   ; Previously 256; increased because the Ref-based put_variable
@@ -277,10 +281,24 @@ define void @wam_trail_binding(%WamState* %vm, i32 %reg_idx) {
   ret void
 }
 
-; Push value onto heap, return address
+; Push value onto heap, return address. Aborts via exit(2) on overflow
+; (the alternative is silent buffer overrun and a confusing later
+; segfault — make it loud while heap-grow remains TODO).
 define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
+entry:
   %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
   %hs = load i32, i32* %hs_ptr
+  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
+  %hc = load i32, i32* %hc_ptr
+  %ovf = icmp sge i32 %hs, %hc
+  br i1 %ovf, label %abort, label %store_it
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_oom, i32 0, i32 0), i32 %hs, i32 %hc)
+  call void @exit(i32 2)
+  unreachable
+
+store_it:
   %heap_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   %heap_arr = load %Value*, %Value** %heap_arr_ptr
   %slot = getelementptr %Value, %Value* %heap_arr, i32 %hs
@@ -289,6 +307,9 @@ define i32 @wam_heap_push(%WamState* %vm, %Value %val) {
   store i32 %new_hs, i32* %hs_ptr
   ret i32 %hs
 }
+
+@.fmt_heap_oom = private constant [41 x i8] c"FATAL: WAM heap overflow at %d (cap=%d)\0A\00"
+declare void @exit(i32)
 
 ; Load / store a heap slot by absolute index. Used by the Ref-aware
 ; helpers (@wam_deref_value, @wam_bind_reg) to read/write heap cells
