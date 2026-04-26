@@ -827,6 +827,96 @@ test_findall_substrate_emits_finalise_aggregate :-
 %% deferred to Phase 3 runtime tests, where a fixture state with an
 %% empty CP stack can exercise the contract end-to-end.
 
+%% Findall instructions (Phase 2) — exercises the parser entries and
+%% wam_elixir_lower_instr/6 clauses for begin_aggregate / end_aggregate
+%% per docs/proposals/WAM_ELIXIR_TIER2_FINDALL.md §4.2 + §4.3.
+
+test_findall_instr_parser_begin_aggregate :-
+    Test = 'Findall instr: instr_from_parts parses `begin_aggregate sum, A1, A3`',
+    (   wam_elixir_lowered_emitter:instr_from_parts(
+            ["begin_aggregate", "sum", "A1", "A3"],
+            begin_aggregate("sum", "A1", "A3"))
+    ->  pass(Test)
+    ;   fail_test(Test, 'parser did not match begin_aggregate 4-element form')
+    ).
+
+test_findall_instr_parser_end_aggregate :-
+    Test = 'Findall instr: instr_from_parts parses `end_aggregate A1`',
+    (   wam_elixir_lowered_emitter:instr_from_parts(
+            ["end_aggregate", "A1"],
+            end_aggregate("A1"))
+    ->  pass(Test)
+    ;   fail_test(Test, 'parser did not match end_aggregate 2-element form')
+    ).
+
+test_findall_instr_lowers_begin_aggregate_sum :-
+    Test = 'Findall instr: begin_aggregate(sum, A1, A3) lowers to push_aggregate_frame call with :sum',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            begin_aggregate("sum", "A1", "A3"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :sum, 1, 3)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'sum aggregator did not lower to push_aggregate_frame call')
+    ).
+
+test_findall_instr_translates_collect_to_findall :-
+    Test = 'Findall instr: begin_aggregate(collect, ...) translates to :findall (proposal §6.4)',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            begin_aggregate("collect", "A1", "A3"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        % Translation is at the emission site so the substrate's
+        % in_forkable_aggregate_frame?/1 (which only recognises
+        % :findall and :aggregate_all) sees a forkable frame.
+        sub_string(S, _, _, _, ':findall'),
+        \+ sub_string(S, _, _, _, ':collect')
+    ->  pass(Test)
+    ;   fail_test(Test, 'collect aggregator was not translated to :findall at emission')
+    ).
+
+test_findall_instr_lowers_end_aggregate :-
+    Test = 'Findall instr: end_aggregate(A1) lowers to aggregate_collect + throw({:fail, state})',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            end_aggregate("A1"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'WamRuntime.aggregate_collect(state, 1)'),
+        % Throw drives backtrack into finalise_aggregate per the
+        % fail-driven enumeration model (proposal §3.3 / §4.4).
+        sub_string(S, _, _, _, 'throw({:fail, state})')
+    ->  pass(Test)
+    ;   fail_test(Test, 'end_aggregate did not emit collect + throw shape')
+    ).
+
+%% End-to-end bridge: a predicate whose body uses findall/3 should now
+%% lower through the full pipeline (WAM compile → parse → lower) and
+%% produce a module containing both runtime calls. This is the first
+%% test that exercises the full Phase 2 chain. Phase 3 will add actual
+%% Elixir-execution tests.
+
+:- dynamic phase_a_test:has_findall/1.
+
+phase_a_findall_fixture_setup :-
+    phase_a_fixture_setup,
+    retractall(phase_a_test:has_findall(_)),
+    assertz((phase_a_test:has_findall(L) :-
+        findall(X, phase_a_test:small_fact(X, _), L))).
+
+test_findall_instr_end_to_end_lowering :-
+    Test = 'Findall instr: predicate body using findall/3 lowers to push_aggregate_frame + aggregate_collect',
+    phase_a_findall_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:has_findall/1, [], WamCode),
+    lower_predicate_to_elixir(has_findall/1, WamCode,
+                              [module_name('TestMod')], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :findall'),
+        sub_string(S, _, _, _, 'WamRuntime.aggregate_collect(state'),
+        sub_string(S, _, _, _, 'throw({:fail, state})')
+    ->  pass(Test)
+    ;   fail_test(Test, 'end-to-end findall lowering missing push/collect/throw shape')
+    ).
+
 test_findall_substrate_backtrack_routes_aggregate_frames :-
     Test = 'Findall substrate: backtrack/1 dispatches aggregate frames to finalise_aggregate',
     (   compile_wam_runtime_to_elixir([], Code),
@@ -1157,6 +1247,12 @@ run_tests :-
     test_findall_substrate_emits_aggregate_collect,
     test_findall_substrate_emits_finalise_aggregate,
     test_findall_substrate_backtrack_routes_aggregate_frames,
+    test_findall_instr_parser_begin_aggregate,
+    test_findall_instr_parser_end_aggregate,
+    test_findall_instr_lowers_begin_aggregate_sum,
+    test_findall_instr_translates_collect_to_findall,
+    test_findall_instr_lowers_end_aggregate,
+    test_findall_instr_end_to_end_lowering,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,
