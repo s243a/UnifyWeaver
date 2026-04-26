@@ -170,6 +170,17 @@ lmdbRawEdgeLookup env dbi cache key = unsafePerformIO $ do
 -- per miss) costs a few hundred ns per lookup, so on workloads with
 -- minimal subgraph overlap (random shallow seeds) this can be slower
 -- than the bare dupsort path.  Use only when you expect cache reuse.
+--
+-- WARNING — parallelism interaction: under +RTS -N>1 the shared
+-- atomicModifyIORef' on every miss serialises writes across cores.
+-- On workloads with low hit rate this produces a NET REGRESSION vs
+-- the bare dupsort path (measured: 7x slowdown at -N4 on the 1000-
+-- seed enwiki benchmark, where there is essentially no subgraph
+-- overlap).  This option targets workloads with substantial overlap
+-- (deeper paths, more seeds sharing root regions, repeated queries).
+-- A two-level cache (per-HEC L1 + sharded L2) would mitigate the
+-- contention; see the WAM Haskell benchmark notes for the planned
+-- follow-up.
 type LmdbResultCache = IORef (IM.IntMap [Int])
 
 newLmdbResultCache :: IO LmdbResultCache

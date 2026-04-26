@@ -3679,6 +3679,19 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %                           overhead can exceed the FFI savings.
 %                           Only meaningful when lmdb_layout(dupsort);
 %                           ignored otherwise.
+%
+%                           PARALLELISM CAVEAT: under +RTS -N>1 the
+%                           shared atomicModifyIORef' write per miss
+%                           serialises across cores.  On low-hit-rate
+%                           workloads this produces a net regression
+%                           vs the bare dupsort path (measured 7x
+%                           slowdown at -N4 on a random-seed enwiki
+%                           workload).  Recommended only when the
+%                           expected cache hit rate justifies the
+%                           contention — generally workloads where
+%                           many seeds share substantial subgraph
+%                           overlap.  A future per-HEC L1 + sharded
+%                           L2 design would mitigate the contention.
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
     (   option(lmdb_layout(dupsort), Options)
