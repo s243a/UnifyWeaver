@@ -1,8 +1,23 @@
 # Elixir WAM findall/aggregate_all proposal
 
-**Status:** Draft for design review (pre-implementation).
-**Target audience:** Perplexity review + future implementer.
-**Depends on:** PR #1586 (Tier-2 substrate), PR #1608 (`par_wrap_segment/4`), PR #1624 (Tier-2 wiring activation).
+**Status:** Phase 1 (substrate) + Phase 2 (instruction lowering) shipped; Phase 3 (runtime integration) in planning.
+**Target audience:** Perplexity review + Phase 3 implementer.
+**Depends on:** PR #1586 (Tier-2 substrate), PR #1608 (`par_wrap_segment/4`), PR #1624 (Tier-2 wiring activation), PR #1626 (this proposal).
+**Shipped:** PR #1627 (substrate — `push_aggregate_frame/4`, `aggregate_collect/2`, `finalise_aggregate/4`, `backtrack/1` dispatch). PR #1643 (instruction lowering — `begin_aggregate` / `end_aggregate` parser + `wam_elixir_lower_instr/6` clauses + `agg_type_atom/2` translation).
+
+## 0. Implementation status
+
+| Phase | Scope | Status |
+|---|---|---|
+| Phase 1 | Runtime substrate (4 helpers + backtrack dispatch) | ✅ Shipped #1627 |
+| Phase 2 | `begin_aggregate` / `end_aggregate` lowering + `:collect → :findall` translation | ✅ Shipped #1643 |
+| Phase 3 | Runtime integration tests; cross-validation against Haskell parity reference | ⏳ Planning |
+
+Deviations from the proposal as written, documented in commits and code:
+
+- **§4.1 CP shape:** the proposal listed a separate `:agg_return_cp` field, but it always equalled `:cp` at push time, so it was dropped during implementation. `finalise_aggregate/4` tail-calls via `restored.cp.(restored)`. Documented in `push_aggregate_frame/4`'s `@doc`.
+- **§4.5 / §9 Q5 (`:collect` vs `:findall`):** translation lands at the emission site (`agg_type_atom/2`), keeping the substrate's existing alphabet (`:findall` / `:aggregate_all`) authoritative rather than broadening it. `in_forkable_aggregate_frame?/1`'s `@doc` documents the alphabet contract.
+- **§6 risk #6 (empty-accumulator semantics) refined during implementation:** list aggregators (`:collect` / `:findall` / `:aggregate_all` / `:bag` / `:set`) return `[]`; `:sum` / `:count` use natural identities (`0`, `0`); `:max` / `:min` throw `{:fail, state}` because no identity exists and silently returning `nil` would propagate a non-WAM value into downstream `get_constant` unification. Documented in `finalise_aggregate/4`'s `@doc`.
 
 ## 1. Context
 
@@ -40,13 +55,13 @@ Add `begin_aggregate` / `end_aggregate` lowering to the Elixir target and the ru
 - **Elixir runtime substrate (PR #1586):** `WamRuntime.in_forkable_aggregate_frame?/1` reads `:agg_type`, returns true only for `:findall` / `:aggregate_all` (forkable types). `WamRuntime.merge_into_aggregate/2` appends a list of branch results to the nearest aggregate CP's `:agg_accum`. Both consumer-side; no producer.
 - **Tier-2 super-wrapper:** when emitted, gates on `in_forkable_aggregate_frame?/1`. With no producer, the gate always returns false; the super-wrapper short-circuits to its `*_impl` sequential path.
 
-### 3.2 What's missing
+### 3.2 What's missing (now: shipped status)
 
-Three things, all in the Elixir target:
+Three things, all in the Elixir target — **all three shipped across PRs #1627 and #1643**:
 
-1. **`begin_aggregate` instruction lowering.** Push an aggregate-typed CP onto `state.choice_points` carrying `:agg_type`, `:agg_value_reg`, `:agg_result_reg`, `:agg_accum: []`, `:agg_return_cp` (continuation), and a snapshot of `state.heap_len` / `state.trail_len` / `state.regs` so backtracking-to-finalize can restore.
-2. **`end_aggregate` instruction lowering.** Read the value register, deref it, copy into the nearest aggregate CP's `:agg_accum`, then `throw({:fail, state})` to drive backtracking — fail-driven enumeration. The next inner-goal alternative gets re-tried; when none remain, backtrack pops the aggregate CP and finalizes.
-3. **Backtrack-to-finalize semantics in `WamRuntime.backtrack/1`.** When the topmost CP popped is an aggregate frame, do not re-execute its `pc` (aggregate frames have no failure target). Instead: aggregate the `:agg_accum` per the `:agg_type` (`:collect`/`:findall` → list, `:sum` → sum, `:count` → length, etc.), bind the result to `:agg_result_reg`, restore the saved environment minus the popped frame, and resume at `:agg_return_cp`.
+1. ✅ **`begin_aggregate` instruction lowering** (#1643). Push an aggregate-typed CP onto `state.choice_points` carrying `:agg_type`, `:agg_value_reg`, `:agg_result_reg`, `:agg_accum: []`, and a snapshot of `state.heap_len` / `state.trail_len` / `state.regs` so backtracking-to-finalize can restore. (Note: `:agg_return_cp` was dropped — see §0 deviations.)
+2. ✅ **`end_aggregate` instruction lowering** (#1643). Read the value register, deref it, copy into the nearest aggregate CP's `:agg_accum`, then `throw({:fail, state})` to drive backtracking — fail-driven enumeration. The next inner-goal alternative gets re-tried; when none remain, backtrack pops the aggregate CP and finalizes.
+3. ✅ **Backtrack-to-finalize semantics in `WamRuntime.backtrack/1`** (#1627). When the topmost CP popped is an aggregate frame, do not re-execute its `pc` (aggregate frames have no failure target). Instead: aggregate the `:agg_accum` per the `:agg_type`, bind the result to `:agg_result_reg`, restore the saved environment minus the popped frame, and tail-call the restored `state.cp`.
 
 ### 3.3 LLVM precedent (closest analogue)
 
@@ -158,26 +173,33 @@ Mirror the LLVM precedent. Lowest-friction interaction with existing CP machiner
 
 ## 6. Risks and open questions
 
-1. **Trail-unwind safety of `:agg_accum`.** When `end_aggregate` collects a value and triggers backtrack, the trail unwind restores variable bindings to the pre-CP state. If a Template value contains heap references to bound variables that the trail unwinds, the captured value mutates retroactively. The deep-copy in `aggregate_collect/2` must walk the value through `deref_var` and copy concrete heap cells — turning `{:struct, addr}` references into self-contained tuples. Worth a probe with a multi-clause inner goal whose Template references unify-time-bound Y-registers.
+1. **Trail-unwind safety of `:agg_accum`.** ⏳ Open for Phase 3. When `end_aggregate` collects a value and triggers backtrack, the trail unwind restores variable bindings to the pre-CP state. If a Template value contains heap references to bound variables that the trail unwinds, the captured value mutates retroactively. The Phase 1 implementation uses `deref_var` to resolve the value before capture — atomic values (strings/numbers/atoms) are BEAM value types and survive unwind; compound values that reference heap cells need a recursive deep-copy. **Haskell precedent:** `wam_haskell_target.pl:2254` uses `derefVar (wsBindings s)` — same pattern, suggesting our atomic-value approach is sound for the simple cases. A Phase 3 probe with `findall(X, p(X), L)` where `p/1` produces compound terms will tell us if the deep-copy follow-up is needed.
 
-2. **Tier-2 finalise trigger.** When the super-wrapper takes the parallel arm, control returns from `merge_into_aggregate/2` to the caller of the super-wrapper — which is the predicate's `clause_main`, which returns to its caller's `state.cp`. But the aggregate frame is still on `state.choice_points`. Two options:
-    - (A) Super-wrapper throws `{:fail, state}` after merge — cleanest, falls through to backtrack which finalises.
+2. **Tier-2 finalise trigger — sequential confirmed, parallel needs divergent path.** When the super-wrapper takes the parallel arm, control returns from `merge_into_aggregate/2` to the caller of the super-wrapper. The aggregate frame is still on `state.choice_points`.
+    - (A) Super-wrapper throws `{:fail, state}` after merge — falls through to backtrack which finalises.
     - (B) Super-wrapper explicitly calls `finalise_aggregate` itself.
-   Option (A) shares the finalise path with the sequential case and is the proposal's recommended approach. Verify with a Tier-2-eligible inner goal.
 
-3. **Cut barrier interaction.** `cut_point` (PR #1535) snapshots `state.choice_points` so `!` prunes back to that snapshot. An aggregate CP under a cut should not be pruned by an inner-goal cut — the aggregate semantics depend on the frame staying alive until enumeration completes. Audit whether `cut_to/1` walks past aggregate frames or treats them as cut barriers.
+   **Updated guidance from Haskell precedent (`wam_haskell_target.pl:1502-1516`):** option (A) works for the **sequential** case but breaks for **nested-fork** cases. When a parallel branch backtracks and hits its OWN aggregate-frame CP (e.g. an outer findall fanning out a Tier-2-eligible predicate that itself contains a findall in some clause), naïvely calling `finalizeAggregate` from the branch wipes the *outer* `wsAggAccum`. Haskell's branch-loop instead checks `case wsCPs s of (cp : _) | Just _ <- cpAggFrame cp -> wsAggAccum s` — i.e. the branch returns its **local** accum to the parent without finalising. The parent's `forkParBranches` then merges via the strategy.
 
-4. **`agg_type` alphabet mismatch.** `compile_aggregate_all/5` uses atoms `sum/count/max/min/bag/set/collect`; the runtime substrate's `in_forkable_aggregate_frame?/1` only forks on `:findall` and `:aggregate_all`. The `:collect` atom (used by findall via the `collect-Template` wrapper) needs to be recognised as forkable, or the wrapper needs to translate `collect → findall` at the begin_aggregate emission site. Proposed: emit `:findall` for findall/3, `:aggregate_all` for aggregate_all/3 with non-list aggregators (sum/count/etc.), keep `:collect` as a synonym only inside the WAM compiler's intermediate representation.
+   **Implication for Elixir Phase 3+:** the current single-collector design (sequential `aggregate_collect/2` and parallel `merge_into_aggregate/2` both writing to the same `:agg_accum`) is correct for the sequential and shallow-parallel cases, but a Tier-2 fan-out whose branches contain their own findall needs a branch-local accumulator pattern. This is Phase 4 territory; Phase 3 stays sequential and validates option (A) on shallow cases only.
 
-5. **Heap snapshot cost.** Aggregate frames need to capture enough state to restore after finalise. The Elixir CP map already captures regs/heap/heap_len/trail/trail_len/stack — adding aggregate fields is additive, no new copying. If a future profiling pass shows finalise-time heap rewind dominates, that's a separate optimisation.
+3. **Cut barrier interaction.** ⏳ Open for Phase 3. `cut_point` (PR #1535) snapshots `state.choice_points` so `!` prunes back to that snapshot. An aggregate CP under a cut should not be pruned by an inner-goal cut — the aggregate semantics depend on the frame staying alive until enumeration completes. Audit whether `cut_to/1` walks past aggregate frames or treats them as cut barriers. Phase 3 test fixture: `findall(X, (p(X), q(X), !), L)` where the cut commits inside the aggregate's inner goal.
 
-6. **Empty result.** `findall(X, fail, L)` should bind L = []. Verify `begin_aggregate` followed immediately by inner-goal failure backtracks straight to the aggregate frame (no inner enumeration), and `finalise_aggregate` correctly emits the empty-list result.
+4. ✅ **`agg_type` alphabet mismatch — resolved.** Translation lands at the emission site via `agg_type_atom/2` (#1643): `:collect → :findall`; all other atoms (`sum/count/max/min/bag/set/aggregate_all`) pass through unchanged. `in_forkable_aggregate_frame?/1`'s `@doc` documents the alphabet contract: only `:findall` and `:aggregate_all` ever reach the substrate.
 
-7. **Nested findalls.** `findall(X, findall(Y, p(X,Y), Ys), Pairs)` pushes two aggregate frames. `aggregate_collect` walks `state.choice_points` to find the **nearest** frame (consistent with `merge_into_aggregate/2`'s existing semantics). Verify the nested case binds correctly — inner finalise should pop the inner agg frame before outer enumeration continues.
+5. **Heap snapshot cost.** Open as a measurement question for Phase 3 / 4. Aggregate frames now capture the same snapshot fields as ordinary CPs — additive, no new copying. If profiling shows finalise-time heap rewind dominates, it's a separate optimisation.
 
-8. **Aggregate frames inside parallel branches.** A Tier-2 fan-out branch could itself contain a findall. Each branch runs in its own Task with a snapshotted state — its inner aggregate frame stays branch-local. The branch's `merge_into_aggregate` writes to its own frame, which is then consumed by the branch's local finalise; the resulting Template value is what propagates up to the outer fan-out's collection. This is correct by construction but worth a test.
+6. ✅ **Empty result — resolved with refined semantics** (see §0 deviations). `findall(X, fail, L)` binds `L = []` (list aggregators have a natural identity). `:sum` / `:count` use 0. `:max` / `:min` throw `{:fail, state}` because no identity exists and `nil` would propagate a non-WAM value. Phase 3 test fixture asserts the list-empty case end-to-end.
+
+7. **Nested findalls.** ⏳ Open for Phase 3. `findall(X, findall(Y, p(X,Y), Ys), Pairs)` pushes two aggregate frames. `aggregate_collect/2` walks `state.choice_points` to find the **nearest** frame (consistent with `merge_into_aggregate/2`'s semantics). Inner finalise should pop the inner agg frame before outer enumeration continues. **Haskell precedent:** the "only the OUTERMOST `ParTryMeElse` actually forks; nested ones use sequential equivalents" pattern (`wam_haskell_target.pl:1486-1492`) matches our `parallel_depth > 0` gate in the Tier-2 super-wrapper — the nested-fork explosion problem has the same shape and the same fix in both implementations. For sequential nested findalls (no Tier-2), the nearest-frame walk is the standard Prolog semantics; Phase 3 confirms via a fixture.
+
+8. **Aggregate frames inside parallel branches.** Cross-references risk #2's branch-local-accum guidance. Each Task gets a snapshotted state, so branch-local aggregate frames stay branch-local — but `merge_into_aggregate/2` writes to the **nearest** frame, which is the branch's local one. The branch finalises locally and the resulting Template value is what propagates up. **Confirmed correct by construction** in the Haskell implementation; Elixir Phase 3 carries a test fixture for this even though it's a Phase 4 (nested parallel) concern.
 
 ## 7. Test matrix
+
+**Phases 1–2 covered (emit-and-grep):** parser entries, lowering shape per aggregator type, end-to-end pipeline test that compiles a `findall/3`-using predicate through the WAM compiler and asserts the lowered Elixir contains `push_aggregate_frame(state, :findall, ...)`, `aggregate_collect(state, ...)`, and `throw({:fail, state})`. 79/79 passing post-Phase-2.
+
+**Phase 3 plan — runtime integration tests** (this is the next PR):
 
 Sequential findall:
 
@@ -190,18 +212,23 @@ aggregate_all:
 - `aggregate_all(count, member(_, [a,b,c]), N)` → `N = 3`.
 - `aggregate_all(sum(X), member(X, [1,2,3]), S)` → `S = 6`.
 - `aggregate_all(max(X), member(X, [3,1,2]), M)` → `M = 3`.
+- `aggregate_all(max(X), fail, M)` → fail (no identity for max over empty bag — see §0 deviations).
 
-Tier-2 interaction:
+Tier-2 interaction (sequential only at Phase 3; nested parallel deferred to Phase 4):
 
 - 3-clause declared-pure predicate `p/1` invoked via `findall(X, p(X), L)`. Assert: `@tier2_eligible true` was emitted (already covered), super-wrapper's `cond do` parallel arm fires, `merge_into_aggregate` populates `:agg_accum`, finalise binds `L = [...]` with all three solutions present (set equality, since parallel order is non-deterministic).
 - Same 3-clause predicate invoked OUTSIDE a findall (e.g. as a directly-called body goal). Super-wrapper's `cond do` falls through to `*_impl` sequential — proves the gate works when no aggregate frame is present.
 
-Edge cases:
+Edge cases (probes for §6 risks #1, #3, #7):
 
-- Nested findall.
-- findall with cut in the inner goal.
-- findall whose Template references a Y-register variable bound during enumeration.
+- Nested findall (§6 risk #7).
+- findall with cut in the inner goal (§6 risk #3).
+- findall whose Template references a Y-register variable bound during enumeration (§6 risk #1, deep-copy probe).
 - Empty-result and single-result paths.
+
+Cross-target validation (recommended Phase 3 addition):
+
+- For each scenario above, compile the same Prolog source through the **Haskell** target's pipeline and compare result lists. Haskell has end-to-end findall + Tier-2 working (see §11) and serves as a known-good correctness reference. Cross-validation turns "tests we wrote that pass" into "behaviour matches a proven implementation" — strongest signal for the §6 risks the proposal flagged.
 
 Compilability:
 
@@ -213,17 +240,17 @@ The new code paths are additive — `begin_aggregate` and `end_aggregate` instru
 
 The Tier-2 substrate from PR #1586 stays inert (as it has been) — `in_forkable_aggregate_frame?/1` returns false for empty CP stacks.
 
-## 9. Questions for design review
+## 9. Questions for design review (resolved)
 
-1. **Is fail-driven enumeration the right control-flow model**, or should the Elixir target diverge from the LLVM precedent and use explicit stream/iterator semantics? The proposal favours fail-driven for consistency with existing CP machinery.
+1. ✅ **Fail-driven enumeration confirmed.** Implemented per the LLVM precedent. Both Phase 1 and Phase 2 reviews confirmed the fit with existing CP machinery. Stream/iterator semantics not pursued.
 
-2. **Should `merge_into_aggregate/2` and per-solution `end_aggregate` collection be unified into one helper**, or is the two-collector design (one batch, one incremental) the right shape? The proposal keeps them separate because they serve different tier paths and the substrate already lives in shipped code.
+2. ✅ **Two-collector design kept separate.** `merge_into_aggregate/2` (parallel batch, from #1586) and `aggregate_collect/2` (sequential per-solution, from #1627) both write to the same `:agg_accum`. `finalise_aggregate/4` consumes the result uniformly. Haskell precedent (§11) shows this design needs refinement under nested parallel — flagged as a Phase 4 concern.
 
-3. **`finalise_aggregate` placement.** Does it live in `WamRuntime` (alongside `merge_into_aggregate`) or in the lowered emitter as inline Elixir? The proposal puts it in `WamRuntime` so all aggregate-frame logic is co-located.
+3. ✅ **`finalise_aggregate` lives in `WamRuntime`** alongside `merge_into_aggregate`, as proposed. All aggregate-frame logic co-located in `compile_aggregate_helpers_to_elixir/1`.
 
-4. **Tier-2 finalise trigger** (§6 risk #2): super-wrapper throws `{:fail, state}` after `merge_into_aggregate`, vs. explicit `finalise_aggregate` call. The proposal recommends throw-and-let-backtrack-finalise.
+4. ⏳ **Tier-2 finalise trigger — sequential validated, parallel deferred.** Option (A) shipped for sequential and shallow-parallel; nested parallel needs the branch-local-accum pattern from Haskell (§6 risk #2 update). Phase 3 tests the sequential case; Phase 4 will revisit.
 
-5. **`:collect` vs `:findall` atom for findall/3.** Translate at emission time, or keep `:collect` as a synonym throughout? The proposal translates at emission time so the runtime substrate's existing `:findall`/`:aggregate_all` discrimination remains the source of truth.
+5. ✅ **`:collect → :findall` translation at emission time.** Implemented in `agg_type_atom/2` (#1643). The substrate's `:findall` / `:aggregate_all` alphabet stays authoritative.
 
 ## 10. What this proposal does NOT cover
 
@@ -232,3 +259,36 @@ The Tier-2 substrate from PR #1586 stays inert (as it has been) — `in_forkable
 - **`findall/4`** (the variant taking a tail list).
 - **Performance tuning of the parallel-vs-sequential gate.** `forkMinBranches = 3` stays hardcoded.
 - **Compile-time inlining of small enumerable sources** (e.g. `findall(X, member(X, [a,b,c]), L)` → directly emit `L = ["a","b","c"]`). Worthwhile peephole opt, separate proposal.
+- **Nested-parallel branch-local accumulators** (§6 risk #2 update). Phase 4 territory — needs the per-branch local-accum + parent-merge pattern from Haskell when a Tier-2 fan-out branch contains its own findall.
+- **`MergeStrategy` separation from `agg_type`.** Haskell's `inferMergeStrategy` (§11) splits "what is the aggregate" from "how do parallel branches combine results" — necessary once Phase 4 introduces parallel-under-aggregate.
+
+## 11. Cross-target precedent (Haskell)
+
+The Haskell target (`src/unifyweaver/targets/wam_haskell_target.pl`) has an end-to-end working implementation of the same fail-driven-enumeration findall + Tier-2 (parallel-forkable) machinery this proposal designs. It has been a useful design oracle for our Phase 3 planning and is the recommended cross-validation reference per §7.
+
+**Direct correspondences:**
+
+| Concept | Elixir (this proposal) | Haskell (`wam_haskell_target.pl`) |
+|---|---|---|
+| Aggregate-frame CP | `cp` map with `:agg_type`, `:agg_value_reg`, `:agg_result_reg`, `:agg_accum` | `ChoicePoint` record with `cpAggFrame :: Maybe AggFrame` |
+| Per-solution collect | `aggregate_collect/2` (#1627) | line 2253 — `EndAggregate` opcode body |
+| Backtrack dispatch | `Map.get(cp, :agg_type)` arm in `backtrack/1` (#1627) | `cpAggFrame cp` pattern match in backtrack |
+| Empty-accumulator | List → `[]`, sum/count → 0, max/min → throw fail (#1627) | `finalizeAggregate` |
+| Begin/end opcodes | `wam_elixir_lower_instr(begin_aggregate/end_aggregate)` (#1643) | `BeginAggregate` / `EndAggregate` (lines 2231 / 2252) |
+| Fail-driven enumeration | `throw({:fail, state})` after `aggregate_collect/2` | `backtrackInner` + `finalizeAggregate` (line 1280) |
+| `:collect → :findall` translation | `agg_type_atom/2` (#1643) | `inferMergeStrategy "findall" = MergeFindall` (line 3242) — different shape but similar role |
+| Nested-fork suppression | `parallel_depth > 0` gate in super-wrapper (#1624) | `seqInstr` rewrite of `Par* → sequential` inside branches (line 1493) |
+| Branch-local accumulator | ⏳ Phase 4 follow-up (§6 risk #2 update) | line 1502 — branch returns local `wsAggAccum` to parent without finalising |
+| `MergeStrategy` (parallel result combining) | ⏳ Phase 4 follow-up (§10 non-goal) | `inferMergeStrategy` separated from `agg_type` |
+
+**What we adopted from Haskell:**
+
+- The fail-driven enumeration model itself (originally cited from LLVM in §3.3 — Haskell is the direct functional analogue).
+- The single-dispatch backtrack (no separate `backtrackInner`) — Haskell needed it because their inner-goal CPs and aggregate frames live in the same `wsCPs` list with PC-based resumption; our Elixir CPS-with-continuations design naturally routes to the right place.
+- The "nested forks suppression" pattern: only the outermost parallel layer forks. Confirms our `parallel_depth > 0` gate design is correct.
+- Branch-local accum vs global accum — informs §6 risk #2 update; flagged for Phase 4 in §10.
+
+**What we deliberately don't adopt:**
+
+- PC-based aggregate-return-PC storage. Haskell stores `returnPC = wsPC s + 1` inside the agg frame at end_aggregate time and `updateNearestAggFrame` walks the CP list to write it. Our Elixir version captures `state.cp` at *push* time — equivalent semantics in our CPS world, simpler implementation. (See §0 deviations: `:agg_return_cp` was redundant with `:cp`.)
+- `MergeStrategy` for now. Phase 3 is sequential-only, so a dedicated merge-strategy abstraction is premature. Phase 4 will introduce it when nested-parallel needs the divergent path.
