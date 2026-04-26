@@ -2718,9 +2718,13 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
     ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
-        % dupsort layout: LMDB is built externally by the streaming
-        % pipeline (no in-process ingest). default layout: WAM-native
-        % ingest from TSV at startup if missing.
+        % Three layout/source variants:
+        %   - lmdb_layout(dupsort): LMDB is built externally by the
+        %     streaming pipeline (no in-process ingest, error if missing).
+        %   - lmdb_fact_source_manifest(Dir): standard TSV ingest, but
+        %     FactSource opens via manifest.json metadata (UTF-8 keys).
+        %   - default: WAM-native packed-Int32 layout, TSV ingest at
+        %     startup if missing.
         (   option(lmdb_layout(dupsort), Options)
         ->  SetupCode =
 '    -- Phase B1: LMDB fact source setup (dupsort layout, externally ingested)
@@ -2732,8 +2736,16 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
       hPutStrLn stderr "LMDB database found (dupsort layout)."
     cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
     cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
-        ;   SetupCode =
-'    -- Phase B1: LMDB fact source setup (WAM-native packed-Int32 layout)
+        ;   (   option(lmdb_fact_source_manifest(ManifestDir0), Options)
+            ->  format(string(FactSourceOpen),
+'    cpFactSource <- lmdbFactSourceFromManifest fullInternTable "~w"',
+                       [ManifestDir0])
+            ;   FactSourceOpen =
+'    -- Also open as FactSource for WAM interpreter path
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+            ),
+            format(string(SetupCode),
+'    -- Phase B1/B2: LMDB fact source setup
     let lmdbDir = factsDir ++ "/lmdb"
     -- Ingest TSV into LMDB (idempotent — skips if directory exists)
     lmdbExists <- doesDirectoryExist lmdbDir
@@ -2745,7 +2757,8 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     else
       hPutStrLn stderr "LMDB database found, skipping ingestion."
     cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
-    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+~w',
+                  [FactSourceOpen])
         ),
         ContextCode =
 '            , wcFactSources   = Map.singleton "category_parent" cpFactSource
@@ -2885,7 +2898,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""

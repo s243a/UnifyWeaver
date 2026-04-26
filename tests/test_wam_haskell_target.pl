@@ -1313,6 +1313,44 @@ test_b1_lmdb_raw_zero_copy_reads :-
     ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
     ).
 
+test_b1_lmdb_scan_support_present :-
+    Test = 'B1: raw LMDB FactSource emits scan support',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "scanRawIntPairs :: MDB_txn -> MDB_dbi' -> IO [(Int, Int)]"),
+        sub_string(S, _, _, _, "fsScan       = scanRawIntPairs txn dbi"),
+        \+ sub_string(S, _, _, _, "fsScan       = return []")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Raw LMDB FactSource scan support not found')
+    ).
+
+test_b1_lmdb_manifest_fact_source_present :-
+    Test = 'B1: manifest-backed LMDB FactSource emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "readLmdbArtifactManifest :: FilePath -> IO (String, Bool)"),
+        sub_string(S, _, _, _, "openLmdbUtf8StoreFromManifest :: FilePath -> IO (MDB_env, MDB_txn, MDB_dbi', Bool)"),
+        sub_string(S, _, _, _, "lmdbFactSourceFromManifest :: InternTable -> FilePath -> IO FactSource"),
+        sub_string(S, _, _, _, "lookupUtf8Values txn dbi dupsort atomKey")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Manifest-backed LMDB FactSource helpers not found')
+    ).
+
+test_b1_lmdb_manifest_wiring_option_present :-
+    Test = 'B1: lmdb_fact_source_manifest option wires manifest-backed FactSource',
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            [],
+            [],
+            [use_lmdb(true), lmdb_fact_source_manifest('/tmp/lmdb-artifact')],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "cpFactSource <- lmdbFactSourceFromManifest fullInternTable \"/tmp/lmdb-artifact\""),
+        \+ sub_string(S, _, _, _, "cpFactSource <- lmdbFactSource lmdbDir \"category_parent\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
@@ -1417,6 +1455,9 @@ run_tests :-
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
     test_b1_lmdb_raw_zero_copy_reads,
+    test_b1_lmdb_scan_support_present,
+    test_b1_lmdb_manifest_fact_source_present,
+    test_b1_lmdb_manifest_wiring_option_present,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,

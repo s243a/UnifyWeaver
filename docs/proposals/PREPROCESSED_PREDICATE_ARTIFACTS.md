@@ -493,6 +493,13 @@ Prototype status:
   programs use that helper, and pipeline programs can now take
   `UNIFYWEAVER_RELATION_SOURCE_MODE` plus `UNIFYWEAVER_RELATION_ARTIFACT_DIR`
   without re-implementing artifact registration in each generated template.
+- Termux viability is now less speculative for LMDB than before. A local probe
+  using the native `liblmdb` Termux package plus a Rust client confirmed a real
+  open/write/read round-trip in this environment. The current prototype lives
+  at `examples/lmdb_relation_artifact/` and builds a small exact two-column
+  LMDB artifact with a sidecar `manifest.json`. That does not settle the final
+  cross-target artifact format, but it does confirm that LMDB-backed exact
+  artifact experiments are feasible here without deferring all work to desktop.
 
 ### N-ary delimited artifact direction
 

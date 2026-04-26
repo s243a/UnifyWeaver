@@ -222,6 +222,16 @@ test_generated_runtime_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_cross_predicate_executable_smoke :-
+    Test = 'WAM-C: cross-predicate executable smoke',
+    (   gcc_available
+    ->  (   run_cross_predicate_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'cross-predicate executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -247,6 +257,25 @@ run_generated_runtime_executable_smoke :-
     compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke(ExePath).
 
+run_cross_predicate_executable_smoke :-
+    WamCode = 'wam_c_exec_caller/1:\n    execute wam_c_exec_callee/1\nwam_c_exec_callee/1:\n    get_constant a, A1\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_exec_caller/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_cross_exec_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_cross_exec_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
 write_text_file(Path, Content) :-
     setup_call_cleanup(
         open(Path, write, Stream),
@@ -259,11 +288,20 @@ compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
     format(atom(Cmd),
            'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
-    catch(process_create(path(sh), ['-c', Cmd],
-                         [stdout(null), stderr(null), process(Pid)]),
-          _, fail),
-    process_wait(Pid, Status),
-    (   Status = exit(0)
+    shell(Cmd, Status),
+    (   Status =:= 0
+    ->  true
+    ;   format(user_error, 'gcc failed with status ~w~n', [Status]),
+        fail
+    ).
+
+compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
+    IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
+    format(atom(Cmd),
+           'gcc -std=c11 -Wall -Wextra -I ~w ~w ~w ~w -o ~w',
+           [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
+    shell(Cmd, Status),
+    (   Status =:= 0
     ->  true
     ;   format(user_error, 'gcc failed with status ~w~n', [Status]),
         fail
@@ -271,13 +309,19 @@ compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
 
 run_c_smoke(ExePath) :-
     format(atom(Cmd),
-           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 ~w',
+           'ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 10 ~w',
            [ExePath]),
-    catch(process_create(path(sh), ['-c', Cmd],
-                         [stdout(null), stderr(null), process(Pid)]),
-          _, fail),
-    process_wait(Pid, Status),
-    (   Status = exit(0)
+    shell(Cmd, Status),
+    (   Status =:= 0
+    ->  true
+    ;   format(user_error, 'generated executable failed with status ~w~n', [Status]),
+        fail
+    ).
+
+run_c_smoke_plain(ExePath) :-
+    format(atom(Cmd), 'timeout 10 ~w', [ExePath]),
+    shell(Cmd, Status),
+    (   Status =:= 0
     ->  true
     ;   format(user_error, 'generated executable failed with status ~w~n', [Status]),
         fail
@@ -310,6 +354,35 @@ int main(void) {
     WamValue args[1] = { list };
     int rc = wam_run_predicate(&state, "wam_c_exec_list/1", args, 1);
     if (rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_cross_exec_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_exec_caller_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_exec_caller_1(&state);
+
+    WamValue ok_args[1] = { val_atom("a") };
+    int ok_rc = wam_run_predicate(&state, "wam_c_exec_caller/1", ok_args, 1);
+    if (ok_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue fail_args[1] = { val_atom("b") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_exec_caller/1", fail_args, 1);
+    if (fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 20;
     }
@@ -382,6 +455,7 @@ run_tests_once :-
     test_predicate_hash_registration,
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
+    test_cross_predicate_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
