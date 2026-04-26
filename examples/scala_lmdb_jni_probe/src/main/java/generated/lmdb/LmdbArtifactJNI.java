@@ -7,7 +7,7 @@ public final class LmdbArtifactJNI {
 
     private LmdbArtifactJNI() {}
 
-    public static native String lookupRaw(String artifactDir, String dbName, String key, boolean dupsort);
+    public static native LmdbRow[] lookupRows(String artifactDir, String dbName, String key, boolean dupsort);
 
-    public static native String scanRaw(String artifactDir, String dbName);
+    public static native LmdbRow[] scanRows(String artifactDir, String dbName);
 }
