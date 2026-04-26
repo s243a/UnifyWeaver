@@ -3702,6 +3702,18 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %                           L1, high-overlap workloads benefit from
 %                           cross-HEC sharing via L2.
 %
+%    lmdb_cache_l2_capacity_bytes(N) — override the auto-detected
+%                           L2 capacity.  N is the desired byte
+%                           budget; the runtime divides by ~32
+%                           bytes per entry and rounds down to a
+%                           power of two.  Only meaningful when L2
+%                           is active (sharded or two_level);
+%                           ignored otherwise.  Useful when the
+%                           /proc/meminfo-based default is too small
+%                           (server with 64 GB RAM but auto caps at
+%                           1M entries) or too large (memory-tight
+%                           container).
+%
 %    All cache modes are gated by lmdb_layout(dupsort); ignored
 %    otherwise.  Modes are mutually exclusive; precedence when
 %    multiple flags are set is two_level > sharded > memoize >
@@ -3750,12 +3762,23 @@ generate_lmdb_functions(Options, Code) :-
     % Legacy memoize section in the template is not used in Phase 2;
     % the sharded IOArray implementation lives under lmdb_cache_l2.
     CacheMemoize   = false,
+    % L2 capacity user override (bytes).  0 means "use the
+    % memory-aware default"; any positive integer overrides it.
+    % Mustache treats 0 as falsy so the {{#lmdb_l2_capacity_bytes}}
+    % section only fires for the override case.
+    (   option(lmdb_cache_l2_capacity_bytes(Bytes), Options),
+        integer(Bytes), Bytes > 0,
+        CacheL2 == true
+    ->  L2CapacityBytes = Bytes
+    ;   L2CapacityBytes = 0
+    ),
     render_template(Template,
                     [lmdb_dupsort=Dupsort,
                      lmdb_cache_memoize=CacheMemoize,
                      lmdb_cache_l1=CacheL1,
                      lmdb_cache_l2=CacheL2,
-                     lmdb_cache_two_level=CacheTwoLevel],
+                     lmdb_cache_two_level=CacheTwoLevel,
+                     lmdb_l2_capacity_bytes=L2CapacityBytes],
                     Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)

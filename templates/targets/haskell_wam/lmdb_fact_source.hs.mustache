@@ -362,6 +362,7 @@ data L2Entry
     = L2Empty
     | L2Entry {-# UNPACK #-} !Int [Int]   -- stored key + values
 
+{{^lmdb_l2_capacity_bytes}}
 -- | Read /proc/meminfo MemAvailable on Linux.  Falls back to 1 GB if
 -- the file is unreadable (non-Linux or sandboxed environment).  This
 -- is best-effort sizing; the user can override via
@@ -393,7 +394,27 @@ l2MemoryBudgetBytes = do
         halfBytes   = available `div` 2
         budget      = min halfBytes (available - bufferBytes)
     return $! max 0 budget
+{{/lmdb_l2_capacity_bytes}}
 
+-- | Round @n@ down to the nearest power of two (≥ 1).
+roundDownPow2 :: Int -> Int
+roundDownPow2 n
+  | n <= 1    = 1
+  | otherwise = go 1
+  where
+    go x | x * 2 > n = x
+         | otherwise = go (x * 2)
+
+{{#lmdb_l2_capacity_bytes}}
+-- | L2 capacity (entries): user-specified via the Prolog option
+-- lmdb_cache_l2_capacity_bytes/1.  Bytes are converted to entries
+-- using the same ~32-byte-per-L2Entry estimate the auto-detect
+-- path uses, then rounded down to a power of two so the
+-- @key .&. (cap-1)@ slot index works.  Auto-detect is bypassed.
+defaultL2Capacity :: IO Int
+defaultL2Capacity = return $! roundDownPow2 ({{lmdb_l2_capacity_bytes}} `div` 32)
+{{/lmdb_l2_capacity_bytes}}
+{{^lmdb_l2_capacity_bytes}}
 -- | Default L2 capacity in entries: derived from the memory budget,
 -- ~32 bytes per L2Entry, rounded down to a power of two, bounded
 -- [1024, 1M] entries.  Can be overridden by the Prolog option
@@ -405,13 +426,7 @@ defaultL2Capacity = do
         rawEntries    = budget `div` bytesPerEntry
         bounded       = max 1024 (min 1048576 rawEntries)
     return $! roundDownPow2 bounded
-  where
-    roundDownPow2 n
-      | n <= 1    = 1
-      | otherwise = go 1
-      where
-        go x | x * 2 > n = x
-             | otherwise = go (x * 2)
+{{/lmdb_l2_capacity_bytes}}
 
 -- | Allocate the shared L2 cache.  Capacity must be a power of two
 -- (caller's responsibility; defaultL2Capacity guarantees this, and
