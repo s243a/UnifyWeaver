@@ -10,7 +10,7 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_haskell_enwiki_lmdb_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [--cache]
+%%       <facts.pl> <output-dir> [--cache | --cache-l1]
 %%
 %% facts.pl is the seeded benchmark workload (effective_distance.pl shape
 %% with dimension_n/1, max_depth/1, category_ancestor/4, power_sum_bound/4).
@@ -18,10 +18,16 @@
 %% in the lmdb_backed_facts allow-list and skipped from WAM compilation
 %% via the external_source path.
 %%
-%% Optional --cache flag adds lmdb_cache_mode(memoize) so each LMDB key
-%% is fetched at most once and shared across all parMap worker threads.
-%% Helps on workloads with subgraph overlap; can hurt on random shallow
-%% seeds where the IORef cache infrastructure overhead exceeds savings.
+%% Optional cache flags:
+%%   --cache      adds lmdb_cache_mode(memoize) — shared IntMap cache
+%%                across all parMap worker threads.  Helps on workloads
+%%                with subgraph overlap; can hurt on random shallow
+%%                seeds where the atomicModifyIORef' contention exceeds
+%%                the FFI savings.
+%%   --cache-l1   adds lmdb_cache_mode(per_hec) — per-thread L1 cache.
+%%                Zero CAS contention on the hot path; cache hits don't
+%%                share across threads.  Right call for most DFS-style
+%%                workloads where intra-thread reuse dominates.
 %%
 %% The generated project expects two extra files alongside the LMDB at
 %% the runtime factsDir:
@@ -39,8 +45,10 @@ main :-
     ->  CacheMode = no
     ;   Argv = [FactsPath, OutputDir, '--cache']
     ->  CacheMode = memoize
+    ;   Argv = [FactsPath, OutputDir, '--cache-l1']
+    ->  CacheMode = per_hec
     ;   format(user_error,
-               'Usage: ... -- <facts.pl> <output-dir> [--cache]~n', []),
+               'Usage: ... -- <facts.pl> <output-dir> [--cache | --cache-l1]~n', []),
         halt(1)
     ),
     generate(FactsPath, OutputDir, CacheMode),
@@ -91,13 +99,19 @@ generate(FactsPath, OutputDir, CacheMode) :-
     ],
     (   CacheMode == memoize
     ->  Options = [lmdb_cache_mode(memoize) | BaseOptions]
+    ;   CacheMode == per_hec
+    ->  Options = [lmdb_cache_mode(per_hec) | BaseOptions]
     ;   Options = BaseOptions
     ),
 
     write_wam_haskell_project(Predicates, Options, OutputDir),
     (   CacheMode == memoize
     ->  format(user_error,
-               '[WAM-Haskell] enwiki int-atom benchmark (cached) generated at ~w~n',
+               '[WAM-Haskell] enwiki int-atom benchmark (memoize cache) generated at ~w~n',
+               [OutputDir])
+    ;   CacheMode == per_hec
+    ->  format(user_error,
+               '[WAM-Haskell] enwiki int-atom benchmark (L1 per-HEC cache) generated at ~w~n',
                [OutputDir])
     ;   format(user_error,
                '[WAM-Haskell] enwiki int-atom benchmark generated at ~w~n',

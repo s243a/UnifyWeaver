@@ -205,6 +205,102 @@ lmdbCachedEdgeLookup env dbi cursorCache resultCache key = unsafePerformIO $ do
         return vs
 {{/lmdb_cache_memoize}}
 
+{{#lmdb_cache_l1}}
+-- | Phase 1 L1 cache (per-HEC, no synchronisation).
+--
+-- Each Haskell thread (HEC under +RTS -N) owns its own IntMap of
+-- recently-seen (key, [neighbours]) pairs, stored in a plain IORef
+-- — NOT atomicModifyIORef'.  Reads and writes are thread-local so
+-- the hot path pays zero CAS, zero cache-line bouncing, and zero
+-- cross-core contention.  This is the fix for the -N4 regression
+-- documented in PR #1637 and the WAM_HASKELL_LMDB_CACHE_TIERS.md
+-- proposal.
+--
+-- The trade-off vs the shared `lmdb_cache_mode(memoize)`: per-HEC
+-- caches don't share hits across threads.  If two parMap workers
+-- both look up the same key they each pay one LMDB FFI miss.  This
+-- is the right call when intra-thread reuse dominates inter-thread
+-- reuse (most DFS-style workloads).  If your workload has heavy
+-- cross-thread overlap, the future L2 / two_level modes will
+-- recover those hits.
+data L1Cache = L1Cache
+    { l1Map      :: {-# UNPACK #-} !(IORef (IM.IntMap [Int]))
+    , l1Capacity :: {-# UNPACK #-} !Int
+    }
+
+-- | Registry mapping each Haskell ThreadId to its own L1Cache.
+-- Same Map ThreadId pattern as DupsortCursorCache (PR #1632) — IORef
+-- + atomicModifyIORef' rather than MVar so we don't need a new
+-- concurrency primitive.  Each thread only ever modifies its own
+-- ThreadId entry, so the CAS is uncontended in the steady state.
+type L1Registry = IORef (Map.Map ThreadId L1Cache)
+
+-- | Default L1 capacity per HEC.  At ~80 bytes per IntMap entry
+-- this is ~80 KiB per HEC, ~320 KiB at -N4 — negligible vs the
+-- LMDB working set.  The user can override via
+-- lmdb_cache_l1_capacity(N) in the Prolog options if needed.
+defaultL1Capacity :: Int
+defaultL1Capacity = 1024
+
+newL1Registry :: IO L1Registry
+newL1Registry = newIORef Map.empty
+
+-- | Look up or lazily allocate this thread's L1 cache.  First call
+-- per thread does an atomicModifyIORef' insert; subsequent calls
+-- read lock-free (we never overwrite our own slot once initialised).
+getOrAllocL1 :: L1Registry -> Int -> IO L1Cache
+getOrAllocL1 reg cap = do
+    tid <- myThreadId
+    m   <- readIORef reg
+    case Map.lookup tid m of
+      Just c  -> return c
+      Nothing -> do
+        ref <- newIORef IM.empty
+        let c = L1Cache ref cap
+        atomicModifyIORef' reg (\m' -> (Map.insert tid c m', ()))
+        return c
+
+-- | L1 lookup: thread-local IORef read, no synchronisation.
+l1Lookup :: L1Cache -> Int -> IO (Maybe [Int])
+l1Lookup (L1Cache ref _) key = do
+    m <- readIORef ref
+    return $! IM.lookup key m
+
+-- | L1 insert with capacity-based overwrite.  When the cache is at
+-- capacity we drop one entry (the smallest key — cheap, deterministic
+-- per-thread; LRU is overkill at this scale and harder under a
+-- non-atomic IORef).  This bounds memory at l1Capacity entries.
+l1Insert :: L1Cache -> Int -> [Int] -> IO ()
+l1Insert (L1Cache ref cap) key vs = do
+    m <- readIORef ref
+    let !m' | IM.size m >= cap = IM.insert key vs (evictOneL1 m)
+            | otherwise        = IM.insert key vs m
+    writeIORef ref m'
+
+-- | Evict one entry.  Drop the smallest key — IM.deleteMin is O(log n)
+-- and avoids the hot-path cost of tracking access order for LRU.
+evictOneL1 :: IM.IntMap [Int] -> IM.IntMap [Int]
+evictOneL1 m = case IM.minViewWithKey m of
+    Just (_, m') -> m'
+    Nothing      -> m  -- impossible if size >= cap >= 1
+
+-- | L1-wrapped EdgeLookup.  On hit, returns the cached neighbours
+-- with no FFI or synchronisation.  On miss, falls through to the
+-- per-thread-cursor dupsort lookup and populates the L1 entry.
+lmdbL1EdgeLookup
+    :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> L1Registry -> Int
+    -> EdgeLookup
+lmdbL1EdgeLookup env dbi cursorCache l1reg cap key = unsafePerformIO $ do
+    l1 <- getOrAllocL1 l1reg cap
+    h  <- l1Lookup l1 key
+    case h of
+      Just vs -> return vs
+      Nothing -> do
+        let !vs = lmdbRawEdgeLookup env dbi cursorCache key
+        l1Insert l1 key vs
+        return vs
+{{/lmdb_cache_l1}}
+
 -- | Convenience: open LMDB and return an EdgeLookup with a long-lived
 -- read transaction. The transaction (and thus the mmap snapshot) stays
 -- open for the process lifetime. This is correct because the fact
@@ -223,7 +319,15 @@ openLmdbEdgeLookup dbPath _dbName = do
     return (lmdbCachedEdgeLookup env dbi cursorCache resultCache)
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
+{{#lmdb_cache_l1}}
+    -- Per-HEC L1 cache; each Haskell thread owns its own IntMap
+    -- with no synchronisation on the hot path.
+    l1reg <- newL1Registry
+    return (lmdbL1EdgeLookup env dbi cursorCache l1reg defaultL1Capacity)
+{{/lmdb_cache_l1}}
+{{^lmdb_cache_l1}}
     return (lmdbRawEdgeLookup env dbi cursorCache)
+{{/lmdb_cache_l1}}
 {{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
@@ -271,7 +375,14 @@ lmdbFactSource dbPath _dbName = do
     let lookup' = lmdbCachedEdgeLookup env dbi cursorCache resultCache
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
+{{#lmdb_cache_l1}}
+    -- Per-HEC L1 cache; thread-local IORefs, no synchronisation.
+    l1reg <- newL1Registry
+    let lookup' = lmdbL1EdgeLookup env dbi cursorCache l1reg defaultL1Capacity
+{{/lmdb_cache_l1}}
+{{^lmdb_cache_l1}}
     let lookup' = lmdbRawEdgeLookup env dbi cursorCache
+{{/lmdb_cache_l1}}
 {{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
