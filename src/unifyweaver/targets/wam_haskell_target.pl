@@ -57,6 +57,8 @@
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../core/purity_certificate',
              [analyze_predicate_purity/2]).
+:- use_module('../core/statistics',
+             [select_cache_mode/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -3714,6 +3716,19 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %                           1M entries) or too large (memory-tight
 %                           container).
 %
+%    lmdb_cache_mode(auto) — Phase 3 hook: defer the choice of
+%                           cache mode to statistics:select_cache_mode/2.
+%                           Users populate workload-level hints via
+%                           statistics:declare_cache_hints/1 (see
+%                           reuse_axis → mode mapping in
+%                           src/unifyweaver/core/statistics.pl).
+%                           When no hints are declared, falls back
+%                           to `none` (no cache).  Infrastructure-
+%                           only: codegen does not currently compute
+%                           the hints; future work will add an
+%                           analyzer that derives them from a
+%                           sample run.
+%
 %    All cache modes are gated by lmdb_layout(dupsort); ignored
 %    otherwise.  Modes are mutually exclusive; precedence when
 %    multiple flags are set is two_level > sharded > memoize >
@@ -3726,6 +3741,20 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %    uses a lock-free IOArray and does not have this problem.  The
 %    PARALLELISM CAVEAT applies only if you explicitly want the
 %    legacy behaviour.
+%% resolve_auto_cache_mode(-Mode)
+%  Phase 3 hook: consult statistics:select_cache_mode/2 with the
+%  default fallback `none`.  Users populate workload-level hints via
+%  statistics:declare_cache_hints/1 before invoking the codegen;
+%  when no hints are declared, this returns `none` and the user
+%  effectively gets the bare dupsort path.
+%
+%  Kept as a thin wrapper here (rather than inlined) so the
+%  default fallback policy is documented in one place and easy to
+%  change later (e.g. flip the default from `none` to `sharded`
+%  once auto-detection of workload class is added).
+resolve_auto_cache_mode(Mode) :-
+    select_cache_mode(none, Mode).
+
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
     (   option(lmdb_layout(dupsort), Options)
@@ -3735,8 +3764,16 @@ generate_lmdb_functions(Options, Code) :-
     % Two-level wins over all single-tier modes; sharded next; then
     % per_hec; the deprecated memoize is treated like sharded for
     % the new IOArray implementation (older IntMap is gone).
-    (   option(lmdb_cache_mode(Mode), Options),
-        member(Mode, [two_level, sharded, per_hec, memoize]),
+    %
+    % `auto` consults statistics:select_cache_mode/2 with default
+    % `none`; users can populate workload hints via
+    % statistics:declare_cache_hints/1.  See Phase 3 in
+    % docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md.
+    (   option(lmdb_cache_mode(auto), Options),
+        Dupsort == true
+    ->  resolve_auto_cache_mode(ChosenMode)
+    ;   option(lmdb_cache_mode(Mode), Options),
+        member(Mode, [two_level, sharded, per_hec, memoize, none]),
         Dupsort == true
     ->  ChosenMode = Mode
     ;   ChosenMode = none

@@ -1486,6 +1486,72 @@ test_b1_lmdb_cache_l2_capacity_ignored_without_l2 :-
     ;   fail_test(Test, 'L2 override unexpectedly emitted without L2')
     ).
 
+test_b1_lmdb_cache_auto_no_hints_falls_back_to_none :-
+    Test = 'B1: lmdb_cache_mode(auto) with no hints emits no cache',
+    (   statistics:clear_cache_hints,
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L1Cache"),
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'auto with no hints unexpectedly emitted cache code')
+    ).
+
+test_b1_lmdb_cache_auto_intra_thread_picks_per_hec :-
+    Test = 'B1: lmdb_cache_mode(auto) + intra_thread hint → per_hec (L1)',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: intra_thread}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        \+ sub_string(S, _, _, _, "L2Cache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + intra_thread did not emit L1-only')
+    ),
+    statistics:clear_cache_hints.
+
+test_b1_lmdb_cache_auto_cross_thread_picks_sharded :-
+    Test = 'B1: lmdb_cache_mode(auto) + cross_thread hint → sharded (L2)',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: cross_thread}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + cross_thread did not emit L2-only')
+    ),
+    statistics:clear_cache_hints.
+
+test_b1_lmdb_cache_auto_mixed_picks_two_level :-
+    Test = 'B1: lmdb_cache_mode(auto) + mixed hint → two_level',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: mixed}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdbTwoLevelEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + mixed did not emit two_level')
+    ),
+    statistics:clear_cache_hints.
+
 test_b1_lmdb_dupsort_alone_no_memoize :-
     Test = 'B1: dupsort without lmdb_cache_mode does not emit memoising lookup',
     (   compile_wam_runtime_to_haskell(
@@ -1665,6 +1731,10 @@ run_tests :-
     test_b1_lmdb_cache_l2_capacity_override,
     test_b1_lmdb_cache_l2_capacity_default_when_unset,
     test_b1_lmdb_cache_l2_capacity_ignored_without_l2,
+    test_b1_lmdb_cache_auto_no_hints_falls_back_to_none,
+    test_b1_lmdb_cache_auto_intra_thread_picks_per_hec,
+    test_b1_lmdb_cache_auto_cross_thread_picks_sharded,
+    test_b1_lmdb_cache_auto_mixed_picks_two_level,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
