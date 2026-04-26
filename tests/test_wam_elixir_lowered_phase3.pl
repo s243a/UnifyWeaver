@@ -129,6 +129,16 @@ user:phase3_set(S) :- aggregate_all(set(X), phase3_smoke_p(X), S).
 user:phase3_max(M) :- aggregate_all(max(X), phase3_smoke_p(X), M).
 user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
 
+% Module-qualified findall — `findall(X, user:p(X), L)` — would test
+% the Finding 1 fix from #1647 end-to-end, but is currently blocked
+% by a separate Elixir-runtime gap: WamRuntime.execute_builtin/3
+% doesn't implement `:/2` (the meta-call dispatcher). The WAM-side
+% fix in compile_aggregate_all/5 IS correct (Y-reg now used for
+% findall regardless of inner-goal shape — verified at the WAM
+% byte-shape level in tests/test_wam_elixir_target.pl). End-to-end
+% runtime validation deferred until `:/2` is implemented in the
+% Elixir runtime — separate Phase 3c follow-up.
+
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
 tmp_root_candidate(Root) :-
