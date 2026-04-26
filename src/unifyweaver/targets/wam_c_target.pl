@@ -307,9 +307,13 @@ wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, CodeSize, Instrs) :-
     ).
 
 wam_generate_c_instruction(PC, Parts, LabelMap, Arity, CodeLines) :-
-    (   (Parts = ["switch_on_constant" | Entries] ; Parts = ["switch_on_constant_a2" | Entries])
+    (   (   Parts = ["switch_on_constant" | Entries],
+            SwitchReg = 0
+        ;   Parts = ["switch_on_constant_a2" | Entries],
+            SwitchReg = 1
+        )
     ->  length(Entries, HashSize),
-        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .hash_size = ~w };', [PC, HashSize]),
+        format(atom(L0), '    state->code[~w] = (Instruction){ .tag = INSTR_SWITCH_ON_CONSTANT, .reg = ~w, .hash_size = ~w };', [PC, SwitchReg, HashSize]),
         format(atom(L1), '    state->code[~w].hash_table = malloc(sizeof(HashEntry) * ~w);', [PC, HashSize]),
         generate_hash_table_entries(PC, "hash_table", Entries, 0, LabelMap, HashLines),
         append([L0, L1], HashLines, CodeLines)
@@ -528,7 +532,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_SWITCH_ON_CONSTANT: {
-                WamValue *cell = wam_deref_ptr(state, &state->A[0]); // A1 is register index 0 (or X1 in 1-based, A array is 0-indexed)
+                WamValue *cell = wam_deref_ptr(state, &state->A[instr->reg]);
                 if (val_is_unbound(*cell)) {
                     state->P++;
                     return true; // Unbound variable falls through to the sequential try_me_else chain

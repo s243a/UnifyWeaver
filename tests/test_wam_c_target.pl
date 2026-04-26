@@ -270,6 +270,16 @@ test_real_prolog_builtin_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_multiclause_executable_smoke :-
+    Test = 'WAM-C: real Prolog multi-clause executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_multiclause_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog multi-clause executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -356,6 +366,35 @@ run_real_prolog_builtin_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_real_builtin(_, _))
     ;   retractall(user:wam_c_real_builtin(_, _)),
+        fail
+    ).
+
+run_real_prolog_multiclause_executable_smoke :-
+    assertz((user:wam_c_real_multi(a, yes) :- true)),
+    assertz((user:wam_c_real_multi(X, int) :- integer(X))),
+    assertz((user:wam_c_real_multi([_|_], list) :- true)),
+    (   compile_predicate_to_wam(user:wam_c_real_multi/2, [], WamCode),
+        sub_string(WamCode, _, _, _, 'switch_on_constant_a2'),
+        sub_string(WamCode, _, _, _, 'retry_me_else'),
+        sub_string(WamCode, _, _, _, 'builtin_call integer/1, 1'),
+        compile_wam_predicate_to_c(user:wam_c_real_multi/2, WamCode, [], PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_multi_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_multi_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_real_multi(_, _))
+    ;   retractall(user:wam_c_real_multi(_, _)),
         fail
     ).
 
@@ -541,6 +580,59 @@ int main(void) {
 }
 ').
 
+wam_c_real_multi_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_real_multi_2(WamState* state);
+
+static WamValue make_test_list(WamState *state) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom("head");
+    state->H_array[state->H++] = val_atom("tail");
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_real_multi_2(&state);
+
+    WamValue atom_args[2] = { val_atom("a"), val_atom("yes") };
+    int atom_rc = wam_run_predicate(&state, "wam_c_real_multi/2", atom_args, 2);
+    if (atom_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue int_args[2] = { val_int(9), val_atom("int") };
+    int int_rc = wam_run_predicate(&state, "wam_c_real_multi/2", int_args, 2);
+    if (int_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue list = make_test_list(&state);
+    WamValue list_args[2] = { list, val_atom("list") };
+    int list_rc = wam_run_predicate(&state, "wam_c_real_multi/2", list_args, 2);
+    if (list_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue fail_args[2] = { val_atom("z"), val_atom("none") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_real_multi/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -609,6 +701,7 @@ run_tests_once :-
     test_cross_predicate_executable_smoke,
     test_builtin_call_executable_smoke,
     test_real_prolog_builtin_executable_smoke,
+    test_real_prolog_multiclause_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
