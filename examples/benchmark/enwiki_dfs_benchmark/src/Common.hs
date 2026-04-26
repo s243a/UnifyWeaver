@@ -15,6 +15,7 @@ module Common
 import qualified Data.IntSet as IS
 import Data.List (sort)
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
+import Control.DeepSeq (NFData(..))
 
 -- | The universal node-lookup contract.  Each backend implements this.
 --   Given a node id, returns the list of its parent node ids.
@@ -26,6 +27,9 @@ data BenchResult = BenchResult
   { brVisited :: {-# UNPACK #-} !Int
   , brMaxDepth :: {-# UNPACK #-} !Int
   } deriving (Show)
+
+instance NFData BenchResult where
+    rnf (BenchResult v d) = rnf v `seq` rnf d
 
 -- | Depth-limited DFS from a seed, collecting a running count of
 --   visited nodes and the maximum depth reached.  Deduplicates via

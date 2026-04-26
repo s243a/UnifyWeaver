@@ -8,12 +8,13 @@ build-type:    Simple
 executable enwiki-dfs
   main-is:          Main.hs
   hs-source-dirs:   src
-  other-modules:    Common, IntMapBackend, LmdbBackend
+  other-modules:    Common, IntMapBackend, LmdbBackend, LmdbCachedBackend
   build-depends:    base >= 4.12,
                     containers >= 0.6,
                     bytestring,
                     time >= 1.8,
                     deepseq >= 1.4,
+                    parallel >= 3.2,
                     mtl,
                     lmdb >= 0.2.5,
                     random >= 1.2

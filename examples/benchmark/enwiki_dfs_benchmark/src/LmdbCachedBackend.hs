@@ -51,7 +51,6 @@ module LmdbCachedBackend
 
 import Control.Concurrent (myThreadId, ThreadId)
 import Control.Concurrent.MVar
-import Control.Monad (when)
 import Data.Int (Int32)
 import Data.IORef
 import qualified Data.IntMap.Strict as IM
@@ -85,26 +84,26 @@ openLmdbCachedBackend path = do
     mdb_env_set_maxreaders env 126
     mdb_env_open env path [MDB_RDONLY]
 
+    -- Bootstrap the dbi handle.  IMPORTANT: the txn must be COMMITTED
+    -- (not aborted) so the dbi handle persists across subsequent
+    -- transactions.  Per LMDB docs, "if the transaction is aborted the
+    -- handle will be closed automatically", which would invalidate
+    -- every per-thread cursor opened later.
+    bootstrapTxn <- mdb_txn_begin env Nothing True
+    dbi <- mdb_dbi_open' bootstrapTxn (Just "main") [MDB_DUPSORT]
+    mdb_txn_commit bootstrapTxn
+
     -- Shared memoisation cache: IntMap [Int], starts empty.
     -- IORef: reads are cheap; writes (cache misses) are rare once warm.
     cacheRef <- newIORef (IM.empty :: IM.IntMap [Int])
 
-    -- Per-thread cursor registry: Map ThreadId (MDB_txn', MDB_cursor').
-    -- Wrapped in MVar for thread-safe insertion of new entries.
-    -- Reads after insertion are lock-free (Map is persistent; we only
-    -- read our own entry after inserting it).
-    cursorMapVar <- newMVar (Map.empty :: Map.Map ThreadId (MDB_txn', MDB_cursor'))
+    -- Per-thread cursor registry.  Wrapped in MVar for thread-safe
+    -- insertion of new entries.  Each thread only reads/writes its own
+    -- ThreadId key so contention is limited to the rare first-miss
+    -- per thread.
+    cursorMapVar <- newMVar (Map.empty :: Map.Map ThreadId MDB_cursor')
 
-    let dbi_ref = unsafePerformIO $ do
-          -- Open a throw-away txn just to get the dbi handle.
-          -- dbi values are stable for the lifetime of the env.
-          txn <- mdb_txn_begin env Nothing True
-          dbi <- mdb_dbi_open' txn (Just "main") [MDB_DUPSORT]
-          mdb_txn_abort txn
-          newIORef dbi
-        {-# NOINLINE dbi_ref #-}
-
-    return $ cachedLookup env dbi_ref cacheRef cursorMapVar
+    return $ cachedLookup env dbi cacheRef cursorMapVar
 
 -- ---------------------------------------------------------------------------
 -- Internal implementation
@@ -113,18 +112,18 @@ openLmdbCachedBackend path = do
 -- | The EdgeLookup closure.
 cachedLookup
     :: MDB_env
-    -> IORef MDB_dbi'
+    -> MDB_dbi'
     -> IORef (IM.IntMap [Int])
-    -> MVar (Map.Map ThreadId (MDB_txn', MDB_cursor'))
+    -> MVar (Map.Map ThreadId MDB_cursor')
     -> EdgeLookup
-cachedLookup env dbiRef cacheRef cursorMapVar key = unsafePerformIO $ do
+cachedLookup env dbi cacheRef cursorMapVar key = unsafePerformIO $ do
     -- Fast path: pure cache hit (no synchronisation).
     cache <- readIORef cacheRef
     case IM.lookup key cache of
       Just vs -> return vs
       Nothing -> do
         -- Slow path: cache miss.  Fetch from LMDB, populate cache.
-        vs <- fetchFromLmdb env dbiRef cursorMapVar key
+        vs <- fetchFromLmdb env dbi cursorMapVar key
         -- Atomically insert into cache.  If another thread raced us,
         -- we just overwrite with the same value (dupsort data is
         -- immutable).  The double-write is harmless and cheaper than
@@ -137,24 +136,23 @@ cachedLookup env dbiRef cacheRef cursorMapVar key = unsafePerformIO $ do
 --   subsequent calls.
 fetchFromLmdb
     :: MDB_env
-    -> IORef MDB_dbi'
-    -> MVar (Map.Map ThreadId (MDB_txn', MDB_cursor'))
+    -> MDB_dbi'
+    -> MVar (Map.Map ThreadId MDB_cursor')
     -> Int
     -> IO [Int]
-fetchFromLmdb env dbiRef cursorMapVar key = do
+fetchFromLmdb env dbi cursorMapVar key = do
     tid <- myThreadId
-    -- Look up this thread's cursor without holding the MVar.
     cursorMap <- readMVar cursorMapVar
-    (_, cursor) <- case Map.lookup tid cursorMap of
-      Just entry -> return entry
-      Nothing    -> do
-        -- First cache-miss for this thread: open a dedicated cursor.
-        dbi <- readIORef dbiRef
+    cursor <- case Map.lookup tid cursorMap of
+      Just c  -> return c
+      Nothing -> do
+        -- First cache-miss for this thread: open a dedicated read txn
+        -- and cursor.  Both stay alive for the life of the thread (no
+        -- explicit cleanup; acceptable for batch jobs).
         txn <- mdb_txn_begin env Nothing True
         cur <- mdb_cursor_open' txn dbi
-        let entry = (txn, cur)
-        modifyMVar_ cursorMapVar $ \m -> return (Map.insert tid entry m)
-        return entry
+        modifyMVar_ cursorMapVar $ \m -> return (Map.insert tid cur m)
+        return cur
     lookupDupsSafe cursor key
 
 -- | Dupsort lookup using an already-positioned cursor.  Same logic as
