@@ -681,3 +681,10 @@ not in the native store object:
 - one thread-local L1 map caches `lookupArg1` results by key
 - scan behavior is unchanged
 - shared L2 caching is still deferred
+
+The next narrow step is now underway too: the JVM helper exposes
+`openSharedCached` and `openTwoLevel` so Clojure can opt into a shared
+`lookupArg1` cache or a composed L1+L2 policy without changing the
+native store seam again. We should not trust Termux to tell us whether
+`none` vs `memoize` is the right default; that comparison is now a
+desktop-only measurement TODO.

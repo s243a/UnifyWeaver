@@ -75,6 +75,8 @@ What is implemented today:
   memoization for `category_parent` lookup overlap:
   - `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize)`
   - `benchmark_relation_cache_policy(category_parent, memoize)`
+- desktop-only TODO: compare `none` vs `memoize` on overlap-heavy and
+  low-overlap workloads before treating L1 as a settled default
 
 This is intentionally narrow:
 
@@ -246,18 +248,32 @@ Reference:
 
 ### Phase C4: Shared cache tiers
 
-Status: **deferred**
+Status: **in progress**
 
-Do not start until:
+Before broadening this phase:
 
 1. raw reader seam is stable
 2. thread-local reuse is validated
-3. L1 policy is benchmarked and justified
+3. L1 policy should still be benchmarked and justified on desktop
+
+Narrow implementation shape:
+
+1. keep shared cache policy above the raw native store seam
+2. use copied JVM `LmdbRow` values as cache payloads
+3. scope the first L2 work to `lookupArg1`
+4. allow a composed `two_level` policy, but keep shared invalidation and
+   memory budgeting deferred
 
 Reference:
 
 - Haskell `d124e1d1` is useful here, but it is guidance for a later
-  phase, not the immediate next step for Clojure
+  phase, not a reason to merge all L2 concerns at once
+
+Desktop measurement TODO:
+
+- evaluate `none` vs `memoize` vs `shared` vs `two_level`
+- do this outside Termux, where JVM timing and memory behavior are more
+  trustworthy
 
 ### Phase C5: Broader relation coverage
 
