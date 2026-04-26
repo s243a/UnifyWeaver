@@ -1410,6 +1410,50 @@ test_b1_lmdb_dupsort_alone_no_memoize :-
             'Memoising EdgeLookup unexpectedly emitted without cache_mode')
     ).
 
+test_b1_lmdb_cache_l1_emitted :-
+    Test = 'B1: lmdb_cache_mode(per_hec) emits L1 EdgeLookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "L1Registry"),
+        sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        sub_string(S, _, _, _, "defaultL1Capacity")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L1 EdgeLookup not emitted')
+    ).
+
+test_b1_lmdb_cache_l1_not_emitted_without_dupsort :-
+    Test = 'B1: lmdb_cache_mode(per_hec) ignored without dupsort layout',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L1Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'L1 EdgeLookup unexpectedly emitted without dupsort')
+    ).
+
+test_b1_lmdb_cache_modes_mutually_exclusive :-
+    Test = 'B1: per_hec and memoize are mutually exclusive (memoize wins)',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(memoize),
+             lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        % memoize takes precedence when both are set; L1 should not
+        % be emitted in that case (keeps Phase 1 single-mode invariant)
+        sub_string(S, _, _, _, "lmdbCachedEdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Mode precedence violated when both flags set')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
@@ -1522,6 +1566,9 @@ run_tests :-
     test_b1_lmdb_cache_memoize_emitted,
     test_b1_lmdb_cache_memoize_not_emitted_without_dupsort,
     test_b1_lmdb_dupsort_alone_no_memoize,
+    test_b1_lmdb_cache_l1_emitted,
+    test_b1_lmdb_cache_l1_not_emitted_without_dupsort,
+    test_b1_lmdb_cache_modes_mutually_exclusive,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,

@@ -2898,7 +2898,7 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId)",
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId)",
         generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
@@ -3668,30 +3668,31 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %    lmdb_layout(dupsort) — named "main" subdb with MDB_DUPSORT, one
 %                           entry per (key, value) pair (streaming-
 %                           pipeline ingest)
-%    lmdb_cache_mode(memoize) — opt-in: wrap the dupsort EdgeLookup with
-%                           a demand-driven IntMap memoisation layer.
-%                           Each (key, [neighbours]) pair is fetched
-%                           from LMDB at most once and shared across
-%                           all parMap worker threads.  Pays off on
-%                           workloads with subgraph overlap (deeper
-%                           paths, shared root regions); on random
-%                           shallow seeds the cache infrastructure
-%                           overhead can exceed the FFI savings.
-%                           Only meaningful when lmdb_layout(dupsort);
-%                           ignored otherwise.
+%    lmdb_cache_mode(memoize) — Phase 2 spelling: shared demand-driven
+%                           IntMap memoisation across all parMap worker
+%                           threads.  See PARALLELISM CAVEAT below.
 %
-%                           PARALLELISM CAVEAT: under +RTS -N>1 the
-%                           shared atomicModifyIORef' write per miss
-%                           serialises across cores.  On low-hit-rate
-%                           workloads this produces a net regression
-%                           vs the bare dupsort path (measured 7x
-%                           slowdown at -N4 on a random-seed enwiki
-%                           workload).  Recommended only when the
-%                           expected cache hit rate justifies the
-%                           contention — generally workloads where
-%                           many seeds share substantial subgraph
-%                           overlap.  A future per-HEC L1 + sharded
-%                           L2 design would mitigate the contention.
+%    lmdb_cache_mode(per_hec) — Phase 1 (this option): per-HEC L1 cache.
+%                           Each Haskell thread (HEC under +RTS -N)
+%                           owns its own IntMap with no synchronisation
+%                           on the hot path — zero CAS, zero cross-core
+%                           contention.  Trade-off: cache hits don't
+%                           share across threads, so a key seen by two
+%                           workers pays the LMDB miss twice.  Right
+%                           call when intra-thread reuse dominates
+%                           (most DFS-style workloads).
+%
+%    All cache modes are gated by lmdb_layout(dupsort); ignored
+%    otherwise.  Modes are mutually exclusive — see
+%    docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md for the L2 and
+%    two_level modes planned for Phase 2.
+%
+%    PARALLELISM CAVEAT (memoize): under +RTS -N>1 the shared
+%    atomicModifyIORef' write per miss serialises across cores.  On
+%    low-hit-rate workloads this produces a net regression vs the
+%    bare dupsort path (measured 7x slowdown at -N4 on a random-seed
+%    enwiki workload).  Use per_hec instead unless your workload has
+%    confirmed cross-thread cache overlap.
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
     (   option(lmdb_layout(dupsort), Options)
@@ -3703,9 +3704,16 @@ generate_lmdb_functions(Options, Code) :-
     ->  CacheMemoize = true
     ;   CacheMemoize = false
     ),
+    (   option(lmdb_cache_mode(per_hec), Options),
+        Dupsort == true,
+        CacheMemoize == false
+    ->  CacheL1 = true
+    ;   CacheL1 = false
+    ),
     render_template(Template,
                     [lmdb_dupsort=Dupsort,
-                     lmdb_cache_memoize=CacheMemoize],
+                     lmdb_cache_memoize=CacheMemoize,
+                     lmdb_cache_l1=CacheL1],
                     Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
