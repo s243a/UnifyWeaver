@@ -102,6 +102,7 @@ test_control_flow_instructions :-
     (   implemented_wam_c_cases(Cases),
         member(call, Cases),
         member(execute, Cases),
+        member(builtin_call, Cases),
         member(proceed, Cases),
         member(allocate, Cases),
         member(deallocate, Cases)
@@ -199,6 +200,23 @@ test_predicate_hash_registration :-
     ;   fail_test(Test, 'predicate hash registration/lookup missing')
     ).
 
+test_builtin_call_generation :-
+    Test = 'WAM-C: builtin_call parses and delegates',
+    WamCode = 'foo/1:\n    builtin_call atom/1, 1\n    proceed',
+    (   compile_wam_predicate_to_c(user:foo/1, WamCode, [], PredCode),
+        atom_string(PredCode, PredS),
+        compile_step_wam_to_c([], StepCode),
+        atom_string(StepCode, StepS),
+        compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(PredS, _, _, _, 'INSTR_BUILTIN_CALL'),
+        sub_string(PredS, _, _, _, '.pred = "atom/1"'),
+        sub_string(StepS, _, _, _, 'wam_execute_builtin'),
+        sub_string(HelpersS, _, _, _, 'bool wam_execute_builtin')
+    ->  pass(Test)
+    ;   fail_test(Test, 'builtin_call parser/runtime delegation missing')
+    ).
+
 test_list_target_pc_emission :-
     Test = 'WAM-C: list-headed clauses emit list_target_pc',
     assertz((user:wam_c_list_case([_|_]) :- true)),
@@ -232,6 +250,16 @@ test_cross_predicate_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_builtin_call_executable_smoke :-
+    Test = 'WAM-C: builtin_call executable smoke',
+    (   gcc_available
+    ->  (   run_builtin_call_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'builtin_call executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -254,8 +282,8 @@ run_generated_runtime_executable_smoke :-
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_exec_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
-    compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath),
-    run_c_smoke(ExePath).
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
 
 run_cross_predicate_executable_smoke :-
     WamCode = 'wam_c_exec_caller/1:\n    execute wam_c_exec_callee/1\nwam_c_exec_callee/1:\n    get_constant a, A1\n    proceed',
@@ -272,6 +300,25 @@ run_cross_predicate_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_cross_exec_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_builtin_call_executable_smoke :-
+    WamCode = 'wam_c_builtin_atom/1:\n    builtin_call atom/1, 1\n    proceed\nwam_c_builtin_is/2:\n    builtin_call is/2, 2\n    proceed',
+    compile_wam_predicate_to_c(user:wam_c_builtin_atom/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    format(atom(TmpBase), '/tmp/unifyweaver_wam_c_builtin_smoke_~w', [Stamp]),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_builtin_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -392,6 +439,42 @@ int main(void) {
 }
 ').
 
+wam_c_builtin_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_builtin_atom_1(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_builtin_atom_1(&state);
+
+    WamValue atom_args[1] = { val_atom("a") };
+    int atom_rc = wam_run_predicate(&state, "wam_c_builtin_atom/1", atom_args, 1);
+    if (atom_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue int_args[1] = { val_int(7) };
+    int int_rc = wam_run_predicate(&state, "wam_c_builtin_atom/1", int_args, 1);
+    if (int_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue is_args[2] = { val_unbound("Result"), val_int(7) };
+    int is_rc = wam_run_predicate(&state, "wam_c_builtin_is/2", is_args, 2);
+    if (is_rc != 0 || state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -412,6 +495,7 @@ implemented_case(deallocate, 'case INSTR_DEALLOCATE').
 implemented_case(proceed, 'case INSTR_PROCEED').
 implemented_case(call, 'case INSTR_CALL').
 implemented_case(execute, 'case INSTR_EXECUTE').
+implemented_case(builtin_call, 'case INSTR_BUILTIN_CALL').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
@@ -453,9 +537,11 @@ run_tests_once :-
     test_c_memory_management,
     test_c_while_loop,
     test_predicate_hash_registration,
+    test_builtin_call_generation,
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
+    test_builtin_call_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
