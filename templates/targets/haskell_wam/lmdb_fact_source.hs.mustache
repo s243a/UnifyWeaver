@@ -337,6 +337,163 @@ lmdbL1EdgeLookup env dbi cursorCache l1reg key = unsafePerformIO $ do
         return vs
 {{/lmdb_cache_l1}}
 
+{{#lmdb_cache_l2}}
+-- | Phase 2 L2 cache (shared, lock-free).
+--
+-- A single IOArray shared across all HECs.  Lookups and writes are
+-- non-atomic but racy-safe: GHC's IOArray pointer writes are
+-- word-aligned and atomic on x86_64, so a reader sees either the
+-- old or the new pointer (no torn writes).  Different threads may
+-- race to write the same slot; the "winner" overwrites, but every
+-- cached value equals the truth (LMDB is read-only), so any winner
+-- is correct.  This avoids both atomicModifyIORef contention and
+-- the complexity of sharded locking.
+--
+-- The single shared IOArray means cross-HEC cache hits are possible
+-- (vs L1 which is strictly per-HEC).  At the cost of a slightly
+-- longer hot path (one extra array indexing per call vs L1) and
+-- more potential cache-line bouncing under heavy contention.
+data L2Cache = L2Cache
+    { l2Arr      :: {-# UNPACK #-} !(IOA.IOArray Int L2Entry)
+    , l2Capacity :: {-# UNPACK #-} !Int  -- must be a power of two
+    }
+
+data L2Entry
+    = L2Empty
+    | L2Entry {-# UNPACK #-} !Int [Int]   -- stored key + values
+
+-- | Read /proc/meminfo MemAvailable on Linux.  Falls back to 1 GB if
+-- the file is unreadable (non-Linux or sandboxed environment).  This
+-- is best-effort sizing; the user can override via
+-- lmdb_cache_l2_capacity_bytes(N) in the Prolog options.
+readMemAvailableBytes :: IO Int
+readMemAvailableBytes = do
+    eContents <- E.try (readFile "/proc/meminfo")
+                   :: IO (Either E.SomeException String)
+    case eContents of
+      Left _ -> return defaultBytes
+      Right contents ->
+        case dropWhile notMemAvailable (lines contents) of
+          (line:_) -> case words line of
+            (_ : kb : _) | [(n, "")] <- reads kb -> return (n * 1024)
+            _ -> return defaultBytes
+          _ -> return defaultBytes
+  where
+    defaultBytes = 1024 * 1024 * 1024  -- 1 GB
+    notMemAvailable l = not ("MemAvailable:" `isPrefixOf` l)
+
+-- | L2 memory budget: min(half of available, available - 500 MB).
+-- Floors at 0 if RAM is too tight to leave the safety buffer.  The
+-- user's design intent: don't use more than half the available RAM,
+-- and always leave a 500 MB headroom for the rest of the process.
+l2MemoryBudgetBytes :: IO Int
+l2MemoryBudgetBytes = do
+    available <- readMemAvailableBytes
+    let bufferBytes = 500 * 1024 * 1024
+        halfBytes   = available `div` 2
+        budget      = min halfBytes (available - bufferBytes)
+    return $! max 0 budget
+
+-- | Default L2 capacity in entries: derived from the memory budget,
+-- ~32 bytes per L2Entry, rounded down to a power of two, bounded
+-- [1024, 1M] entries.  Can be overridden by the Prolog option
+-- lmdb_cache_l2_capacity_bytes/1.
+defaultL2Capacity :: IO Int
+defaultL2Capacity = do
+    budget <- l2MemoryBudgetBytes
+    let bytesPerEntry = 32 :: Int
+        rawEntries    = budget `div` bytesPerEntry
+        bounded       = max 1024 (min 1048576 rawEntries)
+    return $! roundDownPow2 bounded
+  where
+    roundDownPow2 n
+      | n <= 1    = 1
+      | otherwise = go 1
+      where
+        go x | x * 2 > n = x
+             | otherwise = go (x * 2)
+
+-- | Allocate the shared L2 cache.  Capacity must be a power of two
+-- (caller's responsibility; defaultL2Capacity guarantees this, and
+-- the user override should also enforce it).
+newL2Cache :: Int -> IO L2Cache
+newL2Cache cap = do
+    arr <- IOA.newArray (0, cap - 1) L2Empty
+    return (L2Cache arr cap)
+
+-- | L2 lookup: O(1) shared array read with key-match check.  Reads
+-- are not synchronised; we may see another thread's just-written
+-- pointer or its predecessor.  Both are valid cached values.
+{-# INLINE l2Lookup #-}
+l2Lookup :: L2Cache -> Int -> IO (Maybe [Int])
+l2Lookup (L2Cache arr cap) key = do
+    let !idx = key .&. (cap - 1)
+    e <- IOA.readArray arr idx
+    case e of
+      L2Entry k vs | k == key -> return (Just vs)
+      _                       -> return Nothing
+
+-- | L2 insert: O(1) shared array write.  Two threads racing on the
+-- same slot is harmless — both stored values are correct, only the
+-- "winning" pointer survives.  Pointer writes are atomic on x86_64;
+-- weaker ISAs may need a memory barrier (out of scope for now).
+{-# INLINE l2Insert #-}
+l2Insert :: L2Cache -> Int -> [Int] -> IO ()
+l2Insert (L2Cache arr cap) key vs = do
+    let !idx = key .&. (cap - 1)
+    IOA.writeArray arr idx (L2Entry key vs)
+
+-- | L2-only EdgeLookup.  On hit, return the cached neighbours.  On
+-- miss, fall through to the dupsort lookup and populate the L2
+-- entry.  Hot path is lighter than the previous shared-IntMap
+-- (memoize) cache because the IOArray write is unsynchronised.
+{-# INLINE lmdbL2EdgeLookup #-}
+lmdbL2EdgeLookup
+    :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> L2Cache
+    -> EdgeLookup
+lmdbL2EdgeLookup env dbi cursorCache l2 key = unsafePerformIO $ do
+    h <- l2Lookup l2 key
+    case h of
+      Just vs -> return vs
+      Nothing -> do
+        !vs <- lmdbRawEdgeLookupIO env dbi cursorCache key
+        l2Insert l2 key vs
+        return vs
+{{/lmdb_cache_l2}}
+
+{{#lmdb_cache_two_level}}
+-- | Two-level cache: per-HEC L1 in front of shared L2.  L1 hits
+-- avoid the L2 array entirely (no cross-HEC memory traffic).  L2
+-- hits promote to L1 so subsequent same-key lookups on this thread
+-- skip L2.  Misses populate both levels.
+--
+-- This is the workload-portable choice: low-overlap workloads
+-- mostly hit L1, high-overlap workloads benefit from cross-HEC
+-- sharing via L2.  The cost is one extra array index per L1 miss
+-- and one extra write per LMDB miss vs the L1-only path.
+{-# INLINE lmdbTwoLevelEdgeLookup #-}
+lmdbTwoLevelEdgeLookup
+    :: MDB_env -> MDB_dbi' -> DupsortCursorCache
+    -> L1Registry -> L2Cache
+    -> EdgeLookup
+lmdbTwoLevelEdgeLookup env dbi cursorCache l1reg l2 key = unsafePerformIO $ do
+    l1 <- getL1ForCap l1reg
+    h1 <- l1Lookup l1 key
+    case h1 of
+      Just vs -> return vs   -- L1 hit: fast path
+      Nothing -> do
+        h2 <- l2Lookup l2 key
+        case h2 of
+          Just vs -> do
+            l1Insert l1 key vs   -- promote L2 hit to L1
+            return vs
+          Nothing -> do
+            !vs <- lmdbRawEdgeLookupIO env dbi cursorCache key
+            l1Insert l1 key vs
+            l2Insert l2 key vs
+            return vs
+{{/lmdb_cache_two_level}}
+
 -- | Convenience: open LMDB and return an EdgeLookup with a long-lived
 -- read transaction. The transaction (and thus the mmap snapshot) stays
 -- open for the process lifetime. This is correct because the fact
@@ -355,8 +512,27 @@ openLmdbEdgeLookup dbPath _dbName = do
     return (lmdbCachedEdgeLookup env dbi cursorCache resultCache)
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
+{{#lmdb_cache_two_level}}
+    -- two_level: per-HEC L1 in front of shared L2.  Memory budget
+    -- for L2 is computed from /proc/meminfo (Linux), capped to
+    -- min(half-available, available - 500MB), rounded down to a
+    -- power of two.  Override via lmdb_cache_l2_capacity_bytes/1.
+    l1reg  <- newL1Registry defaultL1Capacity
+    l2cap  <- defaultL2Capacity
+    l2     <- newL2Cache l2cap
+    return (lmdbTwoLevelEdgeLookup env dbi cursorCache l1reg l2)
+{{/lmdb_cache_two_level}}
+{{^lmdb_cache_two_level}}
+{{#lmdb_cache_l2}}
+    -- L2-only: shared lock-free IOArray cache.  Cross-HEC sharing
+    -- without atomicModifyIORef contention.
+    l2cap <- defaultL2Capacity
+    l2    <- newL2Cache l2cap
+    return (lmdbL2EdgeLookup env dbi cursorCache l2)
+{{/lmdb_cache_l2}}
+{{^lmdb_cache_l2}}
 {{#lmdb_cache_l1}}
-    -- Per-HEC L1 cache; each capability owns its own IntMap with
+    -- Per-HEC L1 cache; each capability owns its own IOArray with
     -- no synchronisation on the hot path.  Pre-allocated for
     -- numCapabilities slots so the lookup is O(1) array indexing.
     l1reg <- newL1Registry defaultL1Capacity
@@ -365,6 +541,8 @@ openLmdbEdgeLookup dbPath _dbName = do
 {{^lmdb_cache_l1}}
     return (lmdbRawEdgeLookup env dbi cursorCache)
 {{/lmdb_cache_l1}}
+{{/lmdb_cache_l2}}
+{{/lmdb_cache_two_level}}
 {{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
@@ -412,14 +590,31 @@ lmdbFactSource dbPath _dbName = do
     let lookup' = lmdbCachedEdgeLookup env dbi cursorCache resultCache
 {{/lmdb_cache_memoize}}
 {{^lmdb_cache_memoize}}
+{{#lmdb_cache_two_level}}
+    -- two_level: per-HEC L1 + shared L2.
+    l1reg  <- newL1Registry defaultL1Capacity
+    l2cap  <- defaultL2Capacity
+    l2     <- newL2Cache l2cap
+    let lookup' = lmdbTwoLevelEdgeLookup env dbi cursorCache l1reg l2
+{{/lmdb_cache_two_level}}
+{{^lmdb_cache_two_level}}
+{{#lmdb_cache_l2}}
+    -- L2-only: shared lock-free IOArray cache.
+    l2cap <- defaultL2Capacity
+    l2    <- newL2Cache l2cap
+    let lookup' = lmdbL2EdgeLookup env dbi cursorCache l2
+{{/lmdb_cache_l2}}
+{{^lmdb_cache_l2}}
 {{#lmdb_cache_l1}}
-    -- Per-capability L1 cache; one IORef per HEC, no synchronisation.
+    -- Per-capability L1 cache; one IOArray per HEC, no synchronisation.
     l1reg <- newL1Registry defaultL1Capacity
     let lookup' = lmdbL1EdgeLookup env dbi cursorCache l1reg
 {{/lmdb_cache_l1}}
 {{^lmdb_cache_l1}}
     let lookup' = lmdbRawEdgeLookup env dbi cursorCache
 {{/lmdb_cache_l1}}
+{{/lmdb_cache_l2}}
+{{/lmdb_cache_two_level}}
 {{/lmdb_cache_memoize}}
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}

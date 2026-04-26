@@ -47,8 +47,12 @@ main :-
     ->  CacheMode = memoize
     ;   Argv = [FactsPath, OutputDir, '--cache-l1']
     ->  CacheMode = per_hec
+    ;   Argv = [FactsPath, OutputDir, '--cache-l2']
+    ->  CacheMode = sharded
+    ;   Argv = [FactsPath, OutputDir, '--cache-two-level']
+    ->  CacheMode = two_level
     ;   format(user_error,
-               'Usage: ... -- <facts.pl> <output-dir> [--cache | --cache-l1]~n', []),
+               'Usage: ... -- <facts.pl> <output-dir> [--cache | --cache-l1 | --cache-l2 | --cache-two-level]~n', []),
         halt(1)
     ),
     generate(FactsPath, OutputDir, CacheMode),
@@ -97,23 +101,12 @@ generate(FactsPath, OutputDir, CacheMode) :-
         % Disable so the FFI kernel falls back to LMDB lookups directly.
         demand_filter(false)
     ],
-    (   CacheMode == memoize
-    ->  Options = [lmdb_cache_mode(memoize) | BaseOptions]
-    ;   CacheMode == per_hec
-    ->  Options = [lmdb_cache_mode(per_hec) | BaseOptions]
+    (   member(CacheMode, [memoize, per_hec, sharded, two_level])
+    ->  Options = [lmdb_cache_mode(CacheMode) | BaseOptions]
     ;   Options = BaseOptions
     ),
 
     write_wam_haskell_project(Predicates, Options, OutputDir),
-    (   CacheMode == memoize
-    ->  format(user_error,
-               '[WAM-Haskell] enwiki int-atom benchmark (memoize cache) generated at ~w~n',
-               [OutputDir])
-    ;   CacheMode == per_hec
-    ->  format(user_error,
-               '[WAM-Haskell] enwiki int-atom benchmark (L1 per-HEC cache) generated at ~w~n',
-               [OutputDir])
-    ;   format(user_error,
-               '[WAM-Haskell] enwiki int-atom benchmark generated at ~w~n',
-               [OutputDir])
-    ).
+    format(user_error,
+           '[WAM-Haskell] enwiki int-atom benchmark (~w) generated at ~w~n',
+           [CacheMode, OutputDir]).
