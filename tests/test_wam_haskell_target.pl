@@ -1351,6 +1351,28 @@ test_b1_lmdb_manifest_wiring_option_present :-
     ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
     ).
 
+test_b1_lmdb_dupsort_per_thread_cursor :-
+    Test = 'B1: dupsort layout uses per-thread cursor cache',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "DupsortCursorCache"),
+        sub_string(S, _, _, _, "newDupsortCursorCache"),
+        sub_string(S, _, _, _, "getOrOpenDupsortCursor"),
+        sub_string(S, _, _, _, "myThreadId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Dupsort per-thread cursor cache not emitted')
+    ).
+
+test_b1_lmdb_default_layout_no_cursor_cache :-
+    Test = 'B1: default layout does not emit cursor cache',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "DupsortCursorCache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Default layout unexpectedly emitted dupsort cache code')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
@@ -1458,6 +1480,8 @@ run_tests :-
     test_b1_lmdb_scan_support_present,
     test_b1_lmdb_manifest_fact_source_present,
     test_b1_lmdb_manifest_wiring_option_present,
+    test_b1_lmdb_dupsort_per_thread_cursor,
+    test_b1_lmdb_default_layout_no_cursor_cache,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,

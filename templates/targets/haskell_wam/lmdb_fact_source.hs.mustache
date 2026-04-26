@@ -93,13 +93,39 @@ lmdbRawEdgeLookup txn dbi key = unsafePerformIO $
           mapM (\i -> fromIntegral <$> (peekElemOff (castPtr ptr :: Ptr Int32) i)) [0..count-1]
 {{/lmdb_dupsort}}
 {{#lmdb_dupsort}}
+-- | Per-thread cursor cache for dupsort lookups.  LMDB cursors and
+-- read transactions are pinned to the thread that created them, so
+-- a parMap-driven workload needs one (txn, cursor) pair per worker
+-- thread.  The cache is populated lazily on first lookup from each
+-- thread; subsequent lookups from the same thread reuse the cached
+-- cursor.  Cursors leak at shutdown (acceptable for batch jobs).
+type DupsortCursorCache = IORef (Map.Map ThreadId (MDB_txn, MDB_cursor'))
+
+newDupsortCursorCache :: IO DupsortCursorCache
+newDupsortCursorCache = newIORef Map.empty
+
+-- | Look up or lazily allocate the cursor for the calling thread.
+getOrOpenDupsortCursor :: MDB_env -> MDB_dbi' -> DupsortCursorCache
+                       -> IO MDB_cursor'
+getOrOpenDupsortCursor env dbi cache = do
+    tid <- myThreadId
+    m <- readIORef cache
+    case Map.lookup tid m of
+      Just (_, c) -> return c
+      Nothing -> do
+        txn <- mdb_txn_begin env Nothing True
+        c <- mdb_cursor_open' txn dbi
+        atomicModifyIORef' cache
+          (\m' -> (Map.insert tid (txn, c) m', ()))
+        return c
+
 -- | Dupsort EdgeLookup: cursor-based iteration over duplicate values.
--- A single shared cursor is held by closure capture for the process
--- lifetime.  NOT thread-safe; the WAM benchmark drives parMap rdeepseq
--- across seeds, but each seed's DFS is sequential and reuses the
--- cursor.  For multi-threaded readers, allocate one cursor per thread.
-lmdbRawEdgeLookup :: MDB_cursor' -> EdgeLookup
-lmdbRawEdgeLookup cursor key = unsafePerformIO $
+-- Thread-safe: each calling thread gets its own (txn, cursor) from
+-- the per-thread cache.  parMap workloads see no shared mutable state
+-- and run without the shared-cursor assertion failure.
+lmdbRawEdgeLookup :: MDB_env -> MDB_dbi' -> DupsortCursorCache -> EdgeLookup
+lmdbRawEdgeLookup env dbi cache key = unsafePerformIO $ do
+    cursor <- getOrOpenDupsortCursor env dbi cache
     allocaBytes 4 $ \kp -> do
       poke (castPtr kp :: Ptr Int32) (fromIntegral key :: Int32)
       alloca $ \kvPtr -> alloca $ \dvPtr -> do
@@ -107,13 +133,13 @@ lmdbRawEdgeLookup cursor key = unsafePerformIO $
         found <- mdb_cursor_get' MDB_SET cursor kvPtr dvPtr
         if not found
           then return []
-          else collectDups kvPtr dvPtr
+          else collectDups cursor kvPtr dvPtr
   where
-    collectDups kvPtr dvPtr = do
+    collectDups cursor kvPtr dvPtr = do
       v <- readInt32Val dvPtr
       more <- mdb_cursor_get' MDB_NEXT_DUP cursor kvPtr dvPtr
       if more
-        then do rest <- collectDups kvPtr dvPtr
+        then do rest <- collectDups cursor kvPtr dvPtr
                 return (v : rest)
         else return [v]
 
@@ -131,12 +157,14 @@ lmdbRawEdgeLookup cursor key = unsafePerformIO $
 openLmdbEdgeLookup :: FilePath -> String -> IO EdgeLookup
 openLmdbEdgeLookup dbPath _dbName = do
     (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
-    txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
 {{#lmdb_dupsort}}
-    cursor <- mdb_cursor_open' txn dbi
-    return (lmdbRawEdgeLookup cursor)
+    -- Per-thread (txn, cursor) cache; entries are populated lazily
+    -- on the first lookup from each parMap worker thread.
+    cache <- newDupsortCursorCache
+    return (lmdbRawEdgeLookup env dbi cache)
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
+    txn <- mdb_txn_begin env Nothing True  -- read-only, held for process lifetime
     return (lmdbRawEdgeLookup txn dbi)
 {{/lmdb_dupsort}}
 
@@ -169,10 +197,12 @@ scanRawIntPairs txn dbi = do
 lmdbFactSource :: FilePath -> String -> IO FactSource
 lmdbFactSource dbPath _dbName = do
     (env, dbi) <- openLmdbRawReadonlyStore dbPath Nothing
-    txn <- mdb_txn_begin env Nothing True  -- long-lived read txn
+    txn <- mdb_txn_begin env Nothing True  -- long-lived read txn (used by fsScan)
 {{#lmdb_dupsort}}
-    cursor <- mdb_cursor_open' txn dbi
-    let lookup' = lmdbRawEdgeLookup cursor
+    -- Lookups go through a per-thread cursor cache (independent of
+    -- the scan txn above so parMap workers can run in parallel).
+    cache <- newDupsortCursorCache
+    let lookup' = lmdbRawEdgeLookup env dbi cache
 {{/lmdb_dupsort}}
 {{^lmdb_dupsort}}
     let lookup' = lmdbRawEdgeLookup txn dbi
