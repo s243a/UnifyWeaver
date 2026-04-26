@@ -642,3 +642,9 @@ the Java classpath and expose the JNI library path when the project is
 launched. The current integration is deliberately narrow: only
 `category_parent` can opt into LMDB, and the existing EDN / grouped-TSV
 paths remain the stable defaults and fallbacks.
+
+Follow-up design work for the next Clojure LMDB phases now lives in
+`docs/proposals/WAM_CLOJURE_LMDB_FACT_ACCESS_PLAN.md`. That document
+captures the Clojure-specific philosophy, specification, and
+implementation sequencing, and explicitly references the recent Haskell
+LMDB cache and reader commits that should guide the next Clojure steps.
