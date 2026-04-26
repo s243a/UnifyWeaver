@@ -715,7 +715,17 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ;   Template = min(ValueVar) -> AggType = min
     ;   Template = bag(ValueVar) -> AggType = bag
     ;   Template = set(ValueVar) -> AggType = set
-    ;   AggType = collect, ValueVar = Template  % default: collect all values
+    % findall/3 → compile_findall/5 wraps Template as `collect-Template`.
+    % Unwrap to expose the real ValueVar so the var(ValueVar) branch
+    % below allocates a Y-register and emits put_variable Y_n, A1.
+    % Without this, ValueReg defaults to A1 and survives the inner
+    % call only when no instruction along the inner-goal path
+    % overwrites A1 — false in the module-qualified case where the
+    % `:/2` builtin lowering puts the module-name string into A1
+    % (Phase 3 finding from #1647). Y-reg version is preserved
+    % across any inner-call register churn.
+    ;   Template = collect-CollectVar -> AggType = collect, ValueVar = CollectVar
+    ;   AggType = collect, ValueVar = Template  % default: direct callers
     ),
     % Find or allocate the Result register (where output goes)
     (   var(Result), get_var_reg(Result, V0, ResultReg0)

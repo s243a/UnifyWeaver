@@ -921,6 +921,53 @@ test_findall_instr_end_to_end_lowering :-
     ;   fail_test(Test, 'end-to-end findall lowering missing push/collect/throw shape')
     ).
 
+%% Module-qualified findall regression test for the wam_target.pl fix
+%% (Finding 1 from #1647). Before the fix, `findall(X, M:p(X), L)`
+%% emitted `begin_aggregate collect, A1, X_n` — value_reg=A1 — which
+%% got clobbered by the `:/2` builtin's put_constant of the module
+%% name string. After the fix, compile_aggregate_all/5 unwraps
+%% compile_findall's `collect-Template` wrapper to expose the
+%% Template variable, so the var(ValueVar) branch fires and a Y-reg
+%% is allocated. End_aggregate then reads from a slot that survives
+%% any inner-call register churn.
+%%
+%% Target-agnostic at the WAM byte-shape level: this test asserts
+%% the emitted WAM uses Y... not A1 for findall's value_reg, which
+%% is the contract every target's lowering depends on.
+
+:- dynamic phase_a_test:findall_qualified_target/1.
+
+test_findall_module_qualified_uses_y_reg :-
+    Test = 'WAM compiler: findall/3 with module-qualified inner goal uses Y-reg in begin_aggregate (fix for #1647 Finding 1)',
+    setup_call_cleanup(
+        (   retractall(phase_a_test:findall_qualified_target(_)),
+            assertz(phase_a_test:findall_qualified_target('a')),
+            assertz(phase_a_test:findall_qualified_target('b')),
+            assertz((phase_a_test:findall_qualified_caller(L) :-
+                findall(X, phase_a_test:findall_qualified_target(X), L)))
+        ),
+        (   wam_target:compile_predicate_to_wam(
+                phase_a_test:findall_qualified_caller/1, [], WamCode),
+            atom_string(WamCode, S),
+            % The fix: findall's value_reg should be a Y-register
+            % (Y1, Y2, ...). Pre-fix, A1 was used and would have been
+            % clobbered by the `:/2` builtin's put_constant.
+            sub_string(S, _, _, _, 'begin_aggregate collect, Y'),
+            sub_string(S, _, _, _, 'end_aggregate Y'),
+            % And the inner-call lowering should use the `:/2` builtin
+            % path — the very thing that exposed the bug. Confirms we
+            % are still going through the module-qualified compilation,
+            % not silently unwrapping it elsewhere.
+            sub_string(S, _, _, _, 'builtin_call :/2'),
+            \+ sub_string(S, _, _, _, 'begin_aggregate collect, A1')
+        ->  pass(Test)
+        ;   fail_test(Test, 'module-qualified findall did not emit Y-reg in begin_aggregate (fix regressed?)')
+        ),
+        (   retractall(phase_a_test:findall_qualified_target(_)),
+            retractall(phase_a_test:findall_qualified_caller(_))
+        )
+    ).
+
 test_findall_substrate_backtrack_routes_aggregate_frames :-
     Test = 'Findall substrate: backtrack/1 dispatches aggregate frames to finalise_aggregate',
     (   compile_wam_runtime_to_elixir([], Code),
@@ -1257,6 +1304,7 @@ run_tests :-
     test_findall_instr_translates_collect_to_findall,
     test_findall_instr_lowers_end_aggregate,
     test_findall_instr_end_to_end_lowering,
+    test_findall_module_qualified_uses_y_reg,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,
