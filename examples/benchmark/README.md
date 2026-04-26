@@ -201,6 +201,18 @@ This keeps the public benchmark target names stable while letting a
 workload compare grouped TSV against LMDB-backed exact arg1 lookups for
 the hottest traversal relation.
 
+LMDB-backed `category_parent` also supports an optional relation-local
+cache policy override:
+
+- `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize).`
+- `benchmark_relation_cache_policy(category_parent, memoize).`
+
+This does not change the storage mode. It keeps `category_parent` on the
+LMDB path, but switches the packaged JVM helper from plain thread-local
+reader reuse to a thread-local L1 `arg1` memoization layer on top of the
+same native store seam. Leaving the predicate unset preserves the
+default `none` policy.
+
 The generator also now honors the shared predicate-preprocessing
 declaration surface from
 `src/unifyweaver/core/predicate_preprocessing.pl`. For the current

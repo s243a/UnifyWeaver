@@ -4,6 +4,8 @@
 
 #include <stdbool.h>
 #include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,6 +13,13 @@ typedef struct {
     char *key;
     char *value;
 } row_buf;
+
+typedef struct {
+    MDB_env *env;
+    MDB_txn *txn;
+    MDB_dbi dbi;
+    MDB_cursor *cursor;
+} store_handle;
 
 static char *dup_bytes(const char *src, size_t len) {
     char *dst = (char *)malloc(len + 1);
@@ -31,6 +40,13 @@ static void free_rows(row_buf *rows, size_t count) {
         free(rows[i].value);
     }
     free(rows);
+}
+
+static void throw_runtime_exception(JNIEnv *env, const char *message) {
+    jclass ex_cls = (*env)->FindClass(env, "java/lang/RuntimeException");
+    if (ex_cls != NULL) {
+        (*env)->ThrowNew(env, ex_cls, message);
+    }
 }
 
 static int append_row(row_buf **rows, size_t *count, size_t *cap, const char *key, size_t key_len, const char *value, size_t value_len) {
@@ -104,6 +120,17 @@ static void close_store(MDB_env *env, MDB_txn *txn) {
     }
 }
 
+static void close_store_handle(store_handle *handle) {
+    if (handle == NULL) {
+        return;
+    }
+    if (handle->cursor != NULL) {
+        mdb_cursor_close(handle->cursor);
+    }
+    close_store(handle->env, handle->txn);
+    free(handle);
+}
+
 static jobjectArray rows_to_java(JNIEnv *env, row_buf *rows, size_t count) {
     jclass row_cls = (*env)->FindClass(env, "generated/lmdb/LmdbRow");
     if (row_cls == NULL) {
@@ -135,6 +162,172 @@ static jobjectArray rows_to_java(JNIEnv *env, row_buf *rows, size_t count) {
         (*env)->DeleteLocalRef(env, value);
     }
 
+    return result;
+}
+
+static int append_lookup_rows_for_cursor(MDB_cursor *cursor, const char *key, row_buf **rows, size_t *count, size_t *cap) {
+    MDB_val mdb_key;
+    MDB_val mdb_val;
+    mdb_key.mv_size = strlen(key);
+    mdb_key.mv_data = (void *)key;
+
+    int rc = mdb_cursor_get(cursor, &mdb_key, &mdb_val, MDB_SET);
+    while (rc == MDB_SUCCESS) {
+        rc = append_row(rows, count, cap,
+                        key, strlen(key),
+                        (const char *)mdb_val.mv_data, mdb_val.mv_size);
+        if (rc != MDB_SUCCESS) {
+            return rc;
+        }
+        rc = mdb_cursor_get(cursor, &mdb_key, &mdb_val, MDB_NEXT_DUP);
+    }
+    return (rc == MDB_NOTFOUND) ? MDB_SUCCESS : rc;
+}
+
+JNIEXPORT jlong JNICALL
+Java_generated_lmdb_LmdbArtifactJNI_openStore(JNIEnv *env, jclass cls, jstring artifact_dir_j, jstring db_name_j, jboolean dupsort_j) {
+    (void)cls;
+    (void)dupsort_j;
+    const char *artifact_dir = (*env)->GetStringUTFChars(env, artifact_dir_j, NULL);
+    const char *db_name = (*env)->GetStringUTFChars(env, db_name_j, NULL);
+
+    MDB_env *mdb_env = NULL;
+    MDB_txn *txn = NULL;
+    MDB_dbi dbi = 0;
+    int rc = open_store(artifact_dir, db_name, &mdb_env, &txn, &dbi);
+    if (rc != MDB_SUCCESS) {
+        char message[256];
+        snprintf(message, sizeof(message), "LMDB openStore failed: %s", mdb_strerror(rc));
+        throw_runtime_exception(env, message);
+        (*env)->ReleaseStringUTFChars(env, artifact_dir_j, artifact_dir);
+        (*env)->ReleaseStringUTFChars(env, db_name_j, db_name);
+        return 0L;
+    }
+
+    store_handle *handle = (store_handle *)calloc(1, sizeof(store_handle));
+    if (handle == NULL) {
+        throw_runtime_exception(env, "LMDB openStore failed: out of memory");
+        close_store(mdb_env, txn);
+        (*env)->ReleaseStringUTFChars(env, artifact_dir_j, artifact_dir);
+        (*env)->ReleaseStringUTFChars(env, db_name_j, db_name);
+        return 0L;
+    }
+    handle->env = mdb_env;
+    handle->txn = txn;
+    handle->dbi = dbi;
+    handle->cursor = NULL;
+
+    (*env)->ReleaseStringUTFChars(env, artifact_dir_j, artifact_dir);
+    (*env)->ReleaseStringUTFChars(env, db_name_j, db_name);
+    return (jlong)(intptr_t)handle;
+}
+
+JNIEXPORT void JNICALL
+Java_generated_lmdb_LmdbArtifactJNI_closeStore(JNIEnv *env, jclass cls, jlong handle_j) {
+    (void)env;
+    (void)cls;
+    store_handle *handle = (store_handle *)(intptr_t)handle_j;
+    close_store_handle(handle);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_generated_lmdb_LmdbArtifactJNI_lookupRowsForHandle(JNIEnv *env, jclass cls, jlong handle_j, jstring key_j, jboolean dupsort_j) {
+    (void)cls;
+    bool dupsort = dupsort_j == JNI_TRUE;
+    store_handle *handle = (store_handle *)(intptr_t)handle_j;
+    if (handle == NULL) {
+        throw_runtime_exception(env, "LMDB lookupRowsForHandle failed: null handle");
+        return NULL;
+    }
+
+    const char *key = (*env)->GetStringUTFChars(env, key_j, NULL);
+    row_buf *rows = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+    int rc = MDB_SUCCESS;
+
+    if (dupsort) {
+        if (handle->cursor == NULL) {
+            rc = mdb_cursor_open(handle->txn, handle->dbi, &handle->cursor);
+        }
+        if (rc == MDB_SUCCESS) {
+            rc = append_lookup_rows_for_cursor(handle->cursor, key, &rows, &count, &cap);
+        }
+    } else {
+        MDB_val mdb_key;
+        MDB_val mdb_val;
+        mdb_key.mv_size = strlen(key);
+        mdb_key.mv_data = (void *)key;
+        rc = mdb_get(handle->txn, handle->dbi, &mdb_key, &mdb_val);
+        if (rc == MDB_SUCCESS) {
+            rc = append_row(&rows, &count, &cap,
+                            key, strlen(key),
+                            (const char *)mdb_val.mv_data, mdb_val.mv_size);
+        } else if (rc == MDB_NOTFOUND) {
+            rc = MDB_SUCCESS;
+        }
+    }
+
+    jobjectArray result = NULL;
+    if (rc == MDB_SUCCESS) {
+        result = rows_to_java(env, rows, count);
+    } else {
+        char message[256];
+        snprintf(message, sizeof(message), "LMDB lookupRowsForHandle failed: %s", mdb_strerror(rc));
+        throw_runtime_exception(env, message);
+    }
+
+    free_rows(rows, count);
+    (*env)->ReleaseStringUTFChars(env, key_j, key);
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_generated_lmdb_LmdbArtifactJNI_scanRowsForHandle(JNIEnv *env, jclass cls, jlong handle_j) {
+    (void)cls;
+    store_handle *handle = (store_handle *)(intptr_t)handle_j;
+    if (handle == NULL) {
+        throw_runtime_exception(env, "LMDB scanRowsForHandle failed: null handle");
+        return NULL;
+    }
+
+    MDB_cursor *cursor = NULL;
+    int rc = mdb_cursor_open(handle->txn, handle->dbi, &cursor);
+    row_buf *rows = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+
+    if (rc == MDB_SUCCESS) {
+        MDB_val key;
+        MDB_val value;
+        rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+        while (rc == MDB_SUCCESS) {
+            rc = append_row(&rows, &count, &cap,
+                            (const char *)key.mv_data, key.mv_size,
+                            (const char *)value.mv_data, value.mv_size);
+            if (rc != MDB_SUCCESS) {
+                break;
+            }
+            rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+        }
+        if (rc == MDB_NOTFOUND) {
+            rc = MDB_SUCCESS;
+        }
+    }
+
+    jobjectArray result = NULL;
+    if (rc == MDB_SUCCESS) {
+        result = rows_to_java(env, rows, count);
+    } else {
+        char message[256];
+        snprintf(message, sizeof(message), "LMDB scanRowsForHandle failed: %s", mdb_strerror(rc));
+        throw_runtime_exception(env, message);
+    }
+
+    if (cursor != NULL) {
+        mdb_cursor_close(cursor);
+    }
+    free_rows(rows, count);
     return result;
 }
 

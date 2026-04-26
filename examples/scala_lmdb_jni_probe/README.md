@@ -11,6 +11,7 @@ It is intentionally isolated from the current Haskell and Elixir target paths, b
 - exposes a small reusable JVM-side API:
   - `LmdbArtifactManifest`
   - `LmdbArtifactReader`
+  - `LmdbArtifactStore`
   - `LmdbRow`
 - uses JNI-backed C code to:
   - open the named LMDB DB from the manifest
@@ -24,6 +25,7 @@ It is intentionally isolated from the current Haskell and Elixir target paths, b
 - `src/main/java/generated/lmdb/LmdbArtifactJNI.java`
 - `src/main/java/generated/lmdb/LmdbArtifactManifest.java`
 - `src/main/java/generated/lmdb/LmdbArtifactReader.java`
+- `src/main/java/generated/lmdb/LmdbArtifactStore.java`
 - `src/main/java/generated/lmdb/LmdbRow.java`
 - `src/main/scala/generated/lmdb/LmdbArtifactProbe.scala`
 - `src/main/clojure/generated/lmdb/clojure_probe.clj`
@@ -53,5 +55,10 @@ clojure_lmdb_jni_probe_ok lookup=a	1,a	2 scan_count=3 db=edge/2
   - `gcc`
   - installed `liblmdb`
 - manifest parsing and reader ownership are kept in Java so JVM languages like Clojure or a future Scala hybrid WAM can reuse the same seam
+- the reader now reuses one native LMDB store per JVM thread via a
+  thread-local seam instead of reopening LMDB on every lookup
+- the reader also exposes an optional `openMemoized(...)` constructor
+  that adds a thread-local `arg1` memoization layer above the native
+  store seam
 - LMDB access itself is done through JNI against the native `liblmdb`
 - this is still a probe, not yet a generated target integration
