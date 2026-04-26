@@ -1,6 +1,6 @@
 # WAM Haskell LMDB Cache Tiers
 
-**Status:** Phases 1 + 2 shipped (PR #1640, PR #1641, PR #1652); Phase 3 pending
+**Status:** Phases 1 + 2 + 3-scaffold shipped (PR #1640, #1641, #1652, #1655); analyzer pending
 **Author:** John William Creighton (@s243a)
 **Date:** 2026-04-25 (proposed); updated 2026-04-26
 
@@ -448,13 +448,57 @@ parallelism.
 beats `per_hec` (which beats `none`). On the random-seed workload,
 all modes are within 20% of `none`.
 
-### Phase 3 — cost-analysis hook (separate proposal)
+### Phase 3 — cost-analysis hook
 
-- Extend `core/statistics.pl` with the `overlap_factor/2`
-  statistic.
-- Teach the optimiser to choose `lmdb_cache_mode` automatically when
-  statistics are present.
-- Same hook serves the C# target's cost-driven plan selection.
+**Status: scaffolded in PR #1655.**  The hook is wired and
+tested; what remains is the analyzer that derives reuse-pattern
+hints automatically and downstream consumers (notably the C#
+target) reading the same hints for their own decisions.
+
+What's shipped:
+
+- `core/statistics.pl` exports
+  `declare_cache_hints/1`, `get_cache_hints/1`,
+  `clear_cache_hints/0`, and `select_cache_mode/2`.  Hints are a
+  workload-level dict with `reuse_axis` (one of `none`,
+  `intra_thread`, `cross_thread`, `mixed`) plus optional
+  `overlap_factor` and `expected_unique_keys` fields reserved for
+  future use.
+- `wam_haskell_target.pl` accepts `lmdb_cache_mode(auto)`, which
+  consults `select_cache_mode/2` with default fallback `none`.
+  The reuse-axis → mode mapping implements the workload-shape
+  table validated by the enwiki-10k measurement.
+- Four B1 tests cover all mapping cases plus the no-hints
+  fallback.
+
+What still needs to be built:
+
+- **Reuse-pattern analyzer** that derives `reuse_axis` from a
+  sample run.  The enwiki-10k measurement showed that the
+  axis is observable from a small profile (cache hit/miss
+  counters, stratified by which thread saw which key).  An
+  analyzer producing `cache_hints{reuse_axis: cross_thread,
+  overlap_factor: 0.34, expected_unique_keys: 5166}` from a
+  one-shot profiling run would close the auto-select loop end
+  to end.  Out of scope for the cache-tiers proposal proper;
+  belongs in a follow-up "cache analyzer" proposal.
+
+- **C# target consumption.**  The hook is at `core/statistics`
+  so any target can consume it, but only the WAM Haskell target
+  reads it today.  When the C# target's cost-driven plan
+  selection (the cost-analysis work in
+  [`COST_BASED_OPTIMIZATION.md`](./COST_BASED_OPTIMIZATION.md))
+  matures, it can layer on the same `cache_hints` mechanism for
+  query-plan choices that share the reuse-pattern intuition.
+
+- **Use of `overlap_factor` and `expected_unique_keys`.**
+  Currently accepted in the schema but not consumed by the
+  selector.  Plausible future uses: skip caching entirely if
+  `overlap_factor < 0.1`; size L2 capacity from
+  `expected_unique_keys`.
+
+The original Phase 3 sketch (above the implementation note) is
+preserved as the design rationale.
 
 This phase has its own design doc (the C# materialisation work it
 ties into is referenced in
