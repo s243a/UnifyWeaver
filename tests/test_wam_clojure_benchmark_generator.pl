@@ -90,12 +90,16 @@ test(relation_data_mode_override_seeded_parent_lmdb, [condition(lmdb_helper_tool
             directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
             directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
             directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbArtifactStore.class', StoreClassPath),
+            directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbLookupCache.class', LookupCacheClassPath),
+            directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbCacheStats.class', CacheStatsClassPath),
             read_file_to_string(CorePath, CoreCode, []),
             read_file_to_string(ManifestPath, Manifest, []),
             assertion(exists_file(LmdbManifestPath)),
             assertion(exists_file(ReaderJarPath)),
             assertion(exists_file(NativeLibPath)),
             assertion(exists_file(StoreClassPath)),
+            assertion(exists_file(LookupCacheClassPath)),
+            assertion(exists_file(CacheStatsClassPath)),
             assertion(sub_string(CoreCode, _, _, _, 'generated.lmdb.LmdbArtifactReader/open')),
             assertion(sub_string(CoreCode, _, _, _, 'category_parent_lmdb')),
             assertion(sub_string(Manifest, _, _, _, '"category_parent" {:mode "lmdb"')),
@@ -168,6 +172,30 @@ test(relation_cache_policy_override_seeded_parent_lmdb_two_level, [condition(lmd
         )),
         ( maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2),
           maybe_abolish_test_predicate(wam_clojure_benchmark_relation_cache_policy/2)
+        )
+    ).
+
+test(relation_cache_debug_override_seeded_parent_lmdb_two_level, [condition(lmdb_helper_toolchain_available)]) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:wam_clojure_benchmark_relation_data_mode(category_parent, lmdb)),
+          assertz(user:wam_clojure_benchmark_relation_cache_policy(category_parent, two_level)),
+          assertz(user:wam_clojure_benchmark_relation_cache_debug(category_parent, true))
+        ),
+        once((
+            unique_tmp_dir('tmp_wam_clojure_bench_rel_parent_lmdb_debug', TmpDir),
+            generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+            directory_file_path(TmpDir, 'src/generated/wam_clojure_optimized_bench/core.clj', CorePath),
+            read_file_to_string(CorePath, CoreCode, []),
+            assertion(sub_string(CoreCode, _, _, _, '.cacheStats')),
+            assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_parent/2')),
+            assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_ancestor/4')),
+            assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats benchmark-category-parents')),
+            delete_directory_and_contents(TmpDir)
+        )),
+        ( maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2),
+          maybe_abolish_test_predicate(wam_clojure_benchmark_relation_cache_policy/2),
+          maybe_abolish_test_predicate(wam_clojure_benchmark_relation_cache_debug/2)
         )
     ).
 
@@ -411,6 +439,31 @@ test(generated_category_parent_lmdb_two_level_handler_executes,
         )
     ).
 
+test(generated_category_parent_lmdb_two_level_debug_emits_stats,
+     [condition((clojure_available, lmdb_helper_toolchain_available))]) :-
+    setup_call_cleanup(
+        ( load_files(user:'data/benchmark/dev/facts.pl', [silent(true)]),
+          assertz(user:wam_clojure_benchmark_relation_data_mode(category_parent, lmdb)),
+          assertz(user:wam_clojure_benchmark_relation_cache_policy(category_parent, two_level)),
+          assertz(user:wam_clojure_benchmark_relation_cache_debug(category_parent, true))
+        ),
+        once((
+            unique_tmp_dir('tmp_wam_clojure_bench_exec_lmdb_debug', TmpDir),
+            generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
+            run_clojure_predicate_with_stderr(TmpDir, 'category_parent/2',
+                                              ['Abstraction', 'Thought'],
+                                              "true",
+                                              Stderr),
+            assertion(sub_string(Stderr, _, _, _, 'lmdb_cache_stats category_parent/2')),
+            assertion(sub_string(Stderr, _, _, _, 'localHits')),
+            delete_directory_and_contents(TmpDir)
+        )),
+        ( maybe_abolish_test_predicate(wam_clojure_benchmark_relation_data_mode/2),
+          maybe_abolish_test_predicate(wam_clojure_benchmark_relation_cache_policy/2),
+          maybe_abolish_test_predicate(wam_clojure_benchmark_relation_cache_debug/2)
+        )
+    ).
+
 :- end_tests(wam_clojure_benchmark_generator).
 
 unique_tmp_dir(Prefix, TmpDir) :-
@@ -451,6 +504,37 @@ run_clojure_predicate(ProjectDir, PredKey, Args, Output) :-
     ->  true
     ;   throw(error(java_stderr(PredKey, Args, ErrStr), _))
     ).
+
+run_clojure_predicate_with_stderr(ProjectDir, PredKey, Args, Output, Stderr) :-
+    project_clojure_classpath(ProjectDir, ClassPath),
+    project_java_library_path_args(ProjectDir, JavaLibArgs),
+    maplist(clojure_edn_arg, Args, EdnArgs),
+    append(JavaLibArgs,
+           ['-cp', ClassPath, 'clojure.main', '-m',
+            'generated.wam_clojure_optimized_bench.core', PredKey|EdnArgs],
+           JavaArgs),
+    process_create(path(java),
+                   JavaArgs,
+                   [ cwd(ProjectDir),
+                     stdout(pipe(Out)),
+                     stderr(pipe(Err)),
+                     process(PID)
+                   ]),
+    process_wait(PID, Status, [timeout(20)]),
+    (   Status == timeout
+    ->  process_kill(PID)
+    ;   true
+    ),
+    read_string(Out, _, OutStr0),
+    read_string(Err, _, ErrStr0),
+    close(Out),
+    close(Err),
+    (   Status == exit(0)
+    ->  true
+    ;   throw(error(java_exit(PredKey, Args, Status, ErrStr0), _))
+    ),
+    normalize_space(string(Output), OutStr0),
+    normalize_space(string(Stderr), ErrStr0).
 
 clojure_edn_arg(raw(Edn), Edn) :- !.
 clojure_edn_arg(visited(Atoms), Edn) :- !,

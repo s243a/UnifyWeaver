@@ -228,6 +228,17 @@ Use these as explicit workload overrides for now. The relative value of
 `none`, `memoize`, `shared`, and `two_level` should be measured on a
 desktop JVM rather than treated as settled from Termux timings.
 
+For focused debugging, the generator also accepts a relation-local cache
+stats flag:
+
+- `wam_clojure_benchmark_relation_cache_debug(category_parent, true).`
+- `benchmark_relation_cache_debug(category_parent, true).`
+
+When enabled on the LMDB path, generated Clojure projects emit
+`lmdb_cache_stats ...` lines to `stderr` during predicate/runner cache
+activity. This is intended for targeted probes, not normal benchmark
+runs.
+
 The generator also now honors the shared predicate-preprocessing
 declaration surface from
 `src/unifyweaver/core/predicate_preprocessing.pl`. For the current
