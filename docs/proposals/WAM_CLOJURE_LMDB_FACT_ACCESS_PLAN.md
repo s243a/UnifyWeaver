@@ -60,9 +60,10 @@ What is implemented today:
   - `benchmark_relation_data_mode/2`
 - non-benchmark generated Clojure WAM projects may also declare an LMDB
   foreign relation directly through:
-  - `clojure_lmdb_foreign_relations([category_parent/2-"path/to/artifact"])`
+  - `clojure_lmdb_foreign_relations([...])`
   - `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
   - `clojure_lmdb_cache_debug(true|false)`
+  - `clojure_lmdb_ancestor_max_depth(N)` for `category_ancestor/4`
 - generation writes:
   - `category_parent.tsv`
   - `category_parent_lmdb/manifest.json`
@@ -73,6 +74,9 @@ What is implemented today:
 - target-level LMDB foreign relations auto-enable helper packaging, so
   generated projects do not need a separate benchmark-only hook just to
   get the JVM/JNI reader seam
+- target-level LMDB foreign relations currently support:
+  - `category_parent/2`
+  - `category_ancestor/4`
 - the benchmark launcher can place the helper jar on the Java classpath
   and the JNI library directory on `java.library.path`
 - the JVM helper now keeps one native LMDB store per thread through a
@@ -153,11 +157,14 @@ For non-benchmark target generation, the corresponding declarative
 surface is:
 
 - `clojure_lmdb_foreign_relations([category_parent/2-"relative/or/absolute/artifact-dir"])`
+- `clojure_lmdb_foreign_relations([category_ancestor/4-"relative/or/absolute/artifact-dir"])`
 - `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
 - `clojure_lmdb_cache_debug(true|false)`
+- `clojure_lmdb_ancestor_max_depth(N)` for `category_ancestor/4`
 
-This currently supports `category_parent/2` only. Other LMDB-backed
-foreign predicates should be added one relation contract at a time.
+This currently supports `category_parent/2` and `category_ancestor/4`
+only. Other LMDB-backed foreign predicates should be added one relation
+contract at a time.
 
 ### 3. Correctness Rules
 
@@ -232,7 +239,7 @@ Remaining gap:
 - the reader seam is still embedded in the JVM helper package rather
   than exposed as a more explicit “reader pool” type
 - target-level declarative LMDB foreign relations are now wired for
-  `category_parent/2`, so the next gap is not wiring but broader
+  `category_parent/2` and `category_ancestor/4`, so the next gap is not wiring but broader
   relation coverage and desktop measurement
 
 ### Phase C3: Optional L1 memoization

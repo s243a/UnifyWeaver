@@ -214,6 +214,14 @@ clojure_lmdb_foreign_handler_code(category_parent/2, ArtifactPath, Options, Hand
     format(string(HandlerCode),
            "(let [reader-delay (delay ~w)] (fn [args] (let [child (nth args 0) parent (nth args 1) rows (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay child) result (boolean (some (fn [^generated.lmdb.LmdbRow row] (= parent (.value row))) rows))] (do ~w result))))",
            [ReaderOpenExpr, LogSnippet]).
+clojure_lmdb_foreign_handler_code(category_ancestor/4, ArtifactPath, Options, HandlerCode) :-
+    clojure_lmdb_path_literal(ArtifactPath, PathLiteral),
+    clojure_lmdb_reader_open_expr(PathLiteral, Options, ReaderOpenExpr),
+    clojure_lmdb_cache_log_snippet('category_ancestor/4', Options, LogSnippet),
+    option(clojure_lmdb_ancestor_max_depth(MaxDepth), Options, 10),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay ~w) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) parent-values (fn [category] (mapv (fn [^generated.lmdb.LmdbRow row] (.value row)) (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay category))) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (parent-values category)] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] (do ~w {:solutions (vec solutions)}))))",
+           [ReaderOpenExpr, MaxDepth, LogSnippet]).
 clojure_lmdb_foreign_handler_code(Pred/Arity, _ArtifactPath, _Options, _HandlerCode) :-
     throw(error(unsupported_clojure_lmdb_foreign_relation(Pred/Arity), _)).
 
