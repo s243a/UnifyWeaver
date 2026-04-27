@@ -20,6 +20,8 @@
 :- dynamic user:wam_list_fact/1.
 :- dynamic user:wam_use_struct/1.
 :- dynamic user:wam_use_list/1.
+:- dynamic user:category_parent/2.
+:- dynamic user:wam_parent_lookup/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X) :- user:wam_fact(X).
@@ -38,6 +40,8 @@ user:wam_struct_fact(f(a)).
 user:wam_list_fact([a,b]).
 user:wam_use_struct(X) :- user:wam_struct_fact(X).
 user:wam_use_list(X) :- user:wam_list_fact(X).
+user:category_parent(_, _) :- fail.
+user:wam_parent_lookup(X, Y) :- user:category_parent(X, Y).
 
 test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
     once((
@@ -185,6 +189,37 @@ test(clojure_lmdb_target_cache_log_snippet) :-
     assertion(DisabledSnippet == "nil"),
     assertion(sub_string(EnabledSnippet, _, _, _, 'lmdb_cache_stats category_parent/2')),
     assertion(sub_string(EnabledSnippet, _, _, _, '.cacheStats')).
+
+test(clojure_lmdb_target_foreign_relation_auto_handler,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_foreign_target', TmpDir),
+        write_wam_clojure_project([user:wam_parent_lookup/2,
+                                   user:category_parent/2],
+                                  [ namespace('generated.wam_lmdb_foreign_test'),
+                                    clojure_lmdb_foreign_relations([
+                                        category_parent/2-'data/generated/test/category_parent_lmdb'
+                                    ]),
+                                    clojure_lmdb_cache_policy(shared),
+                                    clojure_lmdb_cache_debug(true)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lmdb_foreign_test/core.clj', CorePath),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(wam_clojure_target:clojure_foreign_predicate(category_parent, 2,
+                   [clojure_lmdb_foreign_relations([
+                       category_parent/2-'data/generated/test/category_parent_lmdb'
+                   ])])),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [reader-delay (delay (generated.lmdb.LmdbArtifactReader/openSharedCached')),
+        assertion(sub_string(CoreCode, _, _, _, 'data/generated/test/category_parent_lmdb')),
+        assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_parent/2')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" wam-parent-lookup')),
+        delete_directory_and_contents(TmpDir)
+    )).
 
 test(no_kernels_suppresses_clojure_foreign_stub) :-
     once((

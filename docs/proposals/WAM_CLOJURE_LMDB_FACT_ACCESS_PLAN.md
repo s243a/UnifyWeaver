@@ -58,6 +58,11 @@ What is implemented today:
 - `category_parent` may resolve to `lmdb` through:
   - `wam_clojure_benchmark_relation_data_mode/2`
   - `benchmark_relation_data_mode/2`
+- non-benchmark generated Clojure WAM projects may also declare an LMDB
+  foreign relation directly through:
+  - `clojure_lmdb_foreign_relations([category_parent/2-"path/to/artifact"])`
+  - `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
+  - `clojure_lmdb_cache_debug(true|false)`
 - generation writes:
   - `category_parent.tsv`
   - `category_parent_lmdb/manifest.json`
@@ -65,6 +70,9 @@ What is implemented today:
   - `lib/liblmdb_artifact_jni.so`
 - generated Clojure `category_parent/2` and `category_ancestor/4`
   handlers can consume `generated.lmdb.LmdbArtifactReader`
+- target-level LMDB foreign relations auto-enable helper packaging, so
+  generated projects do not need a separate benchmark-only hook just to
+  get the JVM/JNI reader seam
 - the benchmark launcher can place the helper jar on the Java classpath
   and the JNI library directory on `java.library.path`
 - the JVM helper now keeps one native LMDB store per thread through a
@@ -83,6 +91,10 @@ This is intentionally narrow:
 - only `category_parent` uses LMDB today
 - the existing EDN and grouped-TSV paths remain the stable defaults
 - there is no shared L2 cache policy yet
+- repeated Rust helper builds in Termux should avoid the shared
+  `examples/lmdb_relation_artifact/target` directory; the benchmark
+  generator now uses a workspace-local isolated Cargo target directory
+  per SWI process to keep repeated LMDB-backed runs stable
 
 ## Specification
 
@@ -136,6 +148,16 @@ The current Clojure-specific extension is:
 - `category_parent -> lmdb`
 
 This is intentionally relation-local, not a new top-level benchmark mode.
+
+For non-benchmark target generation, the corresponding declarative
+surface is:
+
+- `clojure_lmdb_foreign_relations([category_parent/2-"relative/or/absolute/artifact-dir"])`
+- `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
+- `clojure_lmdb_cache_debug(true|false)`
+
+This currently supports `category_parent/2` only. Other LMDB-backed
+foreign predicates should be added one relation contract at a time.
 
 ### 3. Correctness Rules
 
@@ -209,6 +231,9 @@ Remaining gap:
 
 - the reader seam is still embedded in the JVM helper package rather
   than exposed as a more explicit “reader pool” type
+- target-level declarative LMDB foreign relations are now wired for
+  `category_parent/2`, so the next gap is not wiring but broader
+  relation coverage and desktop measurement
 
 ### Phase C3: Optional L1 memoization
 
@@ -218,6 +243,9 @@ Goal:
 
 - allow repeated `category_parent` lookups to avoid duplicate JNI and
   LMDB traversal work on overlap-heavy workloads
+
+The same cache policy surface is now available from the target-level
+LMDB foreign relation option, not only from the benchmark generator.
 
 Important constraint:
 

@@ -702,3 +702,23 @@ The immediate stats surface is intentionally small:
 - `localHits`
 - `sharedHits`
 - `misses`
+
+That LMDB wiring is no longer benchmark-only either. The Clojure target
+itself now accepts declarative LMDB foreign relations for
+`category_parent/2`, together with the existing cache-policy and debug
+options:
+
+- `clojure_lmdb_foreign_relations([category_parent/2-"..."])`
+- `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
+- `clojure_lmdb_cache_debug(true|false)`
+
+Generated non-benchmark Clojure WAM projects can therefore package the
+JVM/JNI LMDB helper seam and emit a `call-foreign` handler directly
+through `wam_clojure_target.pl`, rather than relying on
+benchmark-generator-local helper code.
+
+One Termux-specific stabilization also landed while lifting that seam:
+repeated LMDB-backed benchmark generation was corrupting or racing on
+the shared Rust helper under `examples/lmdb_relation_artifact/target`.
+The benchmark generator now uses a workspace-local isolated Cargo target
+directory per SWI process instead of the shared repo `target/` path.

@@ -174,8 +174,14 @@ collect_wam_entries([PredIndicator|Rest], Options, PC,
 clojure_foreign_predicate(Pred, Arity, Options) :-
     \+ option(no_kernels(true), Options),
     \+ option(foreign_lowering(false), Options),
+    clojure_foreign_relation_selected(Pred/Arity, Options).
+
+clojure_foreign_relation_selected(Pred/Arity, Options) :-
     option(foreign_predicates(ForeignPreds), Options, []),
     member(Pred/Arity, ForeignPreds).
+clojure_foreign_relation_selected(Pred/Arity, Options) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    member(Pred/Arity-_, Relations).
 
 clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
     format(atom(PredKey), '~w/~w', [Pred, Arity]),
@@ -187,10 +193,29 @@ clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
     NextPC is PC + 2.
 
 clojure_foreign_handlers_code(Options, Code) :-
-    option(clojure_foreign_handlers(Handlers), Options, []),
+    option(clojure_foreign_handlers(ExplicitHandlers), Options, []),
+    clojure_lmdb_foreign_handlers(Options, LmdbHandlers),
+    append(LmdbHandlers, ExplicitHandlers, Handlers),
     maplist(clojure_foreign_handler_entry, Handlers, Entries),
     atomic_list_concat(Entries, '\n  ', Body),
     (Body == "" -> Code = "" ; format(atom(Code), '  ~w', [Body])).
+
+clojure_lmdb_foreign_handlers(Options, Handlers) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    maplist(clojure_lmdb_foreign_handler(Options), Relations, Handlers).
+
+clojure_lmdb_foreign_handler(Options, Pred/Arity-ArtifactPath, handler(Pred/Arity, HandlerCode)) :-
+    clojure_lmdb_foreign_handler_code(Pred/Arity, ArtifactPath, Options, HandlerCode).
+
+clojure_lmdb_foreign_handler_code(category_parent/2, ArtifactPath, Options, HandlerCode) :-
+    clojure_lmdb_path_literal(ArtifactPath, PathLiteral),
+    clojure_lmdb_reader_open_expr(PathLiteral, Options, ReaderOpenExpr),
+    clojure_lmdb_cache_log_snippet('category_parent/2', Options, LogSnippet),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay ~w)] (fn [args] (let [child (nth args 0) parent (nth args 1) rows (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay child) result (boolean (some (fn [^generated.lmdb.LmdbRow row] (= parent (.value row))) rows))] (do ~w result))))",
+           [ReaderOpenExpr, LogSnippet]).
+clojure_lmdb_foreign_handler_code(Pred/Arity, _ArtifactPath, _Options, _HandlerCode) :-
+    throw(error(unsupported_clojure_lmdb_foreign_relation(Pred/Arity), _)).
 
 clojure_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :- !,
     clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry).
@@ -201,10 +226,17 @@ clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry) :-
     format(atom(Entry), '~w ~s', [PredKeyLit, HandlerText]).
 
 maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options) :-
-    option(clojure_lmdb_runtime_support(true), Options),
+    clojure_lmdb_runtime_needed(Options),
     !,
     prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options).
 maybe_prepare_wam_clojure_lmdb_runtime_support(_, _).
+
+clojure_lmdb_runtime_needed(Options) :-
+    option(clojure_lmdb_runtime_support(true), Options),
+    !.
+clojure_lmdb_runtime_needed(Options) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    Relations \= [].
 
 prepare_wam_clojure_lmdb_runtime_support(ProjectDir, _Options) :-
     absolute_file_name(ProjectDir, AbsoluteProjectDir),
@@ -256,6 +288,16 @@ clojure_lmdb_reader_open_expr_for_policy(PathLiteral, none, Expr) :-
     format(string(Expr),
            "(generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0)))",
            [PathLiteral]).
+
+clojure_lmdb_path_literal(ArtifactPath, PathLiteral) :-
+    string(ArtifactPath),
+    !,
+    clj_string_literal(ArtifactPath, PathLiteral).
+clojure_lmdb_path_literal(ArtifactPath, PathLiteral) :-
+    atom(ArtifactPath),
+    !,
+    clj_string_literal(ArtifactPath, PathLiteral).
+clojure_lmdb_path_literal(path_literal(PathLiteral), PathLiteral).
 
 clojure_handler_code_text(HandlerCode, HandlerCode) :-
     string(HandlerCode), !.
