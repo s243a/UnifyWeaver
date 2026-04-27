@@ -688,3 +688,17 @@ The next narrow step is now underway too: the JVM helper exposes
 native store seam again. We should not trust Termux to tell us whether
 `none` vs `memoize` is the right default; that comparison is now a
 desktop-only measurement TODO.
+
+The cache policy logic is now being pulled into a clearer JVM seam as
+well. `LmdbArtifactReader` is no longer the only place where policy
+details live conceptually; the direction is:
+
+- explicit lookup-cache wrapper
+- lightweight stats hooks
+- opt-in generated Clojure debug output
+
+The immediate stats surface is intentionally small:
+
+- `localHits`
+- `sharedHits`
+- `misses`

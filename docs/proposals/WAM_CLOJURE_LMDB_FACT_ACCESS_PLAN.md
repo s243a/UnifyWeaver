@@ -275,6 +275,25 @@ Desktop measurement TODO:
 - do this outside Termux, where JVM timing and memory behavior are more
   trustworthy
 
+### Phase C4a: Cache seam and stats hooks
+
+Status: **in progress**
+
+Current narrow implementation:
+
+1. extract cache behavior into a clearer JVM-side lookup-cache seam
+2. expose lightweight stats for:
+   - `localHits`
+   - `sharedHits`
+   - `misses`
+3. allow generated Clojure projects to emit those stats behind an
+   explicit debug predicate override, not by default
+
+Current debug surface:
+
+- `wam_clojure_benchmark_relation_cache_debug(category_parent, true)`
+- `benchmark_relation_cache_debug(category_parent, true)`
+
 ### Phase C5: Broader relation coverage
 
 Status: **deferred**
