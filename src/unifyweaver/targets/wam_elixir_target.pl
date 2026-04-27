@@ -1146,6 +1146,35 @@ compile_aggregate_helpers_to_elixir(Code) :-
       cp: agg_cp.cp,
       choice_points: rest_cps
     }
+    # Simulate the predicates deallocate before tail-calling the
+    # saved continuation. agg_cp was pushed INSIDE the predicates
+    # body, AFTER allocate ran — so agg_cp.stack carries the
+    # current predicates env on top. agg_cp.cp was set BEFORE
+    # this predicates allocate (by the callers call instruction
+    # or by the run/1 entry), so it expects state.stack to be the
+    # callers stack, not the callees. end_aggregates throw fail
+    # bypasses the inner deallocate that would normally pop this
+    # frame — finalise has to do it itself. Without this, the
+    # saved cp runs with the wrong Y-regs active and reads stale
+    # values (proposal section 6 risk 7 — nested findall).
+    restored =
+      case restored.stack do
+        [env | rest] ->
+          {_callee_ys, base_regs} = split_y_regs(restored.regs)
+          merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
+          %{restored |
+            cp: env.cp,
+            stack: rest,
+            regs: merged,
+            cut_point: Map.get(env, :cut_point, restored.cut_point)
+          }
+        _ ->
+          # No env on top — leave the snapshot as-is. This shouldnt
+          # happen in practice because begin_aggregate is always
+          # preceded by allocate (findall uses Y-regs), but defending
+          # against it costs nothing.
+          restored
+      end
     restored.cp.(restored)
   end', []).
 
