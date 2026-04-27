@@ -129,15 +129,16 @@ user:phase3_set(S) :- aggregate_all(set(X), phase3_smoke_p(X), S).
 user:phase3_max(M) :- aggregate_all(max(X), phase3_smoke_p(X), M).
 user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
 
-% Module-qualified findall — `findall(X, user:p(X), L)` — would test
-% the Finding 1 fix from #1647 end-to-end, but is currently blocked
-% by a separate Elixir-runtime gap: WamRuntime.execute_builtin/3
-% doesn't implement `:/2` (the meta-call dispatcher). The WAM-side
-% fix in compile_aggregate_all/5 IS correct (Y-reg now used for
-% findall regardless of inner-goal shape — verified at the WAM
-% byte-shape level in tests/test_wam_elixir_target.pl). End-to-end
-% runtime validation deferred until `:/2` is implemented in the
-% Elixir runtime — separate Phase 3c follow-up.
+% Scenario 9: module-qualified findall, end-to-end — closes Finding 1
+% from #1647. The static-module-qualifier unwrap in compile_goal_call/4
+% (this PR) emits a regular `call phase3_smoke_p/1` for the inner
+% goal instead of routing through the `:/2` builtin path, so the
+% Elixir runtime never sees `:/2` and never hits its catch-all
+% `_ -> :fail`. Functionally equivalent to scenario 1 once the
+% unwrap fires. Dynamic module qualifiers (Module = m, Module:p(X))
+% still hit `:/2` and remain a known limitation — see
+% WAM_ELIXIR_TIER2_FINDALL.md for the forward reference.
+user:phase3_findall_qualified(L) :- findall(X, user:phase3_smoke_p(X), L).
 
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
@@ -178,7 +179,8 @@ phase3_predicates([
     user:phase3_bag/1,
     user:phase3_set/1,
     user:phase3_max/1,
-    user:phase3_min/1
+    user:phase3_min/1,
+    user:phase3_findall_qualified/1
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -201,7 +203,9 @@ phase3_driver_invocations([
     'r7 = Phase3Smoke.Phase3Max.run([{:unbound, make_ref()}])',
     'IO.inspect(r7, label: "SCENARIO_AGG_MAX", charlists: :as_lists)',
     'r8 = Phase3Smoke.Phase3Min.run([{:unbound, make_ref()}])',
-    'IO.inspect(r8, label: "SCENARIO_AGG_MIN", charlists: :as_lists)'
+    'IO.inspect(r8, label: "SCENARIO_AGG_MIN", charlists: :as_lists)',
+    'r9 = Phase3Smoke.Phase3FindallQualified.run([{:unbound, make_ref()}])',
+    'IO.inspect(r9, label: "SCENARIO_FINDALL_QUALIFIED", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -330,6 +334,16 @@ assert_scenario_agg_min(StdOut) :-
     % Enum.min on string list — min("a","b","c") = "a".
     sub_string(W, _, _, _, "\"a\"").
 
+assert_scenario_findall_qualified(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_QUALIFIED", W),
+    % Module-qualified findall now works end-to-end after the static
+    % unwrap in compile_goal_call/4. Same expected shape as scenario 1
+    % since the unwrap makes the WAM byte-code identical to the
+    % unqualified case — three solution values present.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -366,6 +380,9 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3: aggregate_all(min(X), phase3_smoke_p(X), M) → "a" (lex min)',
                  assert_scenario_agg_min,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3: findall(X, user:phase3_smoke_p(X), L) → [a, b, c] (module-qualified, closes #1647 Finding 1)',
+                 assert_scenario_findall_qualified,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all

@@ -848,6 +848,23 @@ allocate_var(Var, VIn, VOut, Reg) :-
         Reg = XReg
     ).
 
+% Static module qualifier unwrap. UnifyWeaver's targets resolve
+% predicates by name only — there is no per-module dispatch table —
+% so `M:p(X)` with a static atom (or string) module name is
+% semantically identical to `p(X)`. Recursively compiling the inner
+% goal emits a regular `call p/Arity, N` instead of routing through
+% the `:/2` builtin path. Cross-target win: every target avoids the
+% meta-call overhead (heap walk for the goal structure, register
+% shuffling, dispatch table lookup) on the common static-qualifier
+% case. The dynamic case (`Module = m, Module:p(X)`) where M is a
+% Prolog variable at compile time still falls through to `:/2` —
+% that genuinely needs a module registry which no target has yet.
+% String + atom guard per #1647 follow-up review (Perplexity)
+% covers any code path that represents module names as strings.
+compile_goal_call(M:InnerGoal, V0, Vf, Code) :-
+    (atom(M) ; string(M)),
+    !,
+    compile_goal_call(InnerGoal, V0, Vf, Code).
 compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -861,6 +878,10 @@ compile_goal_call(Goal, V0, Vf, Code) :-
     ;   format(string(Code), "~w~n~w", [PutCode, CallCode])
     ).
 
+compile_goal_execute(M:InnerGoal, V0, Vf, Code) :-
+    (atom(M) ; string(M)),
+    !,
+    compile_goal_execute(InnerGoal, V0, Vf, Code).
 compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
