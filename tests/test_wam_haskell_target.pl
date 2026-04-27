@@ -411,6 +411,37 @@ test_haskell_put_structure_dyn_wam_parse :-
     ;   fail_test(Test, 'put_structure_dyn WAM text not parsed')
     ).
 
+%% SetVariable: builder slot = fresh unbound (used by user-source =../2 list-build path)
+%% ------------------------------------------------------------------------------------
+
+test_haskell_set_variable_in_types :-
+    Test = 'WAM-Haskell: SetVariable constructor takes RegId (not String)',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "SetVariable !RegId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SetVariable !RegId missing from Instruction type')
+    ).
+
+test_haskell_set_variable_step_handler :-
+    Test = 'WAM-Haskell: SetVariable step handler present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (SetVariable xn)"),
+        sub_string(S, _, _, _, "Unbound vid")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SetVariable step handler missing or incorrect')
+    ).
+
+test_haskell_set_variable_wam_parse :-
+    Test = 'WAM-Haskell: set_variable WAM text emits Int reg id',
+    (   wam_haskell_target:wam_instr_to_haskell(["set_variable", "X6"], Hs),
+        % X6 -> 106 via reg_name_to_int
+        sub_string(Hs, _, _, _, "SetVariable 106")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set_variable did not emit numeric register id')
+    ).
+
 %% Phase 4.3: findall/bag/set merge strategies
 %% --------------------------------------------
 
@@ -1644,6 +1675,10 @@ run_tests :-
     test_haskell_put_structure_dyn_in_types,
     test_haskell_put_structure_dyn_step_handler,
     test_haskell_put_structure_dyn_wam_parse,
+    %% SetVariable: list-build path used by user-source =../2 compose mode
+    test_haskell_set_variable_in_types,
+    test_haskell_set_variable_step_handler,
+    test_haskell_set_variable_wam_parse,
     %% Phase 4.3: findall/bag/set merge strategies
     test_haskell_findall_bag_set_forkable,
     test_haskell_infer_collect_maps_to_findall,
