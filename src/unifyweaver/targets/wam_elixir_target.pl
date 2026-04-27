@@ -1046,21 +1046,27 @@ compile_aggregate_helpers_to_elixir(Code) :-
   frame\'s :agg_accum (O(1)). Returns updated state.
 
   Atomic values (strings/numbers/atoms) survive trail unwind without
-  copy because they\'re value types in BEAM. Compound values that
-  reference heap cells (e.g. lists, structures) are a known
-  follow-up — see WAM_ELIXIR_TIER2_FINDALL.md §6 risk #1. For Phase
-  1 substrate the simple cases (`findall(X, member(X, [a,b,c]), L)`,
-  `findall(X, p(X), L)` over fact predicates) are unaffected.
+  copy because theyre value types in BEAM. Compound values that
+  reference heap cells (e.g. structures from put_structure +
+  set_value, emitted by compile_aggregate_alls compound-Template
+  construction code) are deep-copied via deep_copy_value/2 below —
+  the captured value becomes a self-contained {:struct, "name/arity",
+  [args]} tuple that survives backtracks heap-rewind. Without
+  deep-copy, all elements of accum would point to the same heap
+  region (because end_aggregates throw fail rewinds the heap; the
+  next iterations put_structure overwrites the same addresses).
 
   If no aggregate frame is present, returns state unchanged (caller
   misuse — emitter should always pair end_aggregate with begin).
 
-  Walk cost: O(N) in choice-point depth per call. Acceptable for
-  Phase 1; if Phase 3 profiling shows this dominates, an
-  agg_frame_idx field on state can collapse it to O(1).
+  Walk cost: O(N) in choice-point depth per call (for the agg-frame
+  search) plus O(M) in heap-structure size (for deep_copy). Both
+  acceptable for Phase 3; if Phase 4 profiling shows either
+  dominates, separate optimisations can address them.
   """
   def aggregate_collect(state, value_reg) do
-    val = deref_var(state, Map.get(state.regs, value_reg))
+    raw = Map.get(state.regs, value_reg)
+    val = deep_copy_value(state, raw)
     {updated_cps, _collected} =
       Enum.map_reduce(state.choice_points, false, fn cp, collected ->
         cond do
@@ -1072,6 +1078,49 @@ compile_aggregate_helpers_to_elixir(Code) :-
         end
       end)
     %{state | choice_points: updated_cps}
+  end
+
+  @doc """
+  Recursively walk a captured value, resolving heap references into
+  self-contained Elixir tuples that survive backtracks heap-rewind.
+
+  Cases:
+    {:unbound, _}  → deref through state.regs; recurse on the bound
+                     value if any, else return as-is (degenerate).
+    {:ref, addr}   → read heap[addr]. If {:str, "name/arity"}, parse
+                     arity and recursively deep-copy the args at
+                     heap[addr+1..addr+arity]. Yields {:struct,
+                     "name/arity", [arg_copies...]}.
+    Anything else  → atomic value (string/number/atom/list of
+                     atomics) — return as-is.
+
+  Lists built via put_list / set_value chains arent yet handled —
+  they would need heap-walking through ./2 cons cells. For Phase 3c
+  the compound-Template scenarios use only structures and atomic
+  args.
+  """
+  def deep_copy_value(state, val) do
+    case val do
+      {:unbound, _} = unb ->
+        derefed = deref_var(state, unb)
+        if derefed == unb, do: unb, else: deep_copy_value(state, derefed)
+      {:ref, addr} ->
+        case Map.get(state.heap, addr) do
+          {:str, functor} ->
+            arity = parse_functor_arity(functor)
+            args =
+              if arity > 0 do
+                for i <- 1..arity, do: deep_copy_value(state, Map.get(state.heap, addr + i))
+              else
+                []
+              end
+            {:struct, functor, args}
+          _ ->
+            val
+        end
+      _ ->
+        val
+    end
   end
 
   @doc """
