@@ -1,15 +1,18 @@
 :- encoding(utf8).
 % Codegen tests for WAM-to-Haskell transpilation.
 %
-% Unlike the WAM-Rust and WAM-WAT targets, Haskell does not have a
-% functional execution harness in this project — there is no GHC on
-% the CI/dev environment and building a full stack/cabal project per
-% test would be prohibitively slow. These tests therefore assert only
-% that the generated Haskell source contains the expected identifiers,
-% patterns, and dispatch cases. Runtime correctness of the new term
-% inspection builtins (functor/3, arg/3, =../2, copy_term/2) is
-% validated via the parallel WAM-Rust integration tests in
+% These tests assert that the generated Haskell source contains the
+% expected identifiers, patterns, and dispatch cases — they do not
+% drive a GHC build per case. A full cabal build per test would be
+% prohibitively slow, so most runtime correctness for term inspection
+% builtins (functor/3, arg/3, =../2, copy_term/2) is validated via
+% the parallel WAM-Rust integration tests in
 % tests/test_wam_rust_target.pl + the manual cargo-test suite.
+%
+% A focused GHC + cabal smoke for the put_structure_dyn instruction
+% lives at tests/core/test_wam_put_structure_dyn_ghc_smoke.pl. It
+% generates a real project and runs the actual compiled WamRuntime,
+% skipping gracefully when GHC/cabal are not available.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_target.pl
 
