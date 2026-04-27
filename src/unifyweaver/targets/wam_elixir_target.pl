@@ -1016,6 +1016,36 @@ compile_aggregate_helpers_to_elixir(Code) :-
   end
 
   @doc """
+  Update the topmost aggregate frames :cp field to a new continuation.
+  Called by end_aggregate-terminated sub-segments to point the agg
+  frame at the post-end_aggregate sub-segment, so finalise tail-calls
+  the right code after enumeration completes.
+
+  Without this, agg_cp.cp captures whatever state.cp was at
+  begin_aggregate push time — usually terminal_cp for top-level
+  predicates, or the outer callers continuation for nested findall.
+  Neither is correct when the user clauses body has multiple findalls
+  in sequence: finalise of the first findall would jump past the
+  remaining body code (to terminal_cp or the outer caller), making
+  the second findalls setup dead code.
+
+  By updating agg_cp.cp at end_aggregate time, finalise jumps to the
+  immediate post-end_aggregate sub-segment, which can run subsequent
+  body code (including a second findall, deallocate, proceed, etc.).
+  """
+  def update_topmost_agg_cp(state, new_cp) do
+    {updated_cps, _updated} =
+      Enum.map_reduce(state.choice_points, false, fn cp, updated ->
+        cond do
+          updated -> {cp, updated}
+          Map.has_key?(cp, :agg_type) -> {Map.put(cp, :cp, new_cp), true}
+          true -> {cp, updated}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end
+
+  @doc """
   Push an aggregate-frame choice point. Captures the same snapshot
   fields as a try_me_else CP (regs, heap, heap_len, trail, trail_len,
   stack, cp) so finalise_aggregate/4 can restore the pre-aggregate
@@ -1214,35 +1244,24 @@ compile_aggregate_helpers_to_elixir(Code) :-
       cp: agg_cp.cp,
       choice_points: rest_cps
     }
-    # Simulate the predicates deallocate before tail-calling the
-    # saved continuation. agg_cp was pushed INSIDE the predicates
-    # body, AFTER allocate ran — so agg_cp.stack carries the
-    # current predicates env on top. agg_cp.cp was set BEFORE
-    # this predicates allocate (by the callers call instruction
-    # or by the run/1 entry), so it expects state.stack to be the
-    # callers stack, not the callees. end_aggregates throw fail
-    # bypasses the inner deallocate that would normally pop this
-    # frame — finalise has to do it itself. Without this, the
-    # saved cp runs with the wrong Y-regs active and reads stale
-    # values (proposal section 6 risk 7 — nested findall).
-    restored =
-      case restored.stack do
-        [env | rest] ->
-          {_callee_ys, base_regs} = split_y_regs(restored.regs)
-          merged = Map.merge(base_regs, Map.get(env, :y_regs_saved, %{}))
-          %{restored |
-            cp: env.cp,
-            stack: rest,
-            regs: merged,
-            cut_point: Map.get(env, :cut_point, restored.cut_point)
-          }
-        _ ->
-          # No env on top — leave the snapshot as-is. This shouldnt
-          # happen in practice because begin_aggregate is always
-          # preceded by allocate (findall uses Y-regs), but defending
-          # against it costs nothing.
-          restored
-      end
+    # No env-frame pop here. The pop logic from #1661 (which
+    # simulated deallocate to handle the case where end_aggregates
+    # throw fail bypassed the predicates deallocate) is no longer
+    # needed: with the end_aggregate sub-segment split (this PR),
+    # the post-end_aggregate sub-segment ALWAYS contains the
+    # predicates deallocate (or, for findalls in the middle of a
+    # body, more body code that eventually reaches deallocate).
+    # agg_cp.cp now points at that sub-segment thanks to
+    # update_topmost_agg_cp/2. The natural deallocate handles env
+    # cleanup correctly for all cases: single-level findall (k2 =
+    # deallocate+proceed), nested findall (inner_k2 = deallocate
+    # restoring outer_k1 as cp, then proceed jumps to outer_k1),
+    # and multi-findall in one body (k2..k_n stay in the predicates
+    # frame, the final k_last deallocates).
+    #
+    # Removing the pop also fixes the multi-findall-in-one-body
+    # bug: the prior pop overwrote agg_cp.cp with env.cp during
+    # restoration, defeating update_topmost_agg_cp.
     restored.cp.(restored)
   end', []).
 
