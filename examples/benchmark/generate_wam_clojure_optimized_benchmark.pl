@@ -19,6 +19,8 @@
                declared_preprocess_metadata/4]).
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
 :- use_module(library(process), [process_create/3, process_wait/2]).
+:- dynamic lmdb_artifact_builder_ready/1.
+:- dynamic lmdb_artifact_target_dir/1.
 :- discontiguous benchmark_article_category_by_article_artifact/1.
 :- discontiguous benchmark_category_parent_by_child_artifact/1.
 :- discontiguous category_parent_handler_code/3.
@@ -314,9 +316,15 @@ category_parent_handler_code(OutputDir, artifact, HandlerCode) :-
            [CategoryParentMapPath]).
 category_parent_handler_code(OutputDir, lmdb, CachePolicy, HandlerCode) :-
     benchmark_sidecar_subdir_literal(OutputDir, 'category_parent_lmdb', ArtifactDirPath),
-    lmdb_reader_open_expr(ArtifactDirPath, CachePolicy, ReaderOpenExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        ArtifactDirPath,
+        [clojure_lmdb_cache_policy(CachePolicy)],
+        ReaderOpenExpr),
     benchmark_relation_cache_debug(category_parent, lmdb, CacheDebug),
-    lmdb_cache_log_snippet('category_parent/2', CacheDebug, ParentLogCode),
+    wam_clojure_target:clojure_lmdb_cache_log_snippet(
+        'category_parent/2',
+        [clojure_lmdb_cache_debug(CacheDebug)],
+        ParentLogCode),
     format(string(HandlerCode),
            "(let [reader-delay (delay ~w)] (fn [args] (let [child (nth args 0) parent (nth args 1) rows (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay child) result (boolean (some (fn [^generated.lmdb.LmdbRow row] (= parent (.value row))) rows))] (do ~w result))))",
            [ReaderOpenExpr, ParentLogCode]).
@@ -340,29 +348,6 @@ category_parent_handler_code(inline, HandlerCode) :-
     format(string(HandlerCode),
            "(let [edges #{~s}] (fn [args] (contains? edges [(nth args 0) (nth args 1)])))",
            [Edges]).
-
-lmdb_reader_open_expr(ArtifactDirPath, memoize, Expr) :-
-    format(string(Expr),
-           "(generated.lmdb.LmdbArtifactReader/openMemoized (java.nio.file.Paths/get ~w (make-array String 0)))",
-           [ArtifactDirPath]).
-lmdb_reader_open_expr(ArtifactDirPath, shared, Expr) :-
-    format(string(Expr),
-           "(generated.lmdb.LmdbArtifactReader/openSharedCached (java.nio.file.Paths/get ~w (make-array String 0)))",
-           [ArtifactDirPath]).
-lmdb_reader_open_expr(ArtifactDirPath, two_level, Expr) :-
-    format(string(Expr),
-           "(generated.lmdb.LmdbArtifactReader/openTwoLevel (java.nio.file.Paths/get ~w (make-array String 0)))",
-           [ArtifactDirPath]).
-lmdb_reader_open_expr(ArtifactDirPath, none, Expr) :-
-    format(string(Expr),
-           "(generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0)))",
-           [ArtifactDirPath]).
-
-lmdb_cache_log_snippet(_Context, false, "nil").
-lmdb_cache_log_snippet(Context, true, Snippet) :-
-    format(string(Snippet),
-           "(binding [*out* *err*] (println (str \"lmdb_cache_stats ~w \" (pr-str (.cacheStats ^generated.lmdb.LmdbArtifactReader @reader-delay)))))",
-           [Context]).
 
 category_ancestor_handler_code(HandlerCode) :-
     parse_benchmark_data_mode(auto, DataMode),
@@ -389,9 +374,15 @@ category_ancestor_handler_code(OutputDir, artifact, HandlerCode) :-
 category_ancestor_handler_code(OutputDir, lmdb, CachePolicy, HandlerCode) :-
     benchmark_max_depth_literal(MaxDepth),
     benchmark_sidecar_subdir_literal(OutputDir, 'category_parent_lmdb', ArtifactDirPath),
-    lmdb_reader_open_expr(ArtifactDirPath, CachePolicy, ReaderOpenExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        ArtifactDirPath,
+        [clojure_lmdb_cache_policy(CachePolicy)],
+        ReaderOpenExpr),
     benchmark_relation_cache_debug(category_parent, lmdb, CacheDebug),
-    lmdb_cache_log_snippet('category_ancestor/4', CacheDebug, AncestorLogCode),
+    wam_clojure_target:clojure_lmdb_cache_log_snippet(
+        'category_ancestor/4',
+        [clojure_lmdb_cache_debug(CacheDebug)],
+        AncestorLogCode),
     format(string(HandlerCode),
            "(let [reader-delay (delay ~w) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) parent-values (fn [category] (mapv (fn [^generated.lmdb.LmdbRow row] (.value row)) (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay category))) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (parent-values category)] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] (do ~w {:solutions (vec solutions)}))))",
            [ReaderOpenExpr, MaxDepth, AncestorLogCode]).
@@ -667,25 +658,25 @@ benchmark_category_parents_code(inline, _ParentCachePolicy, _DataDirLiteral, ben
            [CategoryParents]).
 
 lmdb_reader_open_expr_runtime(memoize, Expr) :-
-    Expr = '(generated.lmdb.LmdbArtifactReader/openMemoized
-                   (java.nio.file.Paths/get
-                     (str benchmark-data-dir "/category_parent_lmdb")
-                     (make-array String 0)))'.
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        '(str benchmark-data-dir "/category_parent_lmdb")',
+        [clojure_lmdb_cache_policy(memoize)],
+        Expr).
 lmdb_reader_open_expr_runtime(shared, Expr) :-
-    Expr = '(generated.lmdb.LmdbArtifactReader/openSharedCached
-                   (java.nio.file.Paths/get
-                     (str benchmark-data-dir "/category_parent_lmdb")
-                     (make-array String 0)))'.
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        '(str benchmark-data-dir "/category_parent_lmdb")',
+        [clojure_lmdb_cache_policy(shared)],
+        Expr).
 lmdb_reader_open_expr_runtime(two_level, Expr) :-
-    Expr = '(generated.lmdb.LmdbArtifactReader/openTwoLevel
-                   (java.nio.file.Paths/get
-                     (str benchmark-data-dir "/category_parent_lmdb")
-                     (make-array String 0)))'.
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        '(str benchmark-data-dir "/category_parent_lmdb")',
+        [clojure_lmdb_cache_policy(two_level)],
+        Expr).
 lmdb_reader_open_expr_runtime(none, Expr) :-
-    Expr = '(generated.lmdb.LmdbArtifactReader/open
-                   (java.nio.file.Paths/get
-                     (str benchmark-data-dir "/category_parent_lmdb")
-                     (make-array String 0)))'.
+    wam_clojure_target:clojure_lmdb_reader_open_expr(
+        '(str benchmark-data-dir "/category_parent_lmdb")',
+        [clojure_lmdb_cache_policy(none)],
+        Expr).
 
 lmdb_runner_cache_log_snippet(false, "nil").
 lmdb_runner_cache_log_snippet(true, Snippet) :-
@@ -1095,67 +1086,58 @@ maybe_write_category_parent_lmdb_artifact(DataDir, lmdb) :-
     directory_file_path(DataDir, 'category_parent_lmdb', ArtifactDir),
     make_directory_path(ArtifactDir),
     benchmark_repo_path('examples/lmdb_relation_artifact/Cargo.toml', CargoManifest),
-    process_create(path(cargo),
-                   ['run', '--quiet',
-                    '--manifest-path', CargoManifest,
-                    '--', 'build', 'category_parent/2',
-                    TsvPath, ArtifactDir, '--dupsort'],
+    ensure_lmdb_artifact_builder(CargoManifest, ArtifactBuilder),
+    format(atom(ArtifactBuildCmd),
+           '"~w" build "category_parent/2" "~w" "~w" --dupsort',
+           [ArtifactBuilder, TsvPath, ArtifactDir]),
+    process_create(path(sh),
+                   ['-c', ArtifactBuildCmd],
+                   [process(RunPID)]),
+    process_wait(RunPID, RunStatus),
+    (   RunStatus == exit(0)
+    ->  true
+    ;   throw(error(cargo_lmdb_artifact_build_failed(RunStatus, TsvPath, ArtifactDir), _))
+    ).
+
+ensure_lmdb_artifact_builder(_CargoManifest, ArtifactBuilder) :-
+    lmdb_artifact_builder_ready(ArtifactBuilder),
+    exists_file(ArtifactBuilder),
+    !.
+ensure_lmdb_artifact_builder(CargoManifest, ArtifactBuilder) :-
+    lmdb_artifact_target_dir(CargoTargetDir),
+    !,
+    directory_file_path(CargoTargetDir, 'debug/lmdb_relation_artifact', ArtifactBuilder),
+    build_lmdb_artifact_builder(CargoManifest, CargoTargetDir, ArtifactBuilder).
+ensure_lmdb_artifact_builder(CargoManifest, ArtifactBuilder) :-
+    get_time(T),
+    Stamp is floor(T * 1000),
+    benchmark_repo_root(RepoRoot),
+    format(atom(TargetDirName), 'tmp_lmdb_relation_artifact_target_~w', [Stamp]),
+    directory_file_path(RepoRoot, TargetDirName, CargoTargetDir),
+    make_directory_path(CargoTargetDir),
+    assertz(lmdb_artifact_target_dir(CargoTargetDir)),
+    directory_file_path(CargoTargetDir, 'debug/lmdb_relation_artifact', ArtifactBuilder),
+    build_lmdb_artifact_builder(CargoManifest, CargoTargetDir, ArtifactBuilder).
+
+build_lmdb_artifact_builder(CargoManifest, CargoTargetDir, ArtifactBuilder) :-
+    format(atom(BuildCmd),
+           'CARGO_TARGET_DIR="~w" cargo build --quiet --manifest-path "~w"',
+           [CargoTargetDir, CargoManifest]),
+    process_create(path(sh),
+                   ['-c', BuildCmd],
                    [process(PID)]),
     process_wait(PID, Status),
-    (   Status == exit(0)
-    ->  true
-    ;   throw(error(cargo_lmdb_artifact_build_failed(Status, TsvPath, ArtifactDir), _))
+    (   Status == exit(0),
+        exists_file(ArtifactBuilder)
+    ->  retractall(lmdb_artifact_builder_ready(_)),
+        assertz(lmdb_artifact_builder_ready(ArtifactBuilder))
+    ;   throw(error(cargo_lmdb_artifact_build_failed(Status, CargoManifest, ArtifactBuilder), _))
     ).
 
 maybe_prepare_clojure_lmdb_runtime_support(_OutputDir, ParentMode) :-
     ParentMode \== lmdb,
     !.
 maybe_prepare_clojure_lmdb_runtime_support(OutputDir, lmdb) :-
-    absolute_file_name(OutputDir, AbsoluteOutputDir),
-    directory_file_path(AbsoluteOutputDir, 'classes', ClassesDir),
-    directory_file_path(AbsoluteOutputDir, 'lib', LibDir),
-    directory_file_path(AbsoluteOutputDir, '.jni', JniDir),
-    make_directory_path(ClassesDir),
-    make_directory_path(LibDir),
-    make_directory_path(JniDir),
-    lmdb_helper_java_sources(JavaSources),
-    atomic_list_concat(JavaSources, ' ', JavaSourceArgs),
-    format(atom(JavacCmd),
-           'javac -d "~w" -h "~w" ~w',
-           [ClassesDir, JniDir, JavaSourceArgs]),
-    run_shell_command_or_throw(AbsoluteOutputDir, JavacCmd, javac_lmdb_helper_failed),
-    format(atom(JarCmd),
-           'jar --create --file "~w/lmdb-artifact-reader.jar" -C "~w" generated/lmdb',
-           [LibDir, ClassesDir]),
-    run_shell_command_or_throw(AbsoluteOutputDir, JarCmd, jar_lmdb_helper_failed),
-    benchmark_repo_path('examples/scala_lmdb_jni_probe/native/lmdb_artifact_jni.c', NativeSource),
-    format(atom(GccCmd),
-           'JAVAC_REAL=$(readlink -f "$(command -v javac)") && JAVA_HOME_DIR=$(CDPATH= cd -- "$(dirname "$JAVAC_REAL")/.." && pwd) && cat "~w" | gcc -x c -shared -fPIC -include stddef.h -I"$JAVA_HOME_DIR/include" -I"$JAVA_HOME_DIR/include/linux" -I/data/data/com.termux/files/usr/include -L/data/data/com.termux/files/usr/lib -o "~w/liblmdb_artifact_jni.so" - -llmdb',
-           [NativeSource, LibDir]),
-    run_shell_command_or_throw(AbsoluteOutputDir, GccCmd, gcc_lmdb_helper_failed).
-
-lmdb_helper_java_sources(JavaSources) :-
-    maplist(lmdb_helper_java_source_path,
-            [ 'LmdbRow.java',
-              'LmdbCacheStats.java',
-              'LmdbArtifactManifest.java',
-              'LmdbArtifactStore.java',
-              'LmdbLookupCache.java',
-              'LmdbArtifactReader.java',
-              'LmdbArtifactJNI.java'
-            ],
-            JavaSources).
-
-lmdb_helper_java_source_path(FileName, QuotedPath) :-
-    benchmark_repo_path('examples/scala_lmdb_jni_probe/src/main/java/generated/lmdb', JavaDir),
-    directory_file_path(JavaDir, FileName, SourcePath),
-    format(atom(QuotedPath), '"~w"', [SourcePath]).
-
-run_shell_command_or_throw(Cwd, Command, ErrorFunctor) :-
-    process_create(path(sh), ['-c', Command], [cwd(Cwd), process(PID)]),
-    process_wait(PID, Status),
-    (   Status == exit(0)
-    ->  true
-    ;   Error =.. [ErrorFunctor, Status, Command],
-        throw(error(Error, _))
-    ).
+    wam_clojure_target:prepare_wam_clojure_lmdb_runtime_support(
+        OutputDir,
+        [clojure_lmdb_runtime_support(true)]).

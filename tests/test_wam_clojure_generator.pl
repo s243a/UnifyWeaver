@@ -138,6 +138,54 @@ test(clojure_foreign_handlers_emit_handler_map) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(clojure_lmdb_target_runtime_support_packages_helpers,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_target', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [ namespace('generated.wam_lmdb_target_test'),
+                                    clojure_lmdb_runtime_support(true)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbLookupCache.class', LookupCacheClassPath),
+        directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbCacheStats.class', CacheStatsClassPath),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(exists_file(LookupCacheClassPath)),
+        assertion(exists_file(CacheStatsClassPath)),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_target_reader_open_expr_policies) :-
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(none)],
+                                                     NoneExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(memoize)],
+                                                     MemoExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(shared)],
+                                                     SharedExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(two_level)],
+                                                     TwoLevelExpr),
+    assertion(sub_string(NoneExpr, _, _, _, 'LmdbArtifactReader/open ')),
+    assertion(sub_string(MemoExpr, _, _, _, 'LmdbArtifactReader/openMemoized')),
+    assertion(sub_string(SharedExpr, _, _, _, 'LmdbArtifactReader/openSharedCached')),
+    assertion(sub_string(TwoLevelExpr, _, _, _, 'LmdbArtifactReader/openTwoLevel')).
+
+test(clojure_lmdb_target_cache_log_snippet) :-
+    wam_clojure_target:clojure_lmdb_cache_log_snippet('category_parent/2',
+                                                      [clojure_lmdb_cache_debug(false)],
+                                                      DisabledSnippet),
+    wam_clojure_target:clojure_lmdb_cache_log_snippet('category_parent/2',
+                                                      [clojure_lmdb_cache_debug(true)],
+                                                      EnabledSnippet),
+    assertion(DisabledSnippet == "nil"),
+    assertion(sub_string(EnabledSnippet, _, _, _, 'lmdb_cache_stats category_parent/2')),
+    assertion(sub_string(EnabledSnippet, _, _, _, '.cacheStats')).
+
 test(no_kernels_suppresses_clojure_foreign_stub) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_no_kernels', TmpDir),
@@ -293,6 +341,11 @@ has_working_clojure_main :-
     read_string(Err, _, _),
     close(Out),
     close(Err).
+
+lmdb_helper_toolchain_available :-
+    absolute_file_name(path(javac), _, [access(execute)]),
+    absolute_file_name(path(jar), _, [access(execute)]),
+    absolute_file_name(path(gcc), _, [access(execute)]).
 
 clojure_exec_e2e_enabled :-
     % Direct java/clojure.main runs work manually, but running them from

@@ -16,12 +16,16 @@
 :- module(wam_clojure_target, [
     compile_wam_predicate_to_clojure/4,  % +Pred/Arity, +WamCode, +Options, -ClojureCode
     write_wam_clojure_project/3,         % +Predicates, +Options, +ProjectDir
-    clojure_foreign_predicate/3          % +Pred, +Arity, +Options
+    clojure_foreign_predicate/3,         % +Pred, +Arity, +Options
+    prepare_wam_clojure_lmdb_runtime_support/2, % +ProjectDir, +Options
+    clojure_lmdb_reader_open_expr/3,     % +PathLiteral, +Options, -Expr
+    clojure_lmdb_cache_log_snippet/3     % +Context, +Options, -Snippet
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module(library(process), [process_create/3, process_wait/2]).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 
@@ -41,6 +45,7 @@ write_wam_clojure_project(Predicates, Options, ProjectDir) :-
     write_deps_edn(ModuleName, CoreNamespace, ProjectDir),
     write_project_clj(ModuleName, CoreNamespace, ProjectDir),
     write_runtime_namespace(RuntimeNamespace, Date, ProjectDir),
+    maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options),
     compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, CoreCode),
     write_namespace_file(ProjectDir, CoreNamespace, CoreCode),
     format(user_error, '[WAM-Clojure] Generated project at: ~w~n', [ProjectDir]).
@@ -194,6 +199,63 @@ clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry) :-
     clj_string_literal(PredKey, PredKeyLit),
     clojure_handler_code_text(HandlerCode, HandlerText),
     format(atom(Entry), '~w ~s', [PredKeyLit, HandlerText]).
+
+maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options) :-
+    option(clojure_lmdb_runtime_support(true), Options),
+    !,
+    prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options).
+maybe_prepare_wam_clojure_lmdb_runtime_support(_, _).
+
+prepare_wam_clojure_lmdb_runtime_support(ProjectDir, _Options) :-
+    absolute_file_name(ProjectDir, AbsoluteProjectDir),
+    directory_file_path(AbsoluteProjectDir, 'classes', ClassesDir),
+    directory_file_path(AbsoluteProjectDir, 'lib', LibDir),
+    make_directory_path(ClassesDir),
+    make_directory_path(LibDir),
+    clojure_lmdb_helper_java_sources(JavaSources),
+    atomic_list_concat(JavaSources, ' ', SourceArgs),
+    format(atom(JavacCmd),
+           'javac -d "~w" ~w',
+           [ClassesDir, SourceArgs]),
+    run_shell_command_or_throw(AbsoluteProjectDir, JavacCmd, javac_lmdb_helper_failed),
+    format(atom(JarCmd),
+           'jar --create --file "~w/lmdb-artifact-reader.jar" -C "~w" generated/lmdb',
+           [LibDir, ClassesDir]),
+    run_shell_command_or_throw(AbsoluteProjectDir, JarCmd, jar_lmdb_helper_failed),
+    repo_relative_path('examples/scala_lmdb_jni_probe/native/lmdb_artifact_jni.c', NativeSource),
+    format(atom(GccCmd),
+           'JAVAC_REAL=$(readlink -f "$(command -v javac)") && JAVA_HOME_DIR=$(CDPATH= cd -- "$(dirname "$JAVAC_REAL")/.." && pwd) && cat "~w" | gcc -x c -shared -fPIC -include stddef.h -I"$JAVA_HOME_DIR/include" -I"$JAVA_HOME_DIR/include/linux" -I/data/data/com.termux/files/usr/include -L/data/data/com.termux/files/usr/lib -o "~w/liblmdb_artifact_jni.so" - -llmdb',
+           [NativeSource, LibDir]),
+    run_shell_command_or_throw(AbsoluteProjectDir, GccCmd, gcc_lmdb_helper_failed).
+
+clojure_lmdb_reader_open_expr(PathLiteral, Options, Expr) :-
+    option(clojure_lmdb_cache_policy(CachePolicy), Options, none),
+    clojure_lmdb_reader_open_expr_for_policy(PathLiteral, CachePolicy, Expr).
+
+clojure_lmdb_cache_log_snippet(_Context, Options, "nil") :-
+    \+ option(clojure_lmdb_cache_debug(true), Options),
+    !.
+clojure_lmdb_cache_log_snippet(Context, _Options, Snippet) :-
+    format(string(Snippet),
+           "(binding [*out* *err*] (println (str \"lmdb_cache_stats ~w \" (pr-str (.cacheStats ^generated.lmdb.LmdbArtifactReader @reader-delay)))))",
+           [Context]).
+
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, memoize, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openMemoized (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, shared, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openSharedCached (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, two_level, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openTwoLevel (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, none, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
 
 clojure_handler_code_text(HandlerCode, HandlerCode) :-
     string(HandlerCode), !.
@@ -433,6 +495,41 @@ write_file(Path, Content) :-
     open(Path, write, Stream),
     format(Stream, '~w', [Content]),
     close(Stream).
+
+clojure_lmdb_helper_java_sources(JavaSources) :-
+    maplist(clojure_lmdb_helper_java_source_path,
+            [ 'LmdbRow.java',
+              'LmdbCacheStats.java',
+              'LmdbArtifactManifest.java',
+              'LmdbArtifactStore.java',
+              'LmdbLookupCache.java',
+              'LmdbArtifactReader.java',
+              'LmdbArtifactJNI.java'
+            ],
+            JavaSources).
+
+clojure_lmdb_helper_java_source_path(FileName, QuotedPath) :-
+    repo_relative_path('examples/scala_lmdb_jni_probe/src/main/java/generated/lmdb', JavaDir),
+    directory_file_path(JavaDir, FileName, SourcePath),
+    format(atom(QuotedPath), '"~w"', [SourcePath]).
+
+repo_relative_path(RelativePath, AbsolutePath) :-
+    source_file(wam_clojure_target:repo_relative_path(_, _), ThisFile),
+    file_directory_name(ThisFile, ThisDir),
+    directory_file_path(ThisDir, '..', Parent1),
+    directory_file_path(Parent1, '..', Parent2),
+    directory_file_path(Parent2, '..', RepoRoot),
+    directory_file_path(RepoRoot, RelativePath, Joined),
+    absolute_file_name(Joined, AbsolutePath).
+
+run_shell_command_or_throw(Cwd, Command, ErrorFunctor) :-
+    process_create(path(sh), ['-c', Command], [cwd(Cwd), process(PID)]),
+    process_wait(PID, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   Error =.. [ErrorFunctor, Status, Command],
+        throw(error(Error, _))
+    ).
 
 clj_string_literal(In, Literal) :-
     atom_string(InAtom, In),
