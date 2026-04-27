@@ -784,9 +784,18 @@ generate_one_segment(Labels, Suffix, Name-Instrs, ThisSegCodes) :-
 
 %% split_body_at_calls(+Instrs, -SubSegs)
 %  Splits a flat instr list into sub-segment lists, cutting after every
-%  `call P, N` opcode. The call is the last element of its sub-segment;
-%  the next sub-segment starts with the first instr after it. A body with
-%  no `call`s yields exactly one sub-segment.
+%  `call P, N` opcode AND after every `end_aggregate ValReg` opcode.
+%  The terminator is the last element of its sub-segment; the next
+%  sub-segment starts with the first instr after it. A body with
+%  no terminators yields exactly one sub-segment.
+%
+%  Splitting at end_aggregate is what makes multiple findalls in one
+%  clause body compose correctly: the post-end_aggregate code lives
+%  in its own sub-segment, and end_aggregates lowering uses
+%  WamRuntime.update_topmost_agg_cp/2 to point the agg frame at it
+%  before throwing fail. Without this split, the post-end_aggregate
+%  code ends up in the same sub-segment as end_aggregates throw fail
+%  (dead code), and finalise tail-calls a stale agg_cp.cp.
 split_body_at_calls(Instrs, SubSegs) :-
     split_body_at_calls_(Instrs, [], SubSegs).
 
@@ -795,6 +804,10 @@ split_body_at_calls_([], AccRev, [Seg]) :-
 split_body_at_calls_([PC-call(P, N) | Rest], AccRev, [Seg | RestSegs]) :-
     !,
     reverse([PC-call(P, N) | AccRev], Seg),
+    split_body_at_calls_(Rest, [], RestSegs).
+split_body_at_calls_([PC-end_aggregate(V) | Rest], AccRev, [Seg | RestSegs]) :-
+    !,
+    reverse([PC-end_aggregate(V) | AccRev], Seg),
     split_body_at_calls_(Rest, [], RestSegs).
 split_body_at_calls_([Instr | Rest], AccRev, Segs) :-
     split_body_at_calls_(Rest, [Instr | AccRev], Segs).
@@ -859,17 +872,45 @@ emit_cont_segments([Seg | More], BaseFunc, Idx, Labels, Suffix, [Code | RestCode
     emit_cont_segments(More, BaseFunc, NextIdx, Labels, Suffix, RestCodes).
 
 %% lower_seg_with_continuation(+Instrs, +NextFunc, +Labels, +FuncName, +Suffix, -Body)
-%  Lowers a sub-segment that ends with `call P, N`. The body is the
-%  ordinary lowering of the pre-call instrs, followed by a tail-call that
-%  stores NextFunc in state.cp so the called predicate\'s `proceed`
+%  Lowers a sub-segment that ends with either `call P, N` or
+%  `end_aggregate ValReg` — the two segment terminators recognised by
+%  split_body_at_calls/2.
+%
+%  For `call`: emits pre-call instrs, sets state.cp = &NextFunc/1, then
+%  tail-calls WamDispatcher.call. The called predicates `proceed`
 %  routes control back to NextFunc rather than collapsing the stack.
+%
+%  For `end_aggregate`: emits pre-end_aggregate instrs, then updates
+%  the topmost agg frames cp via update_topmost_agg_cp/2 to point at
+%  NextFunc, then aggregate_collect, then throws fail. The throw
+%  drives backtrack-to-finalise; finalise tail-calls the now-updated
+%  agg_cp.cp = NextFunc, which is the post-end_aggregate sub-segment.
+%  This lets multiple findalls in one body compose correctly.
 lower_seg_with_continuation(Instrs, NextFunc, Labels, FuncName, Suffix, Body) :-
-    append(InitInstrs, [_PC-call(P, _N)], Instrs),
+    append(InitInstrs, [_PC-Last], Instrs),
+    (   Last = call(P, _N)
+    ->  lower_call_terminator(InitInstrs, P, NextFunc, Labels, FuncName, Suffix, Body)
+    ;   Last = end_aggregate(ValReg)
+    ->  lower_end_aggregate_terminator(InitInstrs, ValReg, NextFunc, Labels, FuncName, Suffix, Body)
+    ;   throw(error(unexpected_seg_terminator(Last), lower_seg_with_continuation/6))
+    ).
+
+lower_call_terminator(InitInstrs, P, NextFunc, Labels, FuncName, Suffix, Body) :-
     lower_instr_list(InitInstrs, Labels, FuncName, Suffix, InitExprs),
     format(string(TailCallCode),
 '    state = %{state | cp: &~w/1}
     WamDispatcher.call("~w", state)', [NextFunc, P]),
     append(InitExprs, [TailCallCode], AllExprs),
+    atomic_list_concat(AllExprs, '\n', Body).
+
+lower_end_aggregate_terminator(InitInstrs, ValReg, NextFunc, Labels, FuncName, Suffix, Body) :-
+    reg_id(ValReg, ValRegId),
+    lower_instr_list(InitInstrs, Labels, FuncName, Suffix, InitExprs),
+    format(string(EndAggCode),
+'    state = WamRuntime.update_topmost_agg_cp(state, &~w/1)
+    state = WamRuntime.aggregate_collect(state, ~w)
+    throw({:fail, state})', [NextFunc, ValRegId]),
+    append(InitExprs, [EndAggCode], AllExprs),
     atomic_list_concat(AllExprs, '\n', Body).
 
 %% split_last_colon(+Entry, -Key, -Label)

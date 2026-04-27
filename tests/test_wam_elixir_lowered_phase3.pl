@@ -237,6 +237,23 @@ user:phase3_cut_barrier(L, Rest) :-
     phase3_cut_first(L),
     findall(Y, phase3_r(Y), Rest).
 
+% Scenario 16: two inline findalls in one body — previously the
+% deferred finding from #1667. Closed by this PRs structural fix:
+% split_body_at_calls now also splits at end_aggregate, so the
+% post-end_aggregate code lives in its own sub-segment, and
+% end_aggregates lowering uses update_topmost_agg_cp to point the
+% agg frame at it. Finalise tail-calls the post-end_aggregate
+% sub-segment, which can run subsequent body code (including a
+% second findall, deallocate, proceed, etc.).
+%
+% The fixture matches Perplexity's original Fixture 3 form
+% (two inline findalls without a sub-predicate wrapper). Expected:
+%   L = [1, 2, 3]   (full enumeration of phase3_r)
+%   Rest = [1, 2, 3]   (independent second enumeration)
+user:phase3_two_findalls(L, Rest) :-
+    findall(X, phase3_r(X), L),
+    findall(Y, phase3_r(Y), Rest).
+
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
 tmp_root_candidate(Root) :-
@@ -289,7 +306,8 @@ phase3_predicates([
     user:phase3_first_r/1,
     user:phase3_cut_subpred/1,
     user:phase3_cut_first/1,
-    user:phase3_cut_barrier/2
+    user:phase3_cut_barrier/2,
+    user:phase3_two_findalls/2
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -326,7 +344,9 @@ phase3_driver_invocations([
     'r14 = Phase3Smoke.Phase3CutSubpred.run([{:unbound, make_ref()}])',
     'IO.inspect(r14, label: "SCENARIO_CUT_SUBPRED", charlists: :as_lists)',
     'r15 = Phase3Smoke.Phase3CutBarrier.run([{:unbound, make_ref()}, {:unbound, make_ref()}])',
-    'IO.inspect(r15, label: "SCENARIO_CUT_BARRIER", charlists: :as_lists)'
+    'IO.inspect(r15, label: "SCENARIO_CUT_BARRIER", charlists: :as_lists)',
+    'r16 = Phase3Smoke.Phase3TwoFindalls.run([{:unbound, make_ref()}, {:unbound, make_ref()}])',
+    'IO.inspect(r16, label: "SCENARIO_TWO_FINDALLS", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -543,6 +563,18 @@ assert_scenario_cut_barrier(StdOut) :-
     sub_string(W, _, _, _, "\"2\""),
     sub_string(W, _, _, _, "\"3\"").
 
+assert_scenario_two_findalls(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_TWO_FINDALLS", W),
+    % Two inline findalls in one body. Without this PR's structural
+    % fix, the second findall's setup ended up as dead code after
+    % the first end_aggregate's throw fail. With the fix, both
+    % findalls enumerate independently and bind L = Rest = [1, 2, 3].
+    % Both lists are present in the IO.inspect output (as separate
+    % bindings on regs[1] and regs[2]).
+    sub_string(W, _, _, _, "\"1\""),
+    sub_string(W, _, _, _, "\"2\""),
+    sub_string(W, _, _, _, "\"3\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -600,6 +632,9 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3c: cut barrier — agg frame protects second findall from cut',
                  assert_scenario_cut_barrier,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: two inline findalls in one body — split at end_aggregate',
+                 assert_scenario_two_findalls,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all
