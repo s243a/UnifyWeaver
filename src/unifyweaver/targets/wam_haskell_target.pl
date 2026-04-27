@@ -1907,6 +1907,12 @@ step !ctx s (SetValue xn) =
     Just val -> addToBuilder val s
     Nothing -> Nothing
 
+step !ctx s (SetVariable xn) =
+  let vid = wsVarCounter s
+      var = Unbound vid
+      s1 = putReg xn var (s { wsVarCounter = vid + 1 })
+  in addToBuilder var s1
+
 step !ctx s (SetConstant c) =
   addToBuilder c s
 
@@ -3367,6 +3373,7 @@ data Instruction
   | PutStructureDyn !RegId !RegId !RegId  -- nameReg, arityReg, targetReg (runtime-parsed)
   | PutList !RegId
   | SetValue !RegId
+  | SetVariable !RegId                  -- builder slot = fresh unbound; also write to register
   | SetConstant Value
   | Allocate
   | Deallocate
@@ -4020,7 +4027,8 @@ wam_instr_to_haskell(["trust_me"], "TrustMe").
 wam_instr_to_haskell(["retry_me_else", Label], Hs) :-
     format(string(Hs), 'RetryMeElse "~w"', [Label]).
 wam_instr_to_haskell(["set_variable", Xn], Hs) :-
-    format(string(Hs), 'SetVariable "~w"', [Xn]).
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'SetVariable ~w', [XnI]).
 %% switch_on_constant key1:label1, key2:label2, ...
 wam_instr_to_haskell(["switch_on_constant"|Entries], Hs) :-
     parse_switch_entries(Entries, HsPairs),
