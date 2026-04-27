@@ -23,6 +23,7 @@
 :- use_module(library(option)).
 :- use_module('../core/clause_body_analysis').
 :- use_module('../core/template_system').
+:- use_module('../core/binding_state_analysis').
 
 %% target_info(-Info)
 target_info(info{
@@ -308,6 +309,7 @@ escape_wam_char(C, [C]).
 
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
+    set_clause_binding_context(Head, Body),
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
@@ -434,6 +436,7 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
         format(string(Choice), "L_~w_~w_~w:~n    retry_me_else L_~w_~w_~w", [Pred, Arity, I, Pred, Arity, Next])
     ),
     % Compile clause body — pre-assign Yi for permanent vars before head
+    set_clause_binding_context(Head, Body),
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
@@ -683,7 +686,18 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         )
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        (   HasEnv == yes
+        (   %% Univ compose-mode lowering routes through compile_goal_execute
+            %% which dispatches to emit_put_structure_dyn_lowering when the
+            %% binding-state preconditions hold. We add the deallocate here
+            %% (HasEnv == yes case) so the resulting tail-call stays
+            %% TCO-correct.
+            Goal = (_ =.. _),
+            HasEnv == yes
+        ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
+            format(string(Code), "    deallocate~n~w", [ExecCode])
+        ;   Goal = (_ =.. _)
+        ->  compile_goal_execute(Goal, V0, Vf, Code)
+        ;   HasEnv == yes
         ->  Goal =.. [Pred|Args],
             length(Args, Arity),
             compile_put_arguments(Args, 1, V0, Vf, PutCode),
@@ -699,6 +713,7 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         )
     ;   % Non-last goal: call
         compile_goal_call(Goal, V0, V1, GoalCode),
+        advance_clause_goal_idx,
         compile_goals(Rest, V1, HasEnv, Vf, RestCode),
         format(string(Code), "~w~n~w", [GoalCode, RestCode])
     ).
@@ -939,6 +954,17 @@ compile_goal_call(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
     compile_goal_call(InnerGoal, V0, Vf, Code).
+%% =../2 compose-mode lowering: T =.. [Name | FixedArgs] where T is
+%% provably unbound and Name is provably bound. Emits PutStructureDyn
+%% rather than the generic =../2 builtin call. Falls through to the
+%% builtin path if the binding-state preconditions cannot be proved.
+compile_goal_call(T =.. L, V0, Vf, Code) :-
+    parse_univ_list_pattern(L, NameVar, FixedArgs),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
+    !,
+    emit_put_structure_dyn_lowering(T, NameVar, FixedArgs, V0, Vf, Code).
 compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -956,6 +982,16 @@ compile_goal_execute(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
     compile_goal_execute(InnerGoal, V0, Vf, Code).
+%% =../2 compose-mode lowering, tail-call form. Produces the same
+%% PutStructureDyn lowering followed by `proceed`.
+compile_goal_execute(T =.. L, V0, Vf, Code) :-
+    parse_univ_list_pattern(L, NameVar, FixedArgs),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
+    !,
+    emit_put_structure_dyn_lowering(T, NameVar, FixedArgs, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
 compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -1217,3 +1253,127 @@ write_wam_program(Code, Filename) :-
         format(Stream, "~w~n", [Code]),
         close(Stream)
     ).
+
+%% ========================================================================
+%% Binding-state analysis plumbing for =../2 compose-mode lowering.
+%%
+%% The binding analyser produces a list of `goal_binding(Idx, Before,
+%% After)` records per clause. We stash that list in a non-backtrackable
+%% global before invoking the body walk, and the new `compile_goal_call`
+%% / `compile_goal_execute` clauses for `T =.. L` consult it.
+%%
+%% The analysis is *additive* — if the global is unset (e.g. when a
+%% target invokes `compile_goal_call/4` directly without going through
+%% `compile_single_clause_wam`), the lowering simply falls through to
+%% the existing builtin path. No regression for any non-WAM-Haskell
+%% caller.
+%% ========================================================================
+
+%% set_clause_binding_context(+Head, +Body)
+%  Run the binding analyser on the clause and stash the resulting list
+%  of `goal_binding/3` records in `wam_clause_binding_records`. Also
+%  resets the per-goal index counter to 1.
+set_clause_binding_context(Head, Body) :-
+    catch(
+        binding_state_analysis:analyse_clause_bindings(Head, Body, Bindings),
+        _Err,
+        Bindings = []
+    ),
+    b_setval(wam_clause_binding_records, Bindings),
+    b_setval(wam_clause_goal_idx, 1).
+
+%% current_clause_binding_env(-BeforeEnv)
+%  Returns the BeforeEnv of the goal currently being compiled. Defaults
+%  to the empty env when no analysis is in scope.
+current_clause_binding_env(BeforeEnv) :-
+    (   catch(b_getval(wam_clause_binding_records, Bindings), _, fail)
+    ->  true
+    ;   Bindings = []
+    ),
+    (   catch(b_getval(wam_clause_goal_idx, Idx), _, fail)
+    ->  true
+    ;   Idx = 1
+    ),
+    (   member(goal_binding(Idx, Env, _), Bindings)
+    ->  BeforeEnv = Env
+    ;   binding_state_analysis:empty_binding_env(BeforeEnv)
+    ).
+
+%% advance_clause_goal_idx
+%  Step the per-clause goal index forward by one. Called from the body
+%  walk between goals so the binding lookup sees the right BeforeEnv.
+advance_clause_goal_idx :-
+    (   catch(b_getval(wam_clause_goal_idx, Idx), _, fail)
+    ->  Idx1 is Idx + 1,
+        b_setval(wam_clause_goal_idx, Idx1)
+    ;   true
+    ).
+
+%% parse_univ_list_pattern(+List, -NameVar, -FixedArgs)
+%
+%  Recognises the list literal `[NameVar | FixedArgs]` where NameVar is
+%  a Prolog variable and FixedArgs is a fixed-length proper list
+%  (length ≥ 0, no tail variables). Used by the =../2 compose-mode
+%  lowering to extract the dynamic functor name and the fixed
+%  argument list.
+parse_univ_list_pattern(List, _NameVar, _FixedArgs) :-
+    var(List), !, fail.
+parse_univ_list_pattern([NameVar|Rest], NameVar, FixedArgs) :-
+    var(NameVar),
+    proper_fixed_list(Rest, FixedArgs).
+
+proper_fixed_list(L, _) :- var(L), !, fail.
+proper_fixed_list([], []) :- !.
+proper_fixed_list([H|T], [H|FixedT]) :-
+    proper_fixed_list(T, FixedT).
+
+%% emit_put_structure_dyn_lowering(+T, +NameVar, +FixedArgs, +V0, -Vf, -Code)
+%
+%  Emit the WAM instruction sequence that constructs a structure whose
+%  functor name comes from a register (`NameVar`) and whose arity is
+%  the literal length of FixedArgs.
+%
+%  Sequence:
+%      put_value Reg(NameVar), A1     # nameReg
+%      put_constant N, A2             # arityReg (literal int)
+%      put_structure_dyn A1, A2, A3   # construct Str at A3
+%      <set_value/set_variable for each FixedArg>
+%      get_value Reg(T), A3           # unify with T
+%
+%  Pre-condition: the caller has verified that NameVar is `bound` and
+%  T is `unbound` in the BeforeEnv.
+emit_put_structure_dyn_lowering(T, NameVar, FixedArgs, V0, Vf, Code) :-
+    %% A1 = NameVar's register (must already exist; if not, allocate).
+    (   get_var_reg(NameVar, V0, NameReg)
+    ->  V1 = V0,
+        format(string(NameCode), "    put_value ~w, A1", [NameReg])
+    ;   next_x_reg(V0, NameReg, V_temp1),
+        bind_var(NameVar, NameReg, V_temp1, V1),
+        format(string(NameCode), "    put_variable ~w, A1", [NameReg])
+    ),
+    %% A2 = literal arity.
+    length(FixedArgs, Arity),
+    format(string(ArityCode), "    put_constant ~w, A2", [Arity]),
+    %% A3 = constructed term register.
+    next_x_reg(V1, TermReg, V2),
+    format(string(StructCode), "    put_structure_dyn A1, A2, ~w", [TermReg]),
+    %% Emit set_value/set_variable for each FixedArg.
+    compile_set_arguments(FixedArgs, V2, V3, SetCode),
+    %% Bind T to the result. If T already has a reg, emit get_value;
+    %% otherwise bind T to TermReg directly (T is now aliased to the
+    %% constructed term).
+    (   get_var_reg(T, V3, TReg)
+    ->  Vf = V3,
+        format(string(GetCode), "    get_value ~w, ~w", [TReg, TermReg])
+    ;   bind_var(T, TermReg, V3, Vf),
+        GetCode = ""
+    ),
+    %% Stitch together, dropping empty pieces.
+    join_nonempty(
+        [NameCode, ArityCode, StructCode, SetCode, GetCode],
+        Code).
+
+join_nonempty(Pieces, Code) :-
+    exclude(=(""), Pieces, NonEmpty),
+    atomic_list_concat(NonEmpty, '\n', CodeAtom),
+    atom_string(CodeAtom, Code).
