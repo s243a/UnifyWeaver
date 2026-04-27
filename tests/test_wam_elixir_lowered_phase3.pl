@@ -131,7 +131,7 @@ user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
 
 % Scenario 9: module-qualified findall, end-to-end — closes Finding 1
 % from #1647. The static-module-qualifier unwrap in compile_goal_call/4
-% (this PR) emits a regular `call phase3_smoke_p/1` for the inner
+% (#1658) emits a regular `call phase3_smoke_p/1` for the inner
 % goal instead of routing through the `:/2` builtin path, so the
 % Elixir runtime never sees `:/2` and never hits its catch-all
 % `_ -> :fail`. Functionally equivalent to scenario 1 once the
@@ -139,6 +139,50 @@ user:phase3_min(M) :- aggregate_all(min(X), phase3_smoke_p(X), M).
 % still hit `:/2` and remain a known limitation — see
 % WAM_ELIXIR_TIER2_FINDALL.md for the forward reference.
 user:phase3_findall_qualified(L) :- findall(X, user:phase3_smoke_p(X), L).
+
+% Scenario 10: single-clause findall — degenerate case. Inner predicate
+% has exactly one solution (no try_me_else / retry_me_else CPs).
+% Validates the path where the inner enumeration exhausts immediately
+% after one solution: aggregate_collect captures the value, throw fail
+% drives backtrack, the topmost CP IS the agg frame (no inner CPs to
+% pop first), and finalise binds the 1-element list.
+user:phase3_one_solution(only).
+user:phase3_findall_one(L) :- findall(X, phase3_one_solution(X), L).
+
+% Nested findall — proposal §6 risk #7 — surfaced a deeper
+% architectural issue during this PR's investigation, deferred to a
+% focused follow-up:
+%
+%   When end_aggregate throws {:fail, state}, wrap_segment's catch
+%   calls backtrack/1, which routes to finalise_aggregate/4.
+%   finalise tail-calls the saved continuation (agg_cp.cp = the
+%   outer caller's post-call continuation) DIRECTLY, bypassing the
+%   inner predicate's deallocate instruction. The outer continuation
+%   then runs with the inner's stack frame still active — Y-reg
+%   accesses see the inner's Y-regs, not the outer's. For
+%   single-level findall this works because there's no outer
+%   "Y-reg consumer" after the call (the post-call continuation only
+%   touches X-regs and the result_reg via aggregate_collect). For
+%   nested findall, the outer's end_aggregate Y1 reads the wrong Y1.
+%
+%   The trail-bind fix in this PR (finalise binds the result through
+%   the underlying unbound ref's id, not just the integer reg slot)
+%   makes single-level findall correctly bind L at the parameter
+%   slot instead of incidentally leaving the value at the X-reg
+%   only. This is necessary but not sufficient for nested.
+%
+%   Follow-up options for the architectural fix:
+%   (a) Have finalise simulate deallocate when state.stack has an
+%       env frame above the saved snapshot — pop frames until the
+%       agg_cp.stack snapshot matches.
+%   (b) Restructure end_aggregate's lowering to fall through to the
+%       inner's deallocate before throwing fail.
+%   (c) Push the agg frame BEFORE allocate, so agg_cp.stack
+%       captures the pre-allocate state and finalise's restore
+%       naturally pops the inner env.
+%
+%   Each option needs careful design — that's its own PR after
+%   Phase 3c lands.
 
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
@@ -180,7 +224,9 @@ phase3_predicates([
     user:phase3_set/1,
     user:phase3_max/1,
     user:phase3_min/1,
-    user:phase3_findall_qualified/1
+    user:phase3_findall_qualified/1,
+    user:phase3_one_solution/1,
+    user:phase3_findall_one/1
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -205,7 +251,9 @@ phase3_driver_invocations([
     'r8 = Phase3Smoke.Phase3Min.run([{:unbound, make_ref()}])',
     'IO.inspect(r8, label: "SCENARIO_AGG_MIN", charlists: :as_lists)',
     'r9 = Phase3Smoke.Phase3FindallQualified.run([{:unbound, make_ref()}])',
-    'IO.inspect(r9, label: "SCENARIO_FINDALL_QUALIFIED", charlists: :as_lists)'
+    'IO.inspect(r9, label: "SCENARIO_FINDALL_QUALIFIED", charlists: :as_lists)',
+    'r10 = Phase3Smoke.Phase3FindallOne.run([{:unbound, make_ref()}])',
+    'IO.inspect(r10, label: "SCENARIO_FINDALL_ONE_CLAUSE", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -344,6 +392,13 @@ assert_scenario_findall_qualified(StdOut) :-
     sub_string(W, _, _, _, "\"b\""),
     sub_string(W, _, _, _, "\"c\"").
 
+assert_scenario_findall_one_clause(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_ONE_CLAUSE", W),
+    % One-element list — the single fact's value `only` is captured
+    % once. No try_me_else CPs to backtrack through; finalise is
+    % reached on the very first throw-fail after aggregate_collect.
+    sub_string(W, _, _, _, "\"only\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -383,6 +438,9 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3: findall(X, user:phase3_smoke_p(X), L) → [a, b, c] (module-qualified, closes #1647 Finding 1)',
                  assert_scenario_findall_qualified,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: findall(X, phase3_one_solution(X), L) → ["only"] (single-clause, no try_me_else CPs)',
+                 assert_scenario_findall_one_clause,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all
