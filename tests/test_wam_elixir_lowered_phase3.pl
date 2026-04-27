@@ -149,40 +149,25 @@ user:phase3_findall_qualified(L) :- findall(X, user:phase3_smoke_p(X), L).
 user:phase3_one_solution(only).
 user:phase3_findall_one(L) :- findall(X, phase3_one_solution(X), L).
 
-% Nested findall — proposal §6 risk #7 — surfaced a deeper
-% architectural issue during this PR's investigation, deferred to a
-% focused follow-up:
+% Scenario 11: nested findall — proposal §6 risk #7. Deferred from
+% the Phase 3c trail-bind PR (#1659) and now activated by this
+% PR's finalise-pops-env-frame fix (option (a) from that PR's
+% deferred-scenario comment block).
 %
-%   When end_aggregate throws {:fail, state}, wrap_segment's catch
-%   calls backtrack/1, which routes to finalise_aggregate/4.
-%   finalise tail-calls the saved continuation (agg_cp.cp = the
-%   outer caller's post-call continuation) DIRECTLY, bypassing the
-%   inner predicate's deallocate instruction. The outer continuation
-%   then runs with the inner's stack frame still active — Y-reg
-%   accesses see the inner's Y-regs, not the outer's. For
-%   single-level findall this works because there's no outer
-%   "Y-reg consumer" after the call (the post-call continuation only
-%   touches X-regs and the result_reg via aggregate_collect). For
-%   nested findall, the outer's end_aggregate Y1 reads the wrong Y1.
-%
-%   The trail-bind fix in this PR (finalise binds the result through
-%   the underlying unbound ref's id, not just the integer reg slot)
-%   makes single-level findall correctly bind L at the parameter
-%   slot instead of incidentally leaving the value at the X-reg
-%   only. This is necessary but not sufficient for nested.
-%
-%   Follow-up options for the architectural fix:
-%   (a) Have finalise simulate deallocate when state.stack has an
-%       env frame above the saved snapshot — pop frames until the
-%       agg_cp.stack snapshot matches.
-%   (b) Restructure end_aggregate's lowering to fall through to the
-%       inner's deallocate before throwing fail.
-%   (c) Push the agg frame BEFORE allocate, so agg_cp.stack
-%       captures the pre-allocate state and finalise's restore
-%       naturally pops the inner env.
-%
-%   Each option needs careful design — that's its own PR after
-%   Phase 3c lands.
+% Outer findall iterates inner-findall results. The inner
+% phase3_nested_inner/1 is single-clause and deterministically
+% returns [a, b, c], so the outer collects exactly one solution
+% whose value is that inner list. Validates the full chain:
+%   - inner finalise binds L through the trail (PR #1659)
+%   - inner finalise pops inner_env from state.stack (this PR), so
+%     the saved cp (= outer's post-call k1) runs with the OUTER's
+%     Y-regs active
+%   - outer's end_aggregate Y1 reads the now-correctly-bound L
+%   - outer aggregate_collect captures it
+%   - outer finalise binds LL through the trail
+%   - outer finalise pops outer_env, tail-calls terminal_cp
+user:phase3_nested_inner(L) :- findall(X, phase3_smoke_p(X), L).
+user:phase3_nested_outer(LL) :- findall(L, phase3_nested_inner(L), LL).
 
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
@@ -226,7 +211,9 @@ phase3_predicates([
     user:phase3_min/1,
     user:phase3_findall_qualified/1,
     user:phase3_one_solution/1,
-    user:phase3_findall_one/1
+    user:phase3_findall_one/1,
+    user:phase3_nested_inner/1,
+    user:phase3_nested_outer/1
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -253,7 +240,9 @@ phase3_driver_invocations([
     'r9 = Phase3Smoke.Phase3FindallQualified.run([{:unbound, make_ref()}])',
     'IO.inspect(r9, label: "SCENARIO_FINDALL_QUALIFIED", charlists: :as_lists)',
     'r10 = Phase3Smoke.Phase3FindallOne.run([{:unbound, make_ref()}])',
-    'IO.inspect(r10, label: "SCENARIO_FINDALL_ONE_CLAUSE", charlists: :as_lists)'
+    'IO.inspect(r10, label: "SCENARIO_FINDALL_ONE_CLAUSE", charlists: :as_lists)',
+    'r11 = Phase3Smoke.Phase3NestedOuter.run([{:unbound, make_ref()}])',
+    'IO.inspect(r11, label: "SCENARIO_FINDALL_NESTED", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -399,6 +388,19 @@ assert_scenario_findall_one_clause(StdOut) :-
     % reached on the very first throw-fail after aggregate_collect.
     sub_string(W, _, _, _, "\"only\"").
 
+assert_scenario_findall_nested(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_NESTED", W),
+    % Nested findall: outer iterates inner-findall results. The
+    % inner phase3_nested_inner/1 deterministically returns
+    % [a, b, c]; outer collects exactly one solution whose value
+    % is that inner list. After the finalise-pops-env-frame fix
+    % in this PR, all three values are correctly bound through
+    % the trail across both aggregate frames and the parameter
+    % slot resolves to the nested list.
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -441,6 +443,9 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3c: findall(X, phase3_one_solution(X), L) → ["only"] (single-clause, no try_me_else CPs)',
                  assert_scenario_findall_one_clause,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: nested findall — outer iterates inner-findall results (proposal §6 risk #7)',
+                 assert_scenario_findall_nested,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all
