@@ -48,13 +48,15 @@
 %%      pass but this test will fail — flagging the runtime regression
 %%      at the semantic level.
 %%
-%% Limitations: this is not a full GHC-backed end-to-end test. The
-%% runtime `step` semantics are mirrored in Prolog rather than
-%% executed by the actual compiled Haskell. A full Cabal build per
-%% test run is intentionally avoided (see the comment at the top of
-%% tests/test_wam_haskell_target.pl) — Control.Parallel.Strategies
-%% and Control.Concurrent.Async are unconditional imports of the
-%% generated WamRuntime.hs and are not in the project's CI image.
+%% Limitations: this file mirrors the runtime `step` semantics in
+%% Prolog rather than executing the compiled Haskell. The companion
+%% test tests/core/test_wam_put_structure_dyn_ghc_smoke.pl drives
+%% the *real* generated WamRuntime through a full GHC + cabal build
+%% when those tools are available locally; that file skips
+%% gracefully when they are not. Both tests should remain green —
+%% this one provides coverage on environments without GHC, and the
+%% smoke catches divergence between the Prolog mirror in this file
+%% and the actual generated Haskell.
 %%
 %% Usage:
 %%   swipl -g run_tests -t halt tests/core/test_wam_put_structure_dyn_runtime.pl
