@@ -784,16 +784,23 @@ test_findall_substrate_emits_push_aggregate_frame :-
     ).
 
 test_findall_substrate_emits_aggregate_collect :-
-    Test = 'Findall substrate: WamRuntime emits aggregate_collect/2 (deref + prepend to nearest agg frame)',
+    Test = 'Findall substrate: WamRuntime emits aggregate_collect/2 (deep-copy + prepend to nearest agg frame)',
     (   compile_wam_runtime_to_elixir([], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, 'def aggregate_collect(state, value_reg)'),
-        % Must deref the value register before capturing.
-        sub_string(S, _, _, _, 'val = deref_var(state, Map.get(state.regs, value_reg))'),
+        % Must deep-copy the value register before capturing — atomic
+        % values pass through unchanged, compound heap structures
+        % become self-contained {:struct, ...} tuples that survive
+        % backtrack's heap-rewind.
+        sub_string(S, _, _, _, 'raw = Map.get(state.regs, value_reg)'),
+        sub_string(S, _, _, _, 'val = deep_copy_value(state, raw)'),
         % Must prepend (O(1)) to the nearest aggregate frame's accum.
-        sub_string(S, _, _, _, '[val | prior]')
+        sub_string(S, _, _, _, '[val | prior]'),
+        % And the deep_copy_value helper itself exists.
+        sub_string(S, _, _, _, 'def deep_copy_value(state, val)'),
+        sub_string(S, _, _, _, '{:str, functor}')
     ->  pass(Test)
-    ;   fail_test(Test, 'aggregate_collect absent or missing deref/prepend logic')
+    ;   fail_test(Test, 'aggregate_collect absent or missing deep-copy/prepend logic')
     ).
 
 test_findall_substrate_emits_finalise_aggregate :-

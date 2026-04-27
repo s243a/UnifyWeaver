@@ -737,9 +737,22 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     ->  % ValueVar is a Prolog variable — allocate a Y-register for it
         allocate_var(ValueVar, V1, V2, ValueReg),
         % Emit put_variable to actually create the Y-register in the env frame
-        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg])
+        format(string(InitValueCode), "    put_variable ~w, A1", [ValueReg]),
+        ConstructionCode = ""
+    ;   compound(ValueVar)
+    ->  % Compound Template — `findall(p(X, Y), Goal, L)` and similar.
+        % Allocate Y-regs for each variable arg, init via put_variable so
+        % each iteration starts with fresh refs (the inner goal binds
+        % them through head unification). After the inner returns, build
+        % the Template structure on the heap via put_structure +
+        % set_value/set_constant. ValueReg = A1 holds the heap ref so
+        % end_aggregate captures it. aggregate_collect on the Elixir
+        % runtime side deep-copies the heap structure into a self-
+        % contained value before backtrack rewinds the heap.
+        compile_compound_template(ValueVar, V1, V2, InitValueCode, ConstructionCode),
+        ValueReg = 'A1'
     ;   % Constant value (e.g., count uses 1) — use A1 as placeholder
-        ValueReg = 'A1', V2 = V1, InitValueCode = ""
+        ValueReg = 'A1', V2 = V1, InitValueCode = "", ConstructionCode = ""
     ),
     % Flatten the InnerGoal conjunction into a list of goals
     flatten_conjunction(InnerGoal, GoalList),
@@ -752,14 +765,75 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
     % pre_assign_permanent_vars call here — it would reassign variables
     % that already have Y-register slots from the outer pass.
     compile_inner_call_goals(GoalList, V2, Vf, InnerCode),
+    % For compound Templates, the construction code runs AFTER the
+    % inner-goal call but BEFORE end_aggregate captures.
+    (   ConstructionCode == ""
+    ->  FullInnerCode = InnerCode
+    ;   format(string(FullInnerCode), "~w~n~w", [InnerCode, ConstructionCode])
+    ),
     (   InitValueCode \= ""
     ->  format(string(Code),
             "~w~n    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
-            [InitValueCode, AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+            [InitValueCode, AggType, ValueReg, ResultReg0, FullInnerCode, ValueReg])
     ;   format(string(Code),
             "    begin_aggregate ~w, ~w, ~w~n~w~n    end_aggregate ~w",
-            [AggType, ValueReg, ResultReg0, InnerCode, ValueReg])
+            [AggType, ValueReg, ResultReg0, FullInnerCode, ValueReg])
     ).
+
+%% compile_compound_template(+Template, +V0, -Vf, -InitCode, -ConstructionCode)
+%  For findall(Functor(Arg1, Arg2, ...), Goal, L) with compound Template:
+%  - Each Arg is either a variable or a constant
+%  - Variables get Y-regs allocated (via allocate_var) so they have
+%    stable slots across the inner-goal call
+%  - InitCode emits put_variable Y_n, A_n for variables and
+%    put_constant for constants — fresh refs each iteration
+%  - ConstructionCode emits put_structure + set_value/set_constant
+%    after the inner goal returns; A1 holds the heap ref to the
+%    constructed Template
+%  - Compound args within the Template (e.g., `findall(p(f(X)), ...)`)
+%    are not yet supported — would need recursive heap construction.
+compile_compound_template(Template, V0, Vf, InitCode, ConstructionCode) :-
+    Template =.. [Functor | Args],
+    length(Args, Arity),
+    compile_template_arg_init(Args, 1, V0, V1, InitLines),
+    (   InitLines == []
+    ->  InitCode = ""
+    ;   atomic_list_concat(InitLines, '\n', InitCode)
+    ),
+    format(string(PutStrucCode), "    put_structure ~w/~w, A1", [Functor, Arity]),
+    compile_template_arg_set(Args, V1, Vf, SetLines),
+    atomic_list_concat([PutStrucCode | SetLines], '\n', ConstructionCode).
+
+compile_template_arg_init([], _, V, V, []).
+compile_template_arg_init([Arg | Rest], I, V0, Vf, Lines) :-
+    (   var(Arg)
+    ->  allocate_var(Arg, V0, V1, Reg),
+        format(string(Line), "    put_variable ~w, A~w", [Reg, I]),
+        Lines = [Line | RestLines]
+    ;   atomic(Arg)
+    ->  V1 = V0,
+        quote_wam_constant(Arg, ArgStr),
+        format(string(Line), "    put_constant ~w, A~w", [ArgStr, I]),
+        Lines = [Line | RestLines]
+    ;   % Compound or other — not yet supported
+        throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
+    ),
+    NI is I + 1,
+    compile_template_arg_init(Rest, NI, V1, Vf, RestLines).
+
+compile_template_arg_set([], V, V, []).
+compile_template_arg_set([Arg | Rest], V0, Vf, [Line | Lines]) :-
+    (   var(Arg)
+    ->  get_var_reg(Arg, V0, Reg),
+        format(string(Line), "    set_value ~w", [Reg]),
+        V1 = V0
+    ;   atomic(Arg)
+    ->  V1 = V0,
+        quote_wam_constant(Arg, ArgStr),
+        format(string(Line), "    set_constant ~w", [ArgStr])
+    ;   throw(error(unsupported_template_arg(Arg), compile_compound_template/5))
+    ),
+    compile_template_arg_set(Rest, V1, Vf, Lines).
 
 %% compile_findall(+Template, +InnerGoal, +Result, +V0, -Vf, -Code)
 compile_findall(Template, InnerGoal, Result, V0, Vf, Code) :-

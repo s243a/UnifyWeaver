@@ -169,6 +169,33 @@ user:phase3_findall_one(L) :- findall(X, phase3_one_solution(X), L).
 user:phase3_nested_inner(L) :- findall(X, phase3_smoke_p(X), L).
 user:phase3_nested_outer(LL) :- findall(L, phase3_nested_inner(L), LL).
 
+% Scenario 12: compound Template findall — proposal §6 risk #1 probe
+% (deep-copy of compound captured values). Surfaced and resolved in
+% this PR via two changes:
+%
+%   1. compile_aggregate_all/5 now detects compound Templates
+%      (`Template = compound(...)`), allocates Y-regs for variable
+%      args via the new compile_compound_template/5 helper, and
+%      emits put_structure + set_value/set_constant code AFTER the
+%      inner-goal call so each iteration constructs a fresh heap
+%      structure. Without this the WAM emitted no construction
+%      instructions and end_aggregate captured only A1 (the first
+%      Template arg), losing the other args entirely.
+%
+%   2. WamRuntime.aggregate_collect/2 now deep-copies the captured
+%      value via deep_copy_value/2 before adding to accum.
+%      For atomic captured values (the prior cases, scenarios 1–11)
+%      deep-copy is a no-op pass-through; for compound `{:ref, addr}`
+%      values it walks the heap structure and builds a self-contained
+%      {:struct, "name/arity", [args]} tuple. Without deep-copy all
+%      accum entries would point to the same final iterations heap
+%      addresses (heap_len rewinds during backtrack so put_structure
+%      reuses the same addrs).
+user:phase3_q(a, '1').
+user:phase3_q(b, '2').
+user:phase3_q(c, '3').
+user:phase3_findall_compound(L) :- findall(p(X, Y), phase3_q(X, Y), L).
+
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
 tmp_root_candidate(Root) :-
@@ -213,7 +240,9 @@ phase3_predicates([
     user:phase3_one_solution/1,
     user:phase3_findall_one/1,
     user:phase3_nested_inner/1,
-    user:phase3_nested_outer/1
+    user:phase3_nested_outer/1,
+    user:phase3_q/2,
+    user:phase3_findall_compound/1
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -242,7 +271,9 @@ phase3_driver_invocations([
     'r10 = Phase3Smoke.Phase3FindallOne.run([{:unbound, make_ref()}])',
     'IO.inspect(r10, label: "SCENARIO_FINDALL_ONE_CLAUSE", charlists: :as_lists)',
     'r11 = Phase3Smoke.Phase3NestedOuter.run([{:unbound, make_ref()}])',
-    'IO.inspect(r11, label: "SCENARIO_FINDALL_NESTED", charlists: :as_lists)'
+    'IO.inspect(r11, label: "SCENARIO_FINDALL_NESTED", charlists: :as_lists)',
+    'r12 = Phase3Smoke.Phase3FindallCompound.run([{:unbound, make_ref()}])',
+    'IO.inspect(r12, label: "SCENARIO_FINDALL_COMPOUND", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -401,6 +432,27 @@ assert_scenario_findall_nested(StdOut) :-
     sub_string(W, _, _, _, "\"b\""),
     sub_string(W, _, _, _, "\"c\"").
 
+assert_scenario_findall_compound(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_FINDALL_COMPOUND", W),
+    % Compound Template findall: each iteration constructs a fresh
+    % p(X, Y) on the heap and aggregate_collect deep-copies it into
+    % a self-contained {:struct, "p/2", [X, Y]} tuple. After all
+    % three iterations, L should contain three distinct {:struct,
+    % ...} tuples — sub-term identity preserved per Perplexity's
+    % "sharper probe" recommendation. We assert all six sub-term
+    % values are present in the scenario's stdout window. If
+    % deep-copy was missing, all three list elements would point
+    % to the same heap region (the final iteration's p(c, "3"))
+    % so "a", "b", "1", "2" would be absent.
+    sub_string(W, _, _, _, ":struct"),
+    sub_string(W, _, _, _, "p/2"),
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\""),
+    sub_string(W, _, _, _, "\"1\""),
+    sub_string(W, _, _, _, "\"2\""),
+    sub_string(W, _, _, _, "\"3\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -446,6 +498,9 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3c: nested findall — outer iterates inner-findall results (proposal §6 risk #7)',
                  assert_scenario_findall_nested,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: findall(p(X,Y), q(X,Y), L) — compound Template + deep-copy (proposal §6 risk #1)',
+                 assert_scenario_findall_compound,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all
