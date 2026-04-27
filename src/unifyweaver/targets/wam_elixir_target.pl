@@ -1111,8 +1111,33 @@ compile_aggregate_helpers_to_elixir(Code) :-
         :min ->
           if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
       end
+    # Bind the result through the trail when result_reg holds an
+    # unbound ref. Direct slot overwrite (the pre-#1659 behaviour)
+    # writes to agg_cp.regs[result_reg_idx] but leaves the underlying
+    # ref unbound — fine for the simple case where the result_reg
+    # slot IS the binding target, but breaks for nested findall: the
+    # inner findalls result_reg shares its unbound ref with the
+    # outer callers reg via the calls get_variable, and the inner
+    # predicates deallocate merge restores the outers Y-reg
+    # snapshot — overwriting the inners reg-slot binding. Trail-style
+    # binding (Map.put under the ref id, not the integer reg-slot)
+    # propagates through deref_var across frame boundaries and
+    # survives deallocate. Proposal section 6 risk 7 (nested findall)
+    # fix surfaced by Phase 3c.
+    bound_regs =
+      case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+        {:unbound, id} ->
+          # Trail the binding under the unbound refs id so any
+          # aliased copy sees it via deref_var.
+          agg_cp.regs
+          |> Map.put(id, result)
+          |> Map.put(agg_cp.agg_result_reg, result)
+        _ ->
+          # Slot was bound or empty — preserve legacy direct overwrite.
+          Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+      end
     restored = %{state |
-      regs: Map.put(agg_cp.regs, agg_cp.agg_result_reg, result),
+      regs: bound_regs,
       heap: agg_cp.heap,
       heap_len: agg_cp.heap_len,
       trail: agg_cp.trail,
