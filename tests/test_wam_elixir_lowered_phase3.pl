@@ -196,6 +196,47 @@ user:phase3_q(b, '2').
 user:phase3_q(c, '3').
 user:phase3_findall_compound(L) :- findall(p(X, Y), phase3_q(X, Y), L).
 
+% Scenarios 13, 14, 15: cut x findall interaction (proposal §6 risk #3).
+% Three fixtures from Perplexity's review:
+%
+%   13. Cut in conjunction — `findall(X, (r(X), !), L)`. Cut inside
+%       findall's inner goal should stop enumeration after the first
+%       solution but NOT escape findall's scope. Expected: L = [1].
+%
+%   14. Cut in sub-predicate — findall calls a sub-predicate that
+%       itself uses cut. Each call to the sub-predicate runs its
+%       cut, returns one solution; findall enumerates over those.
+%       Since first_r is deterministic (cut prunes after first
+%       success), findall captures only that one solution.
+%       Expected: L = [1].
+%
+%   15. Cut barrier — first findall uses cut, second findall right
+%       after must NOT be affected by it. Tests that the agg frame
+%       acts as a cut barrier. Restructured from Perplexity's
+%       suggestion (which had two inline findalls in one body) to
+%       use a sub-predicate for the cut-findall: that pattern works
+%       end-to-end while two-inline-findalls-in-one-body needs a
+%       lowering-level fix that's out of scope here.
+%       Expected: L = [1], Rest = [1, 2, 3].
+%
+% All three required a substrate-level cut fix in WamRuntime.execute
+% _builtin/3's `!/0` arm: cut now PRESERVES aggregate frames between
+% the current top of state.choice_points and state.cut_point. Without
+% this preservation, cut inside findall would remove the agg frame
+% (because allocate's cut_point snapshot is taken BEFORE findall
+% pushes the agg frame), leaving end_aggregate's throw fail with no
+% agg frame to dispatch to and the predicate ends up failing.
+user:phase3_r(1).
+user:phase3_r(2).
+user:phase3_r(3).
+user:phase3_cut_conj(L) :- findall(X, (phase3_r(X), !), L).
+user:phase3_first_r(X) :- phase3_r(X), !.
+user:phase3_cut_subpred(L) :- findall(X, phase3_first_r(X), L).
+user:phase3_cut_first(L) :- findall(X, (phase3_r(X), !), L).
+user:phase3_cut_barrier(L, Rest) :-
+    phase3_cut_first(L),
+    findall(Y, phase3_r(Y), Rest).
+
 %% tmp_root — try TMPDIR / TMP / TEMP / $PREFIX/tmp / ./output in
 %% order. Same fallback chain as the existing benchmark harness.
 tmp_root_candidate(Root) :-
@@ -242,7 +283,13 @@ phase3_predicates([
     user:phase3_nested_inner/1,
     user:phase3_nested_outer/1,
     user:phase3_q/2,
-    user:phase3_findall_compound/1
+    user:phase3_findall_compound/1,
+    user:phase3_r/1,
+    user:phase3_cut_conj/1,
+    user:phase3_first_r/1,
+    user:phase3_cut_subpred/1,
+    user:phase3_cut_first/1,
+    user:phase3_cut_barrier/2
 ]).
 
 %% phase3_driver_invocations(-Lines)
@@ -273,7 +320,13 @@ phase3_driver_invocations([
     'r11 = Phase3Smoke.Phase3NestedOuter.run([{:unbound, make_ref()}])',
     'IO.inspect(r11, label: "SCENARIO_FINDALL_NESTED", charlists: :as_lists)',
     'r12 = Phase3Smoke.Phase3FindallCompound.run([{:unbound, make_ref()}])',
-    'IO.inspect(r12, label: "SCENARIO_FINDALL_COMPOUND", charlists: :as_lists)'
+    'IO.inspect(r12, label: "SCENARIO_FINDALL_COMPOUND", charlists: :as_lists)',
+    'r13 = Phase3Smoke.Phase3CutConj.run([{:unbound, make_ref()}])',
+    'IO.inspect(r13, label: "SCENARIO_CUT_CONJ", charlists: :as_lists)',
+    'r14 = Phase3Smoke.Phase3CutSubpred.run([{:unbound, make_ref()}])',
+    'IO.inspect(r14, label: "SCENARIO_CUT_SUBPRED", charlists: :as_lists)',
+    'r15 = Phase3Smoke.Phase3CutBarrier.run([{:unbound, make_ref()}, {:unbound, make_ref()}])',
+    'IO.inspect(r15, label: "SCENARIO_CUT_BARRIER", charlists: :as_lists)'
 ]).
 
 %% Generate the test project. Predicates and driver invocations are
@@ -453,6 +506,43 @@ assert_scenario_findall_compound(StdOut) :-
     sub_string(W, _, _, _, "\"2\""),
     sub_string(W, _, _, _, "\"3\"").
 
+assert_scenario_cut_conj(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_CUT_CONJ", W),
+    % Cut in conjunction: findall(X, (r(X), !), L) → L = [1]. Cut
+    % stops enumeration after the first solution. The agg frame
+    % must survive cut for end_aggregate's throw fail to find it
+    % during backtrack and finalise correctly. Without the cut fix
+    % in this PR, the agg frame would be removed by cut and the
+    % predicate would fail entirely.
+    sub_string(W, _, _, _, "\"1\""),
+    \+ sub_string(W, _, _, _, "\"2\""),
+    \+ sub_string(W, _, _, _, "\"3\"").
+
+assert_scenario_cut_subpred(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_CUT_SUBPRED", W),
+    % Cut in sub-predicate: findall(X, first_r(X), L) where
+    % first_r(X) :- r(X), !. Each call to first_r succeeds with
+    % the first r solution and cuts. findall's enumeration sees
+    % first_r as deterministic — only one solution. L = [1].
+    sub_string(W, _, _, _, "\"1\""),
+    \+ sub_string(W, _, _, _, "\"2\""),
+    \+ sub_string(W, _, _, _, "\"3\"").
+
+assert_scenario_cut_barrier(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_CUT_BARRIER", W),
+    % Cut barrier: cut inside cut_first_findall must NOT escape
+    % into the second findall's enumeration. After cut_first_findall
+    % returns L = [1], the second findall must enumerate all 3
+    % r/1 solutions independently. Rest = [1, 2, 3].
+    %
+    % Both 1, 2, and 3 must appear in the output (as part of Rest).
+    % This is the diagnostic test: if cut leaked through the agg
+    % frame boundary, the second findall would see the cut's
+    % effect and Rest would be missing values.
+    sub_string(W, _, _, _, "\"1\""),
+    sub_string(W, _, _, _, "\"2\""),
+    sub_string(W, _, _, _, "\"3\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -501,6 +591,15 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 3c: findall(p(X,Y), q(X,Y), L) — compound Template + deep-copy (proposal §6 risk #1)',
                  assert_scenario_findall_compound,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: findall(X, (r(X), !), L) → [1] — cut in conjunction (proposal §6 risk #3)',
+                 assert_scenario_cut_conj,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: findall(X, first_r(X), L) → [1] — cut in sub-predicate',
+                 assert_scenario_cut_subpred,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 3c: cut barrier — agg frame protects second findall from cut',
+                 assert_scenario_cut_barrier,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation, all

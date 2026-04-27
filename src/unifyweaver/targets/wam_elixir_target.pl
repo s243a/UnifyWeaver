@@ -844,8 +844,27 @@ compile_utility_helpers_to_elixir(Code) :-
         # predicate entry (saved by `allocate` into state.cut_point).
         # Preserves caller CPs while clearing CPs pushed inside this
         # clause body.
+        #
+        # Aggregate frames between the current top and cut_point are
+        # PRESERVED as additional cut barriers. Without this, cut
+        # inside a findall body (or in a sub-predicate called from
+        # findall after deallocate restores cut_point to the outer
+        # level) removes the agg frame, causing end_aggregates throw
+        # fail to propagate without finalisation. Closes proposal
+        # section 6 risk 3 — cut x findall interaction.
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | choice_points: state.cut_point, pc: new_pc}
+        cut_target_len = length(state.cut_point)
+        current_len = length(state.choice_points)
+        new_cps =
+          if current_len <= cut_target_len do
+            state.choice_points
+          else
+            above_cut_count = current_len - cut_target_len
+            above_cut = Enum.take(state.choice_points, above_cut_count)
+            preserved_aggs = Enum.filter(above_cut, &Map.has_key?(&1, :agg_type))
+            preserved_aggs ++ state.cut_point
+          end
+        %{state | choice_points: new_cps, pc: new_pc}
       _ -> :fail
     end
   end
