@@ -937,8 +937,8 @@ test_findall_instr_end_to_end_lowering :-
 
 :- dynamic phase_a_test:findall_qualified_target/1.
 
-test_findall_module_qualified_uses_y_reg :-
-    Test = 'WAM compiler: findall/3 with module-qualified inner goal uses Y-reg in begin_aggregate (fix for #1647 Finding 1)',
+test_findall_module_qualified_unwrap :-
+    Test = 'WAM compiler: findall/3 with static module-qualified inner goal unwraps to direct call (fix for #1647 Finding 1)',
     setup_call_cleanup(
         (   retractall(phase_a_test:findall_qualified_target(_)),
             assertz(phase_a_test:findall_qualified_target('a')),
@@ -949,19 +949,25 @@ test_findall_module_qualified_uses_y_reg :-
         (   wam_target:compile_predicate_to_wam(
                 phase_a_test:findall_qualified_caller/1, [], WamCode),
             atom_string(WamCode, S),
-            % The fix: findall's value_reg should be a Y-register
-            % (Y1, Y2, ...). Pre-fix, A1 was used and would have been
-            % clobbered by the `:/2` builtin's put_constant.
+            % Y-reg-allocation portion of #1650 still applies — findall's
+            % value_reg should be a Y-register regardless of inner-goal shape.
             sub_string(S, _, _, _, 'begin_aggregate collect, Y'),
             sub_string(S, _, _, _, 'end_aggregate Y'),
-            % And the inner-call lowering should use the `:/2` builtin
-            % path — the very thing that exposed the bug. Confirms we
-            % are still going through the module-qualified compilation,
-            % not silently unwrapping it elsewhere.
-            sub_string(S, _, _, _, 'builtin_call :/2'),
-            \+ sub_string(S, _, _, _, 'begin_aggregate collect, A1')
+            \+ sub_string(S, _, _, _, 'begin_aggregate collect, A1'),
+            % Static-module-qualifier unwrap (this PR): the inner goal
+            % `phase_a_test:findall_qualified_target(X)` should compile
+            % to a regular `call findall_qualified_target/1, 1` instead
+            % of routing through the `:/2` builtin path. Cross-target
+            % win — every target avoids the meta-call overhead on the
+            % common static-qualifier case.
+            sub_string(S, _, _, _, 'call findall_qualified_target/1'),
+            \+ sub_string(S, _, _, _, 'builtin_call :/2'),
+            % And the put_constant for the module name is gone too —
+            % the unwrapped call doesn't construct a `:/2` structure
+            % on the heap.
+            \+ sub_string(S, _, _, _, 'put_constant phase_a_test')
         ->  pass(Test)
-        ;   fail_test(Test, 'module-qualified findall did not emit Y-reg in begin_aggregate (fix regressed?)')
+        ;   fail_test(Test, 'module-qualified findall did not unwrap to direct call (Option B regressed?)')
         ),
         (   retractall(phase_a_test:findall_qualified_target(_)),
             retractall(phase_a_test:findall_qualified_caller(_))
@@ -1304,7 +1310,7 @@ run_tests :-
     test_findall_instr_translates_collect_to_findall,
     test_findall_instr_lowers_end_aggregate,
     test_findall_instr_end_to_end_lowering,
-    test_findall_module_qualified_uses_y_reg,
+    test_findall_module_qualified_unwrap,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,

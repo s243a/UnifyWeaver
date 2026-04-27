@@ -1,9 +1,9 @@
 # Elixir WAM findall/aggregate_all proposal
 
-**Status:** Phase 1 (substrate) + Phase 2 (instruction lowering) shipped; Phase 3 (runtime integration) in planning.
-**Target audience:** Perplexity review + Phase 3 implementer.
+**Status:** Phases 1–3 shipped (substrate, instruction lowering, runtime smoke + module-qualifier unwrap). Phase 3c edge cases and Phase 4 (parallel branch-local accum) remain.
+**Target audience:** Perplexity review + Phase 3c / Phase 4 implementer.
 **Depends on:** PR #1586 (Tier-2 substrate), PR #1608 (`par_wrap_segment/4`), PR #1624 (Tier-2 wiring activation), PR #1626 (this proposal).
-**Shipped:** PR #1627 (substrate — `push_aggregate_frame/4`, `aggregate_collect/2`, `finalise_aggregate/4`, `backtrack/1` dispatch). PR #1643 (instruction lowering — `begin_aggregate` / `end_aggregate` parser + `wam_elixir_lower_instr/6` clauses + `agg_type_atom/2` translation).
+**Shipped:** PR #1627 (substrate — `push_aggregate_frame/4`, `aggregate_collect/2`, `finalise_aggregate/4`, `backtrack/1` dispatch). PR #1643 (instruction lowering). PR #1647 / #1649 (Phase 3a/3b runtime smoke). PR #1650 (`compile_findall` Y-reg fix). The current PR (static module-qualifier unwrap in `compile_goal_call/4` + `compile_goal_execute/4`) closes Finding 1 from #1647 end-to-end.
 
 ## 0. Implementation status
 
@@ -11,7 +11,12 @@
 |---|---|---|
 | Phase 1 | Runtime substrate (4 helpers + backtrack dispatch) | ✅ Shipped #1627 |
 | Phase 2 | `begin_aggregate` / `end_aggregate` lowering + `:collect → :findall` translation | ✅ Shipped #1643 |
-| Phase 3 | Runtime integration tests; cross-validation against Haskell parity reference | ⏳ Planning |
+| Phase 3a | Runtime harness + first scenario (3-clause sequential findall) | ✅ Shipped #1647 |
+| Phase 3b | Runtime aggregator coverage (8 scenarios spanning `:findall` / `:count` / `:bag` / `:set` / `:max` / `:min`) | ✅ Shipped #1649 |
+| WAM-compiler fix | `compile_findall` Y-reg allocation (Finding 1, byte-shape) | ✅ Shipped #1650 |
+| Static module-qualifier unwrap | `compile_goal_call/4` + `compile_goal_execute/4` recognise `M:Goal` with atom/string M (Finding 1, end-to-end runtime closure) | ✅ This PR |
+| Phase 3c | Edge cases — single-clause, Y-register Template deep-copy probe (§6 risk #1), cut in inner goal (§6 risk #3), nested findall (§6 risk #7) | ⏳ Next |
+| Phase 4 | Tier-2 × findall — branch-local-accum protocol from Haskell | ⏳ Future |
 
 Deviations from the proposal as written, documented in commits and code:
 
@@ -261,6 +266,7 @@ The Tier-2 substrate from PR #1586 stays inert (as it has been) — `in_forkable
 - **Compile-time inlining of small enumerable sources** (e.g. `findall(X, member(X, [a,b,c]), L)` → directly emit `L = ["a","b","c"]`). Worthwhile peephole opt, separate proposal.
 - **Nested-parallel branch-local accumulators** (§6 risk #2 update). Phase 4 territory — needs the per-branch local-accum + parent-merge pattern from Haskell when a Tier-2 fan-out branch contains its own findall.
 - **`MergeStrategy` separation from `agg_type`.** Haskell's `inferMergeStrategy` (§11) splits "what is the aggregate" from "how do parallel branches combine results" — necessary once Phase 4 introduces parallel-under-aggregate.
+- **Dynamic `Module:Goal` meta-call on the Elixir runtime.** The static-module-qualifier unwrap in `compile_goal_call/4` / `compile_goal_execute/4` handles the common case (`findall(X, user:p(X), L)`) at compile time — `M:Goal` with atom or string `M` recursively compiles to a regular `call p/Arity, N`, identical to the unqualified case. The dynamic case (`Module = m, Module:Goal` where `M` is a Prolog variable at compile time) still routes through the `:/2` builtin, which `WamRuntime.execute_builtin/3` does not implement (catch-all returns `:fail`). When the dynamic case actually surfaces in a real predicate, the correct runtime fix is the CP-frame extension to `backtrack/1` — install a meta-call frame at `:/2` entry that backtracking knows to handle by re-entering the call site for each enumerated solution. This is workaround #2 from the design analysis Perplexity reviewed prior to this PR; it's an architectural change (meta-call as a first-class CP type, like aggregate frames are today), not a bug fix. Other targets (Rust / Go / LLVM / Haskell) have native `:/2` runtime support and handle the dynamic case directly. No existing test predicate uses dynamic meta-call.
 
 ## 11. Cross-target precedent (Haskell)
 
