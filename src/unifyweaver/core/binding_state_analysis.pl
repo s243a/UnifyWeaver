@@ -338,8 +338,12 @@ apply_call_modes([Arg|Rest], [Mode|RestModes], Env0, Env) :-
 apply_call_mode(_Arg, input, Env, Env) :- !.    % caller required to supply bound
 apply_call_mode(Arg,  output, Env0, Env) :- !,  % callee promises to bind it
     set_var_bound(Arg, Env0, Env).
-apply_call_mode(Arg,  any, Env0, Env) :- !,     % unknown post-state
-    set_var_unknown(Arg, Env0, Env).
+apply_call_mode(_Arg, any, Env, Env) :- !.      % `?` mode: leave at pre-call state
+                                                % (per WAM_HASKELL_MODE_ANALYSIS_SPEC.md
+                                                % §2.3.7). The user has asserted the
+                                                % predicate is mode-polymorphic, so a
+                                                % proven-bound arg stays proven bound
+                                                % across the call.
 apply_call_mode(_Arg, _Other, Env, Env).
 
 is_pure_comparison_op(>).

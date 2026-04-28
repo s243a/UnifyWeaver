@@ -70,6 +70,7 @@ test(test_ite_meet_agree).
 test(test_disjunction_meet).
 test(test_findall_result_bound).
 test(test_call_unknown_pred_opacity).
+test(test_call_any_mode_preserves_bound).
 test(test_walk_body_indices).
 test(test_binding_state_at_lookup).
 test(test_binding_state_at_var_negative).
@@ -324,6 +325,29 @@ test_call_unknown_pred_opacity :-
     propagate_goal(some_user_pred(X), Env1, Env2),
     get_binding_state(Env2, X, S),
     (   S == unknown -> pass(Test) ; fail_test(Test, S) ).
+
+test_call_any_mode_preserves_bound :-
+    %% Per WAM_HASKELL_MODE_ANALYSIS_SPEC.md §2.3.7: `?` mode leaves
+    %% the argument at its pre-call state. A bound arg passed to a
+    %% predicate declared with `?` mode must STAY bound after the
+    %% call. This is the gating condition for the \+ member lowering
+    %% to fire across opaque fact-predicate calls in real workloads
+    %% (e.g. category_ancestor calling category_parent).
+    Test = test_call_any_mode_preserves_bound,
+    %% Setup: declare some_poly_pred as mode (?, ?).
+    retractall(user:mode(some_poly_pred(_, _))),
+    assertz(user:mode(some_poly_pred(?, ?))),
+    empty_binding_env(Env0),
+    set_binding_state(Env0, X, bound, Env1),
+    set_binding_state(Env1, Y, bound, Env2),
+    propagate_goal(some_poly_pred(X, Y), Env2, Env3),
+    get_binding_state(Env3, X, SX),
+    get_binding_state(Env3, Y, SY),
+    retractall(user:mode(some_poly_pred(_, _))),
+    (   SX == bound, SY == bound
+    ->  pass(Test)
+    ;   fail_test(Test, sx_sy(SX, SY))
+    ).
 
 %% ========================================================================
 %% Section 5 — full clause walks
