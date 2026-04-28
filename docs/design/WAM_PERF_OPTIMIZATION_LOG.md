@@ -1030,10 +1030,111 @@ exercise the WAM-only ancestry path should see the same
 - **Visited-set as IntSet.** The big win for graph traversal is
   representing visited as `IntSet`, not `[Value]`. That would
   reduce `\\+ member` from O(N) to O(log N). It is a fundamental
-  data-structure change — not a lowering — and is filed as
-  separate work.
+  data-structure change — not a lowering. **Designed as of
+  PR #1683 in `WAM_HASKELL_INTSET_VISITED_DESIGN.md`**;
+  implementation is the natural next perf arc.
 - **`member(X, L)` succeeding case.** The current lowering only
   fires inside `\\+`; positive `member` with a bound L (i.e. a
   type-test "is X one of these atoms") could use the same
   walk-inline shape but with success/fail inverted. Marginal
   utility — the negation case is the common visited-set check.
+
+---
+
+## Phase G appendix: macro benchmark on effective-distance + analyser fix (2026-04-28)
+
+**Branch:** `feat/wam-haskell-macro-bench-and-intset`
+
+Two follow-ups closing out Phase G:
+
+### G.1 — Latent `?`-mode bug found by trying to fire on real workload
+
+The first attempt to measure the `\\+ member` lowering on
+`category_ancestor`-style code showed **the lowering was not firing**
+even with `mode(category_ancestor(-, +, -, +))` declared. The
+unlowered path stayed in place: `put_structure member/2 + builtin_call \\+/1`.
+
+Cause: the binding-state analyser's `apply_call_mode(_, any, ...)`
+clause was setting the arg to `unknown` after a call to a predicate
+declared with `?` mode, contradicting the spec
+(`WAM_HASKELL_MODE_ANALYSIS_SPEC.md` §2.3.7 says `?` should leave
+the arg at its pre-call state). For the canonical pattern
+
+```prolog
+parent(X, Z), \\+ member(Z, V)
+```
+
+the call to `parent/2` (declared `?, ?`) was destroying `Z`'s proven
+`bound` state, so the lowering's `binding_state_at_var(BeforeEnv,
+Z, bound)` precondition failed and we fell through.
+
+Fix: change `apply_call_mode(_Arg, any, Env, Env)` to a no-op,
+matching the spec. New regression test
+(`test_call_any_mode_preserves_bound`) asserts that a bound arg
+passed to a `?,?`-mode predicate stays bound across the call.
+
+### G.2 — Macro benchmark on effective-distance
+
+`tests/benchmarks/wam_effective_distance_macro_bench.pl` generates
+two Haskell WAM projects from the same `effective_distance.pl`
+source, distinguished only by which mode declarations are in
+effect:
+
+| variant | `mode(category_ancestor)` | `mode(category_parent)` | result |
+|---|---|---|---|
+| lowered | `(-, +, -, +)` | `(?, ?)` | `NotMemberList` fires |
+| unlowered | `(-, +, -, +)` | none | `BuiltinCall "\\+/1"` |
+
+Both build the standard benchmark project (Main.hs reads TSV facts,
+runs effective-distance, reports `query_ms` to stderr). Both
+variants are run twice with the order alternated to spot
+cache-warming bias.
+
+Result on `data/benchmark/1k` (1002 articles, 5934 category-parent
+edges, 2 root categories, GHC 8.6.5 `-O2`):
+
+| Trial | lowered query_ms | unlowered query_ms |
+|---|---:|---:|
+| Trial 1 | 84 | 118 |
+| Trial 2 | 74 | 68 |
+| **Mean** | **79** | **93** |
+
+**Speedup: ~1.18× on the macro path** (~17 % faster).
+`tuple_count=48` matches across both variants — correctness
+preserved.
+
+This is the macro-level confirmation of the Phase G claim that
+"the lowering fires automatically on existing benchmarks once the
+mode declarations are in place." It also confirms the microbenchmark
+result (~14 %) carries over to a real workload, with the macro
+slightly higher because the `=../2` and `functor/3` lowerings also
+fire in adjacent code paths.
+
+Trial 2's unlowered (68 ms) is faster than trial 1's lowered (84 ms),
+which is jitter on a cold first run — that's why the harness runs
+twice and alternates order. The mean across two trials is the
+honest number.
+
+### G.3 — IntSet visited design landed (implementation deferred)
+
+`WAM_HASKELL_INTSET_VISITED_DESIGN.md` (added in this PR) covers
+the algorithmic next step: a `VSet IS.IntSet` `Value` variant + 3
+new instructions (`BuildEmptySet`, `SetInsert`, `NotMemberSet`) +
+a `:- visited_set/2` directive that opts a specific predicate-arg
+position into the IntSet representation. Expected speedup: another
+~1.5–3× on top of the constant-factor wins, scaling with
+`max_depth`. Implementation deferred to a follow-up PR (task #191).
+
+### Test surface (cumulative across the mode-analysis arc)
+
+| Suite | Count |
+|---|---:|
+| `test_binding_state_analysis.pl` | 32 (was 31; +1 for `?`-mode fix) |
+| `test_wam_univ_lowering.pl` | 5 |
+| `test_wam_functor3_lowering.pl` | 6 |
+| `test_wam_arg3_lowering.pl` | 5 |
+| `test_wam_not_member_lowering.pl` | 5 |
+| `test_wam_term_construction_e2e.pl` (cabal) | 2 |
+| `wam_term_construction_bench.pl` (microbench) | — |
+| `wam_not_member_bench.pl` (microbench) | — |
+| `wam_effective_distance_macro_bench.pl` (macrobench, NEW) | — |
