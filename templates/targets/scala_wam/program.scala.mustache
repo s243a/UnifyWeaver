@@ -41,6 +41,17 @@ object GeneratedProgram {
   )
 
   // ----------------------------------------------------------
+  // Foreign handler registry
+  // ----------------------------------------------------------
+  // Defined before sharedProgram so the forward reference inside
+  // WamProgram(... foreignHandlers ...) resolves to a real Map at
+  // initialization time, not null.
+
+  val foreignHandlers: Map[String, ForeignHandler] = Map(
+{{foreign_handlers}}
+  )
+
+  // ----------------------------------------------------------
   // Compiled program object
   // ----------------------------------------------------------
 
@@ -52,15 +63,6 @@ object GeneratedProgram {
 {{dispatch}}
     ),
     internTable     = internTable
-  )
-
-  // ----------------------------------------------------------
-  // Foreign handler registry
-  // ----------------------------------------------------------
-  // Override entries here or pass handlers at call time.
-
-  val foreignHandlers: Map[String, ForeignHandler] = Map(
-{{foreign_handlers}}
   )
 
   // ----------------------------------------------------------
@@ -112,7 +114,7 @@ object GeneratedProgram {
   private def parseList(inner: String): WamTerm = {
     val items = splitTopLevelCommas(inner).filter(_.nonEmpty).map(parseArg)
     items.foldRight[WamTerm](Atom(internAtomId("[]"))) { (head, tail) =>
-      Struct(internAtomId("."), 2, Array(head, tail))
+      Struct(internAtomId("[|]"), 2, Array(head, tail))
     }
   }
 

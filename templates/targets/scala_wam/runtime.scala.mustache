@@ -82,8 +82,10 @@ case class PutValue(varReg: Int, argReg: Int)           extends Instruction
 // Structure/list building
 case class PutStructure(functorId: Int, reg: Int, sArity: Int) extends Instruction
 case class GetStructure(functorId: Int, reg: Int)       extends Instruction
-case class PutList(reg: Int)                            extends Instruction
-case class GetList(reg: Int)                            extends Instruction
+// PutList/GetList carry the cons functor id explicitly so they agree
+// with PutStructure([|]/2,...)/GetStructure([|]/2,...) on the same list.
+case class PutList(reg: Int, functorId: Int)            extends Instruction
+case class GetList(reg: Int, functorId: Int)            extends Instruction
 case class SetVariable(varReg: Int)                     extends Instruction
 case class SetValue(varReg: Int)                        extends Instruction
 case class SetConstant(value: WamTerm)                  extends Instruction
@@ -347,18 +349,22 @@ object WamRuntime {
           backtrack(s)
         case ForeignCP(sol +: remaining) =>
           s.choicePoints = cp.copy(kind = ForeignCP(remaining)) :: rest
-          applyBindings(s, sol)
+          if (!applyBindings(s, sol)) backtrack(s)
         case WamCP =>
           s.choicePoints = rest
       }
   }
 
-  def applyBindings(s: WamState, binds: Map[Int, WamTerm]): Unit =
-    binds.foreach { case (reg, v) =>
+  /** Apply a foreign-handler-provided binding map to the current state.
+   *  Returns true on success; false on first unification conflict (caller
+   *  should then backtrack). Stops at the first failure rather than
+   *  continuing to bind further registers. */
+  def applyBindings(s: WamState, binds: Map[Int, WamTerm]): Boolean =
+    binds.forall { case (reg, v) =>
       val current = deref(s.bindings, s.regs(reg))
       current match {
-        case r @ Ref(_) => bindVar(s, r, v)
-        case existing   => if (!unify(s, existing, v)) s.status = Failed
+        case r @ Ref(_) => bindVar(s, r, v); true
+        case existing   => unify(s, existing, v)
       }
     }
 
@@ -412,8 +418,7 @@ object WamRuntime {
           case ForeignSucceed =>
             s.pc = resumePc
           case ForeignBindings(binds) =>
-            applyBindings(s, binds)
-            if (s.status == Running) s.pc = resumePc
+            if (applyBindings(s, binds)) s.pc = resumePc else backtrack(s)
           case ForeignMulti(Nil) =>
             backtrack(s)
           case ForeignMulti(sol +: rest) =>
@@ -430,8 +435,7 @@ object WamRuntime {
               )
               s.choicePoints = cp :: s.choicePoints
             }
-            applyBindings(s, sol)
-            if (s.status == Running) s.pc = resumePc
+            if (applyBindings(s, sol)) s.pc = resumePc else backtrack(s)
         }
     }
   }
@@ -557,8 +561,8 @@ object WamRuntime {
         s.buildStack = BuildFrame(reg, functorId, sArity, Nil) :: s.buildStack
         s.pc += 1
 
-      case PutList(reg) =>
-        s.buildStack = BuildFrame(reg, -1 /* [|]/2 */, 2, Nil) :: s.buildStack
+      case PutList(reg, functorId) =>
+        s.buildStack = BuildFrame(reg, functorId, 2, Nil) :: s.buildStack
         s.pc += 1
 
       case SetVariable(varReg) =>
@@ -584,10 +588,10 @@ object WamRuntime {
           case _ => backtrack(s)
         }
 
-      case GetList(reg) =>
+      case GetList(reg, functorId) =>
         val v = deref(s.bindings, s.regs(reg))
         v match {
-          case Struct(-1, 2, args) => // [|]/2 sentinel
+          case Struct(f, 2, args) if f == functorId =>
             s.unifyQueue = args.toList
             s.pc += 1
           case _ => backtrack(s)
