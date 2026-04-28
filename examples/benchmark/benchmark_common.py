@@ -27,6 +27,37 @@ def run_command(
     )
 
 
+def csharp_query_env(source_mode: str | None = None, artifact_dir: Path | None = None) -> dict[str, str]:
+    env = dict(os.environ)
+    selected_source_mode = source_mode or "auto"
+    env["UNIFYWEAVER_RELATION_SOURCE_MODE"] = selected_source_mode
+    if selected_source_mode in {"artifact", "artifact-prebuilt"} and artifact_dir is not None:
+        env["UNIFYWEAVER_RELATION_ARTIFACT_DIR"] = str(artifact_dir)
+    else:
+        env.pop("UNIFYWEAVER_RELATION_ARTIFACT_DIR", None)
+    return env
+
+
+def csharp_query_source_mode_choices() -> list[str]:
+    return ["auto", "preload", "delimited", "artifact", "artifact-prebuilt"]
+
+
+def add_csharp_query_source_mode_arg(parser) -> None:
+    parser.add_argument(
+        "--csharp-query-source-mode",
+        default="auto",
+        choices=csharp_query_source_mode_choices(),
+        help="Relation source mode for csharp-query runs.",
+    )
+
+
+def append_csharp_query_source_mode_metric(stderr: str, source_mode: str | None) -> str:
+    selected_source_mode = source_mode or "auto"
+    if selected_source_mode == "auto":
+        return stderr
+    return stderr.rstrip() + f"\ncsharp_query_source_mode={selected_source_mode}\n"
+
+
 def require_file(path: Path) -> Path:
     if not path.exists():
         raise FileNotFoundError(path)

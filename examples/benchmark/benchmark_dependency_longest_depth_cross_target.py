@@ -19,6 +19,9 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    add_csharp_query_source_mode_arg,
+    append_csharp_query_source_mode_metric,
+    csharp_query_env,
     digest_normalized_output,
     find_result,
     group_results_by_scale,
@@ -63,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
+    add_csharp_query_source_mode_arg(parser)
     return parser.parse_args()
 
 
@@ -105,7 +109,15 @@ def build_go_dfs(root: Path, facts_path: Path) -> list[str]:
     )
 
 
-def benchmark_target(command: list[str], dataset_dir: Path, repetitions: int, target: str, scale: str) -> RunResult:
+def benchmark_target(
+    command: list[str],
+    dataset_dir: Path,
+    repetitions: int,
+    target: str,
+    scale: str,
+    csharp_query_source_mode: str = "auto",
+    artifact_dir: Path | None = None,
+) -> RunResult:
     edge_path = require_file(dataset_dir / "category_parent.tsv")
     article_path = require_file(dataset_dir / "article_category.tsv")
 
@@ -114,10 +126,13 @@ def benchmark_target(command: list[str], dataset_dir: Path, repetitions: int, ta
     stderr = ""
     for _ in range(repetitions):
         started = time.perf_counter()
-        result = run_command(command + [str(edge_path), str(article_path)])
+        env = csharp_query_env(csharp_query_source_mode, artifact_dir) if target == "csharp-query" else None
+        result = run_command(command + [str(edge_path), str(article_path)], env=env)
         times.append(time.perf_counter() - started)
         stdout = result.stdout
         stderr = result.stderr
+        if target == "csharp-query":
+            stderr = append_csharp_query_source_mode_metric(stderr, csharp_query_source_mode)
 
     digest, row_count = digest_normalized_output(normalize_sorted_lines(stdout))
     return RunResult(target, scale, times, digest, row_count, stderr)
@@ -183,7 +198,18 @@ def main() -> int:
         for scale in scales:
             dataset_dir = build_dataset(temp_root, scale)
             for target in targets:
-                results.append(benchmark_target(commands[target], dataset_dir, args.repetitions, target, scale))
+                artifact_dir = temp_root / "artifacts" / target / scale if target == "csharp-query" else None
+                results.append(
+                    benchmark_target(
+                        commands[target],
+                        dataset_dir,
+                        args.repetitions,
+                        target,
+                        scale,
+                        args.csharp_query_source_mode,
+                        artifact_dir,
+                    )
+                )
 
         print_summary(results)
         return 0

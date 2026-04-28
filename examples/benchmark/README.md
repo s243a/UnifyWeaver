@@ -437,7 +437,7 @@ Tables:
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
-| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
+| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner; use the `join` mode when you need concrete artifact bucket join strategy rows |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |
@@ -1016,6 +1016,14 @@ Comparison note:
 - cross-target runners summarize those generated metrics as
   `csharp-query-bucket-strategies` rows when `UNIFYWEAVER_BENCH_TRACE=1`
   captures any concrete bucket strategies
+- most generated cross-target workloads use specialized DAG, weight-sum,
+  or path-min runtime nodes rather than direct `KeyJoinNode` plans; forcing
+  `--csharp-query-source-mode artifact-prebuilt` enables artifact-backed
+  relation access but does not by itself guarantee a bucket-join trace row
+- generated `csharp-query` cross-target runners accept
+  `--csharp-query-source-mode auto|preload|delimited|artifact|artifact-prebuilt`;
+  non-`auto` runs include `csharp_query_source_mode=<mode>` in the
+  `csharp-query-metrics` row and use a runner-managed artifact directory
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
