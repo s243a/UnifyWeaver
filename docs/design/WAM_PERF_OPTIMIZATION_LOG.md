@@ -727,3 +727,78 @@ repeated LMDB-backed benchmark generation was corrupting or racing on
 the shared Rust helper under `examples/lmdb_relation_artifact/target`.
 The benchmark generator now uses a workspace-local isolated Cargo target
 directory per SWI process instead of the shared repo `target/` path.
+
+---
+
+## Phase F: Mode-driven term-construction lowering (2026-04-27)
+
+**Branches:**
+- `docs/wam-haskell-mode-analysis-design` — three-doc design package
+- `feat/wam-haskell-mode-analysis` — analyser + `=../2` lowering (M1–M6)
+- `feat/wam-haskell-mode-analysis-followups` — `functor/3` lowering, M7
+  cabal end-to-end smoke, this log entry
+
+Added a forward, three-valued (`unbound`/`bound`/`unknown`)
+binding-state analysis pass at
+`src/unifyweaver/core/binding_state_analysis.pl`. The pass produces, per
+clause, a list of `goal_binding(Idx, BeforeEnv, AfterEnv)` records that
+the WAM compiler consults at the program point of each `=../2` and
+`functor/3` goal. When the analysis can prove the term is unbound and
+the functor name is bound, the compiler lowers the goal to a
+`PutStructureDyn` instruction sequence; otherwise it falls through to
+the existing `BuiltinCall` path.
+
+### What lowers and what does not
+
+| Goal shape | Mode declaration | Result |
+|---|---|---|
+| `T =.. [Name | FixedArgs]` | T proven `unbound`, Name proven `bound` | `PutStructureDyn` + `set_value`/`set_variable` × N + `get_value` |
+| `T =.. [...]` | T `unknown` (no mode decl) | `BuiltinCall "=../2"` |
+| `T =.. [...]` | T proven `bound` (decompose) | `BuiltinCall "=../2"` |
+| `functor(T, Name, Arity)` | T `unbound`, Name `bound`, Arity literal int | `PutStructureDyn` + `set_variable` × Arity + `get_value` |
+| `functor(T, Name, Arity)` | Arity is a runtime variable | `BuiltinCall "functor/3"` |
+| `functor(T, Name, Arity)` | no mode declaration | `BuiltinCall "functor/3"` |
+
+The `functor/3` lowering reuses `emit_put_structure_dyn_lowering/6`
+verbatim by synthesising N fresh anonymous Prolog variables and threading
+them through `compile_set_arguments/4`, which emits one
+`set_variable` per slot. No new emit helper.
+
+### Soundness contract
+
+The analysis is forward-only, no fixpoint, no aliasing tracking, and
+collapses to `unknown` at any control-flow meet where branches
+disagree. Every positive answer is a runtime guarantee; `unknown`
+keeps the existing path. Wrong analysis can only leave performance on
+the table — never produce incorrect runtime behaviour.
+
+### Why no benchmark numbers yet
+
+Both lowerings are correctness-preserving optimisations on a path that
+is rarely the hot loop in the benchmarks we currently measure
+(category-ancestor walks, etc.). The lowerings will pay off on
+workloads that construct many terms in tight loops — code-generation
+utilities, Prolog-meta interpreters, term-rewriting passes. We will
+benchmark when a real such workload exists. The unit tests
+(`tests/core/test_binding_state_analysis.pl`,
+`test_wam_univ_lowering.pl`, `test_wam_functor3_lowering.pl`) plus the
+M7 cabal end-to-end smoke
+(`test_wam_term_construction_e2e.pl`) cover correctness.
+
+### Out-of-scope follow-ups (analysis substrate is in place)
+
+- `arg/3` on a known-bound term: fuse to indexed `GetValue`.
+- `\+ member(X, L)` on a ground L: skip unification, use `IS.notMember`.
+- `copy_term/2` on a ground source: identity (no walk needed).
+- Multi-mode predicate specialisation: separate WAM bodies per mode.
+
+These would extend the analysis with new propagation-rule entries
+(`arg/3`, `\+/1`-special-cased on `member/2`) and add new
+`compile_goal_call/4` clauses, without touching the public API.
+
+### Related documents
+
+- `WAM_HASKELL_MODE_ANALYSIS_PHILOSOPHY.md` — the *why*
+- `WAM_HASKELL_MODE_ANALYSIS_SPEC.md` — data structures, propagation
+  rules, integration sites
+- `WAM_HASKELL_MODE_ANALYSIS_PLAN.md` — phases M1–M8 with test gates
