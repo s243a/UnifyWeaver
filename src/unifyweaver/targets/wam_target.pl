@@ -686,16 +686,16 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
         )
     ;   Rest == []
     ->  % Last goal: execute (Tail Call Optimization)
-        (   %% Univ compose-mode lowering routes through compile_goal_execute
-            %% which dispatches to emit_put_structure_dyn_lowering when the
-            %% binding-state preconditions hold. We add the deallocate here
-            %% (HasEnv == yes case) so the resulting tail-call stays
-            %% TCO-correct.
-            Goal = (_ =.. _),
+        (   %% Term-construction builtins (=../2 and functor/3) compose-mode
+            %% lowering routes through compile_goal_execute which dispatches
+            %% to emit_put_structure_dyn_lowering when the binding-state
+            %% preconditions hold. We add the deallocate here (HasEnv == yes
+            %% case) so the resulting tail-call stays TCO-correct.
+            is_term_construction_goal(Goal),
             HasEnv == yes
         ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
             format(string(Code), "    deallocate~n~w", [ExecCode])
-        ;   Goal = (_ =.. _)
+        ;   is_term_construction_goal(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, Code)
         ;   HasEnv == yes
         ->  Goal =.. [Pred|Args],
@@ -965,6 +965,19 @@ compile_goal_call(T =.. L, V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
     !,
     emit_put_structure_dyn_lowering(T, NameVar, FixedArgs, V0, Vf, Code).
+%% functor/3 compose-mode lowering: functor(T, Name, Arity) where T is
+%% provably unbound, Name is provably bound, and Arity is a literal
+%% non-negative integer. Lowers to the same PutStructureDyn shape as
+%% the =../2 case by synthesising Arity fresh unbound argument slots.
+compile_goal_call(functor(T, NameVar, Arity), V0, Vf, Code) :-
+    integer(Arity), Arity >= 0,
+    var(T), var(NameVar),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
+    !,
+    length(FreshArgs, Arity),
+    emit_put_structure_dyn_lowering(T, NameVar, FreshArgs, V0, Vf, Code).
 compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -991,6 +1004,19 @@ compile_goal_execute(T =.. L, V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
     !,
     emit_put_structure_dyn_lowering(T, NameVar, FixedArgs, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
+%% functor/3 compose-mode lowering, tail-call form. Same shape as the
+%% call form: synthesise Arity fresh unbound slots and reuse the =../2
+%% emit helper.
+compile_goal_execute(functor(T, NameVar, Arity), V0, Vf, Code) :-
+    integer(Arity), Arity >= 0,
+    var(T), var(NameVar),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, unbound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, NameVar, bound),
+    !,
+    length(FreshArgs, Arity),
+    emit_put_structure_dyn_lowering(T, NameVar, FreshArgs, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
 compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
@@ -1307,6 +1333,19 @@ advance_clause_goal_idx :-
     ->  Idx1 is Idx + 1,
         b_setval(wam_clause_goal_idx, Idx1)
     ;   true
+    ).
+
+%% is_term_construction_goal(+Goal)
+%
+%  True when Goal matches one of the term-construction builtins that
+%  compose-mode lowering recognises: `T =.. L` or `functor(T, N, A)`.
+%  Used by the TCO routing in compile_goals/5 to direct these goals
+%  through compile_goal_execute so the lowering's preconditions can
+%  be checked.
+is_term_construction_goal(Goal) :-
+    nonvar(Goal),
+    (   Goal = (_ =.. _)
+    ;   Goal = functor(_, _, _)
     ).
 
 %% parse_univ_list_pattern(+List, -NameVar, -FixedArgs)
