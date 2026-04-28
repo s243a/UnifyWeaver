@@ -990,6 +990,20 @@ compile_goal_call(arg(N, T, A), V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
     !,
     emit_arg_lowering(N, T, A, V0, Vf, Code).
+%% \+ member(X, L) lowering: emits a specialised NotMemberList WAM
+%% instruction that walks L inline and skips both the put_structure
+%% goal-term construction AND the builtin_call dispatch (4 dispatches +
+%% one heap allocation per call). Fires when X and L are Prolog
+%% variables that the binding-state analyser proves are both `bound`
+%% at the goal site — typical of visited-set checks in graph
+%% traversal: `parent(X, Z), \+ member(Z, V), recurse(Z, [Z|V])`.
+compile_goal_call(\+ member(X, L), V0, Vf, Code) :-
+    var(X), var(L),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, X, bound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, L, bound),
+    !,
+    emit_not_member_list_lowering(X, L, V0, Vf, Code).
 compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -1038,6 +1052,15 @@ compile_goal_execute(arg(N, T, A), V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
     !,
     emit_arg_lowering(N, T, A, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
+%% \+ member(X, L) lowering, tail-call form.
+compile_goal_execute(\+ member(X, L), V0, Vf, Code) :-
+    var(X), var(L),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, X, bound),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, L, bound),
+    !,
+    emit_not_member_list_lowering(X, L, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
 compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
@@ -1358,9 +1381,9 @@ advance_clause_goal_idx :-
 
 %% is_term_construction_goal(+Goal)
 %
-%  True when Goal matches one of the term-construction or
-%  term-projection builtins that lowering recognises: `T =.. L`,
-%  `functor(T, N, A)`, or `arg(N, T, A)`. Used by the TCO routing in
+%  True when Goal matches a builtin that the WAM compiler recognises
+%  for binding-analysis-driven lowering: `T =.. L`, `functor(T, N, A)`,
+%  `arg(N, T, A)`, or `\+ member(X, L)`. Used by the TCO routing in
 %  compile_goals/5 to direct these goals through compile_goal_execute
 %  so the lowering preconditions can be checked.
 is_term_construction_goal(Goal) :-
@@ -1368,7 +1391,34 @@ is_term_construction_goal(Goal) :-
     (   Goal = (_ =.. _)
     ;   Goal = functor(_, _, _)
     ;   Goal = arg(_, _, _)
+    ;   Goal = (\+ member(_, _))
     ).
+
+%% emit_not_member_list_lowering(+X, +L, +V0, -Vf, -Code)
+%
+%  Emits a single `not_member_list XReg LReg` WAM instruction. Both
+%  X and L are required (by the caller's binding-analysis check) to
+%  already have allocated registers on entry; this helper simply
+%  looks them up. Falls back to allocating fresh X registers if the
+%  variables somehow do not yet have register assignments — a defensive
+%  path that should not fire when the precondition holds.
+emit_not_member_list_lowering(X, L, V0, Vf, Code) :-
+    (   get_var_reg(X, V0, XReg)
+    ->  V1 = V0,
+        XPrefix = ""
+    ;   next_x_reg(V0, XReg, V_temp1),
+        bind_var(X, XReg, V_temp1, V1),
+        format(string(XPrefix), "    put_variable ~w, A1", [XReg])
+    ),
+    (   get_var_reg(L, V1, LReg)
+    ->  Vf = V1,
+        LPrefix = ""
+    ;   next_x_reg(V1, LReg, V_temp2),
+        bind_var(L, LReg, V_temp2, Vf),
+        format(string(LPrefix), "    put_variable ~w, A2", [LReg])
+    ),
+    format(string(Body), "    not_member_list ~w, ~w", [XReg, LReg]),
+    join_nonempty([XPrefix, LPrefix, Body], Code).
 
 %% emit_arg_lowering(+N, +T, +A, +V0, -Vf, -Code)
 %
