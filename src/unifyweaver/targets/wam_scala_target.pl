@@ -46,7 +46,11 @@ init_scala_atom_intern_table :-
     assertz(scala_atom_intern_id("[]",   2)),
     assertz(scala_atom_intern_id(".",    3)),
     assertz(scala_atom_intern_id("",     4)),
-    assertz(scala_atom_intern_next(5)).
+    % "[|]" is the SWI/WAM cons functor; pre-intern so it has a stable id
+    % regardless of whether the user predicate body emits put_list/get_list
+    % (which carry it implicitly) or put_structure [|]/2 (explicit).
+    assertz(scala_atom_intern_id("[|]",  5)),
+    assertz(scala_atom_intern_next(6)).
 
 %% intern_scala_atom(+AtomStr, -Id) is det.
 intern_scala_atom(AtomStr, Id) :-
@@ -188,7 +192,8 @@ wam_parts_to_scala(["put_structure", Functor, Reg], Lit) :-
 
 wam_parts_to_scala(["put_list", Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    format(string(Lit), 'PutList(~w)', [RegIdx]).
+    intern_scala_atom("[|]", FId),
+    format(string(Lit), 'PutList(~w, ~w)', [RegIdx, FId]).
 
 wam_parts_to_scala(["get_structure", Functor, Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
@@ -198,7 +203,8 @@ wam_parts_to_scala(["get_structure", Functor, Reg], Lit) :-
 
 wam_parts_to_scala(["get_list", Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    format(string(Lit), 'GetList(~w)', [RegIdx]).
+    intern_scala_atom("[|]", FId),
+    format(string(Lit), 'GetList(~w, ~w)', [RegIdx, FId]).
 
 wam_parts_to_scala(["set_variable", Reg], Lit) :-
     reg_to_int(Reg, Idx),
@@ -325,6 +331,13 @@ compile_wam_predicate_to_scala(_Pred, _WamCode, _Options, "").
 %    AllLabelEntries: all labels including sub-clause labels (for instruction resolution)
 compile_predicates_for_project(Predicates, Options, AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode) :-
     init_scala_atom_intern_table,
+    % Pre-intern atoms requested via the intern_atoms option. Useful when
+    % user-supplied foreign handlers reference atoms that don't appear in
+    % any WAM body (otherwise they collapse to the unknown-atom id -1 and
+    % can't be distinguished from each other).
+    option(intern_atoms(ExtraAtoms), Options, []),
+    forall(member(A, ExtraAtoms),
+           (atom_string(A, S), intern_scala_atom(S, _))),
     compile_all_predicates(Predicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
     atomic_list_concat(Wrappers, '\n', WrapperCode).
 
@@ -335,10 +348,14 @@ compile_all_predicates([Pred|Rest], Options, BasePC,
                        AllInstrs, TopLevelLabelEntries, AllLabelEntries, AllWrappers) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   scala_foreign_predicate(P, Arity, Options)
-    ->  % Foreign: emit a single CallForeign instruction
+    ->  % Foreign stub: CallForeign followed by Proceed. The trailing
+        % Proceed is what returns control to the caller after the handler
+        % succeeds; without it, pc falls through into the next predicate
+        % and re-executes its body as if continuing the foreign call.
         format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
-        NewInstrs = [FLit | InstrAcc],
-        NewPC is BasePC + 1,
+        ForeignSeq = [FLit, 'Proceed'],
+        append(InstrAcc, ForeignSeq, NewInstrs),
+        NewPC is BasePC + 2,
         format(string(MainEntry), '    "~w/~w" -> ~w', [P, Arity, BasePC]),
         NewTopLabels = [MainEntry | TopLabelAcc],
         NewAllLabels = [MainEntry | AllLabelAcc]
@@ -445,6 +462,20 @@ scala_foreign_predicate(Pred, Arity, Options) :-
     ;   member(_:Pred/Arity, FPs)
     ), !.
 
+%% scala_foreign_handlers_code(+Options, -Code) is det.
+%  Renders the body of the `foreignHandlers` Map in the generated
+%  program. Reads `scala_foreign_handlers([handler(P/A, "<scala>"), ...])`
+%  from Options. Each handler value is a Scala expression of type
+%  `ForeignHandler` (typically `new ForeignHandler { def apply(...) = ... }`).
+%  When no handlers are configured, returns the empty string.
+scala_foreign_handlers_code(Options, Code) :-
+    option(scala_foreign_handlers(Handlers), Options, []),
+    maplist(scala_foreign_handler_entry, Handlers, Entries),
+    atomic_list_concat(Entries, ',\n', Code).
+
+scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
+    format(string(Entry), '    "~w/~w" -> ~w', [Pred, Arity, HandlerCode]).
+
 % ============================================================================
 % PROJECT WRITER
 % ============================================================================
@@ -473,12 +504,15 @@ write_wam_scala_project(Predicates, Options, ProjectDir) :-
     % --- Package and runtime package ---
     option(package(Pkg), Options, 'generated.wam_scala.core'),
     option(runtime_package(RPkg), Options, 'generated.wam_scala.runtime'),
+    % --- Foreign handler bodies ---
+    scala_foreign_handlers_code(Options, ForeignHandlersBody),
     % --- Render runtime template ---
     write_runtime_source(ProjectDir, Pkg, RPkg),
     % --- Render program template ---
     write_program_source(ProjectDir, Pkg, RPkg,
                          InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, StringToIdStr, IdToStringStr).
+                         WrapperCode, StringToIdStr, IdToStringStr,
+                         ForeignHandlersBody).
 
 write_build_sbt(ProjectDir, ModName) :-
     find_template('templates/targets/scala_wam/build.sbt.mustache', Template),
@@ -504,7 +538,8 @@ write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
 
 write_program_source(ProjectDir, Package, RuntimePkg,
                      InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, StringToIdStr, IdToStringStr) :-
+                     WrapperCode, StringToIdStr, IdToStringStr,
+                     ForeignHandlersBody) :-
     find_template('templates/targets/scala_wam/program.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -517,7 +552,7 @@ write_program_source(ProjectDir, Package, RuntimePkg,
           'wrappers'=WrapperCode,
           'intern_string_to_id'=StringToIdStr,
           'intern_id_to_string'=IdToStringStr,
-          'foreign_handlers'=""
+          'foreign_handlers'=ForeignHandlersBody
         ], Content),
     scala_source_path(ProjectDir, Package, 'GeneratedProgram', Path),
     make_directory_path_for(Path),
