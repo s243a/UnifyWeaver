@@ -22,6 +22,8 @@
 :- dynamic user:wam_use_list/1.
 :- dynamic user:category_parent/2.
 :- dynamic user:wam_parent_lookup/2.
+:- dynamic user:max_depth/1.
+:- dynamic user:wam_ancestor_lookup/4.
 
 user:wam_fact(a).
 user:wam_execute_caller(X) :- user:wam_fact(X).
@@ -42,6 +44,8 @@ user:wam_use_struct(X) :- user:wam_struct_fact(X).
 user:wam_use_list(X) :- user:wam_list_fact(X).
 user:category_parent(_, _) :- fail.
 user:wam_parent_lookup(X, Y) :- user:category_parent(X, Y).
+user:max_depth(_) :- fail.
+user:wam_ancestor_lookup(A, B, C, D) :- user:category_ancestor(A, B, C, D).
 
 test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
     once((
@@ -218,6 +222,40 @@ test(clojure_lmdb_target_foreign_relation_auto_handler,
         assertion(sub_string(CoreCode, _, _, _, 'data/generated/test/category_parent_lmdb')),
         assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_parent/2')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" wam-parent-lookup')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_target_ancestor_foreign_relation_auto_handler,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_foreign_ancestor_target', TmpDir),
+        write_wam_clojure_project([user:wam_ancestor_lookup/4,
+                                   user:category_ancestor/4],
+                                  [ namespace('generated.wam_lmdb_ancestor_foreign_test'),
+                                    clojure_lmdb_foreign_relations([
+                                        category_ancestor/4-'data/generated/test/category_parent_lmdb'
+                                    ]),
+                                    clojure_lmdb_cache_policy(two_level),
+                                    clojure_lmdb_cache_debug(true),
+                                    clojure_lmdb_ancestor_max_depth(7)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lmdb_ancestor_foreign_test/core.clj', CorePath),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(wam_clojure_target:clojure_foreign_predicate(category_ancestor, 4,
+                   [clojure_lmdb_foreign_relations([
+                       category_ancestor/4-'data/generated/test/category_parent_lmdb'
+                   ])])),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
+        assertion(sub_string(CoreCode, _, _, _, 'LmdbArtifactReader/openTwoLevel')),
+        assertion(sub_string(CoreCode, _, _, _, 'max-depth 7')),
+        assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_ancestor/4')),
+        assertion(sub_string(CoreCode, _, _, _, '{:solutions (vec solutions)}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:bindings {2 ancestor 3 hops}}')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_ancestor_lookup/4" wam-ancestor-lookup')),
         delete_directory_and_contents(TmpDir)
     )).
 
