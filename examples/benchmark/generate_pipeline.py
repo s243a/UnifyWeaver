@@ -39,6 +39,30 @@ CSHARP_BENCHMARK_PROJECT = """\
 </Project>
 """
 
+CSHARP_QUERY_BUCKET_STRATEGY_HELPERS = r"""
+    static bool IsConcreteBucketStrategy(string strategy)
+    {
+        return strategy.StartsWith("KeyJoinIndexedRelationProviderBucket", StringComparison.Ordinal)
+            && !string.Equals(strategy, "KeyJoinIndexedRelationProviderBuckets", StringComparison.Ordinal);
+    }
+
+    static void PrintBucketStrategies(QueryExecutionTrace? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        foreach (var strategy in trace.SnapshotStrategies()
+            .Where(s => IsConcreteBucketStrategy(s.Strategy))
+            .OrderBy(s => s.NodeType, StringComparer.Ordinal)
+            .ThenBy(s => s.Strategy, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"bucket_strategy_{strategy.NodeType}_{strategy.Strategy}={strategy.Count}");
+        }
+    }
+"""
+
 
 def load_facts(facts_path):
     """Load facts from Prolog file."""
@@ -1475,6 +1499,7 @@ class Program
             Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds:F3}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -1564,6 +1589,7 @@ class Program
         Console.Error.WriteLine($"project_count={{results.Count}}");
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintDagPhases(trace);
     }}
 }}
@@ -1984,6 +2010,7 @@ class Program
             Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -2084,6 +2111,7 @@ class Program
         Console.Error.WriteLine($"project_count={{results.Count}}");
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintDagPhases(trace);
     }}
 }}
@@ -2645,6 +2673,7 @@ class Program
             Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -2742,6 +2771,7 @@ class Program
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintWeightSumPhases(trace);
     }}
 }}
@@ -2829,6 +2859,7 @@ class Program
             Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -2915,6 +2946,7 @@ class Program
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintWeightSumPhases(trace);
     }}
 
@@ -3005,6 +3037,7 @@ class Program
             Console.Error.WriteLine($"phase_{{phase.Phase}}_ms={{phase.Elapsed.TotalMilliseconds.ToString(\"F3\", CultureInfo.InvariantCulture)}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -3090,6 +3123,7 @@ class Program
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintPathMinPhases(trace);
     }}
 }}
@@ -3192,6 +3226,7 @@ class Program
             Console.Error.WriteLine($"metric_{{metric.Metric}}={{metric.Value.ToString(\"G17\", CultureInfo.InvariantCulture)}}");
         }}
     }}
+{CSHARP_QUERY_BUCKET_STRATEGY_HELPERS}
 
     static void Main(string[] args)
     {{
@@ -3317,6 +3352,7 @@ class Program
         Console.Error.WriteLine($"edge_retention_strategy_setting={{edgeRetentionStrategy}}");
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
+        PrintBucketStrategies(trace);
         PrintPathMinPhases(trace);
         PrintPathMinMetrics(trace);
     }}
