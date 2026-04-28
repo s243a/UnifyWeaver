@@ -290,6 +290,16 @@ test_real_prolog_structure_index_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_is_list_executable_smoke :-
+    Test = 'WAM-C: real Prolog is_list/1 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_is_list_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog is_list/1 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -433,6 +443,31 @@ run_real_prolog_structure_index_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_real_struct(_, _))
     ;   retractall(user:wam_c_real_struct(_, _)),
+        fail
+    ).
+
+run_real_prolog_is_list_executable_smoke :-
+    assertz((user:wam_c_real_is_list(X, ok) :- is_list(X))),
+    (   compile_predicate_to_wam(user:wam_c_real_is_list/2, [], WamCode),
+        sub_string(WamCode, _, _, _, 'builtin_call is_list/1, 1'),
+        compile_wam_predicate_to_c(user:wam_c_real_is_list/2, WamCode, [], PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_is_list_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_is_list_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_real_is_list(_, _))
+    ;   retractall(user:wam_c_real_is_list(_, _)),
         fail
     ).
 
@@ -719,6 +754,45 @@ int main(void) {
 }
 ').
 
+wam_c_real_is_list_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_real_is_list_2(WamState* state);
+
+static WamValue make_test_list_is_list(WamState *state) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom("head");
+    state->H_array[state->H++] = val_atom("tail");
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_real_is_list_2(&state);
+
+    WamValue list = make_test_list_is_list(&state);
+    WamValue list_args[2] = { list, val_atom("ok") };
+    int list_rc = wam_run_predicate(&state, "wam_c_real_is_list/2", list_args, 2);
+    if (list_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue atom_args[2] = { val_atom("not_a_list"), val_atom("ok") };
+    int atom_rc = wam_run_predicate(&state, "wam_c_real_is_list/2", atom_args, 2);
+    if (atom_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -789,6 +863,7 @@ run_tests_once :-
     test_real_prolog_builtin_executable_smoke,
     test_real_prolog_multiclause_executable_smoke,
     test_real_prolog_structure_index_executable_smoke,
+    test_real_prolog_is_list_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
