@@ -36,6 +36,7 @@ from benchmark_common import (
     find_result,
     group_results_by_scale,
     normalize_three_column_float_rows,
+    print_bucket_strategy_metrics,
     print_match_status,
     print_pair_match_status,
     print_phase_metrics,
@@ -378,6 +379,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_prolog_semantic_min", prolog_semantic_min, qe)
         print_speedup(scale, "speedup_vs_prolog_eff_semantic", prolog_eff_semantic, qe)
         print_phase_metrics(scale, "csharp-query-metrics", qe)
+        print_bucket_strategy_metrics(scale, "csharp-query-bucket-strategies", qe)
         print_phase_metrics(scale, "prolog-seeded-metrics", prolog_seeded)
         print_phase_metrics(scale, "prolog-pruned-metrics", prolog_pruned)
         print_phase_metrics(scale, "prolog-accumulated-metrics", prolog_accumulated)

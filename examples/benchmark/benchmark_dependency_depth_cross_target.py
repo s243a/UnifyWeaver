@@ -23,6 +23,7 @@ from benchmark_common import (
     find_result,
     group_results_by_scale,
     normalize_sorted_lines,
+    print_bucket_strategy_metrics,
     print_match_status,
     print_pair_match_status,
     print_result_table,
@@ -137,6 +138,7 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_csharp_dfs", csharp_dfs, qe)
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_go_dfs", go_dfs, qe)
+        print_bucket_strategy_metrics(scale, "csharp-query-bucket-strategies", qe)
 
 
 def main() -> int:
