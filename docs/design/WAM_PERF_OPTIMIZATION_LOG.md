@@ -802,3 +802,137 @@ These would extend the analysis with new propagation-rule entries
 - `WAM_HASKELL_MODE_ANALYSIS_SPEC.md` — data structures, propagation
   rules, integration sites
 - `WAM_HASKELL_MODE_ANALYSIS_PLAN.md` — phases M1–M8 with test gates
+
+---
+
+## Phase F appendix: term-construction lowering measurement and `arg/3` (2026-04-27)
+
+**Branch:** `feat/wam-haskell-arg3-and-bench`
+
+Three follow-ups closing out the Phase F arc:
+
+### F.1 — Latent `GetValue` handler bug found by benchmarking
+
+The first attempt to drive the `=../2` compose lowering through the
+runtime in a benchmark loop revealed that 100 % of the lowered
+iterations were returning `Nothing` (failing the goal). Cause: the
+`GetValue xn ai` step handler in `WamRuntime` only handled the case
+where `ai` (the second argument register) held the unbound side. The
+lowering's emit helper produces `get_value T_reg, TermReg` where
+`T_reg` (the *first* argument) is the fresh output and `TermReg` is
+the freshly-constructed `Str` — i.e. the unbound side is on the
+*xn* side. The handler fell through to `Nothing`.
+
+The fix adds the symmetric case directly to `step (GetValue xn ai)`:
+
+```haskell
+(Just a, Just (Unbound vid)) ->
+  Just (s { ..., wsBindings = IM.insert vid a (wsBindings s), ... })
+```
+
+Unification is symmetric, so this is the principled fix. The bug is
+latent — every codegen unit test in the original mode-analysis arc
+verified `PutStructureDyn` text appeared in the WAM, but none ran
+the bytecode through `run`. The benchmark is the first thing that
+did. The cabal e2e (`test_wam_term_construction_e2e.pl`) builds the
+project with cabal but does not execute it, so it did not surface
+the bug either.
+
+### F.2 — Synthetic benchmark numbers
+
+`tests/benchmarks/wam_term_construction_bench.pl` generates one
+project containing two predicates with **identical Prolog source**:
+
+```prolog
+:- mode bench_lowered(+, +, -).
+bench_lowered(Name, Arg, T) :- T =.. [Name, Arg].
+
+bench_unlowered(Name, Arg, T) :- T =.. [Name, Arg].
+```
+
+The mode declaration triggers the binding-state analyser; the
+unannotated copy gets the list-build + `BuiltinCall "=../2"` runtime
+path. A custom `Bench.hs` (in `tests/fixtures/wam_term_construction_bench/`)
+imports the generated `WamRuntime` + `Predicates` and times each
+predicate across `N` calls of `bench(foo, k, T)`, alternating the
+order across two trial blocks to reduce cache-warming bias.
+
+Result at N = 100,000 (GHC 8.6.5, `-O2`):
+
+| Trial block | lowered (s) | unlowered (s) | speedup |
+|---|---:|---:|---:|
+| Block 1 | 0.198 | 0.284 | 1.43× |
+| Block 2 | 0.181 | 0.216 | 1.19× |
+| **Mean** | **0.190** | **0.250** | **1.32×** |
+
+The lowering wins by ~24–32 % on this microbenchmark. The savings
+are *not* from instruction count (both paths emit ~6 instructions);
+they come from the runtime work the `BuiltinCall "=../2"` handler
+does on the unlowered side: allocate an intermediate `VList`, walk
+it to extract the `Atom` head, and only then construct the `Str`.
+The lowered `PutStructureDyn` skips all of that — it pre-allocates
+the `BuildStruct` builder directly and `SetValue` writes the args
+straight in.
+
+This is a microbenchmark; real workloads that construct terms in
+tight loops (codegen utilities, meta-interpreters, term-rewriting
+passes) would see the same per-call shape and similar relative
+gains. Benchmarks that are dominated by I/O, FFI, or recursion-heavy
+logic will see no measurable change because term construction is
+not on their hot path.
+
+### F.3 — `arg/3` lowering
+
+Adds the `arg/3` term-projection counterpart to the
+construction-side lowerings already in place. Detects:
+
+```prolog
+:- mode pred(..., +, ..., -).
+pred(..., T, ..., A) :- arg(N, T, A).
+```
+
+where `N` is a literal positive integer and the binding-state
+analyser proves T is `bound`. Lowers to a single specialised
+`Arg !Int !RegId !RegId` instruction (new in this PR), skipping the
+`put_constant N → A1`, `put_value T → A2`, `put_variable A → A3`,
+`builtin_call arg/3` chain (4 dispatches) in favour of one direct
+runtime step.
+
+The runtime handler:
+- derefs T from its register, requires `Str _ args` or `VList _`,
+- indexes the N-th element (1-based; matches the existing builtin),
+- unifies the result with the output register's current value
+  (handles both unbound and already-bound cases for safety).
+
+Five unit tests in `tests/core/test_wam_arg3_lowering.pl`:
+
+| Test | What it covers |
+|---|---|
+| `test_arg3_lowered_when_t_bound_and_n_literal` | Mode-annotated T + literal N ⇒ `arg N TReg AReg` emitted |
+| `test_arg3_no_mode_falls_through_to_builtin` | No mode ⇒ `builtin_call arg/3` |
+| `test_arg3_dynamic_n_falls_through` | N is a runtime variable ⇒ no lowering |
+| `test_arg3_zero_or_negative_n_falls_through` | N=0 ⇒ no lowering (preserves builtin failure semantics) |
+| `test_arg3_literal_n_appears_in_wam_text` | Literal N appears verbatim in emitted WAM |
+
+No new benchmark numbers for `arg/3` yet; the construction-side
+benchmark above is the first wired-up timing harness, and `arg/3` on
+hot paths would need its own workload to exercise. The savings
+shape is the same as `=../2` (skipping ~3 dispatch hops) so the
+microbenchmark improvement is expected to be in the same range.
+
+### F.4 — Test surface (cumulative)
+
+After this appendix lands the term-construction arc has:
+
+| Suite | Count |
+|---|---:|
+| `test_wam_haskell_target.pl` (full target suite) | unchanged |
+| `test_binding_state_analysis.pl` | 31 |
+| `test_wam_univ_lowering.pl` | 5 |
+| `test_wam_functor3_lowering.pl` | 6 |
+| `test_wam_arg3_lowering.pl` | 5 (new) |
+| `test_wam_term_construction_e2e.pl` (cabal smoke) | 2 |
+| `wam_term_construction_bench.pl` (benchmark, not a regression test) | — |
+
+Plus 30 + lines added to the existing `step (GetValue xn ai)` to
+cover the symmetric case.

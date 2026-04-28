@@ -978,6 +978,18 @@ compile_goal_call(functor(T, NameVar, Arity), V0, Vf, Code) :-
     !,
     length(FreshArgs, Arity),
     emit_put_structure_dyn_lowering(T, NameVar, FreshArgs, V0, Vf, Code).
+%% arg/3 lowering: arg(N, T, A) where N is a literal positive integer
+%% and T is provably bound. Emits a single specialised `arg` WAM
+%% instruction that the runtime translates to the Arg ADT constructor,
+%% skipping the put_constant + put_value + builtin_call dispatch chain.
+%% A may be bound or unbound; the runtime handles both via unification.
+compile_goal_call(arg(N, T, A), V0, Vf, Code) :-
+    integer(N), N >= 1,
+    var(T), var(A),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
+    !,
+    emit_arg_lowering(N, T, A, V0, Vf, Code).
 compile_goal_call(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
     length(Args, Arity),
@@ -1017,6 +1029,15 @@ compile_goal_execute(functor(T, NameVar, Arity), V0, Vf, Code) :-
     !,
     length(FreshArgs, Arity),
     emit_put_structure_dyn_lowering(T, NameVar, FreshArgs, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
+%% arg/3 lowering, tail-call form.
+compile_goal_execute(arg(N, T, A), V0, Vf, Code) :-
+    integer(N), N >= 1,
+    var(T), var(A),
+    current_clause_binding_env(BeforeEnv),
+    binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
+    !,
+    emit_arg_lowering(N, T, A, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
 compile_goal_execute(Goal, V0, Vf, Code) :-
     Goal =.. [Pred|Args],
@@ -1337,15 +1358,43 @@ advance_clause_goal_idx :-
 
 %% is_term_construction_goal(+Goal)
 %
-%  True when Goal matches one of the term-construction builtins that
-%  compose-mode lowering recognises: `T =.. L` or `functor(T, N, A)`.
-%  Used by the TCO routing in compile_goals/5 to direct these goals
-%  through compile_goal_execute so the lowering's preconditions can
-%  be checked.
+%  True when Goal matches one of the term-construction or
+%  term-projection builtins that lowering recognises: `T =.. L`,
+%  `functor(T, N, A)`, or `arg(N, T, A)`. Used by the TCO routing in
+%  compile_goals/5 to direct these goals through compile_goal_execute
+%  so the lowering preconditions can be checked.
 is_term_construction_goal(Goal) :-
     nonvar(Goal),
     (   Goal = (_ =.. _)
     ;   Goal = functor(_, _, _)
+    ;   Goal = arg(_, _, _)
+    ).
+
+%% emit_arg_lowering(+N, +T, +A, +V0, -Vf, -Code)
+%
+%  Emits a single `arg N TReg AReg` WAM instruction. Allocates X
+%  registers for T and A as needed (mirrors the conventions in
+%  emit_put_structure_dyn_lowering/6).
+emit_arg_lowering(N, T, A, V0, Vf, Code) :-
+    %% TReg: T must already have a register (precondition: bound). If
+    %% not allocated, allocate one and emit put_variable for safety.
+    (   get_var_reg(T, V0, TReg)
+    ->  V1 = V0,
+        TPrefix = ""
+    ;   next_x_reg(V0, TReg, V_temp1),
+        bind_var(T, TReg, V_temp1, V1),
+        format(string(TPrefix), "    put_variable ~w, A1", [TReg])
+    ),
+    %% AReg: allocate if not present.
+    (   get_var_reg(A, V1, AReg)
+    ->  Vf = V1
+    ;   next_x_reg(V1, AReg, V_temp2),
+        bind_var(A, AReg, V_temp2, Vf)
+    ),
+    format(string(ArgCode), "    arg ~w, ~w, ~w", [N, TReg, AReg]),
+    (   TPrefix == ""
+    ->  Code = ArgCode
+    ;   format(string(Code), "~w~n~w", [TPrefix, ArgCode])
     ).
 
 %% parse_univ_list_pattern(+List, -NameVar, -FixedArgs)
