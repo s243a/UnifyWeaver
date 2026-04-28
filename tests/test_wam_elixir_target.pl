@@ -7,7 +7,7 @@
 :- use_module('../src/unifyweaver/targets/wam_elixir_lowered_emitter',
               [lower_predicate_to_elixir/4, classify_predicate/4,
                extract_facts/3, extract_arg1_index/3,
-               tier2_purity_eligible/3]).
+               tier2_purity_eligible/3, par_wrap_segment/4]).
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
@@ -518,6 +518,30 @@ test_phase_d_emits_external_source_shape :-
     ;   fail_test(Test, 'external_source shape missing or bled through to other layouts')
     ).
 
+test_phase_d_external_source_preserves_shared_preprocess_metadata :-
+    Test = 'Phase D: external_source preserves shared preprocess metadata in generated module',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:big_fact/2, [], WamCode),
+    setup_call_cleanup(
+        assertz(user:preprocess(big_fact/2, exact_hash_index([key([1]), values([2])]))),
+        (   Opts = [module_name('TestMod'),
+                    fact_layout(big_fact/2, external_source(tsv_marker))],
+            once(lower_predicate_to_elixir(big_fact/2, WamCode, Opts, Code)),
+            contains_string(Code, '@external_source_spec "tsv_marker"'),
+            contains_string(Code, '@external_source_metadata %{source_spec: @external_source_spec, preprocess: %{'),
+            contains_string(Code, 'source: "shared_preprocess"'),
+            contains_string(Code, 'mode: "artifact"'),
+            contains_string(Code, 'kind: "exact_hash_index"'),
+            contains_string(Code, 'format: "exact_hash_index"'),
+            contains_string(Code, 'access_contracts: ["arg_position_lookup(1)", "exact_key_lookup", "grouped_values_lookup([2])", "scan"]'),
+            contains_string(Code, 'options: ["key([1])", "values([2])"]'),
+            contains_string(Code, 'def external_source_metadata, do: @external_source_metadata')
+        ->  pass(Test)
+        ;   fail_test(Test, 'shared preprocess metadata missing from external_source module')
+        ),
+        maybe_abolish_test_predicate(preprocess/2)
+    ).
+
 test_phase_d_runtime_emits_fact_source :-
     Test = 'Phase D: runtime assembly emits FactSource behaviour + Tsv adaptor + Registry',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -729,6 +753,251 @@ test_tier2_aggregate_forkable_types :-
     ;   fail_test(Test, 'emitted forkable predicate does not cover both findall and aggregate_all')
     ).
 
+%% Findall substrate (Phase 1) — exercises the runtime helpers added
+%% per docs/proposals/WAM_ELIXIR_TIER2_FINDALL.md §4. End-to-end findall
+%% execution waits on Phase 2 (begin_aggregate/end_aggregate instruction
+%% lowering) and Phase 3 (integration tests). These are emit-and-grep
+%% checks on the emitted Elixir source.
+
+test_findall_substrate_emits_push_aggregate_frame :-
+    Test = 'Findall substrate: WamRuntime emits push_aggregate_frame/4 with correct CP shape',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def push_aggregate_frame(state, agg_type, value_reg, result_reg)'),
+        % CP must capture aggregate-specific fields.
+        sub_string(S, _, _, _, 'agg_type: agg_type'),
+        sub_string(S, _, _, _, 'agg_value_reg: value_reg'),
+        sub_string(S, _, _, _, 'agg_result_reg: result_reg'),
+        sub_string(S, _, _, _, 'agg_accum: []'),
+        % Plus the standard CP snapshot fields finalise restores.
+        % `cp:` here doubles as the post-finalise continuation — the
+        % proposal §4.1 listed a separate :agg_return_cp field but it
+        % always equalled state.cp at push time, so it was dropped
+        % during implementation. The docstring on the emitted helper
+        % explains the deviation; finalise_aggregate's tail-call uses
+        % `restored.cp.(restored)` (asserted in the finalise test).
+        sub_string(S, _, _, _, 'cp: state.cp'),
+        sub_string(S, _, _, _, 'trail_len: state.trail_len'),
+        sub_string(S, _, _, _, 'heap_len: state.heap_len')
+    ->  pass(Test)
+    ;   fail_test(Test, 'push_aggregate_frame absent or missing required CP fields')
+    ).
+
+test_findall_substrate_emits_aggregate_collect :-
+    Test = 'Findall substrate: WamRuntime emits aggregate_collect/2 (deep-copy + prepend to nearest agg frame)',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def aggregate_collect(state, value_reg)'),
+        % Must deep-copy the value register before capturing — atomic
+        % values pass through unchanged, compound heap structures
+        % become self-contained {:struct, ...} tuples that survive
+        % backtrack's heap-rewind.
+        sub_string(S, _, _, _, 'raw = Map.get(state.regs, value_reg)'),
+        sub_string(S, _, _, _, 'val = deep_copy_value(state, raw)'),
+        % Must prepend (O(1)) to the nearest aggregate frame's accum.
+        sub_string(S, _, _, _, '[val | prior]'),
+        % And the deep_copy_value helper itself exists.
+        sub_string(S, _, _, _, 'def deep_copy_value(state, val)'),
+        sub_string(S, _, _, _, '{:str, functor}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'aggregate_collect absent or missing deep-copy/prepend logic')
+    ).
+
+test_findall_substrate_emits_finalise_aggregate :-
+    Test = 'Findall substrate: WamRuntime emits finalise_aggregate/4 covering all aggregator types',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def finalise_aggregate(state, agg_cp, rest_cps, agg_type)'),
+        % Reverses accumulator (we prepend in collect for O(1)).
+        sub_string(S, _, _, _, 'Enum.reverse(agg_cp.agg_accum)'),
+        % All aggregator atoms emitted by compile_aggregate_all/5 must
+        % be handled — see wam_target.pl:712 for the alphabet.
+        sub_string(S, _, _, _, ':collect, :findall, :aggregate_all, :bag'),
+        sub_string(S, _, _, _, ':set -> Enum.uniq'),
+        sub_string(S, _, _, _, ':sum -> Enum.sum'),
+        sub_string(S, _, _, _, ':count -> length'),
+        % :max / :min throw {:fail, state} on empty accumulator
+        % (canonical Prolog semantics — no identity exists).
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)'),
+        sub_string(S, _, _, _, 'if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)'),
+        % Must bind the result into agg_result_reg, restore from
+        % snapshot, and tail-call the restored state.cp (no
+        % separate :agg_return_cp — see push_aggregate_frame test).
+        sub_string(S, _, _, _, 'Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)'),
+        sub_string(S, _, _, _, 'restored.cp.(restored)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'finalise_aggregate absent or missing required aggregator handling')
+    ).
+
+%% Note: aggregate_collect/2 with no aggregate frame on the stack is
+%% a documented safety contract (returns state unchanged). Coverage
+%% deferred to Phase 3 runtime tests, where a fixture state with an
+%% empty CP stack can exercise the contract end-to-end.
+
+%% Findall instructions (Phase 2) — exercises the parser entries and
+%% wam_elixir_lower_instr/6 clauses for begin_aggregate / end_aggregate
+%% per docs/proposals/WAM_ELIXIR_TIER2_FINDALL.md §4.2 + §4.3.
+
+test_findall_instr_parser_begin_aggregate :-
+    Test = 'Findall instr: instr_from_parts parses `begin_aggregate sum, A1, A3`',
+    (   wam_elixir_lowered_emitter:instr_from_parts(
+            ["begin_aggregate", "sum", "A1", "A3"],
+            begin_aggregate("sum", "A1", "A3"))
+    ->  pass(Test)
+    ;   fail_test(Test, 'parser did not match begin_aggregate 4-element form')
+    ).
+
+test_findall_instr_parser_end_aggregate :-
+    Test = 'Findall instr: instr_from_parts parses `end_aggregate A1`',
+    (   wam_elixir_lowered_emitter:instr_from_parts(
+            ["end_aggregate", "A1"],
+            end_aggregate("A1"))
+    ->  pass(Test)
+    ;   fail_test(Test, 'parser did not match end_aggregate 2-element form')
+    ).
+
+test_findall_instr_lowers_begin_aggregate_sum :-
+    Test = 'Findall instr: begin_aggregate(sum, A1, A3) lowers to push_aggregate_frame call with :sum',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            begin_aggregate("sum", "A1", "A3"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :sum, 1, 3)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'sum aggregator did not lower to push_aggregate_frame call')
+    ).
+
+test_findall_instr_translates_collect_to_findall :-
+    Test = 'Findall instr: begin_aggregate(collect, ...) translates to :findall (proposal §6.4)',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            begin_aggregate("collect", "A1", "A3"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        % Translation is at the emission site so the substrate's
+        % in_forkable_aggregate_frame?/1 (which only recognises
+        % :findall and :aggregate_all) sees a forkable frame.
+        sub_string(S, _, _, _, ':findall'),
+        \+ sub_string(S, _, _, _, ':collect')
+    ->  pass(Test)
+    ;   fail_test(Test, 'collect aggregator was not translated to :findall at emission')
+    ).
+
+test_findall_instr_lowers_end_aggregate :-
+    Test = 'Findall instr: end_aggregate(A1) lowers to aggregate_collect + throw({:fail, state})',
+    (   wam_elixir_lowered_emitter:wam_elixir_lower_instr(
+            end_aggregate("A1"),
+            1, [], "clause_main", "", Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'WamRuntime.aggregate_collect(state, 1)'),
+        % Throw drives backtrack into finalise_aggregate per the
+        % fail-driven enumeration model (proposal §3.3 / §4.4).
+        sub_string(S, _, _, _, 'throw({:fail, state})')
+    ->  pass(Test)
+    ;   fail_test(Test, 'end_aggregate did not emit collect + throw shape')
+    ).
+
+%% End-to-end bridge: a predicate whose body uses findall/3 should now
+%% lower through the full pipeline (WAM compile → parse → lower) and
+%% produce a module containing both runtime calls. This is the first
+%% test that exercises the full Phase 2 chain. Phase 3 will add actual
+%% Elixir-execution tests.
+
+:- dynamic phase_a_test:has_findall/1.
+
+phase_a_findall_fixture_setup :-
+    phase_a_fixture_setup,
+    retractall(phase_a_test:has_findall(_)),
+    assertz((phase_a_test:has_findall(L) :-
+        findall(X, phase_a_test:small_fact(X, _), L))).
+
+test_findall_instr_end_to_end_lowering :-
+    Test = 'Findall instr: predicate body using findall/3 lowers to push_aggregate_frame + aggregate_collect',
+    phase_a_findall_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:has_findall/1, [], WamCode),
+    lower_predicate_to_elixir(has_findall/1, WamCode,
+                              [module_name('TestMod')], Code),
+    atom_string(Code, S),
+    (   % :findall (translated from WAM-emitted :collect) must appear
+        % in the push call — confirms the collect→findall translation
+        % survives the full WAM compile → parse → lower pipeline, not
+        % just the unit-level lowering test above.
+        sub_string(S, _, _, _, 'WamRuntime.push_aggregate_frame(state, :findall'),
+        sub_string(S, _, _, _, 'WamRuntime.aggregate_collect(state'),
+        sub_string(S, _, _, _, 'throw({:fail, state})')
+    ->  pass(Test)
+    ;   fail_test(Test, 'end-to-end findall lowering missing push/collect/throw shape')
+    ).
+
+%% Module-qualified findall regression test for the wam_target.pl fix
+%% (Finding 1 from #1647). Before the fix, `findall(X, M:p(X), L)`
+%% emitted `begin_aggregate collect, A1, X_n` — value_reg=A1 — which
+%% got clobbered by the `:/2` builtin's put_constant of the module
+%% name string. After the fix, compile_aggregate_all/5 unwraps
+%% compile_findall's `collect-Template` wrapper to expose the
+%% Template variable, so the var(ValueVar) branch fires and a Y-reg
+%% is allocated. End_aggregate then reads from a slot that survives
+%% any inner-call register churn.
+%%
+%% Target-agnostic at the WAM byte-shape level: this test asserts
+%% the emitted WAM uses Y... not A1 for findall's value_reg, which
+%% is the contract every target's lowering depends on.
+
+:- dynamic phase_a_test:findall_qualified_target/1.
+
+test_findall_module_qualified_unwrap :-
+    Test = 'WAM compiler: findall/3 with static module-qualified inner goal unwraps to direct call (fix for #1647 Finding 1)',
+    setup_call_cleanup(
+        (   retractall(phase_a_test:findall_qualified_target(_)),
+            assertz(phase_a_test:findall_qualified_target('a')),
+            assertz(phase_a_test:findall_qualified_target('b')),
+            assertz((phase_a_test:findall_qualified_caller(L) :-
+                findall(X, phase_a_test:findall_qualified_target(X), L)))
+        ),
+        (   wam_target:compile_predicate_to_wam(
+                phase_a_test:findall_qualified_caller/1, [], WamCode),
+            atom_string(WamCode, S),
+            % Y-reg-allocation portion of #1650 still applies — findall's
+            % value_reg should be a Y-register regardless of inner-goal shape.
+            sub_string(S, _, _, _, 'begin_aggregate collect, Y'),
+            sub_string(S, _, _, _, 'end_aggregate Y'),
+            \+ sub_string(S, _, _, _, 'begin_aggregate collect, A1'),
+            % Static-module-qualifier unwrap (this PR): the inner goal
+            % `phase_a_test:findall_qualified_target(X)` should compile
+            % to a regular `call findall_qualified_target/1, 1` instead
+            % of routing through the `:/2` builtin path. Cross-target
+            % win — every target avoids the meta-call overhead on the
+            % common static-qualifier case.
+            sub_string(S, _, _, _, 'call findall_qualified_target/1'),
+            \+ sub_string(S, _, _, _, 'builtin_call :/2'),
+            % And the put_constant for the module name is gone too —
+            % the unwrapped call doesn't construct a `:/2` structure
+            % on the heap.
+            \+ sub_string(S, _, _, _, 'put_constant phase_a_test')
+        ->  pass(Test)
+        ;   fail_test(Test, 'module-qualified findall did not unwrap to direct call (Option B regressed?)')
+        ),
+        (   retractall(phase_a_test:findall_qualified_target(_)),
+            retractall(phase_a_test:findall_qualified_caller(_))
+        )
+    ).
+
+test_findall_substrate_backtrack_routes_aggregate_frames :-
+    Test = 'Findall substrate: backtrack/1 dispatches aggregate frames to finalise_aggregate',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        % The dispatcher arm: presence of :agg_type on the popped CP
+        % routes to finalise instead of the ordinary unwind path.
+        sub_string(S, _, _, _, 'case Map.get(cp, :agg_type) do'),
+        sub_string(S, _, _, _, 'nil ->'),
+        sub_string(S, _, _, _, 'backtrack_ordinary(state, cp, rest)'),
+        sub_string(S, _, _, _, 'agg_type ->'),
+        sub_string(S, _, _, _, 'finalise_aggregate(state, cp, rest, agg_type)'),
+        % And the existing ordinary path must still exist as a defp.
+        sub_string(S, _, _, _, 'defp backtrack_ordinary(state, cp, rest)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'backtrack/1 does not dispatch on :agg_type or backtrack_ordinary missing')
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -747,6 +1016,234 @@ test_tier2_purity_gate_accepts_declared :-
         ;   fail_test(Test, 'gate did not accept declared parallel predicate')
         ),
         retract(clause_body_analysis:order_independent(user:tier2_test_pred/2))
+    ).
+
+%% par_wrap_segment/4 tests — exercise the three static gates (purity,
+%% clause count, kill-switch) plus the shape of the emitted super-wrapper.
+
+three_segment_fixture([
+    'clause_start'-[1-try_me_else(l_b), 2-proceed],
+    'l_b'-[3-retry_me_else(l_c), 4-proceed],
+    'l_c'-[5-trust_me, 6-proceed]
+]).
+
+two_segment_fixture([
+    'clause_start'-[1-try_me_else(l_b), 2-proceed],
+    'l_b'-[3-trust_me, 4-proceed]
+]).
+
+test_par_wrap_segment_emits_super_wrapper :-
+    Test = 'Tier-2 wrapper: 3-clause declared-pure predicate emits cond-based super-wrapper',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            Code \= "",
+            % Entry func name derives from the first segment; fixture
+            % uses 'clause_start' atom so segment_func_name emits
+            % 'clause_ClauseStart'. Assertion checks the surface shape,
+            % not a specific hard-coded name.
+            sub_string(Code, _, _, _, 'defp clause_ClauseStart(state) do'),
+            sub_string(Code, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
+            sub_string(Code, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(Code, _, _, _, 'clause_ClauseStart_impl(state)'),
+            sub_string(Code, _, _, _, 'cut_point: state.choice_points'),
+            sub_string(Code, _, _, _, 'Task.async_stream'),
+            sub_string(Code, _, _, _, 'try do'),
+            sub_string(Code, _, _, _, '{:fail, _state} -> []'),
+            sub_string(Code, _, _, _, 'WamRuntime.merge_into_aggregate(state, branch_results)')
+        ->  pass(Test)
+        ;   fail_test(Test, 'super-wrapper shape missing')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_references_all_branches :-
+    Test = 'Tier-2 wrapper: branch list references every clause _impl function',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            sub_string(Code, _, _, _, '&clause_ClauseStart_impl/1'),
+            sub_string(Code, _, _, _, '&clause_LB_impl/1'),
+            sub_string(Code, _, _, _, '&clause_LC_impl/1')
+        ->  pass(Test)
+        ;   fail_test(Test, 'branch list does not reference all three clause _impl functions')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_rejects_two_clauses :-
+    Test = 'Tier-2 wrapper: 2-clause predicate falls through (clause-count gate)',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure2/2)),
+        (   two_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure2/2, Segs, [], Code),
+            Code == ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'clause-count gate did not reject 2-clause predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure2/2))
+    ).
+
+test_par_wrap_segment_rejects_impure :-
+    Test = 'Tier-2 wrapper: impure predicate falls through (no certificate)',
+    three_segment_fixture(Segs),
+    par_wrap_segment(no_such_pred/2, Segs, [], Code),
+    (   Code == ""
+    ->  pass(Test)
+    ;   fail_test(Test, 'purity gate did not reject unknown predicate')
+    ).
+
+%% switch_arm_targets(+Instrs, -Targets)
+%  Extract the non-default arm targets from the first segment's
+%  switch_on_constant instruction. Used by the switch-arm coverage
+%  test to confirm every switch target corresponds to a segment in
+%  the Segments list — the invariant par_wrap_segment/4 relies on
+%  to fan out all clause alternatives when first-arg indexing is
+%  present.
+%
+%  Each arm is represented as a string "Key:Target" (not a compound
+%  term), so splitting on ":" is required to extract the target.
+switch_arm_targets(Instrs, Targets) :-
+    member(_PC-switch_on_constant(Arms), Instrs),
+    !,
+    findall(TargetStr,
+            (  member(Arm, Arms),
+               split_string(Arm, ":", "", [_KeyStr, TargetStr]),
+               TargetStr \= "default"
+            ),
+            Targets).
+switch_arm_targets(_, []).
+
+test_switch_arm_targets_are_segments :-
+    Test = 'Tier-2 wrapper: switch_on_constant arm targets are all named segments (prereq 1)',
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+    Segments = [_-FirstInstrs | _],
+    switch_arm_targets(FirstInstrs, ArmTargets),
+    % Turn each segment name into an atom for comparison.
+    findall(Name, member(Name-_, Segments), SegNames),
+    % Every non-default arm target must appear as a segment name.
+    (   ArmTargets \= [],
+        forall(member(T, ArmTargets), memberchk(T, SegNames))
+    ->  pass(Test)
+    ;   format(atom(Reason),
+               'arm targets ~w not all in segment names ~w',
+               [ArmTargets, SegNames]),
+        fail_test(Test, Reason)
+    ).
+
+test_par_wrap_segment_covers_switch_targets :-
+    Test = 'Tier-2 wrapper: emitted branch list references every switch_on_constant target',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            atom_string(WamCode, WamStr),
+            split_string(WamStr, "\n", "", Lines),
+            wam_elixir_lowered_emitter:split_into_segments(Lines, 1, Segments),
+            Segments = [_-FirstInstrs | _],
+            switch_arm_targets(FirstInstrs, ArmTargets),
+            par_wrap_segment(small_fact/2, Segments, [], Code),
+            Code \= "",
+            % For each switch arm target, confirm the emitted super-wrapper
+            % references &clause_<camelCase(target)>_impl/1.
+            forall(member(Target, ArmTargets),
+                   (  wam_elixir_lowered_emitter:segment_func_name(Target, BaseFunc),
+                      format(string(ImplRef), '&~w_impl/1', [BaseFunc]),
+                      sub_string(Code, _, _, _, ImplRef)
+                   ))
+        ->  pass(Test)
+        ;   fail_test(Test, 'emitted branch list does not cover every switch_on_constant target')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_par_wrap_segment_kill_switch :-
+    Test = 'Tier-2 wrapper: intra_query_parallel(false) option forces fall-through',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [intra_query_parallel(false)], Code),
+            Code == ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'kill-switch did not force fall-through')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+maybe_abolish_test_predicate(Name/Arity) :-
+    (   current_predicate(user:Name/Arity)
+    ->  abolish(user:Name/Arity)
+    ;   true
+    ).
+
+contains_string(Haystack, Needle) :-
+    once(sub_string(Haystack, _, _, _, Needle)).
+
+%% Wiring tests — exercise the full lower_predicate_to_elixir/4 entry
+%% point (not par_wrap_segment/4 in isolation). small_fact/2 has 4
+%% ground clauses, classified `compiled` under the default threshold,
+%% so it routes through render_compiled_module/8 where the wiring lives.
+
+test_wiring_emits_tier2_eligible_attr :-
+    Test = 'Wiring: gate-pass emits @tier2_eligible true module attribute',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, '@tier2_eligible true')
+        ->  pass(Test)
+        ;   fail_test(Test, '@tier2_eligible attribute not emitted on gate-pass')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_wiring_clause_main_is_super_wrapper_on_gate_pass :-
+    Test = 'Wiring: gate-pass — surface entry is the super-wrapper, not the first clause body',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:small_fact/2)),
+        (   phase_a_fixture_setup,
+            wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Structural shape: a `cond do` super-wrapper signature is
+            % present (uniquely identifies the Tier-2 wrapper), and at
+            % least one `defp clause_X_impl(state) do` body is emitted
+            % — confirming the rename happened. Name is not hardcoded
+            % because the entry func name derives from the first
+            % segment label, which varies per compiled predicate.
+            sub_string(S, _, _, _, 'cond do'),
+            sub_string(S, _, _, _, 'not WamRuntime.in_forkable_aggregate_frame?(state)'),
+            sub_string(S, _, _, _, 'Map.get(state, :parallel_depth, 0) > 0'),
+            sub_string(S, _, _, _, '_impl(state) do')
+        ->  pass(Test)
+        ;   fail_test(Test, 'super-wrapper signature or _impl body absent on gate-pass')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_wiring_gate_reject_preserves_naming :-
+    Test = 'Wiring: gate-reject leaves clause names unchanged (no _impl, no @tier2_eligible)',
+    % No order_independent declaration → purity gate rejects.
+    phase_a_fixture_setup,
+    wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+    lower_predicate_to_elixir(small_fact/2, WamCode,
+                              [module_name('TestMod')], Code),
+    atom_string(Code, S),
+    (   \+ sub_string(S, _, _, _, '_impl'),
+        \+ sub_string(S, _, _, _, '@tier2_eligible'),
+        \+ sub_string(S, _, _, _, 'in_forkable_aggregate_frame?')
+    ->  pass(Test)
+    ;   fail_test(Test, 'gate-reject path leaked _impl, @tier2_eligible, or super-wrapper signature into output')
     ).
 
 %% Test runner
@@ -792,6 +1289,7 @@ run_tests :-
     test_phase_c_index_policy_none,
     test_phase_c_variable_head_no_index,
     test_phase_d_emits_external_source_shape,
+    test_phase_d_external_source_preserves_shared_preprocess_metadata,
     test_phase_d_runtime_emits_fact_source,
     test_phase_d_external_beats_inline_override,
     test_phase_e_auto_matches_pre_phase_e,
@@ -809,7 +1307,28 @@ run_tests :-
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
+    test_findall_substrate_emits_push_aggregate_frame,
+    test_findall_substrate_emits_aggregate_collect,
+    test_findall_substrate_emits_finalise_aggregate,
+    test_findall_substrate_backtrack_routes_aggregate_frames,
+    test_findall_instr_parser_begin_aggregate,
+    test_findall_instr_parser_end_aggregate,
+    test_findall_instr_lowers_begin_aggregate_sum,
+    test_findall_instr_translates_collect_to_findall,
+    test_findall_instr_lowers_end_aggregate,
+    test_findall_instr_end_to_end_lowering,
+    test_findall_module_qualified_unwrap,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
+    test_par_wrap_segment_emits_super_wrapper,
+    test_par_wrap_segment_references_all_branches,
+    test_par_wrap_segment_rejects_two_clauses,
+    test_par_wrap_segment_rejects_impure,
+    test_switch_arm_targets_are_segments,
+    test_par_wrap_segment_covers_switch_targets,
+    test_par_wrap_segment_kill_switch,
+    test_wiring_emits_tier2_eligible_attr,
+    test_wiring_clause_main_is_super_wrapper_on_gate_pass,
+    test_wiring_gate_reject_preserves_naming,
     format('~n=== WAM-Elixir Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).

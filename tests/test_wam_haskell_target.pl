@@ -1,15 +1,18 @@
 :- encoding(utf8).
 % Codegen tests for WAM-to-Haskell transpilation.
 %
-% Unlike the WAM-Rust and WAM-WAT targets, Haskell does not have a
-% functional execution harness in this project — there is no GHC on
-% the CI/dev environment and building a full stack/cabal project per
-% test would be prohibitively slow. These tests therefore assert only
-% that the generated Haskell source contains the expected identifiers,
-% patterns, and dispatch cases. Runtime correctness of the new term
-% inspection builtins (functor/3, arg/3, =../2, copy_term/2) is
-% validated via the parallel WAM-Rust integration tests in
+% These tests assert that the generated Haskell source contains the
+% expected identifiers, patterns, and dispatch cases — they do not
+% drive a GHC build per case. A full cabal build per test would be
+% prohibitively slow, so most runtime correctness for term inspection
+% builtins (functor/3, arg/3, =../2, copy_term/2) is validated via
+% the parallel WAM-Rust integration tests in
 % tests/test_wam_rust_target.pl + the manual cargo-test suite.
+%
+% A focused GHC + cabal smoke for the put_structure_dyn instruction
+% lives at tests/core/test_wam_put_structure_dyn_ghc_smoke.pl. It
+% generates a real project and runs the actual compiled WamRuntime,
+% skipping gracefully when GHC/cabal are not available.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_haskell_target.pl
 
@@ -409,6 +412,37 @@ test_haskell_put_structure_dyn_wam_parse :-
         sub_string(Hs, _, _, _, "PutStructureDyn")
     ->  pass(Test)
     ;   fail_test(Test, 'put_structure_dyn WAM text not parsed')
+    ).
+
+%% SetVariable: builder slot = fresh unbound (used by user-source =../2 list-build path)
+%% ------------------------------------------------------------------------------------
+
+test_haskell_set_variable_in_types :-
+    Test = 'WAM-Haskell: SetVariable constructor takes RegId (not String)',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        atom_string(TypesCode, S),
+        sub_string(S, _, _, _, "SetVariable !RegId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SetVariable !RegId missing from Instruction type')
+    ).
+
+test_haskell_set_variable_step_handler :-
+    Test = 'WAM-Haskell: SetVariable step handler present',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "step !ctx s (SetVariable xn)"),
+        sub_string(S, _, _, _, "Unbound vid")
+    ->  pass(Test)
+    ;   fail_test(Test, 'SetVariable step handler missing or incorrect')
+    ).
+
+test_haskell_set_variable_wam_parse :-
+    Test = 'WAM-Haskell: set_variable WAM text emits Int reg id',
+    (   wam_haskell_target:wam_instr_to_haskell(["set_variable", "X6"], Hs),
+        % X6 -> 106 via reg_name_to_int
+        sub_string(Hs, _, _, _, "SetVariable 106")
+    ->  pass(Test)
+    ;   fail_test(Test, 'set_variable did not emit numeric register id')
     ).
 
 %% Phase 4.3: findall/bag/set merge strategies
@@ -1313,6 +1347,303 @@ test_b1_lmdb_raw_zero_copy_reads :-
     ;   fail_test(Test, 'Raw LMDB zero-copy read patterns not found')
     ).
 
+test_b1_lmdb_scan_support_present :-
+    Test = 'B1: raw LMDB FactSource emits scan support',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "scanRawIntPairs :: MDB_txn -> MDB_dbi' -> IO [(Int, Int)]"),
+        sub_string(S, _, _, _, "fsScan       = scanRawIntPairs txn dbi"),
+        \+ sub_string(S, _, _, _, "fsScan       = return []")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Raw LMDB FactSource scan support not found')
+    ).
+
+test_b1_lmdb_manifest_fact_source_present :-
+    Test = 'B1: manifest-backed LMDB FactSource emitted when use_lmdb(true)',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "readLmdbArtifactManifest :: FilePath -> IO (String, Bool)"),
+        sub_string(S, _, _, _, "openLmdbUtf8StoreFromManifest :: FilePath -> IO (MDB_env, MDB_txn, MDB_dbi', Bool)"),
+        sub_string(S, _, _, _, "lmdbFactSourceFromManifest :: InternTable -> FilePath -> IO FactSource"),
+        sub_string(S, _, _, _, "lookupUtf8Values txn dbi dupsort atomKey")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Manifest-backed LMDB FactSource helpers not found')
+    ).
+
+test_b1_lmdb_manifest_wiring_option_present :-
+    Test = 'B1: lmdb_fact_source_manifest option wires manifest-backed FactSource',
+    (   wam_haskell_target:generate_main_hs(
+            [],
+            [],
+            [],
+            [use_lmdb(true), lmdb_fact_source_manifest('/tmp/lmdb-artifact')],
+            Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "cpFactSource <- lmdbFactSourceFromManifest fullInternTable \"/tmp/lmdb-artifact\""),
+        \+ sub_string(S, _, _, _, "cpFactSource <- lmdbFactSource lmdbDir \"category_parent\"")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
+    ).
+
+test_b1_lmdb_dupsort_per_thread_cursor :-
+    Test = 'B1: dupsort layout uses per-thread cursor cache',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "DupsortCursorCache"),
+        sub_string(S, _, _, _, "newDupsortCursorCache"),
+        sub_string(S, _, _, _, "getOrOpenDupsortCursor"),
+        sub_string(S, _, _, _, "myThreadId")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Dupsort per-thread cursor cache not emitted')
+    ).
+
+test_b1_lmdb_default_layout_no_cursor_cache :-
+    Test = 'B1: default layout does not emit cursor cache',
+    (   compile_wam_runtime_to_haskell([use_lmdb(true)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "DupsortCursorCache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Default layout unexpectedly emitted dupsort cache code')
+    ).
+
+test_b1_lmdb_cache_memoize_emitted :-
+    Test = 'B1: lmdb_cache_mode(memoize) maps to L2 (deprecated synonym)',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(memoize)], [], Code),
+        atom_string(Code, S),
+        % Phase 2: memoize is a deprecated synonym for sharded; both
+        % emit L2 (lock-free IOArray cache).  The legacy IntMap-based
+        % memoize code path is gone.
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 EdgeLookup not emitted for memoize mode')
+    ).
+
+test_b1_lmdb_cache_memoize_not_emitted_without_dupsort :-
+    Test = 'B1: lmdb_cache_mode(memoize) ignored without dupsort layout',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_cache_mode(memoize)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'L2 EdgeLookup unexpectedly emitted without dupsort')
+    ).
+
+test_b1_lmdb_cache_sharded_emitted :-
+    Test = 'B1: lmdb_cache_mode(sharded) emits L2 EdgeLookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
+        sub_string(S, _, _, _, "defaultL2Capacity"),
+        sub_string(S, _, _, _, "newL2Cache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 EdgeLookup not emitted for sharded mode')
+    ).
+
+test_b1_lmdb_cache_two_level_emitted :-
+    Test = 'B1: lmdb_cache_mode(two_level) emits both L1 and L2',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(two_level)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbTwoLevelEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'two_level EdgeLookup not emitted')
+    ).
+
+test_b1_lmdb_cache_default_no_l2 :-
+    Test = 'B1: default (no cache_mode) does not emit L2',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 unexpectedly emitted in default mode')
+    ).
+
+test_b1_lmdb_cache_l2_capacity_override :-
+    Test = 'B1: lmdb_cache_l2_capacity_bytes overrides auto-detect',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded),
+             lmdb_cache_l2_capacity_bytes(67108864)], [], Code),  % 64 MB
+        atom_string(Code, S),
+        % override branch emits a constant-return defaultL2Capacity
+        sub_string(S, _, _, _, "user-specified"),
+        sub_string(S, _, _, _, "67108864 `div` 32"),
+        % the auto-detect branch should NOT be emitted
+        \+ sub_string(S, _, _, _, "l2MemoryBudgetBytes")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 capacity override not emitted as expected')
+    ).
+
+test_b1_lmdb_cache_l2_capacity_default_when_unset :-
+    Test = 'B1: L2 capacity falls back to auto-detect when not specified',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(sharded)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "l2MemoryBudgetBytes"),
+        \+ sub_string(S, _, _, _, "user-specified")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Auto-detect path not emitted by default')
+    ).
+
+test_b1_lmdb_cache_l2_capacity_ignored_without_l2 :-
+    Test = 'B1: lmdb_cache_l2_capacity_bytes ignored when L2 not active',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(per_hec),
+             lmdb_cache_l2_capacity_bytes(67108864)], [], Code),
+        atom_string(Code, S),
+        % L2 is not active (per_hec only) so override should not fire
+        \+ sub_string(S, _, _, _, "user-specified"),
+        \+ sub_string(S, _, _, _, "67108864")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L2 override unexpectedly emitted without L2')
+    ).
+
+test_b1_lmdb_cache_auto_no_hints_falls_back_to_none :-
+    Test = 'B1: lmdb_cache_mode(auto) with no hints emits no cache',
+    (   statistics:clear_cache_hints,
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L1Cache"),
+        \+ sub_string(S, _, _, _, "L2Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL2EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'auto with no hints unexpectedly emitted cache code')
+    ).
+
+test_b1_lmdb_cache_auto_intra_thread_picks_per_hec :-
+    Test = 'B1: lmdb_cache_mode(auto) + intra_thread hint → per_hec (L1)',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: intra_thread}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        \+ sub_string(S, _, _, _, "L2Cache")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + intra_thread did not emit L1-only')
+    ),
+    statistics:clear_cache_hints.
+
+test_b1_lmdb_cache_auto_cross_thread_picks_sharded :-
+    Test = 'B1: lmdb_cache_mode(auto) + cross_thread hint → sharded (L2)',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: cross_thread}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L2Cache"),
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + cross_thread did not emit L2-only')
+    ),
+    statistics:clear_cache_hints.
+
+test_b1_lmdb_cache_auto_mixed_picks_two_level :-
+    Test = 'B1: lmdb_cache_mode(auto) + mixed hint → two_level',
+    (   statistics:clear_cache_hints,
+        statistics:declare_cache_hints(_{reuse_axis: mixed}),
+        compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(auto)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "lmdbTwoLevelEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + mixed did not emit two_level')
+    ),
+    statistics:clear_cache_hints.
+
+test_b1_lmdb_dupsort_alone_no_memoize :-
+    Test = 'B1: dupsort without lmdb_cache_mode does not emit memoising lookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_layout(dupsort)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "LmdbResultCache"),
+        \+ sub_string(S, _, _, _, "lmdbCachedEdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Memoising EdgeLookup unexpectedly emitted without cache_mode')
+    ).
+
+test_b1_lmdb_cache_l1_emitted :-
+    Test = 'B1: lmdb_cache_mode(per_hec) emits L1 EdgeLookup',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "L1Cache"),
+        sub_string(S, _, _, _, "L1Registry"),
+        sub_string(S, _, _, _, "lmdbL1EdgeLookup"),
+        sub_string(S, _, _, _, "defaultL1Capacity")
+    ->  pass(Test)
+    ;   fail_test(Test, 'L1 EdgeLookup not emitted')
+    ).
+
+test_b1_lmdb_cache_l1_not_emitted_without_dupsort :-
+    Test = 'B1: lmdb_cache_mode(per_hec) ignored without dupsort layout',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true), lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        \+ sub_string(S, _, _, _, "L1Cache"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'L1 EdgeLookup unexpectedly emitted without dupsort')
+    ).
+
+test_b1_lmdb_cache_modes_mutually_exclusive :-
+    Test = 'B1: cache modes are mutually exclusive (first option wins)',
+    (   compile_wam_runtime_to_haskell(
+            [use_lmdb(true),
+             lmdb_layout(dupsort),
+             lmdb_cache_mode(memoize),
+             lmdb_cache_mode(per_hec)], [], Code),
+        atom_string(Code, S),
+        % memoize is the first option, and it now maps to L2 (sharded);
+        % L1 should not be emitted alongside.  The legacy
+        % lmdbCachedEdgeLookup is gone — Phase 2 unified memoize and
+        % sharded under the IOArray L2 implementation.
+        sub_string(S, _, _, _, "lmdbL2EdgeLookup"),
+        \+ sub_string(S, _, _, _, "lmdbL1EdgeLookup")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Mode precedence violated when both flags set')
+    ).
+
 run_tests :-
     format('~n========================================~n'),
     format('WAM-Haskell target: Phase 5+6+7+8+F1-F4+E2E+B1 codegen tests~n'),
@@ -1347,6 +1678,10 @@ run_tests :-
     test_haskell_put_structure_dyn_in_types,
     test_haskell_put_structure_dyn_step_handler,
     test_haskell_put_structure_dyn_wam_parse,
+    %% SetVariable: list-build path used by user-source =../2 compose mode
+    test_haskell_set_variable_in_types,
+    test_haskell_set_variable_step_handler,
+    test_haskell_set_variable_wam_parse,
     %% Phase 4.3: findall/bag/set merge strategies
     test_haskell_findall_bag_set_forkable,
     test_haskell_infer_collect_maps_to_findall,
@@ -1417,6 +1752,27 @@ run_tests :-
     test_b1_lmdb_cabal_dependency,
     test_b1_no_lmdb_cabal_default,
     test_b1_lmdb_raw_zero_copy_reads,
+    test_b1_lmdb_scan_support_present,
+    test_b1_lmdb_manifest_fact_source_present,
+    test_b1_lmdb_manifest_wiring_option_present,
+    test_b1_lmdb_dupsort_per_thread_cursor,
+    test_b1_lmdb_default_layout_no_cursor_cache,
+    test_b1_lmdb_cache_memoize_emitted,
+    test_b1_lmdb_cache_memoize_not_emitted_without_dupsort,
+    test_b1_lmdb_dupsort_alone_no_memoize,
+    test_b1_lmdb_cache_l1_emitted,
+    test_b1_lmdb_cache_l1_not_emitted_without_dupsort,
+    test_b1_lmdb_cache_modes_mutually_exclusive,
+    test_b1_lmdb_cache_sharded_emitted,
+    test_b1_lmdb_cache_two_level_emitted,
+    test_b1_lmdb_cache_default_no_l2,
+    test_b1_lmdb_cache_l2_capacity_override,
+    test_b1_lmdb_cache_l2_capacity_default_when_unset,
+    test_b1_lmdb_cache_l2_capacity_ignored_without_l2,
+    test_b1_lmdb_cache_auto_no_hints_falls_back_to_none,
+    test_b1_lmdb_cache_auto_intra_thread_picks_per_hec,
+    test_b1_lmdb_cache_auto_cross_thread_picks_sharded,
+    test_b1_lmdb_cache_auto_mixed_picks_two_level,
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,

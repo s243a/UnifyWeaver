@@ -100,6 +100,44 @@ The proposed boundary has three layers:
    distance metadata. Approximate artifacts must not masquerade as exact
    relation providers.
 
+   For exact artifacts, the target-neutral manifest seam should also preserve
+   the declaration intent that selected the physical layout. The current
+   Clojure benchmark path is the first proving ground for this narrower schema:
+
+   ```json
+   {
+     "predicate": "article_category/2",
+     "resolved_mode": "artifact",
+     "file_format": "grouped_tsv_arg1",
+     "access": ["scan", "arg1_grouped_lookup"],
+     "declaration": {
+       "source": "shared_preprocess",
+       "mode": "artifact",
+       "kind": "exact_hash_index",
+       "format": "exact_hash_index",
+       "access_contracts": [
+         "exact_key_lookup",
+         "arg_position_lookup(1)",
+         "grouped_values_lookup([2])",
+         "scan"
+       ],
+       "options": ["key([1])", "values([2])"]
+     }
+   }
+   ```
+
+   Not every runtime needs to emit the exact same file names or storage
+   encodings. The important cross-target seam is:
+
+   - resolved storage mode
+   - physical format
+   - supported runtime access contracts
+   - originating preprocess declaration kind/options
+   - source and schema invalidation metadata
+
+   That is enough for a planner or provider to explain both what artifact was
+   chosen and why it was considered semantically valid.
+
 3. Runtime access layer
 
    The runtime opens artifacts through a narrow provider interface and asks for
@@ -325,6 +363,44 @@ implementation:
 The exact syntax is intentionally open. The important fields are predicate,
 access pattern, exactness, invalidation inputs, and fallback.
 
+## Shared Manifest Schema Notes
+
+The current C# prototype and the current Clojure benchmark generator are using
+different concrete manifest encodings, but they are already converging on the
+same logical fields. A small shared schema should standardize the metadata
+shape before attempting a common binary format:
+
+- `predicate`
+- `resolved_mode`
+- `artifact_kind` or declaration `kind`
+- `format_version`
+- `physical_format`
+- `exactness`
+- `source_hash`
+- `schema_hash`
+- `target_capabilities`
+- `access`
+- `declaration`
+  - `source`
+  - `mode`
+  - `kind`
+  - `format`
+  - `access_contracts`
+  - `options`
+- `files`
+
+This should stay intentionally target-neutral:
+
+- C# may keep JSON and binary sidecars.
+- Clojure may keep EDN manifests with TSV or EDN sidecars.
+- Haskell may eventually pair this with LMDB, mmap, or FactSource-backed
+  providers.
+- Elixir `external_source` can consume the same declaration metadata even if
+  the first runtime adaptor is TSV, ETS, or SQLite.
+
+The shared declaration layer should therefore stabilize before the physical
+artifact formats do.
+
 ## Build And Invalidation Lifecycle
 
 Artifact build should be a separate lifecycle from query execution:
@@ -417,6 +493,73 @@ Prototype status:
   programs use that helper, and pipeline programs can now take
   `UNIFYWEAVER_RELATION_SOURCE_MODE` plus `UNIFYWEAVER_RELATION_ARTIFACT_DIR`
   without re-implementing artifact registration in each generated template.
+- Termux viability is now less speculative for LMDB than before. A local probe
+  using the native `liblmdb` Termux package plus a Rust client confirmed a real
+  open/write/read round-trip in this environment. The current prototype lives
+  at `examples/lmdb_relation_artifact/` and builds a small exact two-column
+  LMDB artifact with a sidecar `manifest.json`. That does not settle the final
+  cross-target artifact format, but it does confirm that LMDB-backed exact
+  artifact experiments are feasible here without deferring all work to desktop.
+
+### N-ary delimited artifact direction
+
+The current C# artifact implementation is deliberately binary. Wider
+delimited relations can now use the same runtime-configured source registration
+path, but `artifact` and `artifact-prebuilt` modes fall back to preloaded rows
+for arities other than 2. That is the correct interim behavior: it preserves
+answers and source-mode wiring without pretending the `.uwbr` sidecars support
+general row shapes.
+
+A general delimited artifact should be a new format revision, not an implicit
+reinterpretation of the binary files. The row file should keep the existing
+length-prefixed string-cell encoding, but record `arity > 0` as first-class
+metadata and avoid names that imply binary-only relations. A possible naming
+scheme is:
+
+- `.uwrel` for row data
+- `.uwrel.json` for the manifest
+- `.colN.uwreli` for single-column index entries
+- `.colsA_B.uwreli` for composite-key index entries
+- `.colsA_B.uwrelb` for sorted covering bucket sidecars
+
+The manifest needs to describe index coverage explicitly:
+
+```json
+{
+  "format": "unifyweaver.delimited-relation",
+  "version": 1,
+  "predicate": "sale_item/3",
+  "arity": 3,
+  "row_count": 100000,
+  "source_hash": "sha256:...",
+  "row_encoding": "length_prefixed_utf8_cells",
+  "indexes": [
+    { "columns": [0], "kind": "offset_directory" },
+    { "columns": [0, 1], "kind": "covering_bucket" }
+  ]
+}
+```
+
+The planner should request access by key shape rather than by artifact file:
+
+- full scan: any exact artifact can replay rows
+- single-column lookup: requires an index for `[column]`
+- composite lookup: requires an index for the exact bound column list
+- join bucket merge: requires sorted covering buckets for the join key columns
+- projection-heavy plans: prefer covering buckets only when they include all
+  columns needed downstream, otherwise account for row-file seeks
+
+The first implementation should target one measured case: a TSV relation with
+arity 3 and a composite lookup or join on columns `[0, 1]`. That exercises the
+real reason to go beyond binary artifacts without committing to every possible
+index combination. Builder defaults should remain conservative: emit the row
+file plus indexes only for columns the generated query or benchmark actually
+uses. A future declaration syntax can request additional indexes up front.
+
+Fallback policy stays the same as the current configured provider policy:
+binary artifacts use the proven binary path, N-ary artifacts are used only when
+the manifest supports the requested access, and unsupported or stale artifacts
+fall back to preload unless the caller explicitly asks to fail.
 
 ## Success Criteria
 

@@ -157,6 +157,12 @@ Requirements on the emitter:
 - `SourceSpec` in `fact_layout(P/A, external_source(SourceSpec))` is
   an opaque term passed through to the runtime registration.
   Minimum: `tsv(Path, ArityHeader)`.
+- When a shared `preprocess/2` declaration exists for the predicate,
+  the emitted module should preserve normalized preprocess metadata
+  alongside that raw source spec so later runtime/provider code can
+  inspect the chosen declaration intent without reparsing Prolog.
+  The first Elixir seam for this is module metadata, not a live runtime
+  provider contract.
 - `run/1` / `run/0` bodies call `WamRuntime.FactSource.open(SourceSpec, state, P/A)`
   and then use the same `stream_facts` / `backtrack` contract as
   `inline_data`.
@@ -168,6 +174,16 @@ Requirements on the runtime:
   absent, the runtime falls back to linear scan.
 - A registration helper so drivers can bind a `SourceSpec` atom to a
   concrete implementation before calling `Mod.run/1`.
+- The runtime does not need to consume preprocess metadata yet, but the
+  generated module should surface it in a stable shape so future TSV,
+  ETS, SQLite, mmap, or manifest-backed providers can use the same
+  declaration seam.
+- Near-term backend choice: Elixir should keep using the existing
+  `FactSource` adaptors while the shared artifact/provider boundary
+  matures. A local Rust LMDB prototype now confirms that LMDB is viable
+  in Termux for exact relation artifacts, but that should land first as
+  a shared artifact/provider path rather than a direct Elixir binding
+  requirement.
 
 ## Option plumbing
 

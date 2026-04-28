@@ -12,8 +12,18 @@
     get_stats/2,            % get_stats(+Pred, -Stats)
     clear_stats/1,          % clear_stats(+Pred)
     load_stats/1,           % load_stats(+Path)
-    
-    estimate_cost/4         % estimate_cost(+Goal, +BoundVars, +Pred, -Cost)
+
+    estimate_cost/4,        % estimate_cost(+Goal, +BoundVars, +Pred, -Cost)
+
+    % --- Phase 3 scaffolding: cache mode auto-select ---
+    % Optional hints for choosing an LMDB cache mode in the WAM
+    % Haskell target.  The hints describe a workload's reuse
+    % pattern; the selector maps that to a cache mode.  See
+    % docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md Phase 3.
+    declare_cache_hints/1,  % declare_cache_hints(+Hints)
+    get_cache_hints/1,      % get_cache_hints(-Hints)
+    clear_cache_hints/0,    % clear_cache_hints
+    select_cache_mode/2     % select_cache_mode(+DefaultMode, -Mode)
 ]).
 
 :- use_module(library(lists)).
@@ -160,3 +170,84 @@ count_bound_fields(Fields, BoundVars, Count) :-
 
 var_member(V, [H|_]) :- V == H, !.
 var_member(V, [_|T]) :- var_member(V, T).
+
+% ============================================================================
+% PHASE 3 SCAFFOLDING: CACHE MODE AUTO-SELECT
+% ============================================================================
+%
+% Workload-level hints that describe the *shape* of cache reuse,
+% not its quantity.  Used by the WAM Haskell target to pick an
+% lmdb_cache_mode automatically when the user passes
+% lmdb_cache_mode(auto).  This is infrastructure: the hints must
+% currently be supplied by the user (or a future analyzer tool);
+% the codegen does not compute them itself.
+%
+% Hints schema (all fields optional except reuse_axis):
+%
+%   cache_hints{
+%       reuse_axis: none | intra_thread | cross_thread | mixed,
+%       overlap_factor: Float in [0.0, 1.0]   % approx fraction of
+%                                             % accesses that are
+%                                             % cache hits when warm
+%       expected_unique_keys: Int             % helps L2 sizing
+%   }
+%
+% reuse_axis → mode mapping (per the workload-shape table in the
+% cache-tiers proposal, validated by enwiki-10k measurement):
+%
+%   none          → none      (cache infrastructure costs more
+%                              than it saves)
+%   intra_thread  → per_hec   (each spark re-touches its own
+%                              keys; per-HEC L1 catches them
+%                              with zero synchronisation)
+%   cross_thread  → sharded   (threads converge on shared keys;
+%                              the lock-free L2 catches every
+%                              cross-thread hit, and L1 would
+%                              just add overhead)
+%   mixed         → two_level (both axes present; L1 absorbs
+%                              hot intra-thread reuse, L2 picks
+%                              up the cross-thread hits)
+
+% stored as a single workload-level entry; cache mode is a
+% process-wide decision, not per-predicate.
+:- dynamic stored_cache_hints/1.
+
+%% declare_cache_hints(+Hints)
+%  Set workload-level cache hints.  Replaces any previous hints.
+%  Hints is the cache_hints dict described above.
+declare_cache_hints(Hints) :-
+    retractall(stored_cache_hints(_)),
+    assertz(stored_cache_hints(Hints)).
+
+%% get_cache_hints(-Hints)
+%  Retrieve the current workload-level cache hints.  Fails if none
+%  have been declared.
+get_cache_hints(Hints) :-
+    stored_cache_hints(Hints).
+
+%% clear_cache_hints
+%  Remove any workload-level cache hints.
+clear_cache_hints :-
+    retractall(stored_cache_hints(_)).
+
+%% select_cache_mode(+DefaultMode, -Mode)
+%  Pick an lmdb_cache_mode based on the current cache hints.  If
+%  no hints have been declared, returns DefaultMode.  Otherwise
+%  maps hints.reuse_axis to a mode per the table above.
+%
+%  DefaultMode is one of: none, per_hec, sharded, two_level.
+%  The fallback exists so callers can ship a sensible default
+%  when no hints are available (typically `none` or `sharded`
+%  depending on the broader workload class).
+select_cache_mode(DefaultMode, Mode) :-
+    (   stored_cache_hints(Hints),
+        get_dict(reuse_axis, Hints, Axis),
+        reuse_axis_to_mode(Axis, Mode)
+    ->  true
+    ;   Mode = DefaultMode
+    ).
+
+reuse_axis_to_mode(none,         none).
+reuse_axis_to_mode(intra_thread, per_hec).
+reuse_axis_to_mode(cross_thread, sharded).
+reuse_axis_to_mode(mixed,        two_level).

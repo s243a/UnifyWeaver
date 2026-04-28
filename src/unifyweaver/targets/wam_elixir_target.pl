@@ -366,49 +366,62 @@ compile_backtrack_to_elixir(Code) :-
     case state.choice_points do
       [] -> :fail
       [cp | rest] ->
-        # cp.trail_len is the mark — unwind all entries pushed after that.
-        state = state
-        |> unwind_trail(cp.trail_len)
-        |> Map.put(:pc, cp.pc)
-        |> Map.put(:regs, cp.regs)
-        |> Map.put(:heap, cp.heap)
-        |> Map.put(:heap_len, cp.heap_len)
-        |> Map.put(:cp, cp.cp)
-        |> Map.put(:stack, cp.stack)
-        |> Map.put(:trail, cp.trail)
-        |> Map.put(:trail_len, cp.trail_len)
-        |> Map.put(:choice_points, rest)
-
-        cond do
-          is_function(cp.pc) ->
-            # The retried clause may throw {:fail, thrown_state} (its own
-            # guards failed, with CPs accumulated during its body) or
-            # {:return, result} (it succeeded). Translate back into the
-            # {:ok, state} | :fail contract so the caller does not need to
-            # know about clause-local control flow.
-            try do
-              cp.pc.(state)
-            catch
-              {:fail, thrown_state} -> backtrack(thrown_state)
-              {:return, result} -> result
-            end
-
-          match?({:fact_stream, _, _}, cp.pc) ->
-            # Phase-B fact-stream CP: resume iteration over the remaining
-            # tail of the fact list. The snapshot already restored regs /
-            # trail / heap to their pre-unify state, so resume_fact_stream
-            # just needs to attempt the next fact.
-            {:fact_stream, remaining, arity} = cp.pc
-            try do
-              resume_fact_stream(state, remaining, arity)
-            catch
-              {:fail, thrown_state} -> backtrack(thrown_state)
-              {:return, result} -> result
-            end
-
-          true ->
-            {:ok, state}
+        # Aggregate frames are popped via finalise_aggregate/4 instead
+        # of the ordinary unwind/restore path: they have no failure
+        # target (cp.pc is nil) and need to bind the accumulator into
+        # :agg_result_reg before resuming via :agg_return_cp.
+        case Map.get(cp, :agg_type) do
+          nil ->
+            backtrack_ordinary(state, cp, rest)
+          agg_type ->
+            finalise_aggregate(state, cp, rest, agg_type)
         end
+    end
+  end
+
+  defp backtrack_ordinary(state, cp, rest) do
+    # cp.trail_len is the mark — unwind all entries pushed after that.
+    state = state
+    |> unwind_trail(cp.trail_len)
+    |> Map.put(:pc, cp.pc)
+    |> Map.put(:regs, cp.regs)
+    |> Map.put(:heap, cp.heap)
+    |> Map.put(:heap_len, cp.heap_len)
+    |> Map.put(:cp, cp.cp)
+    |> Map.put(:stack, cp.stack)
+    |> Map.put(:trail, cp.trail)
+    |> Map.put(:trail_len, cp.trail_len)
+    |> Map.put(:choice_points, rest)
+
+    cond do
+      is_function(cp.pc) ->
+        # The retried clause may throw {:fail, thrown_state} (its own
+        # guards failed, with CPs accumulated during its body) or
+        # {:return, result} (it succeeded). Translate back into the
+        # {:ok, state} | :fail contract so the caller does not need to
+        # know about clause-local control flow.
+        try do
+          cp.pc.(state)
+        catch
+          {:fail, thrown_state} -> backtrack(thrown_state)
+          {:return, result} -> result
+        end
+
+      match?({:fact_stream, _, _}, cp.pc) ->
+        # Phase-B fact-stream CP: resume iteration over the remaining
+        # tail of the fact list. The snapshot already restored regs /
+        # trail / heap to their pre-unify state, so resume_fact_stream
+        # just needs to attempt the next fact.
+        {:fact_stream, remaining, arity} = cp.pc
+        try do
+          resume_fact_stream(state, remaining, arity)
+        catch
+          {:fail, thrown_state} -> backtrack(thrown_state)
+          {:return, result} -> result
+        end
+
+      true ->
+        {:ok, state}
     end
   end', []).
 
@@ -831,8 +844,27 @@ compile_utility_helpers_to_elixir(Code) :-
         # predicate entry (saved by `allocate` into state.cut_point).
         # Preserves caller CPs while clearing CPs pushed inside this
         # clause body.
+        #
+        # Aggregate frames between the current top and cut_point are
+        # PRESERVED as additional cut barriers. Without this, cut
+        # inside a findall body (or in a sub-predicate called from
+        # findall after deallocate restores cut_point to the outer
+        # level) removes the agg frame, causing end_aggregates throw
+        # fail to propagate without finalisation. Closes proposal
+        # section 6 risk 3 — cut x findall interaction.
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
-        %{state | choice_points: state.cut_point, pc: new_pc}
+        cut_target_len = length(state.cut_point)
+        current_len = length(state.choice_points)
+        new_cps =
+          if current_len <= cut_target_len do
+            state.choice_points
+          else
+            above_cut_count = current_len - cut_target_len
+            above_cut = Enum.take(state.choice_points, above_cut_count)
+            preserved_aggs = Enum.filter(above_cut, &Map.has_key?(&1, :agg_type))
+            preserved_aggs ++ state.cut_point
+          end
+        %{state | choice_points: new_cps, pc: new_pc}
       _ -> :fail
     end
   end
@@ -934,9 +966,19 @@ compile_aggregate_helpers_to_elixir(Code) :-
   for bagof/setof (witness-variable dependency) and for an empty or
   non-aggregate-bearing CP stack.
 
-  Consumed by the Tier-2 wrapper (`par_wrap_segment/3`, PR2) as a
-  correctness gate: outside a forkable aggregate, parallel fan-out
-  would strand solutions that the sequential `next_solution/1`
+  Note on the alphabet: the WAM compiler\'s compile_aggregate_all/5
+  emits `:collect` for findall/3 (via the collect-Template wrapper
+  in compile_findall/5), but the Elixir target translates
+  `collect → findall` at the begin_aggregate emission site
+  (agg_type_atom/2 in wam_elixir_lowered_emitter.pl, per
+  WAM_ELIXIR_TIER2_FINDALL.md §6.4). Consequently the only
+  forkable atoms this function ever sees in emitted modules are
+  `:findall` and `:aggregate_all` — `:collect` never reaches the
+  runtime substrate.
+
+  Consumed by the Tier-2 wrapper (`par_wrap_segment/4`, PR #1608)
+  as a correctness gate: outside a forkable aggregate, parallel
+  fan-out would strand solutions that the sequential
   enumeration path would otherwise surface.
   """
   def in_forkable_aggregate_frame?(state) do
@@ -971,6 +1013,256 @@ compile_aggregate_helpers_to_elixir(Code) :-
         end
       end)
     %{state | choice_points: updated_cps}
+  end
+
+  @doc """
+  Update the topmost aggregate frames :cp field to a new continuation.
+  Called by end_aggregate-terminated sub-segments to point the agg
+  frame at the post-end_aggregate sub-segment, so finalise tail-calls
+  the right code after enumeration completes.
+
+  Without this, agg_cp.cp captures whatever state.cp was at
+  begin_aggregate push time — usually terminal_cp for top-level
+  predicates, or the outer callers continuation for nested findall.
+  Neither is correct when the user clauses body has multiple findalls
+  in sequence: finalise of the first findall would jump past the
+  remaining body code (to terminal_cp or the outer caller), making
+  the second findalls setup dead code.
+
+  By updating agg_cp.cp at end_aggregate time, finalise jumps to the
+  immediate post-end_aggregate sub-segment, which can run subsequent
+  body code (including a second findall, deallocate, proceed, etc.).
+  """
+  def update_topmost_agg_cp(state, new_cp) do
+    {updated_cps, _updated} =
+      Enum.map_reduce(state.choice_points, false, fn cp, updated ->
+        cond do
+          updated -> {cp, updated}
+          Map.has_key?(cp, :agg_type) -> {Map.put(cp, :cp, new_cp), true}
+          true -> {cp, updated}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end
+
+  @doc """
+  Push an aggregate-frame choice point. Captures the same snapshot
+  fields as a try_me_else CP (regs, heap, heap_len, trail, trail_len,
+  stack, cp) so finalise_aggregate/4 can restore the pre-aggregate
+  state, plus four aggregate-specific fields:
+
+    - :agg_type        — :collect|:findall|:aggregate_all|:sum|:count|
+                         :max|:min|:bag|:set (the alphabet emitted by
+                         compile_aggregate_all/5 in wam_target.pl).
+    - :agg_value_reg   — register holding the per-solution Template
+                         value at end_aggregate time.
+    - :agg_result_reg  — register that finalise binds the aggregated
+                         value to.
+    - :agg_accum       — accumulator, prepended to (O(1)) by
+                         aggregate_collect/2; reversed at finalise.
+                         merge_into_aggregate/2 also writes here for
+                         the Tier-2 parallel-fan-out path.
+
+  state.cp is captured as :cp; finalise restores it then tail-calls
+  via the restored state.cp (no separate :agg_return_cp field — the
+  proposal §4.1 listed one, but they would always equal :cp at push
+  time, so the duplication was dropped during implementation).
+  The .pc field is set to nil because aggregate frames have no
+  failure target — backtrack/1 routes them to finalise instead of
+  resuming a clause.
+  """
+  def push_aggregate_frame(state, agg_type, value_reg, result_reg) do
+    cp = %{
+      pc: nil,
+      regs: state.regs,
+      heap: state.heap,
+      heap_len: state.heap_len,
+      cp: state.cp,
+      trail: state.trail,
+      trail_len: state.trail_len,
+      stack: state.stack,
+      agg_type: agg_type,
+      agg_value_reg: value_reg,
+      agg_result_reg: result_reg,
+      agg_accum: []
+    }
+    %{state | choice_points: [cp | state.choice_points]}
+  end
+
+  @doc """
+  Per-solution collector for sequential fail-driven enumeration.
+  Reads value_reg, derefs it, prepends to the nearest aggregate
+  frame\'s :agg_accum (O(1)). Returns updated state.
+
+  Atomic values (strings/numbers/atoms) survive trail unwind without
+  copy because theyre value types in BEAM. Compound values that
+  reference heap cells (e.g. structures from put_structure +
+  set_value, emitted by compile_aggregate_alls compound-Template
+  construction code) are deep-copied via deep_copy_value/2 below —
+  the captured value becomes a self-contained {:struct, "name/arity",
+  [args]} tuple that survives backtracks heap-rewind. Without
+  deep-copy, all elements of accum would point to the same heap
+  region (because end_aggregates throw fail rewinds the heap; the
+  next iterations put_structure overwrites the same addresses).
+
+  If no aggregate frame is present, returns state unchanged (caller
+  misuse — emitter should always pair end_aggregate with begin).
+
+  Walk cost: O(N) in choice-point depth per call (for the agg-frame
+  search) plus O(M) in heap-structure size (for deep_copy). Both
+  acceptable for Phase 3; if Phase 4 profiling shows either
+  dominates, separate optimisations can address them.
+  """
+  def aggregate_collect(state, value_reg) do
+    raw = Map.get(state.regs, value_reg)
+    val = deep_copy_value(state, raw)
+    {updated_cps, _collected} =
+      Enum.map_reduce(state.choice_points, false, fn cp, collected ->
+        cond do
+          collected -> {cp, collected}
+          Map.has_key?(cp, :agg_type) ->
+            prior = Map.get(cp, :agg_accum, [])
+            {Map.put(cp, :agg_accum, [val | prior]), true}
+          true -> {cp, collected}
+        end
+      end)
+    %{state | choice_points: updated_cps}
+  end
+
+  @doc """
+  Recursively walk a captured value, resolving heap references into
+  self-contained Elixir tuples that survive backtracks heap-rewind.
+
+  Cases:
+    {:unbound, _}  → deref through state.regs; recurse on the bound
+                     value if any, else return as-is (degenerate).
+    {:ref, addr}   → read heap[addr]. If {:str, "name/arity"}, parse
+                     arity and recursively deep-copy the args at
+                     heap[addr+1..addr+arity]. Yields {:struct,
+                     "name/arity", [arg_copies...]}.
+    Anything else  → atomic value (string/number/atom/list of
+                     atomics) — return as-is.
+
+  Lists built via put_list / set_value chains arent yet handled —
+  they would need heap-walking through ./2 cons cells. For Phase 3c
+  the compound-Template scenarios use only structures and atomic
+  args.
+  """
+  def deep_copy_value(state, val) do
+    case val do
+      {:unbound, _} = unb ->
+        derefed = deref_var(state, unb)
+        if derefed == unb, do: unb, else: deep_copy_value(state, derefed)
+      {:ref, addr} ->
+        case Map.get(state.heap, addr) do
+          {:str, functor} ->
+            arity = parse_functor_arity(functor)
+            args =
+              if arity > 0 do
+                for i <- 1..arity, do: deep_copy_value(state, Map.get(state.heap, addr + i))
+              else
+                []
+              end
+            {:struct, functor, args}
+          _ ->
+            val
+        end
+      _ ->
+        val
+    end
+  end
+
+  @doc """
+  Reduce :agg_accum per :agg_type, bind the result to :agg_result_reg,
+  restore the pre-aggregate snapshot, and tail-call the saved
+  continuation (the restored state.cp). Called by backtrack/1 when
+  the popped CP carries :agg_type.
+
+  :collect / :findall / :aggregate_all → reversed list (preserves
+  enumeration order for sequential; non-deterministic for the
+  parallel Tier-2 path, which is acceptable because both forkable
+  aggregators are order-independent by definition).
+
+  :sum / :count / :max / :min mirror compile_aggregate_all/5\'s
+  alphabet. :bag is collect-with-duplicates; :set deduplicates.
+
+  Empty-accumulator semantics:
+    :collect/:findall/:aggregate_all/:bag/:set → []
+    :sum   → 0     (Enum.sum identity)
+    :count → 0     (length identity)
+    :max/:min → throws {:fail, state} — no identity exists, and
+                returning nil would silently propagate as a non-WAM
+                value into downstream get_constant unification. Fail
+                is the canonical Prolog semantics for max/min over
+                an empty bag.
+  """
+  def finalise_aggregate(state, agg_cp, rest_cps, agg_type) do
+    accum_rev = Enum.reverse(agg_cp.agg_accum)
+    result =
+      case agg_type do
+        t when t in [:collect, :findall, :aggregate_all, :bag] -> accum_rev
+        :set -> Enum.uniq(accum_rev)
+        :sum -> Enum.sum(accum_rev)
+        :count -> length(accum_rev)
+        :max ->
+          if accum_rev == [], do: throw({:fail, state}), else: Enum.max(accum_rev)
+        :min ->
+          if accum_rev == [], do: throw({:fail, state}), else: Enum.min(accum_rev)
+      end
+    # Bind the result through the trail when result_reg holds an
+    # unbound ref. Direct slot overwrite (the pre-#1659 behaviour)
+    # writes to agg_cp.regs[result_reg_idx] but leaves the underlying
+    # ref unbound — fine for the simple case where the result_reg
+    # slot IS the binding target, but breaks for nested findall: the
+    # inner findalls result_reg shares its unbound ref with the
+    # outer callers reg via the calls get_variable, and the inner
+    # predicates deallocate merge restores the outers Y-reg
+    # snapshot — overwriting the inners reg-slot binding. Trail-style
+    # binding (Map.put under the ref id, not the integer reg-slot)
+    # propagates through deref_var across frame boundaries and
+    # survives deallocate. Proposal section 6 risk 7 (nested findall)
+    # fix surfaced by Phase 3c.
+    bound_regs =
+      case Map.get(agg_cp.regs, agg_cp.agg_result_reg) do
+        {:unbound, id} ->
+          # Trail the binding under the unbound refs id so any
+          # aliased copy sees it via deref_var.
+          agg_cp.regs
+          |> Map.put(id, result)
+          |> Map.put(agg_cp.agg_result_reg, result)
+        _ ->
+          # Slot was bound or empty — preserve legacy direct overwrite.
+          Map.put(agg_cp.regs, agg_cp.agg_result_reg, result)
+      end
+    restored = %{state |
+      regs: bound_regs,
+      heap: agg_cp.heap,
+      heap_len: agg_cp.heap_len,
+      trail: agg_cp.trail,
+      trail_len: agg_cp.trail_len,
+      stack: agg_cp.stack,
+      cp: agg_cp.cp,
+      choice_points: rest_cps
+    }
+    # No env-frame pop here. The pop logic from #1661 (which
+    # simulated deallocate to handle the case where end_aggregates
+    # throw fail bypassed the predicates deallocate) is no longer
+    # needed: with the end_aggregate sub-segment split (this PR),
+    # the post-end_aggregate sub-segment ALWAYS contains the
+    # predicates deallocate (or, for findalls in the middle of a
+    # body, more body code that eventually reaches deallocate).
+    # agg_cp.cp now points at that sub-segment thanks to
+    # update_topmost_agg_cp/2. The natural deallocate handles env
+    # cleanup correctly for all cases: single-level findall (k2 =
+    # deallocate+proceed), nested findall (inner_k2 = deallocate
+    # restoring outer_k1 as cp, then proceed jumps to outer_k1),
+    # and multi-findall in one body (k2..k_n stay in the predicates
+    # frame, the final k_last deallocates).
+    #
+    # Removing the pop also fixes the multi-findall-in-one-body
+    # bug: the prior pop overwrote agg_cp.cp with env.cp during
+    # restoration, defeating update_topmost_agg_cp.
+    restored.cp.(restored)
   end', []).
 
 % ============================================================================

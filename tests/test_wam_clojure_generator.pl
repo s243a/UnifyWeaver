@@ -20,6 +20,10 @@
 :- dynamic user:wam_list_fact/1.
 :- dynamic user:wam_use_struct/1.
 :- dynamic user:wam_use_list/1.
+:- dynamic user:category_parent/2.
+:- dynamic user:wam_parent_lookup/2.
+:- dynamic user:max_depth/1.
+:- dynamic user:wam_ancestor_lookup/4.
 
 user:wam_fact(a).
 user:wam_execute_caller(X) :- user:wam_fact(X).
@@ -38,6 +42,10 @@ user:wam_struct_fact(f(a)).
 user:wam_list_fact([a,b]).
 user:wam_use_struct(X) :- user:wam_struct_fact(X).
 user:wam_use_list(X) :- user:wam_list_fact(X).
+user:category_parent(_, _) :- fail.
+user:wam_parent_lookup(X, Y) :- user:category_parent(X, Y).
+user:max_depth(_) :- fail.
+user:wam_ancestor_lookup(A, B, C, D) :- user:category_ancestor(A, B, C, D).
 
 test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
     once((
@@ -135,6 +143,119 @@ test(clojure_foreign_handlers_emit_handler_map) :-
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" (fn [args] (= (first args) "a"))')),
         assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers)')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_target_runtime_support_packages_helpers,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_target', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [ namespace('generated.wam_lmdb_target_test'),
+                                    clojure_lmdb_runtime_support(true)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbLookupCache.class', LookupCacheClassPath),
+        directory_file_path(TmpDir, 'classes/generated/lmdb/LmdbCacheStats.class', CacheStatsClassPath),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(exists_file(LookupCacheClassPath)),
+        assertion(exists_file(CacheStatsClassPath)),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_target_reader_open_expr_policies) :-
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(none)],
+                                                     NoneExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(memoize)],
+                                                     MemoExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(shared)],
+                                                     SharedExpr),
+    wam_clojure_target:clojure_lmdb_reader_open_expr('"/tmp/artifact"',
+                                                     [clojure_lmdb_cache_policy(two_level)],
+                                                     TwoLevelExpr),
+    assertion(sub_string(NoneExpr, _, _, _, 'LmdbArtifactReader/open ')),
+    assertion(sub_string(MemoExpr, _, _, _, 'LmdbArtifactReader/openMemoized')),
+    assertion(sub_string(SharedExpr, _, _, _, 'LmdbArtifactReader/openSharedCached')),
+    assertion(sub_string(TwoLevelExpr, _, _, _, 'LmdbArtifactReader/openTwoLevel')).
+
+test(clojure_lmdb_target_cache_log_snippet) :-
+    wam_clojure_target:clojure_lmdb_cache_log_snippet('category_parent/2',
+                                                      [clojure_lmdb_cache_debug(false)],
+                                                      DisabledSnippet),
+    wam_clojure_target:clojure_lmdb_cache_log_snippet('category_parent/2',
+                                                      [clojure_lmdb_cache_debug(true)],
+                                                      EnabledSnippet),
+    assertion(DisabledSnippet == "nil"),
+    assertion(sub_string(EnabledSnippet, _, _, _, 'lmdb_cache_stats category_parent/2')),
+    assertion(sub_string(EnabledSnippet, _, _, _, '.cacheStats')).
+
+test(clojure_lmdb_target_foreign_relation_auto_handler,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_foreign_target', TmpDir),
+        write_wam_clojure_project([user:wam_parent_lookup/2,
+                                   user:category_parent/2],
+                                  [ namespace('generated.wam_lmdb_foreign_test'),
+                                    clojure_lmdb_foreign_relations([
+                                        category_parent/2-'data/generated/test/category_parent_lmdb'
+                                    ]),
+                                    clojure_lmdb_cache_policy(shared),
+                                    clojure_lmdb_cache_debug(true)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lmdb_foreign_test/core.clj', CorePath),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(wam_clojure_target:clojure_foreign_predicate(category_parent, 2,
+                   [clojure_lmdb_foreign_relations([
+                       category_parent/2-'data/generated/test/category_parent_lmdb'
+                   ])])),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_parent" :arity 2}')),
+        assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [reader-delay (delay (generated.lmdb.LmdbArtifactReader/openSharedCached')),
+        assertion(sub_string(CoreCode, _, _, _, 'data/generated/test/category_parent_lmdb')),
+        assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_parent/2')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" wam-parent-lookup')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_target_ancestor_foreign_relation_auto_handler,
+     [condition(lmdb_helper_toolchain_available)]) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_foreign_ancestor_target', TmpDir),
+        write_wam_clojure_project([user:wam_ancestor_lookup/4,
+                                   user:category_ancestor/4],
+                                  [ namespace('generated.wam_lmdb_ancestor_foreign_test'),
+                                    clojure_lmdb_foreign_relations([
+                                        category_ancestor/4-'data/generated/test/category_parent_lmdb'
+                                    ]),
+                                    clojure_lmdb_cache_policy(two_level),
+                                    clojure_lmdb_cache_debug(true),
+                                    clojure_lmdb_ancestor_max_depth(7)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lmdb_ancestor_foreign_test/core.clj', CorePath),
+        directory_file_path(TmpDir, 'lib/lmdb-artifact-reader.jar', ReaderJarPath),
+        directory_file_path(TmpDir, 'lib/liblmdb_artifact_jni.so', NativeLibPath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(wam_clojure_target:clojure_foreign_predicate(category_ancestor, 4,
+                   [clojure_lmdb_foreign_relations([
+                       category_ancestor/4-'data/generated/test/category_parent_lmdb'
+                   ])])),
+        assertion(exists_file(ReaderJarPath)),
+        assertion(exists_file(NativeLibPath)),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "category_ancestor" :arity 4}')),
+        assertion(sub_string(CoreCode, _, _, _, 'LmdbArtifactReader/openTwoLevel')),
+        assertion(sub_string(CoreCode, _, _, _, 'max-depth 7')),
+        assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_ancestor/4')),
+        assertion(sub_string(CoreCode, _, _, _, '{:solutions (vec solutions)}')),
+        assertion(sub_string(CoreCode, _, _, _, '{:bindings {2 ancestor 3 hops}}')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_ancestor_lookup/4" wam-ancestor-lookup')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -293,6 +414,11 @@ has_working_clojure_main :-
     read_string(Err, _, _),
     close(Out),
     close(Err).
+
+lmdb_helper_toolchain_available :-
+    absolute_file_name(path(javac), _, [access(execute)]),
+    absolute_file_name(path(jar), _, [access(execute)]),
+    absolute_file_name(path(gcc), _, [access(execute)]).
 
 clojure_exec_e2e_enabled :-
     % Direct java/clojure.main runs work manually, but running them from

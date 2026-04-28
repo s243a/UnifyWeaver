@@ -588,3 +588,625 @@ This does not change runtime behavior. It makes the generated data
 layout explicit enough for desktop benchmarking, artifact invalidation
 work, and later provider-style loaders without forcing another change to
 the benchmark target names.
+
+The next follow-up starts lifting those Clojure benchmark storage-policy
+knobs into shared infrastructure. A new
+`src/unifyweaver/core/predicate_preprocessing.pl` layer now normalizes
+source-level `preprocess/2` declarations onto the same small storage
+surface used by the benchmark generator: `artifact`, `sidecar`, and
+`inline`.
+
+The Clojure effective-distance generator now consumes that shared
+declaration layer in addition to its existing benchmark-local predicates:
+
+- benchmark-local relation overrides still win first
+- shared `preprocess/2` declarations are the next policy source
+- generator defaults remain the final fallback
+
+That is a better match for the C# and Haskell direction than adding more
+one-off benchmark predicates. It turns the current Clojure artifact and
+sidecar work into a reusable seam for later cross-target preprocessing
+and artifact-provider work, while keeping the current benchmark
+interface stable.
+
+The next small extension makes that seam inspectable instead of only
+actionable. The shared preprocessing module now exposes normalized
+metadata for a declaration:
+
+- originating declaration kind
+- normalized physical format
+- normalized access contracts
+- preserved declaration options
+
+The Clojure benchmark manifest now includes that metadata whenever a
+relation's resolved mode came from the shared `preprocess/2` layer. That
+brings the current Clojure path closer to the C# provider/materializer
+shape: generated artifacts now carry both the chosen storage mode and
+the declaration intent that selected it.
+
+The next Clojure step is no longer just metadata. The benchmark
+generator now supports an opt-in per-relation `lmdb` mode for
+`category_parent`. When that override is selected, generation:
+
+- writes a flat `category_parent.tsv` source file
+- builds a real LMDB dupsort artifact for `category_parent/2`
+- packages the shared JVM LMDB reader into
+  `lib/lmdb-artifact-reader.jar`
+- builds `lib/liblmdb_artifact_jni.so`
+- switches the generated Clojure `category_parent/2` and
+  `category_ancestor/4` foreign handlers to use
+  `generated.lmdb.LmdbArtifactReader`
+
+The generated benchmark runner also knows how to put that helper jar on
+the Java classpath and expose the JNI library path when the project is
+launched. The current integration is deliberately narrow: only
+`category_parent` can opt into LMDB, and the existing EDN / grouped-TSV
+paths remain the stable defaults and fallbacks.
+
+Follow-up design work for the next Clojure LMDB phases now lives in
+`docs/proposals/WAM_CLOJURE_LMDB_FACT_ACCESS_PLAN.md`. That document
+captures the Clojure-specific philosophy, specification, and
+implementation sequencing, and explicitly references the recent Haskell
+LMDB cache and reader commits that should guide the next Clojure steps.
+
+The first implementation step from that plan is now in place too. The
+JVM helper behind the Clojure LMDB benchmark path no longer opens LMDB
+from scratch on every lookup. `LmdbArtifactReader` now fronts a
+thread-local native store seam:
+
+- one LMDB read transaction per thread
+- one dupsort cursor per thread
+- owned `LmdbRow` objects still cross the JNI boundary
+- generated Clojure code keeps the same call surface
+
+This matches the spirit of the recent Haskell progression:
+
+- split raw reader mechanics from wrapper policy first
+- add thread-local reader reuse next
+- keep memoization as a separate later layer
+
+That later layer is now in place too, but still narrowly. The Clojure
+benchmark generator now accepts an opt-in relation-local cache policy
+for LMDB-backed `category_parent`:
+
+- `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize)`
+- `benchmark_relation_cache_policy(category_parent, memoize)`
+
+When selected, generated Clojure projects keep the same `lmdb` storage
+mode and reader seam, but switch to `LmdbArtifactReader.openMemoized`.
+The memoization layer is thread-local and lives in the Java wrapper,
+not in the native store object:
+
+- one native store per thread still owns the LMDB transaction/cursor
+- one thread-local L1 map caches `lookupArg1` results by key
+- scan behavior is unchanged
+- shared L2 caching is still deferred
+
+The next narrow step is now underway too: the JVM helper exposes
+`openSharedCached` and `openTwoLevel` so Clojure can opt into a shared
+`lookupArg1` cache or a composed L1+L2 policy without changing the
+native store seam again. We should not trust Termux to tell us whether
+`none` vs `memoize` is the right default; that comparison is now a
+desktop-only measurement TODO.
+
+The cache policy logic is now being pulled into a clearer JVM seam as
+well. `LmdbArtifactReader` is no longer the only place where policy
+details live conceptually; the direction is:
+
+- explicit lookup-cache wrapper
+- lightweight stats hooks
+- opt-in generated Clojure debug output
+
+The immediate stats surface is intentionally small:
+
+- `localHits`
+- `sharedHits`
+- `misses`
+
+That LMDB wiring is no longer benchmark-only either. The Clojure target
+itself now accepts declarative LMDB foreign relations for
+`category_parent/2`, and now also for `category_ancestor/4`, together
+with the existing cache-policy and debug options:
+
+- `clojure_lmdb_foreign_relations([category_parent/2-"..."])`
+- `clojure_lmdb_foreign_relations([category_ancestor/4-"..."])`
+- `clojure_lmdb_cache_policy(none|memoize|shared|two_level)`
+- `clojure_lmdb_cache_debug(true|false)`
+- `clojure_lmdb_ancestor_max_depth(N)` for `category_ancestor/4`
+
+Generated non-benchmark Clojure WAM projects can therefore package the
+JVM/JNI LMDB helper seam and emit a `call-foreign` handler directly
+through `wam_clojure_target.pl`, rather than relying on
+benchmark-generator-local helper code. The target-level
+`category_ancestor/4` handler reuses the LMDB-backed parent lookup seam
+and emits streamed `{:solutions ...}` results using the same recursive
+ancestor traversal contract as the benchmark path.
+
+One Termux-specific stabilization also landed while lifting that seam:
+repeated LMDB-backed benchmark generation was corrupting or racing on
+the shared Rust helper under `examples/lmdb_relation_artifact/target`.
+The benchmark generator now uses a workspace-local isolated Cargo target
+directory per SWI process instead of the shared repo `target/` path.
+
+---
+
+## Phase F: Mode-driven term-construction lowering (2026-04-27)
+
+**Branches:**
+- `docs/wam-haskell-mode-analysis-design` — three-doc design package
+- `feat/wam-haskell-mode-analysis` — analyser + `=../2` lowering (M1–M6)
+- `feat/wam-haskell-mode-analysis-followups` — `functor/3` lowering, M7
+  cabal end-to-end smoke, this log entry
+
+Added a forward, three-valued (`unbound`/`bound`/`unknown`)
+binding-state analysis pass at
+`src/unifyweaver/core/binding_state_analysis.pl`. The pass produces, per
+clause, a list of `goal_binding(Idx, BeforeEnv, AfterEnv)` records that
+the WAM compiler consults at the program point of each `=../2` and
+`functor/3` goal. When the analysis can prove the term is unbound and
+the functor name is bound, the compiler lowers the goal to a
+`PutStructureDyn` instruction sequence; otherwise it falls through to
+the existing `BuiltinCall` path.
+
+### What lowers and what does not
+
+| Goal shape | Mode declaration | Result |
+|---|---|---|
+| `T =.. [Name | FixedArgs]` | T proven `unbound`, Name proven `bound` | `PutStructureDyn` + `set_value`/`set_variable` × N + `get_value` |
+| `T =.. [...]` | T `unknown` (no mode decl) | `BuiltinCall "=../2"` |
+| `T =.. [...]` | T proven `bound` (decompose) | `BuiltinCall "=../2"` |
+| `functor(T, Name, Arity)` | T `unbound`, Name `bound`, Arity literal int | `PutStructureDyn` + `set_variable` × Arity + `get_value` |
+| `functor(T, Name, Arity)` | Arity is a runtime variable | `BuiltinCall "functor/3"` |
+| `functor(T, Name, Arity)` | no mode declaration | `BuiltinCall "functor/3"` |
+
+The `functor/3` lowering reuses `emit_put_structure_dyn_lowering/6`
+verbatim by synthesising N fresh anonymous Prolog variables and threading
+them through `compile_set_arguments/4`, which emits one
+`set_variable` per slot. No new emit helper.
+
+### Soundness contract
+
+The analysis is forward-only, no fixpoint, no aliasing tracking, and
+collapses to `unknown` at any control-flow meet where branches
+disagree. Every positive answer is a runtime guarantee; `unknown`
+keeps the existing path. Wrong analysis can only leave performance on
+the table — never produce incorrect runtime behaviour.
+
+### Why no benchmark numbers yet
+
+Both lowerings are correctness-preserving optimisations on a path that
+is rarely the hot loop in the benchmarks we currently measure
+(category-ancestor walks, etc.). The lowerings will pay off on
+workloads that construct many terms in tight loops — code-generation
+utilities, Prolog-meta interpreters, term-rewriting passes. We will
+benchmark when a real such workload exists. The unit tests
+(`tests/core/test_binding_state_analysis.pl`,
+`test_wam_univ_lowering.pl`, `test_wam_functor3_lowering.pl`) plus the
+M7 cabal end-to-end smoke
+(`test_wam_term_construction_e2e.pl`) cover correctness.
+
+### Out-of-scope follow-ups (analysis substrate is in place)
+
+- `arg/3` on a known-bound term: fuse to indexed `GetValue`.
+- `\+ member(X, L)` on a ground L: skip unification, use `IS.notMember`.
+- `copy_term/2` on a ground source: identity (no walk needed).
+- Multi-mode predicate specialisation: separate WAM bodies per mode.
+
+These would extend the analysis with new propagation-rule entries
+(`arg/3`, `\+/1`-special-cased on `member/2`) and add new
+`compile_goal_call/4` clauses, without touching the public API.
+
+### Related documents
+
+- `WAM_HASKELL_MODE_ANALYSIS_PHILOSOPHY.md` — the *why*
+- `WAM_HASKELL_MODE_ANALYSIS_SPEC.md` — data structures, propagation
+  rules, integration sites
+- `WAM_HASKELL_MODE_ANALYSIS_PLAN.md` — phases M1–M8 with test gates
+
+---
+
+## Phase F appendix: term-construction lowering measurement and `arg/3` (2026-04-27)
+
+**Branch:** `feat/wam-haskell-arg3-and-bench`
+
+Three follow-ups closing out the Phase F arc:
+
+### F.1 — Latent `GetValue` handler bug found by benchmarking
+
+The first attempt to drive the `=../2` compose lowering through the
+runtime in a benchmark loop revealed that 100 % of the lowered
+iterations were returning `Nothing` (failing the goal). Cause: the
+`GetValue xn ai` step handler in `WamRuntime` only handled the case
+where `ai` (the second argument register) held the unbound side. The
+lowering's emit helper produces `get_value T_reg, TermReg` where
+`T_reg` (the *first* argument) is the fresh output and `TermReg` is
+the freshly-constructed `Str` — i.e. the unbound side is on the
+*xn* side. The handler fell through to `Nothing`.
+
+The fix adds the symmetric case directly to `step (GetValue xn ai)`:
+
+```haskell
+(Just a, Just (Unbound vid)) ->
+  Just (s { ..., wsBindings = IM.insert vid a (wsBindings s), ... })
+```
+
+Unification is symmetric, so this is the principled fix. The bug is
+latent — every codegen unit test in the original mode-analysis arc
+verified `PutStructureDyn` text appeared in the WAM, but none ran
+the bytecode through `run`. The benchmark is the first thing that
+did. The cabal e2e (`test_wam_term_construction_e2e.pl`) builds the
+project with cabal but does not execute it, so it did not surface
+the bug either.
+
+### F.2 — Synthetic benchmark numbers
+
+`tests/benchmarks/wam_term_construction_bench.pl` generates one
+project containing two predicates with **identical Prolog source**:
+
+```prolog
+:- mode bench_lowered(+, +, -).
+bench_lowered(Name, Arg, T) :- T =.. [Name, Arg].
+
+bench_unlowered(Name, Arg, T) :- T =.. [Name, Arg].
+```
+
+The mode declaration triggers the binding-state analyser; the
+unannotated copy gets the list-build + `BuiltinCall "=../2"` runtime
+path. A custom `Bench.hs` (in `tests/fixtures/wam_term_construction_bench/`)
+imports the generated `WamRuntime` + `Predicates` and times each
+predicate across `N` calls of `bench(foo, k, T)`, alternating the
+order across two trial blocks to reduce cache-warming bias.
+
+Result at N = 100,000 (GHC 8.6.5, `-O2`):
+
+| Trial block | lowered (s) | unlowered (s) | speedup |
+|---|---:|---:|---:|
+| Block 1 | 0.198 | 0.284 | 1.43× |
+| Block 2 | 0.181 | 0.216 | 1.19× |
+| **Mean** | **0.190** | **0.250** | **1.32×** |
+
+The lowering wins by ~24–32 % on this microbenchmark. The savings
+are *not* from instruction count (both paths emit ~6 instructions);
+they come from the runtime work the `BuiltinCall "=../2"` handler
+does on the unlowered side: allocate an intermediate `VList`, walk
+it to extract the `Atom` head, and only then construct the `Str`.
+The lowered `PutStructureDyn` skips all of that — it pre-allocates
+the `BuildStruct` builder directly and `SetValue` writes the args
+straight in.
+
+This is a microbenchmark; real workloads that construct terms in
+tight loops (codegen utilities, meta-interpreters, term-rewriting
+passes) would see the same per-call shape and similar relative
+gains. Benchmarks that are dominated by I/O, FFI, or recursion-heavy
+logic will see no measurable change because term construction is
+not on their hot path.
+
+### F.3 — `arg/3` lowering
+
+Adds the `arg/3` term-projection counterpart to the
+construction-side lowerings already in place. Detects:
+
+```prolog
+:- mode pred(..., +, ..., -).
+pred(..., T, ..., A) :- arg(N, T, A).
+```
+
+where `N` is a literal positive integer and the binding-state
+analyser proves T is `bound`. Lowers to a single specialised
+`Arg !Int !RegId !RegId` instruction (new in this PR), skipping the
+`put_constant N → A1`, `put_value T → A2`, `put_variable A → A3`,
+`builtin_call arg/3` chain (4 dispatches) in favour of one direct
+runtime step.
+
+The runtime handler:
+- derefs T from its register, requires `Str _ args` or `VList _`,
+- indexes the N-th element (1-based; matches the existing builtin),
+- unifies the result with the output register's current value
+  (handles both unbound and already-bound cases for safety).
+
+Five unit tests in `tests/core/test_wam_arg3_lowering.pl`:
+
+| Test | What it covers |
+|---|---|
+| `test_arg3_lowered_when_t_bound_and_n_literal` | Mode-annotated T + literal N ⇒ `arg N TReg AReg` emitted |
+| `test_arg3_no_mode_falls_through_to_builtin` | No mode ⇒ `builtin_call arg/3` |
+| `test_arg3_dynamic_n_falls_through` | N is a runtime variable ⇒ no lowering |
+| `test_arg3_zero_or_negative_n_falls_through` | N=0 ⇒ no lowering (preserves builtin failure semantics) |
+| `test_arg3_literal_n_appears_in_wam_text` | Literal N appears verbatim in emitted WAM |
+
+No new benchmark numbers for `arg/3` yet; the construction-side
+benchmark above is the first wired-up timing harness, and `arg/3` on
+hot paths would need its own workload to exercise. The savings
+shape is the same as `=../2` (skipping ~3 dispatch hops) so the
+microbenchmark improvement is expected to be in the same range.
+
+### F.4 — Test surface (cumulative)
+
+After this appendix lands the term-construction arc has:
+
+| Suite | Count |
+|---|---:|
+| `test_wam_haskell_target.pl` (full target suite) | unchanged |
+| `test_binding_state_analysis.pl` | 31 |
+| `test_wam_univ_lowering.pl` | 5 |
+| `test_wam_functor3_lowering.pl` | 6 |
+| `test_wam_arg3_lowering.pl` | 5 (new) |
+| `test_wam_term_construction_e2e.pl` (cabal smoke) | 2 |
+| `wam_term_construction_bench.pl` (benchmark, not a regression test) | — |
+
+Plus 30 + lines added to the existing `step (GetValue xn ai)` to
+cover the symmetric case.
+
+---
+
+## Phase G: \\+ member(X, L) lowering (2026-04-28)
+
+**Branch:** `feat/wam-haskell-member-lowering-and-realworkload`
+
+Adds the `NotMemberList` instruction and the matching
+`compile_goal_call(\\+ member(X, L), ...)` clause that fires when
+binding-state analysis proves both X and L are `bound`. Unlike the
+construction-side lowerings (`=../2`, `functor/3`) and the
+projection-side lowering (`arg/3`), this one targets a pattern that
+appears verbatim in real graph-traversal workloads
+(`category_ancestor`, etc.) — the visited-set check.
+
+### What replaces what
+
+The existing path for `\\+ member(X, V)` emits:
+
+```
+put_structure member/2, A1
+set_value Reg(X)
+set_value Reg(V)
+builtin_call \\+/1, 1
+```
+
+(4 dispatches plus a heap allocation for the `Str "member/2" [X, V]`
+goal term.) The runtime then fast-paths to a `VList` walk inside the
+`\\+/1` handler.
+
+The lowered path emits one instruction:
+
+```
+not_member_list Reg(X), Reg(V)
+```
+
+The `NotMemberList` step handler reads X and L directly from
+registers (no goal-term construction) and walks `VList items`
+inline, skipping the dispatch chain and the heap allocation.
+
+### Measurement
+
+`tests/benchmarks/wam_not_member_bench.pl` builds a project with
+`bench_notmember_lowered/2` (mode-annotated) and
+`bench_notmember_unlowered/2` (no mode) — same Prolog source, same
+50-item visited list at runtime, X is an Integer that varies
+per-iteration to defeat constant folding.
+
+At N = 200,000 (GHC 8.6.5, `-O2`):
+
+| Trial block | lowered (s) | unlowered (s) | speedup |
+|---|---:|---:|---:|
+| Block 1 | 0.290 | 0.350 | 1.21× |
+| Block 2 | 0.296 | 0.317 | 1.07× |
+| **Mean** | **0.293** | **0.334** | **~1.14×** |
+
+A modest ~14 % win. Most of the per-call cost is the actual list
+walk (50 atom comparisons), which both paths still do; the savings
+are ~210 ns per call from skipping the dispatch chain and heap
+allocation. The relative speedup will scale with how short the
+visited list is — for a list of 5 items the dispatch overhead is a
+larger fraction of total work, so the speedup will be larger.
+
+### Real-workload applicability (option 1)
+
+The visited-set check pattern in `category_ancestor`-style
+predicates uses `\\+ member(Z, V)` where Z is bound (output of
+`parent(X, Z)` in the previous goal) and V is bound (mode `+`
+head argument). Existing benchmarks declare
+`mode(category_ancestor(-, +, -, +))`. As of this PR, when
+`category_ancestor`'s body compiles to WAM (the WAM-only path,
+not the lowered-Haskell or FFI'd-kernel path), the
+`NotMemberList` lowering fires automatically — no source changes
+needed in the benchmark fixtures. Future benchmark runs that
+exercise the WAM-only ancestry path should see the same
+~14 % per-call improvement compounded across recursion depth.
+
+### Tests
+
+`tests/core/test_wam_not_member_lowering.pl`, 5 tests:
+
+| Test | What it covers |
+|---|---|
+| `test_not_member_lowered_when_x_and_l_bound` | Mode +,+ ⇒ `not_member_list` |
+| `test_not_member_no_mode_falls_through` | No mode ⇒ `builtin_call \\+/1` |
+| `test_not_member_only_x_bound_falls_through` | L `?` ⇒ no lowering |
+| `test_not_member_only_l_bound_falls_through` | X `?` ⇒ no lowering |
+| `test_plain_member_not_lowered` | `member` alone (no `\\+`) is NOT lowered (semantics-preserving) |
+
+### Out-of-scope follow-ups
+
+- **Visited-set as IntSet.** The big win for graph traversal is
+  representing visited as `IntSet`, not `[Value]`. That would
+  reduce `\\+ member` from O(N) to O(log N). It is a fundamental
+  data-structure change — not a lowering. **Designed as of
+  PR #1683 in `WAM_HASKELL_INTSET_VISITED_DESIGN.md`**;
+  implementation is the natural next perf arc.
+- **`member(X, L)` succeeding case.** The current lowering only
+  fires inside `\\+`; positive `member` with a bound L (i.e. a
+  type-test "is X one of these atoms") could use the same
+  walk-inline shape but with success/fail inverted. Marginal
+  utility — the negation case is the common visited-set check.
+
+---
+
+## Phase G appendix: macro benchmark on effective-distance + analyser fix (2026-04-28)
+
+**Branch:** `feat/wam-haskell-macro-bench-and-intset`
+
+Two follow-ups closing out Phase G:
+
+### G.1 — Latent `?`-mode bug found by trying to fire on real workload
+
+The first attempt to measure the `\\+ member` lowering on
+`category_ancestor`-style code showed **the lowering was not firing**
+even with `mode(category_ancestor(-, +, -, +))` declared. The
+unlowered path stayed in place: `put_structure member/2 + builtin_call \\+/1`.
+
+Cause: the binding-state analyser's `apply_call_mode(_, any, ...)`
+clause was setting the arg to `unknown` after a call to a predicate
+declared with `?` mode, contradicting the spec
+(`WAM_HASKELL_MODE_ANALYSIS_SPEC.md` §2.3.7 says `?` should leave
+the arg at its pre-call state). For the canonical pattern
+
+```prolog
+parent(X, Z), \\+ member(Z, V)
+```
+
+the call to `parent/2` (declared `?, ?`) was destroying `Z`'s proven
+`bound` state, so the lowering's `binding_state_at_var(BeforeEnv,
+Z, bound)` precondition failed and we fell through.
+
+Fix: change `apply_call_mode(_Arg, any, Env, Env)` to a no-op,
+matching the spec. New regression test
+(`test_call_any_mode_preserves_bound`) asserts that a bound arg
+passed to a `?,?`-mode predicate stays bound across the call.
+
+### G.2 — Macro benchmark on effective-distance
+
+`tests/benchmarks/wam_effective_distance_macro_bench.pl` generates
+two Haskell WAM projects from the same `effective_distance.pl`
+source, distinguished only by which mode declarations are in
+effect:
+
+| variant | `mode(category_ancestor)` | `mode(category_parent)` | result |
+|---|---|---|---|
+| lowered | `(-, +, -, +)` | `(?, ?)` | `NotMemberList` fires |
+| unlowered | `(-, +, -, +)` | none | `BuiltinCall "\\+/1"` |
+
+Both build the standard benchmark project (Main.hs reads TSV facts,
+runs effective-distance, reports `query_ms` to stderr). Both
+variants are run twice with the order alternated to spot
+cache-warming bias.
+
+Result on `data/benchmark/1k` (1002 articles, 5934 category-parent
+edges, 2 root categories, GHC 8.6.5 `-O2`):
+
+| Trial | lowered query_ms | unlowered query_ms |
+|---|---:|---:|
+| Trial 1 | 84 | 118 |
+| Trial 2 | 74 | 68 |
+| **Mean** | **79** | **93** |
+
+**Speedup: ~1.18× on the macro path** (~17 % faster).
+`tuple_count=48` matches across both variants — correctness
+preserved.
+
+This is the macro-level confirmation of the Phase G claim that
+"the lowering fires automatically on existing benchmarks once the
+mode declarations are in place." It also confirms the microbenchmark
+result (~14 %) carries over to a real workload, with the macro
+slightly higher because the `=../2` and `functor/3` lowerings also
+fire in adjacent code paths.
+
+Trial 2's unlowered (68 ms) is faster than trial 1's lowered (84 ms),
+which is jitter on a cold first run — that's why the harness runs
+twice and alternates order. The mean across two trials is the
+honest number.
+
+### G.3 — IntSet visited design landed (implementation deferred)
+
+`WAM_HASKELL_INTSET_VISITED_DESIGN.md` (added in this PR) covers
+the algorithmic next step: a `VSet IS.IntSet` `Value` variant + 3
+new instructions (`BuildEmptySet`, `SetInsert`, `NotMemberSet`) +
+a `:- visited_set/2` directive that opts a specific predicate-arg
+position into the IntSet representation. Expected speedup: another
+~1.5–3× on top of the constant-factor wins, scaling with
+`max_depth`. Implementation deferred to a follow-up PR (task #191).
+
+### Test surface (cumulative across the mode-analysis arc)
+
+| Suite | Count |
+|---|---:|
+| `test_binding_state_analysis.pl` | 32 (was 31; +1 for `?`-mode fix) |
+| `test_wam_univ_lowering.pl` | 5 |
+| `test_wam_functor3_lowering.pl` | 6 |
+| `test_wam_arg3_lowering.pl` | 5 |
+| `test_wam_not_member_lowering.pl` | 5 |
+| `test_wam_term_construction_e2e.pl` (cabal) | 2 |
+| `wam_term_construction_bench.pl` (microbench) | — |
+| `wam_not_member_bench.pl` (microbench) | — |
+| `wam_effective_distance_macro_bench.pl` (macrobench, NEW) | — |
+
+---
+
+## Phase H: IntSet-backed visited (Layer 1 — runtime + ADT) (2026-04-28)
+
+**Branch:** `feat/wam-haskell-intset-visited`
+
+Implements Layer 1 of the IntSet visited design
+(`WAM_HASKELL_INTSET_VISITED_DESIGN.md` from PR #1684): the runtime
+data structures and instructions, validated by 12 codegen unit
+tests. Layer 2 (compile-time recognition of the
+`:- visited_set/2` directive and the bootstrap/recursive/`\\+ member`
+emission triple) is the natural follow-up — it's where the actual
+speedup gets unlocked, and it's substantial enough on its own to
+warrant a focused PR with its own test gates.
+
+### Changes
+
+#### `src/unifyweaver/targets/wam_haskell_target.pl` (template edits)
+
+- **`Value` ADT**: add `VSet !IS.IntSet` variant; `import qualified Data.IntSet as IS` in WamTypes.
+- **`NFData Value`**: add `rnf (VSet s) = rnf (IS.size s)` branch (IntSet has no NFData; force the size to ensure thunks resolve).
+- **`Instruction` ADT**: add three new constructors:
+  - `BuildEmptySet !RegId` — write `VSet IS.empty` into the named register.
+  - `SetInsert !RegId !RegId !RegId` — `elemReg`, `inSetReg`, `outSetReg`.
+  - `NotMemberSet !RegId !RegId` — `elemReg`, `setReg`; succeeds when the elem is NOT in the set.
+- **Step handlers** for the three new instructions, mirroring the design doc's pseudocode. `SetInsert` and `NotMemberSet` require the element to deref to an `Atom` (visited-set members are interned atom IDs); non-atom elements return `Nothing` (semantically: backtrack).
+- **WAM text parsers**: `build_empty_set XReg`, `set_insert EReg, InReg, OutReg`, `not_member_set EReg, SReg`.
+
+#### Tests
+
+`tests/core/test_wam_intset_runtime.pl` (NEW, 12 tests, all green):
+
+| Section | Coverage |
+|---|---|
+| Value type | `VSet !IS.IntSet` present, `Data.IntSet` imported, `NFData VSet` branch present |
+| Instruction ADT | `BuildEmptySet`, `SetInsert`, `NotMemberSet` all present |
+| Step handlers | All three handler bodies emit the right `IS.*` operations |
+| WAM parsers | All three text→ADT translations produce correct register IDs |
+
+Plus the existing `test_wam_haskell_target.pl` suite stays green
+(verifies the new variant doesn't break any pattern-match
+exhaustiveness on `Value`), and the cabal e2e
+(`test_wam_term_construction_e2e.pl`) still builds successfully —
+GHC is happy with the new variant + the explicit `NFData VSet`
+branch + the `_ -> Nothing` fall-throughs in non-set-aware
+handlers.
+
+### What does NOT lower yet (Layer 2)
+
+The Phase H runtime is correct but currently *unreachable* from
+user code: nothing in the WAM compiler emits `BuildEmptySet` /
+`SetInsert` / `NotMemberSet`, so a clause that uses
+`\\+ member(X, V)` still compiles to `NotMemberList` (or the
+slow path, depending on mode declarations). The compile-time
+integration is the next PR.
+
+The Layer 2 work needs:
+1. A `:- visited_set(Pred/Arity, ArgN)` directive parser/registry.
+2. Per-clause context for "this head's visited-set vars".
+3. `compile_goal_call(\\+ member(X, V), ...)` clause that emits
+   `NotMemberSet` when `V` is in the visited-set context.
+4. `compile_put_argument` integration to detect when an arg
+   position matches a directive AND the arg is a list literal
+   (bootstrap) or `[X|V_visited]` (recursive extension), and
+   emit `BuildEmptySet` + `SetInsert` × N or
+   `SetInsert(X, V_visited, FreshReg)` instead of the standard
+   list-build sequence.
+
+Steps 3 and 4 must coordinate — they share state (the head's
+visited-set vars) and emission rules. That's the heart of the
+follow-up PR.

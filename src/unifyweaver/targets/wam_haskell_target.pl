@@ -57,6 +57,8 @@
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../core/purity_certificate',
              [analyze_predicate_purity/2]).
+:- use_module('../core/statistics',
+             [select_cache_mode/2]).
 
 % Phase 3: the real lowerability check and emission helpers live in the
 % wam_haskell_lowered_emitter module. We reexport so existing callers can
@@ -1858,6 +1860,17 @@ step !ctx s (GetValue xn ai) =
               , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
               , wsTrailLen = wsTrailLen s + 1
               })
+    -- Symmetric case: xn (X-register) holds the unbound side, ai
+    -- holds the bound value. Used by the =../2 / functor/3 compose
+    -- lowering, which emits get_value T_reg, TermReg where T_reg is
+    -- the fresh output and TermReg is the freshly-constructed Str.
+    -- Unification is symmetric, so bind the xn vid to a.
+    (Just a, Just (Unbound vid)) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsBindings = IM.insert vid a (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
+              })
     _ -> Nothing
 
 step !ctx s (PutConstant c ai) =
@@ -1904,6 +1917,12 @@ step !ctx s (SetValue xn) =
   case getReg xn s of
     Just val -> addToBuilder val s
     Nothing -> Nothing
+
+step !ctx s (SetVariable xn) =
+  let vid = wsVarCounter s
+      var = Unbound vid
+      s1 = putReg xn var (s { wsVarCounter = vid + 1 })
+  in addToBuilder var s1
 
 step !ctx s (SetConstant c) =
   addToBuilder c s
@@ -2329,6 +2348,89 @@ step !_ctx s (BuiltinCall "arg/3" _) =
           Just s1 -> Just (s1 { wsPC = wsPC s1 + 1 })
     _ -> Nothing
 
+-- Specialized arg lowering: Arg N tReg aReg
+-- Compile-time N (positive integer), runtime T from tReg, output to
+-- aReg. Skips the put_constant/put_value/builtin_call dispatch chain
+-- that the generic arg/3 builtin requires. Emitted by the WAM compiler
+-- when binding-state analysis proves T is bound and N is a literal int.
+step !_ctx s (Arg n tReg aReg) | n >= 1 =
+  let mT = derefVar (wsBindings s) <$> IM.lookup tReg (wsRegs s)
+  in case mT of
+    Just tVal ->
+      let mElem = case tVal of
+            Str _ args | n <= length args -> Just (args !! (n - 1))
+            VList (x : _) | n == 1 -> Just x
+            VList (_ : xs) | n == 2 -> Just (VList xs)
+            _ -> Nothing
+      in case mElem of
+        Nothing -> Nothing
+        Just elem ->
+          let mA = derefVar (wsBindings s) <$> IM.lookup aReg (wsRegs s)
+          in case mA of
+            Nothing ->
+              Just (s { wsPC = wsPC s + 1
+                      , wsRegs = IM.insert aReg elem (wsRegs s)
+                      })
+            Just (Unbound vid) ->
+              Just (s { wsPC = wsPC s + 1
+                      , wsRegs = IM.insert aReg elem (wsRegs s)
+                      , wsBindings = IM.insert vid elem (wsBindings s)
+                      , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                      , wsTrailLen = wsTrailLen s + 1
+                      })
+            Just a | a == elem -> Just (s { wsPC = wsPC s + 1 })
+            _ -> Nothing
+    Nothing -> Nothing
+step !_ctx _ (Arg _ _ _) = Nothing
+
+-- Specialized \\+ member(X, L) lowering: NotMemberList xReg lReg.
+-- Skips the put_structure member/2 + set_value + set_value +
+-- builtin_call \\+/1 chain (4 dispatches, plus the heap allocation
+-- for the goal term) by reading X and L directly from registers and
+-- walking L inline. Emitted by the WAM compiler when binding-state
+-- analysis proves both X and L are bound at the goal site.
+step !_ctx s (NotMemberList xReg lReg) =
+  let mX = derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s)
+      mL = derefVar (wsBindings s) <$> IM.lookup lReg (wsRegs s)
+  in case (mX, mL) of
+    (Just x, Just l) ->
+      let found = case l of
+            VList items -> any (\\item -> derefVar (wsBindings s) item == x) items
+            _ -> False
+      in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
+-- IntSet visited support: write an empty set into the named register.
+-- Used by the WAM compiler at the bootstrap site of a visited-set
+-- argument (e.g. the `[Cat]` literal flowing into category_ancestor)
+-- so the recursive call sees a VSet rather than a VList.
+step !_ctx s (BuildEmptySet r) =
+  Just (s { wsPC = wsPC s + 1
+          , wsRegs = IM.insert r (VSet IS.empty) (wsRegs s) })
+
+-- IntSet insert: read element from elemReg (must deref to Atom), read
+-- the input VSet from inReg, write the inserted set to outReg. Returns
+-- Nothing if the element is not an atom or the input is not a VSet.
+step !_ctx s (SetInsert eReg inReg outReg) =
+  let mE  = derefVar (wsBindings s) <$> IM.lookup eReg (wsRegs s)
+      mIn = derefVar (wsBindings s) <$> IM.lookup inReg (wsRegs s)
+  in case (mE, mIn) of
+    (Just (Atom aid), Just (VSet s0)) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsRegs = IM.insert outReg (VSet (IS.insert aid s0)) (wsRegs s) })
+    _ -> Nothing
+
+-- IntSet membership: succeed when elemReg (an Atom) is NOT in setReg
+-- (a VSet). O(log N) lookup, replacing the O(N) walk of NotMemberList
+-- on the visited-set hot path.
+step !_ctx s (NotMemberSet eReg setReg) =
+  let mE   = derefVar (wsBindings s) <$> IM.lookup eReg (wsRegs s)
+      mSet = derefVar (wsBindings s) <$> IM.lookup setReg (wsRegs s)
+  in case (mE, mSet) of
+    (Just (Atom aid), Just (VSet s0)) ->
+      if IS.member aid s0 then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 -- =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
 -- compose (unbound A1, list in A2).
 step !_ctx s (BuiltinCall "=../2" _) =
@@ -2651,6 +2753,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     read_kernel_template('main.hs.mustache', Template),
     detected_kernel_keys(DetectedKernels, Keys),
     format_foreign_preds(Keys, ForeignPredsStr),
+    option(benchmark_mode(Mode), Options, wam_haskell_accumulated),
     % When kernels are detected, the query body should use executeForeign
     % dispatch instead of running WAM code (fact code is skipped).
     (   DetectedKernels \= []
@@ -2671,8 +2774,17 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
     % Phase B1: generate LMDB setup and context wiring
     generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
+    % Int-atom-seeds path: when use_lmdb(true) and seeds come pre-interned
+    % as int32 IDs from the LMDB ingest pipeline, skip the TSV-based
+    % seed loading and string interning.  Gated by section blocks in the
+    % template; this just exposes the flag to the renderer.
+    (   option(int_atom_seeds(true), Options)
+    ->  IntAtomSeeds = true
+    ;   IntAtomSeeds = false
+    ),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
+        , benchmark_mode=Mode
         , query_body=QueryBody
         , merged_code_build=MergedCodeBuild
         , demand_filter=DemandFilter
@@ -2682,6 +2794,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_setup=LmdbSetup
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
+        , int_atom_seeds=IntAtomSeeds
         ], Code).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)
@@ -2707,8 +2820,34 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
 generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
     (   option(use_lmdb(true), Options)
     ->  ImportCode = 'import System.Directory (doesDirectoryExist, createDirectory)',
-        SetupCode =
-'    -- Phase B1: LMDB fact source setup
+        % Three layout/source variants:
+        %   - lmdb_layout(dupsort): LMDB is built externally by the
+        %     streaming pipeline (no in-process ingest, error if missing).
+        %   - lmdb_fact_source_manifest(Dir): standard TSV ingest, but
+        %     FactSource opens via manifest.json metadata (UTF-8 keys).
+        %   - default: WAM-native packed-Int32 layout, TSV ingest at
+        %     startup if missing.
+        (   option(lmdb_layout(dupsort), Options)
+        ->  SetupCode =
+'    -- Phase B1: LMDB fact source setup (dupsort layout, externally ingested)
+    let lmdbDir = factsDir ++ "/lmdb"
+    lmdbExists <- doesDirectoryExist lmdbDir
+    if not lmdbExists then
+      error ("LMDB not found at " ++ lmdbDir ++ "; build it via the streaming pipeline first")
+    else
+      hPutStrLn stderr "LMDB database found (dupsort layout)."
+    cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+        ;   (   option(lmdb_fact_source_manifest(ManifestDir0), Options)
+            ->  format(string(FactSourceOpen),
+'    cpFactSource <- lmdbFactSourceFromManifest fullInternTable "~w"',
+                       [ManifestDir0])
+            ;   FactSourceOpen =
+'    -- Also open as FactSource for WAM interpreter path
+    cpFactSource <- lmdbFactSource lmdbDir "category_parent"'
+            ),
+            format(string(SetupCode),
+'    -- Phase B1/B2: LMDB fact source setup
     let lmdbDir = factsDir ++ "/lmdb"
     -- Ingest TSV into LMDB (idempotent — skips if directory exists)
     lmdbExists <- doesDirectoryExist lmdbDir
@@ -2719,10 +2858,10 @@ generate_lmdb_wiring(Options, SetupCode, ContextCode, ImportCode) :-
       hPutStrLn stderr "LMDB ingestion complete."
     else
       hPutStrLn stderr "LMDB database found, skipping ingestion."
-    -- Open LMDB as EdgeLookup for FFI kernels (on-demand mmap reads)
     cpEdgeLookup <- openLmdbEdgeLookup lmdbDir "category_parent"
-    -- Also open as FactSource for WAM interpreter path
-    cpFactSource <- lmdbFactSource lmdbDir "category_parent"',
+~w',
+                  [FactSourceOpen])
+        ),
         ContextCode =
 '            , wcFactSources   = Map.singleton "category_parent" cpFactSource
             , wcEdgeLookups   = Map.singleton "category_parent" cpEdgeLookup'
@@ -2861,8 +3000,8 @@ compile_wam_runtime_to_haskell(Options, DetectedKernels, Code) :-
                     BacktrackCode),
     % Phase B1: conditional LMDB imports and functions
     (   option(use_lmdb(true), Options)
-    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread)",
-        generate_lmdb_functions(LmdbFunctions)
+    ->  LmdbImports = "import Database.LMDB.Raw\nimport Foreign.Ptr (Ptr, castPtr)\nimport Foreign.Storable (peek, poke, peekElemOff)\nimport Foreign.Marshal.Alloc (alloca, allocaBytes)\nimport Foreign.Marshal.Array (withArray)\nimport Foreign.C.String (withCStringLen, peekCStringLen)\nimport Foreign.C.Types (CSize(..))\nimport Data.Int (Int32)\nimport Data.Word (Word8)\nimport Data.Bits ((.&.))\nimport Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicModifyIORef')\nimport qualified Data.Array as A\nimport qualified Data.Array.IO as IOA\nimport qualified Control.Exception as E\nimport Control.Monad (forM_)\nimport Control.Concurrent (runInBoundThread, myThreadId, ThreadId, threadCapability, getNumCapabilities)",
+        generate_lmdb_functions(Options, LmdbFunctions)
     ;   LmdbImports = "",
         LmdbFunctions = ""
     ),
@@ -3069,6 +3208,7 @@ generate_wam_types_hs(Code) :-
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 -- Phase 4.2: NFData is needed for parMap rdeepseq to fully evaluate
 -- each forked branch''s contribution before the merge step.
@@ -3081,6 +3221,7 @@ data Value = Atom !Int          -- interned atom ID
            | Integer !Int
            | Float !Double
            | VList [Value]
+           | VSet !IS.IntSet    -- visited-set: IntSet of interned atom IDs
            | Str !Int [Value]   -- interned functor name, args
            | Unbound !Int       -- variable ID (interned via wsVarCounter)
            | Ref Int
@@ -3216,6 +3357,7 @@ instance NFData Value where
   rnf (Integer n)      = rnf n
   rnf (Float f)        = rnf f
   rnf (VList xs)       = rnf xs
+  rnf (VSet s)         = rnf (IS.size s)  -- IntSet has no NFData; force size
   rnf (Str n args)     = rnf n `seq` rnf args
   rnf (Unbound n)      = rnf n
   rnf (Ref n)          = rnf n
@@ -3328,6 +3470,7 @@ data Instruction
   | PutStructureDyn !RegId !RegId !RegId  -- nameReg, arityReg, targetReg (runtime-parsed)
   | PutList !RegId
   | SetValue !RegId
+  | SetVariable !RegId                  -- builder slot = fresh unbound; also write to register
   | SetConstant Value
   | Allocate
   | Deallocate
@@ -3344,6 +3487,11 @@ data Instruction
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
   | SwitchOnConstantPc !(IM.IntMap Int)      -- post-resolution: interned atom ID -> PC
   | BuiltinCall String !Int
+  | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
+  | NotMemberList !RegId !RegId       -- specialized \\+ member(X, L): X reg, L reg
+  | BuildEmptySet !RegId              -- write VSet IS.empty into the named register
+  | SetInsert !RegId !RegId !RegId    -- elemReg, inSetReg, outSetReg
+  | NotMemberSet !RegId !RegId        -- elemReg, setReg: O(log N) member check
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
@@ -3621,11 +3769,163 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
         format(string(Code), '~w :: [(Int, Int)]\n~w =\n~w\n    ]\n', [ListName, ListName, Body])
     ).
 
-%% generate_lmdb_functions(-Code)
-%  Loads the LMDB FactSource functions from the Mustache template.
+%% generate_lmdb_functions(+Options, -Code)
+%  Loads the LMDB FactSource functions from the Mustache template,
+%  rendering the layout-specific section blocks.
 %  Only called when use_lmdb(true).
-generate_lmdb_functions(Code) :-
-    read_kernel_template('lmdb_fact_source.hs.mustache', Code).
+%
+%  Options:
+%    lmdb_layout(default) — packed-Int32 array per key (WAM-native ingest)
+%    lmdb_layout(dupsort) — named "main" subdb with MDB_DUPSORT, one
+%                           entry per (key, value) pair (streaming-
+%                           pipeline ingest)
+%    lmdb_cache_mode(memoize) — DEPRECATED synonym for sharded.  Kept
+%                           for backwards compatibility with PR #1637.
+%                           Internally identical to the sharded mode
+%                           it was renamed to.  See PARALLELISM
+%                           CAVEAT below — the original IntMap-based
+%                           memoize regressed under -N>1; the new
+%                           IOArray-based sharded mode does not.
+%
+%    lmdb_cache_mode(per_hec) — Phase 1 — per-HEC L1 cache (PR #1640).
+%                           Each capability owns its own mutable
+%                           IOArray with no synchronisation on the
+%                           hot path.  Trade-off: cache hits don't
+%                           share across threads, so a key seen by
+%                           two workers pays the LMDB miss twice.
+%                           Right call when intra-thread reuse
+%                           dominates (most DFS-style workloads).
+%
+%    lmdb_cache_mode(sharded) — Phase 2 — shared L2 cache.  A single
+%                           IOArray shared across all HECs.  Lock-
+%                           free racy writes (correct because LMDB
+%                           is read-only).  Cross-HEC sharing without
+%                           atomicModifyIORef contention.  Memory
+%                           budget computed from /proc/meminfo on
+%                           Linux: min(half-available, available -
+%                           500 MB), bounded [1024, 1M] entries.
+%
+%    lmdb_cache_mode(two_level) — Phase 2 — L1 + L2 composed.  Per-
+%                           HEC L1 in front of shared L2.  L1 hits
+%                           skip L2; L2 hits promote to L1; LMDB
+%                           misses fill both.  The workload-portable
+%                           choice: low-overlap workloads mostly hit
+%                           L1, high-overlap workloads benefit from
+%                           cross-HEC sharing via L2.
+%
+%    lmdb_cache_l2_capacity_bytes(N) — override the auto-detected
+%                           L2 capacity.  N is the desired byte
+%                           budget; the runtime divides by ~32
+%                           bytes per entry and rounds down to a
+%                           power of two.  Only meaningful when L2
+%                           is active (sharded or two_level);
+%                           ignored otherwise.  Useful when the
+%                           /proc/meminfo-based default is too small
+%                           (server with 64 GB RAM but auto caps at
+%                           1M entries) or too large (memory-tight
+%                           container).
+%
+%    lmdb_cache_mode(auto) — Phase 3 hook: defer the choice of
+%                           cache mode to statistics:select_cache_mode/2.
+%                           Users populate workload-level hints via
+%                           statistics:declare_cache_hints/1 (see
+%                           reuse_axis → mode mapping in
+%                           src/unifyweaver/core/statistics.pl).
+%                           When no hints are declared, falls back
+%                           to `none` (no cache).  Infrastructure-
+%                           only: codegen does not currently compute
+%                           the hints; future work will add an
+%                           analyzer that derives them from a
+%                           sample run.
+%
+%    All cache modes are gated by lmdb_layout(dupsort); ignored
+%    otherwise.  Modes are mutually exclusive; precedence when
+%    multiple flags are set is two_level > sharded > memoize >
+%    per_hec.
+%
+%    PARALLELISM CAVEAT (legacy memoize): the original IntMap-based
+%    memoize cache (PR #1637) used atomicModifyIORef' on every miss,
+%    which serialised across cores and regressed 7x at -N4 on
+%    low-hit-rate workloads.  The current sharded implementation
+%    uses a lock-free IOArray and does not have this problem.  The
+%    PARALLELISM CAVEAT applies only if you explicitly want the
+%    legacy behaviour.
+%% resolve_auto_cache_mode(-Mode)
+%  Phase 3 hook: consult statistics:select_cache_mode/2 with the
+%  default fallback `none`.  Users populate workload-level hints via
+%  statistics:declare_cache_hints/1 before invoking the codegen;
+%  when no hints are declared, this returns `none` and the user
+%  effectively gets the bare dupsort path.
+%
+%  Kept as a thin wrapper here (rather than inlined) so the
+%  default fallback policy is documented in one place and easy to
+%  change later (e.g. flip the default from `none` to `sharded`
+%  once auto-detection of workload class is added).
+resolve_auto_cache_mode(Mode) :-
+    select_cache_mode(none, Mode).
+
+generate_lmdb_functions(Options, Code) :-
+    read_kernel_template('lmdb_fact_source.hs.mustache', Template),
+    (   option(lmdb_layout(dupsort), Options)
+    ->  Dupsort = true
+    ;   Dupsort = false
+    ),
+    % Two-level wins over all single-tier modes; sharded next; then
+    % per_hec; the deprecated memoize is treated like sharded for
+    % the new IOArray implementation (older IntMap is gone).
+    %
+    % `auto` consults statistics:select_cache_mode/2 with default
+    % `none`; users can populate workload hints via
+    % statistics:declare_cache_hints/1.  See Phase 3 in
+    % docs/proposals/WAM_HASKELL_LMDB_CACHE_TIERS.md.
+    (   option(lmdb_cache_mode(auto), Options),
+        Dupsort == true
+    ->  resolve_auto_cache_mode(ChosenMode)
+    ;   option(lmdb_cache_mode(Mode), Options),
+        member(Mode, [two_level, sharded, per_hec, memoize, none]),
+        Dupsort == true
+    ->  ChosenMode = Mode
+    ;   ChosenMode = none
+    ),
+    % Mode → flag mapping for the template:
+    %   two_level  → l1 + l2 + two_level
+    %   sharded    → l2
+    %   memoize    → l2 (deprecated synonym; same impl)
+    %   per_hec    → l1
+    %   none       → no cache
+    (   (ChosenMode == per_hec ; ChosenMode == two_level)
+    ->  CacheL1 = true
+    ;   CacheL1 = false
+    ),
+    (   (ChosenMode == sharded ; ChosenMode == memoize ; ChosenMode == two_level)
+    ->  CacheL2 = true
+    ;   CacheL2 = false
+    ),
+    (   ChosenMode == two_level
+    ->  CacheTwoLevel = true
+    ;   CacheTwoLevel = false
+    ),
+    % Legacy memoize section in the template is not used in Phase 2;
+    % the sharded IOArray implementation lives under lmdb_cache_l2.
+    CacheMemoize   = false,
+    % L2 capacity user override (bytes).  0 means "use the
+    % memory-aware default"; any positive integer overrides it.
+    % Mustache treats 0 as falsy so the {{#lmdb_l2_capacity_bytes}}
+    % section only fires for the override case.
+    (   option(lmdb_cache_l2_capacity_bytes(Bytes), Options),
+        integer(Bytes), Bytes > 0,
+        CacheL2 == true
+    ->  L2CapacityBytes = Bytes
+    ;   L2CapacityBytes = 0
+    ),
+    render_template(Template,
+                    [lmdb_dupsort=Dupsort,
+                     lmdb_cache_memoize=CacheMemoize,
+                     lmdb_cache_l1=CacheL1,
+                     lmdb_cache_l2=CacheL2,
+                     lmdb_cache_two_level=CacheTwoLevel,
+                     lmdb_l2_capacity_bytes=L2CapacityBytes],
+                    Code).
 
 %% maybe_parallelize_instrs(+PredIndicator, +Options, +InstrExprs0, -InstrExprs)
 %  Rewrite TryMeElse → ParTryMeElse etc. when the predicate certifies
@@ -3797,6 +4097,26 @@ wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
     clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
     reg_name_to_int(CN, NI), reg_name_to_int(CA, AI), reg_name_to_int(CT, TI),
     format(string(Hs), 'PutStructureDyn ~w ~w ~w', [NI, AI, TI]).
+wam_instr_to_haskell(["arg", N, TReg, AReg], Hs) :-
+    clean_comma(N, CN), clean_comma(TReg, CT), clean_comma(AReg, CA),
+    number_string(NI, CN),
+    reg_name_to_int(CT, TI), reg_name_to_int(CA, AI),
+    format(string(Hs), 'Arg ~w ~w ~w', [NI, TI, AI]).
+wam_instr_to_haskell(["not_member_list", XReg, LReg], Hs) :-
+    clean_comma(XReg, CX), clean_comma(LReg, CL),
+    reg_name_to_int(CX, XI), reg_name_to_int(CL, LI),
+    format(string(Hs), 'NotMemberList ~w ~w', [XI, LI]).
+wam_instr_to_haskell(["build_empty_set", Reg], Hs) :-
+    clean_comma(Reg, CR), reg_name_to_int(CR, RI),
+    format(string(Hs), 'BuildEmptySet ~w', [RI]).
+wam_instr_to_haskell(["set_insert", EReg, InReg, OutReg], Hs) :-
+    clean_comma(EReg, CE), clean_comma(InReg, CI), clean_comma(OutReg, CO),
+    reg_name_to_int(CE, EI), reg_name_to_int(CI, II), reg_name_to_int(CO, OI),
+    format(string(Hs), 'SetInsert ~w ~w ~w', [EI, II, OI]).
+wam_instr_to_haskell(["not_member_set", EReg, SReg], Hs) :-
+    clean_comma(EReg, CE), clean_comma(SReg, CS),
+    reg_name_to_int(CE, EI), reg_name_to_int(CS, SI),
+    format(string(Hs), 'NotMemberSet ~w ~w', [EI, SI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
@@ -3829,7 +4149,8 @@ wam_instr_to_haskell(["trust_me"], "TrustMe").
 wam_instr_to_haskell(["retry_me_else", Label], Hs) :-
     format(string(Hs), 'RetryMeElse "~w"', [Label]).
 wam_instr_to_haskell(["set_variable", Xn], Hs) :-
-    format(string(Hs), 'SetVariable "~w"', [Xn]).
+    clean_comma(Xn, CXn), reg_name_to_int(CXn, XnI),
+    format(string(Hs), 'SetVariable ~w', [XnI]).
 %% switch_on_constant key1:label1, key2:label2, ...
 wam_instr_to_haskell(["switch_on_constant"|Entries], Hs) :-
     parse_switch_entries(Entries, HsPairs),

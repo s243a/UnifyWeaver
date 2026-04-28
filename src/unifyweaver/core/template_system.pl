@@ -250,11 +250,27 @@ render_named_template(TemplateName, Dict, Options, Result) :-
 %% ORIGINAL TEMPLATE RENDERING (unchanged)
 %% ============================================
 
-%% Named placeholder substitution
-% Replaces {{name}} with corresponding value from dictionary
+%% Named placeholder substitution + section blocks.
+%
+% Supports a small mustache subset:
+%   {{name}}              — substitution (existing behavior)
+%   {{#flag}}...{{/flag}}  — truthy section: rendered iff Dict says flag is truthy
+%   {{^flag}}...{{/flag}}  — inverted section: rendered iff Dict says flag is falsy
+%
+% Section bodies may themselves contain {{name}} substitutions and other
+% sections (with different tag names; see limitation below).
+%
+% Truthiness rules: a key is truthy when it appears in Dict and its value
+% is not one of `false`, `0`, the empty string `""` or `''`, or the empty
+% list `[]`. A key not in Dict is falsy. Any other value is truthy.
+%
+% Limitation: same-named sections cannot nest. {{#x}}{{#x}}...{{/x}}{{/x}}
+% will close the outer section at the first {{/x}}. Different-named
+% sections nest fine.
 render_template(Template, Dict, Result) :-
     atom_string(Template, TStr),
-    render_template_string(TStr, Dict, Result).
+    expand_sections(TStr, Dict, Expanded),
+    render_template_string(Expanded, Dict, Result).
 
 % Fixed version using atom_string and sub_atom for reliable replacement
 render_template_string(Template, [], Template) :- !.
@@ -278,6 +294,108 @@ replace_substring(String, Find, Replace, Result) :-
         string_concat(Part1, RestResult, Result)
     ;   Result = String
     ).
+
+%% ============================================
+%% MUSTACHE SECTION EXPANSION
+%% ============================================
+%
+% Pre-processing pass that handles {{#flag}}...{{/flag}} and
+% {{^flag}}...{{/flag}} before the substitution pass runs.
+
+%% expand_sections(+Template, +Dict, -Result)
+%  Strips or keeps section blocks based on truthiness of dict entries.
+expand_sections(Template, Dict, Result) :-
+    (   find_first_section(Template, Kind, Tag, Before, Body, After)
+    ->  (   keep_section_block(Kind, Tag, Dict)
+        ->  expand_sections(Body, Dict, BodyExpanded),
+            expand_sections(After, Dict, AfterExpanded),
+            string_concat(Before, BodyExpanded, P1),
+            string_concat(P1, AfterExpanded, Result)
+        ;   expand_sections(After, Dict, AfterExpanded),
+            string_concat(Before, AfterExpanded, Result)
+        )
+    ;   Result = Template
+    ).
+
+%% find_first_section(+Str, -Kind, -Tag, -Before, -Body, -After)
+%  Locate the first {{#Tag}} or {{^Tag}} in Str and its matching
+%  {{/Tag}}.  Body is the section's contents (markers excluded);
+%  Before/After are the parts of Str outside the section.
+find_first_section(Str, Kind, Tag, Before, Body, After) :-
+    earliest_section_open(Str, Kind, Tag, OpenIdx, BodyStart),
+    format(string(CloseMarker), "{{/~w}}", [Tag]),
+    string_length(CloseMarker, CMLen),
+    sub_string(Str, BodyStart, _, 0, BodyAndAfter),
+    sub_string(BodyAndAfter, BodyEndRel, CMLen, _, CloseMarker),
+    sub_string(BodyAndAfter, 0, BodyEndRel, _, Body),
+    AfterStart is BodyEndRel + CMLen,
+    sub_string(BodyAndAfter, AfterStart, _, 0, After),
+    sub_string(Str, 0, OpenIdx, _, Before).
+
+%% earliest_section_open(+Str, -Kind, -Tag, -OpenIdx, -BodyStart)
+%  Find the earliest {{#TAG}} or {{^TAG}} in Str.  Returns Kind in
+%  {section, inverted_section}, the absolute Index of the {{ at the
+%  opener, and BodyStart, the absolute index just after the closing
+%  }} of the open marker.
+earliest_section_open(Str, Kind, Tag, OpenIdx, BodyStart) :-
+    findall(I-K-T-B,
+            ( ( K = section,          Marker = "{{#"
+              ; K = inverted_section, Marker = "{{^"
+              ),
+              section_marker_at(Str, Marker, I, T, B)
+            ),
+            All),
+    All \= [],
+    sort(All, [OpenIdx-Kind-Tag-BodyStart|_]).
+
+%% section_marker_at(+Str, +Marker, -OpenIdx, -Tag, -BodyStart)
+%  Locate `{{#TAG}}` or `{{^TAG}}` in Str.  Marker is the 3-character
+%  opener (e.g. "{{#").  TAG must be alphanumeric/underscore.
+section_marker_at(Str, Marker, OpenIdx, Tag, BodyStart) :-
+    string_length(Marker, MLen),
+    sub_string(Str, OpenIdx, MLen, _, Marker),
+    AfterMarker is OpenIdx + MLen,
+    sub_string(Str, AfterMarker, _, 0, Tail),
+    sub_string(Tail, EndRel, 2, _, "}}"),
+    sub_string(Tail, 0, EndRel, _, TagStr),
+    TagStr \= "",
+    valid_tag_name(TagStr),
+    atom_string(Tag, TagStr),
+    BodyStart is AfterMarker + EndRel + 2.
+
+%% valid_tag_name(+TagStr)
+%  A tag is valid if every character is alnum or underscore.  This
+%  prevents `{{#one}}…{{/two}}` from masquerading as `{{#one two}}`
+%  or matching tag boundaries with whitespace.
+valid_tag_name(TagStr) :-
+    string_chars(TagStr, Chars),
+    Chars \= [],
+    forall(member(C, Chars), tag_char(C)).
+
+tag_char(C) :- char_type(C, alnum), !.
+tag_char('_').
+
+%% keep_section_block(+Kind, +Tag, +Dict)
+%  True when the section body should be rendered.  For Kind=section
+%  this means Tag is truthy in Dict.  For Kind=inverted_section it
+%  means Tag is falsy.
+keep_section_block(section, Tag, Dict) :-
+    truthy_in(Dict, Tag).
+keep_section_block(inverted_section, Tag, Dict) :-
+    \+ truthy_in(Dict, Tag).
+
+%% truthy_in(+Dict, +Tag)
+%  Tag is truthy in Dict if Dict contains `Tag=Value` and Value is
+%  not falsy.  Falsy values: false, 0, "", '', [].
+truthy_in(Dict, Tag) :-
+    member(Tag=Value, Dict),
+    \+ falsy_value(Value).
+
+falsy_value(false).
+falsy_value(0).
+falsy_value("").
+falsy_value('').
+falsy_value([]).
 
 %% Compose multiple templates into one
 compose_templates([], _, "") :- !.
@@ -746,6 +864,66 @@ test_template_system :-
     get_template_config(test_template, [source_order([file])], Config7),
     member(source_order([file]), Config7),
     writeln('PASS'),
+
+    % Test 8: Truthy section keeps body
+    write('Test 8 - Section, truthy: '),
+    render_template('A{{#flag}}B{{/flag}}C', [flag=true], R8),
+    (sub_string(R8, _, _, _, 'ABC') -> writeln('PASS') ; (format('FAIL: got ~w~n', [R8]), fail)),
+
+    % Test 9: Falsy section drops body
+    write('Test 9 - Section, falsy: '),
+    render_template('A{{#flag}}B{{/flag}}C', [flag=false], R9),
+    (sub_string(R9, _, _, _, 'AC'), \+ sub_string(R9, _, _, _, 'B')
+     -> writeln('PASS') ; (format('FAIL: got ~w~n', [R9]), fail)),
+
+    % Test 10: Missing key is falsy
+    write('Test 10 - Missing key is falsy: '),
+    render_template('A{{#absent}}B{{/absent}}C', [], R10),
+    (sub_string(R10, _, _, _, 'AC'), \+ sub_string(R10, _, _, _, 'B')
+     -> writeln('PASS') ; (format('FAIL: got ~w~n', [R10]), fail)),
+
+    % Test 11: Inverted section, falsy renders
+    write('Test 11 - Inverted section, falsy: '),
+    render_template('A{{^flag}}B{{/flag}}C', [flag=false], R11),
+    (sub_string(R11, _, _, _, 'ABC') -> writeln('PASS') ; (format('FAIL: got ~w~n', [R11]), fail)),
+
+    % Test 12: Inverted section, truthy hides
+    write('Test 12 - Inverted section, truthy: '),
+    render_template('A{{^flag}}B{{/flag}}C', [flag=true], R12),
+    (sub_string(R12, _, _, _, 'AC'), \+ sub_string(R12, _, _, _, 'B')
+     -> writeln('PASS') ; (format('FAIL: got ~w~n', [R12]), fail)),
+
+    % Test 13: Empty string is falsy
+    write('Test 13 - Empty string is falsy: '),
+    render_template('A{{#flag}}B{{/flag}}C', [flag=""], R13),
+    (sub_string(R13, _, _, _, 'AC'), \+ sub_string(R13, _, _, _, 'B')
+     -> writeln('PASS') ; (format('FAIL: got ~w~n', [R13]), fail)),
+
+    % Test 14: Substitution inside truthy section
+    write('Test 14 - Substitution inside section: '),
+    render_template('Hello {{#greet}}{{name}}{{/greet}}!', [greet=true, name='World'], R14),
+    (sub_string(R14, _, _, _, 'Hello World!') -> writeln('PASS')
+     ; (format('FAIL: got ~w~n', [R14]), fail)),
+
+    % Test 15: Nested differently-named sections
+    write('Test 15 - Nested sections: '),
+    render_template('[{{#a}}A{{#b}}B{{/b}}{{/a}}]', [a=true, b=true], R15a),
+    render_template('[{{#a}}A{{#b}}B{{/b}}{{/a}}]', [a=true, b=false], R15b),
+    render_template('[{{#a}}A{{#b}}B{{/b}}{{/a}}]', [a=false, b=true], R15c),
+    (sub_string(R15a, _, _, _, '[AB]'),
+     sub_string(R15b, _, _, _, '[A]'), \+ sub_string(R15b, _, _, _, 'B'),
+     sub_string(R15c, _, _, _, '[]'),  \+ sub_string(R15c, _, _, _, 'A'),
+     \+ sub_string(R15c, _, _, _, 'B')
+     -> writeln('PASS')
+     ; (format('FAIL: a=t b=t got ~w~n  a=t b=f got ~w~n  a=f b=t got ~w~n',
+               [R15a, R15b, R15c]), fail)),
+
+    % Test 16: Backward compatibility — existing pure-substitution
+    % templates still render identically (no { #/^/ } syntax in them).
+    write('Test 16 - No section syntax = unchanged: '),
+    render_template('plain {{x}} plain {{y}} plain', [x='X', y='Y'], R16),
+    (sub_string(R16, _, _, _, 'plain X plain Y plain')
+     -> writeln('PASS') ; (format('FAIL: got ~w~n', [R16]), fail)),
 
     % Clean up
     clear_template_cache(test_cached),

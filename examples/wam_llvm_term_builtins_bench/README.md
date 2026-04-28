@@ -202,22 +202,54 @@ broken aliasing, so `run_loop → false`.
      put_variable heap pushes from a failed alternative do not leak
      into the next clause's heap region. **Landed.**
 
-  4. Ref-based `put_variable` + binding-site migration: **attempted
-     and reverted (again).** With (3) in place, the symptom changed
-     from "wrong answer" to "segfault on the first sum_small call",
-     deterministic and immediate. Root cause still not fully
-     diagnosed. Probable contributor: each reg-bind now produces
-     *two* trail entries (one via caller's `wam_trail_binding`, one
-     from `wam_bind_reg`'s heap-side trailing); the caller's entry is
-     a no-op on unwind (reg still holds Ref{H}) but it still consumes
-     a slot. Paired with deep recursion, the 256-entry trail buffer
-     may overflow with no bounds check. Out of scope for this PR.
+  4. Trail initial capacity raised from 256 to 16 384 entries
+     (~384 KB per VM). Previously enough for the current Phase 0
+     bench corpus, but the Ref-based put_variable landing will double
+     trail traffic (one reg entry from the caller plus one heap entry
+     from `wam_bind_reg`), so the extra headroom removes trail
+     overflow as a blocker. Still no bounds check in
+     `wam_trail_binding` / `wam_trail_heap_binding`; if 16 384 turns
+     out to be insufficient a realloc path will be needed. **Landed.**
 
-The structural-equals, Ref-aware helpers, and now CP-heap-top
-rewinding are the three pieces the future put_variable Ref fix will
-need. Two more pieces remain: trail-capacity growth (or tighter
-trailing) and a clean diagnosis of the segfault under the current
-helpers.
+  5. Ref-based `put_variable` + binding-site migration: **attempted
+     three times and reverted each time.** Third attempt (with all
+     four prerequisites above in place) finally diagnosed the root
+     cause, which is **not** in the Ref migration itself but in a
+     pre-existing WAM-LLVM register layout issue:
+
+     **Y-registers and X-registers share the same physical slots.**
+     `src/unifyweaver/bindings/llvm_wam_bindings.pl:73-85` maps both
+     `Yn` and `Xn` to index `n + 15` in the 32-slot `[32 x %Value]`
+     register array. Canonical WAM keeps Y-regs in per-call env
+     frames; this target flattened them into the X-reg space. As
+     long as Y-regs were treated as "just temporaries that happen to
+     survive allocate/deallocate", the naive put_variable scheme
+     (two independent Unbound structs in both regs) papered over the
+     issue — any inner-call trashing of outer's Y-regs got masked by
+     the aliasing that wasn't there.
+
+     With Ref-based put_variable, the Y-reg collisions become
+     visible: when an inner predicate does `get_variable Y3, A1`, it
+     writes the outer caller's Y3 slot. When the outer resumes after
+     the call and does `set_value Y3` (e.g. to pass the current
+     index to an arithmetic compound), it reads the trashed value.
+     `bench_sum_small` works by coincidence because the arg values
+     happen to equal the iteration indices (`f(1,2,3)` — arg at
+     position I equals I). `bench_sum_medium` breaks because
+     `g(2,3)` as an arg makes `arg_value != I`.
+
+     **Proper fix** needs Y-regs to live in per-call env frames,
+     with `allocate` reserving Y-slots, `deallocate` popping them,
+     and `get_variable Yn` / `set_value Yn` reading/writing the top
+     env frame's Y-array. That is a substantial refactor touching
+     `allocate`, `deallocate`, every Y-reg access in
+     `wam_line_to_llvm_literal`, and probably backtrack's register
+     restore. Out of scope for Phase 0 / initial Ref work.
+
+The structural-equals, Ref-aware helpers, CP-heap-top rewinding, and
+trail headroom remain useful — they will all be needed when the
+Y-reg env-frame refactor lands, after which the Ref-based
+put_variable migration can finally succeed.
 
 ### `put_constant` tag fix (landed in this PR)
 

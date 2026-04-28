@@ -22,11 +22,13 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_haskell_optimized_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [accumulated|seeded]
+%%       <facts.pl> <output-dir> [accumulated|seeded|accumulated_no_kernels|seeded_no_kernels]
 %%
 %% Variants:
-%%   seeded      — base category_ancestor + power_sum_bound (no helpers)
-%%   accumulated — full seeded accumulation with effective_distance_sum helpers
+%%   seeded                 — base category_ancestor + power_sum_bound (no helpers)
+%%   accumulated            — full seeded accumulation with effective_distance_sum helpers
+%%   seeded_no_kernels      — seeded, with native recursive kernels disabled
+%%   accumulated_no_kernels — accumulated, with native recursive kernels disabled
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -40,7 +42,7 @@ main :-
     ;   Argv = [_FactsPath, OutputDir]
     ->  VariantAtom = accumulated  % default
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded]~n', []),
+            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded|accumulated_no_kernels|seeded_no_kernels]~n', []),
         halt(1)
     ),
     generate(VariantAtom, OutputDir),
@@ -51,6 +53,7 @@ main :-
     halt(1).
 
 generate(VariantAtom, OutputDir) :-
+    parse_variant(VariantAtom, BaseVariant, KernelOptions, OptimizationOptions),
     % Step 1: Load the base workload
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
@@ -58,7 +61,6 @@ generate(VariantAtom, OutputDir) :-
     assertz(user:mode(category_ancestor(-, +, -, +))),
 
     % Step 2: Generate optimized Prolog via prolog_target
-    parse_variant(VariantAtom, OptimizationOptions),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
 
@@ -70,22 +72,35 @@ generate(VariantAtom, OutputDir) :-
     delete_file(TmpPath),
 
     % Step 4: Collect all relevant predicates (base + generated helpers)
-    collect_wam_predicates(VariantAtom, Predicates),
-    format(user_error, '[WAM-Haskell-Optimized] variant=~w predicates=~w~n',
-           [VariantAtom, Predicates]),
+    collect_wam_predicates(BaseVariant, Predicates),
+    format(user_error, '[WAM-Haskell-Optimized] variant=~w base_variant=~w predicates=~w~n',
+           [VariantAtom, BaseVariant, Predicates]),
 
     % Step 5: Generate Haskell WAM project
-    query_pred_for_variant(VariantAtom, QueryPredOpts),
-    append([module_name('wam-haskell-bench'), emit_mode(functions)], QueryPredOpts, Options),
+    query_pred_for_variant(BaseVariant, QueryPredOpts),
+    format(atom(ModeAtom), 'wam_haskell_~w', [VariantAtom]),
+    append([module_name('wam-haskell-bench'), emit_mode(functions), benchmark_mode(ModeAtom)], QueryPredOpts, Options0),
+    append(Options0, KernelOptions, Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error, '[WAM-Haskell-Optimized] Generated project at ~w~n', [OutputDir]).
 
-parse_variant(seeded, [
+parse_variant(seeded, seeded, [], [
     dialect(swi),
     branch_pruning(false),
     min_closure(false)
 ]).
-parse_variant(accumulated, [
+parse_variant(accumulated, accumulated, [], [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false),
+    seeded_accumulation(auto)
+]).
+parse_variant(seeded_no_kernels, seeded, [no_kernels(true)], [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+parse_variant(accumulated_no_kernels, accumulated, [no_kernels(true)], [
     dialect(swi),
     branch_pruning(false),
     min_closure(false),

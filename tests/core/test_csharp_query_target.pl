@@ -291,6 +291,8 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_param_seed_filtered_probe_uses_scan_index_partial,
         verify_multi_key_both_scan_join_strategy_partial_index,
+        verify_nary_artifact_bucket_join_strategy,
+        verify_nary_artifact_bucket_hash_fallback_strategy,
         verify_both_scan_join_selective_probe_uses_partial_index,
         verify_both_scan_join_filter_selective_probe_uses_partial_index,
         verify_multi_key_both_scan_join_rowcount_tie_prefers_distinct_tie_break_left,
@@ -2429,6 +2431,62 @@ verify_multi_key_both_scan_join_strategy_partial_index :-
          'alice,laptop,2,10',
          'alice,laptop,2,20',
         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_nary_artifact_bucket_join_strategy :-
+    setup_call_cleanup(
+        setup_nary_artifact_bucket_join_source,
+        verify_nary_artifact_bucket_join_strategy_(),
+        cleanup_nary_artifact_bucket_join_source
+    ).
+
+verify_nary_artifact_bucket_join_strategy_ :-
+    csharp_query_target:build_query_plan(test_nary_artifact_bucket_join_strategy/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:_, right:_, left_keys:[0], right_keys:[0], left_width:3, right_width:3, width:6}, Root),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_source_mode_strategy_flag(
+        ModuleClass,
+        [],
+        'artifact-prebuilt',
+        'KeyJoinIndexedRelationProviderBucketMerge',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['Keyboard,Keyboard',
+         'Laptop,Laptop',
+         'Mouse,Mouse',
+         'STRATEGY_USED:KeyJoinIndexedRelationProviderBucketMerge=true'],
+        [],
+        HarnessSource).
+
+verify_nary_artifact_bucket_hash_fallback_strategy :-
+    setup_call_cleanup(
+        setup_nary_artifact_bucket_join_source,
+        verify_nary_artifact_bucket_hash_fallback_strategy_(),
+        cleanup_nary_artifact_bucket_join_source
+    ).
+
+verify_nary_artifact_bucket_hash_fallback_strategy_ :-
+    csharp_query_target:build_query_plan(test_nary_artifact_bucket_join_strategy/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:_, right:_, left_keys:[0], right_keys:[0], left_width:3, right_width:3, width:6}, Root),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_source_mode_without_bucket_rows_strategy_flag(
+        ModuleClass,
+        [],
+        'artifact-prebuilt',
+        'KeyJoinIndexedRelationProviderBucketHashBuildLeft',
+        HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['Keyboard,Keyboard',
+         'Laptop,Laptop',
+         'Mouse,Mouse',
+         'STRATEGY_USED:KeyJoinIndexedRelationProviderBucketHashBuildLeft=true'],
         [],
         HarnessSource).
 
@@ -6174,6 +6232,8 @@ verify_dynamic_source_plan_ :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'DelimitedTextReader'),
     sub_string(Source, _, _, _, 'test_users.csv'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterBinaryRelation'),
     maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
 
 verify_tsv_dynamic_source_plan :-
@@ -6189,6 +6249,7 @@ verify_tsv_dynamic_source_plan_ :-
     sub_string(Source, _, _, _, 'configuredProvider.RegisterDelimitedRelation'),
     sub_string(Source, _, _, _, 'new DelimitedRelationSource'),
     sub_string(Source, _, _, _, 'test_sales.tsv'),
+    \+ sub_string(Source, _, _, _, 'configuredProvider.RegisterBinaryRelation'),
     string_codes(TabLiteral, [39, 92, 116, 39]),
     sub_string(Source, _, _, _, TabLiteral),
     maybe_run_query_runtime(Plan, ['Laptop,1200', 'Mouse,25', 'Keyboard,75']).
@@ -6415,6 +6476,18 @@ cleanup_tsv_dynamic_source :-
     retractall(user:test_sales_total(_, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_sales/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_sales/3, _)).
+
+setup_nary_artifact_bucket_join_source :-
+    setup_tsv_dynamic_source,
+    assertz(user:(
+        test_nary_artifact_bucket_join_strategy(Product, Product2) :-
+            test_sales(Order, Product, _),
+            test_sales(Order, Product2, _)
+    )).
+
+cleanup_nary_artifact_bucket_join_source :-
+    retractall(user:test_nary_artifact_bucket_join_strategy(_, _)),
+    cleanup_tsv_dynamic_source.
 
 setup_json_dynamic_source :-
     source(json, test_products, [
@@ -7467,6 +7540,112 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
 var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
 Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
 ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_source_mode_strategy_flag(ModuleClass, Params, SourceMode, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Globalization;
+ using System.Linq;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using UnifyWeaver.QueryRuntime;
+
+Environment.SetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE", "~w");
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   ', [SourceMode, ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_source_mode_without_bucket_rows_strategy_flag(ModuleClass, Params, SourceMode, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Globalization;
+ using System.IO;
+ using System.Linq;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using UnifyWeaver.QueryRuntime;
+
+var artifactDir = Path.Combine(Directory.GetCurrentDirectory(), "relation-artifacts");
+Directory.CreateDirectory(artifactDir);
+Environment.SetEnvironmentVariable("UNIFYWEAVER_RELATION_SOURCE_MODE", "~w");
+Environment.SetEnvironmentVariable("UNIFYWEAVER_RELATION_ARTIFACT_DIR", artifactDir);
+var result = UnifyWeaver.Generated.~w.Build();
+foreach (var path in Directory.GetFiles(artifactDir, "*.uwdrb"))
+{
+    File.Delete(path);
+}
+foreach (var path in Directory.GetFiles(artifactDir, "*.uwbrb"))
+{
+    File.Delete(path);
+}
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   ', [SourceMode, ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
 harness_source_with_strategy_flag_quiet_no_reuse(ModuleClass, Params, Strategy, Source) :-
     (   Params == []

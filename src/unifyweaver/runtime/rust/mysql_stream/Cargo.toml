@@ -1,0 +1,21 @@
+[package]
+name = "mysql_stream"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Streaming parser for MySQL INSERT dumps — leaf primitive for UnifyWeaver"
+
+[dependencies]
+flate2 = "1.0"
+
+[[bin]]
+name = "mysql_stream"
+path = "src/main.rs"
+
+[lib]
+name = "mysql_stream"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
