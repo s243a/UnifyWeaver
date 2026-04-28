@@ -2400,6 +2400,37 @@ step !_ctx s (NotMemberList xReg lReg) =
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- IntSet visited support: write an empty set into the named register.
+-- Used by the WAM compiler at the bootstrap site of a visited-set
+-- argument (e.g. the `[Cat]` literal flowing into category_ancestor)
+-- so the recursive call sees a VSet rather than a VList.
+step !_ctx s (BuildEmptySet r) =
+  Just (s { wsPC = wsPC s + 1
+          , wsRegs = IM.insert r (VSet IS.empty) (wsRegs s) })
+
+-- IntSet insert: read element from elemReg (must deref to Atom), read
+-- the input VSet from inReg, write the inserted set to outReg. Returns
+-- Nothing if the element is not an atom or the input is not a VSet.
+step !_ctx s (SetInsert eReg inReg outReg) =
+  let mE  = derefVar (wsBindings s) <$> IM.lookup eReg (wsRegs s)
+      mIn = derefVar (wsBindings s) <$> IM.lookup inReg (wsRegs s)
+  in case (mE, mIn) of
+    (Just (Atom aid), Just (VSet s0)) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsRegs = IM.insert outReg (VSet (IS.insert aid s0)) (wsRegs s) })
+    _ -> Nothing
+
+-- IntSet membership: succeed when elemReg (an Atom) is NOT in setReg
+-- (a VSet). O(log N) lookup, replacing the O(N) walk of NotMemberList
+-- on the visited-set hot path.
+step !_ctx s (NotMemberSet eReg setReg) =
+  let mE   = derefVar (wsBindings s) <$> IM.lookup eReg (wsRegs s)
+      mSet = derefVar (wsBindings s) <$> IM.lookup setReg (wsRegs s)
+  in case (mE, mSet) of
+    (Just (Atom aid), Just (VSet s0)) ->
+      if IS.member aid s0 then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 -- =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
 -- compose (unbound A1, list in A2).
 step !_ctx s (BuiltinCall "=../2" _) =
@@ -3177,6 +3208,7 @@ generate_wam_types_hs(Code) :-
 
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.Array (Array, listArray, (!), bounds)
 -- Phase 4.2: NFData is needed for parMap rdeepseq to fully evaluate
 -- each forked branch''s contribution before the merge step.
@@ -3189,6 +3221,7 @@ data Value = Atom !Int          -- interned atom ID
            | Integer !Int
            | Float !Double
            | VList [Value]
+           | VSet !IS.IntSet    -- visited-set: IntSet of interned atom IDs
            | Str !Int [Value]   -- interned functor name, args
            | Unbound !Int       -- variable ID (interned via wsVarCounter)
            | Ref Int
@@ -3324,6 +3357,7 @@ instance NFData Value where
   rnf (Integer n)      = rnf n
   rnf (Float f)        = rnf f
   rnf (VList xs)       = rnf xs
+  rnf (VSet s)         = rnf (IS.size s)  -- IntSet has no NFData; force size
   rnf (Str n args)     = rnf n `seq` rnf args
   rnf (Unbound n)      = rnf n
   rnf (Ref n)          = rnf n
@@ -3455,6 +3489,9 @@ data Instruction
   | BuiltinCall String !Int
   | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
   | NotMemberList !RegId !RegId       -- specialized \\+ member(X, L): X reg, L reg
+  | BuildEmptySet !RegId              -- write VSet IS.empty into the named register
+  | SetInsert !RegId !RegId !RegId    -- elemReg, inSetReg, outSetReg
+  | NotMemberSet !RegId !RegId        -- elemReg, setReg: O(log N) member check
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
@@ -4069,6 +4106,17 @@ wam_instr_to_haskell(["not_member_list", XReg, LReg], Hs) :-
     clean_comma(XReg, CX), clean_comma(LReg, CL),
     reg_name_to_int(CX, XI), reg_name_to_int(CL, LI),
     format(string(Hs), 'NotMemberList ~w ~w', [XI, LI]).
+wam_instr_to_haskell(["build_empty_set", Reg], Hs) :-
+    clean_comma(Reg, CR), reg_name_to_int(CR, RI),
+    format(string(Hs), 'BuildEmptySet ~w', [RI]).
+wam_instr_to_haskell(["set_insert", EReg, InReg, OutReg], Hs) :-
+    clean_comma(EReg, CE), clean_comma(InReg, CI), clean_comma(OutReg, CO),
+    reg_name_to_int(CE, EI), reg_name_to_int(CI, II), reg_name_to_int(CO, OI),
+    format(string(Hs), 'SetInsert ~w ~w ~w', [EI, II, OI]).
+wam_instr_to_haskell(["not_member_set", EReg, SReg], Hs) :-
+    clean_comma(EReg, CE), clean_comma(SReg, CS),
+    reg_name_to_int(CE, EI), reg_name_to_int(CS, SI),
+    format(string(Hs), 'NotMemberSet ~w ~w', [EI, SI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
