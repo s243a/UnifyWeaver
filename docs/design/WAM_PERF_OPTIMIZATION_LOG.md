@@ -1138,3 +1138,75 @@ position into the IntSet representation. Expected speedup: another
 | `wam_term_construction_bench.pl` (microbench) | — |
 | `wam_not_member_bench.pl` (microbench) | — |
 | `wam_effective_distance_macro_bench.pl` (macrobench, NEW) | — |
+
+---
+
+## Phase H: IntSet-backed visited (Layer 1 — runtime + ADT) (2026-04-28)
+
+**Branch:** `feat/wam-haskell-intset-visited`
+
+Implements Layer 1 of the IntSet visited design
+(`WAM_HASKELL_INTSET_VISITED_DESIGN.md` from PR #1684): the runtime
+data structures and instructions, validated by 12 codegen unit
+tests. Layer 2 (compile-time recognition of the
+`:- visited_set/2` directive and the bootstrap/recursive/`\\+ member`
+emission triple) is the natural follow-up — it's where the actual
+speedup gets unlocked, and it's substantial enough on its own to
+warrant a focused PR with its own test gates.
+
+### Changes
+
+#### `src/unifyweaver/targets/wam_haskell_target.pl` (template edits)
+
+- **`Value` ADT**: add `VSet !IS.IntSet` variant; `import qualified Data.IntSet as IS` in WamTypes.
+- **`NFData Value`**: add `rnf (VSet s) = rnf (IS.size s)` branch (IntSet has no NFData; force the size to ensure thunks resolve).
+- **`Instruction` ADT**: add three new constructors:
+  - `BuildEmptySet !RegId` — write `VSet IS.empty` into the named register.
+  - `SetInsert !RegId !RegId !RegId` — `elemReg`, `inSetReg`, `outSetReg`.
+  - `NotMemberSet !RegId !RegId` — `elemReg`, `setReg`; succeeds when the elem is NOT in the set.
+- **Step handlers** for the three new instructions, mirroring the design doc's pseudocode. `SetInsert` and `NotMemberSet` require the element to deref to an `Atom` (visited-set members are interned atom IDs); non-atom elements return `Nothing` (semantically: backtrack).
+- **WAM text parsers**: `build_empty_set XReg`, `set_insert EReg, InReg, OutReg`, `not_member_set EReg, SReg`.
+
+#### Tests
+
+`tests/core/test_wam_intset_runtime.pl` (NEW, 12 tests, all green):
+
+| Section | Coverage |
+|---|---|
+| Value type | `VSet !IS.IntSet` present, `Data.IntSet` imported, `NFData VSet` branch present |
+| Instruction ADT | `BuildEmptySet`, `SetInsert`, `NotMemberSet` all present |
+| Step handlers | All three handler bodies emit the right `IS.*` operations |
+| WAM parsers | All three text→ADT translations produce correct register IDs |
+
+Plus the existing `test_wam_haskell_target.pl` suite stays green
+(verifies the new variant doesn't break any pattern-match
+exhaustiveness on `Value`), and the cabal e2e
+(`test_wam_term_construction_e2e.pl`) still builds successfully —
+GHC is happy with the new variant + the explicit `NFData VSet`
+branch + the `_ -> Nothing` fall-throughs in non-set-aware
+handlers.
+
+### What does NOT lower yet (Layer 2)
+
+The Phase H runtime is correct but currently *unreachable* from
+user code: nothing in the WAM compiler emits `BuildEmptySet` /
+`SetInsert` / `NotMemberSet`, so a clause that uses
+`\\+ member(X, V)` still compiles to `NotMemberList` (or the
+slow path, depending on mode declarations). The compile-time
+integration is the next PR.
+
+The Layer 2 work needs:
+1. A `:- visited_set(Pred/Arity, ArgN)` directive parser/registry.
+2. Per-clause context for "this head's visited-set vars".
+3. `compile_goal_call(\\+ member(X, V), ...)` clause that emits
+   `NotMemberSet` when `V` is in the visited-set context.
+4. `compile_put_argument` integration to detect when an arg
+   position matches a directive AND the arg is a list literal
+   (bootstrap) or `[X|V_visited]` (recursive extension), and
+   emit `BuildEmptySet` + `SetInsert` × N or
+   `SetInsert(X, V_visited, FreshReg)` instead of the standard
+   list-build sequence.
+
+Steps 3 and 4 must coordinate — they share state (the head's
+visited-set vars) and emission rules. That's the heart of the
+follow-up PR.
