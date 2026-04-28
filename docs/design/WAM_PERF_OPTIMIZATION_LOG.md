@@ -936,3 +936,104 @@ After this appendix lands the term-construction arc has:
 
 Plus 30 + lines added to the existing `step (GetValue xn ai)` to
 cover the symmetric case.
+
+---
+
+## Phase G: \\+ member(X, L) lowering (2026-04-28)
+
+**Branch:** `feat/wam-haskell-member-lowering-and-realworkload`
+
+Adds the `NotMemberList` instruction and the matching
+`compile_goal_call(\\+ member(X, L), ...)` clause that fires when
+binding-state analysis proves both X and L are `bound`. Unlike the
+construction-side lowerings (`=../2`, `functor/3`) and the
+projection-side lowering (`arg/3`), this one targets a pattern that
+appears verbatim in real graph-traversal workloads
+(`category_ancestor`, etc.) — the visited-set check.
+
+### What replaces what
+
+The existing path for `\\+ member(X, V)` emits:
+
+```
+put_structure member/2, A1
+set_value Reg(X)
+set_value Reg(V)
+builtin_call \\+/1, 1
+```
+
+(4 dispatches plus a heap allocation for the `Str "member/2" [X, V]`
+goal term.) The runtime then fast-paths to a `VList` walk inside the
+`\\+/1` handler.
+
+The lowered path emits one instruction:
+
+```
+not_member_list Reg(X), Reg(V)
+```
+
+The `NotMemberList` step handler reads X and L directly from
+registers (no goal-term construction) and walks `VList items`
+inline, skipping the dispatch chain and the heap allocation.
+
+### Measurement
+
+`tests/benchmarks/wam_not_member_bench.pl` builds a project with
+`bench_notmember_lowered/2` (mode-annotated) and
+`bench_notmember_unlowered/2` (no mode) — same Prolog source, same
+50-item visited list at runtime, X is an Integer that varies
+per-iteration to defeat constant folding.
+
+At N = 200,000 (GHC 8.6.5, `-O2`):
+
+| Trial block | lowered (s) | unlowered (s) | speedup |
+|---|---:|---:|---:|
+| Block 1 | 0.290 | 0.350 | 1.21× |
+| Block 2 | 0.296 | 0.317 | 1.07× |
+| **Mean** | **0.293** | **0.334** | **~1.14×** |
+
+A modest ~14 % win. Most of the per-call cost is the actual list
+walk (50 atom comparisons), which both paths still do; the savings
+are ~210 ns per call from skipping the dispatch chain and heap
+allocation. The relative speedup will scale with how short the
+visited list is — for a list of 5 items the dispatch overhead is a
+larger fraction of total work, so the speedup will be larger.
+
+### Real-workload applicability (option 1)
+
+The visited-set check pattern in `category_ancestor`-style
+predicates uses `\\+ member(Z, V)` where Z is bound (output of
+`parent(X, Z)` in the previous goal) and V is bound (mode `+`
+head argument). Existing benchmarks declare
+`mode(category_ancestor(-, +, -, +))`. As of this PR, when
+`category_ancestor`'s body compiles to WAM (the WAM-only path,
+not the lowered-Haskell or FFI'd-kernel path), the
+`NotMemberList` lowering fires automatically — no source changes
+needed in the benchmark fixtures. Future benchmark runs that
+exercise the WAM-only ancestry path should see the same
+~14 % per-call improvement compounded across recursion depth.
+
+### Tests
+
+`tests/core/test_wam_not_member_lowering.pl`, 5 tests:
+
+| Test | What it covers |
+|---|---|
+| `test_not_member_lowered_when_x_and_l_bound` | Mode +,+ ⇒ `not_member_list` |
+| `test_not_member_no_mode_falls_through` | No mode ⇒ `builtin_call \\+/1` |
+| `test_not_member_only_x_bound_falls_through` | L `?` ⇒ no lowering |
+| `test_not_member_only_l_bound_falls_through` | X `?` ⇒ no lowering |
+| `test_plain_member_not_lowered` | `member` alone (no `\\+`) is NOT lowered (semantics-preserving) |
+
+### Out-of-scope follow-ups
+
+- **Visited-set as IntSet.** The big win for graph traversal is
+  representing visited as `IntSet`, not `[Value]`. That would
+  reduce `\\+ member` from O(N) to O(log N). It is a fundamental
+  data-structure change — not a lowering — and is filed as
+  separate work.
+- **`member(X, L)` succeeding case.** The current lowering only
+  fires inside `\\+`; positive `member` with a bound L (i.e. a
+  type-test "is X one of these atoms") could use the same
+  walk-inline shape but with success/fail inverted. Marginal
+  utility — the negation case is the common visited-set check.

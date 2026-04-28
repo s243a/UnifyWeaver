@@ -2383,6 +2383,23 @@ step !_ctx s (Arg n tReg aReg) | n >= 1 =
     Nothing -> Nothing
 step !_ctx _ (Arg _ _ _) = Nothing
 
+-- Specialized \\+ member(X, L) lowering: NotMemberList xReg lReg.
+-- Skips the put_structure member/2 + set_value + set_value +
+-- builtin_call \\+/1 chain (4 dispatches, plus the heap allocation
+-- for the goal term) by reading X and L directly from registers and
+-- walking L inline. Emitted by the WAM compiler when binding-state
+-- analysis proves both X and L are bound at the goal site.
+step !_ctx s (NotMemberList xReg lReg) =
+  let mX = derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s)
+      mL = derefVar (wsBindings s) <$> IM.lookup lReg (wsRegs s)
+  in case (mX, mL) of
+    (Just x, Just l) ->
+      let found = case l of
+            VList items -> any (\\item -> derefVar (wsBindings s) item == x) items
+            _ -> False
+      in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 -- =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
 -- compose (unbound A1, list in A2).
 step !_ctx s (BuiltinCall "=../2" _) =
@@ -3437,6 +3454,7 @@ data Instruction
   | SwitchOnConstantPc !(IM.IntMap Int)      -- post-resolution: interned atom ID -> PC
   | BuiltinCall String !Int
   | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
+  | NotMemberList !RegId !RegId       -- specialized \\+ member(X, L): X reg, L reg
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
@@ -4047,6 +4065,10 @@ wam_instr_to_haskell(["arg", N, TReg, AReg], Hs) :-
     number_string(NI, CN),
     reg_name_to_int(CT, TI), reg_name_to_int(CA, AI),
     format(string(Hs), 'Arg ~w ~w ~w', [NI, TI, AI]).
+wam_instr_to_haskell(["not_member_list", XReg, LReg], Hs) :-
+    clean_comma(XReg, CX), clean_comma(LReg, CL),
+    reg_name_to_int(CX, XI), reg_name_to_int(CL, LI),
+    format(string(Hs), 'NotMemberList ~w ~w', [XI, LI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
