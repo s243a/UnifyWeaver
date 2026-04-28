@@ -74,7 +74,11 @@
     probe_sfg1_v0/0, probe_sfg1_v1/0, probe_sfg1_v2/0, probe_sfg1_v3/0,
     probe_s1g1/1, probe_sfg1/1,
     probe_sg_v0/0, probe_sg_v1/0, probe_sg_v2/0, probe_sg_v3/0,
-    probe_sg/1
+    probe_sg/1,
+    dbg_sum/3, dbg_sum_args/5,
+    probe_dbg_sum_fg/0, probe_dbg_sum_g/0,
+    probe_dbg_sum_f12/0, probe_dbg_sum_f1g/0,
+    probe_nested_build/0
 ]).
 :- use_module('../wam_term_builtins_bench/bench_suite', [term_depth_args/5]).
 :- use_module('../wam_term_builtins_bench/bench_term_walk').
@@ -223,6 +227,63 @@ probe_sg_v0 :- probe_sg(0).
 probe_sg_v1 :- probe_sg(1).
 probe_sg_v2 :- probe_sg(2).
 probe_sg_v3 :- probe_sg(3).
+
+%% Debug-instrumented sum_ints with prints between steps.
+%% Prints intermediate accumulator values so we can see exactly where
+%% the nested-compound recursion diverges from the expected trace.
+dbg_sum(T, Acc, Sum) :-
+    write(77000), nl,        %% entry print: every call to dbg_sum
+    integer(T), !,
+    write(77001), nl,        %% integer-clause path
+    write(T), nl,
+    Sum is Acc + T,
+    write(77002), nl,
+    write(Sum), nl.
+dbg_sum(T, Acc, Sum) :-
+    write(77003), nl,        %% compound-clause start
+    %% probe: is T compound here? (compound/1 should succeed)
+    (compound(T) -> write(77004) ; write(77005)), nl,
+    %% probe: is T a Ref? var(T) returns true if it's an unbound Ref.
+    (var(T) -> write(77006) ; write(77007)), nl,
+    functor(T, _F, Arity),
+    write(99001), nl,
+    write(Arity), nl,
+    dbg_sum_args(1, Arity, T, Acc, Sum),
+    write(99002), nl,
+    write(Sum), nl.
+
+dbg_sum_args(I, Arity, _, Acc, Sum) :- I > Arity, !, Sum = Acc.
+dbg_sum_args(I, Arity, T, Acc, Sum) :-
+    arg(I, T, A),
+    write(88001), nl,                              %% before call
+    (var(A) -> write(88002) ; write(88003)), nl,   %% A bound or not?
+    (compound(A) -> write(88004) ; write(88005)), nl, %% A compound?
+    (integer(A) -> write(88006) ; write(88007)), nl,  %% A integer?
+    dbg_sum(A, Acc, Acc1),
+    write(99003), nl,
+    write(Acc1), nl,
+    I1 is I + 1,
+    dbg_sum_args(I1, Arity, T, Acc1, Sum).
+
+%% Run dbg_sum over f(g(2)) — should print intermediate acc values.
+probe_dbg_sum_fg :- dbg_sum(f(g(2)), 0, _).
+probe_dbg_sum_g :- dbg_sum(g(2), 0, _).
+probe_dbg_sum_f12 :- dbg_sum(f(1, 2), 0, _).
+probe_dbg_sum_f1g :- dbg_sum(f(1, g(2)), 0, _).
+
+%% Test nested compound construction: build f(1, g(2,3)) and probe args.
+probe_nested_build :-
+    T = f(1, g(2, 3)),
+    arg(1, T, A1),
+    write(7001), nl,
+    write(A1), nl,           % should be 1
+    arg(2, T, A2),
+    write(7002), nl,
+    (compound(A2) -> write(7003) ; write(7004)), nl,    % should be compound
+    (var(A2) -> write(7005) ; write(7006)), nl,         % should NOT be var
+    arg(1, A2, A21),
+    write(7007), nl,
+    write(A21), nl.          % should be 2
 
 %% sum_ints on g(2,3) directly to isolate the inner-compound case
 probe_sg23(V) :- sum_ints(g(2, 3), 0, V).

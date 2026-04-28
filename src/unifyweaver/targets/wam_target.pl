@@ -872,6 +872,8 @@ is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
 is_builtin_pred(copy_term, 2). % term inspection: fresh-variable copy
+is_builtin_pred(write, 1).  % I/O — useful for runtime instrumentation.
+is_builtin_pred(nl, 0).
 is_builtin_pred(=, 2).       % unification: bind / structurally unify two terms.
                              % Without this entry, X = Y in a body goal
                              % would compile to `execute =/2`, which looks
