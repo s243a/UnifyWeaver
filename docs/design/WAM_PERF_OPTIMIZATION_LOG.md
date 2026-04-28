@@ -1210,3 +1210,74 @@ The Layer 2 work needs:
 Steps 3 and 4 must coordinate — they share state (the head's
 visited-set vars) and emission rules. That's the heart of the
 follow-up PR.
+
+---
+
+## Phase H appendix: IntSet Layer 2 partial — `\\+ member` lowering only (2026-04-28)
+
+**Branch:** `feat/wam-haskell-intset-visited-codegen`
+
+Implements two of the four pieces Layer 2 needs:
+
+1. **`:- visited_set(Pred/Arity, ArgN)` directive registry** — read at
+   compile time via `is_visited_set_arg/2`.
+2. **Per-clause visited-set var context** — `set_clause_visited_context/1`
+   captures head-arg variables matching the directive at clause start
+   into a non-backtrackable global, mirroring the existing
+   `wam_clause_binding_records` plumbing for binding-state analysis.
+3. **`\\+ member(X, V)` lowering** — when V is a head-arg variable in
+   the per-clause visited-set context, emits `not_member_set XReg, VReg`
+   instead of `not_member_list`. Tail-call form mirrored.
+
+Pieces still pending (documented as Layer 2.5):
+
+4. **Call-site arg rewriting** — converting `[Cat]` (bootstrap) and
+   `[X|V_visited]` (recursive extension) into `BuildEmptySet`/
+   `SetInsert` sequences when passed into a visited-set arg position.
+   Initial implementation revealed an interaction with the TCO
+   dispatch in `compile_goals/5` that caused infinite recursion on
+   simple test cases — backed out of this PR to keep the runtime
+   landing unblocked. The rewrite needs to be reworked so it doesn't
+   recurse through the same dispatch on the rewritten goal.
+
+### What does and doesn't lower
+
+| Pattern | Layer 2 (this PR) | Layer 2.5 (next PR) |
+|---|:---:|:---:|
+| `\\+ member(X, V)` where V is head's visited-set var | ✅ `not_member_set` | — |
+| `pred(..., [Cat], ...)` (bootstrap into visited slot) | put_list (unchanged) | `build_empty_set` + `set_insert` |
+| `pred(..., [X\|V_visited], ...)` (recursive cons) | put_list (unchanged) | `set_insert` |
+
+The `\\+ member` lowering is correct and useful in isolation **only
+once a separate code path constructs the `VSet`**. Without Layer 2.5,
+calling code that uses the directive will get `NotMemberSet` against
+a `VList`-typed register at runtime → handler returns `Nothing`. So
+in practice this PR adds the half-machinery; Layer 2.5 closes the loop.
+
+### Findall-vs-identity bug worth noting
+
+While implementing the per-clause visited-set var capture, an early
+implementation used `findall/3` to collect head-arg variables matching
+directives. `findall` creates fresh copies of captured variables,
+which broke `==` identity later when the body's `\\+ member(X, V)`
+goal compared its V against the captured set. Fixed by walking the
+head-arg list in place via a recursive `collect_visited_vars/4`
+helper that preserves variable identity. New regression test
+`test_visited_set_var_propagation_across_clauses` covers the case.
+
+### Tests
+
+`tests/core/test_wam_visited_set_lowering.pl` (NEW, 4 tests):
+
+| Test | Coverage |
+|---|---|
+| `test_not_member_set_when_visited_declared` | Directive + body `\\+ member` ⇒ `not_member_set` |
+| `test_no_visited_directive_keeps_not_member_list` | No directive ⇒ Phase G fallback fires |
+| `test_visited_set_var_propagation_across_clauses` | Multi-clause head var identity preserved across clause boundaries |
+| `test_unrelated_call_with_list_arg_unchanged` | Calls without visited_set directive are NOT rewritten |
+
+All 4/4 green. Plus the full
+`tests/test_wam_haskell_target.pl`,
+`tests/core/test_wam_not_member_lowering.pl`,
+`tests/core/test_binding_state_analysis.pl`, and
+`tests/core/test_wam_intset_runtime.pl` suites all stay green.
