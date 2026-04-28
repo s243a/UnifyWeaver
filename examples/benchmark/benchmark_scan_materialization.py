@@ -96,6 +96,12 @@ class Program
                 .Select(s => $"{s.NodeType}:{s.Strategy}={s.Count}"));
     }
 
+    static bool IsArtifactBucketStrategy(QueryStrategyTrace strategy)
+    {
+        return strategy.Strategy.StartsWith("KeyJoinIndexedRelationProviderBucket", StringComparison.Ordinal) &&
+               !string.Equals(strategy.Strategy, "KeyJoinIndexedRelationProviderBuckets", StringComparison.Ordinal);
+    }
+
     static string SummarizePhases(QueryExecutionTrace trace, string prefix)
     {
         return string.Join(
@@ -257,6 +263,7 @@ class Program
                                     strategy.Strategy.StartsWith("ScanRelationRetention", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanMaterializationPlan", StringComparison.Ordinal)));
 
+                Console.Error.WriteLine("bucket_strategies=" + SummarizeStrategies(trace, IsArtifactBucketStrategy));
                 Console.Error.WriteLine("scan_phase_summary=" + SummarizePhases(trace, "scan_"));
             }
 
@@ -420,7 +427,7 @@ def main() -> int:
                     for strategy in strategies:
                         results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
+        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	bucket_strategies	phases")
         grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
         by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
         for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
@@ -429,11 +436,12 @@ def main() -> int:
                 by_source_mode[(result.scale, result.mode, result.source_mode)] = result
             metrics = parse_metrics(result.stderr)
             planner = select_planner_summary(metrics)
+            bucket_strategies = metrics.get("bucket_strategies", "")
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
             print(
                 f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
-                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{phases}"
+                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{bucket_strategies}	{phases}"
             )
 
         for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
