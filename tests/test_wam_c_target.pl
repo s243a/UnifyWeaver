@@ -300,6 +300,16 @@ test_real_prolog_is_list_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_real_prolog_unify_executable_smoke :-
+    Test = 'WAM-C: real Prolog =/2 executable smoke',
+    (   gcc_available
+    ->  (   run_real_prolog_unify_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'real Prolog =/2 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 gcc_available :-
     catch(process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
@@ -468,6 +478,31 @@ run_real_prolog_is_list_executable_smoke :-
         run_c_smoke_plain(ExePath)
     ->  retractall(user:wam_c_real_is_list(_, _))
     ;   retractall(user:wam_c_real_is_list(_, _)),
+        fail
+    ).
+
+run_real_prolog_unify_executable_smoke :-
+    assertz((user:wam_c_real_unify(X, Y) :- X = Y)),
+    (   compile_predicate_to_wam(user:wam_c_real_unify/2, [], WamCode),
+        sub_string(WamCode, _, _, _, 'builtin_call =/2, 2'),
+        compile_wam_predicate_to_c(user:wam_c_real_unify/2, WamCode, [], PredCode),
+        compile_wam_runtime_to_c([], RuntimeCode),
+        get_time(Now),
+        Stamp is round(Now * 1000000),
+        format(atom(TmpBase), '/tmp/unifyweaver_wam_c_real_unify_smoke_~w', [Stamp]),
+        format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+        format(atom(PredPath), '~w_pred.c', [TmpBase]),
+        format(atom(MainPath), '~w_main.c', [TmpBase]),
+        format(atom(ExePath), '~w_bin', [TmpBase]),
+        write_text_file(RuntimePath, RuntimeCode),
+        format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+        write_text_file(PredPath, PredTranslationUnit),
+        wam_c_real_unify_smoke_main(MainCode),
+        write_text_file(MainPath, MainCode),
+        compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+        run_c_smoke_plain(ExePath)
+    ->  retractall(user:wam_c_real_unify(_, _))
+    ;   retractall(user:wam_c_real_unify(_, _)),
         fail
     ).
 
@@ -793,6 +828,43 @@ int main(void) {
 }
 ').
 
+wam_c_real_unify_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_real_unify_2(WamState* state);
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_real_unify_2(&state);
+
+    WamValue equal_args[2] = { val_atom("same"), val_atom("same") };
+    int equal_rc = wam_run_predicate(&state, "wam_c_real_unify/2", equal_args, 2);
+    if (equal_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue bind_args[2] = { val_unbound("X"), val_int(7) };
+    int bind_rc = wam_run_predicate(&state, "wam_c_real_unify/2", bind_args, 2);
+    if (bind_rc != 0 || state.P != WAM_HALT ||
+        state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue fail_args[2] = { val_atom("left"), val_atom("right") };
+    int fail_rc = wam_run_predicate(&state, "wam_c_real_unify/2", fail_args, 2);
+    if (fail_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
 implemented_wam_c_cases(Cases) :-
     compile_step_wam_to_c([], Code),
     atom_string(Code, S),
@@ -864,6 +936,7 @@ run_tests_once :-
     test_real_prolog_multiclause_executable_smoke,
     test_real_prolog_structure_index_executable_smoke,
     test_real_prolog_is_list_executable_smoke,
+    test_real_prolog_unify_executable_smoke,
     format('~n=== WAM-C Target Tests Complete ===~n'),
     (   test_failed -> halt(1) ; true ).
 
