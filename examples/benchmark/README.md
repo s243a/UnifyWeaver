@@ -1013,6 +1013,9 @@ Comparison note:
   print concrete artifact bucket join choices as
   `bucket_strategy_<node>_<strategy>=<count>` when trace data contains
   `KeyJoinIndexedRelationProviderBucket*` strategies
+- cross-target runners summarize those generated metrics as
+  `csharp-query-bucket-strategies` rows when `UNIFYWEAVER_BENCH_TRACE=1`
+  captures any concrete bucket strategies
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter

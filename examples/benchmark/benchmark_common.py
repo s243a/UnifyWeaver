@@ -366,6 +366,25 @@ def print_speedup(scale: str, label: str, faster_baseline: object | None, measur
 
 def print_phase_metrics(scale: str, label: str, result: object | None) -> None:
     if result and result.stderr:
-        phase_lines = [line.strip() for line in result.stderr.splitlines() if "=" in line]
+        phase_lines = [
+            line.strip()
+            for line in result.stderr.splitlines()
+            if "=" in line and not line.startswith("bucket_strategy_")
+        ]
         if phase_lines:
             print(f"{scale}\t{label}\t" + " ".join(phase_lines))
+
+
+def summarize_bucket_strategy_metrics(stderr: str) -> str:
+    return " ".join(
+        line.strip()
+        for line in stderr.splitlines()
+        if line.startswith("bucket_strategy_") and "=" in line
+    )
+
+
+def print_bucket_strategy_metrics(scale: str, label: str, result: object | None) -> None:
+    if result and result.stderr:
+        summary = summarize_bucket_strategy_metrics(result.stderr)
+        if summary:
+            print(f"{scale}\t{label}\t{summary}")

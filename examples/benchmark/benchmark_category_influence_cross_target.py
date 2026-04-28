@@ -23,6 +23,7 @@ from benchmark_common import (
     find_result,
     group_results_by_scale,
     normalize_two_column_float_rows,
+    print_bucket_strategy_metrics,
     print_match_status,
     print_phase_metrics,
     print_result_table,
@@ -135,9 +136,9 @@ def print_summary(results: list[RunResult]) -> None:
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
     for scale, entries in group_results_by_scale(results):
         print_result_table(entries, scale)
+        csharp = find_result(entries, "csharp-query")
         if len(entries) > 1:
             print_match_status(scale, "outputs", entries)
-            csharp = find_result(entries, "csharp-query")
             rust = find_result(entries, "rust-dfs")
             go = find_result(entries, "go-dfs")
             prolog = find_result(entries, "prolog-accumulated")
@@ -149,8 +150,9 @@ def print_summary(results: list[RunResult]) -> None:
                 speedup = (go.median / rust.median) if faster == "rust-dfs" else (rust.median / go.median)
                 print(f"{scale}\tfaster_target\t{faster}")
                 print(f"{scale}\tspeedup\t{speedup:.2f}x")
-            print_phase_metrics(scale, "csharp-query-metrics", csharp)
             print_phase_metrics(scale, "prolog-accumulated-metrics", prolog)
+        print_phase_metrics(scale, "csharp-query-metrics", csharp)
+        print_bucket_strategy_metrics(scale, "csharp-query-bucket-strategies", csharp)
 
 
 def main() -> int:
