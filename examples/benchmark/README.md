@@ -1009,6 +1009,10 @@ Comparison note:
 - set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
   `csharp-query` longest-depth benchmark to print both per-phase DAG
   timings and DAG retention strategy buckets to `stderr`
+- generated `csharp-query` DAG, weight-sum, and path-min workloads also
+  print concrete artifact bucket join choices as
+  `bucket_strategy_<node>_<strategy>=<count>` when trace data contains
+  `KeyJoinIndexedRelationProviderBucket*` strategies
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
