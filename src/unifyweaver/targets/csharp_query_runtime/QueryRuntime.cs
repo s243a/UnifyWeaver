@@ -6271,9 +6271,11 @@ namespace UnifyWeaver.QueryRuntime
                                 rightScanPattern,
                                 rightScanFilter,
                                 join.RightKeys[0],
+                                out var indexedBucketStrategy,
                                 out var indexedBucketRows))
                         {
                             trace?.RecordStrategy(join, "KeyJoinIndexedRelationProviderBuckets");
+                            trace?.RecordStrategy(join, indexedBucketStrategy);
                             foreach (var row in indexedBucketRows)
                             {
                                 yield return row;
@@ -11663,8 +11665,10 @@ namespace UnifyWeaver.QueryRuntime
             object[]? rightPattern,
             Func<object[], bool>? rightFilter,
             int rightKeyIndex,
+            out string strategy,
             out IEnumerable<object[]> rows)
         {
+            strategy = string.Empty;
             rows = default!;
             if (_provider is IIndexedRelationBucketJoinProvider bucketJoinProvider &&
                 bucketJoinProvider.TryReadBucketJoinRows(
@@ -11679,6 +11683,7 @@ namespace UnifyWeaver.QueryRuntime
                     join,
                     out rows))
             {
+                strategy = "KeyJoinIndexedRelationProviderBucketMerge";
                 return true;
             }
 
@@ -11716,6 +11721,9 @@ namespace UnifyWeaver.QueryRuntime
                     probePattern: leftPattern,
                     probeFilter: leftFilter,
                     buildOnLeft: false);
+            strategy = buildLeft
+                ? "KeyJoinIndexedRelationProviderBucketHashBuildLeft"
+                : "KeyJoinIndexedRelationProviderBucketHashBuildRight";
             return true;
         }
 
