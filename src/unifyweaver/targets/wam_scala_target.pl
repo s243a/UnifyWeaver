@@ -111,21 +111,27 @@ wam_line_to_scala_literal(Line, Literal) :-
     wam_parts_to_scala(Parts, Literal).
 
 % --- Control instructions ---
+% The WAM emitter produces both:
+%   "execute wam_fact/1"        — 2 tokens, name/arity in one
+%   "call wam_fact/1, 1"        — 3 tokens after comma stripping, name and arity
+% Either form should yield Call("wam_fact", 1) / Execute("wam_fact", 1).
+wam_parts_to_scala(["call", PredArity], Lit) :-
+    parse_functor_arity(PredArity, PredName, Arity),
+    format(string(Lit), 'Call("~w", ~w)', [PredName, Arity]).
+
 wam_parts_to_scala(["call", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr),
-    format(string(Lit), 'Call("~w", ~w)', [Pred, Arity]).
+    strip_arity_suffix(Pred, PredName),
+    format(string(Lit), 'Call("~w", ~w)', [PredName, Arity]).
 
-wam_parts_to_scala(["execute", Pred], Lit) :-
-    % execute may include arity as functor/arity — split it
-    (   sub_string(Pred, B, 1, _, "/")
-    ->  sub_string(Pred, 0, B, _, PredName)
-    ;   PredName = Pred
-    ),
-    format(string(Lit), 'Execute("~w", 0)', [PredName]).
+wam_parts_to_scala(["execute", PredArity], Lit) :-
+    parse_functor_arity(PredArity, PredName, Arity),
+    format(string(Lit), 'Execute("~w", ~w)', [PredName, Arity]).
 
 wam_parts_to_scala(["execute", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr),
-    format(string(Lit), 'Execute("~w", ~w)', [Pred, Arity]).
+    strip_arity_suffix(Pred, PredName),
+    format(string(Lit), 'Execute("~w", ~w)', [PredName, Arity]).
 
 wam_parts_to_scala(["proceed"], 'Proceed').
 
@@ -244,12 +250,21 @@ wam_parts_to_scala(Parts, Lit) :-
 
 %% parse_switch_cases(+Tokens, -CaseLiterals)
 %  Parses switch_on_constant case list into SwitchCase constructor calls.
+%  Each token has the form "value:label" (e.g. "a:default", "b:L_x_2").
 parse_switch_cases([], []).
-parse_switch_cases([Val, Label | Rest], [Lit | More]) :-
-    intern_scala_atom(Val, AtomId),
-    format(string(Lit), 'SwitchCase(Atom(~w), "~w")', [AtomId, Label]),
+parse_switch_cases([Token | Rest], [Lit | More]) :-
+    split_string(Token, ":", "", [ValStr, LabelStr | _]),
+    intern_scala_atom(ValStr, AtomId),
+    format(string(Lit), 'SwitchCase(Atom(~w), "~w")', [AtomId, LabelStr]),
     parse_switch_cases(Rest, More).
-parse_switch_cases([_], []).
+
+%% strip_arity_suffix(+Pred, -Name)
+%  If Pred has the form "name/N", returns "name"; otherwise returns Pred unchanged.
+strip_arity_suffix(Pred, Name) :-
+    (   sub_string(Pred, B, 1, _, "/")
+    ->  sub_string(Pred, 0, B, _, Name)
+    ;   Name = Pred
+    ).
 
 %% parse_functor_arity(+FunctorStr, -Name, -Arity)
 parse_functor_arity(FStr, Name, Arity) :-
@@ -304,54 +319,70 @@ wam_lines_to_data([Line|Rest], PC, Instructions, LabelMap, LabelEntries) :-
 %% compile_wam_predicate_to_scala(+PredIndicator, +WamCode, +Options, -ScalaCode)
 compile_wam_predicate_to_scala(_Pred, _WamCode, _Options, "").
 
-%% compile_predicates_for_project(+Predicates, +Options, -AllInstrs, -AllLabelEntries, -WrapperCode)
-%  Compiles all predicates: merges instruction arrays and collects labels.
-compile_predicates_for_project(Predicates, Options, AllInstrs, AllLabelEntries, WrapperCode) :-
+%% compile_predicates_for_project(+Predicates, +Options, -AllInstrs, -TopLevelLabelEntries, -AllLabelEntries, -WrapperCode)
+%  Compiles all predicates. Returns:
+%    TopLevelLabelEntries: only "pred/arity" -> PC entries (for Scala Map literal)
+%    AllLabelEntries: all labels including sub-clause labels (for instruction resolution)
+compile_predicates_for_project(Predicates, Options, AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode) :-
     init_scala_atom_intern_table,
-    compile_all_predicates(Predicates, Options, 0, [], [], [], AllInstrs, AllLabelEntries, Wrappers),
+    compile_all_predicates(Predicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
     atomic_list_concat(Wrappers, '\n', WrapperCode).
 
-compile_all_predicates([], _, _, Instrs, LabelEntries, Wrappers,
-                       Instrs, LabelEntries, Wrappers).
+compile_all_predicates([], _, _, Instrs, TopLabels, AllLabels, Wrappers,
+                       Instrs, TopLabels, AllLabels, Wrappers).
 compile_all_predicates([Pred|Rest], Options, BasePC,
-                       InstrAcc, LabelAcc, WrapperAcc,
-                       AllInstrs, AllLabelEntries, AllWrappers) :-
+                       InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc,
+                       AllInstrs, TopLevelLabelEntries, AllLabelEntries, AllWrappers) :-
     (   Pred = _Module:P/Arity -> true ; Pred = P/Arity ),
     (   scala_foreign_predicate(P, Arity, Options)
     ->  % Foreign: emit a single CallForeign instruction
         format(string(FLit), 'CallForeign("~w", ~w)', [P, Arity]),
         NewInstrs = [FLit | InstrAcc],
         NewPC is BasePC + 1,
-        format(string(LEntry), '    "~w/~w" -> ~w', [P, Arity, BasePC]),
-        NewLabelEntries = [LEntry | LabelAcc]
+        format(string(MainEntry), '    "~w/~w" -> ~w', [P, Arity, BasePC]),
+        NewTopLabels = [MainEntry | TopLabelAcc],
+        NewAllLabels = [MainEntry | AllLabelAcc]
     ;   % WAM compile
         compile_predicate_to_wam(P/Arity, [], WamCode),
-        wam_code_to_scala_data(WamCode, PredInstrs, _LMap, PredLabelEntries0),
-        % Offset label PCs by BasePC
+        wam_code_to_scala_data(WamCode, PredInstrs, _LMap, PredSubLabelEntries0),
         length(PredInstrs, PredLen),
         NewPC is BasePC + PredLen,
-        maplist(offset_label_entry(BasePC), PredLabelEntries0, PredLabelEntries),
-        % Main entry label
+        % Offset sub-clause labels by BasePC
+        maplist(offset_label_entry(BasePC), PredSubLabelEntries0, PredSubLabelEntries1),
+        % Filter out labels that duplicate the MainEntry (WAM emits pred/arity: as first label)
+        format(string(MainKey), '~w/~w', [P, Arity]),
+        exclude(is_pred_label(MainKey), PredSubLabelEntries1, PredSubLabelEntries),
+        % Main predicate entry label
         format(string(MainEntry), '    "~w/~w" -> ~w', [P, Arity, BasePC]),
         append(InstrAcc, PredInstrs, NewInstrs),
-        append([MainEntry | PredLabelEntries], LabelAcc, NewLabelEntries)
+        NewTopLabels = [MainEntry | TopLabelAcc],
+        append([MainEntry | PredSubLabelEntries], AllLabelAcc, NewAllLabels)
     ),
     emit_scala_wrapper(P, Arity, BasePC, WrapperCode),
     compile_all_predicates(Rest, Options, NewPC,
-                           NewInstrs, NewLabelEntries, [WrapperCode|WrapperAcc],
-                           AllInstrs, AllLabelEntries, AllWrappers).
+                           NewInstrs, NewTopLabels, NewAllLabels, [WrapperCode|WrapperAcc],
+                           AllInstrs, TopLevelLabelEntries, AllLabelEntries, AllWrappers).
 
 offset_label_entry(Offset, Entry0, Entry) :-
-    % Entry0 is already a formatted string like '    "label" -> N'
-    % Re-parse the PC from the end and rebuild with offset applied.
+    % Entry0 is a string like '    "label" -> N'
+    % Find the last occurrence of ' -> ' to split label from PC.
     atom_string(Entry0, S),
-    split_string(S, "->", " ", Parts),
-    last(Parts, PCStr),
-    number_string(PC0, PCStr),
-    PC is PC0 + Offset,
-    sub_string(S, 0, _, _, Before),
-    split_string(Before, "->", "", [LabelPart|_]),
-    format(string(Entry), '~w-> ~w', [LabelPart, PC]).
+    (   sub_string(S, B, 4, _, " -> ")
+    ->  B1 is B + 4,
+        sub_string(S, 0, B, _, LabelPart),
+        sub_string(S, B1, _, 0, PCStr),
+        number_string(PC0, PCStr),
+        PC is PC0 + Offset,
+        format(string(Entry), '~w -> ~w', [LabelPart, PC])
+    ;   Entry = Entry0  % no ' -> ' found — pass through unchanged
+    ).
+
+%% is_pred_label(+PredKey, +LabelEntry) is semidet.
+%  True if LabelEntry contains PredKey (e.g. "wam_fact/1").
+%  Used to filter redundant WAM predicate-signature labels from sub-clause lists.
+is_pred_label(PredKey, Entry) :-
+    atom_string(Entry, S),
+    sub_string(S, _, _, _, PredKey).
 
 %% emit_scala_wrapper(+Pred, +Arity, +StartPc, -Code)
 %  Generates a def wrapper that calls runPredicate with the right start PC.
@@ -428,16 +459,17 @@ write_wam_scala_project(Predicates, Options, ProjectDir) :-
     % --- project/build.properties ---
     write_build_properties(ProjectDir),
     % --- Compile all predicates ---
-    compile_predicates_for_project(Predicates, Options, AllInstrs, AllLabelEntries, WrapperCode),
+    compile_predicates_for_project(Predicates, Options,
+        AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode),
     % --- Intern table ---
     emit_scala_intern_table(StringToIdStr, IdToStringStr),
     % --- Format instruction array body ---
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
-    % --- Format label map body ---
+    % --- Format dispatch map body (top-level pred/arity only) ---
+    atomic_list_concat(TopLevelLabelEntries, ',\n', DispatchBody),
+    % --- Format full label map for instruction resolution (top-level + sub-clause) ---
     atomic_list_concat(AllLabelEntries, ',\n', LabelBody),
-    % --- Dispatch map (same as labels but only top-level predicate entries) ---
-    DispatchBody = LabelBody,
     % --- Package and runtime package ---
     option(package(Pkg), Options, 'generated.wam_scala.core'),
     option(runtime_package(RPkg), Options, 'generated.wam_scala.runtime'),

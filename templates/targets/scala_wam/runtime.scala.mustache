@@ -114,13 +114,10 @@ case object ForeignSucceed                                    extends ForeignRes
 case class ForeignBindings(bindings: Map[Int, WamTerm])       extends ForeignResult
 case class ForeignMulti(solutions: Seq[Map[Int, WamTerm]])    extends ForeignResult
 
-type ForeignHandler = Array[WamTerm] => ForeignResult
-
-// ============================================================
-// Predicate entry (dispatch table)
-// ============================================================
-
-final case class PredicateEntry(startPc: Int, arity: Int)
+/** Foreign predicate handler — implement as a SAM or anonymous class. */
+abstract class ForeignHandler {
+  def apply(args: Array[WamTerm]): ForeignResult
+}
 
 // ============================================================
 // WamProgram — immutable compiled context (Layer B)
@@ -132,7 +129,7 @@ final case class WamProgram(
   instructions:    Array[Instruction],
   labels:          Map[String, Int],
   foreignHandlers: Map[String, ForeignHandler],
-  dispatch:        Map[String, PredicateEntry],
+  dispatch:        Map[String, Int],      // pred/arity -> start PC
   internTable:     InternTable
 )
 
@@ -407,7 +404,7 @@ object WamRuntime {
         backtrack(s)
       case Some(handler) =>
         val args   = foreignArgs(s, arity)
-        val result = handler(args)
+        val result = handler.apply(args)
         val resumePc = s.pc + 1
         result match {
           case ForeignFail =>
@@ -488,17 +485,17 @@ object WamRuntime {
       case Call(pred, arity) =>
         // Unresolved — look up in dispatch table
         program.dispatch.get(s"$pred/$arity") match {
-          case Some(entry) =>
+          case Some(pc) =>
             s.callStack = (s.pc + 1) :: s.callStack
-            s.pc = entry.startPc
+            s.pc = pc
           case None =>
             backtrack(s)
         }
 
       case Execute(pred, arity) =>
         program.dispatch.get(s"$pred/$arity") match {
-          case Some(entry) => s.pc = entry.startPc
-          case None        => backtrack(s)
+          case Some(pc) => s.pc = pc
+          case None     => backtrack(s)
         }
 
       case Jump(lbl) =>

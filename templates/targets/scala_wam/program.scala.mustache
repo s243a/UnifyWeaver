@@ -82,10 +82,55 @@ object GeneratedProgram {
       case None =>
         System.err.println(s"Unknown predicate: $key")
         sys.exit(1)
-      case Some(entry) =>
-        val argRegs = args.drop(1).map(a => Atom(internTable.stringToId.getOrElse(a, -1)): WamTerm)
-        val result  = WamRuntime.runPredicate(sharedProgram, entry.startPc, argRegs)
+      case Some(startPc) =>
+        val argRegs = args.drop(1).map(a => parseArg(a)).toArray
+        val result  = WamRuntime.runPredicate(sharedProgram, startPc, argRegs)
         println(result)
     }
   }
+
+  // Parse a CLI argument into a WamTerm.
+  // Supports atoms ("a"), structures ("f(a,b)"), and lists ("[a,b]").
+  // Unknown atom strings get id -1 so they fail unification with known atoms.
+  private def parseArg(s: String): WamTerm = {
+    val t = s.trim
+    if (t.startsWith("[") && t.endsWith("]"))
+      parseList(t.substring(1, t.length - 1))
+    else {
+      val open = t.indexOf('(')
+      if (open > 0 && t.endsWith(")")) {
+        val functor = t.substring(0, open)
+        val inner = t.substring(open + 1, t.length - 1)
+        val argTerms = splitTopLevelCommas(inner).map(parseArg).toArray
+        Struct(internAtomId(functor), argTerms.length, argTerms)
+      } else {
+        Atom(internAtomId(t))
+      }
+    }
+  }
+
+  private def parseList(inner: String): WamTerm = {
+    val items = splitTopLevelCommas(inner).filter(_.nonEmpty).map(parseArg)
+    items.foldRight[WamTerm](Atom(internAtomId("[]"))) { (head, tail) =>
+      Struct(internAtomId("."), 2, Array(head, tail))
+    }
+  }
+
+  private def splitTopLevelCommas(s: String): List[String] = {
+    val buf  = scala.collection.mutable.ListBuffer.empty[String]
+    val cur  = new StringBuilder
+    var depth = 0
+    s.foreach {
+      case c @ ('(' | '[') => depth += 1; cur.append(c)
+      case c @ (')' | ']') => depth -= 1; cur.append(c)
+      case ',' if depth == 0 =>
+        buf.append(cur.toString); cur.clear()
+      case c => cur.append(c)
+    }
+    if (cur.nonEmpty) buf.append(cur.toString)
+    buf.toList
+  }
+
+  private def internAtomId(s: String): Int =
+    internTable.stringToId.getOrElse(s, -1)
 }
