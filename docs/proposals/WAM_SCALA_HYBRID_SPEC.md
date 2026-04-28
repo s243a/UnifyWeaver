@@ -73,12 +73,18 @@ Example:
 
 ```scala
 final case class WamProgram(
-  instructions: Array[Instruction],
-  labels: Map[String, Int],
+  instructions:    Array[Instruction],
+  labels:          Map[String, Int],
   foreignHandlers: Map[String, ForeignHandler],
-  dispatch: Map[String, PredicateEntry]
+  dispatch:        Map[String, PredicateEntry],
+  internTable:     InternTable               // §3.5
 )
 ```
+
+> **Note (Amendment 1):** The `instructions` array is populated once at
+> construction time and must not be mutated afterward. The runtime treats
+> it as effectively immutable. A future optimization may wrap it in an
+> `ImmutableArray` or `IndexedSeq` if concurrent safety becomes critical.
 
 This structure is shared across runs.
 
@@ -118,6 +124,59 @@ object WamRuntime {
 
 This contract is intentionally close to the Clojure target’s generated
 wrapper shape, but Scala may use richer static types internally.
+
+### 3.4 Register addressing
+
+> **Amendment 2a — added during implementation planning.**
+
+Register names from WAM text are converted to integer indices at
+code-generation time, following the Haskell WAM target's proven
+`reg_to_int` encoding:
+
+| Register class | Example | Index formula |
+|---|---|---|
+| Argument/temp (A) | `A1` | `N` (A1→1, A2→2, ...) |
+| Extended temp (X) | `X3` | `N + 100` (X1→101, X2→102, ...) |
+| Permanent (Y) | `Y2` | `N + 200` (Y1→201, Y2→202, ...) |
+
+The runtime uses `Array[WamTerm](300)` indexed by these integers for
+the register file. Y-register values are additionally stored in the
+current environment frame for save/restore across calls.
+
+Choice-point snapshots use `Array.clone()` — O(n) in array size but
+constant in the number of live registers.
+
+**Reference:** `reg_to_int/2` in
+`src/unifyweaver/targets/wam_haskell_lowered_emitter.pl` (lines 446–452).
+
+### 3.5 Atom interning
+
+> **Amendment 2b — added during implementation planning.**
+
+Atom strings are interned to integer IDs at code-generation time.
+Well-known atoms are pre-assigned:
+
+| Atom | ID |
+|---|---|
+| `true` | 0 |
+| `fail` | 1 |
+| `[]` | 2 |
+
+The generated program includes a compile-time `InternTable`:
+
+```scala
+final case class InternTable(
+  stringToId: Map[String, Int],
+  idToString:  Array[String]      // indexed by atom ID
+)
+```
+
+The runtime `Atom` case class (§5.1) carries an integer ID, not a
+string. String comparison in the hot loop is replaced by integer
+comparison.
+
+**Reference:** `init_atom_intern_table/0` and `intern_atom/2` in
+`src/unifyweaver/targets/wam_haskell_target.pl` (lines 78–99).
 
 ## 4. Instruction Representation
 
@@ -175,11 +234,19 @@ Baseline:
 
 ```scala
 sealed trait WamTerm
-final case class Ref(id: Int) extends WamTerm
-final case class Atom(value: String) extends WamTerm
-final case class IntTerm(value: Int) extends WamTerm
-final case class Struct(functor: String, args: Array[WamTerm]) extends WamTerm
+final case class Ref(id: Int)                               extends WamTerm
+final case class Atom(id: Int)                              extends WamTerm  // interned ID
+final case class IntTerm(value: Int)                        extends WamTerm
+final case class FloatTerm(value: Double)                   extends WamTerm
+final case class Struct(functor: Int, arity: Int,
+                        args: Array[WamTerm])               extends WamTerm  // functor interned
 ```
+
+> **Change from original design (Amendment 2b):** `Atom` previously
+> carried a `String`; it now carries an integer ID that indexes into
+> `WamProgram.internTable`. Similarly `Struct.functor` changed from
+> `String` to `Int`. This eliminates string hashing from the unification
+> hot loop. Use `program.internTable.resolve(id)` for display/debugging.
 
 ### 5.2 Term operations
 
