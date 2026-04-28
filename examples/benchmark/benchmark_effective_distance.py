@@ -32,6 +32,9 @@ from benchmark_common import (
     build_go_binary,
     build_haskell_project,
     build_rust_binary,
+    add_csharp_query_source_mode_arg,
+    append_csharp_query_source_mode_metric,
+    csharp_query_env,
     digest_normalized_output,
     find_result,
     group_results_by_scale,
@@ -97,6 +100,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep the temporary build directory for inspection",
     )
+    add_csharp_query_source_mode_arg(parser)
     return parser.parse_args()
 
 
@@ -278,7 +282,14 @@ def build_haskell_wam_effective_distance(root: Path, scale: str, variant: str) -
     return command
 
 
-def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
+def benchmark_target(
+    command: list[str],
+    scale: str,
+    repetitions: int,
+    target: str,
+    csharp_query_source_mode: str = "auto",
+    artifact_dir: Path | None = None,
+) -> RunResult:
     times: list[float] = []
     last_stdout = ""
     last_stderr = ""
@@ -290,11 +301,14 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
             edge_path = scale_dir / "category_parent.tsv"
             article_path = scale_dir / "article_category.tsv"
-            result = run_command(command + [str(edge_path), str(article_path)])
+            env = csharp_query_env(csharp_query_source_mode, artifact_dir) if target == "csharp-query" else None
+            result = run_command(command + [str(edge_path), str(article_path)], env=env)
         elapsed = time.perf_counter() - started
         times.append(elapsed)
         last_stdout = result.stdout
         last_stderr = result.stderr
+        if target == "csharp-query":
+            last_stderr = append_csharp_query_source_mode_metric(last_stderr, csharp_query_source_mode)
 
     normalized = normalize_three_column_float_rows(last_stdout, decimals=6)
     digest, rows = digest_normalized_output(normalized)
@@ -537,7 +551,17 @@ def main() -> int:
                     command = build_prolog_effective_semantic(temp_root, scale)
                 else:
                     command = commands[target]
-                results.append(benchmark_target(command, scale, args.repetitions, target))
+                artifact_dir = temp_root / "artifacts" / target / scale if target == "csharp-query" else None
+                results.append(
+                    benchmark_target(
+                        command,
+                        scale,
+                        args.repetitions,
+                        target,
+                        args.csharp_query_source_mode,
+                        artifact_dir,
+                    )
+                )
 
         print_summary(results)
         if args.keep_temp:
