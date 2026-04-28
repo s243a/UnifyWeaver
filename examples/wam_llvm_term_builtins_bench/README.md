@@ -33,34 +33,56 @@ are out of scope here and tracked below.
 **10/13 workloads OK with correctness assertions.** The 3 FAILs all
 involve `sum_ints` / `term_depth_args` recursing into a nested
 compound argument (e.g. `f(1, g(2, 3), 4)` where `g(2, 3)` is itself
-walked). The predicate completes but produces a wrong value — the
-final assertion `sum_ints(..., 0, 10)` fails because the accumulator
-result is not what was expected.
+walked). The predicate completes but `arg/3` reads the nested arg
+slot as `unbound` instead of `g(2, 3)` — so the inner `sum_ints`
+recursion fails at `functor/3` and the outer accumulator never sees
+the inner sub-total.
 
-The Ref-aliased `put_variable` fix (this PR's predecessor commit)
-correctly handles `bench_sum_small` (3 integer leaves, no nesting) and
-`bench_fib10` (deep recursion with no cross-compound walk). It does
-not yet handle the case where `sum_ints/3` is `call`-invoked from
-within `sum_ints_args/5`'s clause 2 to walk a nested compound — the
-inner call's TCO chain returns control to the caller's continuation,
-but the outer accumulator (`Acc1` on the caller's `Y7` slot via a
-shared heap cell) does not reflect the fully-summed inner total in
-the way the tail-call iteration expects.
+**Root cause** (localized via the `dbg_sum/3` probes in
+`examples/wam_llvm_term_builtins_probe/`): the WAM compiler emits the
+following bytecode for the wrapper that builds `f(1, g(2, 3), 4)`:
 
-Probe-level findings (from `examples/wam_llvm_term_builtins_probe/`):
+```
+put_structure f/3, A1
+set_constant 1
+set_variable X2          ; X2 = unbound; f.args[1] = unbound (a separate copy!)
+put_structure g/2, X2    ; X2 = Compound g (overwrites X2's prior unbound)
+set_constant 2
+set_constant 3
+set_constant 4
+```
 
-  - `sum_ints(g(2, 3), 0, ?)` → 5 ✓ (direct call from a wrapper)
+The `set_variable X2` writes two **separate** Unbound sentinels — one
+into `f.args[1]` (via the WriteCtx) and one into `X2`. After
+`put_structure g/2, X2` overwrites `X2` with the new Compound,
+`f.args[1]` still holds the orphaned Unbound from `set_variable`.
+When `sum_ints` later does `arg(2, f, A)`, it reads `f.args[1]` as
+Unbound and the nested-compound recursion fails.
+
+This is the same root cause as the original `put_variable` bug fixed
+in `4d2bc7a9`: two separate sentinels instead of a heap-aliased Ref.
+
+**Probe-level evidence:**
+
+  - `sum_ints(g(2, 3), 0, ?)` → 5 ✓ (direct call, no nesting)
   - `sum_ints(f(1, 2, 3), 0, ?)` → 6 ✓ (no nesting)
-  - `sum_ints(f(g(2)), 0, ?)` → fails for all V ✗ (nested)
-  - `sum_ints(f(1, g(2)), 0, ?)` → fails for all V ✗ (nested)
+  - `sum_ints(f(g(2)), 0, ?)` → fails ✗ (nested)
+  - `sum_ints(f(1, g(2)), 0, ?)` → fails ✗ (nested)
+  - `dbg_sum(f(g(2)), 0, _)` traces show `compound(T) → false` and
+    `var(T) → true` for the inner recursion — confirming the inner
+    `sum_ints` sees the nested arg as Unbound.
 
-Working theory: the `fcbe9c9a` Y-reg save/restore at
-allocate/deallocate may now be redundant or interacting badly with
-the new Ref-aliased state; backtracking still does not pop env frames
-between a `try_me_else` CP and the failure (a known stale-frame
-issue), and the combination of stale frames + heap-Ref-shared
-accumulators across the nested-call boundary is suspect. Needs
-follow-up investigation.
+**Attempted fix** (rolled back in `b0cae461`): also Ref-alias
+`set_variable` (heap-push Unbound, store the same Ref in both the
+WriteCtx slot and Xn) and route `put_structure` through `wam_bind_reg`
+with a guard ("write through only when the target heap cell is
+Unbound"). The direct-access probe (`probe_nested_build`) confirmed
+the nested compound was correctly built and readable, but
+`bench_sum_medium` segfaulted in the recursive `sum_ints` path. The
+segfault wasn't isolated in the time available — likely an
+interaction between `put_structure +/2, A2` in `sum_ints/3` clause 1
+(the `is/2` builtin path) and the new conditional bind-through
+behavior. Needs follow-up.
 
 ## Usage
 
