@@ -1860,6 +1860,17 @@ step !ctx s (GetValue xn ai) =
               , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
               , wsTrailLen = wsTrailLen s + 1
               })
+    -- Symmetric case: xn (X-register) holds the unbound side, ai
+    -- holds the bound value. Used by the =../2 / functor/3 compose
+    -- lowering, which emits get_value T_reg, TermReg where T_reg is
+    -- the fresh output and TermReg is the freshly-constructed Str.
+    -- Unification is symmetric, so bind the xn vid to a.
+    (Just a, Just (Unbound vid)) ->
+      Just (s { wsPC = wsPC s + 1
+              , wsBindings = IM.insert vid a (wsBindings s)
+              , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+              , wsTrailLen = wsTrailLen s + 1
+              })
     _ -> Nothing
 
 step !ctx s (PutConstant c ai) =
@@ -2336,6 +2347,41 @@ step !_ctx s (BuiltinCall "arg/3" _) =
           Nothing -> Nothing
           Just s1 -> Just (s1 { wsPC = wsPC s1 + 1 })
     _ -> Nothing
+
+-- Specialized arg lowering: Arg N tReg aReg
+-- Compile-time N (positive integer), runtime T from tReg, output to
+-- aReg. Skips the put_constant/put_value/builtin_call dispatch chain
+-- that the generic arg/3 builtin requires. Emitted by the WAM compiler
+-- when binding-state analysis proves T is bound and N is a literal int.
+step !_ctx s (Arg n tReg aReg) | n >= 1 =
+  let mT = derefVar (wsBindings s) <$> IM.lookup tReg (wsRegs s)
+  in case mT of
+    Just tVal ->
+      let mElem = case tVal of
+            Str _ args | n <= length args -> Just (args !! (n - 1))
+            VList (x : _) | n == 1 -> Just x
+            VList (_ : xs) | n == 2 -> Just (VList xs)
+            _ -> Nothing
+      in case mElem of
+        Nothing -> Nothing
+        Just elem ->
+          let mA = derefVar (wsBindings s) <$> IM.lookup aReg (wsRegs s)
+          in case mA of
+            Nothing ->
+              Just (s { wsPC = wsPC s + 1
+                      , wsRegs = IM.insert aReg elem (wsRegs s)
+                      })
+            Just (Unbound vid) ->
+              Just (s { wsPC = wsPC s + 1
+                      , wsRegs = IM.insert aReg elem (wsRegs s)
+                      , wsBindings = IM.insert vid elem (wsBindings s)
+                      , wsTrail = TrailEntry vid (IM.lookup vid (wsBindings s)) : wsTrail s
+                      , wsTrailLen = wsTrailLen s + 1
+                      })
+            Just a | a == elem -> Just (s { wsPC = wsPC s + 1 })
+            _ -> Nothing
+    Nothing -> Nothing
+step !_ctx _ (Arg _ _ _) = Nothing
 
 -- =../2 (univ): A1 = T, A2 = L. Decompose (instantiated A1) or
 -- compose (unbound A1, list in A2).
@@ -3390,6 +3436,7 @@ data Instruction
   | RetryMeElsePc !Int                 -- post-resolution: direct PC for next branch
   | SwitchOnConstantPc !(IM.IntMap Int)      -- post-resolution: interned atom ID -> PC
   | BuiltinCall String !Int
+  | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
   | TryMeElse String
   | RetryMeElse String
   | TrustMe
@@ -3995,6 +4042,11 @@ wam_instr_to_haskell(["put_structure_dyn", NameReg, ArityReg, TargetReg], Hs) :-
     clean_comma(NameReg, CN), clean_comma(ArityReg, CA), clean_comma(TargetReg, CT),
     reg_name_to_int(CN, NI), reg_name_to_int(CA, AI), reg_name_to_int(CT, TI),
     format(string(Hs), 'PutStructureDyn ~w ~w ~w', [NI, AI, TI]).
+wam_instr_to_haskell(["arg", N, TReg, AReg], Hs) :-
+    clean_comma(N, CN), clean_comma(TReg, CT), clean_comma(AReg, CA),
+    number_string(NI, CN),
+    reg_name_to_int(CT, TI), reg_name_to_int(CA, AI),
+    format(string(Hs), 'Arg ~w ~w ~w', [NI, TI, AI]).
 wam_instr_to_haskell(["put_list", Ai], Hs) :-
     clean_comma(Ai, CAi), reg_name_to_int(CAi, AiI),
     format(string(Hs), 'PutList ~w', [AiI]).
