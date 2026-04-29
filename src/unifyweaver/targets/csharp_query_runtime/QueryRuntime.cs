@@ -113,6 +113,8 @@ namespace UnifyWeaver.QueryRuntime
 
     public static class RelationSourceModePolicy
     {
+        private const long SmallJoinPrebuiltArtifactRowThreshold = 7_500L;
+
         public static bool TryParse(string? value, out RelationSourceMode mode)
         {
             switch ((value ?? "preload").Trim().ToLowerInvariant())
@@ -164,7 +166,7 @@ namespace UnifyWeaver.QueryRuntime
             {
                 "bound_scan" => RelationSourceMode.Artifact,
                 "selective_join" => RelationSourceMode.Artifact,
-                "join" when totalRows <= 5_000L => RelationSourceMode.ArtifactPrebuilt,
+                "join" when totalRows <= SmallJoinPrebuiltArtifactRowThreshold => RelationSourceMode.ArtifactPrebuilt,
                 "join" => RelationSourceMode.Artifact,
                 _ => RelationSourceMode.Preload,
             };
