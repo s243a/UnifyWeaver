@@ -310,6 +310,7 @@ escape_wam_char(C, [C]).
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
     set_clause_binding_context(Head, Body),
+    set_clause_visited_context(Head),
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
@@ -437,6 +438,7 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     ),
     % Compile clause body — pre-assign Yi for permanent vars before head
     set_clause_binding_context(Head, Body),
+    set_clause_visited_context(Head),
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
@@ -990,6 +992,17 @@ compile_goal_call(arg(N, T, A), V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
     !,
     emit_arg_lowering(N, T, A, V0, Vf, Code).
+%% \+ member(X, V) lowering for visited-set variables (Phase H).
+%% Fires when V is a head-arg variable at a position declared via
+%% `:- visited_set(Pred/Arity, ArgN)` for this clause's predicate.
+%% Emits `not_member_set` (O(log N)) instead of `not_member_list`
+%% (O(N)). Must come BEFORE the NotMemberList clause so the more
+%% specific case wins.
+compile_goal_call(\+ member(X, V), V0, Vf, Code) :-
+    var(X), var(V),
+    is_visited_set_var(V),
+    !,
+    emit_not_member_set_lowering(X, V, V0, Vf, Code).
 %% \+ member(X, L) lowering: emits a specialised NotMemberList WAM
 %% instruction that walks L inline and skips both the put_structure
 %% goal-term construction AND the builtin_call dispatch (4 dispatches +
@@ -1052,6 +1065,13 @@ compile_goal_execute(arg(N, T, A), V0, Vf, Code) :-
     binding_state_analysis:binding_state_at_var(BeforeEnv, T, bound),
     !,
     emit_arg_lowering(N, T, A, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
+%% \+ member(X, V) for visited-set V, tail-call form.
+compile_goal_execute(\+ member(X, V), V0, Vf, Code) :-
+    var(X), var(V),
+    is_visited_set_var(V),
+    !,
+    emit_not_member_set_lowering(X, V, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
 %% \+ member(X, L) lowering, tail-call form.
 compile_goal_execute(\+ member(X, L), V0, Vf, Code) :-
@@ -1379,6 +1399,85 @@ advance_clause_goal_idx :-
     ;   true
     ).
 
+%% ========================================================================
+%% Visited-set context (Layer 2 of the IntSet visited design).
+%%
+%% A predicate-arg position can be marked as a visited-set via
+%%
+%%     :- visited_set(Pred/Arity, ArgN).
+%%
+%% asserted into the user module before compilation. The compiler then:
+%%
+%%   1. At clause entry, captures which head-arg variables of THIS
+%%      clause sit at declared visited-set positions and stashes them
+%%      in `wam_clause_visited_vars` (a non-backtrackable global).
+%%
+%%   2. At a body goal `\+ member(X, V)` where V is in that set, emits
+%%      `not_member_set` instead of `not_member_list`.
+%%
+%%   3. At a CALL site whose target predicate-arg matches a directive
+%%      AND whose actual arg is a list-shaped term:
+%%        * `[Cat]` (1-elem ground literal)  ⇒
+%%            build_empty_set + set_insert(Cat) sequence
+%%        * `[X|V_visited]` (cons of head's visited-set var) ⇒
+%%            set_insert(X, V_visited, Fresh)
+%%      bound to a fresh Prolog variable, which the standard
+%%      put_argument path then stores in the call's argument register.
+%%
+%% Soundness: if `:- visited_set/2` is wrong (e.g. claims an arg is a
+%% set but the runtime sees a non-Atom element), `set_insert` /
+%% `not_member_set` return Nothing → the goal fails. No silent
+%% miscompilation.
+%% ========================================================================
+
+%% set_clause_visited_context(+Head)
+%  Read user:visited_set(Pred/Arity, ArgN) declarations and capture
+%  the head-arg variables matching this clause as the per-clause
+%  visited-set var set. Stored as a list because Prolog vars are not
+%  groundable for use as map keys without copy_term.
+set_clause_visited_context(Head) :-
+    (   compound(Head)
+    ->  Head =.. [Pred|HeadArgs],
+        length(HeadArgs, Arity),
+        %% Walk HeadArgs in place (NOT via findall, which would copy
+        %% the captured variables and break == identity later).
+        collect_visited_vars(HeadArgs, 1, Pred/Arity, VisitedVars)
+    ;   VisitedVars = []
+    ),
+    b_setval(wam_clause_visited_vars, VisitedVars).
+
+%% collect_visited_vars(+Args, +N, +Pred/+Arity, -CapturedVars)
+%  Walk Args; for each variable position whose index N matches a
+%  visited_set directive on Pred/Arity, capture the variable in
+%  CapturedVars (preserving its identity — no findall copy).
+collect_visited_vars([], _, _, []).
+collect_visited_vars([Arg|Rest], N, PA, [Arg|MoreVars]) :-
+    var(Arg),
+    is_visited_set_arg(PA, N),
+    !,
+    N1 is N + 1,
+    collect_visited_vars(Rest, N1, PA, MoreVars).
+collect_visited_vars([_|Rest], N, PA, MoreVars) :-
+    N1 is N + 1,
+    collect_visited_vars(Rest, N1, PA, MoreVars).
+
+%% is_visited_set_var(+Var)
+%  True when Var is a Prolog variable currently in the per-clause
+%  visited-set context (captured by set_clause_visited_context/1).
+is_visited_set_var(Var) :-
+    var(Var),
+    catch(b_getval(wam_clause_visited_vars, Vars), _, fail),
+    member(V, Vars),
+    V == Var.
+
+%% is_visited_set_arg(+Pred/+Arity, +ArgN)
+%  True when the directive `user:visited_set(Pred/Arity, ArgN)` has
+%  been asserted.
+is_visited_set_arg(Pred/Arity, ArgN) :-
+    current_predicate(user:visited_set/2),
+    user:visited_set(Pred/Arity, ArgN).
+
+
 %% is_term_construction_goal(+Goal)
 %
 %  True when Goal matches a builtin that the WAM compiler recognises
@@ -1419,6 +1518,31 @@ emit_not_member_list_lowering(X, L, V0, Vf, Code) :-
     ),
     format(string(Body), "    not_member_list ~w, ~w", [XReg, LReg]),
     join_nonempty([XPrefix, LPrefix, Body], Code).
+
+%% emit_not_member_set_lowering(+X, +V, +V0, -Vf, -Code)
+%
+%  Emits a single `not_member_set XReg VReg` WAM instruction (Layer 2
+%  of the IntSet visited design). Mirrors the not_member_list helper
+%  above; the runtime semantic is O(log N) IntSet lookup instead of
+%  O(N) list walk. Pre-condition (checked by the caller): V is in the
+%  per-clause visited-set context.
+emit_not_member_set_lowering(X, V, V0, Vf, Code) :-
+    (   get_var_reg(X, V0, XReg)
+    ->  V1 = V0,
+        XPrefix = ""
+    ;   next_x_reg(V0, XReg, V_temp1),
+        bind_var(X, XReg, V_temp1, V1),
+        format(string(XPrefix), "    put_variable ~w, A1", [XReg])
+    ),
+    (   get_var_reg(V, V1, VReg)
+    ->  Vf = V1,
+        VPrefix = ""
+    ;   next_x_reg(V1, VReg, V_temp2),
+        bind_var(V, VReg, V_temp2, Vf),
+        format(string(VPrefix), "    put_variable ~w, A2", [VReg])
+    ),
+    format(string(Body), "    not_member_set ~w, ~w", [XReg, VReg]),
+    join_nonempty([XPrefix, VPrefix, Body], Code).
 
 %% emit_arg_lowering(+N, +T, +A, +V0, -Vf, -Code)
 %
