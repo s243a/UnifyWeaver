@@ -699,6 +699,16 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             format(string(Code), "    deallocate~n~w", [ExecCode])
         ;   is_term_construction_goal(Goal)
         ->  compile_goal_execute(Goal, V0, Vf, Code)
+        ;   %% Visited-set lowering (Layer 2.5) routes through
+            %% compile_goal_execute where the rewrite clause fires.
+            %% Without this the inline put_arguments path below would
+            %% bypass the rewrite for TCO-position goals.
+            goal_has_visited_set_arg(Goal),
+            HasEnv == yes
+        ->  compile_goal_execute(Goal, V0, Vf, ExecCode),
+            format(string(Code), "    deallocate~n~w", [ExecCode])
+        ;   goal_has_visited_set_arg(Goal)
+        ->  compile_goal_execute(Goal, V0, Vf, Code)
         ;   HasEnv == yes
         ->  Goal =.. [Pred|Args],
             length(Args, Arity),
@@ -956,6 +966,27 @@ compile_goal_call(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
     compile_goal_call(InnerGoal, V0, Vf, Code).
+%% Visited-set arg rewrite (Layer 2.5 of the IntSet design). When a
+%% goal calls a predicate with `:- visited_set(Pred/Arity, ArgN)` and
+%% the arg at position N is a recognised list shape (`[Cat]` bootstrap
+%% or `[X|V_visited]` recursive extension), rewrite the arg to a
+%% fresh var bound to the constructed-VSet register and INLINE the
+%% put_arguments + call. We do NOT recurse on the rewritten goal —
+%% that's what caused the previous Layer 2 attempt to hang via the
+%% TCO-dispatch / rewrite interaction.
+compile_goal_call(Goal, V0, Vf, Code) :-
+    nonvar(Goal),
+    Goal =.. [Pred|Args],
+    Args \== [],
+    length(Args, Arity),
+    rewrite_visited_set_args(Pred/Arity, Args, NewArgs, ConstructCode, V0, V1),
+    !,
+    compile_put_arguments(NewArgs, 1, V1, Vf, PutCode),
+    (   is_builtin_pred(Pred, Arity)
+    ->  format(string(CallCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity])
+    ;   format(string(CallCode), "    call ~w/~w, ~w", [Pred, Arity, Arity])
+    ),
+    join_nonempty([ConstructCode, PutCode, CallCode], Code).
 %% =../2 compose-mode lowering: T =.. [Name | FixedArgs] where T is
 %% provably unbound and Name is provably bound. Emits PutStructureDyn
 %% rather than the generic =../2 builtin call. Falls through to the
@@ -1034,6 +1065,23 @@ compile_goal_execute(M:InnerGoal, V0, Vf, Code) :-
     (atom(M) ; string(M)),
     !,
     compile_goal_execute(InnerGoal, V0, Vf, Code).
+%% Visited-set arg rewrite, tail-call form. Mirrors compile_goal_call
+%% but ends in `execute Pred/Arity` instead of `call`. Same single-pass
+%% emission — no recursion on the rewritten goal.
+compile_goal_execute(Goal, V0, Vf, Code) :-
+    nonvar(Goal),
+    Goal =.. [Pred|Args],
+    Args \== [],
+    length(Args, Arity),
+    rewrite_visited_set_args(Pred/Arity, Args, NewArgs, ConstructCode, V0, V1),
+    !,
+    compile_put_arguments(NewArgs, 1, V1, Vf, PutCode),
+    (   is_builtin_pred(Pred, Arity)
+    ->  format(string(BuiltinCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity]),
+        format(string(ExecCode), "~w~n    proceed", [BuiltinCode])
+    ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity])
+    ),
+    join_nonempty([ConstructCode, PutCode, ExecCode], Code).
 %% =../2 compose-mode lowering, tail-call form. Produces the same
 %% PutStructureDyn lowering followed by `proceed`.
 compile_goal_execute(T =.. L, V0, Vf, Code) :-
@@ -1543,6 +1591,95 @@ emit_not_member_set_lowering(X, V, V0, Vf, Code) :-
     ),
     format(string(Body), "    not_member_set ~w, ~w", [XReg, VReg]),
     join_nonempty([XPrefix, VPrefix, Body], Code).
+
+%% rewrite_visited_set_args(+Pred/+Arity, +Args, -NewArgs, -Code, +V0, -Vf)
+%
+%  Rewrite call-site args at positions declared as visited-sets via
+%  `:- visited_set(Pred/Arity, ArgN)`. Recognises two list shapes:
+%
+%    Pattern 1 — bootstrap `[X]` (1-elem list, var head):
+%      build_empty_set Rs ; set_insert XReg, Rs, Rs
+%      Replaces the arg with a fresh var bound to Rs.
+%
+%    Pattern 2 — recursive `[X|V_visited]` (cons of head's visited-set
+%      var): set_insert XReg, V_visited_Reg, Rfresh
+%      Replaces the arg with a fresh var bound to Rfresh.
+%
+%  Anything else passes through unchanged. Succeeds only when at
+%  least one position rewrites — otherwise fails so the caller falls
+%  through to the standard compile_put_arguments path.
+rewrite_visited_set_args(PA, Args, NewArgs, Code, V0, Vf) :-
+    rewrite_args_loop(Args, 1, PA, NewArgs, V0, Vf, Pieces),
+    Pieces \= [],
+    join_nonempty(Pieces, Code).
+
+rewrite_args_loop([], _, _, [], V, V, []).
+rewrite_args_loop([Arg|Rest], N, PA, [NewArg|NewRest], V0, Vf, Pieces) :-
+    (   is_visited_set_arg(PA, N),
+        rewrite_visited_arg(Arg, NewArg, V0, V1, ArgCode)
+    ->  Pieces = [ArgCode|RestPieces]
+    ;   NewArg = Arg, V1 = V0, Pieces = RestPieces
+    ),
+    N1 is N + 1,
+    rewrite_args_loop(Rest, N1, PA, NewRest, V1, Vf, RestPieces).
+
+%% rewrite_visited_arg(+Arg, -NewArg, +V0, -Vf, -Code)
+%
+%  Recursive extension `[X|V_visited]` (cons of head's visited-set
+%  var). Tested FIRST so the more specific case wins — clause-head
+%  unification of `[X]` would otherwise bind V_visited=[] and fall
+%  through to the bootstrap path with wrong semantics.
+rewrite_visited_arg(L, NewArg, V0, Vf, Code) :-
+    nonvar(L),
+    L = [X|V],
+    var(X), var(V),
+    is_visited_set_var(V),
+    !,
+    (   get_var_reg(X, V0, XReg)
+    ->  V1 = V0
+    ;   next_x_reg(V0, XReg, V_t1),
+        bind_var(X, XReg, V_t1, V1)
+    ),
+    (   get_var_reg(V, V1, VReg)
+    ->  V2 = V1
+    ;   next_x_reg(V1, VReg, V_t2),
+        bind_var(V, VReg, V_t2, V2)
+    ),
+    next_x_reg(V2, NewSetReg, V3),
+    bind_var(NewArg, NewSetReg, V3, Vf),
+    format(string(Code), "    set_insert ~w, ~w, ~w", [XReg, VReg, NewSetReg]).
+%% Bootstrap: `[X]` (1-elem list with var head and atom-`[]` tail)
+%% -> build_empty_set + set_insert(X). The tail-is-atom-[] guard
+%% prevents this from matching `[X|V_var]` where V_var would get
+%% silently bound to [] by Prolog clause-head unification.
+rewrite_visited_arg(L, NewArg, V0, Vf, Code) :-
+    nonvar(L),
+    L = [X|T],
+    var(X),
+    nonvar(T), T == [],
+    !,
+    (   get_var_reg(X, V0, XReg)
+    ->  V1 = V0
+    ;   next_x_reg(V0, XReg, V_t1),
+        bind_var(X, XReg, V_t1, V1)
+    ),
+    next_x_reg(V1, SetReg, V2),
+    bind_var(NewArg, SetReg, V2, Vf),
+    format(string(Code),
+        "    build_empty_set ~w~n    set_insert ~w, ~w, ~w",
+        [SetReg, XReg, SetReg, SetReg]).
+
+%% goal_has_visited_set_arg(+Goal)
+%  True when Goal calls a predicate with at least one visited_set
+%  declaration. Used by the TCO dispatch in compile_goals/5 to route
+%  the goal through compile_goal_execute (where the rewrite fires)
+%  instead of the inline put_arguments path.
+goal_has_visited_set_arg(Goal) :-
+    nonvar(Goal),
+    Goal =.. [Pred|Args],
+    Args \== [],
+    length(Args, Arity),
+    is_visited_set_arg(Pred/Arity, _).
 
 %% emit_arg_lowering(+N, +T, +A, +V0, -Vf, -Code)
 %

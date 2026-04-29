@@ -55,6 +55,10 @@ test(test_not_member_set_when_visited_declared).
 test(test_no_visited_directive_keeps_not_member_list).
 test(test_visited_set_var_propagation_across_clauses).
 test(test_unrelated_call_with_list_arg_unchanged).
+test(test_bootstrap_emits_build_empty_set_and_insert).
+test(test_recursive_cons_emits_set_insert).
+test(test_bootstrap_does_not_emit_put_list).
+test(test_recursive_cons_does_not_emit_put_list).
 
 %% Cleanup helper to keep state hygiene between tests.
 :- dynamic user:visited_set/2.
@@ -167,6 +171,108 @@ test_unrelated_call_with_list_arg_unchanged :-
         )
     ;   reset_directives,
         retractall(user:vis_passthrough(_, _)),
+        fail_test(Test, compile_failed)
+    ).
+
+test_bootstrap_emits_build_empty_set_and_insert :-
+    %% Caller passes [Cat] into a visited-set arg position.
+    %% With the directive on the callee, the call site emits
+    %% build_empty_set + set_insert, NOT put_list.
+    Test = test_bootstrap_emits_build_empty_set_and_insert,
+    reset_directives,
+    retractall(user:vis_caller_a(_)),
+    retractall(user:vis_callee_a(_, _)),
+    assertz(user:visited_set(vis_callee_a/2, 2)),
+    assertz(user:(vis_caller_a(Cat) :- vis_callee_a(Cat, [Cat]))),
+    (   catch(
+            wam_target:compile_predicate_to_wam(vis_caller_a/1, [], WamCode),
+            _, fail)
+    ->  atom_string(WamCode, S),
+        reset_directives,
+        retractall(user:vis_caller_a(_)),
+        retractall(user:vis_callee_a(_, _)),
+        (   sub_string(S, _, _, _, "build_empty_set"),
+            sub_string(S, _, _, _, "set_insert")
+        ->  pass(Test)
+        ;   fail_test(Test, expected_set_construction(S))
+        )
+    ;   reset_directives,
+        retractall(user:vis_caller_a(_)),
+        retractall(user:vis_callee_a(_, _)),
+        fail_test(Test, compile_failed)
+    ).
+
+test_recursive_cons_emits_set_insert :-
+    %% Inside a predicate whose visited arg is V, the recursive call
+    %% with [Mid|V] in the visited slot emits set_insert.
+    Test = test_recursive_cons_emits_set_insert,
+    reset_directives,
+    retractall(user:vis_walk_a(_, _, _)),
+    assertz(user:visited_set(vis_walk_a/3, 3)),
+    assertz(user:mode(vis_walk_a(+, -, +))),
+    assertz(user:(vis_walk_a(Cat, Out, V) :- vis_walk_a(Cat, Out, [Cat|V]))),
+    (   catch(
+            wam_target:compile_predicate_to_wam(vis_walk_a/3, [], WamCode),
+            _, fail)
+    ->  atom_string(WamCode, S),
+        reset_directives,
+        retractall(user:vis_walk_a(_, _, _)),
+        (   sub_string(S, _, _, _, "set_insert")
+        ->  pass(Test)
+        ;   fail_test(Test, expected_set_insert(S))
+        )
+    ;   reset_directives,
+        retractall(user:vis_walk_a(_, _, _)),
+        fail_test(Test, compile_failed)
+    ).
+
+test_bootstrap_does_not_emit_put_list :-
+    %% Same setup as bootstrap test; assert that the put_list / set_value /
+    %% set_constant cons-cell construction is GONE for the visited slot.
+    Test = test_bootstrap_does_not_emit_put_list,
+    reset_directives,
+    retractall(user:vis_caller_b(_)),
+    retractall(user:vis_callee_b(_, _)),
+    assertz(user:visited_set(vis_callee_b/2, 2)),
+    assertz(user:(vis_caller_b(Cat) :- vis_callee_b(Cat, [Cat]))),
+    (   catch(
+            wam_target:compile_predicate_to_wam(vis_caller_b/1, [], WamCode),
+            _, fail)
+    ->  atom_string(WamCode, S),
+        reset_directives,
+        retractall(user:vis_caller_b(_)),
+        retractall(user:vis_callee_b(_, _)),
+        (   \+ sub_string(S, _, _, _, "put_list"),
+            \+ sub_string(S, _, _, _, "set_constant []")
+        ->  pass(Test)
+        ;   fail_test(Test, list_construction_should_be_gone(S))
+        )
+    ;   reset_directives,
+        retractall(user:vis_caller_b(_)),
+        retractall(user:vis_callee_b(_, _)),
+        fail_test(Test, compile_failed)
+    ).
+
+test_recursive_cons_does_not_emit_put_list :-
+    %% Same setup as recursive cons; assert put_list is gone.
+    Test = test_recursive_cons_does_not_emit_put_list,
+    reset_directives,
+    retractall(user:vis_walk_b(_, _, _)),
+    assertz(user:visited_set(vis_walk_b/3, 3)),
+    assertz(user:mode(vis_walk_b(+, -, +))),
+    assertz(user:(vis_walk_b(Cat, Out, V) :- vis_walk_b(Cat, Out, [Cat|V]))),
+    (   catch(
+            wam_target:compile_predicate_to_wam(vis_walk_b/3, [], WamCode),
+            _, fail)
+    ->  atom_string(WamCode, S),
+        reset_directives,
+        retractall(user:vis_walk_b(_, _, _)),
+        (   \+ sub_string(S, _, _, _, "put_list")
+        ->  pass(Test)
+        ;   fail_test(Test, list_construction_should_be_gone(S))
+        )
+    ;   reset_directives,
+        retractall(user:vis_walk_b(_, _, _)),
         fail_test(Test, compile_failed)
     ).
 
