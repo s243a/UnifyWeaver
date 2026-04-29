@@ -1368,16 +1368,88 @@ SetInsert 201 203 107    -- [Mid|Visited] passed to recursive call
 The runtime instructions (Layer 1) + lowering (Layer 2) + arg
 rewrite (Layer 2.5) coordinate end-to-end.
 
-### Macro benchmark — TODO
+### Macro benchmark — measured (and the design's expected speedup did NOT materialise)
 
-A follow-up should extend
-`tests/benchmarks/wam_effective_distance_macro_bench.pl` to add a
-third variant that includes `:- visited_set(category_ancestor/4, 4)`
-and compare against the Phase G `mode`-only baseline. Expected
-improvement per the design doc: another ~1.5–3× on top of the
-~1.18× Phase G macro speedup (compounding the constant-factor and
-algorithmic wins). Filed as a small follow-up — the substrate is in
-place; the benchmark is just a copy-and-add-directive.
+`tests/benchmarks/wam_effective_distance_macro_bench.pl` extended
+to a 3-way comparison: `unlowered` / `lowered` (Phase G) /
+`intset` (Phase G + H). 6 trials with rotating order to spot
+cache-warming bias.
+
+Results at 10k scale (`data/benchmark/10k`, 462 tuples,
+~50-element visited list bounded by `max_depth=10`):
+
+| variant | mean query_ms |
+|---|---:|
+| unlowered (no directives) | 931.5 |
+| lowered (Phase G `mode` only) | 861.0 |
+| intset (Phase G + H combined) | 957.5 |
+
+Speedups:
+
+- **lowered vs unlowered: 1.082×** — Phase G's constant-factor
+  win on the macro path is consistent with the prior 1.18× at 1k.
+- **intset vs lowered: 0.899×** — the IntSet path is **~10 %
+  slower** than the list-based lowering at this scale.
+- **intset vs unlowered: 0.973×** — IntSet barely matches the
+  unlowered baseline.
+
+`tuple_count=462` matches across all three — correctness
+preserved.
+
+### Why the algorithmic O(log N) does not pay off here
+
+The design predicted ~1.5–3× speedup from O(N) → O(log N) at
+`max_depth=10`. Reality: the Patricia-trie constant factor
+(tree descent, node allocation per insert) **exceeds** the
+~10-element list walk's linear cost. Specifically:
+
+1. **Allocation per insert**: `IS.insert` allocates new tree
+   nodes on each cons-extension (purely functional). `[X|V]`
+   allocates one cons cell. For shallow visited sets, the
+   allocation cost dominates.
+2. **Cache locality**: a small contiguous cons-cell list packs
+   into one or two cache lines. A 4-element IntSet trie scatters
+   across multiple nodes that may hit different cache lines.
+3. **Node traversal overhead**: even `IS.member` on a 10-element
+   `IntSet` does ~3-4 tag-checks and comparisons in a Patricia
+   trie, vs at most 10 simple `==` checks in the list — the
+   constant factors are surprisingly close at this size.
+
+**The IntSet wins kick in at much deeper visited sets** —
+probably `max_depth ≥ 50` or unbounded depth on cyclic graphs.
+For the canonical effective-distance workload at `max_depth=10`,
+the algorithmic improvement does not amortise its constant
+factors.
+
+### Honest reading of the IntSet arc
+
+The IntSet implementation is **correct** (tests + cabal e2e green,
+`tuple_count` matches across all variants), but on the workload it
+was designed for, it does not improve performance — and slightly
+hurts it. Three takeaways:
+
+1. **Algorithmic wins are not free at small N.** The design's
+   "1.5–3× expected" was reasoning from asymptotic complexity
+   without accounting for IntSet's per-operation constant factors
+   on deeply-allocating workloads.
+2. **The infrastructure is reusable.** `VSet`, the directive,
+   and the codegen paths can host other set representations that
+   might win at small N — e.g. a sorted array or a small bitmap
+   for known-small visited sets.
+3. **Phase G is the real macro win.** The constant-factor
+   `not_member_list` lowering (skipping put_structure +
+   builtin_call dispatch + heap term allocation) is what
+   actually speeds up the workload. Phase H's algorithmic
+   pivot was the wrong move for this particular workload.
+
+The directive remains opt-in. Users who don't declare it pay
+nothing. Users who do declare it on workloads with deep visited
+sets may see the expected algorithmic win; users at typical
+`max_depth=10` should leave it off.
+
+A useful follow-up would be to test at `max_depth=50` or higher
+to find the crossover point where IntSet's algorithmic benefit
+finally dominates the constant factors.
 
 ---
 
