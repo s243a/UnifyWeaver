@@ -108,15 +108,25 @@ render_compiled_module(CamelMod, CamelPred, PredIndicator, PredStr, ShapeComment
     (   Tier2Wrapper == ""
     ->  Suffix = "",
         Tier2Extras = "",
-        Tier2ModAttr = ""
+        Tier2ModAttr = "",
+        BranchFuncCodes = []
     ;   Suffix = "_impl",
         % The super-wrapper (Tier2Wrapper) already calls the
         % `*_impl` entry directly from its gate-miss cond arms, so
         % no separate sequential alias is emitted here.
         Tier2Extras = Tier2Wrapper,
-        Tier2ModAttr = '  @tier2_eligible true\n'
+        Tier2ModAttr = '  @tier2_eligible true\n',
+        % Phase 4b.5: Tier-2-eligible predicates ALSO emit `_branch`
+        % variants of each clause function. The super-wrappers
+        % parallel branches (in BranchImplFuncs) point at these.
+        % The `_branch` versions run only their own clause body
+        % without pushing a try_me_else CP for the next clause —
+        % each branch enumerates ONLY its own clauses solutions,
+        % avoiding the duplicate-enumeration finding from #1706.
+        generate_all_segments(Segments, Labels, "_branch", BranchFuncCodes)
     ),
-    generate_all_segments(Segments, Labels, Suffix, FuncCodes),
+    generate_all_segments(Segments, Labels, Suffix, ImplFuncCodes),
+    append(ImplFuncCodes, BranchFuncCodes, FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FuncsBody),
     % `def run(state)` always delegates to `clause_main` — which is the
     % super-wrapper under Tier 2, or the first clause's body pre-Tier-2.
@@ -985,6 +995,29 @@ classify_segment_head(Instrs, HeadType, BodyInstrs) :-
     ;   HeadType = none, BodyInstrs = Instrs
     ), !.
 
+% Phase 4b.5: _branch variant emission. When Suffix is "_branch" the
+% function is called directly by the Tier-2 super-wrapper as one of
+% its parallel branches — it must run only its own clause body
+% without pushing a CP for the next clause (which would cause the
+% branchs local backtrack to chain into subsequent clauses,
+% producing duplicate solutions across branches; the chain-CP
+% finding from Phase 4b's runtime probe). The no-push shape mirrors
+% the existing trust_me / none templates.
+wrap_segment(FuncName, _HeadType, BodyCode, "_branch", Code) :-
+    !,
+    format(string(Code),
+'  defp ~w(state) do
+    try do
+~w
+    catch
+      {:fail, s} ->
+        case WamRuntime.backtrack(s) do
+          :fail -> throw({:fail, %{s | choice_points: []}})
+          other -> other
+        end
+    end
+  end', [FuncName, BodyCode]).
+
 wrap_segment(FuncName, try_me_else(L), BodyCode, Suffix, Code) :-
     segment_func_name(L, Suffix, FallbackFunc),
     format(string(Code),
@@ -1106,9 +1139,15 @@ par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
     Segments = [FirstName-_|_],
     segment_func_name(FirstName, "", EntryFunc),
     segment_func_name(FirstName, "_impl", EntryImplFunc),
-    maplist([Name-_Instrs, ImplFunc]>>segment_func_name(Name, "_impl", ImplFunc),
-            Segments, BranchImplFuncs),
-    emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code).
+    % Phase 4b.5: BranchFuncs reference the `_branch` variants
+    % (emitted alongside `_impl` by render_compiled_module/8 when
+    % Tier-2 is eligible). The `_branch` versions skip the
+    % try_me_else / retry_me_else CP push so each branch enumerates
+    % ONLY its own clauses solutions — avoids the chain-CP
+    % duplicates from Phase 4bs runtime probe.
+    maplist([Name-_Instrs, BranchFunc]>>segment_func_name(Name, "_branch", BranchFunc),
+            Segments, BranchFuncs),
+    emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchFuncs, Code).
 par_wrap_segment(_Pred, _Segments, _Options, "").
 
 %% emit_par_tier2_wrapper(+EntryFunc, +EntryImplFunc, +BranchImplFuncs, -Code)
