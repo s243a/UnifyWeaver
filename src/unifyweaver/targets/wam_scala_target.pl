@@ -274,13 +274,16 @@ strip_arity_suffix(Pred, Name) :-
     ).
 
 %% constant_to_scala_term(+ConstStr, -ScalaTermLit) is det.
-%  Converts a WAM constant token to its Scala-source-literal form. Numeric
-%  tokens become IntTerm(N) so arithmetic builtins (is/2, =:=/2, ...) can
-%  evaluate them; non-numeric tokens are interned as atoms.
+%  Converts a WAM constant token to its Scala-source-literal form.
+%  Integer tokens become IntTerm(N); float tokens become FloatTerm(N);
+%  everything else is interned as an atom.
 constant_to_scala_term(C, Lit) :-
     (   number_string(N, C),
         integer(N)
     ->  format(string(Lit), 'IntTerm(~w)', [N])
+    ;   number_string(F, C),
+        float(F)
+    ->  format(string(Lit), 'FloatTerm(~w)', [F])
     ;   intern_scala_atom(C, AtomId),
         format(string(Lit), 'Atom(~w)', [AtomId])
     ).
@@ -302,15 +305,26 @@ scala_string_escape_char('"',  ['\\', '"'])  :- !.
 scala_string_escape_char(C, [C]).
 
 %% parse_functor_arity(+FunctorStr, -Name, -Arity)
+%  Splits a WAM functor token of the form "name/arity" into Name and Arity.
+%  Uses the *last* "/" as the separator so functor names that themselves
+%  contain a slash (e.g. the division operator "/" rendered as "//2") are
+%  parsed correctly.
 parse_functor_arity(FStr, Name, Arity) :-
     atom_string(FA, FStr),
-    (   sub_atom(FA, B, 1, _, '/')
+    (   last_slash_index(FA, B)
     ->  sub_atom(FA, 0, B, _, Name),
         B1 is B + 1,
         sub_atom(FA, B1, _, 0, AS),
         atom_number(AS, Arity)
     ;   Name = FA, Arity = 0
     ).
+
+%% last_slash_index(+Atom, -Index)
+%  Index of the last "/" in Atom, or fails if none.
+last_slash_index(Atom, Index) :-
+    findall(B, sub_atom(Atom, B, 1, _, '/'), Bs),
+    Bs \= [],
+    last(Bs, Index).
 
 % ============================================================================
 % WAM TEXT → SCALA INSTRUCTION ARRAY
@@ -506,12 +520,115 @@ scala_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :-
     format(string(Entry), '    "~w/~w" -> ~w', [Pred, Arity, HandlerCode]).
 
 % ============================================================================
+% FACT BACKEND SEAM (Phase S7)
+% ============================================================================
+% A FactSource is a declarative way to provide fact-shaped data to a
+% predicate at codegen time without writing a full Scala ForeignHandler.
+% The user supplies `scala_fact_sources([source(P/A, Tuples), ...])` where
+% each Tuple is a list of Arity atoms. The codegen synthesises:
+%   - a ForeignHandler that enumerates all tuples as ForeignMulti solutions
+%     (the runtime's existing applyBindings + backtracking machinery filters
+%     them against the input args);
+%   - a foreign_predicates entry so the WAM body is replaced by a
+%     CallForeign stub;
+%   - intern_atoms entries for every atom used in any tuple.
+% This is the "inline" implementation; sidecar (file/LMDB) backends will
+% slot into the same option in later phases.
+
+%% expand_fact_sources_in_options(+Options0, -Options) is det.
+%  Replaces scala_fact_sources(...) entries with equivalent
+%  foreign_predicates + scala_foreign_handlers + intern_atoms entries,
+%  preserving any user-supplied entries in those lists by union.
+expand_fact_sources_in_options(Options0, Options) :-
+    (   option(scala_fact_sources(Sources), Options0, []),
+        Sources \= []
+    ->  findall(P/A, member(source(P/A, _), Sources), SourcePreds),
+        findall(handler(P/A, Code),
+                (   member(source(P/A, Tuples), Sources),
+                    fact_source_to_handler_code(A, Tuples, Code)
+                ),
+                SourceHandlers),
+        findall(Atom,
+                (   member(source(_/_, Tuples), Sources),
+                    member(Tuple, Tuples),
+                    member(Atom, Tuple)
+                ),
+                FactAtomsBag),
+        list_to_set(FactAtomsBag, FactAtoms),
+        % Union with any user-supplied lists. option/3 picks the first
+        % occurrence; we replace it with the unioned form below.
+        option(foreign_predicates(FPs0), Options0, []),
+        option(scala_foreign_handlers(FHs0), Options0, []),
+        option(intern_atoms(IA0), Options0, []),
+        list_union(FPs0, SourcePreds, FPsAll),
+        list_union(FHs0, SourceHandlers, FHsAll),
+        list_union(IA0, FactAtoms, IAAll),
+        replace_option(foreign_predicates, FPsAll, Options0, O1),
+        replace_option(scala_foreign_handlers, FHsAll, O1, O2),
+        replace_option(intern_atoms, IAAll, O2, Options)
+    ;   Options = Options0
+    ).
+
+%% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
+fact_source_to_handler_code(Arity, Tuples, Code) :-
+    maplist(tuple_to_solution_map_lit(Arity), Tuples, SolLits),
+    atomic_list_concat(SolLits, ',\n        ', SolBody),
+    format(string(Code),
+           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols: Seq[Map[Int, WamTerm]] = Seq(\n        ~w\n        )\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [SolBody]).
+
+tuple_to_solution_map_lit(Arity, Tuple, Lit) :-
+    is_list(Tuple),
+    length(Tuple, Arity),
+    map_args_to_pairs(Tuple, 1, Pairs),
+    atomic_list_concat(Pairs, ', ', PairsStr),
+    format(string(Lit), 'Map(~w)', [PairsStr]).
+
+map_args_to_pairs([], _, []).
+map_args_to_pairs([A|Rest], N, [Pair|More]) :-
+    fact_arg_to_scala_term(A, TermLit),
+    format(string(Pair), '~w -> ~w', [N, TermLit]),
+    N1 is N + 1,
+    map_args_to_pairs(Rest, N1, More).
+
+%% fact_arg_to_scala_term(+Arg, -ScalaTermLit)
+%  Same numeric/atom split as constant_to_scala_term/2 but operating
+%  on Prolog terms (not WAM-text strings).
+fact_arg_to_scala_term(N, Lit) :-
+    integer(N), !,
+    format(string(Lit), 'IntTerm(~w)', [N]).
+fact_arg_to_scala_term(F, Lit) :-
+    float(F), !,
+    format(string(Lit), 'FloatTerm(~w)', [F]).
+fact_arg_to_scala_term(A, Lit) :-
+    atom_string(A, S),
+    intern_scala_atom(S, AtomId),
+    format(string(Lit), 'Atom(~w)', [AtomId]).
+
+%% list_union(+L1, +L2, -Union) — preserves order of L1, then appends new of L2.
+list_union(L1, L2, Union) :-
+    findall(X, (member(X, L2), \+ member(X, L1)), New),
+    append(L1, New, Union).
+
+%% replace_option(+Key, +Value, +Options0, -Options)
+%  Removes any existing Key(...) entry from Options0 and prepends
+%  Key(Value).
+replace_option(Key, Value, Options0, [NewEntry | Cleaned]) :-
+    exclude([X]>>( compound(X), X =.. [Key, _] ), Options0, Cleaned),
+    NewEntry =.. [Key, Value].
+
+% ============================================================================
 % PROJECT WRITER
 % ============================================================================
 
-%% write_wam_scala_project(+Predicates, +Options, +ProjectDir) is det.
-%  Creates a complete Scala WAM project in ProjectDir.
-write_wam_scala_project(Predicates, Options, ProjectDir) :-
+%% write_wam_scala_project(+Predicates, +Options0, +ProjectDir) is det.
+%  Creates a complete Scala WAM project in ProjectDir. The S7 fact-backend
+%  seam is processed before anything else: scala_fact_sources(...) entries
+%  expand into equivalent foreign_predicates + scala_foreign_handlers +
+%  intern_atoms entries, so the rest of the pipeline doesn't need to know
+%  about fact sources as a distinct concept.
+write_wam_scala_project(Predicates, Options0, ProjectDir) :-
+    expand_fact_sources_in_options(Options0, Options),
     make_directory_path(ProjectDir),
     % --- build.sbt ---
     option(module_name(ModName), Options, 'wam-scala-generated'),

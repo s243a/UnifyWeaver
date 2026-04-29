@@ -59,6 +59,16 @@
 :- dynamic user:wam_eq_arith/2.
 :- dynamic user:wam_neq_arith/2.
 :- dynamic user:wam_cut_obs/1.
+:- dynamic user:wam_always_fail/1.
+:- dynamic user:wam_dummy_a/1.
+:- dynamic user:wam_neg_dummy/1.
+:- dynamic user:wam_float_mul/2.
+:- dynamic user:wam_float_div/2.
+:- dynamic user:wam_float_lit/1.
+:- dynamic user:wam_float_cmp_lt/2.
+:- dynamic user:wam_int_div_true/2.
+:- dynamic user:wam_pair_inline/2.
+:- dynamic user:wam_pair_sidecar/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -121,6 +131,30 @@ user:wam_geq(X, Y)        :- X >= Y.
 user:wam_leq(X, Y)        :- X =< Y.
 user:wam_eq_arith(X, Y)   :- X =:= Y.
 user:wam_neq_arith(X, Y)  :- X =\= Y.
+
+% --- fail/0 and \+/1 ---
+user:wam_always_fail(_X) :- fail.
+user:wam_dummy_a(a).
+% Negation-as-failure: succeeds only when the inner goal fails.
+user:wam_neg_dummy(X) :- \+ user:wam_dummy_a(X).
+
+% --- Float arithmetic ---
+user:wam_float_mul(X, Y)    :- Y is X * 2.5.
+user:wam_float_div(X, Y)    :- Y is X / 2.0.
+user:wam_float_lit(Y)       :- Y is 3.14.
+user:wam_float_cmp_lt(X, Y) :- X < Y.
+% True division of two integers: 5/2 -> 2.5, not 2 (per SWI semantics).
+user:wam_int_div_true(X, Y) :- Y is X / 2.
+
+% --- S7 fact backend seam ---
+% Same relation under two backends. The inline form has WAM-compiled
+% facts; the sidecar form passes the same tuples via scala_fact_sources
+% so the codegen synthesises a ForeignHandler that enumerates them.
+% Both forms must give identical answers for every query.
+user:wam_pair_inline(a, b).
+user:wam_pair_inline(b, c).
+user:wam_pair_inline(c, d).
+user:wam_pair_sidecar(_, _).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -386,6 +420,82 @@ test(arith_compare) :-
             verify_scala_args(TmpDir, 'wam_neq_arith/2', ['3', '4'], "true"),
             verify_scala_args(TmpDir, 'wam_neq_arith/2', ['3', '3'], "false")
         )).
+
+% --- fail/0 builtin ---
+test(builtin_fail) :-
+    with_scala_project(
+        [user:wam_always_fail/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_always_fail/1', 'a', "false"),
+            verify_scala(TmpDir, 'wam_always_fail/1', 'b', "false")
+        )).
+
+% --- \+/1 negation-as-failure ---
+% wam_neg_dummy(a) → false (wam_dummy_a(a) succeeds, so \+ fails)
+% wam_neg_dummy(b) → true  (wam_dummy_a(b) fails,    so \+ succeeds)
+test(builtin_negation) :-
+    with_scala_project(
+        [user:wam_dummy_a/1, user:wam_neg_dummy/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_neg_dummy/1', 'a', "false"),
+            verify_scala(TmpDir, 'wam_neg_dummy/1', 'b', "true"),
+            verify_scala(TmpDir, 'wam_neg_dummy/1', 'c', "true")
+        )).
+
+% --- Float arithmetic ---
+test(arith_float) :-
+    with_scala_project(
+        [user:wam_float_mul/2, user:wam_float_div/2,
+         user:wam_float_lit/1, user:wam_float_cmp_lt/2,
+         user:wam_int_div_true/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_float_mul/2',    ['4', '10.0'],   "true"),
+            verify_scala_args(TmpDir, 'wam_float_mul/2',    ['4', '11.0'],   "false"),
+            verify_scala_args(TmpDir, 'wam_float_div/2',    ['9', '4.5'],    "true"),
+            verify_scala_args(TmpDir, 'wam_float_div/2',    ['9', '4.0'],    "false"),
+            verify_scala_args(TmpDir, 'wam_float_lit/1',    ['3.14'],        "true"),
+            verify_scala_args(TmpDir, 'wam_float_lit/1',    ['3.15'],        "false"),
+            verify_scala_args(TmpDir, 'wam_float_cmp_lt/2', ['1.5', '2.5'],  "true"),
+            verify_scala_args(TmpDir, 'wam_float_cmp_lt/2', ['2.5', '1.5'],  "false"),
+            % Mixed Int/Float comparison should promote.
+            verify_scala_args(TmpDir, 'wam_float_cmp_lt/2', ['1', '2.5'],    "true"),
+            verify_scala_args(TmpDir, 'wam_float_cmp_lt/2', ['2.5', '3'],    "true"),
+            % True division of integers yields a Float.
+            verify_scala_args(TmpDir, 'wam_int_div_true/2', ['5', '2.5'],    "true"),
+            verify_scala_args(TmpDir, 'wam_int_div_true/2', ['5', '2'],      "false")
+        )).
+
+% --- S7 fact backend seam: parity inline-vs-sidecar ---
+% Both versions answer the same set of queries identically.
+test(fact_source_inline_vs_sidecar) :-
+    InlineQueries =
+        [['a','b']-true, ['a','c']-false, ['b','c']-true,
+         ['c','d']-true, ['x','y']-false],
+    % Inline backend: WAM-compiled facts.
+    with_scala_project(
+        [user:wam_pair_inline/2],
+        _OptsInline,
+        TmpDir1,
+        forall(member(Args-Expected, InlineQueries),
+               ( (Expected == true -> S = "true" ; S = "false"),
+                 verify_scala_args(TmpDir1, 'wam_pair_inline/2', Args, S)
+               ))),
+    % Sidecar backend: same tuples, declared via scala_fact_sources.
+    with_scala_project(
+        [user:wam_pair_sidecar/2],
+        [ scala_fact_sources(
+              [source(wam_pair_sidecar/2, [[a,b], [b,c], [c,d]])]) ],
+        TmpDir2,
+        forall(member(Args-Expected, InlineQueries),
+               ( (Expected == true -> S = "true" ; S = "false"),
+                 verify_scala_args(TmpDir2, 'wam_pair_sidecar/2', Args, S)
+               ))).
 
 :- end_tests(wam_scala_runtime_smoke).
 
