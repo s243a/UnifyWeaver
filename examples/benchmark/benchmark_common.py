@@ -42,6 +42,26 @@ def csharp_query_source_mode_choices() -> list[str]:
     return ["auto", "preload", "delimited", "artifact", "artifact-prebuilt"]
 
 
+def split_csv(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def validate_csharp_query_source_modes(value: str) -> list[str]:
+    modes = split_csv(value)
+    if not modes:
+        raise ValueError("expected at least one C# query source mode")
+    choices = set(csharp_query_source_mode_choices())
+    unknown = [mode for mode in modes if mode not in choices]
+    if unknown:
+        raise ValueError(
+            "unknown C# query source mode(s): "
+            + ", ".join(unknown)
+            + "; expected one of "
+            + ", ".join(csharp_query_source_mode_choices())
+        )
+    return modes
+
+
 def add_csharp_query_source_mode_arg(parser) -> None:
     parser.add_argument(
         "--csharp-query-source-mode",
@@ -49,6 +69,28 @@ def add_csharp_query_source_mode_arg(parser) -> None:
         choices=csharp_query_source_mode_choices(),
         help="Relation source mode for csharp-query runs.",
     )
+    parser.add_argument(
+        "--csharp-query-source-modes",
+        default=None,
+        help=(
+            "Comma-separated C# query source modes to sweep. "
+            "When set, csharp-query rows are labeled csharp-query:<mode>."
+        ),
+    )
+
+
+def csharp_query_source_modes_from_args(args) -> list[str]:
+    raw_modes = getattr(args, "csharp_query_source_modes", None)
+    if raw_modes:
+        try:
+            return validate_csharp_query_source_modes(raw_modes)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    return [getattr(args, "csharp_query_source_mode", "auto")]
+
+
+def csharp_query_target_label(source_mode: str, source_modes: list[str]) -> str:
+    return f"csharp-query:{source_mode}" if len(source_modes) > 1 else "csharp-query"
 
 
 def append_csharp_query_source_mode_metric(stderr: str, source_mode: str | None) -> str:
@@ -378,6 +420,43 @@ def print_result_table(entries: list[object], scale: str) -> None:
 
 def find_result(entries: list[object], target: str) -> object | None:
     return next((item for item in entries if item.target == target), None)
+
+
+def csharp_query_results(entries: list[object]) -> list[object]:
+    return [
+        item
+        for item in entries
+        if item.target == "csharp-query" or item.target.startswith("csharp-query:")
+    ]
+
+
+def find_csharp_query_result(entries: list[object]) -> object | None:
+    exact = find_result(entries, "csharp-query")
+    if exact is not None:
+        return exact
+    auto = find_result(entries, "csharp-query:auto")
+    if auto is not None:
+        return auto
+    candidates = csharp_query_results(entries)
+    return candidates[0] if candidates else None
+
+
+def csharp_query_source_mode_from_target(target: str) -> str:
+    if target.startswith("csharp-query:"):
+        return target.split(":", 1)[1]
+    return "auto"
+
+
+def print_csharp_query_source_mode_summary(scale: str, entries: list[object]) -> None:
+    candidates = [item for item in csharp_query_results(entries) if item.target.startswith("csharp-query:")]
+    if len(candidates) < 2:
+        return
+    best = min(candidates, key=lambda item: item.median)
+    auto = find_result(candidates, "csharp-query:auto")
+    print(f"{scale}\tcsharp_query_best_source_mode\t{csharp_query_source_mode_from_target(best.target)}")
+    if auto is not None:
+        ratio = auto.median / best.median if best.median else float("inf")
+        print(f"{scale}\tcsharp_query_auto_vs_best_source_mode\t{ratio:.2f}x")
 
 
 def print_match_status(scale: str, label: str, entries: list[object]) -> None:

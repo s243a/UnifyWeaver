@@ -1024,6 +1024,10 @@ Comparison note:
   `--csharp-query-source-mode auto|preload|delimited|artifact|artifact-prebuilt`;
   non-`auto` runs include `csharp_query_source_mode=<mode>` in the
   `csharp-query-metrics` row and use a runner-managed artifact directory
+- use `--csharp-query-source-modes auto,artifact-prebuilt,...` to sweep
+  multiple source modes in one generated cross-target run; the output labels
+  those rows as `csharp-query:<mode>` and prints a
+  `csharp_query_best_source_mode` summary
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
