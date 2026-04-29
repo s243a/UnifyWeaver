@@ -4,6 +4,45 @@
 (ns {{runtime_namespace}}
   (:require [clojure.string :as str]))
 
+(def well-known-intern-seeds ["true" "fail" "[]" "." "" "[|]" "[|]/2"])
+
+(defn parse-functor-arity [functor]
+  (let [[_ arity-str] (str/split functor #"/")]
+    (Integer/parseInt arity-str)))
+
+(defn build-intern-context
+  ([atom-seeds]
+   (build-intern-context atom-seeds []))
+  ([atom-seeds functor-seeds]
+   (let [ordered-seeds (vec (distinct (concat well-known-intern-seeds atom-seeds functor-seeds)))
+         atom-intern (into {}
+                           (map-indexed (fn [idx value]
+                                          [value idx]))
+                           ordered-seeds)
+         functor-arity (into {}
+                            (map (fn [functor]
+                                   [functor (parse-functor-arity functor)]))
+                            (distinct functor-seeds))]
+     {:atom-intern atom-intern
+      :atom-deintern ordered-seeds
+      :functor-arity functor-arity})))
+
+(defn intern-atom [ctx atom]
+  (if-let [id (get (:atom-intern ctx) atom)]
+    [ctx id]
+    (let [id (count (:atom-deintern ctx))]
+      [(-> ctx
+           (assoc-in [:atom-intern atom] id)
+           (update :atom-deintern conj atom))
+       id])))
+
+(defn deintern-atom [ctx id]
+  (get (:atom-deintern ctx) id))
+
+(defn functor-arity [ctx functor]
+  (or (get-in ctx [:functor-arity functor])
+      (parse-functor-arity functor)))
+
 (defn resolve-instruction [labels instr]
   (case (:op instr)
     :call
@@ -70,13 +109,16 @@
 
 (defn new-state
   ([code labels start-pc regs]
-   (new-state code labels start-pc regs {}))
+   (new-state code labels start-pc regs {} nil))
   ([code labels start-pc regs foreign-handlers]
+   (new-state code labels start-pc regs foreign-handlers nil))
+  ([code labels start-pc regs foreign-handlers intern-context]
   {:code code
    :labels labels
    :pc start-pc
    :regs regs
    :foreign-handlers foreign-handlers
+   :intern-context intern-context
    :env-stack []
    :bindings {}
    :stack []
@@ -278,10 +320,6 @@
   (let [id (:next-var-id state)]
     [(var-term id) (update state :next-var-id inc)]))
 
-(defn parse-functor-arity [functor]
-  (let [[_ arity-str] (str/split functor #"/")]
-    (Integer/parseInt arity-str)))
-
 (defn push-build-frame [state target-reg functor arity]
   (update state :build-stack conj {:target-reg target-reg
                                    :functor functor
@@ -471,7 +509,8 @@
             advance)
 
         :put-structure
-        (let [arity (parse-functor-arity (:functor instr))]
+        (let [arity (or (:arity instr)
+                        (functor-arity (:intern-context state) (:functor instr)))]
           (-> state
               (push-build-frame (:reg instr) (:functor instr) arity)
               advance))
@@ -663,6 +702,8 @@
 
 (defn run-wam-predicate
   ([code labels start-pc regs]
-   (run-wam-predicate code labels start-pc regs {}))
+   (run-wam-predicate code labels start-pc regs {} nil))
   ([code labels start-pc regs foreign-handlers]
-   (run-wam (new-state code labels start-pc regs foreign-handlers))))
+   (run-wam-predicate code labels start-pc regs foreign-handlers nil))
+  ([code labels start-pc regs foreign-handlers intern-context]
+   (run-wam (new-state code labels start-pc regs foreign-handlers intern-context))))

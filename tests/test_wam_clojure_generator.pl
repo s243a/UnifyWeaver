@@ -47,7 +47,7 @@ user:wam_parent_lookup(X, Y) :- user:category_parent(X, Y).
 user:max_depth(_) :- fail.
 user:wam_ancestor_lookup(A, B, C, D) :- user:category_ancestor(A, B, C, D).
 
-test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
+test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_shared', TmpDir),
         write_wam_clojure_project([user:wam_execute_caller/1,
@@ -62,19 +62,30 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         read_file_to_string(RuntimePath, RuntimeCode, []),
         read_file_to_string(DepsPath, DepsCode, []),
         read_file_to_string(ProjectPath, ProjectCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '(def compile-time-atom-seeds [')),
+        assertion(sub_string(CoreCode, _, _, _, '(def compile-time-functor-seeds [')),
+        assertion(sub_string(CoreCode, _, _, _, '(def atom-intern-context')),
+        assertion(sub_string(CoreCode, _, _, _, '(def atom-intern-table (:atom-intern atom-intern-context))')),
+        assertion(sub_string(CoreCode, _, _, _, '(def atom-deintern-table (:atom-deintern atom-intern-context))')),
+        assertion(sub_string(CoreCode, _, _, _, '(def functor-arity-table (:functor-arity atom-intern-context))')),
         assertion(sub_string(CoreCode, _, _, _, '(def shared-wam-code-raw [')),
         assertion(sub_string(CoreCode, _, _, _, '(def shared-wam-labels {')),
         assertion(sub_string(CoreCode, _, _, _, '(def shared-wam-code')),
         assertion(sub_string(CoreCode, _, _, _, 'runtime/resolve-instructions shared-wam-code-raw shared-wam-labels')),
-        assertion(sub_string(CoreCode, _, _, _, '(def wam-execute-caller-start-pc ')),
-        assertion(sub_string(CoreCode, _, _, _, '(defn wam-execute-caller [a1]')),
-        assertion(sub_string(CoreCode, _, _, _, '(defn wam-call-caller [a1]')),
-        assertion(sub_string(CoreCode, _, _, _, 'runtime/run-wam-predicate shared-wam-code shared-wam-labels wam-execute-caller-start-pc')),
+        assertion(sub_string(CoreCode, _, _, _, '(defn lowered-wam-execute-caller-1 [state]')),
+        assertion(sub_string(CoreCode, _, _, _, '(defn lowered-wam-call-caller-1 [state]')),
+        assertion(sub_string(CoreCode, _, _, _, '(defn lowered-wam-fact-1 [state]')),
         assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers')),
         assertion(sub_string(CoreCode, _, _, _, '(def predicate-dispatch {')),
-        assertion(sub_string(CoreCode, _, _, _, '"wam_execute_caller/1" wam-execute-caller')),
-        assertion(sub_string(CoreCode, _, _, _, '"wam_call_caller/1" wam-call-caller')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_execute_caller/1" lowered-wam-execute-caller-1')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_call_caller/1" lowered-wam-call-caller-1')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" lowered-wam-fact-1')),
         assertion(sub_string(CoreCode, _, _, _, '(defn -main [& args]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(def well-known-intern-seeds [')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn build-intern-context')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn intern-atom [ctx atom]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn deintern-atom [ctx id]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn functor-arity [ctx functor]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn resolve-instructions [code labels]')),
         assertion(sub_string(RuntimeCode, _, _, _, ':try-me-else-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':switch-on-constant')),
@@ -102,11 +113,27 @@ test(project_uses_shared_wam_table_for_cross_predicate_calls) :-
         assertion(sub_string(RuntimeCode, _, _, _, ':unify-variable')),
         assertion(sub_string(RuntimeCode, _, _, _, ':retry-me-else-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':trust-me')),
+        assertion(sub_string(RuntimeCode, _, _, _, ':intern-context intern-context')),
         assertion(sub_string(RuntimeCode, _, _, _, ':regs (:regs state)')),
         assertion(\+ sub_string(RuntimeCode, _, _, _, 'snapshot-choice-regs')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn step [state]')),
         assertion(sub_string(DepsCode, _, _, _, '"-m" "generated.wam_test.core"')),
         assertion(sub_string(ProjectCode, _, _, _, ':main generated.wam_test.core')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(compile_time_intern_tables_are_emitted_and_deduplicated) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_intern_tables', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1,
+                                   user:wam_struct_fact/1,
+                                   user:wam_list_fact/1],
+                                  [namespace('generated.wam_intern_test')], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_intern_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '(def compile-time-atom-seeds ["[]" "[|]/2" "a" "b" "f/1" "wam_fact/1" "wam_list_fact/1" "wam_struct_fact/1"])')),
+        assertion(sub_string(CoreCode, _, _, _, '(def compile-time-functor-seeds ["[|]/2" "f/1"])')),
+        assertion(sub_string(CoreCode, _, _, _, '(runtime/build-intern-context compile-time-atom-seeds compile-time-functor-seeds)')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -142,7 +169,7 @@ test(clojure_foreign_handlers_emit_handler_map) :-
         read_file_to_string(CorePath, CoreCode, []),
         assertion(sub_string(CoreCode, _, _, _, '(def foreign-handlers {')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" (fn [args] (= (first args) "a"))')),
-        assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers)')),
+        assertion(sub_string(CoreCode, _, _, _, 'foreign-handlers atom-intern-context)')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -221,7 +248,7 @@ test(clojure_lmdb_target_foreign_relation_auto_handler,
         assertion(sub_string(CoreCode, _, _, _, '"category_parent/2" (let [reader-delay (delay (generated.lmdb.LmdbArtifactReader/openSharedCached')),
         assertion(sub_string(CoreCode, _, _, _, 'data/generated/test/category_parent_lmdb')),
         assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_parent/2')),
-        assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" wam-parent-lookup')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" lowered-wam-parent-lookup-2')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -255,7 +282,7 @@ test(clojure_lmdb_target_ancestor_foreign_relation_auto_handler,
         assertion(sub_string(CoreCode, _, _, _, 'lmdb_cache_stats category_ancestor/4')),
         assertion(sub_string(CoreCode, _, _, _, '{:solutions (vec solutions)}')),
         assertion(sub_string(CoreCode, _, _, _, '{:bindings {2 ancestor 3 hops}}')),
-        assertion(sub_string(CoreCode, _, _, _, '"wam_ancestor_lookup/4" wam-ancestor-lookup')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_ancestor_lookup/4" lowered-wam-ancestor-lookup-4')),
         delete_directory_and_contents(TmpDir)
     )).
 
