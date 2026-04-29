@@ -2406,12 +2406,24 @@ step !_ctx s (NotMemberList xReg lReg) =
 -- unlowered builtin path (N PutStructures + dispatch + N unifications)
 -- and the IntSet inline-build path (N SetInserts allocate Patricia
 -- nodes per call) at small N typical of source-literal lists.
+--
+-- Semantics: succeed when X cannot unify with any atom in the baked-in
+-- list. For an Atom X, that is "aid notElem atomIds". For a non-Atom
+-- ground value (Integer, Float, Str, VList, VSet) X can never unify
+-- with any atom, so the check trivially succeeds. For an Unbound X,
+-- it COULD unify with some atom (Prolog would succeed via
+-- unification), so the check must fail — matches Prolog
+-- \\+ member(X, [a,b,c]) semantics when X is unbound.
 step !_ctx s (NotMemberConstAtoms xReg atomIds) =
   let mX = derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s)
   in case mX of
-    Just (Atom aid) ->
-      if aid `elem` atomIds then Nothing else Just (s { wsPC = wsPC s + 1 })
-    _ -> Nothing
+    Just (Atom aid)    -> if aid `elem` atomIds
+                            then Nothing
+                            else Just (s { wsPC = wsPC s + 1 })
+    Just (Unbound _)   -> Nothing  -- could unify with some atom
+    Just (Ref _)       -> Nothing  -- unresolved chain — treat as could-unify
+    Just _             -> Just (s { wsPC = wsPC s + 1 })  -- non-atom ground: never in list
+    Nothing            -> Nothing  -- register not set
 
 -- IntSet visited support: write an empty set into the named register.
 -- Used by the WAM compiler at the bootstrap site of a visited-set
