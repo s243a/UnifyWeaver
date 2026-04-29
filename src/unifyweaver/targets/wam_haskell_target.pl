@@ -2400,6 +2400,19 @@ step !_ctx s (NotMemberList xReg lReg) =
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- Specialized \\+ member(X, [a, b, c]) for compile-time-ground lists.
+-- Atoms are interned at codegen, so the instruction carries [Int] of
+-- atom IDs. Single dispatch, zero heap allocation. Beats both the
+-- unlowered builtin path (N PutStructures + dispatch + N unifications)
+-- and the IntSet inline-build path (N SetInserts allocate Patricia
+-- nodes per call) at small N typical of source-literal lists.
+step !_ctx s (NotMemberConstAtoms xReg atomIds) =
+  let mX = derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s)
+  in case mX of
+    Just (Atom aid) ->
+      if aid `elem` atomIds then Nothing else Just (s { wsPC = wsPC s + 1 })
+    _ -> Nothing
+
 -- IntSet visited support: write an empty set into the named register.
 -- Used by the WAM compiler at the bootstrap site of a visited-set
 -- argument (e.g. the `[Cat]` literal flowing into category_ancestor)
@@ -3489,6 +3502,7 @@ data Instruction
   | BuiltinCall String !Int
   | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
   | NotMemberList !RegId !RegId       -- specialized \\+ member(X, L): X reg, L reg
+  | NotMemberConstAtoms !RegId ![Int] -- \\+ member(X, [a,b,c,...]): X reg, baked-in interned atom IDs
   | BuildEmptySet !RegId              -- write VSet IS.empty into the named register
   | SetInsert !RegId !RegId !RegId    -- elemReg, inSetReg, outSetReg
   | NotMemberSet !RegId !RegId        -- elemReg, setReg: O(log N) member check
@@ -4106,6 +4120,16 @@ wam_instr_to_haskell(["not_member_list", XReg, LReg], Hs) :-
     clean_comma(XReg, CX), clean_comma(LReg, CL),
     reg_name_to_int(CX, XI), reg_name_to_int(CL, LI),
     format(string(Hs), 'NotMemberList ~w ~w', [XI, LI]).
+%% Variable-arity: not_member_const_atoms XReg Atom1 Atom2 ... AtomN
+wam_instr_to_haskell(["not_member_const_atoms", XReg | AtomTokens], Hs) :-
+    AtomTokens \= [],
+    clean_comma(XReg, CX), reg_name_to_int(CX, XI),
+    maplist([T, Id]>>(
+        clean_comma(T, CT),
+        intern_atom(CT, Id)
+    ), AtomTokens, Ids),
+    atomic_list_concat(Ids, ',', IdsAtom),
+    format(string(Hs), 'NotMemberConstAtoms ~w [~w]', [XI, IdsAtom]).
 wam_instr_to_haskell(["build_empty_set", Reg], Hs) :-
     clean_comma(Reg, CR), reg_name_to_int(CR, RI),
     format(string(Hs), 'BuildEmptySet ~w', [RI]).

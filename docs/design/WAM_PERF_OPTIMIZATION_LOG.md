@@ -1451,6 +1451,95 @@ A useful follow-up would be to test at `max_depth=50` or higher
 to find the crossover point where IntSet's algorithmic benefit
 finally dominates the constant factors.
 
+### Phase H follow-up — depth-sweep (2026-04-29)
+
+Ran the depth-sweep filed above. The benchmark gained a
+`WAM_EFF_DIST_BENCH_MAX_DEPTH` env var that overrides
+`max_depth/1` at codegen time. Sweep at scale=1k, 2 trials per
+variant per depth (rotating order):
+
+| max_depth | unlowered (ms) | lowered (ms) | intset (ms) | intset/lowered |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 72.5 | 53.5 | 67.5 | **0.79×** |
+| 30 | 77.0 | 51.0 | 80.0 | **0.64×** |
+| 50 | 69.0 | 77.0 | 70.0 | **1.10×** |
+
+`tuple_count=48` matches across **all** runs at **all** depths.
+This is the punchline: the wikipedia category-graph paths terminate
+well before depth 10, so the depth bound never fires. Increasing
+`max_depth` from 10 to 50 has no observable effect on visited-list
+sizes at the goal site. There is no IntSet crossover to find on
+this graph — the visited list is shape-bound by graph topology to
+~10 elements regardless of the depth cap.
+
+The 1.10× at depth=50 sits inside the 2-trial noise (lowered's
+spread that depth was 70→84 ms, ~20%); it is not a real crossover.
+
+**Honest reading: the IntSet algorithmic crossover does not
+materialise on the wikipedia-category-graph workload at any
+`max_depth` setting.** The graph is the limit, not the bound.
+Confirming the IntSet wins on real workloads would require either
+(a) a synthetic workload with deep cycles or long chains, or
+(b) a different real graph with longer transitive paths (some
+biological or citation networks would qualify).
+
+The directive remains opt-in. The infrastructure is reusable for
+alternate small-N set representations (sorted array, bitmap)
+which might beat IntSet at this scale — filed as future
+exploration alongside the synthetic-workload follow-up.
+
+### Phase G.2 — ground-list `\+ member` lowering (2026-04-29)
+
+Companion to Phase G's `not_member_list` (which handles
+`\+ member(X, V)` where V is a runtime-bound list var). Phase G.2
+handles the OTHER `\+ member` shape — a literal ground list at
+the call site:
+
+```prolog
+\+ member(X, [foo, bar, baz])    %% ground list of atoms in source
+```
+
+Lowers to a single new instruction:
+
+```
+not_member_const_atoms <xReg> foo bar baz
+```
+
+with the atom IDs interned at codegen and baked into the
+generated Haskell as `NotMemberConstAtoms !RegId ![Int]`. The
+step handler does a single `elem` check on the embedded ID list:
+
+```haskell
+step !_ctx s (NotMemberConstAtoms xReg atomIds) =
+  case derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s) of
+    Just (Atom aid) | aid `elem` atomIds -> Nothing
+    Just (Atom _)                        -> Just (s { wsPC = wsPC s + 1 })
+    _                                    -> Nothing
+```
+
+Vs the unlowered path (`PutStructure` cons cells × N + builtin
+dispatch `\+/1` + `member/2` + N unifications), this is a single
+WAM dispatch with zero heap allocation. Vs the inline-IntSet
+construction (`BuildEmptySet` + N `SetInsert` + `NotMemberSet`),
+this avoids per-call Patricia-trie allocation that — per the
+Phase H finding above — does not pay off at small N.
+
+Fires when the second arg is a proper list of ground atoms.
+Falls through cleanly for var lists (Phase G `not_member_list`),
+partial lists, and lists containing integers/structures/unbound
+elements.
+
+**Macro impact**: none on the canonical effective-distance
+workload — that workload uses var L (visited set), not ground L.
+A targeted microbench (e.g. `\+ member(X, [a,b,c,d,e,f,g,h])`
+in a tight loop) would be the natural follow-up to quantify the
+saved heap allocation + dispatch. Not measured on this branch.
+
+Touch points: `wam_target.pl` (lowering, helper), `wam_haskell_target.pl`
+(Instruction ADT entry, step handler, WAM-text parser),
+`tests/core/test_wam_ground_member_lowering.pl` (9 codegen +
+runtime + parse tests).
+
 ---
 
 ## Planning Note: Clojure lowered-tier and interning follow-up (2026-04-28)
