@@ -147,4 +147,19 @@ object GeneratedProgram {
 
   private def internAtomId(s: String): Int =
     internTable.stringToId.getOrElse(s, -1)
+
+  /** Parse one CSV-cell string into a WamTerm. Used by file-backed
+   *  fact-source handlers. Same numeric/atom split as parseArg but
+   *  without the list / structure forms (CSV cells are expected to be
+   *  scalars). */
+  private def parseFactArg(s: String): WamTerm = {
+    val t = s.trim
+    val intOpt = try Some(t.toInt) catch { case _: NumberFormatException => None }
+    if (intOpt.isDefined) return IntTerm(intOpt.get)
+    if (t.exists(c => c == '.' || c == 'e' || c == 'E')) {
+      val dblOpt = try Some(t.toDouble) catch { case _: NumberFormatException => None }
+      if (dblOpt.isDefined) return FloatTerm(dblOpt.get)
+    }
+    Atom(internAtomId(t))
+  }
 }

@@ -544,14 +544,20 @@ expand_fact_sources_in_options(Options0, Options) :-
         Sources \= []
     ->  findall(P/A, member(source(P/A, _), Sources), SourcePreds),
         findall(handler(P/A, Code),
-                (   member(source(P/A, Tuples), Sources),
-                    fact_source_to_handler_code(A, Tuples, Code)
+                (   member(source(P/A, Spec), Sources),
+                    fact_source_spec_to_handler_code(A, Spec, Code)
                 ),
                 SourceHandlers),
+        % Collect atoms from inline tuple sources for pre-interning. File-
+        % backed sources can't pre-intern at codegen time (the file is read
+        % at runtime), so the user must declare expected atoms via
+        % intern_atoms(...) if their handler-side code needs them.
         findall(Atom,
-                (   member(source(_/_, Tuples), Sources),
-                    member(Tuple, Tuples),
-                    member(Atom, Tuple)
+                (   member(source(_/_, Spec), Sources),
+                    is_list(Spec),
+                    member(Tuple, Spec),
+                    member(Atom, Tuple),
+                    \+ number(Atom)
                 ),
                 FactAtomsBag),
         list_to_set(FactAtomsBag, FactAtoms),
@@ -568,6 +574,25 @@ expand_fact_sources_in_options(Options0, Options) :-
         replace_option(intern_atoms, IAAll, O2, Options)
     ;   Options = Options0
     ).
+
+%% fact_source_spec_to_handler_code(+Arity, +Spec, -ScalaCode) is det.
+%  Dispatches on the shape of Spec:
+%    - Spec is a list of tuples → inline handler enumerating them.
+%    - Spec is file('path') → handler that reads CSV at runtime.
+fact_source_spec_to_handler_code(Arity, Spec, Code) :-
+    is_list(Spec), !,
+    fact_source_to_handler_code(Arity, Spec, Code).
+fact_source_spec_to_handler_code(Arity, file(Path), Code) :-
+    !,
+    atom_string(Path, PathStr),
+    scala_string_literal(PathStr, PathLit),
+    format(string(Code),
+           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          val sols: Seq[Map[Int, WamTerm]] = src.getLines().toList.map { line =>\n            val parts = line.split(\",\").map(_.trim)\n            parts.zipWithIndex.map { case (p, i) => (i + 1) -> parseFactArg(p) }.toMap\n          }\n          if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n        } finally { src.close() }\n      }\n    }",
+           [PathLit]),
+    % Note: Arity isn't enforced here (each line uses whatever columns are
+    % present); a malformed CSV will simply produce wrong-arity bindings
+    % that the runtime will fail to unify. Acceptable for a first cut.
+    _ = Arity.
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
 fact_source_to_handler_code(Arity, Tuples, Code) :-
