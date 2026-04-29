@@ -363,8 +363,10 @@ class SourceModeSummary:
     mode: str
     best_source_mode: str
     chosen_source_mode: str
+    policy_status: str
     auto_vs_best: str
     median_summary: str
+    spread_summary: str
     row_summary: str
     source_registration_summary: str
     bucket_strategy_summary: str
@@ -380,7 +382,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--format", choices=["detail-tsv", "report-tsv", "markdown"], default="detail-tsv")
+    parser.add_argument(
+        "--format",
+        choices=["detail-tsv", "report-tsv", "markdown", "calibration-tsv", "calibration-markdown"],
+        default="detail-tsv")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -430,6 +435,10 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     return metrics.get("scan_planner_strategies", "") or operator
 
 
+def format_time_spread(result: BenchResult) -> str:
+    return f"{min(result.times):.3f}-{max(result.times):.3f}"
+
+
 def summarize_by_source_mode(
     results: list[BenchResult],
     scales: list[str],
@@ -460,6 +469,9 @@ def summarize_by_source_mode(
             auto = source_results.get("auto")
             chosen_source_mode = auto.resolved_source_mode if auto is not None else ""
             best_source_mode = best.source_mode if best is not None else ""
+            policy_status = "match" if chosen_source_mode == best_source_mode else "mismatch"
+            if not chosen_source_mode or not best_source_mode:
+                policy_status = ""
             auto_vs_best = ""
             if auto is not None and best is not None:
                 ratio = auto.median / best.median if best.median else float("inf")
@@ -467,6 +479,10 @@ def summarize_by_source_mode(
 
             median_summary = ",".join(
                 f"{source_mode}:{result.median:.3f}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            spread_summary = ",".join(
+                f"{source_mode}:{format_time_spread(result)}"
                 for source_mode, result in sorted(source_results.items())
             )
             row_summary = ",".join(
@@ -487,8 +503,10 @@ def summarize_by_source_mode(
                     mode=mode,
                     best_source_mode=best_source_mode,
                     chosen_source_mode=chosen_source_mode,
+                    policy_status=policy_status,
                     auto_vs_best=auto_vs_best,
                     median_summary=median_summary,
+                    spread_summary=spread_summary,
                     row_summary=row_summary,
                     source_registration_summary=registration_summary,
                     bucket_strategy_summary=bucket_strategy_summary,
@@ -578,6 +596,28 @@ def print_markdown(summaries: list[SourceModeSummary]) -> None:
         )
 
 
+def print_calibration_tsv(summaries: list[SourceModeSummary]) -> None:
+    print("scale	mode	policy_status	chosen_source_mode	best_source_mode	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
+    for summary in summaries:
+        print(
+            f"{summary.scale}	{summary.mode}	{summary.policy_status}	"
+            f"{summary.chosen_source_mode}	{summary.best_source_mode}	{summary.auto_vs_best}	"
+            f"{summary.median_summary}	{summary.spread_summary}	{summary.source_registration_summary}"
+        )
+
+
+def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
+    print("| Scale | Mode | Policy | Chosen source mode | Best source mode | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
+    print("| --- | --- | --- | --- | --- | ---: | --- | --- | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | "
+            f"{summary.chosen_source_mode} | {summary.best_source_mode} | {summary.auto_vs_best} | "
+            f"`{summary.median_summary}` | `{summary.spread_summary}` | "
+            f"`{summary.source_registration_summary}` |"
+        )
+
+
 def benchmark_mode(
     command: list[str],
     scale: str,
@@ -650,7 +690,11 @@ def main() -> int:
             print_detail_tsv(results, scales, modes, source_modes)
         else:
             summaries = summarize_by_source_mode(results, scales, modes)
-            if args.format == "markdown":
+            if args.format == "calibration-tsv":
+                print_calibration_tsv(summaries)
+            elif args.format == "calibration-markdown":
+                print_calibration_markdown(summaries)
+            elif args.format == "markdown":
                 print_markdown(summaries)
             else:
                 print_report_tsv(summaries)
