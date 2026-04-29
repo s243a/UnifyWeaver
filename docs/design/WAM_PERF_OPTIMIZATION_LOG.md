@@ -1475,4 +1475,4 @@ The resulting proposal is:
 
 Reference:
 
-- [WAM_CLOJURE_LOWERED_TIER_PLAN.md](/data/data/com.termux/files/home/UnifyWeaver/docs/proposals/WAM_CLOJURE_LOWERED_TIER_PLAN.md)
+- [WAM_CLOJURE_LOWERED_TIER_PLAN.md](../proposals/WAM_CLOJURE_LOWERED_TIER_PLAN.md)

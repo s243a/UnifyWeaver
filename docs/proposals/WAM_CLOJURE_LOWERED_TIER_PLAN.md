@@ -51,8 +51,8 @@ shapes:
 
 Primary files:
 
-- [src/unifyweaver/targets/clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/clojure_target.pl)
-- [tests/core/test_clojure_native_lowering.pl](/data/data/com.termux/files/home/UnifyWeaver/tests/core/test_clojure_native_lowering.pl)
+- [src/unifyweaver/targets/clojure_target.pl](../../src/unifyweaver/targets/clojure_target.pl)
+- [tests/core/test_clojure_native_lowering.pl](../../tests/core/test_clojure_native_lowering.pl)
 
 The hybrid Clojure WAM target already has:
 
@@ -65,11 +65,11 @@ The hybrid Clojure WAM target already has:
 
 Primary files:
 
-- [src/unifyweaver/targets/wam_clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_clojure_target.pl)
-- [templates/targets/clojure_wam/runtime.clj.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/clojure_wam/runtime.clj.mustache)
-- [tests/test_wam_clojure_generator.pl](/data/data/com.termux/files/home/UnifyWeaver/tests/test_wam_clojure_generator.pl)
-- [tests/test_wam_clojure_runtime_smoke.pl](/data/data/com.termux/files/home/UnifyWeaver/tests/test_wam_clojure_runtime_smoke.pl)
-- [tests/test_wam_clojure_benchmark_generator.pl](/data/data/com.termux/files/home/UnifyWeaver/tests/test_wam_clojure_benchmark_generator.pl)
+- [src/unifyweaver/targets/wam_clojure_target.pl](../../src/unifyweaver/targets/wam_clojure_target.pl)
+- [templates/targets/clojure_wam/runtime.clj.mustache](../../templates/targets/clojure_wam/runtime.clj.mustache)
+- [tests/test_wam_clojure_generator.pl](../../tests/test_wam_clojure_generator.pl)
+- [tests/test_wam_clojure_runtime_smoke.pl](../../tests/test_wam_clojure_runtime_smoke.pl)
+- [tests/test_wam_clojure_benchmark_generator.pl](../../tests/test_wam_clojure_benchmark_generator.pl)
 
 ### What Clojure still lacks
 
@@ -82,10 +82,10 @@ Compared with Rust, Clojure still lacks:
 
 Rust already has all three in some form:
 
-- classic native lowering in [src/unifyweaver/targets/rust_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/rust_target.pl)
-- hybrid WAM routing in [src/unifyweaver/targets/wam_rust_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_rust_target.pl)
-- dedicated lowered WAM emitter in [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
-- atom interning in [templates/targets/rust_wam/state.rs.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/rust_wam/state.rs.mustache)
+- classic native lowering in [src/unifyweaver/targets/rust_target.pl](../../src/unifyweaver/targets/rust_target.pl)
+- hybrid WAM routing in [src/unifyweaver/targets/wam_rust_target.pl](../../src/unifyweaver/targets/wam_rust_target.pl)
+- dedicated lowered WAM emitter in [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](../../src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
+- atom interning in [templates/targets/rust_wam/state.rs.mustache](../../templates/targets/rust_wam/state.rs.mustache)
 
 ## Philosophy
 
@@ -145,7 +145,7 @@ Examples in the current runtime:
 
 See:
 
-- [templates/targets/clojure_wam/runtime.clj.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/clojure_wam/runtime.clj.mustache)
+- [templates/targets/clojure_wam/runtime.clj.mustache](../../templates/targets/clojure_wam/runtime.clj.mustache)
 
 By contrast, the Rust WAM runtime already has atom interning:
 
@@ -155,7 +155,7 @@ By contrast, the Rust WAM runtime already has atom interning:
 
 See:
 
-- [templates/targets/rust_wam/state.rs.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/rust_wam/state.rs.mustache)
+- [templates/targets/rust_wam/state.rs.mustache](../../templates/targets/rust_wam/state.rs.mustache)
 
 For Clojure, this matters because a lowered WAM tier only pays off if
 the runtime values it manipulates are also cheaper than the current
@@ -178,6 +178,13 @@ The references should be separated cleanly:
 
 Clojure should take architecture from both, not treat either as the
 single source of truth.
+
+This proposal complements rather than replaces
+[WAM_TIERED_LOWERING.md](../design/WAM_TIERED_LOWERING.md):
+
+- `WAM_TIERED_LOWERING.md` is the cross-target tiering concept
+- this document specializes that idea for the current Clojure gap:
+  adding a lowered WAM middle tier and planning for interning
 
 ## Specification
 
@@ -208,8 +215,10 @@ This ordering expresses preference, not a rigid implementation order.
 The initial routing policy should be:
 
 1. if explicit foreign/kernel relation is selected, use Tier C
-2. else if classic source-level native lowering succeeds and hybrid WAM
-   generation is not explicitly requested, use Tier A
+2. else if classic source-level native lowering succeeds, the predicate
+   is deterministic, and the selected output mode is an ordinary
+   Clojure target rather than an explicitly hybrid WAM project, use
+   Tier A
 3. else if lowered WAM emission succeeds, use Tier B
 4. else use Tier D
 
@@ -218,6 +227,17 @@ Initial option surface:
 - `clojure_lowering_mode(auto|native|lowered_wam|foreign|wam)`
 - `clojure_prefer_native(true|false)` when `auto`
 - `clojure_enable_lowered_wam(true|false)` when `auto`
+
+Decision heuristic:
+
+- prefer **Tier A** when source-level analysis cleanly captures the
+  predicate and the user wants ordinary target-native Clojure
+- prefer **Tier B** when source-level native lowering is unavailable or
+  would be awkward, but the compiled WAM body is still regular enough
+  to optimize directly
+- prefer **Tier C** when the predicate is explicitly modeled as a
+  foreign/kernel relation
+- fall back to **Tier D** for the remainder
 
 The point is not to expose every future strategy immediately. The point
 is to avoid baking a single hidden policy into the generator.
@@ -317,11 +337,11 @@ Deliverables:
 
 Add:
 
-- [src/unifyweaver/targets/wam_clojure_lowered_emitter.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_clojure_lowered_emitter.pl)
+- [src/unifyweaver/targets/wam_clojure_lowered_emitter.pl](../../src/unifyweaver/targets/wam_clojure_lowered_emitter.pl)
 
 Model it on:
 
-- [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
+- [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](../../src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
 
 Scope:
 
@@ -341,7 +361,7 @@ Tests:
 
 Update:
 
-- [src/unifyweaver/targets/wam_clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_clojure_target.pl)
+- [src/unifyweaver/targets/wam_clojure_target.pl](../../src/unifyweaver/targets/wam_clojure_target.pl)
 
 Add:
 
@@ -363,8 +383,8 @@ generation without yet forcing the entire runtime onto it.
 
 Potential files:
 
-- [templates/targets/clojure_wam/runtime.clj.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/clojure_wam/runtime.clj.mustache)
-- [src/unifyweaver/targets/wam_clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_clojure_target.pl)
+- [templates/targets/clojure_wam/runtime.clj.mustache](../../templates/targets/clojure_wam/runtime.clj.mustache)
+- [src/unifyweaver/targets/wam_clojure_target.pl](../../src/unifyweaver/targets/wam_clojure_target.pl)
 
 Scope:
 
@@ -386,7 +406,7 @@ are:
 - or hybrid lowered-tier gaps
 
 If the former, use TypR as the reference and extend
-[src/unifyweaver/targets/clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/clojure_target.pl),
+[src/unifyweaver/targets/clojure_target.pl](../../src/unifyweaver/targets/clojure_target.pl),
 not the hybrid WAM target.
 
 This keeps the two lowering families conceptually clean.
@@ -423,7 +443,7 @@ once:
 
 Those are separate efforts.
 
-## Suggested First PR Sequence
+## Suggested Early PR Milestones
 
 1. docs only: this proposal
 2. scaffold `wam_clojure_lowered_emitter.pl` + unit tests
@@ -434,13 +454,13 @@ Those are separate efforts.
 
 ## References
 
-- [docs/design/native-clause-lowering.md](/data/data/com.termux/files/home/UnifyWeaver/docs/design/native-clause-lowering.md)
-- [docs/design/WAM_TIERED_LOWERING.md](/data/data/com.termux/files/home/UnifyWeaver/docs/design/WAM_TIERED_LOWERING.md)
-- [src/unifyweaver/targets/typr_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/typr_target.pl)
-- [src/unifyweaver/targets/clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/clojure_target.pl)
-- [src/unifyweaver/targets/wam_clojure_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_clojure_target.pl)
-- [src/unifyweaver/targets/rust_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/rust_target.pl)
-- [src/unifyweaver/targets/wam_rust_target.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_rust_target.pl)
-- [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](/data/data/com.termux/files/home/UnifyWeaver/src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
-- [templates/targets/rust_wam/state.rs.mustache](/data/data/com.termux/files/home/UnifyWeaver/templates/targets/rust_wam/state.rs.mustache)
-- [docs/proposals/WAM_SCALA_HYBRID_SPEC.md](/data/data/com.termux/files/home/UnifyWeaver/docs/proposals/WAM_SCALA_HYBRID_SPEC.md)
+- [native-clause-lowering.md](../design/native-clause-lowering.md)
+- [WAM_TIERED_LOWERING.md](../design/WAM_TIERED_LOWERING.md)
+- [src/unifyweaver/targets/typr_target.pl](../../src/unifyweaver/targets/typr_target.pl)
+- [src/unifyweaver/targets/clojure_target.pl](../../src/unifyweaver/targets/clojure_target.pl)
+- [src/unifyweaver/targets/wam_clojure_target.pl](../../src/unifyweaver/targets/wam_clojure_target.pl)
+- [src/unifyweaver/targets/rust_target.pl](../../src/unifyweaver/targets/rust_target.pl)
+- [src/unifyweaver/targets/wam_rust_target.pl](../../src/unifyweaver/targets/wam_rust_target.pl)
+- [src/unifyweaver/targets/wam_rust_lowered_emitter.pl](../../src/unifyweaver/targets/wam_rust_lowered_emitter.pl)
+- [templates/targets/rust_wam/state.rs.mustache](../../templates/targets/rust_wam/state.rs.mustache)
+- [WAM_SCALA_HYBRID_SPEC.md](./WAM_SCALA_HYBRID_SPEC.md)
