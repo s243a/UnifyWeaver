@@ -69,6 +69,13 @@
 :- dynamic user:wam_int_div_true/2.
 :- dynamic user:wam_pair_inline/2.
 :- dynamic user:wam_pair_sidecar/2.
+:- dynamic user:wam_pair_file/2.
+:- dynamic user:wam_call_dummy/1.
+:- dynamic user:wam_meta_dummy/1.
+:- dynamic user:wam_member_q/2.
+:- dynamic user:wam_member_or_abc/1.
+:- dynamic user:wam_length_q/2.
+:- dynamic user:wam_append_q/3.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -155,6 +162,18 @@ user:wam_pair_inline(a, b).
 user:wam_pair_inline(b, c).
 user:wam_pair_inline(c, d).
 user:wam_pair_sidecar(_, _).
+user:wam_pair_file(_, _).
+
+% --- call/1 meta-call ---
+user:wam_call_dummy(a).
+user:wam_call_dummy(b).
+user:wam_meta_dummy(X) :- call(user:wam_call_dummy(X)).
+
+% --- List builtins ---
+user:wam_member_q(X, L)     :- member(X, L).
+user:wam_member_or_abc(X)   :- member(X, [a, b, c]).
+user:wam_length_q(L, N)     :- length(L, N).
+user:wam_append_q(A, B, C)  :- append(A, B, C).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -497,6 +516,90 @@ test(fact_source_inline_vs_sidecar) :-
                  verify_scala_args(TmpDir2, 'wam_pair_sidecar/2', Args, S)
                ))).
 
+% --- File-backed fact source ---
+% Same parity check, but the tuples come from a CSV file at runtime.
+test(fact_source_file_backed) :-
+    write_facts_csv('_tmp_facts.csv', [[a,b], [b,c], [c,d]]),
+    absolute_file_name('_tmp_facts.csv', AbsPath),
+    Queries =
+        [['a','b']-true, ['a','c']-false, ['b','c']-true,
+         ['c','d']-true, ['x','y']-false],
+    setup_call_cleanup(
+        true,
+        with_scala_project(
+            [user:wam_pair_file/2],
+            % Atoms in the CSV are read at runtime, so they need to be
+            % declared up-front for parseFactArg to find them in the
+            % runtime intern table. Otherwise every atom collapses to id
+            % -1 and the test can't discriminate matches from mismatches.
+            [ intern_atoms([a, b, c, d, x, y]),
+              scala_fact_sources(
+                  [source(wam_pair_file/2, file(AbsPath))]) ],
+            TmpDir,
+            forall(member(Args-Expected, Queries),
+                   ( (Expected == true -> S = "true" ; S = "false"),
+                     verify_scala_args(TmpDir, 'wam_pair_file/2', Args, S)
+                   ))),
+        catch(delete_file('_tmp_facts.csv'), _, true)).
+
+% --- call/1 meta-call ---
+test(call_meta) :-
+    with_scala_project(
+        [user:wam_call_dummy/1, user:wam_meta_dummy/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_meta_dummy/1', 'a', "true"),
+            verify_scala(TmpDir, 'wam_meta_dummy/1', 'b', "true"),
+            verify_scala(TmpDir, 'wam_meta_dummy/1', 'c', "false")
+        )).
+
+% --- List builtins ---
+test(builtin_member) :-
+    with_scala_project(
+        [user:wam_member_q/2, user:wam_member_or_abc/1],
+        [ intern_atoms([a, b, c, d]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_member_q/2', ['a', '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_member_q/2', ['b', '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_member_q/2', ['c', '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_member_q/2', ['d', '[a,b,c]'], "false"),
+            verify_scala_args(TmpDir, 'wam_member_q/2', ['a', '[]'],      "false"),
+            verify_scala(TmpDir, 'wam_member_or_abc/1', 'a', "true"),
+            verify_scala(TmpDir, 'wam_member_or_abc/1', 'b', "true"),
+            verify_scala(TmpDir, 'wam_member_or_abc/1', 'c', "true"),
+            verify_scala(TmpDir, 'wam_member_or_abc/1', 'd', "false")
+        )).
+
+test(builtin_length) :-
+    with_scala_project(
+        [user:wam_length_q/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_length_q/2', ['[]',      '0'], "true"),
+            verify_scala_args(TmpDir, 'wam_length_q/2', ['[a]',     '1'], "true"),
+            verify_scala_args(TmpDir, 'wam_length_q/2', ['[a,b,c]', '3'], "true"),
+            verify_scala_args(TmpDir, 'wam_length_q/2', ['[a,b]',   '3'], "false")
+        )).
+
+test(builtin_append) :-
+    with_scala_project(
+        [user:wam_append_q/3],
+        [ intern_atoms([a, b, c]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_append_q/3',
+                              ['[a]', '[b,c]', '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_append_q/3',
+                              ['[]', '[a,b]', '[a,b]'], "true"),
+            verify_scala_args(TmpDir, 'wam_append_q/3',
+                              ['[a,b]', '[]', '[a,b]'], "true"),
+            verify_scala_args(TmpDir, 'wam_append_q/3',
+                              ['[a]', '[b]', '[a,c]'], "false")
+        )).
+
 :- end_tests(wam_scala_runtime_smoke).
 
 % ============================================================
@@ -595,6 +698,17 @@ unique_scala_tmp_dir(Prefix, TmpDir) :-
     get_time(T),
     Stamp is floor(T * 1000),
     format(atom(TmpDir), '~w_~w', [Prefix, Stamp]).
+
+%% write_facts_csv(+Path, +Tuples) is det.
+%  Writes each tuple as a comma-separated line to Path. Used by the
+%  file-backed fact source test.
+write_facts_csv(Path, Tuples) :-
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        forall(member(Tuple, Tuples),
+               ( atomic_list_concat(Tuple, ',', Line),
+                 format(Stream, '~w~n', [Line]) )),
+        close(Stream)).
 
 % ============================================================
 % Foreign handler bodies (Scala source)

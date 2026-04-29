@@ -499,8 +499,12 @@ object WamRuntime {
         s.pc = target
 
       case Call(pred, arity) =>
-        // Unresolved — look up in dispatch table
-        program.dispatch.get(s"$pred/$arity") match {
+        // Special case call/1 as a meta-call — unwrap module qualification
+        // ":/2" if present and dispatch on the inner goal.
+        if (pred == "call" && arity == 1) {
+          metaCallInline(s, program, deref(s.bindings, s.regs(1)),
+                         resumePc = s.pc + 1, withReturn = true)
+        } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) =>
             s.callStack = (s.pc + 1) :: s.callStack
             s.pc = pc
@@ -509,7 +513,11 @@ object WamRuntime {
         }
 
       case Execute(pred, arity) =>
-        program.dispatch.get(s"$pred/$arity") match {
+        if (pred == "call" && arity == 1) {
+          // Tail-call meta-call: don't push a return address.
+          metaCallInline(s, program, deref(s.bindings, s.regs(1)),
+                         resumePc = s.pc + 1, withReturn = false)
+        } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) => s.pc = pc
           case None     => backtrack(s)
         }
@@ -706,6 +714,53 @@ object WamRuntime {
             case None        => backtrack(s)        // unresolvable goal → fail
           }
 
+        // member(Element, List) — multi-solution. Each list element
+        // becomes one ForeignMulti-style solution binding A1.
+        case "member/2" =>
+          listToSeq(s, program, s.regs(2)) match {
+            case None         => backtrack(s)
+            case Some(Nil)    => backtrack(s)
+            case Some(items) =>
+              val sols = items.map(item => Map(1 -> item))
+              val resumePc = s.pc + 1
+              val rest = sols.tail
+              if (rest.nonEmpty) {
+                val cp = ChoicePoint(
+                  pc        = resumePc,
+                  regs      = snapshotRegs(s),
+                  envStack  = s.envStack,
+                  callStack = s.callStack,
+                  trailLen  = s.trail.length,
+                  cutBar    = s.cutBar,
+                  nextVarId = s.nextVarId,
+                  kind      = ForeignCP(rest)
+                )
+                s.choicePoints = cp :: s.choicePoints
+              }
+              if (applyBindings(s, sols.head)) s.pc = resumePc
+              else backtrack(s)
+          }
+
+        // length(List, N) — deterministic for a ground list.
+        case "length/2" =>
+          listToSeq(s, program, s.regs(1)) match {
+            case Some(items) =>
+              if (unify(s, s.regs(2), IntTerm(items.length))) s.pc += 1
+              else backtrack(s)
+            case None => backtrack(s)
+          }
+
+        // append(A, B, C) — deterministic concat-mode: A and B ground
+        // (or at least convertible to a list), C unifies with the result.
+        case "append/3" =>
+          (listToSeq(s, program, s.regs(1)),
+           listToSeq(s, program, s.regs(2))) match {
+            case (Some(a), Some(b)) =>
+              val joined = seqToList(program, a ++ b)
+              if (unify(s, s.regs(3), joined)) s.pc += 1 else backtrack(s)
+            case _ => backtrack(s)
+          }
+
         case _ =>
           backtrack(s)
       }
@@ -835,6 +890,97 @@ object WamRuntime {
     (evalArith(s, program, s.regs(1)), evalArith(s, program, s.regs(2))) match {
       case (Some(a), Some(b)) if op(a, b) => s.pc += 1
       case _                              => backtrack(s)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Goal reflection helpers
+  // ----------------------------------------------------------
+  // call/1 and \+/1 receive the goal as a term (Atom for arity-0,
+  // Struct(f,arity,args) otherwise). The goal may be wrapped in `:/2`
+  // for module qualification (e.g. user:wam_dummy(X)) — we unwrap that
+  // recursively so the runtime sees `wam_dummy(X)`.
+
+  def unwrapModuleQualification(s: WamState, program: WamProgram, t: WamTerm): WamTerm = {
+    val v = deref(s.bindings, t)
+    v match {
+      case Struct(f, 2, args) =>
+        val name = if (f >= 0 && f < program.internTable.idToString.length)
+                     program.internTable.idToString(f) else ""
+        if (name == ":") unwrapModuleQualification(s, program, args(1))
+        else v
+      case _ => v
+    }
+  }
+
+  /** Resolve a goal term to (pred-key, arg-array). Returns None for terms
+   *  that can't be invoked (Refs, IntTerms, etc.). */
+  def goalToPredCall(s: WamState, program: WamProgram, goal: WamTerm): Option[(String, Array[WamTerm])] = {
+    unwrapModuleQualification(s, program, goal) match {
+      case Atom(f) =>
+        val n = if (f >= 0 && f < program.internTable.idToString.length)
+                  program.internTable.idToString(f) else ""
+        Some((s"$n/0", Array.empty[WamTerm]))
+      case Struct(f, arity, args) =>
+        val n = if (f >= 0 && f < program.internTable.idToString.length)
+                  program.internTable.idToString(f) else ""
+        Some((s"$n/$arity", args))
+      case _ => None
+    }
+  }
+
+  /** call/1 implementation. Reflects the goal into a real predicate call.
+   *  When `withReturn` is true, pushes resumePc onto the callStack so the
+   *  goal's Proceed returns to it; otherwise this is a tail call. */
+  def metaCallInline(s: WamState, program: WamProgram, goal: WamTerm,
+                     resumePc: Int, withReturn: Boolean): Unit = {
+    goalToPredCall(s, program, goal) match {
+      case None => backtrack(s)
+      case Some((key, args)) =>
+        program.dispatch.get(key) match {
+          case None => backtrack(s)
+          case Some(startPc) =>
+            // Place args in argument registers.
+            args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
+            if (withReturn) s.callStack = resumePc :: s.callStack
+            s.pc = startPc
+        }
+    }
+  }
+
+  // ----------------------------------------------------------
+  // List helpers
+  // ----------------------------------------------------------
+  // listToSeq deconstructs a Prolog list term into a Scala Seq. Returns
+  // None for partial / improper lists (unbound tail or non-cons cell
+  // before the closing []). Cons cells use functor `[|]` from the
+  // intern table; the empty list is the atom `[]`.
+
+  def listToSeq(s: WamState, program: WamProgram, list: WamTerm): Option[Seq[WamTerm]] = {
+    val emptyId = program.internTable.stringToId.getOrElse("[]",  -1)
+    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val buf = scala.collection.mutable.ListBuffer.empty[WamTerm]
+    var cur = deref(s.bindings, list)
+    while (true) {
+      cur match {
+        case Atom(id) if id == emptyId =>
+          return Some(buf.toList)
+        case Struct(f, 2, args) if f == consId =>
+          buf.append(deref(s.bindings, args(0)))
+          cur = deref(s.bindings, args(1))
+        case _ =>
+          return None
+      }
+    }
+    None
+  }
+
+  /** Build a Prolog list term from a Scala Seq. */
+  def seqToList(program: WamProgram, items: Seq[WamTerm]): WamTerm = {
+    val emptyId = program.internTable.stringToId.getOrElse("[]",  -1)
+    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    items.foldRight[WamTerm](Atom(emptyId)) { (h, t) =>
+      Struct(consId, 2, Array(h, t))
     }
   }
 
