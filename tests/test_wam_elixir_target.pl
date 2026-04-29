@@ -998,6 +998,47 @@ test_findall_substrate_backtrack_routes_aggregate_frames :-
     ;   fail_test(Test, 'backtrack/1 does not dispatch on :agg_type or backtrack_ordinary missing')
     ).
 
+%% Phase 4a substrate — branch_backtrack/1 helper for parallel-branch
+%% context. See WAM_ELIXIR_TIER2_FINDALL_PHASE4.md sections 4.2/4.3.
+%% Phase 4a only adds the helper; Phase 4b wires it into the super-
+%% wrappers branch wrapper. Tests are emit-and-grep; runtime
+%% verification (via the Phase 3-style harness) belongs to Phase 4c.
+
+test_findall_phase4a_emits_branch_backtrack :-
+    Test = 'Phase 4a: WamRuntime emits branch_backtrack/1 with required dispatch arms',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'def branch_backtrack(state)'),
+        % Empty CP stack arm — branch produced nothing.
+        sub_string(S, _, _, _, '{:branch_exhausted, []}'),
+        % Agg frame arm — return reversed local accum (aggregate_collect
+        % prepends for O(1), branch_backtrack reverses on return so the
+        % parent sees enumeration-order values).
+        sub_string(S, _, _, _, '{:branch_exhausted, Enum.reverse'),
+        sub_string(S, _, _, _, 'Map.get(cp, :agg_accum, [])'),
+        % Fall-through arm — non-agg CP routes to backtrack_ordinary
+        % (the existing path), letting the resumed clause continue
+        % the branchs local enumeration.
+        sub_string(S, _, _, _, 'backtrack_ordinary(state, cp, rest)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'branch_backtrack/1 missing or has wrong dispatch shape')
+    ).
+
+test_findall_phase4a_branch_backtrack_distinct_from_backtrack :-
+    Test = 'Phase 4a: branch_backtrack/1 is a distinct def from backtrack/1',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        % Both must exist as separate top-level defs — branch_backtrack
+        % is additive, not a replacement for backtrack. Phase 4b will
+        % decide how the super-wrapper routes between them (proposal §9
+        % Q1 — return shape vs. throw shape, branch-mode state field
+        % vs. catch-arm dispatch).
+        sub_string(S, _, _, _, 'def backtrack(state) do'),
+        sub_string(S, _, _, _, 'def branch_backtrack(state) do')
+    ->  pass(Test)
+    ;   fail_test(Test, 'branch_backtrack/1 should coexist with backtrack/1')
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -1311,6 +1352,8 @@ run_tests :-
     test_findall_substrate_emits_aggregate_collect,
     test_findall_substrate_emits_finalise_aggregate,
     test_findall_substrate_backtrack_routes_aggregate_frames,
+    test_findall_phase4a_emits_branch_backtrack,
+    test_findall_phase4a_branch_backtrack_distinct_from_backtrack,
     test_findall_instr_parser_begin_aggregate,
     test_findall_instr_parser_end_aggregate,
     test_findall_instr_lowers_begin_aggregate_sum,

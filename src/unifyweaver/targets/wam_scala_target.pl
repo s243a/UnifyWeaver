@@ -158,8 +158,8 @@ wam_parts_to_scala(["deallocate"], 'Deallocate').
 % --- Register: get ---
 wam_parts_to_scala(["get_constant", C, Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    intern_scala_atom(C, AtomId),
-    format(string(Lit), 'GetConstant(Atom(~w), ~w)', [AtomId, RegIdx]).
+    constant_to_scala_term(C, TermLit),
+    format(string(Lit), 'GetConstant(~w, ~w)', [TermLit, RegIdx]).
 
 wam_parts_to_scala(["get_variable", VarReg, ArgReg], Lit) :-
     reg_to_int(VarReg, VIdx), reg_to_int(ArgReg, AIdx),
@@ -172,8 +172,8 @@ wam_parts_to_scala(["get_value", VarReg, ArgReg], Lit) :-
 % --- Register: put ---
 wam_parts_to_scala(["put_constant", C, Reg], Lit) :-
     reg_to_int(Reg, RegIdx),
-    intern_scala_atom(C, AtomId),
-    format(string(Lit), 'PutConstant(Atom(~w), ~w)', [AtomId, RegIdx]).
+    constant_to_scala_term(C, TermLit),
+    format(string(Lit), 'PutConstant(~w, ~w)', [TermLit, RegIdx]).
 
 wam_parts_to_scala(["put_variable", VarReg, ArgReg], Lit) :-
     reg_to_int(VarReg, VIdx), reg_to_int(ArgReg, AIdx),
@@ -215,8 +215,8 @@ wam_parts_to_scala(["set_value", Reg], Lit) :-
     format(string(Lit), 'SetValue(~w)', [Idx]).
 
 wam_parts_to_scala(["set_constant", C], Lit) :-
-    intern_scala_atom(C, AtomId),
-    format(string(Lit), 'SetConstant(Atom(~w))', [AtomId]).
+    constant_to_scala_term(C, TermLit),
+    format(string(Lit), 'SetConstant(~w)', [TermLit]).
 
 wam_parts_to_scala(["unify_variable", Reg], Lit) :-
     reg_to_int(Reg, Idx),
@@ -227,13 +227,14 @@ wam_parts_to_scala(["unify_value", Reg], Lit) :-
     format(string(Lit), 'UnifyValue(~w)', [Idx]).
 
 wam_parts_to_scala(["unify_constant", C], Lit) :-
-    intern_scala_atom(C, AtomId),
-    format(string(Lit), 'UnifyConstant(Atom(~w))', [AtomId]).
+    constant_to_scala_term(C, TermLit),
+    format(string(Lit), 'UnifyConstant(~w)', [TermLit]).
 
 % --- Builtins ---
 wam_parts_to_scala(["builtin_call", Pred, ArityStr], Lit) :-
     number_string(Arity, ArityStr),
-    format(string(Lit), 'BuiltinCall("~w", ~w)', [Pred, Arity]).
+    scala_string_literal(Pred, PredLit),
+    format(string(Lit), 'BuiltinCall(~w, ~w)', [PredLit, Arity]).
 
 % --- Foreign call ---
 wam_parts_to_scala(["call_foreign", Pred, ArityStr], Lit) :-
@@ -271,6 +272,34 @@ strip_arity_suffix(Pred, Name) :-
     ->  sub_string(Pred, 0, B, _, Name)
     ;   Name = Pred
     ).
+
+%% constant_to_scala_term(+ConstStr, -ScalaTermLit) is det.
+%  Converts a WAM constant token to its Scala-source-literal form. Numeric
+%  tokens become IntTerm(N) so arithmetic builtins (is/2, =:=/2, ...) can
+%  evaluate them; non-numeric tokens are interned as atoms.
+constant_to_scala_term(C, Lit) :-
+    (   number_string(N, C),
+        integer(N)
+    ->  format(string(Lit), 'IntTerm(~w)', [N])
+    ;   intern_scala_atom(C, AtomId),
+        format(string(Lit), 'Atom(~w)', [AtomId])
+    ).
+
+%% scala_string_literal(+Raw, -Quoted) is det.
+%  Wraps Raw in double quotes and escapes backslashes and double quotes
+%  so it is a valid Scala string literal. Used for builtin predicate
+%  names like `=\=/2` that contain backslashes.
+scala_string_literal(Raw, Quoted) :-
+    atom_string(Raw, S),
+    string_chars(S, Chars),
+    maplist(scala_string_escape_char, Chars, EscapedLists),
+    append(EscapedLists, EscChars),
+    string_chars(EscBody, EscChars),
+    format(string(Quoted), '"~w"', [EscBody]).
+
+scala_string_escape_char('\\', ['\\', '\\']) :- !.
+scala_string_escape_char('"',  ['\\', '"'])  :- !.
+scala_string_escape_char(C, [C]).
 
 %% parse_functor_arity(+FunctorStr, -Name, -Arity)
 parse_functor_arity(FStr, Name, Arity) :-

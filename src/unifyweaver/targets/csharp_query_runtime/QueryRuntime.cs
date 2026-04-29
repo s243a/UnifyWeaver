@@ -1258,6 +1258,13 @@ namespace UnifyWeaver.QueryRuntime
         double Value
     );
 
+    public sealed record RelationSourceRegistrationTrace(
+        PredicateId Predicate,
+        RelationSourceMode SourceMode,
+        string StorageKind,
+        int Arity
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -4492,6 +4499,8 @@ namespace UnifyWeaver.QueryRuntime
 
     public sealed class ConfiguredDelimitedRelationProvider
     {
+        private readonly List<RelationSourceRegistrationTrace> _registrations = new();
+
         public RelationSourceMode SourceMode { get; }
 
         public InMemoryRelationProvider MemoryProvider { get; }
@@ -4503,6 +4512,8 @@ namespace UnifyWeaver.QueryRuntime
         public IRelationProvider Provider => (IRelationProvider?)ArtifactProvider ?? (IRelationProvider?)DelimitedArtifactProvider ?? MemoryProvider;
 
         public string? ArtifactDirectory { get; }
+
+        public IReadOnlyList<RelationSourceRegistrationTrace> SnapshotRegistrations() => _registrations.ToList();
 
         public ConfiguredDelimitedRelationProvider(
             RelationSourceMode sourceMode,
@@ -4534,9 +4545,11 @@ namespace UnifyWeaver.QueryRuntime
                 case RelationSourceMode.Preload:
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
                     MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    RecordRegistration(predicate, "preloaded");
                     return;
                 case RelationSourceMode.Delimited:
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    RecordRegistration(predicate, "delimited");
                     return;
                 case RelationSourceMode.Artifact:
                 case RelationSourceMode.ArtifactPrebuilt:
@@ -4547,6 +4560,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     var manifestPath = BinaryRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
                     ArtifactProvider.RegisterArtifact(predicate, manifestPath);
+                    RecordRegistration(predicate, "binary_artifact");
                     return;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
@@ -4565,10 +4579,12 @@ namespace UnifyWeaver.QueryRuntime
             {
                 case RelationSourceMode.Delimited:
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
+                    RecordRegistration(predicate, "delimited");
                     return;
                 case RelationSourceMode.Preload:
                     MemoryProvider.RegisterDelimitedSource(predicate, source);
                     MemoryProvider.AddFacts(predicate, DelimitedRelationReader.ReadRows(source));
+                    RecordRegistration(predicate, "preloaded");
                     return;
                 case RelationSourceMode.Artifact:
                 case RelationSourceMode.ArtifactPrebuilt:
@@ -4579,10 +4595,20 @@ namespace UnifyWeaver.QueryRuntime
 
                     var manifestPath = DelimitedRelationArtifactBuilder.BuildFromDelimited(predicate, source, ArtifactDirectory, artifactName);
                     DelimitedArtifactProvider.RegisterArtifact(predicate, manifestPath);
+                    RecordRegistration(predicate, "delimited_artifact");
                     return;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(SourceMode), SourceMode, null);
             }
+        }
+
+        private void RecordRegistration(PredicateId predicate, string storageKind)
+        {
+            _registrations.Add(new RelationSourceRegistrationTrace(
+                predicate,
+                SourceMode,
+                storageKind,
+                predicate.Arity));
         }
     }
 

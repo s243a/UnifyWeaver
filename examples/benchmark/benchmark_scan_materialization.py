@@ -10,6 +10,7 @@ relation sources inside a temporary C# project:
 - `bound_scan`: parameterized `RelationScanNode` over one bound column
 - `pattern`: `PatternScanNode` with a bound category
 - `join`: `KeyJoinNode` over article/category and category-parent scans
+- `nary_join`: `KeyJoinNode` over synthetic width-3 delimited relations
 - `selective_join`: parameter seed joined against category-parent
 - `negation`: unary negation over scanned support relations
 - `aggregate`: grouped count aggregate over a scanned relation
@@ -113,11 +114,29 @@ class Program
                 .Select(group => $"{group.Key}:{group.Sum(p => p.Elapsed.TotalMilliseconds).ToString("F3", CultureInfo.InvariantCulture)}"));
     }
 
+    static string SummarizeSourceRegistrations(ConfiguredDelimitedRelationProvider configuredProvider)
+    {
+        return string.Join(
+            "|",
+            configuredProvider.SnapshotRegistrations()
+                .GroupBy(registration => new
+                {
+                    registration.StorageKind,
+                    registration.SourceMode,
+                    registration.Arity
+                })
+                .OrderBy(group => group.Key.StorageKind, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.SourceMode.ToString(), StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Arity)
+                .Select(group =>
+                    $"{group.Key.StorageKind}:{RelationSourceModePolicy.ToConfigValue(group.Key.SourceMode)}:arity{group.Key.Arity}={group.Count()}"));
+    }
+
     static int Main(string[] args)
     {
         if (args.Length < 3)
         {
-            Console.Error.WriteLine("Usage: program <scan|pattern|join|negation|aggregate> <category_parent.tsv> <article_category.tsv>");
+            Console.Error.WriteLine("Usage: program <scan|pattern|join|nary_join|negation|aggregate> <category_parent.tsv> <article_category.tsv>");
             return 1;
         }
 
@@ -143,6 +162,8 @@ class Program
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
+        var naryLeftId = new PredicateId("nary_left", 3);
+        var naryRightId = new PredicateId("nary_right", 3);
 
         configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(edgePath, '	', 1, 2), $"{edgeId.Name}_{edgeId.Arity}");
         configuredProvider.RegisterBinaryRelation(articleId, new DelimitedRelationSource(articlePath, '	', 1, 2), $"{articleId.Name}_{articleId.Arity}");
@@ -164,9 +185,32 @@ class Program
             }
         }
 
+        var naryLeftPath = Path.Combine(Path.GetTempPath(), $"uw-scan-nary-left-{Guid.NewGuid():N}.tsv");
+        var naryRightPath = Path.Combine(Path.GetTempPath(), $"uw-scan-nary-right-{Guid.NewGuid():N}.tsv");
+        using (var writer = new StreamWriter(naryLeftPath, false))
+        {
+            writer.WriteLine("key	item	rank");
+            writer.WriteLine("Keyboard	left-keyboard	1");
+            writer.WriteLine("Laptop	left-laptop	2");
+            writer.WriteLine("Mouse	left-mouse	3");
+        }
+
+        using (var writer = new StreamWriter(naryRightPath, false))
+        {
+            writer.WriteLine("key	item	score");
+            writer.WriteLine("Keyboard	right-keyboard	10");
+            writer.WriteLine("Laptop	right-laptop	20");
+            writer.WriteLine("Mouse	right-mouse	30");
+        }
+
         try
         {
             configuredProvider.RegisterBinaryRelation(blockedId, new DelimitedRelationSource(blockedPath, '	', 1, 2), $"{blockedId.Name}_{blockedId.Arity}");
+            if (mode == "nary_join")
+            {
+                configuredProvider.RegisterDelimitedRelation(naryLeftId, new DelimitedRelationSource(naryLeftPath, '	', 1, 3), $"{naryLeftId.Name}_{naryLeftId.Arity}");
+                configuredProvider.RegisterDelimitedRelation(naryRightId, new DelimitedRelationSource(naryRightPath, '	', 1, 3), $"{naryRightId.Name}_{naryRightId.Arity}");
+            }
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -196,6 +240,16 @@ class Program
                         2,
                         2,
                         4)),
+                "nary_join" => new QueryPlan(
+                    joinOutId,
+                    new KeyJoinNode(
+                        new RelationScanNode(naryLeftId),
+                        new RelationScanNode(naryRightId),
+                        new int[] { 0 },
+                        new int[] { 0 },
+                        3,
+                        3,
+                        6)),
                 "selective_join" => new QueryPlan(
                     joinOutId,
                     new KeyJoinNode(
@@ -244,6 +298,7 @@ class Program
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
             Console.Error.WriteLine($"elapsed_ms={stopwatch.ElapsedMilliseconds}");
+            Console.Error.WriteLine($"source_registrations={SummarizeSourceRegistrations(configuredProvider)}");
 
             if (traceEnabled && trace is not null)
             {
@@ -272,6 +327,8 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
+            try { File.Delete(naryLeftPath); } catch { }
+            try { File.Delete(naryRightPath); } catch { }
             if (sourceMode != RelationSourceMode.ArtifactPrebuilt)
             {
                 if (!string.IsNullOrWhiteSpace(configuredProvider.ArtifactDirectory))
@@ -427,7 +484,7 @@ def main() -> int:
                     for strategy in strategies:
                         results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	bucket_strategies	phases")
+        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	source_registrations	planner	bucket_strategies	phases")
         grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
         by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
         for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
@@ -439,9 +496,10 @@ def main() -> int:
             bucket_strategies = metrics.get("bucket_strategies", "")
             phases = metrics.get("scan_phase_summary", "")
             rows = metrics.get("row_count", "")
+            source_registrations = metrics.get("source_registrations", "")
             print(
                 f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
-                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{bucket_strategies}	{phases}"
+                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{source_registrations}	{planner}	{bucket_strategies}	{phases}"
             )
 
         for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
