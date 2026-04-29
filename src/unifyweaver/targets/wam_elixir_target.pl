@@ -1046,6 +1046,55 @@ compile_aggregate_helpers_to_elixir(Code) :-
   end
 
   @doc """
+  Phase 4a substrate — variant of backtrack/1 for parallel-branch
+  context. When the topmost CP is an aggregate frame, returns
+  {:branch_exhausted, local_accum} INSTEAD of finalising. This lets
+  a Tier-2 super-wrappers Task.async_stream branch return its local
+  contribution to the parent for merging via merge_into_aggregate/2,
+  rather than triggering a finalise that would only see the branchs
+  partial accum.
+
+  Phase 4b will wire this into the super-wrappers branch wrapper —
+  see WAM_ELIXIR_TIER2_FINDALL_PHASE4.md sections 4.2/4.3 for the
+  control flow. Phase 4c activates intra_query_parallel(true) and
+  validates end-to-end.
+
+  Behaviour by topmost-CP type:
+    - empty stack → {:branch_exhausted, []} — branch produced
+      nothing (e.g., the clauses head failed to match).
+    - :agg_type set → {:branch_exhausted, Enum.reverse(accum)} —
+      branch reached its own agg frame, enumeration is exhausted,
+      return local accum (reversed because aggregate_collect
+      prepends for O(1)).
+    - other CP type → falls through to backtrack_ordinary/3 —
+      resume the next clause-body alternative. backtrack_ordinarys
+      result (a state via cp.pc.(state), or {:ok, state}) flows
+      through; the wrap_segment catch chain may re-enter via
+      backtrack/branch_backtrack as enumeration continues.
+
+  Note on wiring: Phase 4a only adds this helper. Phase 4b decides
+  how branches route their wrap_segment catches through it (e.g.,
+  via a :branch_mode state field that backtrack/1 dispatches on,
+  or via super-wrapper-installed catch arms). The proposals
+  question 1 (section 9 Q1) asks reviewers about return-vs-throw
+  shape; for Phase 4a we use the return shape per the proposal
+  default, leaving room for Phase 4b to revisit if needed.
+  """
+  def branch_backtrack(state) do
+    case state.choice_points do
+      [] ->
+        {:branch_exhausted, []}
+      [cp | rest] ->
+        case Map.get(cp, :agg_type) do
+          nil ->
+            backtrack_ordinary(state, cp, rest)
+          _agg_type ->
+            {:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}
+        end
+    end
+  end
+
+  @doc """
   Push an aggregate-frame choice point. Captures the same snapshot
   fields as a try_me_else CP (regs, heap, heap_len, trail, trail_len,
   stack, cp) so finalise_aggregate/4 can restore the pre-aggregate
