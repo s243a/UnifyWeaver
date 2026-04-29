@@ -1,20 +1,27 @@
 :- encoding(utf8).
-%% Macro benchmark for the mode-analysis arc on a real workload.
+%% Macro benchmark for the mode-analysis + IntSet visited arc on a real
+%% workload.
 %%
-%% Generates two effective-distance Haskell WAM projects from the
-%% same Prolog source, distinguished only by which mode declarations
-%% are in effect when write_wam_haskell_project/3 runs:
+%% Generates THREE effective-distance Haskell WAM projects from the
+%% same Prolog source, distinguished by which directives are in effect
+%% when write_wam_haskell_project/3 runs:
 %%
+%%   variant_unlowered: no extra modes — Parent's bound state is
+%%                      destroyed by the opaque category_parent call,
+%%                      `\+ member` falls back to the slow builtin path.
 %%   variant_lowered:   mode(category_ancestor(-, +, -, +)) AND
-%%                      mode(category_parent(?, ?))     — `\+ member`
-%%                      lowering fires across the parent call.
-%%   variant_unlowered: only mode(category_ancestor(...)) — Parent's
-%%                      bound state is destroyed by the opaque
-%%                      category_parent call, lowering does not fire.
+%%                      mode(category_parent(?, ?))     — Phase G
+%%                      `not_member_list` lowering fires (constant-
+%%                      factor win over the builtin dispatch).
+%%   variant_intset:    same as `lowered` PLUS
+%%                      visited_set(category_ancestor/4, 4) — Phase H
+%%                      IntSet path: BuildEmptySet/SetInsert/
+%%                      NotMemberSet replace the list-walk entirely
+%%                      (algorithmic O(N) → O(log N) on visited check).
 %%
 %% Each project's standard Main.hs prints `query_ms` to stderr after
-%% running the effective-distance workload against the 1k benchmark
-%% data set. We compare query_ms across the two variants.
+%% running effective-distance against the 1k benchmark data set. We
+%% compare query_ms across all three variants.
 %%
 %% Skip: same as wam_term_construction_bench.pl.
 
@@ -50,7 +57,11 @@ build_dir_for(Variant, Dir) :-
 
 facts_path(Path) :-
     repo_root(Root),
-    directory_file_path(Root, 'data/benchmark/1k/facts.pl', Path).
+    (   getenv('WAM_EFF_DIST_BENCH_SCALE', Scale), Scale \== ''
+    ->  format(atom(Sub), 'data/benchmark/~w/facts.pl', [Scale])
+    ;   Sub = 'data/benchmark/1k/facts.pl'
+    ),
+    directory_file_path(Root, Sub, Path).
 
 workload_path(Path) :-
     repo_root(Root),
@@ -67,12 +78,17 @@ ensure_dir(D) :-
 generate_project(Variant, Dir) :-
     workload_path(Wp),
     load_files(Wp, [silent(true)]),
-    %% Reset relevant modes; declare per variant.
+    %% Reset everything per variant.
     retractall(user:mode(category_ancestor(_, _, _, _))),
     retractall(user:mode(category_parent(_, _))),
+    retractall(user:visited_set(_, _)),
     assertz(user:mode(category_ancestor(-, +, -, +))),
-    (   Variant == lowered
+    (   (Variant == lowered ; Variant == intset)
     ->  assertz(user:mode(category_parent(?, ?)))
+    ;   true
+    ),
+    (   Variant == intset
+    ->  assertz(user:visited_set(category_ancestor/4, 4))
     ;   true
     ),
     ensure_dir(Dir),
@@ -176,32 +192,48 @@ main :-
     ->  format("[SKIP] cabal not on PATH~n"), halt(0)
     ;   true
     ),
-    %% Run lowered first, unlowered second, lowered again, unlowered again
-    %% to spot cache-warming bias.
-    build_and_run(lowered,   L1, T1),
+    %% Run all three variants twice with rotating order to spot
+    %% cache-warming bias.
+    build_and_run(intset,    I1, T1i),
+    build_and_run(lowered,   L1, T1l),
     build_and_run(unlowered, U1, T1u),
     build_and_run(unlowered, U2, _),
     build_and_run(lowered,   L2, _),
+    build_and_run(intset,    I2, _),
     format("~n========================================~n"),
     format("Results (1k facts, query_ms)~n"),
     format("========================================~n"),
-    format("  trial 1: lowered = ~w ms,   unlowered = ~w ms~n", [L1, U1]),
-    format("  trial 2: unlowered = ~w ms, lowered = ~w ms~n",   [U2, L2]),
-    format("  tuple_count: lowered=~w  unlowered=~w (must match for correctness)~n",
-           [T1, T1u]),
-    (   integer(L1), integer(L2), integer(U1), integer(U2),
-        L1 > 0, L2 > 0, U1 > 0, U2 > 0
-    ->  Lavg is (L1 + L2) / 2,
+    format("  trial 1: intset = ~w ms, lowered = ~w ms, unlowered = ~w ms~n",
+           [I1, L1, U1]),
+    format("  trial 2: unlowered = ~w ms, lowered = ~w ms, intset = ~w ms~n",
+           [U2, L2, I2]),
+    format("  tuple_count: intset=~w  lowered=~w  unlowered=~w (must match)~n",
+           [T1i, T1l, T1u]),
+    (   integer(I1), integer(I2), integer(L1), integer(L2),
+        integer(U1), integer(U2),
+        I1 > 0, I2 > 0, L1 > 0, L2 > 0, U1 > 0, U2 > 0
+    ->  Iavg is (I1 + I2) / 2,
+        Lavg is (L1 + L2) / 2,
         Uavg is (U1 + U2) / 2,
-        Speedup is Uavg / Lavg,
-        format("~n  mean lowered:   ~3f ms~n", [Lavg]),
+        SpeedupLowered is Uavg / Lavg,
+        SpeedupIntset  is Uavg / Iavg,
+        SpeedupCompound is Lavg / Iavg,
+        format("~n  mean intset:    ~3f ms~n", [Iavg]),
+        format("  mean lowered:   ~3f ms~n", [Lavg]),
         format("  mean unlowered: ~3f ms~n", [Uavg]),
-        format("  speedup: ~3f x~n", [Speedup])
+        format("  speedup intset vs unlowered:    ~3f x  (Phase G + H combined)~n",
+               [SpeedupIntset]),
+        format("  speedup lowered vs unlowered:   ~3f x  (Phase G alone)~n",
+               [SpeedupLowered]),
+        format("  speedup intset vs lowered:      ~3f x  (Phase H IntSet alone)~n",
+               [SpeedupCompound])
     ;   format("~n[WARN] could not compute means (some runs failed)~n")
     ),
     (   getenv('WAM_EFF_DIST_BENCH_KEEP', V), V \== ''
     ->  format("[INFO] keeping build dirs (WAM_EFF_DIST_BENCH_KEEP set)~n", [])
-    ;   build_dir_for(lowered, DL), build_dir_for(unlowered, DU),
+    ;   build_dir_for(intset, DI), build_dir_for(lowered, DL),
+        build_dir_for(unlowered, DU),
+        catch(cleanup_dir(DI), _, true),
         catch(cleanup_dir(DL), _, true),
         catch(cleanup_dir(DU), _, true)
     ),
