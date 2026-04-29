@@ -1281,3 +1281,100 @@ All 4/4 green. Plus the full
 `tests/core/test_wam_not_member_lowering.pl`,
 `tests/core/test_binding_state_analysis.pl`, and
 `tests/core/test_wam_intset_runtime.pl` suites all stay green.
+
+---
+
+## Phase H final: IntSet visited Layer 2.5 — call-site arg rewrite (2026-04-28)
+
+**Branch:** `feat/wam-haskell-intset-layer25`
+
+Closes the IntSet visited arc by adding the call-site argument
+rewriting that was deferred from PR #1690 (the partial Layer 2 PR).
+With this PR, the runtime / instructions / `\\+ member` lowering /
+construction-site rewriting all coordinate, and a workload that uses
+`:- visited_set/2` actually constructs `VSet` values at runtime —
+the loop is closed.
+
+### What landed
+
+#### `compile_goal_call(Goal, ...)` and `compile_goal_execute(Goal, ...)`
+
+New early clauses fire when the goal calls a predicate with at least
+one `:- visited_set/2` declaration AND the arg at that position
+matches a recognised list shape. The clauses inline the construction
+code + `compile_put_arguments` + `call`/`execute` in **a single pass
+— no recursion on the rewritten goal**. The previous Layer 2 attempt
+recursed on the rewritten goal AND the dispatch in `compile_goals/5`
+re-routed visited-set goals through the same rewrite, causing
+infinite recursion. Single-pass emission breaks the cycle.
+
+#### `rewrite_visited_set_args/6` and `rewrite_visited_arg/5`
+
+The rewrite walks the args list, replacing visited-set positions:
+
+- **Recursive extension `[X|V_visited]`**: emits
+  `set_insert XReg, V_visited_Reg, NewSetReg` and binds the
+  replacement var to `NewSetReg`.
+- **Bootstrap `[X]`** (1-elem list, atom-`[]` tail explicitly
+  required): emits `build_empty_set Rs ; set_insert XReg, Rs, Rs`.
+
+The recursive case is tested **first**, with the bootstrap clause
+explicitly requiring `nonvar(T), T == []` for the cdr. Otherwise
+clause-head unification of `[X]` would match `[X|V_var]` by binding
+`V_var = []`, silently mis-routing recursive cons through the
+bootstrap path. (Caught by macro-shape integration check.)
+
+#### `goal_has_visited_set_arg/1` + TCO dispatch hook
+
+Added back to `compile_goals/5`'s last-goal branch so visited-set
+goals route through `compile_goal_execute` (where the rewrite
+fires) rather than the inline `put_arguments` fast path that
+bypasses the rewrite. With single-pass emission in the rewrite
+clause, this hook no longer causes the recursion that hung the
+previous attempt.
+
+### Tests
+
+`tests/core/test_wam_visited_set_lowering.pl` extended to 8 tests
+(was 4):
+
+| Test | Coverage |
+|---|---|
+| (existing) `test_not_member_set_when_visited_declared` | `\\+ member` lowering |
+| (existing) `test_no_visited_directive_keeps_not_member_list` | Phase G fallback |
+| (existing) `test_visited_set_var_propagation_across_clauses` | Multi-clause var identity |
+| (existing) `test_unrelated_call_with_list_arg_unchanged` | No directive ⇒ no rewrite |
+| **new** `test_bootstrap_emits_build_empty_set_and_insert` | `[Cat]` ⇒ build_empty_set + set_insert |
+| **new** `test_recursive_cons_emits_set_insert` | `[X\|V]` ⇒ set_insert |
+| **new** `test_bootstrap_does_not_emit_put_list` | bootstrap doesn't fall back to put_list |
+| **new** `test_recursive_cons_does_not_emit_put_list` | recursive cons doesn't fall back to put_list |
+
+All 8/8 green. Full target suite + binding-state +
+`\\+ member`-list lowering + IntSet runtime all stay green.
+
+### End-to-end check
+
+A direct compile of the canonical `category_ancestor/4` predicate
+with `:- visited_set(category_ancestor/4, 4)` and `mode/1`
+declarations now emits all three Layer 1 instructions in
+`Predicates.hs`:
+
+```
+NotMemberSet 201 202     -- \\+ member(Parent, Visited) in clause 1
+NotMemberSet 201 203     -- \\+ member(Mid, Visited) in clause 2
+SetInsert 201 203 107    -- [Mid|Visited] passed to recursive call
+```
+
+The runtime instructions (Layer 1) + lowering (Layer 2) + arg
+rewrite (Layer 2.5) coordinate end-to-end.
+
+### Macro benchmark — TODO
+
+A follow-up should extend
+`tests/benchmarks/wam_effective_distance_macro_bench.pl` to add a
+third variant that includes `:- visited_set(category_ancestor/4, 4)`
+and compare against the Phase G `mode`-only baseline. Expected
+improvement per the design doc: another ~1.5–3× on top of the
+~1.18× Phase G macro speedup (compounding the constant-factor and
+algorithmic wins). Filed as a small follow-up — the substrate is in
+place; the benchmark is just a copy-and-add-directive.
