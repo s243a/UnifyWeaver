@@ -293,6 +293,40 @@ test(foreign_lowering_false_suppresses_clojure_foreign_stub) :-
         delete_directory_and_contents(TmpDir)
     )).
 
+test(lowered_wam_predicate_routes_into_dispatch) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lowered_route', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1],
+                                  [namespace('generated.wam_lowered_route_test')], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lowered_route_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '(defn lowered-wam-fact-1 [state]')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" lowered-wam-fact-1')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '(def wam-fact-start-pc ')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(mixed_project_supports_lowered_foreign_and_shared_wam) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_mixed_route', TmpDir),
+        write_wam_clojure_project([user:wam_fact/1,
+                                   user:wam_parent_lookup/2,
+                                   user:wam_choice_fact/1],
+                                  [ namespace('generated.wam_mixed_route_test'),
+                                    foreign_predicates([wam_parent_lookup/2])
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_mixed_route_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '(defn lowered-wam-fact-1 [state]')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_fact/1" lowered-wam-fact-1')),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :call-foreign :pred "wam_parent_lookup" :arity 2}')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_parent_lookup/2" wam-parent-lookup')),
+        assertion(sub_string(CoreCode, _, _, _, '(def wam-choice-fact-start-pc ')),
+        assertion(sub_string(CoreCode, _, _, _, '"wam_choice_fact/1" wam-choice-fact')),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :switch-on-constant :cases [')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
 test(switch_on_constant_preserves_default_fallthrough) :-
     once((
         unique_tmp_dir('tmp_wam_clojure_switch', TmpDir),
