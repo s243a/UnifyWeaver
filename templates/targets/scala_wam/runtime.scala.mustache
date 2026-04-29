@@ -672,26 +672,39 @@ object WamRuntime {
           if (ok) s.pc += 1 else backtrack(s)
         case "true/0" =>
           s.pc += 1
+        case "fail/0" =>
+          backtrack(s)
         case "!/0" =>
           s.choicePoints = s.choicePoints.drop(s.choicePoints.length - s.cutBar)
           s.pc += 1
 
         // Arithmetic: A1 is target (assignment) or left operand (comparison),
         // A2 is the expression / right operand. The expression term is built
-        // by put_structure +/2 etc. and evaluated recursively.
+        // by put_structure +/2 etc. and evaluated recursively. Result type
+        // is Int or Double depending on operands and operator.
         case "is/2" =>
           evalArith(s, program, s.regs(2)) match {
             case Some(n) =>
-              if (unify(s, s.regs(1), IntTerm(n))) s.pc += 1 else backtrack(s)
+              if (unify(s, s.regs(1), numToTerm(n))) s.pc += 1 else backtrack(s)
             case None =>
               backtrack(s)
           }
-        case "=:=/2" => arithCmp(s, program, _ == _)
-        case "=\\=/2" => arithCmp(s, program, _ != _)
-        case "</2"   => arithCmp(s, program, _ < _)
-        case ">/2"   => arithCmp(s, program, _ > _)
-        case "=</2"  => arithCmp(s, program, _ <= _)
-        case ">=/2"  => arithCmp(s, program, _ >= _)
+        case "=:=/2" => arithCmp(s, program, numEq)
+        case "=\\=/2" => arithCmp(s, program, (a, b) => !numEq(a, b))
+        case "</2"   => arithCmp(s, program, numLt)
+        case ">/2"   => arithCmp(s, program, (a, b) => numLt(b, a))
+        case "=</2"  => arithCmp(s, program, (a, b) => !numLt(b, a))
+        case ">=/2"  => arithCmp(s, program, (a, b) => !numLt(a, b))
+
+        // Negation as failure. Reflects the goal term back into a predicate
+        // call, runs it in a saved sub-state, and inverts the result.
+        case "\\+/1" =>
+          val goal = deref(s.bindings, s.regs(1))
+          metaCallSucceeds(s, program, goal) match {
+            case Some(true)  => backtrack(s)        // goal succeeded → \+ fails
+            case Some(false) => s.pc += 1            // goal failed   → \+ succeeds
+            case None        => backtrack(s)        // unresolvable goal → fail
+          }
 
         case _ =>
           backtrack(s)
@@ -726,53 +739,174 @@ object WamRuntime {
   // functors (+, -, *, /, mod) are looked up by name via the program's
   // intern table, so the runtime is independent of the well-known atom
   // ID assignment. Returns None on type errors / unbound vars / div-by-0.
+  //
+  // Mixed Int/Double: the result type promotes to NDouble whenever any
+  // sub-expression is a Double or when the operator is `/` (true division).
+  // Integer division uses `//`. This mirrors SWI-Prolog's is/2 semantics
+  // closely enough for typical numeric workloads.
 
-  def evalArith(s: WamState, program: WamProgram, t: WamTerm): Option[Int] = {
+  sealed trait Num {
+    def toDouble: Double = this match {
+      case NInt(n)    => n.toDouble
+      case NDouble(d) => d
+    }
+  }
+  final case class NInt(value: Int) extends Num
+  final case class NDouble(value: Double) extends Num
+
+  def numOf(t: WamTerm): Option[Num] = t match {
+    case IntTerm(n)   => Some(NInt(n))
+    case FloatTerm(d) => Some(NDouble(d))
+    case _            => None
+  }
+
+  def numToTerm(n: Num): WamTerm = n match {
+    case NInt(v)    => IntTerm(v)
+    case NDouble(v) => FloatTerm(v)
+  }
+
+  def numEq(a: Num, b: Num): Boolean = (a, b) match {
+    case (NInt(x), NInt(y)) => x == y
+    case _                  => a.toDouble == b.toDouble
+  }
+  def numLt(a: Num, b: Num): Boolean = (a, b) match {
+    case (NInt(x), NInt(y)) => x < y
+    case _                  => a.toDouble < b.toDouble
+  }
+
+  private def numBinop(name: String, a: Num, b: Num): Option[Num] = (a, b) match {
+    case (NInt(x), NInt(y)) =>
+      name match {
+        case "+"   => Some(NInt(x + y))
+        case "-"   => Some(NInt(x - y))
+        case "*"   => Some(NInt(x * y))
+        case "/"   => Some(NDouble(x.toDouble / y.toDouble))   // true division
+        case "//"  if y != 0 => Some(NInt(x / y))               // integer division
+        case "mod" if y != 0 => Some(NInt(x % y))
+        case _     => None
+      }
+    case _ =>
+      val x = a.toDouble; val y = b.toDouble
+      name match {
+        case "+" => Some(NDouble(x + y))
+        case "-" => Some(NDouble(x - y))
+        case "*" => Some(NDouble(x * y))
+        case "/" => Some(NDouble(x / y))
+        case _   => None
+      }
+  }
+
+  def evalArith(s: WamState, program: WamProgram, t: WamTerm): Option[Num] = {
     val v = deref(s.bindings, t)
-    v match {
-      case IntTerm(n) => Some(n)
-      case Struct(f, 2, args) =>
-        val name =
-          if (f >= 0 && f < program.internTable.idToString.length)
-            program.internTable.idToString(f)
-          else ""
-        val a = evalArith(s, program, args(0))
-        val b = evalArith(s, program, args(1))
-        (a, b) match {
-          case (Some(x), Some(y)) =>
+    numOf(v) match {
+      case Some(n) => Some(n)
+      case None => v match {
+        case Struct(f, 2, args) =>
+          val name =
+            if (f >= 0 && f < program.internTable.idToString.length)
+              program.internTable.idToString(f)
+            else ""
+          for {
+            a <- evalArith(s, program, args(0))
+            b <- evalArith(s, program, args(1))
+            r <- numBinop(name, a, b)
+          } yield r
+        case Struct(f, 1, args) =>
+          val name =
+            if (f >= 0 && f < program.internTable.idToString.length)
+              program.internTable.idToString(f)
+            else ""
+          evalArith(s, program, args(0)).flatMap { x =>
             name match {
-              case "+" => Some(x + y)
-              case "-" => Some(x - y)
-              case "*" => Some(x * y)
-              case "/"   if y != 0 => Some(x / y)
-              case "mod" if y != 0 => Some(x % y)
+              case "-" => Some(x match { case NInt(n) => NInt(-n); case NDouble(d) => NDouble(-d) })
+              case "+" => Some(x)
               case _   => None
             }
-          case _ => None
-        }
-      case Struct(f, 1, args) =>
-        val name =
-          if (f >= 0 && f < program.internTable.idToString.length)
-            program.internTable.idToString(f)
-          else ""
-        evalArith(s, program, args(0)).flatMap { x =>
-          name match {
-            case "-" => Some(-x)
-            case "+" => Some(x)
-            case _   => None
           }
-        }
-      case _ => None
+        case _ => None
+      }
     }
   }
 
   /** Helper for arithmetic comparison builtins: evaluate A1 and A2 then
-   *  apply `op` to the integer results. Advances pc on true; backtracks on
-   *  false or on any evaluation failure. */
-  def arithCmp(s: WamState, program: WamProgram, op: (Int, Int) => Boolean): Unit = {
+   *  apply `op` to the (Int|Double) results. Advances pc on true;
+   *  backtracks on false or any evaluation failure. */
+  def arithCmp(s: WamState, program: WamProgram, op: (Num, Num) => Boolean): Unit = {
     (evalArith(s, program, s.regs(1)), evalArith(s, program, s.regs(2))) match {
       case (Some(a), Some(b)) if op(a, b) => s.pc += 1
       case _                              => backtrack(s)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Meta-call: invoke a predicate from a goal term
+  // ----------------------------------------------------------
+  // Used by \+/1 and (eventually) call/1. Saves the relevant outer
+  // state, runs the goal until completion in the same WamState, then
+  // restores. Returns Some(true) if the goal succeeded, Some(false) if
+  // it failed deterministically, or None if the goal could not be
+  // resolved to a known predicate. Bindings made during the goal are
+  // unwound on exit so \+ does not leak partial bindings.
+
+  def metaCallSucceeds(s: WamState, program: WamProgram, goal: WamTerm): Option[Boolean] = {
+    val (key, args) = goal match {
+      case Atom(f) =>
+        val n = if (f >= 0 && f < program.internTable.idToString.length)
+                  program.internTable.idToString(f) else ""
+        (s"$n/0", Array.empty[WamTerm])
+      case Struct(f, arity, sargs) =>
+        val n = if (f >= 0 && f < program.internTable.idToString.length)
+                  program.internTable.idToString(f) else ""
+        (s"$n/$arity", sargs)
+      case _ => return None
+    }
+    program.dispatch.get(key) match {
+      case None => None
+      case Some(startPc) =>
+        // Snapshot outer state.
+        val savedPc        = s.pc
+        val savedCallStack = s.callStack
+        val savedTrailLen  = s.trail.length
+        val savedCPs       = s.choicePoints
+        val savedRegs      = s.regs.clone()
+        val savedEnvStack  = s.envStack
+        val savedNextVarId = s.nextVarId
+        val savedCutBar    = s.cutBar
+        val savedStatus    = s.status
+        val savedUnifyQ    = s.unifyQueue
+        val savedBuildStk  = s.buildStack
+
+        // Set up the goal's call frame. callStack is empty so Proceed
+        // will mark the sub-run as Succeeded rather than try to return
+        // to the outer caller.
+        java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
+        args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
+        s.callStack    = Nil
+        s.choicePoints = Nil
+        s.envStack     = Nil
+        s.unifyQueue   = Nil
+        s.buildStack   = Nil
+        s.cutBar       = 0
+        s.pc           = startPc
+        s.status       = Running
+
+        while (s.status == Running) step(s, program)
+        val ok = s.status == Succeeded
+
+        // Restore — \+ does not propagate any bindings from the goal.
+        unwindTrail(s, savedTrailLen)
+        System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
+        s.callStack    = savedCallStack
+        s.choicePoints = savedCPs
+        s.envStack     = savedEnvStack
+        s.nextVarId    = savedNextVarId
+        s.cutBar       = savedCutBar
+        s.unifyQueue   = savedUnifyQ
+        s.buildStack   = savedBuildStk
+        s.pc           = savedPc
+        s.status       = savedStatus
+
+        Some(ok)
     }
   }
 
