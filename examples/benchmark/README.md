@@ -1034,7 +1034,8 @@ Comparison note:
   `csharp_query_best_source_mode` summary
 - use `benchmark_csharp_query_source_mode_sweep.py` when you want a compact
   cross-workload TSV or Markdown summary of best source mode, auto-vs-best
-  ratio, output agreement, and per-mode medians
+  ratio, output agreement, per-mode medians, and source-registration storage
+  families
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter

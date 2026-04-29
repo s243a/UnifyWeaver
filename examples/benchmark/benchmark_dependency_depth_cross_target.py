@@ -34,6 +34,7 @@ from benchmark_common import (
     print_csharp_query_source_mode_summary,
     print_match_status,
     print_pair_match_status,
+    print_phase_metrics,
     print_result_table,
     print_speedup,
     require_file,
@@ -160,11 +161,13 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_go_dfs", go_dfs, qe)
         for csharp_entry in csharp_query_results(entries):
+            metric_label = f"{csharp_entry.target}-metrics" if csharp_entry.target != "csharp-query" else "csharp-query-metrics"
             bucket_label = (
                 f"{csharp_entry.target}-bucket-strategies"
                 if csharp_entry.target != "csharp-query"
                 else "csharp-query-bucket-strategies"
             )
+            print_phase_metrics(scale, metric_label, csharp_entry)
             print_bucket_strategy_metrics(scale, bucket_label, csharp_entry)
         print_csharp_query_source_mode_summary(scale, entries)
 
