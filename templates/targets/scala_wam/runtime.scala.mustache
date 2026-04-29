@@ -386,11 +386,23 @@ object WamRuntime {
     case top :: rest =>
       s.buildStack = rest
       val built = Struct(top.functorId, top.sArity, top.args.toArray)
+      // Write-mode WAM PutStructure / PutList semantics. The target
+      // register is *always* set to the new struct, so callers see it
+      // there. In addition, if the target currently holds an unbound
+      // Ref (typical of the `set_variable X; put_structure F, X`
+      // threading idiom that compiles `+(_, *(_, _))`-style nested
+      // arithmetic), bind that Ref so any other build frame that
+      // captured the same Ref as one of its args sees the new struct
+      // through deref.
       val current = s.regs(top.targetReg)
-      val ok = if (current == null) { setReg(s, top.targetReg, built); true }
-               else unify(s, deref(s.bindings, current), built)
-      if (!ok) backtrack(s)
-      else if (s.buildStack.nonEmpty && s.buildStack.head.args.length == s.buildStack.head.sArity)
+      val derefedRef = if (current == null) None
+                       else deref(s.bindings, current) match {
+                         case r: Ref => Some(r)
+                         case _      => None
+                       }
+      derefedRef.foreach(r => bindVar(s, r, built))
+      setReg(s, top.targetReg, built)
+      if (s.buildStack.nonEmpty && s.buildStack.head.args.length == s.buildStack.head.sArity)
         finalizeBuild(s)
   }
 
@@ -663,6 +675,24 @@ object WamRuntime {
         case "!/0" =>
           s.choicePoints = s.choicePoints.drop(s.choicePoints.length - s.cutBar)
           s.pc += 1
+
+        // Arithmetic: A1 is target (assignment) or left operand (comparison),
+        // A2 is the expression / right operand. The expression term is built
+        // by put_structure +/2 etc. and evaluated recursively.
+        case "is/2" =>
+          evalArith(s, program, s.regs(2)) match {
+            case Some(n) =>
+              if (unify(s, s.regs(1), IntTerm(n))) s.pc += 1 else backtrack(s)
+            case None =>
+              backtrack(s)
+          }
+        case "=:=/2" => arithCmp(s, program, _ == _)
+        case "=\\=/2" => arithCmp(s, program, _ != _)
+        case "</2"   => arithCmp(s, program, _ < _)
+        case ">/2"   => arithCmp(s, program, _ > _)
+        case "=</2"  => arithCmp(s, program, _ <= _)
+        case ">=/2"  => arithCmp(s, program, _ >= _)
+
         case _ =>
           backtrack(s)
       }
@@ -686,6 +716,63 @@ object WamRuntime {
 
       case _ =>
         backtrack(s)
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Arithmetic evaluation
+  // ----------------------------------------------------------
+  // Recursively evaluates an arithmetic expression term. Operator
+  // functors (+, -, *, /, mod) are looked up by name via the program's
+  // intern table, so the runtime is independent of the well-known atom
+  // ID assignment. Returns None on type errors / unbound vars / div-by-0.
+
+  def evalArith(s: WamState, program: WamProgram, t: WamTerm): Option[Int] = {
+    val v = deref(s.bindings, t)
+    v match {
+      case IntTerm(n) => Some(n)
+      case Struct(f, 2, args) =>
+        val name =
+          if (f >= 0 && f < program.internTable.idToString.length)
+            program.internTable.idToString(f)
+          else ""
+        val a = evalArith(s, program, args(0))
+        val b = evalArith(s, program, args(1))
+        (a, b) match {
+          case (Some(x), Some(y)) =>
+            name match {
+              case "+" => Some(x + y)
+              case "-" => Some(x - y)
+              case "*" => Some(x * y)
+              case "/"   if y != 0 => Some(x / y)
+              case "mod" if y != 0 => Some(x % y)
+              case _   => None
+            }
+          case _ => None
+        }
+      case Struct(f, 1, args) =>
+        val name =
+          if (f >= 0 && f < program.internTable.idToString.length)
+            program.internTable.idToString(f)
+          else ""
+        evalArith(s, program, args(0)).flatMap { x =>
+          name match {
+            case "-" => Some(-x)
+            case "+" => Some(x)
+            case _   => None
+          }
+        }
+      case _ => None
+    }
+  }
+
+  /** Helper for arithmetic comparison builtins: evaluate A1 and A2 then
+   *  apply `op` to the integer results. Advances pc on true; backtracks on
+   *  false or on any evaluation failure. */
+  def arithCmp(s: WamState, program: WamProgram, op: (Int, Int) => Boolean): Unit = {
+    (evalArith(s, program, s.regs(1)), evalArith(s, program, s.regs(2))) match {
+      case (Some(a), Some(b)) if op(a, b) => s.pc += 1
+      case _                              => backtrack(s)
     }
   }
 

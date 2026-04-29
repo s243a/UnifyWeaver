@@ -48,6 +48,17 @@
 :- dynamic user:wam_foreign_pair_query/1.
 :- dynamic user:wam_foreign_multi/2.
 :- dynamic user:wam_foreign_multi_query/1.
+:- dynamic user:wam_inc/2.
+:- dynamic user:wam_double/2.
+:- dynamic user:wam_combo/3.
+:- dynamic user:wam_neg/2.
+:- dynamic user:wam_lt/2.
+:- dynamic user:wam_gt/2.
+:- dynamic user:wam_geq/2.
+:- dynamic user:wam_leq/2.
+:- dynamic user:wam_eq_arith/2.
+:- dynamic user:wam_neq_arith/2.
+:- dynamic user:wam_cut_obs/1.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -92,6 +103,24 @@ user:wam_foreign_pair(_, _).
 user:wam_foreign_pair_query(Y)  :- user:wam_foreign_pair(a, Y).
 user:wam_foreign_multi(_, _).
 user:wam_foreign_multi_query(Y) :- user:wam_foreign_multi(a, Y).
+% wam_cut_obs: Y is fresh in the body; foreign yields Y=a then Y=b on
+% backtrack. The cut after the foreign call must drop the foreign CP so
+% that a later unify failure cannot redo the foreign and try the second
+% solution. With correct cut: wam_cut_obs(b) → false. Without: would be true.
+user:wam_cut_obs(X) :- user:wam_foreign_multi(a, Y), !, Y = X.
+
+% Arithmetic: WAM emits builtin_call is/2, =:=/2, </2, >/2, =</2, >=/2,
+% =\=/2 and builds expression terms via put_structure +/-/*/'/' .
+user:wam_inc(N, M)        :- M is N + 1.
+user:wam_double(N, M)     :- M is N * 2.
+user:wam_combo(A, B, R)   :- R is A + B * 2.
+user:wam_neg(N, M)        :- M is -N.
+user:wam_lt(X, Y)         :- X < Y.
+user:wam_gt(X, Y)         :- X > Y.
+user:wam_geq(X, Y)        :- X >= Y.
+user:wam_leq(X, Y)        :- X =< Y.
+user:wam_eq_arith(X, Y)   :- X =:= Y.
+user:wam_neq_arith(X, Y)  :- X =\= Y.
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -301,6 +330,63 @@ test(foreign_multi) :-
             verify_scala(TmpDir, 'wam_foreign_multi_query/1', 'c', "false")
         )).
 
+% S6: cut after a multi-solution foreign must drop the foreign choice
+% point so a later unify failure cannot redo the foreign.
+% Discriminating case: wam_cut_obs(b) with cut → false; without cut → true.
+test(cut_after_foreign_multi) :-
+    foreign_multi_handler(MultiHandler),
+    with_scala_project(
+        [user:wam_foreign_multi/2, user:wam_cut_obs/1],
+        [ foreign_predicates([wam_foreign_multi/2]),
+          intern_atoms([a, b, c]),
+          scala_foreign_handlers([handler(wam_foreign_multi/2, MultiHandler)]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_cut_obs/1', 'a', "true"),
+            verify_scala(TmpDir, 'wam_cut_obs/1', 'b', "false"),
+            verify_scala(TmpDir, 'wam_cut_obs/1', 'c', "false")
+        )).
+
+% --- Arithmetic builtins ---
+
+test(arith_is) :-
+    with_scala_project(
+        [user:wam_inc/2, user:wam_double/2, user:wam_combo/3, user:wam_neg/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_inc/2',    ['5', '6'],     "true"),
+            verify_scala_args(TmpDir, 'wam_inc/2',    ['5', '7'],     "false"),
+            verify_scala_args(TmpDir, 'wam_double/2', ['7', '14'],    "true"),
+            verify_scala_args(TmpDir, 'wam_double/2', ['7', '15'],    "false"),
+            verify_scala_args(TmpDir, 'wam_combo/3',  ['3','4','11'], "true"),
+            verify_scala_args(TmpDir, 'wam_combo/3',  ['3','4','12'], "false"),
+            verify_scala_args(TmpDir, 'wam_neg/2',    ['5', '-5'],    "true"),
+            verify_scala_args(TmpDir, 'wam_neg/2',    ['5', '5'],     "false")
+        )).
+
+test(arith_compare) :-
+    with_scala_project(
+        [user:wam_lt/2, user:wam_gt/2, user:wam_geq/2, user:wam_leq/2,
+         user:wam_eq_arith/2, user:wam_neq_arith/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_lt/2',        ['1', '2'], "true"),
+            verify_scala_args(TmpDir, 'wam_lt/2',        ['2', '1'], "false"),
+            verify_scala_args(TmpDir, 'wam_lt/2',        ['2', '2'], "false"),
+            verify_scala_args(TmpDir, 'wam_gt/2',        ['2', '1'], "true"),
+            verify_scala_args(TmpDir, 'wam_gt/2',        ['1', '2'], "false"),
+            verify_scala_args(TmpDir, 'wam_geq/2',       ['2', '2'], "true"),
+            verify_scala_args(TmpDir, 'wam_geq/2',       ['1', '2'], "false"),
+            verify_scala_args(TmpDir, 'wam_leq/2',       ['2', '2'], "true"),
+            verify_scala_args(TmpDir, 'wam_leq/2',       ['3', '2'], "false"),
+            verify_scala_args(TmpDir, 'wam_eq_arith/2',  ['3', '3'], "true"),
+            verify_scala_args(TmpDir, 'wam_eq_arith/2',  ['3', '4'], "false"),
+            verify_scala_args(TmpDir, 'wam_neq_arith/2', ['3', '4'], "true"),
+            verify_scala_args(TmpDir, 'wam_neq_arith/2', ['3', '3'], "false")
+        )).
+
 :- end_tests(wam_scala_runtime_smoke).
 
 % ============================================================
@@ -359,24 +445,28 @@ find_scala_sources(AbsProjectDir, Sources) :-
         Sources).
 
 %% verify_scala(+ProjectDir, +PredKey, +Arg, +Expected)
-%  Runs the predicate via `scala` and checks stdout matches Expected.
+%  Single-arg form for predicates of arity 1.
 verify_scala(ProjectDir, PredKey, Arg, Expected) :-
-    run_scala_predicate(ProjectDir, PredKey, Arg, Actual),
+    verify_scala_args(ProjectDir, PredKey, [Arg], Expected).
+
+%% verify_scala_args(+ProjectDir, +PredKey, +Args, +Expected)
+%  Multi-arg form: Args is a list of atoms/strings to pass on the CLI.
+verify_scala_args(ProjectDir, PredKey, Args, Expected) :-
+    run_scala_predicate_args(ProjectDir, PredKey, Args, Actual),
     (   Actual == Expected
     ->  true
-    ;   throw(error(assertion_error(PredKey, Arg, Expected, Actual), _))
+    ;   throw(error(assertion_error(PredKey, Args, Expected, Actual), _))
     ).
 
-%% run_scala_predicate(+ProjectDir, +PredKey, +Arg, -Output)
-run_scala_predicate(ProjectDir, PredKey, Arg, Output) :-
+run_scala_predicate_args(ProjectDir, PredKey, Args, Output) :-
     absolute_file_name(ProjectDir, AbsProjectDir),
     directory_file_path(AbsProjectDir, 'classes', ClassDir),
-    atom_string(Arg, ArgStr),
     atom_string(PredKey, PredStr),
-    process_create(path(scala),
-                   ['-classpath', ClassDir,
-                    'generated.wam_scala_smoke.core.GeneratedProgram',
-                    PredStr, ArgStr],
+    maplist([A, S]>>atom_string(A, S), Args, ArgStrs),
+    append(['-classpath', ClassDir,
+            'generated.wam_scala_smoke.core.GeneratedProgram',
+            PredStr], ArgStrs, ProcArgs),
+    process_create(path(scala), ProcArgs,
                    [cwd(AbsProjectDir),
                     stdout(pipe(Out)), stderr(pipe(Err)),
                     process(Pid)]),
@@ -388,7 +478,7 @@ run_scala_predicate(ProjectDir, PredKey, Arg, Output) :-
     normalize_space(string(Output), OutStr0),
     (   ExitCode =:= 0
     ->  true
-    ;   throw(error(scala_run_failed(ExitCode, PredKey, Arg, ErrStr), _))
+    ;   throw(error(scala_run_failed(ExitCode, PredKey, Args, ErrStr), _))
     ).
 
 unique_scala_tmp_dir(Prefix, TmpDir) :-

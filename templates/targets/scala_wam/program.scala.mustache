@@ -92,22 +92,29 @@ object GeneratedProgram {
   }
 
   // Parse a CLI argument into a WamTerm.
-  // Supports atoms ("a"), structures ("f(a,b)"), and lists ("[a,b]").
-  // Unknown atom strings get id -1 so they fail unification with known atoms.
+  // Supports integers ("42", "-3"), atoms ("a"), structures ("f(a,b)"),
+  // and lists ("[a,b]"). Unknown atom strings get id -1 so they fail
+  // unification with known atoms.
   private def parseArg(s: String): WamTerm = {
     val t = s.trim
-    if (t.startsWith("[") && t.endsWith("]"))
-      parseList(t.substring(1, t.length - 1))
-    else {
-      val open = t.indexOf('(')
-      if (open > 0 && t.endsWith(")")) {
-        val functor = t.substring(0, open)
-        val inner = t.substring(open + 1, t.length - 1)
-        val argTerms = splitTopLevelCommas(inner).map(parseArg).toArray
-        Struct(internAtomId(functor), argTerms.length, argTerms)
-      } else {
-        Atom(internAtomId(t))
-      }
+    // Integers first — covers signed ints; falls through to atom on parse error.
+    val intOpt = try Some(t.toInt) catch { case _: NumberFormatException => None }
+    intOpt match {
+      case Some(n) => IntTerm(n)
+      case None =>
+        if (t.startsWith("[") && t.endsWith("]"))
+          parseList(t.substring(1, t.length - 1))
+        else {
+          val open = t.indexOf('(')
+          if (open > 0 && t.endsWith(")")) {
+            val functor = t.substring(0, open)
+            val inner = t.substring(open + 1, t.length - 1)
+            val argTerms = splitTopLevelCommas(inner).map(parseArg).toArray
+            Struct(internAtomId(functor), argTerms.length, argTerms)
+          } else {
+            Atom(internAtomId(t))
+          }
+        }
     }
   }
 
