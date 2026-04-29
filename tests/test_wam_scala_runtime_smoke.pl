@@ -76,6 +76,16 @@
 :- dynamic user:wam_member_or_abc/1.
 :- dynamic user:wam_length_q/2.
 :- dynamic user:wam_append_q/3.
+:- dynamic user:wam_findall_dummy/1.
+:- dynamic user:wam_findall_simple/1.
+:- dynamic user:wam_findall_template/1.
+:- dynamic user:wam_findall_empty/1.
+:- dynamic user:wam_call2/2.
+:- dynamic user:wam_pred1/2.
+:- dynamic user:wam_atom_codes_q/2.
+:- dynamic user:wam_atom_length_q/2.
+:- dynamic user:wam_append_split_q/2.
+:- dynamic user:wam_length_gen_q/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -174,6 +184,28 @@ user:wam_member_q(X, L)     :- member(X, L).
 user:wam_member_or_abc(X)   :- member(X, [a, b, c]).
 user:wam_length_q(L, N)     :- length(L, N).
 user:wam_append_q(A, B, C)  :- append(A, B, C).
+
+% --- findall/3 ---
+user:wam_findall_dummy(a).
+user:wam_findall_dummy(b).
+user:wam_findall_simple(L)    :- findall(X, user:wam_findall_dummy(X), L).
+user:wam_findall_template(L)  :- findall(p(X), user:wam_findall_dummy(X), L).
+user:wam_findall_empty(L)     :- findall(X, user:wam_no_such_pred(X), L).
+
+% --- call/N ---
+user:wam_pred1(X, Y) :- Y = X.
+% call(F, X) — F is the goal-atom; X is the additional arg.
+% Calling wam_call2(wam_pred1, 5) should bind X=5 by calling wam_pred1(5,_)
+user:wam_call2(F, X) :- call(F, X, X).
+
+% --- atom_codes/2 ---
+user:wam_atom_codes_q(A, Cs) :- atom_codes(A, Cs).
+% --- atom_length/2 ---
+user:wam_atom_length_q(A, N) :- atom_length(A, N).
+
+% --- append/3 split mode and length/2 generative ---
+user:wam_append_split_q(A, B) :- append(A, B, [a,b,c]).
+user:wam_length_gen_q(L, N)   :- length(L, N).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -598,6 +630,121 @@ test(builtin_append) :-
                               ['[a,b]', '[]', '[a,b]'], "true"),
             verify_scala_args(TmpDir, 'wam_append_q/3',
                               ['[a]', '[b]', '[a,c]'], "false")
+        )).
+
+% --- findall/3 ---
+test(findall_simple) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_findall_simple/1],
+        _Opts,
+        TmpDir,
+        (
+            % Two clauses: wam_findall_dummy(a) and (b). Bag is [a, b].
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[b,a]', "false"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[]',    "false"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[a]',   "false")
+        )).
+
+test(findall_template) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_findall_template/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_findall_template/1', '[p(a),p(b)]', "true"),
+            verify_scala(TmpDir, 'wam_findall_template/1', '[p(a)]',      "false"),
+            verify_scala(TmpDir, 'wam_findall_template/1', '[]',          "false")
+        )).
+
+test(findall_empty) :-
+    with_scala_project(
+        [user:wam_findall_empty/1],
+        _Opts,
+        TmpDir,
+        (
+            % No clauses for the inner goal → bag is [].
+            verify_scala(TmpDir, 'wam_findall_empty/1', '[]',  "true"),
+            verify_scala(TmpDir, 'wam_findall_empty/1', '[a]', "false")
+        )).
+
+% --- call/N ---
+test(call_n_arity_3) :-
+    with_scala_project(
+        [user:wam_pred1/2, user:wam_call2/2],
+        [ intern_atoms([wam_pred1, foo]) ],
+        TmpDir,
+        (
+            % wam_call2(wam_pred1, X) calls wam_pred1(X, X) — succeeds for
+            % any X (X = X by unification).
+            verify_scala_args(TmpDir, 'wam_call2/2', ['wam_pred1', 'foo'], "true"),
+            % If the goal-atom doesn't resolve, expect false.
+            verify_scala_args(TmpDir, 'wam_call2/2', ['no_such_pred', 'foo'], "false")
+        )).
+
+% --- atom_codes/2 ---
+test(builtin_atom_codes) :-
+    with_scala_project(
+        [user:wam_atom_codes_q/2],
+        [ intern_atoms([abc, hi]) ],
+        TmpDir,
+        (
+            % "abc" -> [97, 98, 99]
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['abc', '[97,98,99]'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['hi',  '[104,105]'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['abc', '[97,98]'], "false")
+        )).
+
+% --- atom_length/2 ---
+test(builtin_atom_length) :-
+    with_scala_project(
+        [user:wam_atom_length_q/2],
+        [ intern_atoms([abc, hi, '']) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['abc', '3'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['hi',  '2'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['abc', '4'], "false")
+        )).
+
+% --- append/3 split mode ---
+test(builtin_append_split) :-
+    with_scala_project(
+        [user:wam_append_split_q/2],
+        [ intern_atoms([a, b, c]) ],
+        TmpDir,
+        (
+            % Splits of [a,b,c]: ([], [a,b,c]) ([a], [b,c]) ([a,b], [c]) ([a,b,c], [])
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[]',     '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a]',    '[b,c]'],   "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a,b]',  '[c]'],     "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a,b,c]','[]'],      "true"),
+            % Not a valid split:
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a]',    '[c]'],     "false")
+        )).
+
+% --- length/2 generative mode ---
+% length(L, N) with L unbound and N ground → builds list of N fresh vars.
+% A list of N fresh vars unifies with any concrete list of length N.
+test(builtin_length_generative) :-
+    with_scala_project(
+        [user:wam_length_gen_q/2],
+        [ intern_atoms([x, y, z]) ],
+        TmpDir,
+        (
+            % L=[x,y,z], N=3 → ground both → unify length 3 with 3 → true
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[x,y,z]', '3'], "true"),
+            % L=[x,y], N=3 → 2 != 3 → false
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[x,y]',   '3'], "false"),
+            % We can't easily exercise pure generative mode from CLI
+            % (would need an unbound L), but the round-trip with a
+            % ground list of matching length confirms the deterministic
+            % path; the generative branch is exercised when the WAM
+            % runtime sees an unbound first arg with a bound length.
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[]',      '0'], "true")
         )).
 
 :- end_tests(wam_scala_runtime_smoke).

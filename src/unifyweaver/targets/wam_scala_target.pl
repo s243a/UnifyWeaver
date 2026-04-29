@@ -250,6 +250,20 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
 
+% --- Aggregation (findall/3 etc.) ---
+% begin_aggregate Kind, TemplateReg, BagReg
+% end_aggregate   TemplateReg
+% These come from the WAM lowering of findall(Template, Goal, Bag).
+% Kind is the aggregation mode ("collect" for findall).
+wam_parts_to_scala(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    reg_to_int(BagReg, BIdx),
+    format(string(Lit), 'BeginAggregate("~w", ~w, ~w)', [Kind, TIdx, BIdx]).
+
+wam_parts_to_scala(["end_aggregate", TemplateReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    format(string(Lit), 'EndAggregate(~w)', [TIdx]).
+
 % --- Fallback ---
 wam_parts_to_scala(Parts, Lit) :-
     atomic_list_concat(Parts, ' ', Text),
