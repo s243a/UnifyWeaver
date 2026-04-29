@@ -258,7 +258,8 @@ emit_one(put_value(Xn, Ai), I) :-
 
 emit_one(put_structure(F, Ai), I) :-
     format("~w;; put-structure ~w, ~w~n", [I, F, Ai]),
-    format("~w(let [instr {:op :put-structure :functor ~q :reg ~q}]~n", [I, F, Ai]),
+    parse_functor_arity_local(F, FunctorArity),
+    format("~w(let [instr {:op :put-structure :functor ~q :reg ~q :arity ~w}]~n", [I, F, Ai, FunctorArity]),
     format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
 
 emit_one(put_list(Ai), I) :-
@@ -323,3 +324,7 @@ emit_one(jump(_), _) :- !.
 
 emit_one(Instr, I) :-
     format("~w;; TODO: lowered emission for ~w~n", [I, Instr]).
+
+parse_functor_arity_local(Functor, Arity) :-
+    split_string(Functor, "/", "", [_Name, ArityStr]),
+    number_string(Arity, ArityStr).
