@@ -1075,6 +1075,65 @@ test_findall_phase4b_wamstate_has_branch_mode_field :-
     ;   fail_test(Test, ':branch_mode field missing from WamState defstruct')
     ).
 
+%% Phase 4b.5 — _branch variants emitted alongside _impl for Tier-2-
+%% eligible predicates. Closes the chain-CP duplicate-enumeration
+%% finding from Phase 4b's runtime probe.
+
+test_findall_phase4b5_emits_branch_variants :-
+    Test = 'Phase 4b.5: Tier-2-eligible predicate emits both _impl and _branch clause variants',
+    setup_call_cleanup(
+        (   phase_a_fixture_setup,
+            assertz(clause_body_analysis:order_independent(user:small_fact/2))
+        ),
+        (   wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Both `_impl` and `_branch` variants must be present.
+            % `_impl` is the existing sequential chain (try_me_else
+            % CP push); `_branch` is the no-push variant for parallel
+            % super-wrapper dispatch. Suffix-based check rather than
+            % hardcoded names because real WAM-compiled predicates
+            % produce `clause_<PredCamel><Arity>` entry names, not
+            % `clause_main` which only fires for hand-built fixtures
+            % whose first segment label is literally "clause_start".
+            sub_string(S, _, _, _, '_impl(state) do'),
+            sub_string(S, _, _, _, '_branch(state) do')
+        ->  pass(Test)
+        ;   fail_test(Test, '_impl and/or _branch variants missing for Tier-2 predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
+test_findall_phase4b5_branch_skips_cp_push :-
+    Test = 'Phase 4b.5: _branch variant skips try_me_else CP push',
+    setup_call_cleanup(
+        (   phase_a_fixture_setup,
+            assertz(clause_body_analysis:order_independent(user:small_fact/2))
+        ),
+        (   wam_target:compile_predicate_to_wam(phase_a_test:small_fact/2, [], WamCode),
+            lower_predicate_to_elixir(small_fact/2, WamCode,
+                                      [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Find a `_branch(state) do` defp opener; verify the
+            % immediate body section contains `try do` without a
+            % preceding `cp = %{pc:` push or `choice_points: [cp |`
+            % update. The `_branch` body should jump straight into
+            % `try do` (no CP-push preamble between the defp opener
+            % and the try).
+            sub_string(S, BranchOff, _, _, '_branch(state) do'),
+            string_length(S, TotalLen),
+            ScanLen is min(200, TotalLen - BranchOff),
+            sub_string(S, BranchOff, ScanLen, _, BranchHead),
+            sub_string(BranchHead, _, _, _, 'try do'),
+            \+ sub_string(BranchHead, _, _, _, 'cp = %{pc:'),
+            \+ sub_string(BranchHead, _, _, _, 'choice_points: [cp |')
+        ->  pass(Test)
+        ;   fail_test(Test, '_branch variant unexpectedly contains a CP push')
+        ),
+        retract(clause_body_analysis:order_independent(user:small_fact/2))
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -1145,16 +1204,20 @@ test_par_wrap_segment_emits_super_wrapper :-
     ).
 
 test_par_wrap_segment_references_all_branches :-
-    Test = 'Tier-2 wrapper: branch list references every clause _impl function',
+    Test = 'Tier-2 wrapper: branch list references every clause _branch function (Phase 4b.5)',
     setup_call_cleanup(
         assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
         (   three_segment_fixture(Segs),
             par_wrap_segment(tier2_pure3/2, Segs, [], Code),
-            sub_string(Code, _, _, _, '&clause_ClauseStart_impl/1'),
-            sub_string(Code, _, _, _, '&clause_LB_impl/1'),
-            sub_string(Code, _, _, _, '&clause_LC_impl/1')
+            % Phase 4b.5: super-wrappers BranchFuncs reference `_branch`
+            % variants (no next-clause CP push) instead of `_impl` —
+            % closes the chain-CP duplicate-enumeration finding from
+            % Phase 4bs runtime probe.
+            sub_string(Code, _, _, _, '&clause_ClauseStart_branch/1'),
+            sub_string(Code, _, _, _, '&clause_LB_branch/1'),
+            sub_string(Code, _, _, _, '&clause_LC_branch/1')
         ->  pass(Test)
-        ;   fail_test(Test, 'branch list does not reference all three clause _impl functions')
+        ;   fail_test(Test, 'branch list does not reference all three clause _branch functions')
         ),
         retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
     ).
@@ -1236,12 +1299,13 @@ test_par_wrap_segment_covers_switch_targets :-
             switch_arm_targets(FirstInstrs, ArmTargets),
             par_wrap_segment(small_fact/2, Segments, [], Code),
             Code \= "",
-            % For each switch arm target, confirm the emitted super-wrapper
-            % references &clause_<camelCase(target)>_impl/1.
+            % Phase 4b.5: super-wrapper references `_branch` variants
+            % (skip next-clause CP push) instead of `_impl`. Closes
+            % chain-CP duplicate-enumeration finding from #1706.
             forall(member(Target, ArmTargets),
                    (  wam_elixir_lowered_emitter:segment_func_name(Target, BaseFunc),
-                      format(string(ImplRef), '&~w_impl/1', [BaseFunc]),
-                      sub_string(Code, _, _, _, ImplRef)
+                      format(string(BranchRef), '&~w_branch/1', [BaseFunc]),
+                      sub_string(Code, _, _, _, BranchRef)
                    ))
         ->  pass(Test)
         ;   fail_test(Test, 'emitted branch list does not cover every switch_on_constant target')
@@ -1401,6 +1465,8 @@ run_tests :-
     test_findall_phase4a_branch_backtrack_distinct_from_backtrack,
     test_findall_phase4b_backtrack_dispatches_on_branch_mode,
     test_findall_phase4b_wamstate_has_branch_mode_field,
+    test_findall_phase4b5_emits_branch_variants,
+    test_findall_phase4b5_branch_skips_cp_push,
     test_findall_instr_parser_begin_aggregate,
     test_findall_instr_parser_end_aggregate,
     test_findall_instr_lowers_begin_aggregate_sum,
