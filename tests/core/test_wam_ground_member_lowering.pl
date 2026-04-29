@@ -236,7 +236,12 @@ test_not_member_const_atoms_step_handler :-
     (   compile_wam_runtime_to_haskell([], [], Code),
         atom_string(Code, S),
         sub_string(S, _, _, _, "step !_ctx s (NotMemberConstAtoms xReg atomIds)"),
-        sub_string(S, _, _, _, "aid `elem` atomIds")
+        sub_string(S, _, _, _, "aid `elem` atomIds"),
+        %% Non-atom ground values must succeed (Integer, Float, Str etc.
+        %% can't unify with any atom). Unbound must fail (Prolog would
+        %% succeed via unification → \+ fails).
+        sub_string(S, _, _, _, "Just (Unbound _)"),
+        sub_string(S, _, _, _, "non-atom ground")
     ->  pass(Test)
     ;   fail_test(Test, 'NotMemberConstAtoms handler missing or wrong')
     ).

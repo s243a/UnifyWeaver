@@ -1540,6 +1540,104 @@ Touch points: `wam_target.pl` (lowering, helper), `wam_haskell_target.pl`
 `tests/core/test_wam_ground_member_lowering.pl` (9 codegen +
 runtime + parse tests).
 
+### Phase G.2 microbench — measured ~14.5× (2026-04-29)
+
+The follow-up filed above. `tests/benchmarks/wam_ground_member_bench.pl`
+generates two projects from the same source predicate:
+
+```prolog
+bench_ground(X) :- \+ member(X, [a, b, c, d, e, f, g, h]).
+```
+
+The lowered variant uses default codegen (NotMemberConstAtoms);
+the unlowered variant asserts
+`wam_target:lowering_disabled(ground_member)` to fall through to
+the standard builtin path. A new module-level disable hook in
+`wam_target.pl` exists exactly so benches can build the unlowered
+baseline.
+
+A shared Bench.hs (in `tests/fixtures/wam_ground_member_bench/`)
+runs `bench_ground(Integer k)` 200 000 times per case across 4
+trials, with `Integer k` varying per iteration to defeat constant
+folding. Probe is never one of the 8 atoms, so the check always
+succeeds.
+
+Measured (after fixing the step handler — see "Correctness fix"
+below):
+
+| variant | mean (ms) | per-call (μs) |
+| --- | ---: | ---: |
+| lowered (NotMemberConstAtoms) | 61.9 | 0.31 |
+| unlowered (builtin \\+/1 + member walk) | 899.4 | 4.50 |
+
+**Speedup: ~14.5×**, both variants report 200 000/200 000 correct
+results.
+
+The win matches the design's intuition: 1 instruction dispatch + 1
+Atom-id list scan vs `N+1 PutStructure` heap allocations + 2
+builtin dispatches + N unifications. At N=8 atoms the unlowered
+path's heap allocation is the bulk of the cost.
+
+#### Correctness fix surfaced by the microbench
+
+The first run of the microbench reported **lowered ok=0/200000,
+unlowered ok=200000/200000** — a divergence. Cause: the original
+step handler returned `Nothing` for any non-Atom value:
+
+```haskell
+case mX of
+  Just (Atom aid) -> ...
+  _               -> Nothing  -- WRONG for Integer / Float / Str / etc.
+```
+
+But Prolog's `\\+ member(Integer 42, [a, b, c])` succeeds
+trivially — an integer can never unify with an atom, so member
+fails, so `\\+` succeeds. The handler now distinguishes:
+
+- `Atom aid in atomIds` → fail (member would succeed)
+- `Atom aid not in atomIds` → succeed
+- `Unbound _` / `Ref _` → fail (Prolog could unify with some atom
+  via free unification)
+- Any other ground value (`Integer`, `Float`, `Str`, `VList`,
+  `VSet`) → succeed (no atom can unify with it)
+
+This bug would have hit any user code that passes non-atom probes
+to `\\+ member`. The microbench caught it before any user did.
+
+### Phase H follow-up #2 — synthetic deep-chain workload (2026-04-29)
+
+To answer the open IntSet-crossover question on a workload not
+shape-bound by graph topology, this branch ships
+`examples/benchmark/generate_synthetic_chain.py`. It produces a
+linear category chain `cat_001 → cat_002 → ... → cat_N` with a
+single root `cat_N` and articles placed near the leaf end. Each
+article must walk the full chain to reach the root, forcing a
+visited list of length up to N-1 during `category_ancestor`
+recursion — exactly the shape Phase H was designed for.
+
+The generator produces both `facts.pl` (for SWI-Prolog) and the
+TSV files (`category_parent.tsv`, `article_category.tsv`,
+`root_categories.tsv`) the WAM Haskell binary loads at startup.
+
+**Status: blocked on a binary-side issue.** The SWI-Prolog
+version of the workload runs on `synth_chain_30` and finds 10
+paths (each ~30 hops). The compiled WAM Haskell binary on the
+same data returns `tuple_count=0` and `article_count=0` — even
+though `seed_count=10` and `demand_total_nodes=29` confirm the
+seeds and edges are loaded correctly. The query terminates in
+≤1 ms without finding any paths.
+
+Best guess: the demand-driven path's behaviour on a linear chain
+diverges from SWI-Prolog's evaluation, possibly because of how
+`Par*` parallel fork choice points interact with deep `\\+ member`
++ recursive call patterns. Filed as a follow-up for diagnosis
+on its own branch.
+
+Net: the IntSet-crossover question remains open. The
+infrastructure (generator + bench wiring + max_depth env var) is
+in place; the binary-side bug needs to be resolved before the
+crossover can be measured on this synthetic shape.
+
 ---
 
 ## Planning Note: Clojure lowered-tier and interning follow-up (2026-04-28)

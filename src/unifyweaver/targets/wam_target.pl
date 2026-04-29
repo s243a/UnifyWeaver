@@ -1044,6 +1044,7 @@ compile_goal_call(\+ member(X, V), V0, Vf, Code) :-
 compile_goal_call(\+ member(X, L), V0, Vf, Code) :-
     var(X),
     is_ground_atom_list(L, Atoms),
+    \+ lowering_disabled(ground_member),
     !,
     emit_not_member_const_atoms_lowering(X, Atoms, V0, Vf, Code).
 %% \+ member(X, L) lowering: emits a specialised NotMemberList WAM
@@ -1137,6 +1138,7 @@ compile_goal_execute(\+ member(X, V), V0, Vf, Code) :-
 compile_goal_execute(\+ member(X, L), V0, Vf, Code) :-
     var(X),
     is_ground_atom_list(L, Atoms),
+    \+ lowering_disabled(ground_member),
     !,
     emit_not_member_const_atoms_lowering(X, Atoms, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
@@ -1610,6 +1612,20 @@ emit_not_member_set_lowering(X, V, V0, Vf, Code) :-
     ),
     format(string(Body), "    not_member_set ~w, ~w", [XReg, VReg]),
     join_nonempty([XPrefix, VPrefix, Body], Code).
+
+%% lowering_disabled(+Tag) is semidet.
+%
+%  Per-process opt-out hook used by benchmarks to compile a baseline
+%  project with a specific lowering turned off. Currently recognised:
+%
+%    ground_member — disables the literal-ground-list `\+ member`
+%                    lowering (NotMemberConstAtoms). Falls through to
+%                    the standard builtin dispatch path.
+%
+%  Default: not disabled. Bench scripts assert
+%  `wam_target:lowering_disabled(ground_member)` before generating an
+%  unlowered baseline project, then retract afterwards.
+:- dynamic(lowering_disabled/1).
 
 %% is_ground_atom_list(+L, -Atoms) is semidet.
 %
