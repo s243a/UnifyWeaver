@@ -22,11 +22,16 @@ from benchmark_common import (
     add_csharp_query_source_mode_arg,
     append_csharp_query_source_mode_metric,
     csharp_query_env,
+    csharp_query_results,
+    csharp_query_source_modes_from_args,
+    csharp_query_target_label,
     digest_normalized_output,
     find_result,
+    find_csharp_query_result,
     group_results_by_scale,
     normalize_two_column_float_rows,
     print_bucket_strategy_metrics,
+    print_csharp_query_source_mode_summary,
     print_match_status,
     print_phase_metrics,
     print_result_table,
@@ -120,6 +125,7 @@ def benchmark_target(
     target: str,
     csharp_query_source_mode: str = "auto",
     artifact_dir: Path | None = None,
+    result_target: str | None = None,
 ) -> RunResult:
     scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
     edge_path = scale_dir / "category_parent.tsv"
@@ -147,14 +153,14 @@ def benchmark_target(
 
     normalized = normalize_output(stdout)
     digest, row_count = digest_normalized_output(normalized)
-    return RunResult(target, scale, times, digest, row_count, stderr)
+    return RunResult(result_target or target, scale, times, digest, row_count, stderr)
 
 
 def print_summary(results: list[RunResult]) -> None:
     print("scale\ttarget\tmedian_s\tmin_s\tmax_s\trows\tstdout_sha256")
     for scale, entries in group_results_by_scale(results):
         print_result_table(entries, scale)
-        csharp = find_result(entries, "csharp-query")
+        csharp = find_csharp_query_result(entries)
         if len(entries) > 1:
             print_match_status(scale, "outputs", entries)
             rust = find_result(entries, "rust-dfs")
@@ -169,13 +175,22 @@ def print_summary(results: list[RunResult]) -> None:
                 print(f"{scale}\tfaster_target\t{faster}")
                 print(f"{scale}\tspeedup\t{speedup:.2f}x")
             print_phase_metrics(scale, "prolog-accumulated-metrics", prolog)
-        print_phase_metrics(scale, "csharp-query-metrics", csharp)
-        print_bucket_strategy_metrics(scale, "csharp-query-bucket-strategies", csharp)
+        for csharp_entry in csharp_query_results(entries):
+            metric_label = f"{csharp_entry.target}-metrics" if csharp_entry.target != "csharp-query" else "csharp-query-metrics"
+            bucket_label = (
+                f"{csharp_entry.target}-bucket-strategies"
+                if csharp_entry.target != "csharp-query"
+                else "csharp-query-bucket-strategies"
+            )
+            print_phase_metrics(scale, metric_label, csharp_entry)
+            print_bucket_strategy_metrics(scale, bucket_label, csharp_entry)
+        print_csharp_query_source_mode_summary(scale, entries)
 
 
 def main() -> int:
     args = parse_args()
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
+    csharp_query_source_modes = csharp_query_source_modes_from_args(args)
     targets = available_targets([part.strip() for part in args.targets.split(",") if part.strip()])
     if not targets:
         print("no benchmark targets available", file=sys.stderr)
@@ -209,17 +224,29 @@ def main() -> int:
                 commands["prolog-accumulated"] = build_prolog_accumulated(temp_root, scale)
 
             for target in targets:
-                artifact_dir = temp_root / "artifacts" / target / scale if target == "csharp-query" else None
-                results.append(
-                    benchmark_target(
-                        commands[target],
-                        scale,
-                        args.repetitions,
-                        target,
-                        args.csharp_query_source_mode,
-                        artifact_dir,
+                if target == "csharp-query":
+                    for source_mode in csharp_query_source_modes:
+                        artifact_dir = temp_root / "artifacts" / target / source_mode / scale
+                        results.append(
+                            benchmark_target(
+                                commands[target],
+                                scale,
+                                args.repetitions,
+                                target,
+                                source_mode,
+                                artifact_dir,
+                                csharp_query_target_label(source_mode, csharp_query_source_modes),
+                            )
+                        )
+                else:
+                    results.append(
+                        benchmark_target(
+                            commands[target],
+                            scale,
+                            args.repetitions,
+                            target,
+                        )
                     )
-                )
 
         print_summary(results)
         return 0
