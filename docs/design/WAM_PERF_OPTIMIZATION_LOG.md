@@ -1378,3 +1378,29 @@ improvement per the design doc: another ~1.5–3× on top of the
 ~1.18× Phase G macro speedup (compounding the constant-factor and
 algorithmic wins). Filed as a small follow-up — the substrate is in
 place; the benchmark is just a copy-and-add-directive.
+
+---
+
+## Planning Note: Clojure lowered-tier and interning follow-up (2026-04-28)
+
+The recent Clojure LMDB work and Scala hybrid-WAM design work exposed a
+separate Clojure performance/design gap:
+
+- the Clojure hybrid WAM target still lacks a Rust-style lowered WAM
+  middle tier
+- the Clojure runtime is still comparatively string- and map-heavy in
+  its hot path, whereas Rust and Haskell already treat atom/functor
+  interning as a first-class runtime concern
+
+The resulting proposal is:
+
+- keep TypR-style native clause lowering as one family
+- add a Rust-style `wam_clojure_lowered_emitter` as a second family
+- allow overridable routing defaults between native lowering, lowered
+  WAM, foreign/kernel lowering, and full WAM fallback
+- design atom/functor interning into the lowered-tier plan rather than
+  treating it as a late micro-optimization
+
+Reference:
+
+- [WAM_CLOJURE_LOWERED_TIER_PLAN.md](/data/data/com.termux/files/home/UnifyWeaver/docs/proposals/WAM_CLOJURE_LOWERED_TIER_PLAN.md)
