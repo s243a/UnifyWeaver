@@ -370,11 +370,21 @@ compile_backtrack_to_elixir(Code) :-
         # of the ordinary unwind/restore path: they have no failure
         # target (cp.pc is nil) and need to bind the accumulator into
         # :agg_result_reg before resuming via :agg_return_cp.
+        #
+        # In Tier-2 parallel-branch context (branch_mode: true), the
+        # branch returns its local accum to the parent instead of
+        # finalising — the parent merges branch contributions before
+        # finalising on its own state. See branch_backtrack/1 and
+        # WAM_ELIXIR_TIER2_FINDALL_PHASE4.md section 4.
         case Map.get(cp, :agg_type) do
           nil ->
             backtrack_ordinary(state, cp, rest)
           agg_type ->
-            finalise_aggregate(state, cp, rest, agg_type)
+            if Map.get(state, :branch_mode, false) do
+              {:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}
+            else
+              finalise_aggregate(state, cp, rest, agg_type)
+            end
         end
     end
   end
@@ -1352,7 +1362,17 @@ compile_wam_runtime_to_elixir(Options, Code) :-
               # children and checks > 0 to short-circuit back to
               # sequential — prevents B^D spark explosion on recursive
               # predicates. See docs/design/WAM_TIERED_LOWERING.md.
-              parallel_depth: 0
+              parallel_depth: 0,
+              # branch_mode marks a snapshot as belonging to a Tier-2
+              # parallel-branch task. When true, backtrack/1 routes
+              # aggregate-frame CPs to branch_backtracks return-shape
+              # (returning local accum to the parent for merging) rather
+              # than to finalise_aggregate (which would only see the
+              # branchs partial accum). Set by the super-wrapper when
+              # forking; preserved across the branchs internal
+              # enumeration. See WAM_ELIXIR_TIER2_FINDALL_PHASE4.md
+              # section 4 for the protocol.
+              branch_mode: false
   end
 
 ~w

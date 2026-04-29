@@ -1125,6 +1125,23 @@ par_wrap_segment(_Pred, _Segments, _Options, "").
 %  option is to fall back to sequential evaluation via the renamed
 %  clause chain. Two arms rather than a combined predicate so each
 %  fall-through reason stays self-documenting in the emitted Elixir.
+% Phase 4b finding (deferred to a focused follow-up): each clause
+% _impl function pushes a try_me_else CP for the next clause as
+% part of its standard sequential-enumeration setup. When the
+% super-wrapper dispatches branch i = clause i_impl, branch is
+% local backtrack pops the next-clause CP and resumes clause i+1
+% — branch 1 ends up enumerating ALL clauses, branch 2 enumerates
+% from clause 2, etc., producing duplicate solutions. The fix
+% requires emitting _branch variants of clause functions that
+% omit the next-clause CP push (analogous to trust_me's no-push
+% pattern, which already exists). Tracked as Phase 4b.5 / Phase 4c
+% follow-up. Phase 4b's super-wrapper substrate (branch_mode
+% dispatch, branch_backtrack-aware backtrack, merge-then-throw
+% pattern) is structurally correct and shipped here; the chain-CP
+% issue prevents activating intra_query_parallel(true) in tests
+% but doesn't affect any sequential scenario (intra_query_parallel
+% defaults to true but the Phase 3 kill-switch scenarios use
+% explicit `intra_query_parallel(false)`).
 emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
     maplist([F, Ref]>>format(string(Ref), '&~w/1', [F]),
             BranchImplFuncs, BranchRefs),
@@ -1139,7 +1156,14 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
         ~w(state)
 
       true ->
+        # Phase 4b: branch wrapper rework. Each branch runs with
+        # branch_mode: true so backtrack/1 routes agg-frame CPs to
+        # the {:branch_exhausted, accum} return shape (instead of
+        # finalising on the branchs partial state). See
+        # WAM_ELIXIR_TIER2_FINDALL_PHASE4.md section 4 for the
+        # protocol; #1694 added branch_backtrack/1 substrate.
         branch_state = %{state |
+          branch_mode: true,
           cut_point: state.choice_points,
           parallel_depth: Map.get(state, :parallel_depth, 0) + 1
         }
@@ -1150,11 +1174,24 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
           branches
           |> Task.async_stream(fn branch ->
                try do
-                 branch.(branch_state)
+                 # Branchs clause body proceeds via state.cp = the
+                 # parents post-call continuation (typically the
+                 # findalls k1, which contains aggregate_collect +
+                 # throw fail). The throw drives backtrack-in-branch-
+                 # mode, which returns {:branch_exhausted, accum} as
+                 # the wrap_segment catchs `other` arm. That tuple
+                 # propagates up through state.cp.(state) as the
+                 # branchs return value.
+                 case branch.(branch_state) do
+                   {:branch_exhausted, accum} when is_list(accum) -> accum
+                   _ -> []
+                 end
                catch
-                 {:fail, _state} -> []
-                 {:return, result} when is_list(result) -> result
-                 {:return, result} -> [result]
+                 # If backtrack ever re-throws fail (no more CPs at
+                 # all — shouldnt happen in normal flow because the
+                 # agg frame stays as a sentinel), the branch
+                 # contributes nothing.
+                 {:fail, _s} -> []
                end
              end,
              on_timeout: :kill_task,
@@ -1165,7 +1202,12 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
             _ -> []
           end)
 
-        WamRuntime.merge_into_aggregate(state, branch_results)
+        # Merge all branch contributions into the parents agg frame,
+        # then throw fail to drive the parents standard backtrack ->
+        # finalise_aggregate flow on the merged accum. The parent is
+        # NOT in branch_mode, so finalise fires normally.
+        merged = WamRuntime.merge_into_aggregate(state, branch_results)
+        throw({:fail, merged})
     end
   end',
     [EntryFunc, EntryImplFunc, EntryImplFunc, BranchListInner]).

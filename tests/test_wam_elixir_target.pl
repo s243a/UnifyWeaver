@@ -1039,6 +1039,42 @@ test_findall_phase4a_branch_backtrack_distinct_from_backtrack :-
     ;   fail_test(Test, 'branch_backtrack/1 should coexist with backtrack/1')
     ).
 
+%% Phase 4b — super-wrapper rework. Branches run with branch_mode:
+%% true; backtrack/1 dispatches on it for agg-frame CPs to return
+%% {:branch_exhausted, accum} instead of finalising. Super-wrapper
+%% merges branch results and throws fail to drive the parents
+%% standard finalise.
+
+test_findall_phase4b_backtrack_dispatches_on_branch_mode :-
+    Test = 'Phase 4b: backtrack/1 dispatches agg-frame CPs on branch_mode',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        % The new dispatch arm checks Map.get(state, :branch_mode, false)
+        % BEFORE calling finalise_aggregate. When true, returns
+        % {:branch_exhausted, ...} so the parallel-branch case routes
+        % through branch_backtracks return shape (via the same
+        % Enum.reverse(agg_accum) logic).
+        sub_string(S, _, _, _, 'if Map.get(state, :branch_mode, false) do'),
+        sub_string(S, _, _, _, '{:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}'),
+        % And the existing finalise path is preserved as the else branch.
+        sub_string(S, _, _, _, 'finalise_aggregate(state, cp, rest, agg_type)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'backtrack/1 missing branch_mode dispatch')
+    ).
+
+test_findall_phase4b_wamstate_has_branch_mode_field :-
+    Test = 'Phase 4b: WamState defstruct includes :branch_mode field',
+    (   compile_wam_runtime_to_elixir([], Code),
+        atom_string(Code, S),
+        % The WamState struct must declare branch_mode so the super-
+        % wrapper can set it on branch_state via %{state | branch_mode:
+        % true}. Default false so all existing call sites that dont
+        % explicitly set it remain in non-branch-mode (sequential).
+        sub_string(S, _, _, _, 'branch_mode: false')
+    ->  pass(Test)
+    ;   fail_test(Test, ':branch_mode field missing from WamState defstruct')
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -1091,8 +1127,17 @@ test_par_wrap_segment_emits_super_wrapper :-
             sub_string(Code, _, _, _, 'cut_point: state.choice_points'),
             sub_string(Code, _, _, _, 'Task.async_stream'),
             sub_string(Code, _, _, _, 'try do'),
-            sub_string(Code, _, _, _, '{:fail, _state} -> []'),
-            sub_string(Code, _, _, _, 'WamRuntime.merge_into_aggregate(state, branch_results)')
+            % Phase 4b: branches run with branch_mode: true; backtrack
+            % returns {:branch_exhausted, accum} which the task wrapper
+            % case-of unpacks. The fail-throw catch arm is now `{:fail, _s}`.
+            sub_string(Code, _, _, _, 'branch_mode: true'),
+            sub_string(Code, _, _, _, '{:branch_exhausted, accum} when is_list(accum) -> accum'),
+            sub_string(Code, _, _, _, '{:fail, _s} -> []'),
+            % Parent merges branch contributions, then throws fail to
+            % drive the parents standard finalise flow on the merged
+            % accum (parent is NOT in branch_mode so finalise fires).
+            sub_string(Code, _, _, _, 'merged = WamRuntime.merge_into_aggregate(state, branch_results)'),
+            sub_string(Code, _, _, _, 'throw({:fail, merged})')
         ->  pass(Test)
         ;   fail_test(Test, 'super-wrapper shape missing')
         ),
@@ -1354,6 +1399,8 @@ run_tests :-
     test_findall_substrate_backtrack_routes_aggregate_frames,
     test_findall_phase4a_emits_branch_backtrack,
     test_findall_phase4a_branch_backtrack_distinct_from_backtrack,
+    test_findall_phase4b_backtrack_dispatches_on_branch_mode,
+    test_findall_phase4b_wamstate_has_branch_mode_field,
     test_findall_instr_parser_begin_aggregate,
     test_findall_instr_parser_end_aggregate,
     test_findall_instr_lowers_begin_aggregate_sum,
