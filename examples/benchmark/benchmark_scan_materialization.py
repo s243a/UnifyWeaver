@@ -357,6 +357,19 @@ class BenchResult:
         return statistics.median(self.times)
 
 
+@dataclass
+class SourceModeSummary:
+    scale: str
+    mode: str
+    best_source_mode: str
+    chosen_source_mode: str
+    auto_vs_best: str
+    median_summary: str
+    row_summary: str
+    source_registration_summary: str
+    bucket_strategy_summary: str
+
+
 RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
 
 
@@ -367,6 +380,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--format", choices=["detail-tsv", "report-tsv", "markdown"], default="detail-tsv")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -414,6 +428,154 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     if "KeyJoinIndexedRelationProvider" in operator or "IndexedRelationProviderLookup" in operator:
         return operator
     return metrics.get("scan_planner_strategies", "") or operator
+
+
+def summarize_by_source_mode(
+    results: list[BenchResult],
+    scales: list[str],
+    modes: list[str],
+) -> list[SourceModeSummary]:
+    by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
+    for result in results:
+        if result.strategy == "auto":
+            by_source_mode[(result.scale, result.mode, result.source_mode)] = result
+
+    summaries: list[SourceModeSummary] = []
+    for scale in scales:
+        for mode in modes:
+            source_results = {
+                result_source_mode: result
+                for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                if result_scale == scale and result_mode == mode
+            }
+            if not source_results:
+                continue
+
+            concrete = [
+                result
+                for result_source_mode, result in source_results.items()
+                if result_source_mode != "auto"
+            ]
+            best = min(concrete, key=lambda item: item.median) if concrete else None
+            auto = source_results.get("auto")
+            chosen_source_mode = auto.resolved_source_mode if auto is not None else ""
+            best_source_mode = best.source_mode if best is not None else ""
+            auto_vs_best = ""
+            if auto is not None and best is not None:
+                ratio = auto.median / best.median if best.median else float("inf")
+                auto_vs_best = f"{ratio:.2f}x"
+
+            median_summary = ",".join(
+                f"{source_mode}:{result.median:.3f}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            row_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('row_count', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            registration_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('source_registrations', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            bucket_strategy_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('bucket_strategies', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            summaries.append(
+                SourceModeSummary(
+                    scale=scale,
+                    mode=mode,
+                    best_source_mode=best_source_mode,
+                    chosen_source_mode=chosen_source_mode,
+                    auto_vs_best=auto_vs_best,
+                    median_summary=median_summary,
+                    row_summary=row_summary,
+                    source_registration_summary=registration_summary,
+                    bucket_strategy_summary=bucket_strategy_summary,
+                )
+            )
+
+    return summaries
+
+
+def print_detail_tsv(
+    results: list[BenchResult],
+    scales: list[str],
+    modes: list[str],
+    source_modes: list[str],
+) -> None:
+    print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	source_registrations	planner	bucket_strategies	phases")
+    grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
+    by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
+    for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
+        grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
+        if result.strategy == "auto":
+            by_source_mode[(result.scale, result.mode, result.source_mode)] = result
+        metrics = parse_metrics(result.stderr)
+        planner = select_planner_summary(metrics)
+        bucket_strategies = metrics.get("bucket_strategies", "")
+        phases = metrics.get("scan_phase_summary", "")
+        rows = metrics.get("row_count", "")
+        source_registrations = metrics.get("source_registrations", "")
+        print(
+            f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
+            f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{source_registrations}	{planner}	{bucket_strategies}	{phases}"
+        )
+
+    for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
+        by_strategy = grouped[(scale, mode, source_mode)]
+        auto = by_strategy.get("auto")
+        best = min(by_strategy.values(), key=lambda item: item.median)
+        if auto is not None:
+            print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
+            ratio = auto.median / best.median if best.median else float('inf')
+            print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
+            auto_metrics = parse_metrics(auto.stderr)
+            auto_planner = select_planner_summary(auto_metrics)
+            print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
+
+    if "auto" in source_modes:
+        for scale in scales:
+            for mode in modes:
+                auto = by_source_mode.get((scale, mode, "auto"))
+                if auto is None:
+                    continue
+
+                concrete = [
+                    result
+                    for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                    if result_scale == scale and result_mode == mode and result_source_mode != "auto"
+                ]
+                if not concrete:
+                    continue
+
+                best = min(concrete, key=lambda item: item.median)
+                ratio = auto.median / best.median if best.median else float("inf")
+                print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
+                print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
+                print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
+
+
+def print_report_tsv(summaries: list[SourceModeSummary]) -> None:
+    print("scale	mode	best_source_mode	chosen_source_mode	auto_vs_best	median_s_by_source_mode	rows_by_source_mode	source_registrations_by_source_mode	bucket_strategies_by_source_mode")
+    for summary in summaries:
+        print(
+            f"{summary.scale}	{summary.mode}	{summary.best_source_mode}	{summary.chosen_source_mode}	"
+            f"{summary.auto_vs_best}	{summary.median_summary}	{summary.row_summary}	"
+            f"{summary.source_registration_summary}	{summary.bucket_strategy_summary}"
+        )
+
+
+def print_markdown(summaries: list[SourceModeSummary]) -> None:
+    print("| Scale | Mode | Best source mode | Chosen source mode | Auto vs best | Median seconds by source mode | Rows by source mode | Source registrations by source mode | Bucket strategies by source mode |")
+    print("| --- | --- | --- | --- | ---: | --- | --- | --- | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.scale} | {summary.mode} | {summary.best_source_mode} | "
+            f"{summary.chosen_source_mode} | {summary.auto_vs_best} | `{summary.median_summary}` | "
+            f"`{summary.row_summary}` | `{summary.source_registration_summary}` | "
+            f"`{summary.bucket_strategy_summary}` |"
+        )
 
 
 def benchmark_mode(
@@ -484,56 +646,14 @@ def main() -> int:
                     for strategy in strategies:
                         results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	source_registrations	planner	bucket_strategies	phases")
-        grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
-        by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
-        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
-            grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
-            if result.strategy == "auto":
-                by_source_mode[(result.scale, result.mode, result.source_mode)] = result
-            metrics = parse_metrics(result.stderr)
-            planner = select_planner_summary(metrics)
-            bucket_strategies = metrics.get("bucket_strategies", "")
-            phases = metrics.get("scan_phase_summary", "")
-            rows = metrics.get("row_count", "")
-            source_registrations = metrics.get("source_registrations", "")
-            print(
-                f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
-                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{source_registrations}	{planner}	{bucket_strategies}	{phases}"
-            )
-
-        for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
-            by_strategy = grouped[(scale, mode, source_mode)]
-            auto = by_strategy.get("auto")
-            best = min(by_strategy.values(), key=lambda item: item.median)
-            if auto is not None:
-                print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
-                ratio = auto.median / best.median if best.median else float('inf')
-                print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
-                auto_metrics = parse_metrics(auto.stderr)
-                auto_planner = select_planner_summary(auto_metrics)
-                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
-
-        if "auto" in source_modes:
-            for scale in scales:
-                for mode in modes:
-                    auto = by_source_mode.get((scale, mode, "auto"))
-                    if auto is None:
-                        continue
-
-                    concrete = [
-                        result
-                        for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
-                        if result_scale == scale and result_mode == mode and result_source_mode != "auto"
-                    ]
-                    if not concrete:
-                        continue
-
-                    best = min(concrete, key=lambda item: item.median)
-                    ratio = auto.median / best.median if best.median else float("inf")
-                    print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
-                    print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
-                    print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
+        if args.format == "detail-tsv":
+            print_detail_tsv(results, scales, modes, source_modes)
+        else:
+            summaries = summarize_by_source_mode(results, scales, modes)
+            if args.format == "markdown":
+                print_markdown(summaries)
+            else:
+                print_report_tsv(summaries)
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)
