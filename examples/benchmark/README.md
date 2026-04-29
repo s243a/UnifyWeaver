@@ -436,6 +436,7 @@ Tables:
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
 | `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner; use the `join` mode when you need concrete artifact bucket join strategy rows |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
@@ -1028,6 +1029,9 @@ Comparison note:
   multiple source modes in one generated cross-target run; the output labels
   those rows as `csharp-query:<mode>` and prints a
   `csharp_query_best_source_mode` summary
+- use `benchmark_csharp_query_source_mode_sweep.py` when you want a compact
+  cross-workload TSV or Markdown summary of best source mode, auto-vs-best
+  ratio, output agreement, and per-mode medians
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter
