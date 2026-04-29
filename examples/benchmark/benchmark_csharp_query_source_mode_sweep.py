@@ -40,6 +40,7 @@ class SourceModeSummary:
     auto_vs_best: str
     output_agreement: str
     median_summary: str
+    source_registration_summary: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,6 +86,7 @@ def parse_workloads(value: str) -> list[str]:
 def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
     medians: dict[str, dict[str, str]] = {}
     hashes: dict[str, dict[str, str]] = {}
+    source_registrations: dict[str, dict[str, str]] = {}
     best_modes: dict[str, str] = {}
     auto_vs_best: dict[str, str] = {}
 
@@ -95,6 +97,13 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             source_mode = parts[1].split(":", 1)[1]
             medians.setdefault(scale, {})[source_mode] = parts[2]
             hashes.setdefault(scale, {})[source_mode] = parts[6]
+        elif len(parts) >= 3 and parts[1].startswith("csharp-query:") and parts[1].endswith("-metrics"):
+            scale = parts[0]
+            target = parts[1][:-len("-metrics")]
+            source_mode = target.split(":", 1)[1]
+            registrations = summarize_source_registration_tokens(parts[2])
+            if registrations:
+                source_registrations.setdefault(scale, {})[source_mode] = registrations
         elif len(parts) >= 3 and parts[1] == "csharp_query_best_source_mode":
             best_modes[parts[0]] = parts[2]
         elif len(parts) >= 3 and parts[1] == "csharp_query_auto_vs_best_source_mode":
@@ -110,6 +119,10 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
             f"{mode}:{mode_medians[mode]}"
             for mode in sorted(mode_medians)
         )
+        registration_summary = ",".join(
+            f"{mode}:{registrations}"
+            for mode, registrations in sorted(source_registrations.get(scale, {}).items())
+        )
         summaries.append(
             SourceModeSummary(
                 workload=workload,
@@ -118,9 +131,20 @@ def parse_runner_output(workload: str, output: str) -> list[SourceModeSummary]:
                 auto_vs_best=auto_vs_best.get(scale, ""),
                 output_agreement=output_agreement,
                 median_summary=median_summary,
+                source_registration_summary=registration_summary,
             )
         )
     return summaries
+
+
+def summarize_source_registration_tokens(metrics: str) -> str:
+    registrations: list[str] = []
+    for token in metrics.split():
+        if not token.startswith("source_registration_") or "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        registrations.append(f"{key[len('source_registration_'):]}={value}")
+    return "|".join(sorted(registrations))
 
 
 def run_workload(
@@ -157,21 +181,23 @@ def run_workload(
 
 
 def print_tsv(summaries: list[SourceModeSummary]) -> None:
-    print("workload\tscale\tbest_source_mode\tauto_vs_best\toutput_agreement\tmedian_s_by_mode")
+    print("workload\tscale\tbest_source_mode\tauto_vs_best\toutput_agreement\tmedian_s_by_mode\tsource_registrations_by_mode")
     for summary in summaries:
         print(
             f"{summary.workload}\t{summary.scale}\t{summary.best_source_mode}\t"
-            f"{summary.auto_vs_best}\t{summary.output_agreement}\t{summary.median_summary}"
+            f"{summary.auto_vs_best}\t{summary.output_agreement}\t{summary.median_summary}\t"
+            f"{summary.source_registration_summary}"
         )
 
 
 def print_markdown(summaries: list[SourceModeSummary]) -> None:
-    print("| Workload | Scale | Best source mode | Auto vs best | Outputs | Median seconds by mode |")
-    print("| --- | --- | --- | ---: | --- | --- |")
+    print("| Workload | Scale | Best source mode | Auto vs best | Outputs | Median seconds by mode | Source registrations by mode |")
+    print("| --- | --- | --- | ---: | --- | --- | --- |")
     for summary in summaries:
         print(
             f"| {summary.workload} | {summary.scale} | {summary.best_source_mode} | "
-            f"{summary.auto_vs_best} | {summary.output_agreement} | `{summary.median_summary}` |"
+            f"{summary.auto_vs_best} | {summary.output_agreement} | `{summary.median_summary}` | "
+            f"`{summary.source_registration_summary}` |"
         )
 
 
