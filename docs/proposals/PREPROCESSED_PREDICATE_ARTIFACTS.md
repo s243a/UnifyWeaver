@@ -503,12 +503,14 @@ Prototype status:
 
 ### N-ary delimited artifact direction
 
-The current C# artifact implementation is deliberately binary. Wider
-delimited relations can now use the same runtime-configured source registration
-path, but `artifact` and `artifact-prebuilt` modes fall back to preloaded rows
-for arities other than 2. That is the correct interim behavior: it preserves
-answers and source-mode wiring without pretending the `.uwbr` sidecars support
-general row shapes.
+The original C# artifact implementation was deliberately binary. Wider
+delimited relations now use the same runtime-configured source registration
+path and can use the delimited artifact provider in `artifact` and
+`artifact-prebuilt` modes. Binary relations still use the older `.uwbr`
+provider, while wider relations use the delimited artifact path. Runtime source
+registration reporting distinguishes these paths as `binary_artifact`,
+`delimited_artifact`, `delimited`, or `preloaded`, which keeps benchmark output
+honest about the storage family used for each arity.
 
 A general delimited artifact should be a new format revision, not an implicit
 reinterpretation of the binary files. The row file should keep the existing

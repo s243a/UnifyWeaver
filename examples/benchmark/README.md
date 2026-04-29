@@ -438,7 +438,7 @@ Tables:
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
-| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner; use the `join` mode when you need concrete artifact bucket join strategy rows |
+| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `join` or `nary_join` when you need concrete artifact bucket join strategy rows |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |
@@ -1025,6 +1025,9 @@ Comparison note:
   `--csharp-query-source-mode auto|preload|delimited|artifact|artifact-prebuilt`;
   non-`auto` runs include `csharp_query_source_mode=<mode>` in the
   `csharp-query-metrics` row and use a runner-managed artifact directory
+- generated `csharp-query` metrics also include `source_registration_*`
+  counters that identify the actual storage family used for registered
+  relations, for example `binary_artifact` or `delimited_artifact` by arity
 - use `--csharp-query-source-modes auto,artifact-prebuilt,...` to sweep
   multiple source modes in one generated cross-target run; the output labels
   those rows as `csharp-query:<mode>` and prints a

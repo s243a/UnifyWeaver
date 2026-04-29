@@ -61,6 +61,24 @@ CSHARP_QUERY_BUCKET_STRATEGY_HELPERS = r"""
             Console.Error.WriteLine($"bucket_strategy_{strategy.NodeType}_{strategy.Strategy}={strategy.Count}");
         }
     }
+
+    static void PrintSourceRegistrations(ConfiguredDelimitedRelationProvider configuredProvider)
+    {
+        foreach (var group in configuredProvider.SnapshotRegistrations()
+            .GroupBy(registration => new
+            {
+                registration.StorageKind,
+                registration.SourceMode,
+                registration.Arity
+            })
+            .OrderBy(group => group.Key.StorageKind, StringComparer.Ordinal)
+            .ThenBy(group => group.Key.SourceMode.ToString(), StringComparer.Ordinal)
+            .ThenBy(group => group.Key.Arity))
+        {
+            Console.Error.WriteLine(
+                $"source_registration_{group.Key.StorageKind}_{RelationSourceModePolicy.ToConfigValue(group.Key.SourceMode)}_arity{group.Key.Arity}={group.Count()}");
+        }
+    }
 """
 
 
@@ -1590,6 +1608,7 @@ class Program
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintDagPhases(trace);
     }}
 }}
@@ -2112,6 +2131,7 @@ class Program
         Console.Error.WriteLine($"dag_retention_strategy_setting={{dagRetentionStrategy}}");
         PrintDagStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintDagPhases(trace);
     }}
 }}
@@ -2772,6 +2792,7 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintWeightSumPhases(trace);
     }}
 }}
@@ -2947,6 +2968,7 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintWeightSumStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintWeightSumPhases(trace);
     }}
 
@@ -3124,6 +3146,7 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintPathMinPhases(trace);
     }}
 }}
@@ -3353,6 +3376,7 @@ class Program
         Console.Error.WriteLine($"support_retention_strategy_setting={{supportRetentionStrategy}}");
         PrintPathMinStrategies(trace);
         PrintBucketStrategies(trace);
+        PrintSourceRegistrations(configuredProvider);
         PrintPathMinPhases(trace);
         PrintPathMinMetrics(trace);
     }}
