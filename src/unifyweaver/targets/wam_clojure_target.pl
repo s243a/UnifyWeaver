@@ -28,6 +28,11 @@
 :- use_module(library(process), [process_create/3, process_wait/2]).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_clojure_lowered_emitter', [
+    wam_clojure_lowerable/3,
+    lower_predicate_to_clojure/4,
+    clojure_lowered_func_name/2
+]).
 
 %% write_wam_clojure_project(+Predicates, +Options, +ProjectDir)
 %  Generate a minimal hybrid/WAM Clojure project with:
@@ -96,11 +101,11 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
   (println false))
 ', [CoreNamespace, CoreNamespace, RuntimeNamespace]).
 compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, Code) :-
-    collect_wam_entries(Predicates, Options, 0, WamEntries, RawEntries, LabelEntries, DispatchEntries),
+    collect_wam_entries(Predicates, Options, 0, PredicateBodies, RawEntries, LabelEntries, DispatchEntries),
     clojure_foreign_handlers_code(Options, ForeignHandlersCode),
     atomic_list_concat(RawEntries, '\n  ', RawBody0),
     atomic_list_concat(LabelEntries, '\n  ', LabelBody0),
-    atomic_list_concat(WamEntries, '\n\n', WrapperCode),
+    atomic_list_concat(PredicateBodies, '\n\n', WrapperCode),
     atomic_list_concat(DispatchEntries, '\n  ', DispatchBody0),
     (RawBody0 == "" -> RawBody = "" ; format(atom(RawBody), '  ~w', [RawBody0])),
     (LabelBody0 == "" -> LabelBody = "" ; format(atom(LabelBody), '  ~w', [LabelBody0])),
@@ -147,18 +152,27 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
 
 collect_wam_entries([], _, _, [], [], [], []).
 collect_wam_entries([PredIndicator|Rest], Options, PC,
-                    [WrapperCode|RestWrappers], AllInstrs, AllLabels, [DispatchEntry|RestDispatch]) :-
+                    [PredicateCode|RestWrappers], AllInstrs, AllLabels, [DispatchEntry|RestDispatch]) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     (   clojure_foreign_predicate(Pred, Arity, Options)
-    ->  clojure_foreign_stub_data(Pred, Arity, PC, GoLiterals, LabelPairs, NextPC)
+    ->  clojure_foreign_stub_data(Pred, Arity, PC, GoLiterals, LabelPairs, NextPC),
+        compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, PredicateCode),
+        predicate_clojure_name(Pred, DispatchName)
     ;   wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode),
-        wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC)
+        (   wam_clojure_lowerable(Pred/Arity, WamCode, _Reason)
+        ->  lower_predicate_to_clojure(Pred/Arity, WamCode, Options, PredicateCode),
+            clojure_lowered_func_name(Pred/Arity, DispatchName),
+            GoLiterals = [],
+            LabelPairs = [],
+            NextPC = PC
+        ;   wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
+            compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, PredicateCode),
+            predicate_clojure_name(Pred, DispatchName)
+        )
     ),
     maplist([Lit, Entry]>>format(atom(Entry), '~w', [Lit]), GoLiterals, InstrEntries),
     maplist([Label-Idx, Entry]>>format(atom(Entry), '~w ~w', [Label, Idx]), LabelPairs, LabelRows),
-    compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, WrapperCode),
-    predicate_clojure_name(Pred, CljName),
-    format(atom(DispatchEntry), '"~w/~w" ~w', [Pred, Arity, CljName]),
+    format(atom(DispatchEntry), '"~w/~w" ~w', [Pred, Arity, DispatchName]),
     collect_wam_entries(Rest, Options, NextPC, RestWrappers, RestInstrs, RestLabels, RestDispatch),
     append(InstrEntries, RestInstrs, AllInstrs),
     append(LabelRows, RestLabels, AllLabels).
@@ -482,7 +496,7 @@ wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
     format(atom(Literal), '{:op :raw :text ~w}', [LineLit]).
 
 parse_switch_cases(CasesText, CaseEntries) :-
-    split_string(CasesText, ",", " ", RawCases),
+    split_string(CasesText, " ", " ", RawCases),
     maplist(parse_switch_case, RawCases, CaseEntries).
 
 parse_switch_case(RawCase, Entry) :-
