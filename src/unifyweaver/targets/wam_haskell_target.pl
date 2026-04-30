@@ -2813,6 +2813,11 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     % the historical hardcoded value when no max_depth/1 fact is present.
     % See effective_distance.pl line 43 for the workload's default.
     resolve_max_depth(Options, MaxDepth),
+    % Resolve dimension_n at codegen time. Same instrumentation-bug class
+    % as max_depth: a user-asserted user:dimension_n/1 must reach the
+    % aggregation formula (n in Hops^(-N) and the inverse exponent), not
+    % be silently overridden by a hardcoded 5.0 in the template.
+    resolve_dimension_n(Options, DimN),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2827,6 +2832,7 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
         , max_depth=MaxDepth
+        , dimension_n=DimN
         ], Code).
 
 %% resolve_max_depth(+Options, -MaxDepth)
@@ -2846,6 +2852,26 @@ resolve_max_depth(Options, MaxDepth) :-
         M >= 1
     ->  MaxDepth = M
     ;   MaxDepth = 10
+    ).
+
+%% resolve_dimension_n(+Options, -DimN)
+%  Determine the aggregation formula's dimensionality (the N in
+%  d_eff = (sum Hops^(-N))^(-1/N)). Priority order:
+%   1. Options list: dimension_n(N)
+%   2. user:dimension_n/1 fact (asserted by the workload)
+%   3. Default: 5
+%  Always returns a positive integer.
+resolve_dimension_n(Options, DimN) :-
+    (   option(dimension_n(N), Options),
+        integer(N),
+        N >= 1
+    ->  DimN = N
+    ;   current_predicate(user:dimension_n/1),
+        user:dimension_n(N),
+        integer(N),
+        N >= 1
+    ->  DimN = N
+    ;   DimN = 5
     ).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)

@@ -188,7 +188,7 @@ main = do
     -- Collect seed categories from article_category and TSV roots
     let seedCatsAll = nub $ sort $ map snd articleCategories
         root = head roots
-        n = 5.0 :: Double
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
         negN = -n
     (seedCats, seedLimitMetric, seedFilterMetric) <- applySeedControls seedCatsAll
 
@@ -204,7 +204,7 @@ main = do
         !root = case rootIds of
                   []      -> 0
                   (r:_)   -> r
-        n = 5.0 :: Double
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
         negN = -n
         seedLimitMetric  = Nothing :: Maybe String
         seedFilterMetric = Nothing :: Maybe String
