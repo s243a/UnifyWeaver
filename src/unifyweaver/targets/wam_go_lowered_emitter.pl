@@ -234,17 +234,44 @@ has_internal_ite_pattern(Instrs) :-
 %% split_ite_blocks_go(+Instrs, -CondInstrs, -ThenInstrs, -ElseInstrs, -ContInstrs)
 %  Slice the instruction stream after a try_me_else into the four parts
 %  of an if-then-else:
-%    <cond_instrs> cut_ite <then_instrs> jump(_) trust_me <else_instrs+cont_instrs>
-%  We don't currently have label PC information at this layer, so the
-%  Else block absorbs everything after trust_me; this matches the
-%  typical case where ITE is the tail of a clause and the continuation
-%  is empty (or itself terminates with proceed).
+%    <cond_instrs> cut_ite <then_instrs> jump(_) trust_me <else_instrs> <cont_instrs>
+%
+%  We don't currently have label PC information at this layer, so we
+%  use a heuristic to separate the else body from the continuation:
+%  the continuation is the trailing tail of "epilogue" instructions
+%  (deallocate followed by proceed, or just proceed). Everything before
+%  that tail belongs to the else body. This matches what the WAM
+%  compiler emits for `(C -> T ; E), epilogue` and ensures the then
+%  branch can be augmented with the same epilogue (otherwise it leaks
+%  an env frame and Go fails to compile the function with "missing
+%  return").
 split_ite_blocks_go(Instrs, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
     split_at_instr_go(Instrs, cut_ite, CondInstrs, AfterCut),
     split_at_jump_go(AfterCut, ThenInstrs, AfterJump),
     AfterJump = [trust_me|ElseAndCont],
-    ElseInstrs = ElseAndCont,
-    ContInstrs = [].
+    split_else_from_cont(ElseAndCont, ElseInstrs, ContInstrs).
+
+%% split_else_from_cont(+ElseAndCont, -ElseInstrs, -ContInstrs)
+%  Peel off the trailing epilogue (deallocate*, proceed) as the
+%  continuation. Falls back to "everything is else, cont is empty"
+%  when the trailing pattern doesn't match.
+split_else_from_cont(Instrs, ElseInstrs, ContInstrs) :-
+    (   peel_epilogue(Instrs, ElseInstrs0, ContInstrs0),
+        ContInstrs0 \= []
+    ->  ElseInstrs = ElseInstrs0,
+        ContInstrs = ContInstrs0
+    ;   ElseInstrs = Instrs,
+        ContInstrs = []
+    ).
+
+peel_epilogue(Instrs, Body, Epilogue) :-
+    append(Body, Epilogue, Instrs),
+    is_epilogue(Epilogue),
+    !.
+peel_epilogue(Instrs, Instrs, []).
+
+is_epilogue([proceed]).
+is_epilogue([deallocate, proceed]).
 
 split_at_instr_go([], _, _, _) :- !, fail.
 split_at_instr_go([Instr|Rest], Instr, [], Rest) :- !.

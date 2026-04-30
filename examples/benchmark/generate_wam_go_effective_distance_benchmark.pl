@@ -48,7 +48,14 @@ main :-
 
 generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     benchmark_workload_path(WorkloadPath),
-    load_files(WorkloadPath, [silent(true)]),
+    % NOTE: this file declares :- module(generate_wam_go_effective_distance_benchmark, ...)
+    % which makes load_files default to loading clauses INTO that module rather
+    % than into user. The Rust and Haskell generators don't have a :- module
+    % directive and so don't hit this. Force module(user) here so the workload
+    % helpers (category_ancestor, etc.) and the benchmark facts (article_category,
+    % category_parent, root_category) end up where collect_wam_predicates and
+    % collect_article_categories look for them.
+    user:load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
     parse_variant(VariantAtom, OptimizationOptions),
@@ -59,9 +66,9 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     tmp_file_stream(text, TmpPath, TmpStream),
     write(TmpStream, ScriptCode),
     close(TmpStream),
-    load_files(TmpPath, [silent(true)]),
+    user:load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
-    load_files(FactsPath, [silent(true)]),
+    user:load_files(FactsPath, [silent(true)]),
     collect_wam_predicates(user, KernelModeAtom, Predicates),
     collect_article_categories(user, ArticleCategories),
     collect_roots(user, Roots),
@@ -133,7 +140,11 @@ extract_shared_start_pc(OutputDir, Label, PC) :-
     read_file_to_string(LibPath, Content, []),
     format(string(Needle), '"~w":', [Label]),
     sub_string(Content, Start, _, _, Needle),
-    After is Start + string_length(Needle),
+    % string_length/2 is a predicate, not an arithmetic function — using it
+    % directly inside is/2 made SWI fall back to charcode interpretation and
+    % blew up with `"x" must hold one character` on the multi-char Needle.
+    string_length(Needle, NeedleLen),
+    After is Start + NeedleLen,
     sub_string(Content, After, _, _, Rest0),
     string_trim_left(Rest0, Rest),
     string_digits_prefix(Rest, Digits),
@@ -203,8 +214,12 @@ func newBenchmarkVM(startPC int, args ...Value) *WamState {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
     vm.PC = startPC
+    // A1..An map to integer register indices 0..n-1 (matches go_reg_idx
+    // in wam_go_lowered_emitter.pl). The earlier version of this loop used
+    // string-keyed indexing into vm.Regs, but Regs is a Value slice, not a
+    // map — Go rejected it with "invalid argument: index ... must be integer".
     for i, arg := range args {
-        vm.Regs[fmt.Sprintf("A%%d", i+1)] = arg
+        vm.Regs[i] = arg
     }
     return vm
 }
@@ -340,18 +355,18 @@ func main() {
 
     fmt.Println("article\\troot_category\\teffective_distance")
     for _, row := range rows {
-        fmt.Printf("%%s\\t%%s\\t%%.6f\\n", row.Article, row.Root, row.Distance)
+        fmt.Printf("%s\\t%s\\t%.6f\\n", row.Article, row.Root, row.Distance)
     }
 
     fmt.Fprintf(os.Stderr, "mode=accumulated_go_wam\\n")
     fmt.Fprintf(os.Stderr, "kernel_mode=~w\\n")
-    fmt.Fprintf(os.Stderr, "load_ms=%%d\\n", loadMs)
-    fmt.Fprintf(os.Stderr, "query_ms=%%d\\n", queryMs)
-    fmt.Fprintf(os.Stderr, "aggregation_ms=%%d\\n", aggregationMs)
-    fmt.Fprintf(os.Stderr, "total_ms=%%d\\n", totalMs)
-    fmt.Fprintf(os.Stderr, "seed_count=%%d\\n", seedCount)
-    fmt.Fprintf(os.Stderr, "tuple_count=%%d\\n", tupleCount)
-    fmt.Fprintf(os.Stderr, "article_count=%%d\\n", len(rows))
+    fmt.Fprintf(os.Stderr, "load_ms=%d\\n", loadMs)
+    fmt.Fprintf(os.Stderr, "query_ms=%d\\n", queryMs)
+    fmt.Fprintf(os.Stderr, "aggregation_ms=%d\\n", aggregationMs)
+    fmt.Fprintf(os.Stderr, "total_ms=%d\\n", totalMs)
+    fmt.Fprintf(os.Stderr, "seed_count=%d\\n", seedCount)
+    fmt.Fprintf(os.Stderr, "tuple_count=%d\\n", tupleCount)
+    fmt.Fprintf(os.Stderr, "article_count=%d\\n", len(rows))
 }
 ', [WeightPC, ArticleCategoriesLiteral, RootsLiteral, DimN, KernelModeAtom]),
     setup_call_cleanup(
@@ -363,7 +378,12 @@ func main() {
 go_article_categories_literal([], '').
 go_article_categories_literal(Pairs, Literal) :-
     maplist(go_article_category_entry, Pairs, Entries),
-    atomic_list_concat(Entries, ",\n", Literal).
+    % Trailing newline+comma after the last entry: Go's gofmt rule for
+    % multi-line composite literals requires a trailing comma. Without it,
+    % `go build` rejects the file with "unexpected newline in composite
+    % literal; possibly missing comma".
+    atomic_list_concat(Entries, ",\n", Joined),
+    atom_concat(Joined, ",", Literal).
 
 go_article_category_entry(Article-Category, Entry) :-
     escape_go_string(Article, EscArticle),
@@ -379,13 +399,21 @@ go_string_literal(String, Literal) :-
     escape_go_string(String, Escaped),
     format(atom(Literal), '"~w"', [Escaped]).
 
+%% replace_all_atoms(+Input, +Search, +Replace, -Output)
+%
+% Replace every occurrence of Search in Input with Replace. Recurses on
+% the *suffix only* so cases where Replace contains Search (e.g.
+% Search='main :-', Replace='generated_main :-') terminate. The previous
+% implementation recursed on the glued result, which re-found Search
+% inside the Replace text and grew Output by Replace's prefix on every
+% iteration until process OOM.
 replace_all_atoms(Input, Search, Replace, Output) :-
     (   sub_atom(Input, Before, _, After, Search)
     ->  sub_atom(Input, 0, Before, _, Prefix),
         sub_atom(Input, _, After, 0, Suffix),
+        replace_all_atoms(Suffix, Search, Replace, NewSuffix),
         atom_concat(Prefix, Replace, Tmp),
-        atom_concat(Tmp, Suffix, Next),
-        replace_all_atoms(Next, Search, Replace, Output)
+        atom_concat(Tmp, NewSuffix, Output)
     ;   Output = Input
     ).
 
