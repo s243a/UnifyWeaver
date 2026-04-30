@@ -266,11 +266,17 @@ func floatValue(v Value) (float64, bool) {
 }
 
 func weightSumForCategoryRoot(category string, root string) (float64, bool) {
+    // The Unbound for the third arg goes into A3 (register slot 2). Its
+    // Idx field MUST match that slot — bindUnbound trails the binding
+    // by Idx and (in older runtime templates) also writes the bound
+    // value to Regs[Idx]. Leaving Idx at the zero default would alias
+    // A1 and silently corrupt the input category atom on the first
+    // unification.
     rows := collectSolutions(
         effectiveDistanceWeightStartPC,
         &Atom{Name: category},
         &Atom{Name: root},
-        &Unbound{Name: "weight"},
+        &Unbound{Name: "weight", Idx: 2},
     )
     if len(rows) == 0 || len(rows[0]) < 3 {
         return 0, false

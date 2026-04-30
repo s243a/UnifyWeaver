@@ -177,6 +177,20 @@ func (vm *WamState) trailBinding(addr int) {
 	vm.TrailLen++
 }
 
+// bindUnbound binds an unbound variable u to val, recording the change
+// on the trail so backtrack can undo it, and rewriting every register
+// slot that aliases u so subsequent reads see the bound value.
+//
+// The previous implementation also did `vm.putReg(u.Idx, val)` as an
+// unconditional fallback. That was load-bearing only when u.Idx was a
+// valid register index that happened not to be caught by the alias
+// rewrite — but for any caller that constructs an Unbound without
+// setting Idx (e.g. a benchmark driver doing `&Unbound{Name: "weight"}`
+// to ask for an output register), Idx defaults to zero and the line
+// silently overwrites Regs[0] = A1 with the bound value, corrupting
+// the input atom. The for-loop above already handles every register
+// that genuinely aliases u, so the putReg call is redundant in the
+// happy path and actively harmful when callers don't fill in Idx.
 func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.trailBinding(u.Idx)
 	vm.Bindings[u.Idx] = val
@@ -185,7 +199,6 @@ func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 			vm.Regs[idx] = val
 		}
 	}
-	vm.putReg(u.Idx, val)
 }
 
 func (vm *WamState) heapPush(v Value) int {
