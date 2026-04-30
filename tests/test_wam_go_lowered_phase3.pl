@@ -108,11 +108,21 @@ test_get_nil_uses_interned_nil :-
 
 %% ---------------------------------------------------------------------
 %% If-then-else pattern detection and lowering
-%% ---------------------------------------------------------------------
+%%
+%% Note on shape: the WAM if-then-else inside a clause body looks like
+%%   <prefix>  try_me_else(L_else)  <cond>  cut_ite  <then>  jump(L_cont)
+%%   trust_me  <else>  proceed
+%% The leading `allocate` (or any non-try_me_else instruction) matters:
+%% wam_go_lowerable's clause1_instrs only strips a try_me_else when it
+%% sits at the very head of the instruction list (signalling a multi-
+%% clause predicate). For an *internal* if-then-else, there must be a
+%% preceding instruction — otherwise the outer-stripper consumes it and
+%% the ITE detector never sees the pattern.
 
 test_has_internal_ite_pattern_detects :-
     Test = 'WAM-Go-Lowered Phase 3: has_internal_ite_pattern recognizes a complete ITE',
     Instrs = [
+        allocate,
         try_me_else("L_else"),
         get_constant("c", "A1"),
         cut_ite,
@@ -131,6 +141,7 @@ test_has_internal_ite_pattern_rejects_partial :-
     Test = 'WAM-Go-Lowered Phase 3: has_internal_ite_pattern rejects an incomplete ITE',
     % Missing trust_me — must NOT match.
     Instrs = [
+        allocate,
         try_me_else("L_else"),
         get_constant("c", "A1"),
         cut_ite,
@@ -146,6 +157,7 @@ test_has_internal_ite_pattern_rejects_partial :-
 test_ite_emits_native_if_else :-
     Test = 'WAM-Go-Lowered Phase 3: ITE pattern emits native Go if/else with trail unwind',
     Instrs = [
+        allocate,
         try_me_else("L_else"),
         get_constant("c", "A1"),
         cut_ite,
@@ -174,6 +186,7 @@ test_ite_emits_native_if_else :-
 test_ite_does_not_silently_drop_choice_instrs :-
     Test = 'WAM-Go-Lowered Phase 3: ITE pattern absorbs cut_ite/jump/trust_me into the branching block',
     Instrs = [
+        allocate,
         try_me_else("L_else"),
         get_constant("guard", "A1"),
         cut_ite,
