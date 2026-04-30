@@ -19,33 +19,49 @@ Median over 3 runs each. `query_ms` is the time inside the predicate engine; `to
 
 | Target  | query_ms | total_ms | Correctness                                  |
 |---------|---------:|---------:|----------------------------------------------|
-| Prolog  |      354 |      416 | mismatch (driver double-runs, see below)     |
-| Rust    |       18 |       35 | mismatch by 1 row (Unicode sort order on `é`)|
-| Go      |        2 |        2 | **incorrect — 31 / 271 rows**                |
+| Prolog  |      352 |      415 | mismatch by 1 row (Unicode sort order on `é`)|
+| Rust    |       18 |       32 | mismatch by 1 row (Unicode sort order on `é`)|
+| Go      |        3 |        3 | **incorrect — 31 / 271 rows**                |
 
 ### Scale 1k (6,944-line facts file, ≈1,000 articles)
 
 | Target  | query_ms | total_ms | Correctness                                  |
 |---------|---------:|---------:|----------------------------------------------|
-| Prolog  |      220 |      284 | mismatch (driver double-runs, see below)     |
-| Rust    |       17 |       40 | **EXACT match (580 rows)**                   |
+| Prolog  |      217 |      282 | **EXACT match (580 rows)**                   |
+| Rust    |       16 |       33 | **EXACT match (580 rows)**                   |
 | Go      |        0 |        0 | **incorrect — 0 / 580 rows**                 |
+
+> **Updated 2026-04-30 (post-`fix/wam-go-runtime-and-prolog-driver`):**
+> The Prolog "MISMATCH" rows in the original report were a benchmark-driver
+> bug, not a correctness issue. The runner was passing both
+> `-g run_benchmark` *and* loading a script that already had
+> `:- initialization(run_benchmark, main)`, so swipl ran the entry point
+> twice and concatenated two output blocks into the TSV. Dropping
+> `-g run_benchmark` (the script's initialization directive is sufficient)
+> made Prolog match the reference exactly at scale 1k.
 
 ### Speed ratios (Rust as the reference)
 
 | Target  | Scale 300 total | Scale 1k total |
 |---------|----------------:|---------------:|
 | Rust    |        1.0×     |        1.0×    |
-| Prolog  |       11.9×     |        7.1×    |
+| Prolog  |       13.0×     |        8.5×    |
 | Go      |        n/a (incorrect output)              ||
 
 ## What the numbers mean — and what they don't
 
 **Rust is the clear winner on both speed and correctness.** At scale 1k it produces a byte-identical output to the reference TSV in 40 ms median, ~7× faster than the optimized-Prolog interpreter. The scale-300 mismatch is a single row (`Théophile_de_Donder`) appearing one position off in the sort order — both Rust and Prolog disagree with the reference identically, suggesting the reference was generated under a different locale's collation rule rather than a real numerical bug.
 
-**Optimized Prolog is correct on numerics but the driver double-emits.** Each run of the generated Prolog script under `swipl -g run_benchmark -t halt` prints two metric blocks and two result tables (the swipl `:- initialization(main, main)` directive plus the `-g run_benchmark` flag both fire `run_benchmark`). The runner extracts the *last* `query_ms=` line, so the timings here are per-run (not doubled), but the TSV row count is doubled (1,161 vs. 580 at scale 1k), which trips the byte-diff. The numerical results match Rust within those 580 rows. **This is a pre-existing benchmark-driver quirk, not a Prolog correctness issue.**
+**Optimized Prolog is correct on numerics.** The original report
+showed a Prolog "MISMATCH" caused by the benchmark driver firing the
+entry point twice (the generated script has `:- initialization(run_benchmark, main)`
+*and* the runner was passing `-g run_benchmark` on top of it). Dropping
+the `-g` flag made Prolog produce a single output block that exactly
+matches the reference at scale 1k.
 
-**Go has multiple separate problems.** The generator was previously broken end-to-end (the cross-target runner shipped with a `# NOTE: Go WAM benchmark driver not yet wired up for fact loading` comment). Commit `988f0a6` on this branch fixed seven distinct gen bugs to get the project building and running:
+**Go has multiple separate problems.** The generator was previously broken end-to-end (the cross-target runner shipped with a `# NOTE: Go WAM benchmark driver not yet wired up for fact loading` comment). Two rounds of gen fixes have landed:
+
+Commit `988f0a6` (branch `bench/wam-go-vs-rust-prolog`) — seven gen bugs that prevented `accumulated kernels_on` from compiling at all:
 
 1. `replace_all_atoms/4` infinite loop (Replace string contained Search string)
 2. `load_files/2` loading clauses into the gen's own module instead of `user`
@@ -55,7 +71,13 @@ Median over 3 runs each. `query_ms` is the time inside the predicate engine; `to
 6. `vm.Regs[fmt.Sprintf("A%d", i+1)]` indexing a `[]Value` slice with a string
 7. ITE pattern detection (added in `ebf1b38`) lumping continuation into the else branch and leaving the then branch with no `return`
 
-After those fixes the Go binary builds and runs. **But its output is still wrong at runtime** — it produces 31 rows on the 300-scale fixture (vs. 271 expected) and 0 rows at scale 1k. The 2 ms "query time" therefore measures *how fast Go can return the wrong answer*, not how fast it can compute the right one. The remaining gap is downstream of the gen script: the WAM kernel for `category_ancestor$effective_distance_sum_selected/3` is not producing any tuples at runtime (`tuple_count=0` in the bench's stderr), so all weight sums collapse to 0 or 1 and most articles get filtered out. This is a Go-target runtime / kernel-dispatch issue separate from the generator fixes and out of scope for this comparison.
+Branch `fix/wam-go-runtime-and-prolog-driver` — three further gen bugs that prevented `accumulated kernels_off` from compiling and would have produced invalid Go for any fact predicate containing apostrophe-bearing atoms (e.g. `'People\'s_Republic_of_China'`):
+
+8. `compile_predicate_to_wam/3` is benignly non-deterministic for multi-clause fact predicates (32 essentially-equivalent WAM bodies for `category_parent/2` at scale 300, differing only by ~5 chars of label name). Without `once/1` in the lowered-emission `findall`, the emitter produced one duplicate `func (vm *WamState) PredCategory_parent2() bool` per alternative, and Go refused to compile lib.go with "method already declared".
+9. The WAM-text-to-Go parser passed quoted-atom tokens (`'People\'s_Republic_of_China'`) through to `&Atom{Name: "..."}` literally, so Go saw `\'` inside a double-quoted string and rejected the file with "unknown escape sequence". Now `parse_string_to_go_val/2` round-trips the token through `term_to_atom/2` to strip the outer quotes and unescape the inner `\'`.
+10. `go_value_literal/2` was emitting unescaped `~w` of the atom into a Go double-quoted string. An atom containing `\` or `"` would have produced invalid Go. Now passes through `escape_go_atom_for_double_quoted/2` first.
+
+After all ten fixes the Go binary builds and runs cleanly under both `kernels_on` and `kernels_off`. **But its output is still wrong at runtime** — it produces 31 rows on the 300-scale fixture (vs. 271 expected) and 0 rows at scale 1k. The 2 ms "query time" therefore measures *how fast Go can return the wrong answer*, not how fast it can compute the right one. The remaining gap is downstream of the gen script: the WAM kernel for `category_ancestor$effective_distance_sum_selected/3` is not producing any tuples at runtime (`tuple_count=0` in the bench's stderr), so all weight sums collapse to 0 or 1 and most articles get filtered out. This is a Go-target runtime / kernel-dispatch issue separate from the generator fixes and out of scope for this comparison.
 
 ## Reproducing
 

@@ -160,6 +160,15 @@ func main() {
 %% compile_lowered_predicates(+Predicates, +Options, -Code)
 %  Attempts lowered emission for each predicate. Lowerable deterministic
 %  predicates are emitted as direct Go methods on *WamState.
+%
+%  The inner once/1 is load-bearing: wam_target:compile_predicate_to_wam/3
+%  is benignly non-deterministic for multi-clause fact predicates (it
+%  produced 32 essentially-equivalent WAM bodies for category_parent/2
+%  on the scale-300 fixture, differing only by ~5 chars of label name).
+%  Without once/1, findall collects every alternative solution and the
+%  emitter writes one duplicate `func (vm *WamState) Pred<Name>() bool`
+%  per alternative — Go then refuses to compile the file with
+%  "method already declared". Pin to the first solution per predicate.
 compile_lowered_predicates([], _, "").
 compile_lowered_predicates(Predicates, Options, Code) :-
     findall(GoCode,
@@ -167,11 +176,11 @@ compile_lowered_predicates(Predicates, Options, Code) :-
           predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
           \+ is_ffi_owned_fact(Module, Pred, Arity, Options),
           catch(
-              ( wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
-                wam_go_lowerable(Pred/Arity, WamCode, _Reason),
-                lower_predicate_to_go(Pred/Arity, WamCode, Options, GoLines),
-                atomic_list_concat(GoLines, '\n', GoCode)
-              ),
+              once(( wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+                     wam_go_lowerable(Pred/Arity, WamCode, _Reason),
+                     lower_predicate_to_go(Pred/Arity, WamCode, Options, GoLines),
+                     atomic_list_concat(GoLines, '\n', GoCode)
+                   )),
               _, fail)
         ),
         LoweredCodes),
@@ -888,9 +897,25 @@ wam_lines_to_go([Line|Rest], PC, PredIndicator, Options, GoLits, Labels) :-
 
 %% wam_line_to_go_literal(+Parts, -GoLit)
 %% parse_string_to_go_val(+Str, -GoVal)
+%
+% When the WAM compiler emits an atom that needs Prolog quoting (e.g.
+% an apostrophe-bearing category like 'People\'s_Republic_of_China'),
+% the WAM TEXT carries the quoted form. The split-on-whitespace parser
+% above hands that whole token here including the surrounding ' and
+% the backslash-escaped inner quote. If we just pass it to
+% go_value_literal/2 unchanged, the resulting Go literal becomes
+%     &Atom{Name: "'People\'s_Republic_of_China'"}
+% which (a) keeps the spurious outer apostrophes inside the atom's Name
+% and (b) trips Go with `unknown escape sequence \'`. Use term_to_atom/2
+% to round-trip the token back to a Prolog atom — that strips the outer
+% quotes and unescapes \' to '.
 parse_string_to_go_val(Str, GoVal) :-
     (   number_string(N, Str)
     ->  go_value_literal(N, GoVal)
+    ;   atom_string(QuotedTok, Str),
+        catch(term_to_atom(ParsedTerm, QuotedTok), _, fail),
+        atom(ParsedTerm)
+    ->  go_value_literal(ParsedTerm, GoVal)
     ;   go_value_literal(Str, GoVal)
     ).
 
@@ -1109,13 +1134,29 @@ go_reg_index_str(Str, Idx) :-
     ).
 
 % --- Value literal helpers ---
+%
+% Atom values are emitted as Go double-quoted string literals, so any `\`
+% or `"` in the atom name must be escaped. The previous unconditional
+% `~w` produced invalid Go for atoms containing those characters; pass
+% through escape_go_atom_for_double_quoted/2 first.
 
-go_value_literal(atom(A), GoVal) :- !, format(atom(GoVal), '&Atom{Name: "~w"}', [A]).
+go_value_literal(atom(A), GoVal) :- !, escape_go_atom_for_double_quoted(A, EA), format(atom(GoVal), '&Atom{Name: "~w"}', [EA]).
 go_value_literal(integer(I), GoVal) :- !, format(atom(GoVal), '&Integer{Val: ~w}', [I]).
 go_value_literal(N, GoVal) :- integer(N), !, format(atom(GoVal), '&Integer{Val: ~w}', [N]).
 go_value_literal(N, GoVal) :- float(N), !, format(atom(GoVal), '&Float{Val: ~w}', [N]).
-go_value_literal(A, GoVal) :- atom(A), !, format(atom(GoVal), '&Atom{Name: "~w"}', [A]).
-go_value_literal(T, GoVal) :- format(atom(GoVal), '&Atom{Name: "~w"}', [T]).
+go_value_literal(A, GoVal) :- atom(A), !, escape_go_atom_for_double_quoted(A, EA), format(atom(GoVal), '&Atom{Name: "~w"}', [EA]).
+go_value_literal(T, GoVal) :- escape_go_atom_for_double_quoted(T, EA), format(atom(GoVal), '&Atom{Name: "~w"}', [EA]).
+
+%% escape_go_atom_for_double_quoted(+In, -Out)
+%  Escape `\` -> `\\` and `"` -> `\"` so the result can be embedded
+%  unmodified inside a Go double-quoted string literal.
+escape_go_atom_for_double_quoted(In, Out) :-
+    atom_string(In, S0),
+    split_string(S0, "\\", "", Parts0),
+    atomic_list_concat(Parts0, "\\\\", S1),
+    atom_string(S1, S2),
+    split_string(S2, "\"", "", Parts1),
+    atomic_list_concat(Parts1, "\\\"", Out).
 
 % ============================================================================
 % PHASE 3: step_wam/3 → Go type switch cases

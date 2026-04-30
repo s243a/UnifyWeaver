@@ -43,9 +43,9 @@ echo "=== Effective-Distance Cross-Target Comparison ==="
 echo "Scale=$SCALE  Reps=$REPS  Facts=$FACTS_FILE"
 echo
 
-# Pull `query_ms=N` (preferring the LAST occurrence — the Prolog driver
-# under `swipl -g run_benchmark` runs the entry point twice and emits
-# two metric blocks; we want the second/clean run).
+# Pull `query_ms=N` from the stderr metric block. Take the last
+# occurrence as a defensive measure in case a future driver change
+# emits the metrics multiple times.
 extract_metric() {
     local key="$1"
     local file="$2"
@@ -99,7 +99,14 @@ if [ -n "$PROLOG_DIR" ] && [ -f "$PROLOG_DIR/bench.pl" ]; then
     PROLOG_QMS=()
     PROLOG_TMS=()
     for r in $(seq 1 "$REPS"); do
-        LANG=C.UTF-8 LC_ALL=C.UTF-8 swipl -q -g run_benchmark -t halt "$PROLOG_DIR/bench.pl" \
+        # The generated bench.pl already declares
+        #   :- initialization(run_benchmark, main).
+        # so the toplevel goal we need is just `halt`. Passing
+        # `-g run_benchmark` on top of that fired the entry point twice
+        # and concatenated two output blocks into the TSV (and the
+        # `query_ms=` line into stderr), tripping the diff against the
+        # reference. -t halt alone is sufficient.
+        LANG=C.UTF-8 LC_ALL=C.UTF-8 swipl -q -t halt "$PROLOG_DIR/bench.pl" \
             > "$PROLOG_DIR/run-${r}.tsv" 2> "$PROLOG_DIR/run-${r}.err"
         q=$(extract_metric query_ms "$PROLOG_DIR/run-${r}.err")
         t=$(extract_metric total_ms "$PROLOG_DIR/run-${r}.err")
