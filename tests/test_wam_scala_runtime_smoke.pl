@@ -86,6 +86,22 @@
 :- dynamic user:wam_atom_length_q/2.
 :- dynamic user:wam_append_split_q/2.
 :- dynamic user:wam_length_gen_q/2.
+:- dynamic user:wam_var_q/1.
+:- dynamic user:wam_nonvar_q/1.
+:- dynamic user:wam_atom_q/1.
+:- dynamic user:wam_number_q/1.
+:- dynamic user:wam_is_list_q/1.
+:- dynamic user:wam_ground_q/1.
+:- dynamic user:wam_atomic_q/1.
+:- dynamic user:wam_copy_term_q/2.
+:- dynamic user:wam_sort_q/2.
+:- dynamic user:wam_msort_q/2.
+:- dynamic user:wam_bagof_q/1.
+:- dynamic user:wam_setof_q/1.
+:- dynamic user:wam_setof_dups_dummy/1.
+:- dynamic user:wam_setof_dups_q/1.
+:- dynamic user:wam_bagof_empty_q/1.
+:- dynamic user:wam_var_check_then_bind/1.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -206,6 +222,37 @@ user:wam_atom_length_q(A, N) :- atom_length(A, N).
 % --- append/3 split mode and length/2 generative ---
 user:wam_append_split_q(A, B) :- append(A, B, [a,b,c]).
 user:wam_length_gen_q(L, N)   :- length(L, N).
+
+% --- Type-check builtins ---
+user:wam_var_q(X)        :- var(X).
+user:wam_nonvar_q(X)     :- nonvar(X).
+user:wam_atom_q(X)       :- atom(X).
+user:wam_number_q(X)     :- number(X).
+user:wam_is_list_q(X)    :- is_list(X).
+user:wam_ground_q(X)     :- ground(X).
+user:wam_atomic_q(X)     :- atomic(X).
+
+% A predicate that exercises var/1 on a fresh variable: succeeds because
+% Y is unbound when var(Y) runs.
+user:wam_var_check_then_bind(X) :- var(Y), Y = X.
+
+% --- copy_term/2 ---
+user:wam_copy_term_q(A, B) :- copy_term(A, B).
+
+% --- Sorting ---
+user:wam_sort_q(L, S)  :- sort(L, S).
+user:wam_msort_q(L, S) :- msort(L, S).
+
+% --- bagof/3, setof/3 ---
+user:wam_bagof_q(L)            :- bagof(X, user:wam_findall_dummy(X), L).
+user:wam_setof_q(L)            :- setof(X, user:wam_findall_dummy(X), L).
+user:wam_bagof_empty_q(L)      :- bagof(X, user:wam_no_such_pred_2(X), L).
+user:wam_setof_dups_dummy(a).
+user:wam_setof_dups_dummy(b).
+user:wam_setof_dups_dummy(a).
+user:wam_setof_dups_dummy(c).
+user:wam_setof_dups_dummy(b).
+user:wam_setof_dups_q(L) :- setof(X, user:wam_setof_dups_dummy(X), L).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -745,6 +792,113 @@ test(builtin_length_generative) :-
             % path; the generative branch is exercised when the WAM
             % runtime sees an unbound first arg with a bound length.
             verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[]',      '0'], "true")
+        )).
+
+% --- Type-check builtins ---
+test(builtin_var_nonvar) :-
+    with_scala_project(
+        [user:wam_var_q/1, user:wam_nonvar_q/1, user:wam_var_check_then_bind/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            % var(a) — atom, not unbound — fails.
+            verify_scala(TmpDir, 'wam_var_q/1',    'a', "false"),
+            verify_scala(TmpDir, 'wam_nonvar_q/1', 'a', "true"),
+            % var(Y) inside a body where Y is locally fresh — succeeds.
+            verify_scala(TmpDir, 'wam_var_check_then_bind/1', 'a', "true")
+        )).
+
+test(builtin_atom_number) :-
+    with_scala_project(
+        [user:wam_atom_q/1, user:wam_number_q/1, user:wam_atomic_q/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_atom_q/1',    'a',    "true"),
+            verify_scala(TmpDir, 'wam_atom_q/1',    '5',    "false"),
+            verify_scala(TmpDir, 'wam_atom_q/1',    'f(a)', "false"),
+            verify_scala(TmpDir, 'wam_number_q/1',  '5',    "true"),
+            verify_scala(TmpDir, 'wam_number_q/1',  '3.14', "true"),
+            verify_scala(TmpDir, 'wam_number_q/1',  'a',    "false"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  'a',    "true"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  '5',    "true"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  'f(a)', "false")
+        )).
+
+test(builtin_is_list_ground) :-
+    with_scala_project(
+        [user:wam_is_list_q/1, user:wam_ground_q/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_is_list_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_is_list_q/1', '[]',    "true"),
+            verify_scala(TmpDir, 'wam_is_list_q/1', 'a',     "false"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  'a',     "true"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  'f(a)',  "true"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  '[a,b]', "true")
+        )).
+
+% --- copy_term/2 ---
+% Ground terms copy to themselves; copy_term(a, a) succeeds.
+test(builtin_copy_term) :-
+    with_scala_project(
+        [user:wam_copy_term_q/2],
+        [ intern_atoms([a, b, foo]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['a', 'a'],         "true"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['a', 'b'],         "false"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['foo(a)','foo(a)'], "true"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['foo(a)','foo(b)'], "false")
+        )).
+
+% --- Sorting ---
+test(builtin_sort) :-
+    with_scala_project(
+        [user:wam_sort_q/2, user:wam_msort_q/2],
+        [ intern_atoms([a, b, c, d]) ],
+        TmpDir,
+        (
+            % sort/2: dedup and order
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b]',     '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b,a]',   '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[3,1,2]',     '[1,2,3]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[]',          '[]'],      "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b]',     '[a,c,b]'], "false"),
+            % msort/2: keep duplicates
+            verify_scala_args(TmpDir, 'wam_msort_q/2', ['[c,a,b,a]', '[a,a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_msort_q/2', ['[c,a,b,a]', '[a,b,c]'],   "false")
+        )).
+
+% --- bagof/3, setof/3 ---
+test(builtin_bagof) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_bagof_q/1, user:wam_bagof_empty_q/1],
+        _Opts,
+        TmpDir,
+        (
+            % wam_findall_dummy(a). wam_findall_dummy(b). → bagof returns [a,b]
+            verify_scala(TmpDir, 'wam_bagof_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_bagof_q/1', '[]',    "false"),
+            % bagof with no solutions FAILS (unlike findall which returns [])
+            verify_scala(TmpDir, 'wam_bagof_empty_q/1', '[]', "false"),
+            verify_scala(TmpDir, 'wam_bagof_empty_q/1', '_',  "false")
+        )).
+
+test(builtin_setof) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_setof_q/1,
+         user:wam_setof_dups_dummy/1, user:wam_setof_dups_q/1],
+        _Opts,
+        TmpDir,
+        (
+            % Two clauses, both unique values → set is [a,b]
+            verify_scala(TmpDir, 'wam_setof_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_setof_q/1', '[a]',   "false"),
+            % wam_setof_dups_dummy has clauses for a, b, a, c, b → set is [a,b,c]
+            verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,b,c]', "true"),
+            verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,a,b,b,c]', "false")
         )).
 
 :- end_tests(wam_scala_runtime_smoke).
