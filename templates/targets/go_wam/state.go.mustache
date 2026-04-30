@@ -218,13 +218,39 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
+// snapshotAllRegs captures the FULL register file for a choice point.
+//
+// The original implementation saved only the first `arity` slots — the
+// arity of the predicate that triggered the CP. That was a real
+// correctness bug for any predicate that allocates X-regs (Regs[100..])
+// or Y-regs (Regs[200..]) holding heap-Refs: backtrack would restore
+// A1..An but leave the higher slots untouched, even though heapTrimTo
+// just shrunk the heap past their referent. The next deref of one of
+// those Refs would read off the end of the heap and crash, or — worse —
+// silently resolve to whatever cell a later allocation happened to put
+// in the same slot.
+//
+// Symptom that uncovered this: `category_ancestor("Branches_of_chemistry",
+// "Physics", H, [BoC])` panicked with `index out of range [21] with
+// length 21` from inside `member/2`'s listToSlice. Snapshotting the
+// full register file makes the panic go away and 1-hop and 2-hop
+// ancestor queries return the right number of solutions.
+//
+// The fixed cost (copying a [512]Value array per CP) is small compared
+// to the pre-existing cost of copyStack(vm.Stack) per CP, and is much
+// smaller than the bug it prevents.
+func (vm *WamState) snapshotAllRegs() []Value {
+	saved := make([]Value, len(vm.Regs))
+	copy(saved, vm.Regs[:])
+	return saved
+}
+
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
-		SavedRegs: saved,
+		SavedRegs: vm.snapshotAllRegs(),
 		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
@@ -232,11 +258,10 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		CP:        vm.CP,
-		SavedRegs: saved,
+		SavedRegs: vm.snapshotAllRegs(),
 		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,

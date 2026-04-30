@@ -7,115 +7,156 @@ benchmark returns `tuple_count=0` after the gen-side fixes from
 ## Method
 
 Added a `debug_probe.go` to the generated benchmark project, called from
-`main()` before the timed query loop. Probe walks up the predicate
-stack from leaf to root: `category_parent/2` (single-table fact lookup)
-→ `category_ancestor/4` (recursive) → `effective_distance_sum_selected/3`
-(which the bench actually calls).
+`main()` before the timed query loop. Walks up the predicate stack from
+leaf to root: `category_parent/2` (single-table fact lookup) →
+`category_ancestor/4` (recursive) → `effective_distance_sum_selected/3`
+(which the bench actually calls). Three rounds of bug-hunting, three
+real runtime bugs found.
 
-## Confirmed bug — fixed
+## Bug 1 — `bindUnbound` corrupting A1 (fixed in `26810733`)
 
-**`bindUnbound` writes the bound value into a register slot keyed by the
-Unbound's `Idx` field, which corrupts A1 when callers don't set `Idx`.**
+`bindUnbound` did an unconditional `vm.putReg(u.Idx, val)` after the
+alias-rewrite loop. For runtime-constructed Unbounds (where `Idx` is a
+real X-register slot) this was a no-op atop the loop. For
+caller-constructed Unbounds without `Idx` set — e.g. a benchmark driver
+doing `&Unbound{Name: "weight"}` to ask for an output register — `Idx`
+defaults to zero and the line silently overwrote `Regs[0] = A1`.
 
-Reproducer, before the fix:
+Reproducer (before fix): `category_parent("1640s", X)` returned
+`first=[17th_century, 17th_century]` instead of `first=[1640s, 17th_century]`.
+After fix: returns the correct row.
+
+Fixed in `templates/targets/go_wam/state.go.mustache`.
+
+## Bug 2 — `PutVariable` leaving stale `Bindings` entries (THIS PR)
+
+The runtime's `Bindings` map is keyed by the Unbound's `Idx`, which for
+WAM-created Unbounds is the X-register slot index. When a predicate is
+re-entered (recursive call, or just a second activation), `PutVariable`
+creates a fresh Unbound at the same slot — but the previous activation
+may have left a `Bindings[Xn]` entry from a successful unification.
+Without clearing it, `deref` of the "new" Unbound chases the stale
+binding and the next `Unify(unbound, Integer(N))` compares the leftover
+value against `N` instead of binding cleanly. For the
+effective-distance benchmark, this manifested as `length(Path, N)`
+inside the recursive clause of `category_ancestor/4` returning false
+because the freshly-allocated `N` register was already "bound" to the
+length from the *previous* recursion frame.
+
+Reproducer (before fix), via instruction trace:
+
+```
+[trace] PC=24061 PutVariable X200 A2     ; A2 = new unbound (Idx=200)
+[trace] PC=24062 BuiltinCall length/2    ; length([Chemistry, BoC], A2)
+[length/2] -> 2 elements; arg2=__R200 (type *main.Unbound)
+[length/2] Unify returned false          ; ← bug
+```
+
+`Unify(__R200, Integer(2))` returned false because `deref(__R200)`
+followed `Bindings[200] = Integer(1)` (left over from the outer call's
+length/2) and then compared `Integer(1) == Integer(2)`.
+
+Fix: `PutVariable` now trails and deletes `Bindings[Xn]` before
+allocating the fresh Unbound, so deref sees the cleared slot:
 
 ```go
-rows := collectSolutions(pc,
-    &Atom{Name: "1640s"},                  // A1
-    &Unbound{Name: "_p"})                  // A2 — Idx defaults to 0
-// expected: [Atom("1640s"), Atom("17th_century")]
-// actual:   [Atom("17th_century"), Atom("17th_century")]   // A1 wiped
+case *PutVariable:
+    vm.trailBinding(i.Xn)
+    delete(vm.Bindings, i.Xn)
+    v := &Unbound{Name: ..., Idx: i.Xn}
+    ...
 ```
 
-The runtime's `bindUnbound` (in `templates/targets/go_wam/state.go.mustache`)
-unconditionally does `vm.putReg(u.Idx, val)` after the alias rewrite
-loop. When the for-loop already finds and rewrites every register that
-points at `u`, that follow-up call is redundant. When the caller
-constructs an Unbound without setting `Idx` (e.g. a benchmark driver
-asking for an output register at A3), `Idx` defaults to zero and the
-fallback silently overwrites Regs[0] = A1 with the bound value.
+The `trailBinding` ensures backtrack restores the prior entry.
 
-**Fix landed:** removed the unconditional `putReg(u.Idx, val)` — the
-alias-rewrite loop above already handles every register that genuinely
-holds `u`. Also defensively set `Idx: 2` on the bench-side
-`&Unbound{Name: "weight"}` so the benchmark doesn't depend on the
-runtime fix being present.
+Fixed in `src/unifyweaver/targets/wam_go_target.pl` (gen template,
+`wam_go_case('PutVariable', ...)`).
 
-After the fix, the probe shows:
+## Bug 3 — `pushChoicePoint` only saving A-registers (THIS PR)
 
-```
-category_parent("1640s",            X) -> 5 solutions first=[1640s, 17th_century]
-category_parent("Physics",          X) -> 2 solutions first=[Physics, Natural_sciences]
-category_parent("Quantum_mechanics", X) -> 2 solutions first=[Quantum_mechanics, Branches_of_chemistry]
-```
+`pushChoicePoint` saved `vm.Regs[:arity]` — i.e. the first N register
+slots, where N is the predicate's arity. But the WAM body uses
+X-registers (`Regs[100..]`) and Y-registers (`Regs[200..]`) too, and on
+backtrack those slots may hold heap-Refs to addresses that
+`heapTrimTo(cp.HeapTop)` just shrunk past. The next time anything
+called `deref` on one of those Refs, it would crash with
+`index out of range [N] with length N` reading off the end of `vm.Heap`.
 
-i.e. the input register is no longer being clobbered.
-
-## Still open — recursive predicate fails
-
-Even after the `bindUnbound` fix, `category_ancestor/4` returns zero
-solutions for any query I tried:
+Reproducer (with bug 2 fixed but bug 3 still present):
 
 ```
-category_ancestor("Quantum_mechanics", "Physics", H, P=unbound)         -> 0
-category_ancestor("Branches_of_chemistry", "Physics", H, P=unbound)     -> 0
+ancestor("Quantum_mechanics", "Branches_of_chemistry") PANIC: index out of range [21] with length 21
+ancestor("Branches_of_chemistry", "Physics") PANIC: index out of range [15] with length 15
+ancestor("Branches_of_chemistry", "Natural_sciences") PANIC: index out of range [15] with length 15
+ancestor("Natural_sciences", "Physics") PANIC: index out of range [3] with length 3
 ```
 
-The known-good answer set says e.g. `Quantum_mechanics → Branches_of_chemistry → Natural_sciences → Physics`
-exists, so `category_ancestor` should return a solution. The base
-clause `category_ancestor(Start, Target, 1, _) :- category_parent(Start, Target), \+ member(...)`
-fails for `Quantum_mechanics → Physics` (no direct parent edge), so
-the recursive clause has to fire and walk via `Branches_of_chemistry`.
+Fix: snapshot the full register file at CP push time, so backtrack's
+`copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)` restores X- and
+Y-registers along with A-registers. The fixed cost (copying a
+`[512]Value` array per CP) is smaller than the existing cost of
+`copyStack(vm.Stack)` per CP.
 
-A separate path (passing `Path = &List{Elements: [&Atom{Name: "Quantum_mechanics"}]}`)
-panics inside `listToSlice` → `deref` with `index out of range [3] with length 3`,
-which suggests that bench-constructed `*List` values aren't being
-heap-laid-out in the form the WAM list-traversal builtins expect.
+Fixed in `templates/targets/go_wam/state.go.mustache`
+(`snapshotAllRegs` helper).
 
-So at least one of the following is broken:
+## After bugs 1+2+3 — what works, what's still open
 
-- **Multi-clause backtracking.** TryMeElse / RetryMeElse / TrustMe
-  choice-point management. When clause 1 fails on the
-  `category_parent('Quantum_mechanics', 'Physics')` lookup, the runtime
-  may not be backtracking into clause 2 cleanly.
-- **List representation / heap layout.** Bench-constructed `*List`
-  values panic during `listToSlice` because `deref` reaches off the end
-  of `vm.Heap`. The WAM list builtins (member/2, length/2, append/3)
-  apparently expect a heap-cell-based list, not a `*List` value with
-  inline `Elements`. The two representations need to round-trip but
-  don't.
-- **Recursive call / continuation-pointer chain.** The recursive call
-  to `category_ancestor/4` (inside clause 2) plus the surrounding
-  `BeginAggregate` / `BuiltinCall is/2` / `EndAggregate` interaction in
-  `power_sum_bound/3` may corrupt CP across the recursion.
+After all three fixes:
 
-I didn't get to the bottom of any of these in this pass.
+```
+ancestor("Quantum_mechanics", "Branches_of_chemistry", H, [QM]) -> 1 solutions  ✓ 1-hop
+ancestor("Quantum_mechanics", "Subfields_of_physics", H, [QM])  -> 1 solutions  ✓ 1-hop
+ancestor("Subfields_of_physics", "Physics", H, [SoP])           -> 1 solutions  ✓ 1-hop
+ancestor("Quantum_mechanics", "Physics", H, [QM])               -> 1 solutions  ✓ 2-hop
+ancestor("Quantum_mechanics", "Chemistry", H, [QM])             -> 1 solutions  ✓ 2-hop
+ancestor("Quantum_mechanics", "Natural_sciences", H, [QM])      -> 0 solutions  ✗ 3-hop
+```
+
+So the runtime now reliably computes ancestor relationships up to 2
+hops. Direct queries (1-hop) and one level of recursion (2-hop) work.
+**3-hop+ recursion still fails** — this is a separate, deeper bug,
+likely in how nested choice points + heap trims interact when the
+recursion gets deep enough to push multiple CPs at once.
+
+The full benchmark `tuple_count` is still 0 because
+`effective_distance_sum_selected/3` goes through `power_sum_bound/3`'s
+`BeginAggregate` flow, and that path returns 0 even for
+direct-edge cases that work via the `category_ancestor/4` probe. The
+aggregate Clones the VM state and runs a sub-state to collect
+solutions — something in that Clone+sub-Run chain is dropping
+solutions that the direct path finds.
+
+## Suggested next steps
+
+1. **3-hop recursion bug.** Add a deeper trace and find why the third
+   nested `category_ancestor/4` call doesn't see Subfields_of_physics's
+   parent. Probably another register-snapshot / Bindings-key collision
+   variant; the recursion at higher depths hits new register slots
+   that weren't in the trail.
+2. **`BeginAggregate` solution dropping.** The sub-VM in
+   `executeAggregate` (`vm.Clone()` + `runUntilPC`) returns 0
+   solutions for direct-edge ancestors. Either Clone is missing some
+   field or runUntilPC exits before the aggregate accumulates.
+   Compare against the Rust runtime's aggregate impl, which works on
+   the same workload.
+3. **Trail trimming on heap restore.** Audit whether
+   `heapTrimTo(HeapTop)` should also unwind any Bindings entries
+   whose values now live past the new heap top.
 
 ## Reproducing
 
 ```bash
-# Build the bench with kernels_off (forces category_parent into WAM):
 swipl -q -s examples/benchmark/generate_wam_go_effective_distance_benchmark.pl \
     -- data/benchmark/300/facts.pl /tmp/uw/go-bench accumulated kernels_off
+cd /tmp/uw/go-bench
 
-# Drop debug_probe.go into /tmp/uw/go-bench/, add a `debugProbeRuntime()`
-# call at the top of main() before computeResults(), build and run:
-cd /tmp/uw/go-bench && go build ./... && ./wam-go-effective-distance-bench
+# Drop in a debug_probe.go that calls collectSolutions on
+# category_ancestor/4 with a 1-element list as the path argument, add
+# debugProbeRuntime() at the top of main() before computeResults(),
+# build and run.
+go build ./... && ./wam-go-effective-distance-bench
 ```
 
-Look for the `=== DEBUG PROBE ===` block on stderr.
-
-## Suggested next steps
-
-1. **Add an instruction trace to `vm.Run()`** (gated behind an env var)
-   that logs PC + opcode + key registers per step. Pipe through `head -200`
-   for one `category_ancestor("Quantum_mechanics", "Physics", H, P)` call
-   and compare against the equivalent Rust trace. The first divergence
-   pins the failure to one of the three suspects above.
-2. **Reconcile the two list representations.** Either teach
-   `listToSlice` to handle `*List` directly, or have the bench pass
-   lists as cons-cells (`*Compound{Functor: ".", Args: [head, tail]}`)
-   that go through the heap-allocation path the WAM expects.
-3. **Audit the runtime's choice-point backtrack vs. trail unwind**
-   for symmetry — the `bindUnbound` bug suggests this code path hasn't
-   been exercised enough to shake out the rest.
+Expected probe output (1-hop and 2-hop ancestor return 1 solution
+each; no panics) confirms bugs 2+3 are fixed.

@@ -1359,7 +1359,18 @@ wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
         vm.PC++
         return true').
 
-wam_go_case('PutVariable', '        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: i.Xn}
+wam_go_case('PutVariable', '        // PutVariable creates a fresh logical variable. The Unbound''s Idx
+        // doubles as the Bindings-table key, so we MUST clear any stale entry
+        // at that key first — when a predicate is re-entered (e.g. via a
+        // recursive call) the same X-register slot gets reused, but the
+        // outer activation may have left a binding under the same Idx.
+        // Without the clear, deref of the "new" Unbound would chase that
+        // leftover and the next Unify(unbound, Integer(N)) would compare
+        // against the stale value instead of binding cleanly. Trail the
+        // clear so backtrack restores the prior binding.
+        vm.trailBinding(i.Xn)
+        delete(vm.Bindings, i.Xn)
+        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: i.Xn}
         vm.putReg(i.Xn, v)
         vm.Regs[i.Ai] = v
         vm.PC++
