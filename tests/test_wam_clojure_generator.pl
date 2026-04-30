@@ -92,6 +92,8 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, '(defn normalize-term* [ctx term]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn denormalize-term [ctx term]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn normalize-regs [ctx regs]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn interned-equal? [left right]')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn normalize-dispatch-value [ctx value]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn functor-arity [ctx functor]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn resolve-instructions')),
         assertion(sub_string(RuntimeCode, _, _, _, ':try-me-else-pc')),

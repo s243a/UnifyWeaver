@@ -45,6 +45,9 @@
 (defn atom-term? [v]
   (and (map? v) (= :atom (:tag v)) (contains? v :id)))
 
+(defn interned-equal? [left right]
+  (= left right))
+
 (defn normalize-literal-atom [ctx atom]
   (let [[_ctx id] (intern-atom ctx atom)]
     (atom-term id)))
@@ -69,6 +72,11 @@
     (structure-term? term)
     (update term :args #(mapv (fn [arg] (normalize-literal-term ctx arg)) %))
     :else term))
+
+(defn normalize-dispatch-value [ctx value]
+  (if (string? value)
+    (normalize-literal-atom ctx value)
+    value))
 
 (defn resolve-instruction [labels instr ctx]
   (case (:op instr)
@@ -468,7 +476,9 @@
       s)))
 
 (defn switch-target [state instr]
-  (let [reg-val (deref-value (:bindings state) (reg-get-raw state "A1"))
+  (let [reg-val (normalize-dispatch-value
+                 (:intern-context state)
+                 (deref-value (:bindings state) (reg-get-raw state "A1")))
         case-map (:case-map instr)
         default-target-pc (:default-target-pc instr)
         default-fallthrough? (:default-fallthrough? instr)]
@@ -601,7 +611,7 @@
             (-> (bind-var state current* constant)
                 advance)
 
-            (= current* constant)
+            (interned-equal? current* constant)
             (advance state)
 
             :else
@@ -643,7 +653,7 @@
                                    (or (reg-get-raw state (:reg instr)) ::unbound))]
           (cond
             (structure-term? reg-val)
-            (if (= (:functor reg-val) (:functor instr))
+            (if (interned-equal? (:functor reg-val) (:functor instr))
               (-> state
                   (enter-unify-mode (:args reg-val))
                   advance)
@@ -658,7 +668,7 @@
               list-functor (list-functor-term (:intern-context state))]
           (cond
             (structure-term? reg-val)
-            (if (= (:functor reg-val) list-functor)
+            (if (interned-equal? (:functor reg-val) list-functor)
               (-> state
                   (enter-unify-mode (:args reg-val))
                   advance)
