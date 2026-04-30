@@ -102,6 +102,8 @@
 :- dynamic user:wam_setof_dups_q/1.
 :- dynamic user:wam_bagof_empty_q/1.
 :- dynamic user:wam_var_check_then_bind/1.
+:- dynamic user:wam_dup_first_arg/2.
+:- dynamic user:wam_dup_first_q/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -253,6 +255,17 @@ user:wam_setof_dups_dummy(a).
 user:wam_setof_dups_dummy(c).
 user:wam_setof_dups_dummy(b).
 user:wam_setof_dups_q(L) :- setof(X, user:wam_setof_dups_dummy(X), L).
+
+% Two clauses with the SAME first argument — exercises the WAM
+% compiler's first-arg indexing for the multi-match case. The
+% switch_on_constant emitted for this predicate has `a` mapped to BOTH
+% a default case (clause 1) AND an L_n case (clause 3). The runtime
+% must enumerate both via the try_me_else chain, not jump directly to
+% one and skip the other.
+user:wam_dup_first_arg(a, b).
+user:wam_dup_first_arg(c, d).
+user:wam_dup_first_arg(a, e).
+user:wam_dup_first_q(X, Y) :- user:wam_dup_first_arg(X, Y).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -899,6 +912,24 @@ test(builtin_setof) :-
             % wam_setof_dups_dummy has clauses for a, b, a, c, b → set is [a,b,c]
             verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,b,c]', "true"),
             verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,a,b,b,c]', "false")
+        )).
+
+% switch_on_constant with multi-match (two clauses sharing the same
+% first arg constant): the runtime must enumerate every matching
+% clause via the try_me_else chain, not jump directly to one and skip
+% the rest. Without the multi-match fall-through, wam_dup_first_q(a,e)
+% would be unreachable. Regression test for that case.
+test(builtin_switch_dup_first_arg) :-
+    with_scala_project(
+        [user:wam_dup_first_arg/2, user:wam_dup_first_q/2],
+        [ intern_atoms([a, b, c, d, e]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','b'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','e'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['c','d'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','x'], "false"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['b','b'], "false")
         )).
 
 :- end_tests(wam_scala_runtime_smoke).
