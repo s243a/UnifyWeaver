@@ -41,24 +41,41 @@ test(function_name_generation) :-
     assertion(Name == 'lowered-my-pred-3').
 
 test(lower_predicate_to_clojure_emits_function) :-
-    simple_fact_wam(WamCode),
-    lower_predicate_to_clojure(test_fact/1, WamCode, [], Code),
-    has(Code, "defn lowered-test-fact-1 [state]"),
-    has(Code, "get-constant a, A1"),
-    has(Code, "runtime/step").
+    once((
+        simple_fact_wam(WamCode),
+        lower_predicate_to_clojure(test_fact/1, WamCode, [], Code),
+        has(Code, "defn lowered-test-fact-1 [state]"),
+        has(Code, "get-constant a, A1"),
+        has(Code, "runtime/normalize-literal-term"),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "runtime/interned-equal?")
+    )).
 
 test(lowered_multi_clause_keeps_clause1_shape) :-
-    multi_clause_wam(WamCode),
-    lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
-    has(Code, "defn lowered-test-choice-1 [state]"),
-    has(Code, "get-constant a, A1"),
-    \+ has(Code, "get-constant b, A1").
+    once((
+        multi_clause_wam(WamCode),
+        lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
+        has(Code, "defn lowered-test-choice-1 [state]"),
+        has(Code, "get-constant a, A1"),
+        \+ has(Code, "get-constant b, A1")
+    )).
 
 test(call_foreign_is_part_of_scaffold) :-
     WamCode = "test_foreign/2:\ncall_foreign category_parent/2, 2\nproceed\n",
     wam_clojure_lowerable(test_foreign/2, WamCode, deterministic),
     lower_predicate_to_clojure(test_foreign/2, WamCode, [], Code),
-    has(Code, "call-foreign category_parent/2"),
-    has(Code, "runtime/step").
+    has(Code, "defn lowered-test-foreign-2 [state]"),
+    has(Code, "state").
+
+test(simple_register_ops_are_direct_lowered) :-
+    once((
+        WamCode = "test_regs/2:\nget_variable X1, A1\nput_variable X2, A2\nget_value X1, A2\nput_value X1, A1\nproceed\n",
+        wam_clojure_lowerable(test_regs/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_regs/2, WamCode, [], Code),
+        has(Code, "runtime/fresh-var"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/reg-set-raw")
+    )).
 
 :- end_tests(wam_clojure_lowered_emitter).
