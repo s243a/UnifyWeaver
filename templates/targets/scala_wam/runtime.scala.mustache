@@ -534,15 +534,30 @@ object WamRuntime {
 
   def switchTarget(s: WamState, cases: Array[SwitchCase]): Unit = {
     val key = deref(s.bindings, s.regs(1))
-    // Build lookup map (default = label "default")
-    val defaultPc = cases.find(_.label == "default").map(_.targetPc).getOrElse(-1)
-    val defaultFallthrough = cases.exists(c => c.label == "default" && c.targetPc == -1)
-    val caseMap = cases.filter(_.label != "default").map(c => c.value -> c.targetPc).toMap
-    caseMap.get(key) match {
-      case Some(pc) => s.pc = pc
-      case None if defaultPc >= 0 => s.pc = defaultPc
-      case None if defaultFallthrough => s.pc += 1
-      case _ => backtrack(s)
+    // Find every case (including "default"-labeled ones) whose value
+    // matches the key. The WAM compiler emits a "default"-labeled case
+    // for every value whose first matching clause sits at the head of
+    // the try_me_else chain; an additional "L_N"-labeled case for the
+    // same value indicates a *second* matching clause exists. So:
+    //   - 0 matches → backtrack (or fall through if there's a generic
+    //     default case)
+    //   - 1 match   → deterministic jump (or fall through for default)
+    //   - 2+ matches → multi-match: fall through to the try_me_else
+    //     chain at pc+1, which will iterate every clause and let the
+    //     get_constant in each one filter by exact arg.
+    val matches = cases.filter(_.value == key)
+    matches.length match {
+      case 0 =>
+        cases.find(_.label == "default") match {
+          case Some(d) if d.targetPc >= 0 => s.pc = d.targetPc
+          case Some(_)                    => s.pc += 1
+          case None                       => backtrack(s)
+        }
+      case 1 =>
+        val c = matches.head
+        if (c.targetPc >= 0) s.pc = c.targetPc else s.pc += 1
+      case _ =>
+        s.pc += 1
     }
   }
 
