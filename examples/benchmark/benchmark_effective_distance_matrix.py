@@ -701,6 +701,10 @@ def main() -> int:
                     command = build_wam_rust_effective_distance(temp_root, scale, "seeded")
                 elif target == "wam-rust-accumulated":
                     command = build_wam_rust_effective_distance(temp_root, scale, "accumulated")
+                elif target == "wam-rust-seeded-no-kernels":
+                    command = build_wam_rust_effective_distance(temp_root, scale, "seeded_no_kernels")
+                elif target == "wam-rust-accumulated-no-kernels":
+                    command = build_wam_rust_effective_distance(temp_root, scale, "accumulated_no_kernels")
                 elif target == "go-wam-accumulated":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "go-wam-accumulated-no-kernels":

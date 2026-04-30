@@ -54,6 +54,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Rust benchmark with optimized accumulated helpers",
     ),
+    "wam-rust-seeded-no-kernels": TargetInfo(
+        "wam-rust-seeded-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Rust benchmark with seeded host accumulation and no_kernels(true)",
+    ),
+    "wam-rust-accumulated-no-kernels": TargetInfo(
+        "wam-rust-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Rust benchmark with optimized accumulated helpers and no_kernels(true)",
+    ),
     "go-wam-accumulated": TargetInfo(
         "go-wam-accumulated",
         "hybrid-wam",
@@ -142,6 +152,8 @@ TARGET_SETS: dict[str, list[str]] = {
     "hybrid-wam": [
         "wam-rust-seeded",
         "wam-rust-accumulated",
+        "wam-rust-seeded-no-kernels",
+        "wam-rust-accumulated-no-kernels",
         "go-wam-accumulated",
         "go-wam-accumulated-no-kernels",
         "clojure-wam-accumulated",
