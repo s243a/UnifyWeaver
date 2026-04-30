@@ -187,144 +187,71 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
 ~w)
 ', [FuncName, Pred, Arity, FuncName, Body]).
 
-emit_instrs([], _).
-emit_instrs([Instr|Rest], Indent) :-
-    emit_one(Instr, Indent),
-    emit_instrs(Rest, Indent).
+emit_instrs([], Indent) :-
+    format("~wstate~n", [Indent]).
+emit_instrs(Instrs, Indent) :-
+    format("~w(-> state~n", [Indent]),
+    forall(member(Instr, Instrs), emit_one(Instr, Indent)),
+    format("~w    )~n", [Indent]).
 
-emit_one(proceed, I) :-
-    format("~w(runtime/succeed-state state)~n", [I]).
+emit_one(Instr, Indent) :-
+    instr_comment(Instr, Comment),
+    format("~w    ;; ~w~n", [Indent, Comment]),
+    format("~w    runtime/step~n", [Indent]).
 
-emit_one(fail, I) :-
-    format("~w(runtime/fail-state state)~n", [I]).
-
-emit_one(allocate, I) :-
-    format("~w;; allocate — lowered tier keeps runtime-managed env frames~n", [I]),
-    format("~w(runtime/step state)~n", [I]).
-
-emit_one(deallocate, I) :-
-    format("~w;; deallocate — lowered tier keeps runtime-managed env frames~n", [I]),
-    format("~w(runtime/step state)~n", [I]).
-
-emit_one(get_constant(C, Ai), I) :-
-    format("~w;; get-constant ~w, ~w~n", [I, C, Ai]),
-    format("~w(let [instr {:op :get-constant :constant ~q :reg ~q}]~n", [I, C, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_variable(Xn, Ai), I) :-
-    format("~w;; get-variable ~w, ~w~n", [I, Xn, Ai]),
-    format("~w(let [instr {:op :get-variable :var ~q :reg ~q}]~n", [I, Xn, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_value(Xn, Ai), I) :-
-    format("~w;; get-value ~w, ~w~n", [I, Xn, Ai]),
-    format("~w(let [instr {:op :get-value :var ~q :reg ~q}]~n", [I, Xn, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_structure(F, Ai), I) :-
-    format("~w;; get-structure ~w, ~w~n", [I, F, Ai]),
-    format("~w(let [instr {:op :get-structure :functor ~q :reg ~q}]~n", [I, F, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_list(Ai), I) :-
-    format("~w;; get-list ~w~n", [I, Ai]),
-    format("~w(let [instr {:op :get-list :reg ~q}]~n", [I, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_nil(Ai), I) :-
-    format("~w;; get-nil ~w~n", [I, Ai]),
-    format("~w(let [instr {:op :get-constant :constant \"[]\" :reg ~q}]~n", [I, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(get_integer(N, Ai), I) :-
-    format("~w;; get-integer ~w, ~w~n", [I, N, Ai]),
-    format("~w(let [instr {:op :get-constant :constant ~w :reg ~q}]~n", [I, N, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(put_constant(C, Ai), I) :-
-    format("~w;; put-constant ~w, ~w~n", [I, C, Ai]),
-    format("~w(let [instr {:op :put-constant :constant ~q :reg ~q}]~n", [I, C, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(put_variable(Xn, Ai), I) :-
-    format("~w;; put-variable ~w, ~w~n", [I, Xn, Ai]),
-    format("~w(let [instr {:op :put-variable :var ~q :reg ~q}]~n", [I, Xn, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(put_value(Xn, Ai), I) :-
-    format("~w;; put-value ~w, ~w~n", [I, Xn, Ai]),
-    format("~w(let [instr {:op :put-value :var ~q :reg ~q}]~n", [I, Xn, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(put_structure(F, Ai), I) :-
-    format("~w;; put-structure ~w, ~w~n", [I, F, Ai]),
-    parse_functor_arity_local(F, FunctorArity),
-    format("~w(let [instr {:op :put-structure :functor ~q :reg ~q :arity ~w}]~n", [I, F, Ai, FunctorArity]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(put_list(Ai), I) :-
-    format("~w;; put-list ~w~n", [I, Ai]),
-    format("~w(let [instr {:op :put-list :reg ~q}]~n", [I, Ai]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(unify_variable(Xn), I) :-
-    format("~w;; unify-variable ~w~n", [I, Xn]),
-    format("~w(let [instr {:op :unify-variable :var ~q}]~n", [I, Xn]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(unify_value(Xn), I) :-
-    format("~w;; unify-value ~w~n", [I, Xn]),
-    format("~w(let [instr {:op :unify-value :var ~q}]~n", [I, Xn]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(unify_constant(C), I) :-
-    format("~w;; unify-constant ~w~n", [I, C]),
-    format("~w(let [instr {:op :unify-constant :constant ~q}]~n", [I, C]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(set_variable(Xn), I) :-
-    format("~w;; set-variable ~w~n", [I, Xn]),
-    format("~w(let [instr {:op :set-variable :var ~q}]~n", [I, Xn]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(set_value(Xn), I) :-
-    format("~w;; set-value ~w~n", [I, Xn]),
-    format("~w(let [instr {:op :set-value :var ~q}]~n", [I, Xn]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(set_constant(C), I) :-
-    format("~w;; set-constant ~w~n", [I, C]),
-    format("~w(let [instr {:op :set-constant :constant ~q}]~n", [I, C]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(call(P, N), I) :-
-    format("~w;; call ~w/~w — initial scaffold delegates through runtime invoke path~n", [I, P, N]),
-    format("~w(let [instr {:op :call :pred ~q :arity ~w}]~n", [I, P, N]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(execute(P), I) :-
-    format("~w;; execute ~w — tail-call form stays runtime-mediated in the first slice~n", [I, P]),
-    format("~w(let [instr {:op :execute :pred ~q}]~n", [I, P]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(builtin_call(Op, Ar), I) :-
-    format("~w;; builtin-call ~w/~w~n", [I, Op, Ar]),
-    format("~w(let [instr {:op :builtin-call :pred ~q :arity ~w}]~n", [I, Op, Ar]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(call_foreign(P, Ar), I) :-
-    format("~w;; call-foreign ~w/~w~n", [I, P, Ar]),
-    format("~w(let [instr {:op :call-foreign :pred ~q :arity ~w}]~n", [I, P, Ar]),
-    format("~w  (runtime/step (assoc state :instr instr)))~n", [I]).
-
-emit_one(try_me_else(_), _) :- !.
-emit_one(trust_me, _) :- !.
-emit_one(cut_ite, _) :- !.
-emit_one(jump(_), _) :- !.
-
-emit_one(Instr, I) :-
-    format("~w;; TODO: lowered emission for ~w~n", [I, Instr]).
-
-parse_functor_arity_local(Functor, Arity) :-
-    split_string(Functor, "/", "", [_Name, ArityStr]),
-    number_string(Arity, ArityStr).
+instr_comment(proceed, "proceed").
+instr_comment(fail, "fail").
+instr_comment(allocate, "allocate").
+instr_comment(deallocate, "deallocate").
+instr_comment(get_constant(C, Ai), Comment) :-
+    format(atom(Comment), 'get-constant ~w, ~w', [C, Ai]).
+instr_comment(get_variable(Xn, Ai), Comment) :-
+    format(atom(Comment), 'get-variable ~w, ~w', [Xn, Ai]).
+instr_comment(get_value(Xn, Ai), Comment) :-
+    format(atom(Comment), 'get-value ~w, ~w', [Xn, Ai]).
+instr_comment(get_structure(F, Ai), Comment) :-
+    format(atom(Comment), 'get-structure ~w, ~w', [F, Ai]).
+instr_comment(get_list(Ai), Comment) :-
+    format(atom(Comment), 'get-list ~w', [Ai]).
+instr_comment(get_nil(Ai), Comment) :-
+    format(atom(Comment), 'get-nil ~w', [Ai]).
+instr_comment(get_integer(N, Ai), Comment) :-
+    format(atom(Comment), 'get-integer ~w, ~w', [N, Ai]).
+instr_comment(put_constant(C, Ai), Comment) :-
+    format(atom(Comment), 'put-constant ~w, ~w', [C, Ai]).
+instr_comment(put_variable(Xn, Ai), Comment) :-
+    format(atom(Comment), 'put-variable ~w, ~w', [Xn, Ai]).
+instr_comment(put_value(Xn, Ai), Comment) :-
+    format(atom(Comment), 'put-value ~w, ~w', [Xn, Ai]).
+instr_comment(put_structure(F, Ai), Comment) :-
+    format(atom(Comment), 'put-structure ~w, ~w', [F, Ai]).
+instr_comment(put_list(Ai), Comment) :-
+    format(atom(Comment), 'put-list ~w', [Ai]).
+instr_comment(unify_variable(Xn), Comment) :-
+    format(atom(Comment), 'unify-variable ~w', [Xn]).
+instr_comment(unify_value(Xn), Comment) :-
+    format(atom(Comment), 'unify-value ~w', [Xn]).
+instr_comment(unify_constant(C), Comment) :-
+    format(atom(Comment), 'unify-constant ~w', [C]).
+instr_comment(set_variable(Xn), Comment) :-
+    format(atom(Comment), 'set-variable ~w', [Xn]).
+instr_comment(set_value(Xn), Comment) :-
+    format(atom(Comment), 'set-value ~w', [Xn]).
+instr_comment(set_constant(C), Comment) :-
+    format(atom(Comment), 'set-constant ~w', [C]).
+instr_comment(call(P, N), Comment) :-
+    format(atom(Comment), 'call ~w/~w', [P, N]).
+instr_comment(execute(P), Comment) :-
+    format(atom(Comment), 'execute ~w', [P]).
+instr_comment(builtin_call(Op, Ar), Comment) :-
+    format(atom(Comment), 'builtin-call ~w/~w', [Op, Ar]).
+instr_comment(call_foreign(P, Ar), Comment) :-
+    format(atom(Comment), 'call-foreign ~w/~w', [P, Ar]).
+instr_comment(try_me_else(Label), Comment) :-
+    format(atom(Comment), 'try_me_else ~w', [Label]).
+instr_comment(trust_me, "trust_me").
+instr_comment(cut_ite, "cut_ite").
+instr_comment(jump(Label), Comment) :-
+    format(atom(Comment), 'jump ~w', [Label]).
+instr_comment(Instr, Comment) :-
+    format(atom(Comment), 'TODO: lowered emission for ~w', [Instr]).

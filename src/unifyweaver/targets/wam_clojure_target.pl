@@ -97,7 +97,8 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
 
 (def shared-wam-code-raw [])
 (def shared-wam-labels {})
-(def shared-wam-code (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+(def shared-wam-code
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 (def foreign-handlers {})
 
 (def predicate-dispatch {})
@@ -149,7 +150,7 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
 })
 
 (def shared-wam-code
-  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 
 (def foreign-handlers {
 ~w
@@ -189,11 +190,12 @@ collect_wam_entries([PredIndicator|Rest], Options, PC,
     ;   wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode),
         wam_code_to_clojure_intern_seeds(WamCode, CodeAtomSeeds, CodeFunctorSeeds),
         (   wam_clojure_lowerable(Pred/Arity, WamCode, _Reason)
-        ->  lower_predicate_to_clojure(Pred/Arity, WamCode, Options, PredicateCode),
-            clojure_lowered_func_name(Pred/Arity, DispatchName),
-            GoLiterals = [],
-            LabelPairs = [],
-            NextPC = PC
+        ->  lower_predicate_to_clojure(Pred/Arity, WamCode, Options, LoweredCode),
+            compile_wam_predicate_to_clojure_lowered(Pred/Arity, PC, WrapperCode),
+            atomics_to_string([LoweredCode, "\n", WrapperCode], PredicateCode0),
+            atom_string(PredicateCode, PredicateCode0),
+            wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
+            predicate_clojure_name(Pred, DispatchName)
         ;   wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
             compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, PredicateCode),
             predicate_clojure_name(Pred, DispatchName)
@@ -394,7 +396,7 @@ compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) 
 })
 
 (def shared-wam-code
-  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 
 (def foreign-handlers {})
 
@@ -411,6 +413,20 @@ compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
 (defn ~w [~w]
   (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))
 ', [CljName, StartPC, CljName, ArgList, CljName, RegMap]).
+
+compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
+    predicate_clojure_name(Pred, CljName),
+    clojure_lowered_func_name(Pred/Arity, LoweredName),
+    build_clojure_wam_arg_list(Arity, ArgList),
+    build_clojure_wam_reg_map(Arity, RegMap),
+    format(atom(Code),
+'(def ~w-start-pc ~w)
+
+(defn ~w [~w]
+  (runtime/run-wam
+    (~w
+      (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))))
+', [CljName, StartPC, CljName, ArgList, LoweredName, CljName, RegMap]).
 
 wam_code_to_clojure_data(WamCode, BasePC, Entries, LabelPairs, NextPC) :-
     atom_string(WamCode, WamStr),

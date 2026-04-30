@@ -45,7 +45,7 @@ test(lower_predicate_to_clojure_emits_function) :-
     lower_predicate_to_clojure(test_fact/1, WamCode, [], Code),
     has(Code, "defn lowered-test-fact-1 [state]"),
     has(Code, "get-constant a, A1"),
-    has(Code, "runtime/succeed-state state").
+    has(Code, "runtime/step").
 
 test(lowered_multi_clause_keeps_clause1_shape) :-
     multi_clause_wam(WamCode),
@@ -59,6 +59,6 @@ test(call_foreign_is_part_of_scaffold) :-
     wam_clojure_lowerable(test_foreign/2, WamCode, deterministic),
     lower_predicate_to_clojure(test_foreign/2, WamCode, [], Code),
     has(Code, "call-foreign category_parent/2"),
-    has(Code, ":call-foreign").
+    has(Code, "runtime/step").
 
 :- end_tests(wam_clojure_lowered_emitter).
