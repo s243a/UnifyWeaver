@@ -226,6 +226,8 @@ lowered_direct_instr(get_variable(_, _)).
 lowered_direct_instr(put_variable(_, _)).
 lowered_direct_instr(get_value(_, _)).
 lowered_direct_instr(put_value(_, _)).
+lowered_direct_instr(put_structure(_, _)).
+lowered_direct_instr(put_list(_)).
 lowered_direct_instr(set_constant(_)).
 lowered_direct_instr(set_variable(_)).
 lowered_direct_instr(set_value(_)).
@@ -268,6 +270,15 @@ emit_lowered_expr(put_value(Xn, Ai), S, Expr) :-
     format(atom(Expr),
            '(let [val (runtime/deref-value (:bindings ~w) (runtime/reg-get-raw ~w ~q))] (-> ~w (runtime/reg-set-raw ~q val) runtime/advance))',
            [S, S, Xn, S, Ai]).
+emit_lowered_expr(put_structure(F, Ai), S, Expr) :-
+    clj_lowered_literal(F, Lit),
+    format(atom(Expr),
+           '(let [functor (runtime/normalize-literal-term (:intern-context ~w) ~w) arity (runtime/functor-arity (:intern-context ~w) functor)] (-> ~w (runtime/push-build-frame ~q functor arity) runtime/advance))',
+           [S, Lit, S, S, Ai]).
+emit_lowered_expr(put_list(Ai), S, Expr) :-
+    format(atom(Expr),
+           '(-> ~w (runtime/push-build-frame ~q (runtime/list-functor-term (:intern-context ~w)) 2) runtime/advance)',
+           [S, Ai, S]).
 emit_lowered_expr(set_constant(C), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
