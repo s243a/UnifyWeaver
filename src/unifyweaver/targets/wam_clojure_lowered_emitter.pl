@@ -179,7 +179,8 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     (   is_list(WamCode) -> Instrs = WamCode
     ;   parse_wam_text(WamCode, Instrs)
     ),
-    clause1_instrs(Instrs, C1Instrs),
+    clause1_instrs(Instrs, C1Instrs0),
+    lowered_direct_prefix(C1Instrs0, C1Instrs),
     with_output_to(string(Body), emit_instrs(C1Instrs, "  ")),
     format(string(ClojureCode),
 ';; ~w — lowered from ~w/~w
@@ -190,14 +191,88 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
 emit_instrs([], Indent) :-
     format("~wstate~n", [Indent]).
 emit_instrs(Instrs, Indent) :-
-    format("~w(-> state~n", [Indent]),
-    forall(member(Instr, Instrs), emit_one(Instr, Indent)),
-    format("~w    )~n", [Indent]).
+    length(Instrs, Len),
+    format("~w(let [s0 state~n", [Indent]),
+    emit_instr_bindings(Instrs, 0, Indent),
+    format("~w      ]~n", [Indent]),
+    format("~w  s~w)~n", [Indent, Len]).
 
-emit_one(Instr, Indent) :-
+emit_instr_bindings([], _, _).
+emit_instr_bindings([Instr|Rest], Index, Indent) :-
+    NextIndex is Index + 1,
+    format(atom(InState), 's~w', [Index]),
+    emit_lowered_expr(Instr, InState, Expr),
     instr_comment(Instr, Comment),
-    format("~w    ;; ~w~n", [Indent, Comment]),
-    format("~w    runtime/step~n", [Indent]).
+    format("~w      ;; ~w~n", [Indent, Comment]),
+    format("~w      s~w (if (= :running (:status ~w)) ~w ~w)~n",
+           [Indent, NextIndex, InState, Expr, InState]),
+    emit_instr_bindings(Rest, NextIndex, Indent).
+
+lowered_direct_prefix([], []).
+lowered_direct_prefix([Instr|Rest], [Instr|PrefixRest]) :-
+    lowered_direct_instr(Instr),
+    !,
+    lowered_direct_prefix(Rest, PrefixRest).
+lowered_direct_prefix(_, []).
+
+lowered_direct_instr(proceed).
+lowered_direct_instr(fail).
+lowered_direct_instr(get_constant(_, _)).
+lowered_direct_instr(get_integer(_, _)).
+lowered_direct_instr(get_nil(_)).
+lowered_direct_instr(put_constant(_, _)).
+lowered_direct_instr(put_nil(_)).
+lowered_direct_instr(get_variable(_, _)).
+lowered_direct_instr(put_variable(_, _)).
+lowered_direct_instr(get_value(_, _)).
+lowered_direct_instr(put_value(_, _)).
+
+emit_lowered_expr(proceed, S, Expr) :-
+    format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
+emit_lowered_expr(fail, S, Expr) :-
+    format(atom(Expr), '(runtime/fail-state ~w)', [S]).
+emit_lowered_expr(get_constant(C, Ai), S, Expr) :-
+    clj_lowered_literal(C, Lit),
+    format(atom(Expr),
+           '(let [constant (runtime/normalize-literal-term (:intern-context ~w) ~w) current (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings ~w) current))] (cond (= current* ::lowered-unbound) (-> ~w (runtime/reg-set-raw ~q constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var ~w current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance ~w) :else (runtime/backtrack ~w)))',
+           [S, Lit, S, Ai, S, S, Ai, S, S, S]).
+emit_lowered_expr(get_integer(N, Ai), S, Expr) :-
+    format(atom(Expr),
+           '(let [constant ~w current (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound) current* (if (= current ::lowered-unbound) current (runtime/deref-value (:bindings ~w) current))] (cond (= current* ::lowered-unbound) (-> ~w (runtime/reg-set-raw ~q constant) runtime/advance) (runtime/logic-var? current*) (-> (runtime/bind-var ~w current* constant) runtime/advance) (runtime/interned-equal? current* constant) (runtime/advance ~w) :else (runtime/backtrack ~w)))',
+           [N, S, Ai, S, S, Ai, S, S, S]).
+emit_lowered_expr(get_nil(Ai), S, Expr) :-
+    emit_lowered_expr(get_constant("[]", Ai), S, Expr).
+emit_lowered_expr(put_constant(C, Ai), S, Expr) :-
+    clj_lowered_literal(C, Lit),
+    format(atom(Expr),
+           '(let [constant (runtime/normalize-literal-term (:intern-context ~w) ~w)] (-> ~w (runtime/reg-set-raw ~q constant) runtime/advance))',
+           [S, Lit, S, Ai]).
+emit_lowered_expr(put_nil(Ai), S, Expr) :-
+    emit_lowered_expr(put_constant("[]", Ai), S, Expr).
+emit_lowered_expr(get_variable(Xn, Ai), S, Expr) :-
+    format(atom(Expr),
+           '(-> ~w (runtime/reg-set-raw ~q (runtime/reg-get-raw ~w ~q)) runtime/advance)',
+           [S, Xn, S, Ai]).
+emit_lowered_expr(put_variable(Xn, Ai), S, Expr) :-
+    format(atom(Expr),
+           '(let [[fresh next-state] (runtime/fresh-var ~w)] (-> next-state (runtime/reg-set-raw ~q fresh) (runtime/reg-set-raw ~q fresh) runtime/advance))',
+           [S, Xn, Ai]).
+emit_lowered_expr(get_value(Xn, Ai), S, Expr) :-
+    format(atom(Expr),
+           '(let [left (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound) right (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound) [ok next-state] (runtime/unify-values ~w left right)] (if ok (runtime/advance next-state) (runtime/backtrack ~w)))',
+           [S, Xn, S, Ai, S, S]).
+emit_lowered_expr(put_value(Xn, Ai), S, Expr) :-
+    format(atom(Expr),
+           '(let [val (runtime/deref-value (:bindings ~w) (runtime/reg-get-raw ~w ~q))] (-> ~w (runtime/reg-set-raw ~q val) runtime/advance))',
+           [S, S, Xn, S, Ai]).
+emit_lowered_expr(_Instr, S, Expr) :-
+    format(atom(Expr), '(runtime/step ~w)', [S]).
+
+clj_lowered_literal(Value, Literal) :-
+    (   number(Value)
+    ->  format(atom(Literal), '~w', [Value])
+    ;   format(atom(Literal), '~q', [Value])
+    ).
 
 instr_comment(proceed, "proceed").
 instr_comment(fail, "fail").
