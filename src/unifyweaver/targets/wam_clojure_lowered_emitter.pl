@@ -226,6 +226,9 @@ lowered_direct_instr(get_variable(_, _)).
 lowered_direct_instr(put_variable(_, _)).
 lowered_direct_instr(get_value(_, _)).
 lowered_direct_instr(put_value(_, _)).
+lowered_direct_instr(set_constant(_)).
+lowered_direct_instr(set_variable(_)).
+lowered_direct_instr(set_value(_)).
 
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
@@ -265,6 +268,19 @@ emit_lowered_expr(put_value(Xn, Ai), S, Expr) :-
     format(atom(Expr),
            '(let [val (runtime/deref-value (:bindings ~w) (runtime/reg-get-raw ~w ~q))] (-> ~w (runtime/reg-set-raw ~q val) runtime/advance))',
            [S, S, Xn, S, Ai]).
+emit_lowered_expr(set_constant(C), S, Expr) :-
+    clj_lowered_literal(C, Lit),
+    format(atom(Expr),
+           '(let [constant (runtime/normalize-literal-term (:intern-context ~w) ~w)] (-> ~w (runtime/append-build-arg constant) runtime/finalize-complete-builds runtime/advance))',
+           [S, Lit, S]).
+emit_lowered_expr(set_variable(Xn), S, Expr) :-
+    format(atom(Expr),
+           '(let [[fresh next-state] (runtime/fresh-var ~w)] (-> next-state (runtime/reg-set-raw ~q fresh) (runtime/append-build-arg fresh) runtime/finalize-complete-builds runtime/advance))',
+           [S, Xn]).
+emit_lowered_expr(set_value(Xn), S, Expr) :-
+    format(atom(Expr),
+           '(let [val (runtime/deref-value (:bindings ~w) (runtime/reg-get-raw ~w ~q))] (-> ~w (runtime/append-build-arg val) runtime/finalize-complete-builds runtime/advance))',
+           [S, S, Xn, S]).
 emit_lowered_expr(_Instr, S, Expr) :-
     format(atom(Expr), '(runtime/step ~w)', [S]).
 
