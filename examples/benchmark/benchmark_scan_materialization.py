@@ -364,6 +364,7 @@ class SourceModeSummary:
     best_source_mode: str
     chosen_source_mode: str
     policy_status: str
+    overlap_status: str
     auto_median: str
     auto_vs_best: str
     median_summary: str
@@ -460,6 +461,20 @@ def classify_policy_status(
     return "mismatch"
 
 
+def classify_overlap_status(auto: BenchResult | None, best: BenchResult | None) -> str:
+    if auto is None or best is None:
+        return ""
+    if len(auto.times) < 2 or len(best.times) < 2:
+        return "single-sample"
+    auto_min = min(auto.times)
+    auto_max = max(auto.times)
+    best_min = min(best.times)
+    best_max = max(best.times)
+    if max(auto_min, best_min) <= min(auto_max, best_max):
+        return "overlap"
+    return "separated"
+
+
 def summarize_by_source_mode(
     results: list[BenchResult],
     scales: list[str],
@@ -491,6 +506,7 @@ def summarize_by_source_mode(
             chosen_source_mode = auto.resolved_source_mode if auto is not None else ""
             best_source_mode = best.source_mode if best is not None else ""
             policy_status = classify_policy_status(chosen_source_mode, best_source_mode, auto, best)
+            overlap_status = classify_overlap_status(auto, best)
             auto_median = f"{auto.median:.3f}" if auto is not None else ""
             auto_vs_best = ""
             if auto is not None and best is not None:
@@ -524,6 +540,7 @@ def summarize_by_source_mode(
                     best_source_mode=best_source_mode,
                     chosen_source_mode=chosen_source_mode,
                     policy_status=policy_status,
+                    overlap_status=overlap_status,
                     auto_median=auto_median,
                     auto_vs_best=auto_vs_best,
                     median_summary=median_summary,
@@ -618,21 +635,21 @@ def print_markdown(summaries: list[SourceModeSummary]) -> None:
 
 
 def print_calibration_tsv(summaries: list[SourceModeSummary]) -> None:
-    print("scale	mode	policy_status	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
+    print("scale	mode	policy_status	overlap_status	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
     for summary in summaries:
         print(
-            f"{summary.scale}	{summary.mode}	{summary.policy_status}	"
+            f"{summary.scale}	{summary.mode}	{summary.policy_status}	{summary.overlap_status}	"
             f"{summary.chosen_source_mode}	{summary.best_source_mode}	{summary.auto_median}	{summary.auto_vs_best}	"
             f"{summary.median_summary}	{summary.spread_summary}	{summary.source_registration_summary}"
         )
 
 
 def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
-    print("| Scale | Mode | Policy | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
-    print("| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
+    print("| Scale | Mode | Policy | Overlap | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
+    print("| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
     for summary in summaries:
         print(
-            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | "
+            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | {summary.overlap_status} | "
             f"{summary.chosen_source_mode} | {summary.best_source_mode} | {summary.auto_median} | {summary.auto_vs_best} | "
             f"`{summary.median_summary}` | `{summary.spread_summary}` | "
             f"`{summary.source_registration_summary}` |"
