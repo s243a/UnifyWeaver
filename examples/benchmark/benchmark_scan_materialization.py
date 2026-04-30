@@ -620,6 +620,7 @@ def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
 
 def benchmark_mode(
     command: list[str],
+    artifact_root: Path,
     scale: str,
     mode: str,
     source_mode: str,
@@ -634,7 +635,7 @@ def benchmark_mode(
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
     env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
     if source_mode in {"artifact-prebuilt", "auto"}:
-        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
+        artifact_dir = artifact_root / f"prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / source_mode / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 
@@ -684,7 +685,7 @@ def main() -> int:
             for mode in modes:
                 for source_mode in source_modes:
                     for strategy in strategies:
-                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
+                        results.append(benchmark_mode(command, temp_root, scale, mode, source_mode, strategy, args.repetitions))
 
         if args.format == "detail-tsv":
             print_detail_tsv(results, scales, modes, source_modes)
