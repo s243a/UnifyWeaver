@@ -78,13 +78,26 @@ test(simple_register_ops_are_direct_lowered) :-
         has(Code, "runtime/reg-set-raw")
     )).
 
-test(build_arg_ops_are_direct_lowered_after_delegated_put_structure) :-
+test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
         wam_clojure_lowerable(test_build/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_build/1, WamCode, [], Code),
-        assertion(\+ has(Code, "runtime/append-build-arg")),
-        has(Code, "state")
+        has(Code, "runtime/push-build-frame"),
+        has(Code, "runtime/functor-arity"),
+        has(Code, "runtime/append-build-arg"),
+        has(Code, "runtime/finalize-complete-builds")
+    )).
+
+test(list_build_ops_are_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_list_build/1:\nput_list A1\nset_constant head\nset_constant []\nproceed\n",
+        wam_clojure_lowerable(test_list_build/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_list_build/1, WamCode, [], Code),
+        has(Code, "runtime/push-build-frame"),
+        has(Code, "runtime/list-functor-term"),
+        has(Code, "runtime/append-build-arg"),
+        has(Code, "runtime/finalize-complete-builds")
     )).
 
 test(build_arg_ops_are_direct_lowered_in_prefix) :-
