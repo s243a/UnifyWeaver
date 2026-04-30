@@ -387,7 +387,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument(
         "--format",
-        choices=["detail-tsv", "report-tsv", "markdown", "calibration-tsv", "calibration-markdown"],
+        choices=[
+            "detail-tsv",
+            "report-tsv",
+            "markdown",
+            "calibration-tsv",
+            "calibration-markdown",
+            "actionable-tsv",
+            "actionable-markdown",
+        ],
         default="detail-tsv")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
@@ -473,6 +481,13 @@ def classify_overlap_status(auto: BenchResult | None, best: BenchResult | None) 
     if max(auto_min, best_min) <= min(auto_max, best_max):
         return "overlap"
     return "separated"
+
+
+def is_actionable_summary(summary: SourceModeSummary) -> bool:
+    return (
+        summary.overlap_status == "separated" and
+        summary.policy_status in {"mismatch", "match-slow"}
+    )
 
 
 def summarize_by_source_mode(
@@ -656,6 +671,14 @@ def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
         )
 
 
+def print_actionable_tsv(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_tsv([summary for summary in summaries if is_actionable_summary(summary)])
+
+
+def print_actionable_markdown(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_markdown([summary for summary in summaries if is_actionable_summary(summary)])
+
+
 def benchmark_mode(
     command: list[str],
     artifact_root: Path,
@@ -733,6 +756,10 @@ def main() -> int:
                 print_calibration_tsv(summaries)
             elif args.format == "calibration-markdown":
                 print_calibration_markdown(summaries)
+            elif args.format == "actionable-tsv":
+                print_actionable_tsv(summaries)
+            elif args.format == "actionable-markdown":
+                print_actionable_markdown(summaries)
             elif args.format == "markdown":
                 print_markdown(summaries)
             else:
