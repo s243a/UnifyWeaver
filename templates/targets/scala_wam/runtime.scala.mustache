@@ -575,15 +575,8 @@ object WamRuntime {
         s.pc = target
 
       case Call(pred, arity) =>
-        if (pred == "call" && arity >= 1) {
-          val goal = deref(s.bindings, s.regs(1))
-          val extras = (2 to arity).map(i => s.regs(i)).toArray
-          metaCallApplied(s, program, goal, extras,
-                          resumePc = s.pc + 1, withReturn = true)
-        } else if (pred == "atom_codes" && arity == 2) {
-          atomCodes2(s, program, withReturn = true)
-        } else if (pred == "atom_length" && arity == 2) {
-          atomLength2(s, program, withReturn = true)
+        if (interceptedExecuteBuiltin(s, program, pred, arity, withReturn = true)) {
+          // dispatched
         } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) =>
             s.callStack = (s.pc + 1) :: s.callStack
@@ -593,15 +586,8 @@ object WamRuntime {
         }
 
       case Execute(pred, arity) =>
-        if (pred == "call" && arity >= 1) {
-          val goal = deref(s.bindings, s.regs(1))
-          val extras = (2 to arity).map(i => s.regs(i)).toArray
-          metaCallApplied(s, program, goal, extras,
-                          resumePc = s.pc + 1, withReturn = false)
-        } else if (pred == "atom_codes" && arity == 2) {
-          atomCodes2(s, program, withReturn = false)
-        } else if (pred == "atom_length" && arity == 2) {
-          atomLength2(s, program, withReturn = false)
+        if (interceptedExecuteBuiltin(s, program, pred, arity, withReturn = false)) {
+          // dispatched
         } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) => s.pc = pc
           case None     => backtrack(s)
@@ -843,6 +829,39 @@ object WamRuntime {
                 case _ => backtrack(s)
               }
           }
+
+        // --- Type checks ---
+        case "var/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Ref(_) => s.pc += 1
+            case _      => backtrack(s)
+          }
+        case "nonvar/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Ref(_) => backtrack(s)
+            case _      => s.pc += 1
+          }
+        case "atom/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Atom(_) => s.pc += 1
+            case _       => backtrack(s)
+          }
+        case "number/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case IntTerm(_) | FloatTerm(_) => s.pc += 1
+            case _                         => backtrack(s)
+          }
+        case "is_list/1" =>
+          listToSeq(s, program, s.regs(1)) match {
+            case Some(_) => s.pc += 1
+            case None    => backtrack(s)
+          }
+
+        // copy_term(Term, Copy): unify Copy with a fresh copy of Term in
+        // which every Ref has been consistently replaced by a fresh Ref.
+        case "copy_term/2" =>
+          val (copied, _) = copyTerm(s, s.regs(1), Map.empty)
+          if (unify(s, s.regs(2), copied)) s.pc += 1 else backtrack(s)
 
         // append(A, B, C):
         //   * concat-mode (A, B both ground): build C and unify
@@ -1104,6 +1123,28 @@ object WamRuntime {
     }
   }
 
+  /** Dispatcher for builtin predicates that the WAM compiler emits as
+   *  `Execute name/arity` rather than `BuiltinCall`. Returns true if the
+   *  intercept fired (caller should not continue with normal dispatch). */
+  def interceptedExecuteBuiltin(s: WamState, program: WamProgram,
+                                pred: String, arity: Int,
+                                withReturn: Boolean): Boolean = {
+    if (pred == "call" && arity >= 1) {
+      val goal = deref(s.bindings, s.regs(1))
+      val extras = (2 to arity).map(i => s.regs(i)).toArray
+      metaCallApplied(s, program, goal, extras, s.pc + 1, withReturn)
+      true
+    } else if (pred == "atom_codes" && arity == 2) { atomCodes2(s, program, withReturn); true }
+    else if (pred == "atom_length" && arity == 2)   { atomLength2(s, program, withReturn); true }
+    else if (pred == "ground"      && arity == 1)   { ground1(s, withReturn); true }
+    else if (pred == "atomic"      && arity == 1)   { atomic1(s, withReturn); true }
+    else if (pred == "sort"        && arity == 2)   { sort2(s, program, withReturn, dedup = true);  true }
+    else if (pred == "msort"       && arity == 2)   { sort2(s, program, withReturn, dedup = false); true }
+    else if (pred == "bagof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = false); true }
+    else if (pred == "setof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = true);  true }
+    else false
+  }
+
   /** call/1 implementation. Reflects the goal into a real predicate call.
    *  When `withReturn` is true, pushes resumePc onto the callStack so the
    *  goal's Proceed returns to it; otherwise this is a tail call. */
@@ -1200,6 +1241,218 @@ object WamRuntime {
         if (unify(s, s.regs(2), IntTerm(len))) builtinAdvance(s, withReturn)
         else backtrack(s)
       case _ => backtrack(s)
+    }
+  }
+
+  /** ground(T): true if T contains no unbound variables when fully derefd. */
+  def ground1(s: WamState, withReturn: Boolean): Unit = {
+    if (isGround(s, s.regs(1))) builtinAdvance(s, withReturn) else backtrack(s)
+  }
+  def isGround(s: WamState, t: WamTerm): Boolean = deref(s.bindings, t) match {
+    case Ref(_)             => false
+    case Struct(_, _, args) => args.forall(isGround(s, _))
+    case _                  => true
+  }
+
+  /** atomic(T): true if T is an atom or a number after deref. */
+  def atomic1(s: WamState, withReturn: Boolean): Unit = {
+    deref(s.bindings, s.regs(1)) match {
+      case Atom(_) | IntTerm(_) | FloatTerm(_) => builtinAdvance(s, withReturn)
+      case _                                   => backtrack(s)
+    }
+  }
+
+  /** sort(L, S) / msort(L, S): build a sorted list from a ground list L.
+   *  sort/2 also deduplicates; msort/2 keeps duplicates. */
+  def sort2(s: WamState, program: WamProgram, withReturn: Boolean, dedup: Boolean): Unit = {
+    listToSeq(s, program, s.regs(1)) match {
+      case None => backtrack(s)
+      case Some(items) =>
+        val ordered = items.sortWith(termLessThan(program, _, _))
+        val finalSeq = if (dedup) dedupConsecutive(ordered) else ordered
+        val out = seqToList(program, finalSeq)
+        if (unify(s, s.regs(2), out)) builtinAdvance(s, withReturn)
+        else backtrack(s)
+    }
+  }
+
+  private def dedupConsecutive(xs: Seq[WamTerm]): Seq[WamTerm] = {
+    val buf = scala.collection.mutable.ListBuffer.empty[WamTerm]
+    xs.foreach { x =>
+      if (buf.isEmpty || buf.last != x) buf.append(x)
+    }
+    buf.toSeq
+  }
+
+  /** Standard Prolog term ordering for sort/setof:
+   *    Var < Number < Atom < Compound
+   *  Within numbers: by numeric value (Int/Float promoted).
+   *  Within atoms: by string.
+   *  Within compounds: by (arity, functor-string, args lexicographically). */
+  def termLessThan(program: WamProgram, a: WamTerm, b: WamTerm): Boolean = {
+    def order(t: WamTerm): Int = t match {
+      case Ref(_)                    => 0
+      case IntTerm(_) | FloatTerm(_) => 1
+      case Atom(_)                   => 2
+      case Struct(_, _, _)           => 3
+    }
+    val oa = order(a); val ob = order(b)
+    if (oa != ob) return oa < ob
+    (a, b) match {
+      case (Ref(x), Ref(y))                => x < y
+      case (IntTerm(x), IntTerm(y))        => x < y
+      case (IntTerm(x), FloatTerm(y))      => x.toDouble < y
+      case (FloatTerm(x), IntTerm(y))      => x < y.toDouble
+      case (FloatTerm(x), FloatTerm(y))    => x < y
+      case (Atom(x), Atom(y))              =>
+        atomString(program, x) < atomString(program, y)
+      case (Struct(f1, a1, args1), Struct(f2, a2, args2)) =>
+        if (a1 != a2) a1 < a2
+        else {
+          val s1 = atomString(program, f1)
+          val s2 = atomString(program, f2)
+          if (s1 != s2) s1 < s2
+          else lexLess(program, args1, args2)
+        }
+      case _ => false
+    }
+  }
+  private def atomString(program: WamProgram, id: Int): String =
+    if (id >= 0 && id < program.internTable.idToString.length)
+      program.internTable.idToString(id) else s"<atom:$id>"
+  private def lexLess(program: WamProgram, xs: Array[WamTerm], ys: Array[WamTerm]): Boolean = {
+    val n = math.min(xs.length, ys.length)
+    var i = 0
+    while (i < n) {
+      val x = xs(i); val y = ys(i)
+      if (termLessThan(program, x, y)) return true
+      else if (termLessThan(program, y, x)) return false
+      i += 1
+    }
+    xs.length < ys.length
+  }
+
+  /** copy_term(Term, Copy): build a copy of Term with fresh logic variables
+   *  consistently substituted (same Ref → same fresh Ref). Returns the copy
+   *  and the updated env mapping. */
+  def copyTerm(s: WamState, t: WamTerm, env0: Map[Int, Ref]): (WamTerm, Map[Int, Ref]) = {
+    deref(s.bindings, t) match {
+      case Ref(id) =>
+        env0.get(id) match {
+          case Some(fresh) => (fresh, env0)
+          case None =>
+            val fresh = freshVar(s)
+            (fresh, env0 + (id -> fresh))
+        }
+      case Struct(f, a, args) =>
+        var env = env0
+        val newArgs = args.map { arg =>
+          val (na, env1) = copyTerm(s, arg, env)
+          env = env1
+          na
+        }
+        (Struct(f, a, newArgs), env)
+      case other => (other, env0)
+    }
+  }
+
+  /** bagof(+Template, +Goal, -Bag) / setof(+Template, +Goal, -Bag). The
+   *  goal term is in regs(2); Template in regs(1); Bag in regs(3). Runs
+   *  the goal under backtracking, collecting deepDeref(Template) on each
+   *  success, restores outer state, then unifies the resulting list with
+   *  Bag. Empty result fails (unlike findall, which returns []). For
+   *  setof, results are sorted and deduplicated.
+   *
+   *  Module qualification on the goal (e.g. `user:p(X)`) is unwrapped
+   *  the same way as for `\+`/`call`. Free-variable grouping (the `^`
+   *  operator and bagof's "scattered solutions") is NOT supported in
+   *  this implementation — the goal is treated as a single closed scope. */
+  def bagOrSetof(s: WamState, program: WamProgram, withReturn: Boolean, sorted: Boolean): Unit = {
+    val goal = deref(s.bindings, s.regs(2))
+    val template = s.regs(1)
+    metaCollectAll(s, program, template, goal) match {
+      case None => backtrack(s)
+      case Some(items) =>
+        val finalSeq =
+          if (sorted) dedupConsecutive(items.sortWith(termLessThan(program, _, _)))
+          else items
+        if (finalSeq.isEmpty) backtrack(s)
+        else {
+          val bag = seqToList(program, finalSeq)
+          if (unify(s, s.regs(3), bag)) builtinAdvance(s, withReturn)
+          else backtrack(s)
+        }
+    }
+  }
+
+  /** Run `goal` under backtracking and collect deepDeref(template) for
+   *  each success. Returns None if the goal is unresolvable, otherwise
+   *  Some(seq of captured templates in solution order). Outer state is
+   *  fully restored on exit; bindings made during the goal are undone
+   *  via the trail. */
+  def metaCollectAll(s: WamState, program: WamProgram, template: WamTerm,
+                     goal: WamTerm): Option[Seq[WamTerm]] = {
+    val (key, args) = goalToPredCall(s, program, goal) match {
+      case Some(p) => p
+      case None    => return None
+    }
+    program.dispatch.get(key) match {
+      case None => Some(Seq.empty)   // unknown predicate → no solutions
+      case Some(startPc) =>
+        // Snapshot outer state.
+        val savedPc        = s.pc
+        val savedCallStack = s.callStack
+        val savedTrailLen  = s.trail.length
+        val savedCPs       = s.choicePoints
+        val savedRegs      = s.regs.clone()
+        val savedEnvStack  = s.envStack
+        val savedNextVarId = s.nextVarId
+        val savedCutBar    = s.cutBar
+        val savedStatus    = s.status
+        val savedUnifyQ    = s.unifyQueue
+        val savedBuildStk  = s.buildStack
+
+        // Set up sub-call. Goal's args go into A1..An; callStack is
+        // empty so Proceed marks Succeeded for the sub-run.
+        java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
+        args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
+        s.callStack    = Nil
+        s.choicePoints = Nil
+        s.envStack     = Nil
+        s.unifyQueue   = Nil
+        s.buildStack   = Nil
+        s.cutBar       = 0
+        s.pc           = startPc
+        s.status       = Running
+
+        val results = scala.collection.mutable.ListBuffer.empty[WamTerm]
+        while (s.status != Failed) {
+          while (s.status == Running) step(s, program)
+          if (s.status == Succeeded) {
+            results.append(deepDeref(s, template))
+            if (s.choicePoints.isEmpty) {
+              s.status = Failed
+            } else {
+              s.status = Running
+              backtrack(s)
+            }
+          }
+        }
+
+        // Restore outer state — bagof/setof never propagate inner bindings.
+        unwindTrail(s, savedTrailLen)
+        System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
+        s.callStack    = savedCallStack
+        s.choicePoints = savedCPs
+        s.envStack     = savedEnvStack
+        s.nextVarId    = savedNextVarId
+        s.cutBar       = savedCutBar
+        s.unifyQueue   = savedUnifyQ
+        s.buildStack   = savedBuildStk
+        s.pc           = savedPc
+        s.status       = savedStatus
+
+        Some(results.toSeq)
     }
   }
 
