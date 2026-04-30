@@ -78,6 +78,28 @@ test(simple_register_ops_are_direct_lowered) :-
         has(Code, "runtime/reg-set-raw")
     )).
 
+test(structure_read_entry_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_read_struct/1:\nget_structure f/2, A1\nunify_constant a\nunify_variable X1\nproceed\n",
+        wam_clojure_lowerable(test_read_struct/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_read_struct/1, WamCode, [], Code),
+        has(Code, "runtime/enter-unify-mode"),
+        has(Code, "runtime/structure-term?"),
+        has(Code, "runtime/interned-equal?"),
+        assertion(\+ has(Code, "unify-constant a"))
+    )).
+
+test(list_read_entry_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_read_list/1:\nget_list A1\nunify_constant head\nunify_constant []\nproceed\n",
+        wam_clojure_lowerable(test_read_list/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_read_list/1, WamCode, [], Code),
+        has(Code, "runtime/enter-unify-mode"),
+        has(Code, "runtime/list-functor-term"),
+        has(Code, "runtime/structure-term?"),
+        assertion(\+ has(Code, "unify-constant head"))
+    )).
+
 test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",

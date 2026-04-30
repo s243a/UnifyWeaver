@@ -218,6 +218,8 @@ lowered_direct_prefix(_, []).
 lowered_direct_instr(proceed).
 lowered_direct_instr(fail).
 lowered_direct_instr(get_constant(_, _)).
+lowered_direct_instr(get_structure(_, _)).
+lowered_direct_instr(get_list(_)).
 lowered_direct_instr(get_integer(_, _)).
 lowered_direct_instr(get_nil(_)).
 lowered_direct_instr(put_constant(_, _)).
@@ -247,6 +249,15 @@ emit_lowered_expr(get_integer(N, Ai), S, Expr) :-
            [N, S, Ai, S, S, Ai, S, S, S]).
 emit_lowered_expr(get_nil(Ai), S, Expr) :-
     emit_lowered_expr(get_constant("[]", Ai), S, Expr).
+emit_lowered_expr(get_structure(F, Ai), S, Expr) :-
+    clj_lowered_literal(F, Lit),
+    format(atom(Expr),
+           '(let [functor (runtime/normalize-literal-term (:intern-context ~w) ~w) reg-val (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound))] (cond (and (runtime/structure-term? reg-val) (runtime/interned-equal? (:functor reg-val) functor)) (-> ~w (runtime/enter-unify-mode (:args reg-val)) runtime/advance) :else (runtime/backtrack ~w)))',
+           [S, Lit, S, S, Ai, S, S]).
+emit_lowered_expr(get_list(Ai), S, Expr) :-
+    format(atom(Expr),
+           '(let [reg-val (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound)) list-functor (runtime/list-functor-term (:intern-context ~w))] (cond (and (runtime/structure-term? reg-val) (runtime/interned-equal? (:functor reg-val) list-functor)) (-> ~w (runtime/enter-unify-mode (:args reg-val)) runtime/advance) :else (runtime/backtrack ~w)))',
+           [S, S, Ai, S, S, S]).
 emit_lowered_expr(put_constant(C, Ai), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
