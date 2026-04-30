@@ -1270,7 +1270,7 @@ wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil &&
         }
         if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
             addr := vm.HeapLen
-            v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: i.Xn}
+            v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
             vm.heapPush(v)
             if vm.CurrentStruct != nil {
                 idx := vm.CurrentStruct.Arity - wctx.N
@@ -1359,18 +1359,17 @@ wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
         vm.PC++
         return true').
 
-wam_go_case('PutVariable', '        // PutVariable creates a fresh logical variable. The Unbound''s Idx
-        // doubles as the Bindings-table key, so we MUST clear any stale entry
-        // at that key first — when a predicate is re-entered (e.g. via a
-        // recursive call) the same X-register slot gets reused, but the
-        // outer activation may have left a binding under the same Idx.
-        // Without the clear, deref of the "new" Unbound would chase that
-        // leftover and the next Unify(unbound, Integer(N)) would compare
-        // against the stale value instead of binding cleanly. Trail the
-        // clear so backtrack restores the prior binding.
-        vm.trailBinding(i.Xn)
-        delete(vm.Bindings, i.Xn)
-        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: i.Xn}
+wam_go_case('PutVariable', '        // Allocate a globally-unique Idx for the new logical variable.
+        // The earlier strategy reused i.Xn (the X-register slot index)
+        // as the Idx, which collided across activations: an outer
+        // activation''s X207 (Idx=207) and an inner activation''s X207
+        // (also Idx=207) would share Bindings[207] and clobber each
+        // other. The first attempt at a fix `delete(Bindings, i.Xn)`
+        // worked for 2-hop recursion but broke at 3+ hops because the
+        // delete could erase an outer activation''s still-live binding.
+        // Allocating a fresh Idx via allocVarId/0 sidesteps the
+        // collision entirely.
+        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: vm.allocVarId()}
         vm.putReg(i.Xn, v)
         vm.Regs[i.Ai] = v
         vm.PC++
@@ -1403,7 +1402,7 @@ wam_go_case('PutList', '        addr := vm.heapPush(nil)
         return true').
 
 wam_go_case('SetVariable', '        addr := vm.HeapLen
-        v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: i.Xn}
+        v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
         vm.heapPush(v)
         if vm.CurrentStruct != nil {
             if wctx := vm.peekWriteCtx(); wctx != nil {

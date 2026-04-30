@@ -145,7 +145,16 @@ extract_shared_start_pc(OutputDir, Label, PC) :-
     % blew up with `"x" must hold one character` on the multi-char Needle.
     string_length(Needle, NeedleLen),
     After is Start + NeedleLen,
-    sub_string(Content, After, _, _, Rest0),
+    % Take a fixed-length window after the needle. The previous version
+    % used `_` for length, which made sub_string nondeterministically
+    % enumerate substring lengths starting from 0. The FIRST solution
+    % string_digits_prefix accepted was at length 2 — `" 2"` from the
+    % leading space + first digit of `24145` — giving PC=2 instead of
+    % 24145, and turning the bench into a no-op (it called the WAM
+    % starting at PC=2, which is max_depth/1, and got an immediate
+    % unification failure on every seed). 32 characters is plenty to
+    % cover any plausible label PC.
+    sub_string(Content, After, 32, _, Rest0),
     string_trim_left(Rest0, Rest),
     string_digits_prefix(Rest, Digits),
     number_string(PC, Digits).

@@ -100,6 +100,32 @@ type WamState struct {
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
+	// NextVarId is a monotonically-increasing counter used to give every
+	// new Unbound a globally-unique Idx. Earlier code reused i.Xn (the
+	// X-register slot index) as Idx, which made the Bindings map collide
+	// across activations: a recursive call's PutVariable X207 reused
+	// Idx=207, and the outer call's Unbound{Idx:207} would inherit the
+	// inner call's binding via the shared Bindings[207] entry. Symptom
+	// at depth-3 of category_ancestor: outer-level X206 (which held an
+	// Unbound{Idx:207} carried in via the caller's PutVariable X207)
+	// would deref to the inner-level's bound integer, and the
+	// `OuterHops is RecursiveHops + 1` is/2 call would fail with
+	// `1 is 2`. Start above 1000 so the counter never collides with
+	// the register-slot range that was used pre-fix.
+	NextVarId    int
+}
+
+// allocVarId returns a fresh, globally-unique Idx for a new logical
+// variable. The 1000 floor reserves the X-register-slot range below
+// (which earlier code used as Idx values) so existing snapshots /
+// trail entries that happened to pre-date this change can't collide.
+func (vm *WamState) allocVarId() int {
+	if vm.NextVarId < 1000 {
+		vm.NextVarId = 1000
+	}
+	id := vm.NextVarId
+	vm.NextVarId++
+	return id
 }
 
 func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
@@ -330,6 +356,13 @@ func (vm *WamState) Clone() *WamState {
 		Halted:       vm.Halted,
 		CurrentStruct: vm.CurrentStruct,
 		CurrentList:   vm.CurrentList,
+		// Carry over the Idx counter so the cloned VM allocates IDs
+		// strictly above what the parent has issued. Without this the
+		// sub-VM (used by executeAggregate) starts at 1000 and reuses
+		// Idx values the parent already bound — its "fresh" Unbounds
+		// then deref through the parent's bindings and silently drop
+		// every solution.
+		NextVarId:    vm.NextVarId,
 	}
 	newState.Regs = vm.Regs
 	for k, v := range vm.Bindings {

@@ -100,49 +100,107 @@ Y-registers along with A-registers. The fixed cost (copying a
 Fixed in `templates/targets/go_wam/state.go.mustache`
 (`snapshotAllRegs` helper).
 
-## After bugs 1+2+3 — what works, what's still open
+## Bug 4 — `Idx` collision across activations (THIS PR)
 
-After all three fixes:
+Adding deeper instrumentation to `is/2` revealed why 3-hop recursion
+still failed: at depth 3, the outer activation's `X206 is X207 + 1`
+computation evaluated `X207` to the *inner* activation's bound
+integer, producing `1 is 2` and failing.
+
+`PutVariable` was setting `Unbound.Idx = i.Xn` (the X-register slot
+index). Bindings is keyed by `Idx`, so a recursive call's
+`PutVariable X207` reused `Idx=207` and shared `Bindings[207]` with
+the outer call's `Unbound{Idx:207}`. The fix attempted in bug 2
+(`delete(Bindings, i.Xn)` at PutVariable time) papered over the issue
+for 2 hops but at 3 hops would actively erase a still-live binding
+the outer needed.
+
+Fix: allocate a globally-unique `Idx` for every new logical variable
+via a `NextVarId` counter on the WamState. Different activations'
+PutVariables get different Bindings keys, so neither activation can
+clobber the other's binding. Same change applied to the SetVariable
+and UnifyVariable handlers (they also create Unbounds with `Idx=i.Xn`).
+
+`WamState.Clone` had a sister bug — it didn't copy `NextVarId` to the
+sub-VM in `executeAggregate`, so the cloned VM's counter started at
+zero, allocVarId clamped to the 1000 floor, and the sub-VM's "fresh"
+Unbounds collided with parent-bound Idx values in the cloned
+Bindings. Fixed by carrying NextVarId through Clone.
+
+After bug 4:
 
 ```
-ancestor("Quantum_mechanics", "Branches_of_chemistry", H, [QM]) -> 1 solutions  ✓ 1-hop
-ancestor("Quantum_mechanics", "Subfields_of_physics", H, [QM])  -> 1 solutions  ✓ 1-hop
-ancestor("Subfields_of_physics", "Physics", H, [SoP])           -> 1 solutions  ✓ 1-hop
-ancestor("Quantum_mechanics", "Physics", H, [QM])               -> 1 solutions  ✓ 2-hop
-ancestor("Quantum_mechanics", "Chemistry", H, [QM])             -> 1 solutions  ✓ 2-hop
-ancestor("Quantum_mechanics", "Natural_sciences", H, [QM])      -> 0 solutions  ✗ 3-hop
+ancestor("Quantum_mechanics", "Natural_sciences", H, [QM])  -> 2 solutions  ✓ 3-hop
 ```
 
-So the runtime now reliably computes ancestor relationships up to 2
-hops. Direct queries (1-hop) and one level of recursion (2-hop) work.
-**3-hop+ recursion still fails** — this is a separate, deeper bug,
-likely in how nested choice points + heap trims interact when the
-recursion gets deep enough to push multiple CPs at once.
+## Bug 5 — `extract_shared_start_pc` taking the wrong digits (THIS PR)
 
-The full benchmark `tuple_count` is still 0 because
-`effective_distance_sum_selected/3` goes through `power_sum_bound/3`'s
-`BeginAggregate` flow, and that path returns 0 even for
-direct-edge cases that work via the `category_ancestor/4` probe. The
-aggregate Clones the VM state and runs a sub-state to collect
-solutions — something in that Clone+sub-Run chain is dropping
-solutions that the direct path finds.
+The Go gen's `extract_shared_start_pc` parsed `"label": NNNNN,` from
+lib.go to learn the WAM start PC for the bench. It used
+`sub_string(Content, After, _, _, Rest0)` with both length and
+leading-position unbound, which makes sub_string nondeterministically
+enumerate substrings in increasing length order (0, 1, 2, ...).
+`string_digits_prefix` accepted the FIRST length where it could pull
+at least one digit — length 2, giving the substring `" 2"` (leading
+space + the first digit of `24145`). The bench was being told to
+start the WAM at `PC=2` (which is `max_depth/1`'s `GetConstant 10 A1`)
+instead of the actual `PC=24145` (`effective_distance_sum_selected/3`).
+Every bench query failed at the very first instruction.
 
-## Suggested next steps
+Fix: pin the sub_string length to a fixed 32 chars so the digit
+prefix sees the entire numeric token.
 
-1. **3-hop recursion bug.** Add a deeper trace and find why the third
-   nested `category_ancestor/4` call doesn't see Subfields_of_physics's
-   parent. Probably another register-snapshot / Bindings-key collision
-   variant; the recursion at higher depths hits new register slots
-   that weren't in the trail.
-2. **`BeginAggregate` solution dropping.** The sub-VM in
-   `executeAggregate` (`vm.Clone()` + `runUntilPC`) returns 0
-   solutions for direct-edge ancestors. Either Clone is missing some
-   field or runUntilPC exits before the aggregate accumulates.
-   Compare against the Rust runtime's aggregate impl, which works on
-   the same workload.
-3. **Trail trimming on heap restore.** Audit whether
-   `heapTrimTo(HeapTop)` should also unwind any Bindings entries
-   whose values now live past the new heap top.
+This was the single biggest unblock: the bench wasn't running the
+benchmark at all, just hitting an immediate unification failure on
+every seed and reporting `tuple_count=0`.
+
+## Bug 6 — atom equality always doing string compare (mitigated)
+
+The user observed that the bench's slowness suggested missing atom
+interning. `Atom.Equals` was doing `v.Name == o.Name` unconditionally;
+the lowered emitter already produces a shared `wamAtom_*` table for
+literals it emits, but `Atom.Equals` didn't take advantage of it.
+
+Cheap mitigation: pointer-identity short-circuit at the top of
+`Atom.Equals`. When atoms come from the shared intern table they're
+the same pointer and equality is O(1). Falls through to string
+compare for un-interned atoms (raw `&Atom{Name:"..."}` literals
+scattered through `lib.go`'s WAM bytecode and the bench's
+`&Atom{Name: category}` arguments). A more thorough fix would emit
+the WAM bytecode atoms via the same intern table so EVERY atom is
+shared by pointer; that's a bigger refactor and out of scope here.
+
+## After all six fixes — what works
+
+```
+$ ./wam-go-effective-distance-bench  (scale 300, kernels_off)
+mode=accumulated_go_wam
+kernel_mode=kernels_off
+load_ms=0
+query_ms=216015      (~216s)
+total_ms=216015
+seed_count=386
+tuple_count=12       (was 0)
+article_count=74     (was 31, all distance=1.0)
+```
+
+The bench now actually runs the benchmark. Output rows have real
+fractional distances (`0.993865` etc.) instead of all-1.0 sentinels
+that tagged-directly-with-Physics articles got pre-fix.
+
+## What's still open
+
+- **Speed.** 216 s for 12 tuples is way too slow versus Rust's
+  `total_ms=33`. Most likely culprits: (1) unique-Idx-counter inflates
+  the Bindings map and trail, (2) `executeAggregate` clones the full
+  WAM state per sum loop iteration, (3) atom comparisons fall back to
+  string compare for non-shared atoms (mitigated above but the bulk
+  of WAM bytecode atoms aren't shared yet).
+- **Result completeness.** 74 articles out of 271 expected. Some
+  category chains aren't being walked all the way, or some seeds
+  aren't producing weight tuples. Probably another register/heap
+  management edge case at depth >= 4 — needs another instrumented
+  trace.
 
 ## Reproducing
 
