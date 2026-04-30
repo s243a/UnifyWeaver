@@ -39,11 +39,38 @@
 (defn deintern-atom [ctx id]
   (get (:atom-deintern ctx) id))
 
+(defn atom-term [id]
+  {:tag :atom :id id})
+
+(defn atom-term? [v]
+  (and (map? v) (= :atom (:tag v)) (contains? v :id)))
+
+(defn normalize-literal-atom [ctx atom]
+  (let [[_ctx id] (intern-atom ctx atom)]
+    (atom-term id)))
+
 (defn functor-arity [ctx functor]
   (or (get-in ctx [:functor-arity functor])
       (parse-functor-arity functor)))
 
-(defn resolve-instruction [labels instr]
+(declare structure-term?
+         list-functor-term
+         normalize-terms*
+         normalize-regs)
+
+(defn normalize-literal-term [ctx term]
+  (cond
+    (atom-term? term) term
+    (string? term) (normalize-literal-atom ctx term)
+    (and (structure-term? term) (string? (:functor term)))
+    (assoc term
+           :functor (normalize-literal-atom ctx (:functor term))
+           :args (mapv #(normalize-literal-term ctx %) (:args term)))
+    (structure-term? term)
+    (update term :args #(mapv (fn [arg] (normalize-literal-term ctx arg)) %))
+    :else term))
+
+(defn resolve-instruction [labels instr ctx]
   (case (:op instr)
     :call
     (if-let [pc (get labels (:pred instr))]
@@ -73,9 +100,13 @@
     :switch-on-constant
     (let [resolved-cases
           (mapv (fn [entry]
-                  (if-let [pc (get labels (:label entry))]
-                    (assoc entry :target-pc pc)
-                    entry))
+                  (let [entry* (if (and (contains? entry :value)
+                                        (not= "default" (:label entry)))
+                                 (update entry :value #(normalize-literal-term ctx %))
+                                 entry)]
+                    (if-let [pc (get labels (:label entry*))]
+                      (assoc entry* :target-pc pc)
+                      entry*)))
                 (:cases instr))
           case-map
           (into {}
@@ -102,10 +133,31 @@
              :default-target-pc default-target-pc
              :default-fallthrough? default-fallthrough?))
 
+    :get-constant
+    (update instr :constant #(normalize-literal-term ctx %))
+
+    :put-constant
+    (update instr :constant #(normalize-literal-term ctx %))
+
+    :set-constant
+    (update instr :constant #(normalize-literal-term ctx %))
+
+    :unify-constant
+    (update instr :constant #(normalize-literal-term ctx %))
+
+    :get-structure
+    (update instr :functor #(normalize-literal-term ctx %))
+
+    :put-structure
+    (update instr :functor #(normalize-literal-term ctx %))
+
     instr))
 
-(defn resolve-instructions [code labels]
-  (mapv #(resolve-instruction labels %) code))
+(defn resolve-instructions
+  ([code labels]
+   (resolve-instructions code labels (build-intern-context [] [])))
+  ([code labels ctx]
+   (mapv #(resolve-instruction labels % ctx) code)))
 
 (defn new-state
   ([code labels start-pc regs]
@@ -113,23 +165,25 @@
   ([code labels start-pc regs foreign-handlers]
    (new-state code labels start-pc regs foreign-handlers nil))
   ([code labels start-pc regs foreign-handlers intern-context]
-  {:code code
-   :labels labels
-   :pc start-pc
-   :regs regs
-   :foreign-handlers foreign-handlers
-   :intern-context intern-context
-   :env-stack []
-   :bindings {}
-   :stack []
-   :trail []
-   :heap []
-   :unify-queue []
-   :build-stack []
-   :choice-points []
-   :cut-bar 0
-   :next-var-id 0
-   :status :running}))
+   (let [base-ctx (or intern-context (build-intern-context [] []))
+         [ctx* regs*] (normalize-regs base-ctx regs)]
+     {:code code
+      :labels labels
+      :pc start-pc
+      :regs regs*
+      :foreign-handlers foreign-handlers
+      :intern-context ctx*
+      :env-stack []
+      :bindings {}
+      :stack []
+      :trail []
+      :heap []
+      :unify-queue []
+      :build-stack []
+      :choice-points []
+      :cut-bar 0
+      :next-var-id 0
+      :status :running})))
 
 (defn fail-state [state]
   (assoc state :status :failed))
@@ -298,10 +352,57 @@
 (defn structure-term? [v]
   (and (map? v) (= :struct (:tag v))))
 
-(defn list->term [items]
+(defn list-functor-term [ctx]
+  (normalize-literal-atom ctx "[|]/2"))
+
+(defn normalize-term* [ctx term]
+  (cond
+    (atom-term? term) [ctx term]
+    (string? term)
+    (let [[ctx* id] (intern-atom ctx term)]
+      [ctx* (atom-term id)])
+    (structure-term? term)
+    (let [functor (:functor term)
+          [ctx1 functor*]
+          (cond
+            (atom-term? functor) [ctx functor]
+            (string? functor)
+            (let [[ctx* id] (intern-atom ctx functor)]
+              [ctx* (atom-term id)])
+            :else [ctx functor])
+          [ctx2 args*] (normalize-terms* ctx1 (:args term))]
+      [ctx2 (assoc term :functor functor* :args args*)])
+    :else [ctx term]))
+
+(defn normalize-terms* [ctx terms]
+  (loop [current-ctx ctx
+         remaining terms
+         out []]
+    (if-let [term (first remaining)]
+      (let [[next-ctx norm] (normalize-term* current-ctx term)]
+        (recur next-ctx (rest remaining) (conj out norm)))
+      [current-ctx (vec out)])))
+
+(defn denormalize-term [ctx term]
+  (cond
+    (atom-term? term) (deintern-atom ctx (:id term))
+    (structure-term? term)
+    (assoc term
+           :functor (denormalize-term ctx (:functor term))
+           :args (mapv #(denormalize-term ctx %) (:args term)))
+    :else term))
+
+(defn normalize-regs [ctx regs]
+  (reduce-kv (fn [[current-ctx out] reg value]
+               (let [[next-ctx normalized] (normalize-term* current-ctx value)]
+                 [next-ctx (assoc out reg normalized)]))
+             [ctx {}]
+             regs))
+
+(defn list->term [ctx items]
   (reduce (fn [tail item]
-            (structure-term "[|]/2" [item tail]))
-          "[]"
+            (structure-term (list-functor-term ctx) [item tail]))
+          (normalize-literal-atom ctx "[]")
           (reverse items)))
 
 (defn term->unify-items [term]
@@ -389,8 +490,9 @@
 
 (defn foreign-args [state arity]
   (mapv (fn [idx]
-          (deref-value (:bindings state)
-                       (reg-get-raw state (str "A" idx))))
+          (denormalize-term (:intern-context state)
+                            (deref-value (:bindings state)
+                                         (reg-get-raw state (str "A" idx)))))
         (range 1 (inc arity))))
 
 (defn foreign-binding-reg [idx]
@@ -404,9 +506,11 @@
   (loop [s state
          pairs (seq bindings)]
     (if-let [[idx value] (first pairs)]
-      (let [reg (foreign-binding-reg idx)
-            current (or (reg-get-raw s reg) ::unbound)
-            [ok next-state] (unify-values s current value)]
+      (let [[ctx* value*] (normalize-term* (:intern-context s) value)
+            s* (assoc s :intern-context ctx*)
+            reg (foreign-binding-reg idx)
+            current (or (reg-get-raw s* reg) ::unbound)
+            [ok next-state] (unify-values s* current value*)]
         (if ok
           (recur next-state (next pairs))
           [false state]))
@@ -517,7 +621,7 @@
 
         :put-list
         (-> state
-            (push-build-frame (:reg instr) "[|]/2" 2)
+            (push-build-frame (:reg instr) (list-functor-term (:intern-context state)) 2)
             advance)
 
         :get-variable
@@ -550,10 +654,11 @@
 
         :get-list
         (let [reg-val (deref-value (:bindings state)
-                                   (or (reg-get-raw state (:reg instr)) ::unbound))]
+                                   (or (reg-get-raw state (:reg instr)) ::unbound))
+              list-functor (list-functor-term (:intern-context state))]
           (cond
             (structure-term? reg-val)
-            (if (= (:functor reg-val) "[|]/2")
+            (if (= (:functor reg-val) list-functor)
               (-> state
                   (enter-unify-mode (:args reg-val))
                   advance)
