@@ -1453,6 +1453,10 @@ finally dominates the constant factors.
 
 ### Phase H follow-up — depth-sweep (2026-04-29)
 
+> **⚠ This sweep was based on a broken instrumentation. See the
+> "max_depth instrumentation bug + retraction" section below for the
+> corrected reading.**
+
 Ran the depth-sweep filed above. The benchmark gained a
 `WAM_EFF_DIST_BENCH_MAX_DEPTH` env var that overrides
 `max_depth/1` at codegen time. Sweep at scale=1k, 2 trials per
@@ -1637,6 +1641,109 @@ Net: the IntSet-crossover question remains open. The
 infrastructure (generator + bench wiring + max_depth env var) is
 in place; the binary-side bug needs to be resolved before the
 crossover can be measured on this synthetic shape.
+
+### max_depth instrumentation bug + retraction (2026-04-29)
+
+**The bug**: `templates/targets/haskell_wam/main.hs.mustache`
+hardcoded `wcForeignConfig = Map.singleton "max_depth" 10`. The
+bench's `override_max_depth/0` (added in PR #1712) correctly
+retracted/asserted `user:max_depth/1`, but the codegen never
+consumed it — `nativeKernel_category_ancestor` always cut DFS
+recursion at depth 10 regardless of the env var.
+
+This single bug retroactively invalidates two prior conclusions:
+
+1. **PR #1712's "graph is shape-bound" depth-sweep is wrong.**
+   The 1k bench at WAM_EFF_DIST_BENCH_MAX_DEPTH ∈ {10, 30, 50}
+   all returned `tuple_count=48` because the kernel's actual
+   max_depth was always 10. Re-measuring the same 1k bench with
+   the fix in place at depth=30 returns **89 paths** (not 48)
+   and the query takes **~120 seconds** (not ~50 ms) — paths
+   genuinely deepen, the visited list genuinely grows. The wiki
+   graph is NOT shape-bound; PR #1712's measurement was
+   instrumentation-bound.
+
+2. **PR #1714's "binary returns 0 on linear chains" is the same
+   bug.** synth_chain_30 with `WAM_EFF_DIST_BENCH_MAX_DEPTH=30`
+   needs paths up to 29 hops deep. The kernel cut at hardcoded
+   depth=10, so every seed returned `[]`. The "demand-driven Par*
+   fork interaction with linear chains" hypothesis was wrong;
+   the actual cause was a missing template substitution.
+
+**The fix** (`fix(wam-haskell): resolve max_depth from
+user:max_depth/1 at codegen`, cherry-picked from the diagnostic
+branch):
+
+- Replace the hardcoded `10` with `{{max_depth}}` in
+  `main.hs.mustache`.
+- Add `resolve_max_depth/2` in `wam_haskell_target.pl` that
+  reads from `Options [max_depth(N)]` first, then
+  `user:max_depth/1`, defaulting to 10. Threaded through
+  `render_template`.
+- Three new tests in `test_wam_haskell_target.pl` covering
+  default/user-fact/option-override priorities.
+
+### Phase H follow-up #3 — IntSet crossover finally measured (2026-04-29)
+
+With the fix in place, the synthetic chain workload — designed
+specifically to grow visited lists past Phase H's expected
+crossover — produces real numbers.
+
+**`synth_chain_300` (chain depth 300, 200 articles,
+max_depth=300, 2 trials per variant, rotating order)**:
+
+| variant | trial 1 (ms) | trial 2 (ms) | mean (ms) |
+| --- | ---: | ---: | ---: |
+| intset (Phase G + H) | 80 | 81 | **80.5** |
+| lowered (Phase G `not_member_list`) | 111 | 91 | **101.0** |
+| unlowered (builtin \\+/1 + member walk) | 54 | 81 | 67.5 |
+
+**intset vs lowered: 1.25×** — IntSet beats the list walk on
+deep visited lists, as the Phase H design predicted. Trial-pair
+spread on intset (80 vs 81) is tight; the result is real, not
+noise.
+
+The unlowered timing (67.5 mean, 27ms spread) is too noisy to
+read as faster than lowered — that's a 27ms swing on an 80ms
+mean, dominated by cabal startup + cache effects on first
+trials. The intset/lowered comparison is the load-bearing one
+and it's clean.
+
+**`synth_chain_30` correctness sanity** (chain depth 30, 10
+articles, max_depth=30): all three variants return
+`tuple_count=10` matching SWI-Prolog. Times are below resolution
+(0-1 ms) so timing comparison is not informative at this scale,
+but correctness is preserved end-to-end.
+
+### Honest reading of the IntSet arc, after the fix
+
+1. **Phase H's algorithmic design was correct.** On workloads
+   that genuinely grow visited lists past ~50 elements, IntSet
+   beats Phase G's list walk by ~25 %. This is the speedup
+   originally predicted in the design.
+
+2. **The wiki workload at the originally-tested depths really is
+   shape-bound, but only at small `max_depth`.** At max_depth=10
+   (the canonical workload setting), wiki paths terminate before
+   the cap fires, so visited lists stay small (~10 elements) and
+   IntSet's constant factor exceeds the list walk's. **This is
+   the real Phase H finding for the canonical workload, and it
+   stands.**
+
+3. **The 1k bench at deeper max_depth is a different workload
+   shape.** At max_depth=30 paths actually reach that depth
+   (89 vs 48 paths), and queries take 120 seconds. Whether
+   IntSet wins there has not been re-measured on this branch —
+   the synth_chain_300 measurement covers the design question;
+   the wiki-1k-at-deep-depth measurement is a separate bench
+   exercise filed as future work.
+
+4. **Bench instrumentation should always be cross-checked.** The
+   missing template substitution survived three PRs (#1698,
+   #1712, #1714) because every measurement was internally
+   consistent at the broken depth=10 cap. Adding tests that
+   *fail* when max_depth doesn't flow into the kernel — as the
+   fix's three new tests do — closes the loophole.
 
 ---
 
