@@ -3,6 +3,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/wam_rust_lowered_emitter',
+              [lower_predicate_to_rust/4]).
 :- use_module('../src/unifyweaver/targets/rust_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/core/template_system', [render_named_template/3]).
@@ -1671,6 +1673,27 @@ test_native_wam_mixed_project :-
         fail_test(Test, 'Mixed native+WAM project not generated correctly')
     ).
 
+test_rust_wam_lib_imports_hashset :-
+    Test = 'WAM-Rust: lib template imports HashSet for foreign_pred_keys',
+    (   render_named_template(rust_wam_lib,
+            [module_name='hashset_test', date='test', predicates_code=''],
+            LibStr),
+        sub_string(LibStr, _, _, _, 'use std::collections::{HashMap, HashSet};')
+    ->  pass(Test)
+    ;   fail_test(Test, 'rust_wam_lib template does not import HashSet')
+    ).
+
+test_lowered_calls_detected_kernel_via_callforeign :-
+    Test = 'WAM-Rust: lowered helper calls detected kernel via CallForeign',
+    WamCode = 'put_value X1 A1\ncall category_ancestor/4 4\nproceed\n',
+    (   lower_predicate_to_rust(test_foreign_call/1, WamCode,
+            [foreign_pred_keys(['category_ancestor/4'])], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        sub_string(RustCode, _, _, _, 'CallForeign("category_ancestor/4".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Lowered helper did not emit CallForeign for detected kernel')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -1741,6 +1764,8 @@ run_tests :-
     test_cross_predicate_distinct_pcs,
     test_shared_wam_labels_contain_all_preds,
     test_native_wam_mixed_project,
+    test_rust_wam_lib_imports_hashset,
+    test_lowered_calls_detected_kernel_via_callforeign,
 
     format('~n========================================~n'),
     (   test_failed

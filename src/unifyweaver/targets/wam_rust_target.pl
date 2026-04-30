@@ -2929,7 +2929,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
 
     % Compile predicates and generate lib.rs
-    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    pairs_keys(DetectedKernels, DetectedKeys),
+    compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode],
@@ -3018,7 +3019,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
             atomic_list_concat(RustLines, '\n', PredCode),
             format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
-            Entry = classified(Module, Pred, Arity, lowered, PredCode)
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode))
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -3041,6 +3042,17 @@ collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     % Count instructions to compute next PC
+    length(InstrParts, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrParts, RestInstrs, AllInstrs),
+    append(LabelParts, RestLabels, AllLabels).
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
     collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
@@ -3069,7 +3081,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Re
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, lowered, PredCode)|Rest],
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
