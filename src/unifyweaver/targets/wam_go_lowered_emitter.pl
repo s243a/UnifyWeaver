@@ -18,11 +18,15 @@
     wam_go_lowerable/3,
     lower_predicate_to_go/4,
     is_deterministic_pred_go/1,
-    go_func_name/2
+    go_func_name/2,
+    has_internal_ite_pattern/1   % +Instrs (true if instrs contain a complete try/cut/jump/trust ITE)
 ]).
 
 :- use_module(library(lists)).
-:- use_module(wam_go_target, [escape_go_string/2]).
+:- use_module(wam_go_target, [
+    escape_go_string/2,
+    intern_atom_go/2
+]).
 
 % =====================================================================
 % Parsing
@@ -202,11 +206,79 @@ func (vm *WamState) ~w() bool {', [FuncName, Pred, Arity, FuncName]),
     GoLines = [Header, Body, Footer].
 
 %% emit_instrs(+Instrs, +Indent)
-%  Emit Go code for a list of instructions.
+%  Emit Go code for a list of instructions. Detects the WAM if-then-else
+%  pattern (try_me_else / cut_ite / jump / trust_me) and lowers it to
+%  native Go branching instead of silently consuming the choice-point
+%  instructions. The condition runs inside an inline closure so existing
+%  `return false` failure paths short-circuit cleanly; on failure the
+%  trail is unwound to its pre-condition mark before the else branch.
 emit_instrs([], _).
+emit_instrs([try_me_else(_)|Rest], Ind) :-
+    split_ite_blocks_go(Rest, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs),
+    !,
+    emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, Ind),
+    emit_instrs(ContInstrs, Ind).
 emit_instrs([Instr|Rest], Ind) :-
     emit_one(Instr, Ind),
     emit_instrs(Rest, Ind).
+
+%% has_internal_ite_pattern(+Instrs)
+%  True if the instruction list contains a complete try_me_else /
+%  cut_ite / jump / trust_me sequence. Used by tests to assert that the
+%  emitter actually triggers ITE lowering on a given input.
+has_internal_ite_pattern(Instrs) :-
+    append(_, [try_me_else(_)|Rest], Instrs),
+    split_ite_blocks_go(Rest, _, _, _, _),
+    !.
+
+%% split_ite_blocks_go(+Instrs, -CondInstrs, -ThenInstrs, -ElseInstrs, -ContInstrs)
+%  Slice the instruction stream after a try_me_else into the four parts
+%  of an if-then-else:
+%    <cond_instrs> cut_ite <then_instrs> jump(_) trust_me <else_instrs+cont_instrs>
+%  We don't currently have label PC information at this layer, so the
+%  Else block absorbs everything after trust_me; this matches the
+%  typical case where ITE is the tail of a clause and the continuation
+%  is empty (or itself terminates with proceed).
+split_ite_blocks_go(Instrs, CondInstrs, ThenInstrs, ElseInstrs, ContInstrs) :-
+    split_at_instr_go(Instrs, cut_ite, CondInstrs, AfterCut),
+    split_at_jump_go(AfterCut, ThenInstrs, AfterJump),
+    AfterJump = [trust_me|ElseAndCont],
+    ElseInstrs = ElseAndCont,
+    ContInstrs = [].
+
+split_at_instr_go([], _, _, _) :- !, fail.
+split_at_instr_go([Instr|Rest], Instr, [], Rest) :- !.
+split_at_instr_go([H|T], Instr, [H|Before], After) :-
+    split_at_instr_go(T, Instr, Before, After).
+
+split_at_jump_go([], [], []) :- !, fail.
+split_at_jump_go([jump(_)|Rest], [], Rest) :- !.
+split_at_jump_go([H|T], [H|Then], Rest) :-
+    split_at_jump_go(T, Then, Rest).
+
+%% emit_ite_block(+CondInstrs, +ThenInstrs, +ElseInstrs, +Indent)
+%  Emit native Go if/else for the WAM if-then-else pattern.
+%  The condition runs in an immediately-invoked closure that returns
+%  bool, so any inner `return false` short-circuits to a false outcome
+%  without escaping the surrounding lowered function. The trail mark
+%  taken before the closure is used to unwind any partial bindings made
+%  by the condition before the else branch executes.
+emit_ite_block(CondInstrs, ThenInstrs, ElseInstrs, I) :-
+    atom_concat(I, "    ", InnerInd),
+    format("~w// if-then-else (lowered from try_me_else/cut_ite/jump/trust_me)~n", [I]),
+    format("~w{~n", [I]),
+    format("~w    _trailMark := vm.TrailLen~n", [I]),
+    format("~w    _condOk := func() bool {~n", [I]),
+    emit_instrs(CondInstrs, InnerInd),
+    format("~w        return true~n", [I]),
+    format("~w    }()~n", [I]),
+    format("~w    if _condOk {~n", [I]),
+    emit_instrs(ThenInstrs, InnerInd),
+    format("~w    } else {~n", [I]),
+    format("~w        vm.unwindTrailTo(_trailMark)~n", [I]),
+    emit_instrs(ElseInstrs, InnerInd),
+    format("~w    }~n", [I]),
+    format("~w}~n", [I]).
 
 % --- Terminal instructions ---
 
@@ -249,14 +321,15 @@ emit_one(get_integer(NStr, AiStr), I) :-
 
 emit_one(get_nil(AiStr), I) :-
     go_reg_idx(AiStr, Ai),
+    intern_atom_go("[]", NilVar),
     format("~w// get_nil ~w~n", [I, AiStr]),
     format("~w{~n", [I]),
     format("~w    _a := vm.deref(vm.Regs[~w])~n", [I, Ai]),
     format("~w    if _, ok := _a.(*Unbound); ok {~n", [I]),
     format("~w        u := _a.(*Unbound)~n", [I]),
     format("~w        vm.trailBinding(u.Idx)~n", [I]),
-    format("~w        vm.Regs[u.Idx] = &Atom{Name: \"[]\"}~n", [I]),
-    format("~w    } else if !valueEquals(vm.deref(_a), &Atom{Name: \"[]\"}) {~n", [I]),
+    format("~w        vm.Regs[u.Idx] = ~w~n", [I, NilVar]),
+    format("~w    } else if !valueEquals(vm.deref(_a), ~w) {~n", [I, NilVar]),
     format("~w        return false~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
@@ -450,13 +523,19 @@ go_reg_idx(RegStr, Idx) :-
     ).
 
 %% go_val_literal(+Str, -GoLiteral)
-%  Convert a WAM constant to a Go value literal.
+%  Convert a WAM constant to a Go value literal. Atom literals are
+%  routed through intern_atom_go/2 so identical atoms share a single
+%  package-level *Atom value rather than allocating per call.
 go_val_literal(Str, GoVal) :-
     (   number_string(N, Str), integer(N)
     ->  format(atom(GoVal), '&Integer{Val: ~w}', [N])
     ;   number_string(F, Str), float(F)
     ->  format(atom(GoVal), '&Float{Val: ~w}', [F])
-    ;   format(atom(GoVal), '&Atom{Name: "~w"}', [Str])
+    ;   intern_atom_go(Str, AtomVar)
+    ->  GoVal = AtomVar
+    ;   % Defensive fallback if interning is somehow unavailable.
+        escape_go_string(Str, Escaped),
+        format(atom(GoVal), '&Atom{Name: "~w"}', [Escaped])
     ).
 
 %% pred_to_go_call(+PredStr, -CallExpr)

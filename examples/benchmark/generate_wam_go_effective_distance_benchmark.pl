@@ -79,7 +79,10 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     extract_shared_start_pc(OutputDir,
         "category_ancestor$effective_distance_sum_selected/3",
         WeightPC),
-    write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots),
+    % Resolve dimension_n at codegen time so user:dimension_n/1 reaches
+    % the generated Go code (was previously hardcoded to 5.0 in main.go).
+    wam_go_target:resolve_dimension_n_go(Options, DimN),
+    write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots, DimN),
     format(user_error,
            '[WAM-Go-EffectiveDistance] variant=~w kernels=~w output=~w~n',
            [VariantAtom, KernelModeAtom, OutputDir]).
@@ -159,7 +162,7 @@ take_digits([C|Rest], [C|Digits]) :-
     take_digits(Rest, Digits).
 take_digits(_, []).
 
-write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots) :-
+write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots, DimN) :-
     go_article_categories_literal(ArticleCategories, ArticleCategoriesLiteral),
     go_string_slice_literal(Roots, RootsLiteral),
     make_directory_path(OutputDir),
@@ -288,7 +291,7 @@ func computeResults(root string, articleCats []articleCategoryPair) ([]resultRow
         }
     }
 
-    n := 5.0
+    n := float64(~w)
     invN := -1.0 / n
     rows := make([]resultRow, 0, len(articleWeightSums))
     for article, weightSum := range articleWeightSums {
@@ -350,7 +353,7 @@ func main() {
     fmt.Fprintf(os.Stderr, "tuple_count=%%d\\n", tupleCount)
     fmt.Fprintf(os.Stderr, "article_count=%%d\\n", len(rows))
 }
-', [WeightPC, ArticleCategoriesLiteral, RootsLiteral, KernelModeAtom]),
+', [WeightPC, ArticleCategoriesLiteral, RootsLiteral, DimN, KernelModeAtom]),
     setup_call_cleanup(
         open(MainPath, write, Stream),
         format(Stream, '~w', [Code]),
