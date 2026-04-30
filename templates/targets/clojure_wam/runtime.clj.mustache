@@ -52,9 +52,16 @@
   (let [[_ctx id] (intern-atom ctx atom)]
     (atom-term id)))
 
+(defn functor-key [ctx functor]
+  (cond
+    (string? functor) functor
+    (atom-term? functor) (deintern-atom ctx (:id functor))
+    :else functor))
+
 (defn functor-arity [ctx functor]
-  (or (get-in ctx [:functor-arity functor])
-      (parse-functor-arity functor)))
+  (let [key (functor-key ctx functor)]
+    (or (get-in ctx [:functor-arity key])
+        (parse-functor-arity key))))
 
 (declare structure-term?
          list-functor-term
@@ -345,12 +352,12 @@
   (let [left* (deref-value (:bindings state) left)
         right* (deref-value (:bindings state) right)]
     (cond
-      (= left* right*) [true state]
+      (interned-equal? left* right*) [true state]
       (logic-var? left*) [true (bind-var state left* right*)]
       (logic-var? right*) [true (bind-var state right* left*)]
       (and (structure-term? left*)
            (structure-term? right*)
-           (= (:functor left*) (:functor right*)))
+           (interned-equal? (:functor left*) (:functor right*)))
       (unify-arg-lists state (:args left*) (:args right*))
       :else [false state])))
 
