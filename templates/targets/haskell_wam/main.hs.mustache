@@ -226,7 +226,7 @@ main = do
     -- wcInternTable is the system-wide atom intern table (compile-time +
     -- runtime atoms). wcFfiFacts feeds the FFI kernel path.
     let !ctx = (mkContext mergedCode mergedLabels)
-            { wcForeignConfig = Map.singleton "max_depth" 10
+            { wcForeignConfig = Map.singleton "max_depth" {{max_depth}}
             , wcLoweredPredicates = Lowered.loweredPredicates
             , wcInternTable   = fullInternTable
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}

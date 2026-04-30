@@ -1385,6 +1385,51 @@ test_b1_lmdb_manifest_wiring_option_present :-
     ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
     ).
 
+%% Regression test for the linear-chain-zero-results bug: the FFI kernel's
+%% max_depth must be substituted from user:max_depth/1 (or an option) at
+%% codegen time. Hardcoding 10 in the Main.hs template caused chain-shaped
+%% queries with deeper roots (e.g. cat_001 -> ... -> cat_030) to return
+%% zero results — the kernel cut off recursion at depth 10, never reaching
+%% the root, while SWI-Prolog (using the same workload's max_depth/1 fact
+%% asserted to 30) found the paths.
+test_max_depth_default_10_when_no_user_fact :-
+    Test = 'WAM-Haskell: Main.hs max_depth defaults to 10 when no user:max_depth/1',
+    %% Ensure no stale user:max_depth/1 leaks from other tests.
+    retractall(user:max_depth(_)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Default max_depth=10 not present in Main.hs')
+    ).
+
+test_max_depth_from_user_fact :-
+    Test = 'WAM-Haskell: Main.hs max_depth picks up user:max_depth/1',
+    %% Simulate the workload (effective_distance.pl) asserting a depth bound.
+    retractall(user:max_depth(_)),
+    assertz(user:max_depth(30)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 30"),
+        \+ sub_string(S, _, _, _, "Map.singleton \"max_depth\" 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'user:max_depth(30) not propagated into Main.hs FFI config')
+    ),
+    retractall(user:max_depth(_)).
+
+test_max_depth_option_overrides_user_fact :-
+    Test = 'WAM-Haskell: max_depth(N) option overrides user:max_depth/1',
+    retractall(user:max_depth(_)),
+    assertz(user:max_depth(30)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [max_depth(50)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 50"),
+        \+ sub_string(S, _, _, _, "Map.singleton \"max_depth\" 30")
+    ->  pass(Test)
+    ;   fail_test(Test, 'max_depth(50) option did not override user:max_depth(30)')
+    ),
+    retractall(user:max_depth(_)).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -1776,6 +1821,10 @@ run_tests :-
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
+    %% max_depth substitution (regression for linear-chain-zero-results)
+    test_max_depth_default_10_when_no_user_fact,
+    test_max_depth_from_user_fact,
+    test_max_depth_option_overrides_user_fact,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

@@ -2807,6 +2807,12 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  IntAtomSeeds = true
     ;   IntAtomSeeds = false
     ),
+    % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
+    % by the workload or overridden by tests) so the generated FFI kernel
+    % uses the same depth bound SWI-Prolog would. Defaults to 10 to match
+    % the historical hardcoded value when no max_depth/1 fact is present.
+    % See effective_distance.pl line 43 for the workload's default.
+    resolve_max_depth(Options, MaxDepth),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2820,7 +2826,27 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
+        , max_depth=MaxDepth
         ], Code).
+
+%% resolve_max_depth(+Options, -MaxDepth)
+%  Determine the FFI kernel's depth bound. Priority order:
+%   1. Options list: max_depth(N)
+%   2. user:max_depth/1 fact (asserted by the workload)
+%   3. Default: 10
+%  Always returns a positive integer.
+resolve_max_depth(Options, MaxDepth) :-
+    (   option(max_depth(M), Options),
+        integer(M),
+        M >= 1
+    ->  MaxDepth = M
+    ;   current_predicate(user:max_depth/1),
+        user:max_depth(M),
+        integer(M),
+        M >= 1
+    ->  MaxDepth = M
+    ;   MaxDepth = 10
+    ).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)
 %  Generates the Haskell code to populate wcInlineFacts in the WamContext.
