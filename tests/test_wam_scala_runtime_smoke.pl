@@ -104,6 +104,8 @@
 :- dynamic user:wam_var_check_then_bind/1.
 :- dynamic user:wam_dup_first_arg/2.
 :- dynamic user:wam_dup_first_q/2.
+:- dynamic user:wam_between_q/3.
+:- dynamic user:wam_between_collect/3.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -266,6 +268,10 @@ user:wam_dup_first_arg(a, b).
 user:wam_dup_first_arg(c, d).
 user:wam_dup_first_arg(a, e).
 user:wam_dup_first_q(X, Y) :- user:wam_dup_first_arg(X, Y).
+
+% --- between/3 ---
+user:wam_between_q(L, H, X)         :- between(L, H, X).
+user:wam_between_collect(L, H, R)   :- findall(X, between(L, H, X), R).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -930,6 +936,30 @@ test(builtin_switch_dup_first_arg) :-
             verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['c','d'], "true"),
             verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','x'], "false"),
             verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['b','b'], "false")
+        )).
+
+% --- between/3 ---
+%   bound mode: succeeds iff Low =< X =< High
+%   unbound + findall: enumerates Low..High via the multi-solution path
+test(builtin_between) :-
+    with_scala_project(
+        [user:wam_between_q/3, user:wam_between_collect/3],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','3'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','1'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','5'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','0'], "false"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','6'], "false"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','-1'], "false"),
+            % findall + between exercises the multi-solution path.
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['1','5','[1,2,3,4,5]'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['3','3','[3]'],         "true"),
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['1','3','[1,2,3,4]'],   "false")
         )).
 
 :- end_tests(wam_scala_runtime_smoke).
