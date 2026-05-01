@@ -290,6 +290,43 @@ but the `len(vm.Stack)` mark gives the same effect because env
 trimming guarantees the live frames stay reachable until backtrack
 truncates them.
 
+### Phase E: Y-reg snapshot bounded by actually-used range (May 2026, `perf/wam-go-yreg-trail`)
+
+After Phase D the per-CP profile showed `restoreSavedRegs` at ~42%
+of CPU, with the Y-reg copy (100 elements) dominating over the A-reg
+copy (8 elements). Most clauses use only ~10 Y-regs; the snapshot
+was paying for 100.
+
+Tried first: trail-based Y-reg restoration (per-write trail entries,
+no per-CP snapshot). It hung the bench — too many trail entries +
+subtle ordering issues with `bindUnbound`'s alias-rewrite loop and
+the existing `trailBinding(i.Xn)` calls in `GetVariable` /
+`UnifyVariable` (leftovers from when Idx == register slot index, now
+wrong with allocVarId starting at 1000+). Reverted.
+
+Approach that worked: track `vm.MaxYReg` as a high-water mark of the
+highest Y-reg index ever written, bumped inside `putReg`. The
+snapshot copies only `Regs[200..vm.MaxYReg]` instead of the full Y
+range. For the bench's category_ancestor (uses ~10 Y-regs), this
+shrinks the snapshot from 108 elements to ~18 and the per-CP
+memmove proportionally.
+
+Two bugs surfaced and were fixed:
+
+1. **MaxYReg is monotonic but the *failed clause* could grow it
+   past push-time.** If the snapshot was made when MaxYReg was N
+   and the failed clause wrote a higher Y-reg, restore wouldn't
+   touch the slot — it'd stay at the failed value. Fix:
+   `restoreSavedRegs` now clears `Regs[pushMaxY..vm.MaxYReg]` to
+   nil after restoring the snapshot (those slots were nil at push
+   time by construction).
+
+2. **`Clone()` didn't carry MaxYReg.** Sub-VMs in `executeAggregate`
+   started with MaxYReg=0, snapshot omitted Y-regs, backtrack
+   inside the sub-VM lost values the failed clause overwrote.
+   Symptom: `Velocity Physics 1.602159` instead of the
+   post-Phase-D `1.601079`. Fix: Clone copies MaxYReg.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
 All medians of 5 alternating trials on the 50-seed sub-bench. Full
@@ -302,6 +339,7 @@ All medians of 5 alternating trials on the 50-seed sub-bench. Full
 | Phase B (`Regs[320]` + default-label resolve) | n/a | ~178s | 1.91x | 1.91x |
 | Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
 | Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
+| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | **8.85x / 8.85x** |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
@@ -312,8 +350,9 @@ was generated with `max_depth >= 50`; tracked in
 ### Remaining headroom
 
 - **`bindUnbound`'s alias-rewrite loop** (`for idx, reg := range vm.Regs { if reg == u { vm.Regs[idx] = val } }`) is O(320) per binding. With the snapshot/restore work largely defanged, this is the next visible bandwidth cost. Could be replaced by deref-on-read (every reader that takes an `Unbound` derefs through `vm.getBinding`), at the cost of auditing every `vm.Regs[N]` read in the codegen.
-- **`Bindings map[int]Value` → `[]Value`** (the `perf/wam-go-bindings-slice-and-stack-share` branch). Performance-neutral at the moment because it was committed before Phase D and the dominant cost was elsewhere; with the per-CP work now small, the map's per-access cost may show up. Worth re-measuring on top of Phase D.
+- **`Bindings map[int]Value` → `[]Value`** (the `perf/wam-go-bindings-slice-and-stack-share` branch). Performance-neutral at the moment because it was committed before Phase D and the dominant cost was elsewhere; with the per-CP work now small, the map's per-access cost may show up. Worth re-measuring on top of Phase E.
 - **Heap-trim on backtrack.** `vm.Heap = vm.Heap[:cp.HeapTop]` is fast but allocations to `vm.Heap` still happen via `append`. A pool / arena could eliminate the steady GC churn.
+- **Trail-based Y-reg restoration** (proper version). The Phase-E attempt failed because `trailBinding(i.Xn)` calls in GetVariable/UnifyVariable leak Bindings entries with addresses that overlap the Y-reg range, AND `bindUnbound`'s alias-rewrite loop doesn't trail Y-reg overwrites. With both fixed, trail-based restoration could be made to work and would drop the per-CP snapshot to just A-regs (8 elements). Deferred — the MaxYReg approach captures most of the upside without the audit risk.
 
 ### Lessons unique to the Go runtime
 

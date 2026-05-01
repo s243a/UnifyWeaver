@@ -163,6 +163,15 @@ type WamState struct {
 	// `1 is 2`. Start above 1000 so the counter never collides with
 	// the register-slot range that was used pre-fix.
 	NextVarId    int
+	// MaxYReg is the highest Y-register index ever written + 1 (i.e.,
+	// the count of slots the program actually uses in the Y range
+	// 200..299). snapshotAllRegs uses this as the upper bound on the
+	// Y-reg copy: most programs use only a handful of Y-regs (the
+	// effective-distance bench uses ~10 of the 100 available),
+	// shrinking the per-CP snapshot from 108 elements to 8 + actual.
+	// Monotonically grows; never resets. Starts at 200 so 0 means
+	// "no Y-regs used yet" via the formula `MaxYReg - 200`.
+	MaxYReg int
 	// E is the stack index of the currently-active EnvFrame, or -1
 	// when no frame is allocated (e.g., right after NewWamState before
 	// any Allocate). With env trimming, Deallocate moves E back along
@@ -247,6 +256,14 @@ func RunParallel(ctx *WamContext, seeds [][]Value, maxWorkers int) [][]Value {
 
 func (vm *WamState) putReg(idx int, val Value) {
 	vm.Regs[idx] = val
+	// Track the high-water mark of Y-reg writes so snapshotAllRegs
+	// can size its Y-range copy to actually-used slots only. The
+	// extra branch + compare is cheap relative to the snapshot
+	// shrink it enables (per-CP Y-range copy goes from 100
+	// elements to typically ~10).
+	if idx >= 200 && idx >= vm.MaxYReg {
+		vm.MaxYReg = idx + 1
+	}
 }
 
 func (vm *WamState) getReg(idx int) Value {
@@ -303,40 +320,60 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
-// snapshotAllRegs captures only the A-register range (Regs[0..7]) and
-// the Y-register range (Regs[200..299]). The middle X-register range
+// snapshotAllRegs captures the A-register range (Regs[0..7]) plus
+// the actually-used portion of the Y-register range
+// (Regs[200..vm.MaxYReg]). The middle X-register range
 // (Regs[8..199]) is intentionally skipped — X-regs are clause-local
 // in the codegen, so the next clause's head writes whatever X-regs
-// it needs (PutVariable / GetVariable Xn always writes BEFORE the
-// X-reg is read), and stale leftovers from the failed clause never
-// get touched. The Rust target's `fea72426` ("Save only argument
-// regs in choice points") landed the same observation; in the Go
-// runtime the equivalent has to keep Y-regs because env trimming
-// stores Y-regs at *Allocate* time (caller's outer Y-regs) — at
-// TryMeElse time the caller's *current* Y-regs are already in
-// vm.Regs[200..299] and only the CP's snapshot can recover them
-// across backtrack.
+// it needs and stale leftovers from the failed clause never get
+// touched. Y-regs *do* need saving because env trimming stores
+// Y-regs at *Allocate* time (caller's outer Y-regs) — at TryMeElse
+// time the caller's *current* Y-regs only exist in the CP snapshot.
 //
 // Layout in the returned slice:
 //   - SavedRegs[0..7]   := vm.Regs[0..7]    (A1..A8)
-//   - SavedRegs[8..107] := vm.Regs[200..299] (Y200..Y299)
+//   - SavedRegs[8..8+ycount] := vm.Regs[200..200+ycount]  (used Y-regs)
 //
-// restoreSavedRegs() at backtrack reverses the copy. 108-element
-// snapshot vs the prior 320-element one cuts the per-CP memmove
-// roughly 3x and the matching mallocgc by the same factor.
+// where ycount := max(0, vm.MaxYReg - 200). The bench's
+// category_ancestor uses ~10 Y-regs, so the snapshot is ~18
+// elements vs the prior 108, cutting per-CP memmove ~6x.
 func (vm *WamState) snapshotAllRegs() []Value {
-	saved := make([]Value, 108)
+	ycount := vm.MaxYReg - 200
+	if ycount < 0 {
+		ycount = 0
+	}
+	saved := make([]Value, 8+ycount)
 	copy(saved[:8], vm.Regs[:8])
-	copy(saved[8:], vm.Regs[200:300])
+	if ycount > 0 {
+		copy(saved[8:], vm.Regs[200:200+ycount])
+	}
 	return saved
 }
 
+// restoreSavedRegs is the dual of snapshotAllRegs. The snapshot
+// captures up to MaxYReg-at-push-time; vm.MaxYReg may have grown
+// since (the failed clause wrote new Y-regs). Those "post-push"
+// Y-regs were nil at push time and need to be cleared back to nil
+// here, otherwise they'd leak failed-clause values into the next
+// clause's body. Without the clear, the bench had Velocity at
+// 1.602159 vs the post-Phase-D 1.601079 — a Y-reg from a longer
+// recursion path was bleeding into a shorter one. The clear loop
+// is bounded by MaxYReg-since-push (typically 0-2 slots), so it's
+// much cheaper than restoring the full 100-element Y range.
 func (vm *WamState) restoreSavedRegs(saved []Value) {
-	if len(saved) >= 8 {
-		copy(vm.Regs[:8], saved[:8])
+	if len(saved) < 8 {
+		return
 	}
-	if len(saved) >= 108 {
-		copy(vm.Regs[200:300], saved[8:108])
+	copy(vm.Regs[:8], saved[:8])
+	ycount := len(saved) - 8
+	if ycount > 0 {
+		copy(vm.Regs[200:200+ycount], saved[8:])
+	}
+	// Clear Y-regs that were written between snapshot and now but
+	// weren't captured (they were nil at push time, by definition).
+	pushMaxY := 200 + ycount
+	for i := pushMaxY; i < vm.MaxYReg; i++ {
+		vm.Regs[i] = nil
 	}
 }
 
@@ -436,6 +473,14 @@ func (vm *WamState) Clone() *WamState {
 		// every solution.
 		NextVarId:    vm.NextVarId,
 		E:            vm.E,
+		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
+		// same Y-reg high-water mark as the parent (sub.Regs is a
+		// value-copy of parent.Regs and therefore *contains* those
+		// Y-reg values; without copying MaxYReg the sub-VM thinks
+		// it has 0 Y-regs in use, the snapshot omits them, and
+		// backtrack inside the sub-VM doesn't restore values that
+		// the failed clause overwrote).
+		MaxYReg:      vm.MaxYReg,
 	}
 	newState.Regs = vm.Regs
 	for k, v := range vm.Bindings {
