@@ -222,6 +222,9 @@ lowered_direct_instr(get_structure(_, _)).
 lowered_direct_instr(get_list(_)).
 lowered_direct_instr(get_integer(_, _)).
 lowered_direct_instr(get_nil(_)).
+lowered_direct_instr(unify_constant(_)).
+lowered_direct_instr(unify_variable(_)).
+lowered_direct_instr(unify_value(_)).
 lowered_direct_instr(put_constant(_, _)).
 lowered_direct_instr(put_nil(_)).
 lowered_direct_instr(get_variable(_, _)).
@@ -258,6 +261,19 @@ emit_lowered_expr(get_list(Ai), S, Expr) :-
     format(atom(Expr),
            '(let [reg-val (runtime/deref-value (:bindings ~w) (or (runtime/reg-get-raw ~w ~q) ::lowered-unbound)) list-functor (runtime/list-functor-term (:intern-context ~w))] (cond (and (runtime/structure-term? reg-val) (runtime/interned-equal? (:functor reg-val) list-functor)) (-> ~w (runtime/enter-unify-mode (:args reg-val)) runtime/advance) :else (runtime/backtrack ~w)))',
            [S, S, Ai, S, S, S]).
+emit_lowered_expr(unify_constant(C), S, Expr) :-
+    clj_lowered_literal(C, Lit),
+    format(atom(Expr),
+           '(let [constant (runtime/normalize-literal-term (:intern-context ~w) ~w) [item next-state] (runtime/pop-unify-item ~w) [ok bound-state] (runtime/unify-values next-state item constant)] (if ok (runtime/advance bound-state) (runtime/backtrack ~w)))',
+           [S, Lit, S, S]).
+emit_lowered_expr(unify_variable(Xn), S, Expr) :-
+    format(atom(Expr),
+           '(let [[item next-state] (runtime/pop-unify-item ~w)] (-> next-state (runtime/reg-set-raw ~q item) runtime/advance))',
+           [S, Xn]).
+emit_lowered_expr(unify_value(Xn), S, Expr) :-
+    format(atom(Expr),
+           '(let [[item next-state] (runtime/pop-unify-item ~w) reg-val (or (runtime/reg-get-raw next-state ~q) ::lowered-unbound) [ok bound-state] (runtime/unify-values next-state reg-val item)] (if ok (runtime/advance bound-state) (runtime/backtrack ~w)))',
+           [S, Xn, S]).
 emit_lowered_expr(put_constant(C, Ai), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
