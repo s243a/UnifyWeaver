@@ -327,6 +327,42 @@ Two bugs surfaced and were fixed:
    Symptom: `Velocity Physics 1.602159` instead of the
    post-Phase-D `1.601079`. Fix: Clone copies MaxYReg.
 
+### Phase F: ChoicePoint pointer access + Bindings as `[]Value` (May 2026, `perf/wam-go-cp-pointer-and-bindings`)
+
+The post-Phase-E profile showed two costs newly visible relative to
+the dominant `restoreSavedRegs` from prior phases:
+
+1. `cp := vm.ChoicePoints[topIdx]` — value-copy of the
+   ~150-byte `ChoicePoint` struct on every backtrack (~210ms cum,
+   8.7% in the 50-seed run).
+2. Map ops in `deref` / `unwindTrailTo` / `bindUnbound` — small in
+   absolute terms but harder to see while bigger costs were
+   dominant.
+
+This commit:
+
+- **`backtrack` uses `cp := &vm.ChoicePoints[topIdx]`** instead of
+  the value-copy. Mutations to `cp.IndexedClausePCs` /
+  `cp.ForeignResults` apply in-place, removing the explicit
+  `vm.ChoicePoints[topIdx] = cp` write-back. The pointer stays
+  valid because backtrack only ever truncates the slice (no
+  appends), so the underlying array slot doesn't move while
+  we're reading.
+- **`Bindings: map[int]Value` → `[]Value`** indexed by `Unbound.Idx`.
+  `nil` means unbound; `getBinding` / `setBinding` helpers handle
+  out-of-range reads (return nil) and writes (grow with doubling,
+  floor 64). Pre-sized to 4096 in `NewWamState` to skip the
+  doubling-grow churn for typical query Idx ranges. The Rust
+  target's Phase C (`f339df5b` "nb_setarg box for zero-copy
+  binding table") landed the same int-indexed structure for the
+  same reason once choicepoint snapshots got cheap enough that
+  per-deref/per-trail-entry map overhead became visible.
+
+Earlier attempt (the `perf/wam-go-bindings-slice-and-stack-share`
+branch, on top of Phase B): performance-neutral. The dominant
+costs at the time were elsewhere; the slice version is now
+slightly faster because Phases D and E shrunk those.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
 All medians of 5 alternating trials on the 50-seed sub-bench. Full
@@ -339,7 +375,8 @@ All medians of 5 alternating trials on the 50-seed sub-bench. Full
 | Phase B (`Regs[320]` + default-label resolve) | n/a | ~178s | 1.91x | 1.91x |
 | Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
 | Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
-| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | **8.85x / 8.85x** |
+| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | 8.85x / 8.85x |
+| Phase F cp-pointer + Bindings slice | 2264ms | 23.8s | 1.60x / 1.61x | **15.0x / 14.3x** |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz

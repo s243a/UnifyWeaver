@@ -140,7 +140,15 @@ type WamState struct {
 	// (and snapshotAllRegs's matching alloc) by ~37% per choicepoint
 	// without changing the addressable-slot range.
 	Regs         [320]Value
-	Bindings     map[int]Value
+	// Bindings is a dense slice indexed by Unbound.Idx. nil means
+	// unbound; non-nil is the bound value. The earlier rep was
+	// `map[int]Value`; with allocVarId starting at 1000 and
+	// monotonically incrementing, Idx values pack densely, so a
+	// slice access (~5ns) wins over a map access (~30ns) once the
+	// per-CP work is small enough that map ops show up. The
+	// `setBinding` helper grows the slice on demand (doubling)
+	// for the rare out-of-range write.
+	Bindings []Value
 	Heap         []Value
 	HeapLen      int
 	Stack        []StackEntry
@@ -215,11 +223,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -270,12 +278,39 @@ func (vm *WamState) getReg(idx int) Value {
 	return vm.Regs[idx]
 }
 
-func (vm *WamState) trailBinding(addr int) {
-	if vm.Bindings == nil {
-		vm.Bindings = make(map[int]Value)
+// getBinding reads vm.Bindings[addr] safely — returns nil if addr is
+// past the slice's current length (which the runtime treats the same
+// as "unbound"). Hot path; keep tiny.
+func (vm *WamState) getBinding(addr int) Value {
+	if addr < 0 || addr >= len(vm.Bindings) {
+		return nil
 	}
-	old, hadOld := vm.Bindings[addr]
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: hadOld})
+	return vm.Bindings[addr]
+}
+
+// setBinding writes val to vm.Bindings[addr], growing the slice if
+// addr is past the current length. Doubles capacity (with floor 64)
+// to amortise allocs across the dense 1000+ Idx range allocVarId
+// hands out during a query.
+func (vm *WamState) setBinding(addr int, val Value) {
+	if addr >= len(vm.Bindings) {
+		newCap := len(vm.Bindings)
+		if newCap < 64 {
+			newCap = 64
+		}
+		for newCap <= addr {
+			newCap *= 2
+		}
+		newBindings := make([]Value, newCap)
+		copy(newBindings, vm.Bindings)
+		vm.Bindings = newBindings
+	}
+	vm.Bindings[addr] = val
+}
+
+func (vm *WamState) trailBinding(addr int) {
+	old := vm.getBinding(addr)
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
 	vm.TrailLen++
 }
 
@@ -295,7 +330,7 @@ func (vm *WamState) trailBinding(addr int) {
 // happy path and actively harmful when callers don't fill in Idx.
 func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.trailBinding(u.Idx)
-	vm.Bindings[u.Idx] = val
+	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
 			vm.Regs[idx] = val
@@ -455,7 +490,7 @@ func (vm *WamState) Clone() *WamState {
 		Ctx:          vm.Ctx,
 		PC:           vm.PC,
 		CP:           vm.CP,
-		Bindings:     make(map[int]Value, len(vm.Bindings)),
+		Bindings:     make([]Value, len(vm.Bindings)),
 		Heap:         make([]Value, vm.HeapLen),
 		HeapLen:      vm.HeapLen,
 		Stack:        make([]StackEntry, len(vm.Stack)),
@@ -483,9 +518,7 @@ func (vm *WamState) Clone() *WamState {
 		MaxYReg:      vm.MaxYReg,
 	}
 	newState.Regs = vm.Regs
-	for k, v := range vm.Bindings {
-		newState.Bindings[k] = v
-	}
+	copy(newState.Bindings, vm.Bindings)
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
@@ -666,7 +699,7 @@ func (vm *WamState) deref(v Value) Value {
 			if next == v { return v }
 			v = next
 		case *Unbound:
-			if bound := vm.Bindings[t.Idx]; bound != nil && bound != v {
+			if bound := vm.getBinding(t.Idx); bound != nil && bound != v {
 				v = bound
 			} else {
 				return v
@@ -907,7 +940,16 @@ func (vm *WamState) backtrack() bool {
         return false
     }
     topIdx := len(vm.ChoicePoints) - 1
-    cp := vm.ChoicePoints[topIdx]
+    // Pointer access avoids copying the ~150-byte ChoicePoint struct
+    // value on every backtrack — the post-Phase-E profile flagged
+    // `cp := vm.ChoicePoints[topIdx]` at ~210ms cum / 8.7%. The
+    // pointer stays valid because backtrack only truncates the
+    // ChoicePoints slice (no append), so the underlying array slot
+    // doesn't get reused or moved while we're reading. Mutations to
+    // `cp.IndexedClausePCs` / `cp.ForeignResults` now apply
+    // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
+    // write-back the value-copy version needed.
+    cp := &vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
         vm.restoreSavedRegs(cp.SavedRegs)
@@ -926,8 +968,6 @@ func (vm *WamState) backtrack() bool {
         cp.IndexedClausePCs = cp.IndexedClausePCs[1:]
         if len(cp.IndexedClausePCs) == 0 {
             vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-        } else {
-            vm.ChoicePoints[topIdx] = cp
         }
         vm.PC = nextPC
         return true
@@ -949,15 +989,21 @@ func (vm *WamState) backtrack() bool {
             vm.CurrentList = nil
             nextResult := cp.ForeignResults[0]
             cp.ForeignResults = cp.ForeignResults[1:]
+            // Snapshot the fields we still need after truncation —
+            // once `vm.ChoicePoints = vm.ChoicePoints[:topIdx]`
+            // shrinks the slice, `cp` still points at the underlying
+            // array slot but it''s tidier to read the values out
+            // before truncating.
+            predKey := cp.ForeignPredKey
+            resultRegs := cp.ForeignResultRegs
+            resumePC := cp.ResumePC
             if len(cp.ForeignResults) == 0 {
                 vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-            } else {
-                vm.ChoicePoints[topIdx] = cp
             }
-            if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
+            if !vm.applyForeignResult(predKey, resultRegs, nextResult) {
                 continue
             }
-            vm.PC = cp.ResumePC
+            vm.PC = resumePC
             return true
         }
         return false
@@ -982,11 +1028,10 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
-        if entry.HadOld {
-            vm.Bindings[entry.Addr] = entry.Old
-        } else {
-            delete(vm.Bindings, entry.Addr)
-        }
+        // setBinding handles the bookkeeping: writing nil reverts an
+        // address to its unbound state, exactly matching the previous
+        // map-based delete-on-!HadOld for the slice rep.
+        vm.setBinding(entry.Addr, entry.Old)
     }
     vm.Trail = vm.Trail[:mark]
     vm.TrailLen = mark
