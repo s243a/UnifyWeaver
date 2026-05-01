@@ -105,7 +105,17 @@ type WamState struct {
 	Ctx          *WamContext
 	PC           int
 	CP           int
-	Regs         [512]Value
+	// Regs holds A/X/Y registers in a single flat array.
+	//   * A1..A8: indices 0..7 (argument registers)
+	//   * X-regs: 8..199  (clause-local temporaries)
+	//   * Y-regs: 200..299 (env-frame permanents; saved/restored at
+	//     Allocate/Deallocate via EnvFrame.SavedYRegs)
+	// Beyond 299 is unused space. The size used to be 512 but profiling
+	// at scale-300 showed `copy(vm.Regs[:len(cp.SavedRegs)],
+	// cp.SavedRegs)` was ~37% of CPU; trimming to 320 cuts that copy
+	// (and snapshotAllRegs's matching alloc) by ~37% per choicepoint
+	// without changing the addressable-slot range.
+	Regs         [320]Value
 	Bindings     map[int]Value
 	Heap         []Value
 	HeapLen      int
@@ -278,7 +288,7 @@ func (vm *WamState) trailTrimTo(mark int) {
 // full register file makes the panic go away and 1-hop and 2-hop
 // ancestor queries return the right number of solutions.
 //
-// The fixed cost (copying a [512]Value array per CP) is small compared
+// The fixed cost (copying a [320]Value array per CP) is small compared
 // to the pre-existing cost of copyStack(vm.Stack) per CP, and is much
 // smaller than the bug it prevents.
 func (vm *WamState) snapshotAllRegs() []Value {
