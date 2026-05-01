@@ -37,6 +37,9 @@
 :- dynamic user:wam_cut_helper/1.
 :- dynamic user:wam_hard_cut_outer_ok/1.
 
+has(Code, Substr) :-
+    once(sub_string(Code, _, _, _, Substr)).
+
 user:wam_fact(a).
 user:wam_foreign_pair_query(Y) :- user:wam_foreign_pair(a, Y).
 user:wam_foreign_stream_pair_query(Y) :- user:wam_foreign_stream_pair(a, Y), Y = b.
@@ -125,6 +128,7 @@ run_smoke :-
           ])
         ],
         TmpDir),
+    assert_lowered_read_unify_prefix_emitted(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -179,6 +183,15 @@ run_smoke :-
     verify_output(TmpDir, 'wam_hard_cut_outer_ok/1', b, "true"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
+
+assert_lowered_read_unify_prefix_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-struct-fact-1"),
+    has(CoreCode, "defn lowered-wam-list-fact-1"),
+    has(CoreCode, "runtime/enter-unify-mode"),
+    has(CoreCode, "runtime/pop-unify-item"),
+    has(CoreCode, "runtime/unify-values").
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),
