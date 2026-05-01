@@ -1839,8 +1839,26 @@ func (vm *WamState) fetch() Instruction {
 }
 
 func resolveInstructions(code []Instruction, labels map[string]int) []Instruction {
+    // resolveLabel handles the "default" sentinel that the constant-index
+    // emitter (build_constant_index/5 in wam_target.pl) puts on the
+    // first clause''s entry — at runtime that label means "fall through
+    // to the next instruction" (vm.PC+1). resolveInstructions runs over
+    // the code linearly, so the "next" PC is always idx+1 of the
+    // current SwitchOnConstant. Without this resolution, every
+    // SwitchOnConstant with a default entry stays unresolved (because
+    // labels["default"] doesn''t exist), keeping the linear-scan
+    // SwitchOnConstant runtime case alive — at scale-300 with
+    // category_parent''s 6000-clause table the O(N) scan dominates
+    // the per-call cost.
+    resolveLabel := func(label string, idx int) (int, bool) {
+        if label == "default" {
+            return idx + 1, true
+        }
+        pc, ok := labels[label]
+        return pc, ok
+    }
     resolved := make([]Instruction, 0, len(code))
-    for _, instr := range code {
+    for idx, instr := range code {
         switch i := instr.(type) {
         case *Call:
             if pc, ok := labels[i.Pred]; ok {
@@ -1878,7 +1896,7 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
             cases := make([]ConstPcCase, 0, len(i.Cases))
             complete := true
             for _, c := range i.Cases {
-                pc, ok := labels[c.Label]
+                pc, ok := resolveLabel(c.Label, idx)
                 if !ok {
                     complete = false
                     break
@@ -1897,7 +1915,7 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
             cases := make([]StructPcCase, 0, len(i.Cases))
             complete := true
             for _, c := range i.Cases {
-                pc, ok := labels[c.Label]
+                pc, ok := resolveLabel(c.Label, idx)
                 if !ok {
                     complete = false
                     break
@@ -1913,7 +1931,7 @@ func resolveInstructions(code []Instruction, labels map[string]int) []Instructio
             cases := make([]ConstPcCase, 0, len(i.Cases))
             complete := true
             for _, c := range i.Cases {
-                pc, ok := labels[c.Label]
+                pc, ok := resolveLabel(c.Label, idx)
                 if !ok {
                     complete = false
                     break
@@ -2196,7 +2214,7 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     mode := vm.foreignResultMode(predKey)
     switch mode {
     case "stream":
-        var baseRegs [512]Value
+        var baseRegs [320]Value
         baseRegs = vm.Regs
         baseStack := copyStack(vm.Stack)
         trailMark := vm.TrailLen
