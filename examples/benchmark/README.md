@@ -284,6 +284,17 @@ modes as result-producing `hybrid-wam` targets:
 
 These targets provide both seeded/accumulated and kernel-on/off comparisons.
 
+The matrix CLI can print the currently registered kernel/no-kernel pairings
+without running benchmarks:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-pairs
+```
+
+The report is TSV with `family`, `mode`, `kernels_target`, and
+`no_kernels_target` columns. It currently covers registered Rust, Go, Clojure,
+and Haskell effective-distance WAM pairings.
+
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
 
