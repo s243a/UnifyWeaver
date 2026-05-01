@@ -39,6 +39,22 @@
     kernel_native_call/2
 ]).
 
+rust_safe_function_name(Pred, FuncName) :-
+    atom_string(Pred, PredStr),
+    string_codes(PredStr, Codes),
+    maplist(rust_safe_identifier_code, Codes, SafeCodes),
+    string_codes(FuncStr, SafeCodes),
+    atom_string(FuncName, FuncStr).
+
+rust_safe_identifier_code(C, C) :-
+    (   C >= 0'a, C =< 0'z
+    ;   C >= 0'A, C =< 0'Z
+    ;   C >= 0'0, C =< 0'9
+    ;   C =:= 0'_
+    ),
+    !.
+rust_safe_identifier_code(_, 0'_).
+
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
 % ============================================================================
@@ -2414,6 +2430,7 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -2426,7 +2443,7 @@ pub fn ~w(~w) -> bool {
 ~w
 ~w
     ~w
-}', [PredStr, Arity, PredStr, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+}', [PredStr, Arity, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
@@ -2968,6 +2985,11 @@ fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
         ];
         (code, labels)
     })
+}
+
+pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    let (code, labels) = get_shared_wam();
+    (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
     ;   SharedCode = ""
     ),
@@ -3100,6 +3122,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
 %  Generates a thin WAM predicate wrapper that references the shared code table.
 compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     format(string(RustCode),
@@ -3113,7 +3136,7 @@ pub fn ~w(~w) -> bool {
     vm.pc = ~w;
 ~w
     vm.run()
-}', [PredStr, Arity, StartPC, PredStr, ArgList, StartPC, ArgSetup]).
+}', [PredStr, Arity, StartPC, FuncName, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-

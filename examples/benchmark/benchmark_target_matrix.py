@@ -134,6 +134,16 @@ TARGETS: dict[str, TargetInfo] = {
         "optimized-prolog",
         "Optimized Prolog -> lowered Haskell functions with kernels enabled",
     ),
+    "rust-interp-ffi": TargetInfo(
+        "rust-interp-ffi",
+        "hybrid-wam",
+        "Optimized Prolog -> WAM Rust interpreter with kernels enabled",
+    ),
+    "rust-lowered-ffi": TargetInfo(
+        "rust-lowered-ffi",
+        "optimized-prolog",
+        "Optimized Prolog -> lowered Rust functions with kernels enabled",
+    ),
 }
 
 
@@ -148,6 +158,7 @@ TARGET_SETS: dict[str, list[str]] = {
         "prolog-accumulated",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+        "rust-lowered-ffi",
     ],
     "hybrid-wam": [
         "wam-rust-seeded",
@@ -164,6 +175,8 @@ TARGET_SETS: dict[str, list[str]] = {
         "haskell-interp-ffi",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+        "rust-interp-ffi",
+        "rust-lowered-ffi",
     ],
     "clojure-wam-scaffold": [],
     "clojure-wam": [

@@ -1648,6 +1648,28 @@ test_shared_wam_labels_contain_all_preds :-
         fail_test(Test, 'Shared WAM table missing labels for some predicates')
     ).
 
+test_shared_wam_program_exported :-
+    Test = 'WAM-Rust: shared WAM program is exported for generated runners',
+    TmpDir = 'output/test_wam_rust_shared_program',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('shared_program_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub fn shared_wam_program()'),
+        sub_string(LibStr, _, _, _, '(code.clone(), labels.clone())')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'shared_wam_program export missing')
+    ).
+
 test_native_wam_mixed_project :-
     Test = 'WAM-Rust: mixed native+WAM project only shares WAM predicates',
     TmpDir = 'output/test_wam_rust_mixed',
@@ -1763,6 +1785,7 @@ run_tests :-
     test_cross_predicate_shared_wam,
     test_cross_predicate_distinct_pcs,
     test_shared_wam_labels_contain_all_preds,
+    test_shared_wam_program_exported,
     test_native_wam_mixed_project,
     test_rust_wam_lib_imports_hashset,
     test_lowered_calls_detected_kernel_via_callforeign,
