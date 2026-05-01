@@ -1531,12 +1531,22 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
 
 % --- Control Instructions ---
 
-wam_go_case('Allocate', '        vm.Stack = append(vm.Stack, &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)})
+wam_go_case('Allocate', '        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)}
+        // Snapshot the Y-reg range (200..299) into the env frame so a
+        // nested predicate that uses the same slot numbers via
+        // PutVariable doesn''t silently clobber the caller''s Y-regs.
+        // Restored at Deallocate. Bindings on caller-passed Unbounds
+        // still propagate via the global Bindings[Idx] table — deref
+        // of the restored Y-reg follows that binding, so we don''t
+        // lose genuine results, only spurious leftover state.
+        copy(env.SavedYRegs[:], vm.Regs[200:300])
+        vm.Stack = append(vm.Stack, env)
         vm.PC++
         return true').
 
 wam_go_case('Deallocate', '        if env := vm.popEnvFrame(); env != nil {
             vm.CP = env.CP
+            copy(vm.Regs[200:300], env.SavedYRegs[:])
         }
         vm.PC++
         return true').

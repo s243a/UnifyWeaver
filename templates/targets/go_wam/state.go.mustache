@@ -43,6 +43,22 @@ type ChoicePoint struct {
 type EnvFrame struct {
 	CP int
 	B0 int
+	// SavedYRegs is a snapshot of Regs[200..299] (the Y-register range)
+	// taken at Allocate time and restored at Deallocate. Y-regs are
+	// global slots in this runtime, so without per-call save/restore
+	// nested predicates collide on the same slot — symptom: in the
+	// effective-distance bench, power_sum_bound reserved X203 for the
+	// per-iteration Hops accumulator, but the inner category_ancestor's
+	// clause 2 reuses X203 for the parent atom (also via PutVariable),
+	// so when category_ancestor returned, Regs[203] held an atom
+	// instead of the integer the wrapper expected, and the next is/2
+	// in power_sum_bound failed. Restoring at Deallocate gives the
+	// caller's Y-regs back. Bindings-based deref still propagates any
+	// genuine variable binding the callee made on a caller-passed
+	// Unbound — Bindings[Idx] is global and survives the Y-reg
+	// restore, so reading the restored Y-reg dereferences through the
+	// (still-bound) Unbound to the bound value.
+	SavedYRegs [100]Value
 }
 
 type UnifyCtx struct {
