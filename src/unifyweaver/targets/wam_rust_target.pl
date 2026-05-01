@@ -429,6 +429,62 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     false
                 }'.
 
+wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, hops_reg, visited_reg)', Body) :-
+    Body = '                let cat = match self.get_reg(cat_reg) {
+                    Some(Value::Atom(s)) => s,
+                    Some(val) => match self.deref_var(&val) {
+                        Value::Atom(s) => s,
+                        _ => return false,
+                    },
+                    None => return false,
+                };
+                let target = match self.get_reg(target_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let target_atom = match &target {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let already_visited = match &visited {
+                    Value::List(items) => items.iter().any(|item| self.deref_var(item) == target),
+                    _ => false,
+                };
+                if already_visited {
+                    return false;
+                }
+                let parent_matches = self.indexed_atom_fact2
+                    .get("category_parent/2")
+                    .and_then(|table| table.get(&cat))
+                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .unwrap_or(false);
+                if !parent_matches {
+                    return false;
+                }
+                let hops_val = match self.get_reg(hops_reg) {
+                    Some(val) => val,
+                    None => return false,
+                };
+                match hops_val {
+                    Value::Unbound(var_name) => self.bind_var(&var_name, Value::Integer(1)),
+                    Value::Integer(1) => {},
+                    Value::Atom(ref raw) if raw == "1" => {},
+                    _ => return false,
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
+
 wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip)', Body) :-
     Body = '                let Some(&target_pc) = self.labels.get(pred) else { return false; };
                 let instr = Instruction::RecurseCategoryAncestorPc(
@@ -509,8 +565,16 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     Some(val) => val,
                     None => return false,
                 };
-                if !self.unify(&out_val, &result) {
-                    return false;
+                match out_val {
+                    Value::Unbound(var_name) => self.bind_var(&var_name, result),
+                    Value::Integer(n) if result == Value::Integer(n) => {},
+                    Value::Float(f) if result == Value::Float(f) => {},
+                    Value::Atom(ref raw) if result == Value::Atom(raw.clone()) => {},
+                    other => {
+                        if !self.unify(&other, &result) {
+                            return false;
+                        }
+                    }
                 }
                 if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
                     self.cp = old_cp;

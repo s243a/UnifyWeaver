@@ -125,7 +125,9 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
 def available_targets(requested: list[str]) -> list[str]:
     targets: list[str] = []
     rust_matrix_targets = {
+        "rust-pure-interp",
         "rust-interp-ffi",
+        "rust-lowered-only",
         "rust-lowered-ffi",
     }
     for target in requested:
