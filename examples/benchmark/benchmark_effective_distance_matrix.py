@@ -618,8 +618,12 @@ def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_off")
         elif target == "haskell-lowered-ffi":
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_on")
+        elif target == "rust-pure-interp":
+            commands[target] = build_rust_matrix_effective_distance(root, "interpreter", "kernels_off")
         elif target == "rust-interp-ffi":
             commands[target] = build_rust_matrix_effective_distance(root, "interpreter", "kernels_on")
+        elif target == "rust-lowered-only":
+            commands[target] = build_rust_matrix_effective_distance(root, "functions", "kernels_off")
         elif target == "rust-lowered-ffi":
             commands[target] = build_rust_matrix_effective_distance(root, "functions", "kernels_on")
     return commands

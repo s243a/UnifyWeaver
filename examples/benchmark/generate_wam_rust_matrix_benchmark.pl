@@ -158,6 +158,39 @@ fn build_indexed_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String
     grouped
 }
 
+fn build_reverse_fact2(pairs: &[(String, String)]) -> HashMap<String, Vec<String>> {
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for (child, parent) in pairs {
+        grouped.entry(parent.clone()).or_default().push(child.clone());
+    }
+    grouped
+}
+
+fn compute_reachable_to_root(root: &str, reverse_index: &HashMap<String, Vec<String>>, max_depth: usize) -> HashSet<String> {
+    use std::collections::VecDeque;
+    let mut reachable = HashSet::new();
+    let mut best_depth: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::from([(root.to_string(), 0)]);
+    while let Some((current, depth)) = queue.pop_front() {
+        if let Some(prev) = best_depth.get(&current) {
+            if depth >= *prev {
+                continue;
+            }
+        }
+        best_depth.insert(current.clone(), depth);
+        reachable.insert(current.clone());
+        if depth >= max_depth {
+            continue;
+        }
+        if let Some(children) = reverse_index.get(&current) {
+            for child in children {
+                queue.push_back((child.clone(), depth + 1));
+            }
+        }
+    }
+    reachable
+}
+
 fn append_fact2(code: &mut Vec<Instruction>, labels: &mut HashMap<String, usize>, pred_name: &str, pairs: &[(String, String)]) {
     use std::collections::BTreeMap;
     if pairs.is_empty() {
@@ -232,6 +265,44 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
             if let Some(instr) = replacement {
                 code[i] = instr;
                 i += 2;
+                continue;
+            }
+        }
+        if i + 10 < code.len() {
+            let replacement = match (&code[i], &code[i + 1], &code[i + 2], &code[i + 3], &code[i + 4], &code[i + 5], &code[i + 6], &code[i + 7], &code[i + 8], &code[i + 9], &code[i + 10]) {
+                (
+                    Instruction::GetConstant(Value::Atom(raw), hops_reg),
+                    Instruction::GetVariable(visited_reg, visited_arg),
+                    Instruction::PutValue(cat_reg, a1),
+                    Instruction::PutValue(target_reg, a2),
+                    Instruction::Call(pred, 2),
+                    Instruction::Deallocate,
+                    Instruction::PutStructure(functor, a1b),
+                    Instruction::SetValue(target_reg2),
+                    Instruction::SetValue(visited_reg2),
+                    Instruction::BuiltinCall(op, 1),
+                    Instruction::Proceed,
+                ) if raw == "1"
+                    && visited_arg == "A4"
+                    && a1 == "A1"
+                    && a2 == "A2"
+                    && pred == "category_parent/2"
+                    && functor == "member/2"
+                    && a1b == "A1"
+                    && target_reg == target_reg2
+                    && visited_reg == visited_reg2
+                    && op == r"\\+/1" =>
+                    Some(Instruction::BaseCategoryAncestorBind(
+                        cat_reg.clone(),
+                        target_reg.clone(),
+                        hops_reg.clone(),
+                        visited_arg.clone(),
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 11;
                 continue;
             }
         }
@@ -448,14 +519,23 @@ fn main() {
     let category_parents = load_tsv_pairs(edge_path);
     let article_categories = load_tsv_pairs(article_path);
     let roots = load_single_column(&root_path);
+    let root = roots.first().cloned().unwrap_or_default();
+    let max_depth_limit = 10usize;
+    let reverse_category_parents = build_reverse_fact2(&category_parents);
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
+    let runtime_category_parents: Vec<(String, String)> = category_parents
+        .iter()
+        .filter(|(_, parent)| reachable_to_root.contains(parent))
+        .cloned()
+        .collect();
     let load_ms = started.elapsed().as_millis();
 
     let (mut code, mut labels) = shared_wam_program();
-    append_fact2(&mut code, &mut labels, "category_parent", &category_parents);
+    append_fact2(&mut code, &mut labels, "category_parent", &runtime_category_parents);
     resolve_targets(&mut code, &labels);
 
     let mut vm = WamState::new(code, labels);
-    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&runtime_category_parents));
     for (_pred, table) in &vm.indexed_atom_fact2.clone() {
         for (key, vals) in table {
             vm.intern_atom(key);
@@ -499,7 +579,6 @@ fn main() {
     }
 
     let query_start = Instant::now();
-    let root = roots.first().cloned().unwrap_or_default();
     let n = 5.0f64;
     let inv_n = -1.0 / n;
     let step_limit = std::env::var("WAM_STEP_LIMIT")
@@ -523,7 +602,7 @@ fn main() {
                 cat_id,
                 root_id,
                 &visited_ids,
-                10,
+                max_depth_limit,
                 "category_parent",
                 &mut hops,
             );
@@ -549,7 +628,7 @@ fn main() {
                         false
                     }
                 } else {
-                    vm.backtrack()
+                    vm.backtrack() && vm.run()
                 };
                 if !succeeded {
                     break;
