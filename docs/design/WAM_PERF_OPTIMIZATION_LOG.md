@@ -439,6 +439,19 @@ is committed as a structural cleanup that becomes more impactful
 at workloads with longer lists or higher member/length call
 density.
 
+### Phase I: Constant-factor attempts that didn't pan out (May 2026, `perf/wam-go-instr-tag-dispatch`)
+
+Two more candidates explored on top of Phase H. Both reverted —
+documenting here so they don't get re-tried at the same shape.
+
+| Attempt | What | Outcome |
+|---|---|---|
+| Inline `setBinding` fast path in `unwindTrailTo` | Replace `vm.setBinding(entry.Addr, entry.Old)` with a direct `vm.Bindings[entry.Addr] = entry.Old` write when `entry.Addr < len(vm.Bindings)`, falling back to the helper for the (impossible-by-construction) overflow path. Post-Phase-G profile flagged the loop at ~6% flat. | Within variance. One alternating trial favoured the change at ~11% (3179ms→2831ms), four follow-up trials averaged to a 0.86% slowdown (list mean 2661ms, tagdsp mean 2684ms). The fast path runs *only* on backtrack and `len(Bindings)` is large enough that the bounds branch is well-predicted; the saved function-call frame is below the noise floor. |
+| Inline-array `SavedRegs` in `ChoicePoint` | Replace `SavedRegs []Value` with `SavedA [8]Value` + `SavedY [16]Value` + `SavedYLen int` + `SavedYExt []Value` overflow. Goal: eliminate the per-push `make([]Value, 8+ycount)` heap allocation that `snapshotAllRegs` was doing on every choicepoint. | **10x slowdown** at 50-seed scale (list ~2.4s vs inreg ~25s, two trials confirmed). Reason: each `ChoicePoint` grew from ~150 bytes to ~530 bytes (24 inline `Value` interface slots = 384 bytes added). Every `append(vm.ChoicePoints, ChoicePoint{...})` and slice-grow now memmoves the larger struct, and the bench creates ~1.5M choicepoints — the extra per-CP memmove cost vastly exceeds the saved heap alloc. The lesson is that for slice-of-struct dispatch, struct *size* matters more than per-element heap allocs, because slice growth amortises malloc but every append still pays the element memmove. A pooled `*SavedRegs` (CP holds an 8-byte pointer) would avoid both — deferred. |
+
+Cumulative position is unchanged from Phase H; Phase I is a no-op
+on the cumulative table below.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
 50-seed: median of 5 alternating trials. Full bench: median of 3
