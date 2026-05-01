@@ -30,8 +30,22 @@ type ChoicePoint struct {
 	NextPC    int
 	ResumePC  int
 	CP        int
+	// E captures vm.E (env-frame stack index) at choicepoint push.
+	// Restored at backtrack so the env-trimming-aware Deallocate
+	// continues from the right frame after the failed branch's
+	// changes are undone.
+	E         int
+	// StackLen captures len(vm.Stack) at choicepoint push. Backtrack
+	// truncates the stack to this length; everything pushed during
+	// the failed attempt is dropped. With env trimming in place the
+	// truncation is safe — env frames pushed after the CP are dead
+	// (their PrevE chain has already been walked back), and frames
+	// alive at CP push time are guaranteed to be at indices < StackLen
+	// because Deallocate doesn't physically pop frames whose B0 < the
+	// youngest live CP. Replaces the prior `Stack: copyStack(vm.Stack)`
+	// per-push allocation, which was ~19% of CPU at scale-300.
+	StackLen  int
 	SavedRegs []Value
-	Stack     []StackEntry
 	HeapTop   int
 	TrailMark int
 	IndexedClausePCs []int
@@ -43,6 +57,16 @@ type ChoicePoint struct {
 type EnvFrame struct {
 	CP int
 	B0 int
+	// PrevE is the WamState.E (env-frame stack index) at the moment
+	// this frame was Allocated. Deallocate restores vm.E to PrevE
+	// for the LIFO walk back through nested activations. The "logical
+	// pop only" discipline lets env frames stay physically on the
+	// stack while a younger choicepoint still references them, so
+	// `pushChoicePoint` no longer has to deep-copy the stack — it
+	// just records `len(vm.Stack)` as a mark, and backtrack truncates
+	// to that mark. Stack frames whose B0 makes them "dead" stay
+	// inert until the truncation rolls past them.
+	PrevE int
 	// SavedYRegs is a snapshot of Regs[200..299] (the Y-register range)
 	// taken at Allocate time and restored at Deallocate. Y-regs are
 	// global slots in this runtime, so without per-call save/restore
@@ -139,6 +163,15 @@ type WamState struct {
 	// `1 is 2`. Start above 1000 so the counter never collides with
 	// the register-slot range that was used pre-fix.
 	NextVarId    int
+	// E is the stack index of the currently-active EnvFrame, or -1
+	// when no frame is allocated (e.g., right after NewWamState before
+	// any Allocate). With env trimming, Deallocate moves E back along
+	// the EnvFrame.PrevE chain rather than physically popping; the
+	// frame stays on the stack until either (a) physical pop is safe
+	// (no younger CP referencing it) or (b) backtrack truncates the
+	// stack down past it. peekEnvFrame is now O(1) via this index
+	// instead of an O(stack) reverse scan.
+	E int
 }
 
 // allocVarId returns a fresh, globally-unique Idx for a new logical
@@ -173,11 +206,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
+	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
+	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -270,31 +303,41 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
-// snapshotAllRegs captures the FULL register file for a choice point.
+// snapshotAllRegs captures only the A-register range (Regs[0..7]) and
+// the Y-register range (Regs[200..299]). The middle X-register range
+// (Regs[8..199]) is intentionally skipped — X-regs are clause-local
+// in the codegen, so the next clause's head writes whatever X-regs
+// it needs (PutVariable / GetVariable Xn always writes BEFORE the
+// X-reg is read), and stale leftovers from the failed clause never
+// get touched. The Rust target's `fea72426` ("Save only argument
+// regs in choice points") landed the same observation; in the Go
+// runtime the equivalent has to keep Y-regs because env trimming
+// stores Y-regs at *Allocate* time (caller's outer Y-regs) — at
+// TryMeElse time the caller's *current* Y-regs are already in
+// vm.Regs[200..299] and only the CP's snapshot can recover them
+// across backtrack.
 //
-// The original implementation saved only the first `arity` slots — the
-// arity of the predicate that triggered the CP. That was a real
-// correctness bug for any predicate that allocates X-regs (Regs[100..])
-// or Y-regs (Regs[200..]) holding heap-Refs: backtrack would restore
-// A1..An but leave the higher slots untouched, even though heapTrimTo
-// just shrunk the heap past their referent. The next deref of one of
-// those Refs would read off the end of the heap and crash, or — worse —
-// silently resolve to whatever cell a later allocation happened to put
-// in the same slot.
+// Layout in the returned slice:
+//   - SavedRegs[0..7]   := vm.Regs[0..7]    (A1..A8)
+//   - SavedRegs[8..107] := vm.Regs[200..299] (Y200..Y299)
 //
-// Symptom that uncovered this: `category_ancestor("Branches_of_chemistry",
-// "Physics", H, [BoC])` panicked with `index out of range [21] with
-// length 21` from inside `member/2`'s listToSlice. Snapshotting the
-// full register file makes the panic go away and 1-hop and 2-hop
-// ancestor queries return the right number of solutions.
-//
-// The fixed cost (copying a [320]Value array per CP) is small compared
-// to the pre-existing cost of copyStack(vm.Stack) per CP, and is much
-// smaller than the bug it prevents.
+// restoreSavedRegs() at backtrack reverses the copy. 108-element
+// snapshot vs the prior 320-element one cuts the per-CP memmove
+// roughly 3x and the matching mallocgc by the same factor.
 func (vm *WamState) snapshotAllRegs() []Value {
-	saved := make([]Value, len(vm.Regs))
-	copy(saved, vm.Regs[:])
+	saved := make([]Value, 108)
+	copy(saved[:8], vm.Regs[:8])
+	copy(saved[8:], vm.Regs[200:300])
 	return saved
+}
+
+func (vm *WamState) restoreSavedRegs(saved []Value) {
+	if len(saved) >= 8 {
+		copy(vm.Regs[:8], saved[:8])
+	}
+	if len(saved) >= 108 {
+		copy(vm.Regs[200:300], saved[8:108])
+	}
 }
 
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
@@ -302,8 +345,9 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
+		E:         vm.E,
+		StackLen:  len(vm.Stack),
 		SavedRegs: vm.snapshotAllRegs(),
-		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 	})
@@ -313,8 +357,9 @@ func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
 	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		CP:        vm.CP,
+		E:         vm.E,
+		StackLen:  len(vm.Stack),
 		SavedRegs: vm.snapshotAllRegs(),
-		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 		IndexedClausePCs: append([]int(nil), pcs...),
@@ -348,10 +393,11 @@ func (vm *WamState) peekWriteCtx() *WriteCtx {
 }
 
 func (vm *WamState) peekEnvFrame() *EnvFrame {
-	for i := len(vm.Stack) - 1; i >= 0; i-- {
-		if f, ok := vm.Stack[i].(*EnvFrame); ok {
-			return f
-		}
+	if vm.E < 0 || vm.E >= len(vm.Stack) {
+		return nil
+	}
+	if f, ok := vm.Stack[vm.E].(*EnvFrame); ok {
+		return f
 	}
 	return nil
 }
@@ -389,6 +435,7 @@ func (vm *WamState) Clone() *WamState {
 		// then deref through the parent's bindings and silently drop
 		// every solution.
 		NextVarId:    vm.NextVarId,
+		E:            vm.E,
 	}
 	newState.Regs = vm.Regs
 	for k, v := range vm.Bindings {
@@ -818,8 +865,11 @@ func (vm *WamState) backtrack() bool {
     cp := vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
-        copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-        vm.Stack = copyStack(cp.Stack)
+        vm.restoreSavedRegs(cp.SavedRegs)
+        if cp.StackLen <= len(vm.Stack) {
+            vm.Stack = vm.Stack[:cp.StackLen]
+        }
+        vm.E = cp.E
         if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
             vm.heapTrimTo(cp.HeapTop)
         }
@@ -840,8 +890,11 @@ func (vm *WamState) backtrack() bool {
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {
             vm.unwindTrailTo(cp.TrailMark)
-            copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-            vm.Stack = copyStack(cp.Stack)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            vm.E = cp.E
             if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
                 vm.heapTrimTo(cp.HeapTop)
             }
@@ -865,8 +918,11 @@ func (vm *WamState) backtrack() bool {
         return false
     }
     vm.unwindTrailTo(cp.TrailMark)
-    copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-    vm.Stack = copyStack(cp.Stack)
+    vm.restoreSavedRegs(cp.SavedRegs)
+    if cp.StackLen <= len(vm.Stack) {
+        vm.Stack = vm.Stack[:cp.StackLen]
+    }
+    vm.E = cp.E
     if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
         vm.heapTrimTo(cp.HeapTop)
     }

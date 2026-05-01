@@ -1531,7 +1531,11 @@ wam_go_case('SetConstant', '        vm.heapPush(i.C)
 
 % --- Control Instructions ---
 
-wam_go_case('Allocate', '        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints)}
+wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back to the previously
+        // active env frame. vm.E moves to the index of the just-pushed
+        // frame so peekEnvFrame is O(1) and Deallocate can walk the
+        // PrevE chain without scanning the stack.
+        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), PrevE: vm.E}
         // Snapshot the Y-reg range (200..299) into the env frame so a
         // nested predicate that uses the same slot numbers via
         // PutVariable doesn''t silently clobber the caller''s Y-regs.
@@ -1541,12 +1545,30 @@ wam_go_case('Allocate', '        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePo
         // lose genuine results, only spurious leftover state.
         copy(env.SavedYRegs[:], vm.Regs[200:300])
         vm.Stack = append(vm.Stack, env)
+        vm.E = len(vm.Stack) - 1
         vm.PC++
         return true').
 
-wam_go_case('Deallocate', '        if env := vm.popEnvFrame(); env != nil {
-            vm.CP = env.CP
-            copy(vm.Regs[200:300], env.SavedYRegs[:])
+wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
+            if env, ok := vm.Stack[vm.E].(*EnvFrame); ok {
+                vm.CP = env.CP
+                copy(vm.Regs[200:300], env.SavedYRegs[:])
+                prevE := env.PrevE
+                // Physical-pop only if it''s safe: the frame must be at
+                // the top of the stack AND no younger choicepoint
+                // references it (env.B0 == current CP count means the
+                // frame was Allocated AFTER the youngest live CP, so
+                // nothing depends on it staying around). Otherwise the
+                // frame stays on the stack — backtrack truncation will
+                // sweep it away when the referencing CPs are
+                // exhausted, and a future Allocate can push above it
+                // because vm.E now points at prevE, not at the dead
+                // frame''s slot.
+                if env.B0 >= len(vm.ChoicePoints) && vm.E == len(vm.Stack)-1 {
+                    vm.Stack = vm.Stack[:vm.E]
+                }
+                vm.E = prevE
+            }
         }
         vm.PC++
         return true').
@@ -2216,13 +2238,20 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     case "stream":
         var baseRegs [320]Value
         baseRegs = vm.Regs
-        baseStack := copyStack(vm.Stack)
+        // Capture stack length and the env-pointer instead of cloning
+        // the stack — backtrack truncates to baseStackLen and restores
+        // baseE the same way the regular CP path does.
+        baseStackLen := len(vm.Stack)
+        baseE := vm.E
         trailMark := vm.TrailLen
         heapTop := vm.HeapLen
         for idx, result := range results {
             vm.unwindTrailTo(trailMark)
             vm.Regs = baseRegs
-            vm.Stack = copyStack(baseStack)
+            if baseStackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:baseStackLen]
+            }
+            vm.E = baseE
             if heapTop >= 0 && heapTop <= vm.HeapLen {
                 vm.heapTrimTo(heapTop)
             }
@@ -2234,14 +2263,19 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
             }
             if idx+1 < len(results) {
                 remaining := append([]Value(nil), results[idx+1:]...)
-                savedRegs := make([]Value, 100)
-                copy(savedRegs, baseRegs[:100])
+                // Match the regular CP snapshot layout that
+                // restoreSavedRegs() expects: 8 A-regs + 100 Y-regs,
+                // skipping the clause-local X-reg range.
+                savedRegs := make([]Value, 108)
+                copy(savedRegs[:8], baseRegs[:8])
+                copy(savedRegs[8:], baseRegs[200:300])
                 vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
                     NextPC: resumePC,
                     ResumePC: resumePC,
                     CP: vm.CP,
+                    E: baseE,
+                    StackLen: baseStackLen,
                     SavedRegs: savedRegs,
-                    Stack: baseStack,
                     HeapTop: heapTop,
                     TrailMark: trailMark,
                     ForeignPredKey: predKey,
