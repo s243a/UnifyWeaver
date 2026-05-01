@@ -363,10 +363,54 @@ branch, on top of Phase B): performance-neutral. The dominant
 costs at the time were elsewhere; the slice version is now
 slightly faster because Phases D and E shrunk those.
 
+### Phase G: Pointer-only `Atom.Equals` + `internAtom` routing + `emptyListAtom` singleton (May 2026, `perf/wam-go-bindunbound-aliases`)
+
+The post-Phase-F profile flagged `valueEquals` at 9.56% cum and
+`Atom.Equals` at 4.02% cum. Atom.Equals had a string-compare
+fallback (`return v.Name == o.Name`) for the case where two atoms
+had the same name but different pointers. With every codegen-emitted
+atom in `atoms.go`'s `atomInternMap` and every runtime-side atom
+created via `internAtom`, the fallback path is unreachable in
+practice — the SwitchOnConstantPc forward-scan miss path that fired
+it was just paying for the safety net.
+
+This commit:
+
+- **`Atom.Equals` is pointer-only.** Drops the string fallback;
+  asserts the contract that all atoms come from
+  `atomInternMap`. Documents the constraint in the source comment.
+- **Routes all raw `&Atom{Name: ...}` constructions through
+  `internAtom`.** Affected sites: the runtime helpers in
+  `runtime.go` (`collectNativeTransitiveDistanceResults` and
+  friends — kernels_on path, not exercised by the bench but must
+  satisfy the contract), the codegen fallback in
+  `go_atom_to_literal/2` (when an atom isn't in the pre-interned
+  table), and the `[]` empty-list terminator in
+  `rawListHeadTail` / `listHeadTail`.
+- **`emptyListAtom` package-level singleton** (`var emptyListAtom = internAtom("[]")`)
+  caches the result of `internAtom("[]")` once at init. The
+  list-head/tail helpers now use the cached pointer instead of
+  calling `internAtom("[]")` per invocation — list cell
+  decomposition runs once per recursion step in the bench.
+
+Profile after Phase G:
+- `Atom.Equals`: 4.02% → 1.39%
+- `valueEquals`: 9.56% → 4.38%
+
+Wall-clock at the 50-seed scale: median 2524ms vs Phase F's 2626ms
+(5 alternating trials each), about 4% faster within run-to-run
+variance. Full 386-seed bench: ~26.6s for both Phase F and Phase G
+(repeated 3 runs each), so the gain is invisible at full scale —
+the saved CPU cycles get absorbed by GC and other overhead. The
+single-run "23.8s" Phase F number cited in the prior section turned
+out to be an outlier from one lucky run; the realistic median is
+~26.6s. The cumulative table below uses the realistic medians.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
-All medians of 5 alternating trials on the 50-seed sub-bench. Full
-386-seed bench measured once.
+50-seed: median of 5 alternating trials. Full bench: median of 3
+re-runs (the prior section cited single-run numbers; some of those
+were outliers — this section uses re-measured medians).
 
 | Stage | scale-300/50 median | scale-300/full | speedup vs prior | speedup vs original |
 |---|---|---|---|---|
@@ -376,7 +420,8 @@ All medians of 5 alternating trials on the 50-seed sub-bench. Full
 | Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
 | Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
 | Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | 8.85x / 8.85x |
-| Phase F cp-pointer + Bindings slice | 2264ms | 23.8s | 1.60x / 1.61x | **15.0x / 14.3x** |
+| Phase F cp-pointer + Bindings slice | 2626ms | 26.6s | 1.38x / 1.44x | 12.9x / 12.8x |
+| Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | **13.5x / 12.8x** |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz

@@ -614,19 +614,26 @@ func isEmptyListValue(v Value) bool {
 	return false
 }
 
+// emptyListAtom is a process-wide singleton for the `[]` terminator,
+// initialised once via internAtom("[]") and reused everywhere a list
+// tail terminator is needed. Avoids the per-call internAtom map
+// lookup from rawListHeadTail / listHeadTail; those run once per list
+// cell in the bench's recursion-heavy paths.
+var emptyListAtom = internAtom("[]")
+
 func rawListHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := list.Elements[1]
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
@@ -637,14 +644,14 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := vm.deref(list.Elements[1])
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
