@@ -13,6 +13,14 @@ class TargetInfo:
     description: str
 
 
+@dataclass(frozen=True)
+class KernelPairInfo:
+    family: str
+    mode: str
+    kernels_target: str
+    no_kernels_target: str
+
+
 TARGETS: dict[str, TargetInfo] = {
     "csharp-query": TargetInfo(
         "csharp-query",
@@ -137,6 +145,52 @@ TARGETS: dict[str, TargetInfo] = {
 }
 
 
+KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
+    KernelPairInfo(
+        "rust",
+        "seeded",
+        "wam-rust-seeded",
+        "wam-rust-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "rust",
+        "accumulated",
+        "wam-rust-accumulated",
+        "wam-rust-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "go",
+        "accumulated",
+        "go-wam-accumulated",
+        "go-wam-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "clojure",
+        "seeded",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "clojure",
+        "accumulated",
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "haskell",
+        "interpreter",
+        "haskell-interp-ffi",
+        "haskell-pure-interp",
+    ),
+    KernelPairInfo(
+        "haskell",
+        "lowered",
+        "haskell-lowered-ffi",
+        "haskell-lowered-only",
+    ),
+)
+
+
 TARGET_SETS: dict[str, list[str]] = {
     "termux-smoke": [
         "prolog-accumulated",
@@ -230,6 +284,15 @@ def list_targets_text() -> str:
     lines.append("target_set\ttargets")
     for set_name in sorted(TARGET_SETS):
         lines.append(f"{set_name}\t{','.join(TARGET_SETS[set_name])}")
+    return "\n".join(lines)
+
+
+def list_kernel_pairs_text() -> str:
+    lines = ["family\tmode\tkernels_target\tno_kernels_target"]
+    for pair in KERNEL_TARGET_PAIRS:
+        lines.append(
+            f"{pair.family}\t{pair.mode}\t{pair.kernels_target}\t{pair.no_kernels_target}"
+        )
     return "\n".join(lines)
 
 

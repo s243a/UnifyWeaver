@@ -51,6 +51,7 @@ from benchmark_common import (
 from benchmark_target_matrix import (
     TARGETS,
     default_target_set_name,
+    list_kernel_pairs_text,
     list_targets_text,
     parse_csv,
     resolve_targets,
@@ -106,6 +107,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
+    parser.add_argument(
+        "--list-kernel-pairs",
+        action="store_true",
+        help="Print registered kernel/no-kernel WAM target pairings and exit.",
+    )
     parser.add_argument(
         "--allow-large-termux-scales",
         action="store_true",
@@ -671,6 +677,9 @@ def main() -> int:
     args = parse_args()
     if args.list_targets:
         print(list_targets_text())
+        return 0
+    if args.list_kernel_pairs:
+        print(list_kernel_pairs_text())
         return 0
 
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
