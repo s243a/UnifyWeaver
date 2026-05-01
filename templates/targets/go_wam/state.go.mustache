@@ -43,6 +43,22 @@ type ChoicePoint struct {
 type EnvFrame struct {
 	CP int
 	B0 int
+	// SavedYRegs is a snapshot of Regs[200..299] (the Y-register range)
+	// taken at Allocate time and restored at Deallocate. Y-regs are
+	// global slots in this runtime, so without per-call save/restore
+	// nested predicates collide on the same slot — symptom: in the
+	// effective-distance bench, power_sum_bound reserved X203 for the
+	// per-iteration Hops accumulator, but the inner category_ancestor's
+	// clause 2 reuses X203 for the parent atom (also via PutVariable),
+	// so when category_ancestor returned, Regs[203] held an atom
+	// instead of the integer the wrapper expected, and the next is/2
+	// in power_sum_bound failed. Restoring at Deallocate gives the
+	// caller's Y-regs back. Bindings-based deref still propagates any
+	// genuine variable binding the callee made on a caller-passed
+	// Unbound — Bindings[Idx] is global and survives the Y-reg
+	// restore, so reading the restored Y-reg dereferences through the
+	// (still-bound) Unbound to the bound value.
+	SavedYRegs [100]Value
 }
 
 type UnifyCtx struct {
@@ -100,6 +116,32 @@ type WamState struct {
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
+	// NextVarId is a monotonically-increasing counter used to give every
+	// new Unbound a globally-unique Idx. Earlier code reused i.Xn (the
+	// X-register slot index) as Idx, which made the Bindings map collide
+	// across activations: a recursive call's PutVariable X207 reused
+	// Idx=207, and the outer call's Unbound{Idx:207} would inherit the
+	// inner call's binding via the shared Bindings[207] entry. Symptom
+	// at depth-3 of category_ancestor: outer-level X206 (which held an
+	// Unbound{Idx:207} carried in via the caller's PutVariable X207)
+	// would deref to the inner-level's bound integer, and the
+	// `OuterHops is RecursiveHops + 1` is/2 call would fail with
+	// `1 is 2`. Start above 1000 so the counter never collides with
+	// the register-slot range that was used pre-fix.
+	NextVarId    int
+}
+
+// allocVarId returns a fresh, globally-unique Idx for a new logical
+// variable. The 1000 floor reserves the X-register-slot range below
+// (which earlier code used as Idx values) so existing snapshots /
+// trail entries that happened to pre-date this change can't collide.
+func (vm *WamState) allocVarId() int {
+	if vm.NextVarId < 1000 {
+		vm.NextVarId = 1000
+	}
+	id := vm.NextVarId
+	vm.NextVarId++
+	return id
 }
 
 func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
@@ -177,6 +219,20 @@ func (vm *WamState) trailBinding(addr int) {
 	vm.TrailLen++
 }
 
+// bindUnbound binds an unbound variable u to val, recording the change
+// on the trail so backtrack can undo it, and rewriting every register
+// slot that aliases u so subsequent reads see the bound value.
+//
+// The previous implementation also did `vm.putReg(u.Idx, val)` as an
+// unconditional fallback. That was load-bearing only when u.Idx was a
+// valid register index that happened not to be caught by the alias
+// rewrite — but for any caller that constructs an Unbound without
+// setting Idx (e.g. a benchmark driver doing `&Unbound{Name: "weight"}`
+// to ask for an output register), Idx defaults to zero and the line
+// silently overwrites Regs[0] = A1 with the bound value, corrupting
+// the input atom. The for-loop above already handles every register
+// that genuinely aliases u, so the putReg call is redundant in the
+// happy path and actively harmful when callers don't fill in Idx.
 func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.trailBinding(u.Idx)
 	vm.Bindings[u.Idx] = val
@@ -185,7 +241,6 @@ func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 			vm.Regs[idx] = val
 		}
 	}
-	vm.putReg(u.Idx, val)
 }
 
 func (vm *WamState) heapPush(v Value) int {
@@ -205,13 +260,39 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
+// snapshotAllRegs captures the FULL register file for a choice point.
+//
+// The original implementation saved only the first `arity` slots — the
+// arity of the predicate that triggered the CP. That was a real
+// correctness bug for any predicate that allocates X-regs (Regs[100..])
+// or Y-regs (Regs[200..]) holding heap-Refs: backtrack would restore
+// A1..An but leave the higher slots untouched, even though heapTrimTo
+// just shrunk the heap past their referent. The next deref of one of
+// those Refs would read off the end of the heap and crash, or — worse —
+// silently resolve to whatever cell a later allocation happened to put
+// in the same slot.
+//
+// Symptom that uncovered this: `category_ancestor("Branches_of_chemistry",
+// "Physics", H, [BoC])` panicked with `index out of range [21] with
+// length 21` from inside `member/2`'s listToSlice. Snapshotting the
+// full register file makes the panic go away and 1-hop and 2-hop
+// ancestor queries return the right number of solutions.
+//
+// The fixed cost (copying a [512]Value array per CP) is small compared
+// to the pre-existing cost of copyStack(vm.Stack) per CP, and is much
+// smaller than the bug it prevents.
+func (vm *WamState) snapshotAllRegs() []Value {
+	saved := make([]Value, len(vm.Regs))
+	copy(saved, vm.Regs[:])
+	return saved
+}
+
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
-		SavedRegs: saved,
+		SavedRegs: vm.snapshotAllRegs(),
 		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
@@ -219,11 +300,10 @@ func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		CP:        vm.CP,
-		SavedRegs: saved,
+		SavedRegs: vm.snapshotAllRegs(),
 		Stack:     copyStack(vm.Stack),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
@@ -292,6 +372,13 @@ func (vm *WamState) Clone() *WamState {
 		Halted:       vm.Halted,
 		CurrentStruct: vm.CurrentStruct,
 		CurrentList:   vm.CurrentList,
+		// Carry over the Idx counter so the cloned VM allocates IDs
+		// strictly above what the parent has issued. Without this the
+		// sub-VM (used by executeAggregate) starts at 1000 and reuses
+		// Idx values the parent already bound — its "fresh" Unbounds
+		// then deref through the parent's bindings and silently drop
+		// every solution.
+		NextVarId:    vm.NextVarId,
 	}
 	newState.Regs = vm.Regs
 	for k, v := range vm.Bindings {

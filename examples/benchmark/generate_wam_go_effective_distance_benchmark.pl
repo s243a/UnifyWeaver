@@ -145,7 +145,16 @@ extract_shared_start_pc(OutputDir, Label, PC) :-
     % blew up with `"x" must hold one character` on the multi-char Needle.
     string_length(Needle, NeedleLen),
     After is Start + NeedleLen,
-    sub_string(Content, After, _, _, Rest0),
+    % Take a fixed-length window after the needle. The previous version
+    % used `_` for length, which made sub_string nondeterministically
+    % enumerate substring lengths starting from 0. The FIRST solution
+    % string_digits_prefix accepted was at length 2 — `" 2"` from the
+    % leading space + first digit of `24145` — giving PC=2 instead of
+    % 24145, and turning the bench into a no-op (it called the WAM
+    % starting at PC=2, which is max_depth/1, and got an immediate
+    % unification failure on every seed). 32 characters is plenty to
+    % cover any plausible label PC.
+    sub_string(Content, After, 32, _, Rest0),
     string_trim_left(Rest0, Rest),
     string_digits_prefix(Rest, Digits),
     number_string(PC, Digits).
@@ -266,11 +275,21 @@ func floatValue(v Value) (float64, bool) {
 }
 
 func weightSumForCategoryRoot(category string, root string) (float64, bool) {
+    // The Unbound for the third arg goes into A3 (register slot 2). Its
+    // Idx field MUST match that slot — bindUnbound trails the binding
+    // by Idx and (in older runtime templates) also writes the bound
+    // value to Regs[Idx]. Leaving Idx at the zero default would alias
+    // A1 and silently corrupt the input category atom on the first
+    // unification.
     rows := collectSolutions(
         effectiveDistanceWeightStartPC,
-        &Atom{Name: category},
-        &Atom{Name: root},
-        &Unbound{Name: "weight"},
+        // Use internAtom (defined in atoms.go) so bench-constructed
+        // atoms share pointer identity with the WAM bytecode literals
+        // in lib.go. Without this, every weight query paid a string
+        // compare per SwitchOnConstant case.
+        internAtom(category),
+        internAtom(root),
+        &Unbound{Name: "weight", Idx: 2},
     )
     if len(rows) == 0 || len(rows[0]) < 3 {
         return 0, false

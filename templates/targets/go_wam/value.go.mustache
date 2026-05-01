@@ -29,7 +29,18 @@ func (v *Atom) valueTag() {}
 func (v *Atom) String() string { return v.Name }
 func (v *Atom) Equals(other Value) bool {
 	o, ok := other.(*Atom)
-	return ok && v.Name == o.Name
+	if !ok {
+		return false
+	}
+	// Pointer-identity short-circuit: when atoms are interned (e.g.
+	// the wamAtom_* table the lowered emitter generates), equality is
+	// O(1). Falls through to string compare for un-interned atoms
+	// (raw &Atom{Name:"..."} literals scattered through lib.go and
+	// the bench's `&Atom{Name: category}` arguments).
+	if v == o {
+		return true
+	}
+	return v.Name == o.Name
 }
 
 type Compound struct {
