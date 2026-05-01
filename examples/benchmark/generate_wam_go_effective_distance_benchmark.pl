@@ -283,8 +283,12 @@ func weightSumForCategoryRoot(category string, root string) (float64, bool) {
     // unification.
     rows := collectSolutions(
         effectiveDistanceWeightStartPC,
-        &Atom{Name: category},
-        &Atom{Name: root},
+        // Use internAtom (defined in atoms.go) so bench-constructed
+        // atoms share pointer identity with the WAM bytecode literals
+        // in lib.go. Without this, every weight query paid a string
+        // compare per SwitchOnConstant case.
+        internAtom(category),
+        internAtom(root),
         &Unbound{Name: "weight", Idx: 2},
     )
     if len(rows) == 0 || len(rows[0]) < 3 {
