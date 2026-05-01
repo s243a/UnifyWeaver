@@ -406,6 +406,39 @@ single-run "23.8s" Phase F number cited in the prior section turned
 out to be an outlier from one lucky run; the realistic median is
 ~26.6s. The cumulative table below uses the realistic medians.
 
+### Phase H: list-builtin micro-opts (May 2026, `perf/wam-go-list-builtins`)
+
+The post-Phase-G profile flagged `listToSlice` at 4.43% cum and
+`mallocgc` at 4.76% cum. The bench's `\+ member(M, Visited)` and
+`length(Visited, Depth)` calls — once per category_ancestor recursion
+step — were each materialising the Visited list into a Go `[]Value`
+just to count or scan it. The recursive form did
+`append([]Value{head}, rest...)` which is O(N²) in allocations
+(every level allocates a new slice and copies the rest).
+
+Three changes:
+
+1. **`listToSlice` is iterative** — pre-allocates a 16-cap slice
+   (the bench's max_depth(10) means 16 covers the common case
+   without growth), walks cells with a `for` loop appending each
+   head, returns the final slice. O(N) allocs instead of O(N²).
+2. **`length/2` no longer allocates** — counts cells in a `for`
+   loop without materialising a slice. Bench's
+   `length(Visited, Depth)` now does an in-place walk.
+3. **`member/2` no longer allocates** — walk-and-unify, with a
+   `vm.unwindTrailTo(mark)` between iterations to prevent failed
+   bindings from leaking into the next element check. Standard
+   WAM `member/2` semantics, no slice.
+
+Wall-clock impact at scale-300: essentially neutral. 50-seed
+median shifted from 2524ms → 2534ms (within run-to-run variance).
+Full bench: 26.6s → 27.4s (also within variance — 3 runs each
+showed overlap). The post-G profile already had `listToSlice` at
+only ~4% of CPU, so the saved allocs are absorbed by GC. Phase H
+is committed as a structural cleanup that becomes more impactful
+at workloads with longer lists or higher member/length call
+density.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
 50-seed: median of 5 alternating trials. Full bench: median of 3
@@ -421,7 +454,8 @@ were outliers — this section uses re-measured medians).
 | Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
 | Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | 8.85x / 8.85x |
 | Phase F cp-pointer + Bindings slice | 2626ms | 26.6s | 1.38x / 1.44x | 12.9x / 12.8x |
-| Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | **13.5x / 12.8x** |
+| Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | 13.5x / 12.8x |
+| Phase H list-builtin micro-opts | 2534ms | ~27.4s | 1.0x / ~1.0x | 13.4x / ~12.4x |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz

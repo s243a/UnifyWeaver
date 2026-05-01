@@ -657,24 +657,37 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
 }
 
+// listToSlice walks a Prolog cons list and collects its elements
+// into a Go slice. Used by `length/2`, `member/2`, `append/3`, etc.
+// Iterative implementation: the previous recursive version did
+// `append([]Value{head}, rest...)` which is O(N²) in allocations
+// (each frame allocates a fresh slice and copies the rest); for
+// the bench's recursion-heavy `\+ member(M, Visited)` calls on
+// 10-deep Visited lists, that was ~4% of post-Phase-G CPU.
 func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
 	v = vm.deref(v)
 	if isEmptyListValue(v) {
 		return []Value{}, true
 	}
-	list, ok := v.(*List)
-	if !ok {
-		return nil, false
+	// Pre-allocate with a small initial capacity; the depth of the
+	// bench's Visited list is bounded by max_depth(10) so 16 covers
+	// the common case without an early grow.
+	out := make([]Value, 0, 16)
+	for {
+		if isEmptyListValue(v) {
+			return out, true
+		}
+		list, ok := v.(*List)
+		if !ok {
+			return nil, false
+		}
+		head, tail, ok := vm.listHeadTail(list)
+		if !ok {
+			return out, true
+		}
+		out = append(out, head)
+		v = vm.deref(tail)
 	}
-	head, tail, ok := vm.listHeadTail(list)
-	if !ok {
-		return []Value{}, true
-	}
-	rest, ok := vm.listToSlice(tail)
-	if !ok {
-		return nil, false
-	}
-	return append([]Value{head}, rest...), true
 }
 
 func decompose(v Value) (string, []Value) {
@@ -889,16 +902,59 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return false
 
 	case "length/2":
-		elements, ok := vm.listToSlice(arg1)
-		if !ok { return false }
-		return vm.Unify(arg2, &Integer{Val: int64(len(elements))})
-	case "member/2":
-		elements, ok := vm.listToSlice(arg2)
-		if !ok { return false }
-		for _, e := range elements {
-			if vm.Unify(arg1, e) { return true }
+		// Walk the list counting cells without materialising a
+		// Go slice. listToSlice is recursive-ish + allocates;
+		// length/2 just needs the count, so the bench's
+		// `length(Visited, Depth)` (called per category_ancestor
+		// recursion step) doesn't pay the slice alloc.
+		v := vm.deref(arg1)
+		count := int64(0)
+		for {
+			if isEmptyListValue(v) {
+				break
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				break
+			}
+			_ = head
+			count++
+			v = vm.deref(tail)
 		}
-		return false
+		return vm.Unify(arg2, &Integer{Val: count})
+	case "member/2":
+		// Walk-and-unify; no intermediate slice. The bench's
+		// `\+ member(M, Visited)` is the hot caller — depth-10
+		// Visited × thousands of recursion steps was previously
+		// allocating a 10-element slice per call just to discard
+		// it after the first match (or after a no-match scan).
+		v := vm.deref(arg2)
+		for {
+			if isEmptyListValue(v) {
+				return false
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				return false
+			}
+			// Saving and restoring the trail mark lets a failed
+			// Unify on this element not leak bindings into the
+			// next iteration. (Standard WAM member/2 semantics.)
+			mark := vm.TrailLen
+			if vm.Unify(arg1, head) {
+				return true
+			}
+			vm.unwindTrailTo(mark)
+			v = vm.deref(tail)
+		}
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
