@@ -268,3 +268,85 @@ decision affecting all targets and is left as a follow-up.
   bump the workload to match the reference, or regenerate the
   reference at depth 10. Pick one and apply it across all targets so
   the cross-target diff stays clean.
+
+## Followup #2 — perf optimizations that didn't pan out
+
+After the `perf/wam-go-aggregate-and-yreg` patch (Regs[512] → Regs[320]
++ resolve `default` labels in SwitchOnConstant; merged) brought
+scale-300 down to ~178s, I investigated three additional targets the
+profile flagged. All were prototyped, measured, and reverted because
+the speedup either failed to materialise or only showed up at the
+warm-cache 50-seed scale and inverted at full scale-300.
+
+Profile of the post-`perf` baseline (scale-300, 50 seeds, kernels_off,
+~24s sample):
+- `runtime.memmove`: 16.9% flat
+- `runtime.bulkBarrierPreWrite`: 25.6% cum (write barriers per pointer
+  store)
+- `runtime.mallocgc + gcBgMarkWorker`: ~33% cum combined (heap allocs
+  and GC marking)
+- `backtrack` line `copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)`:
+  9.98s / 23.82s = 41.9% of total
+- `backtrack` line `vm.Stack = copyStack(cp.Stack)`: 4.55s = 19.1%
+
+### What I tried
+
+1. **`Ctx.SaveRegBound` + shrunk snapshot range**: walk Code at
+   `NewWamContext`, find the highest `Ai`/`Xn` ever referenced
+   (turned out to be 207 for the bench), snapshot only `Regs[:208]`
+   instead of `Regs[:320]`. **Theoretical**: 35% smaller copy. **Real**:
+   no measurable improvement at full scale-300; runs alternated between
+   "slightly faster" and "slightly slower" with the variance band
+   (~±10%) swamping any real signal. Reverted.
+
+2. **`SavedRegs` pool**: replace `make([]Value, ...)` in `snapshotAllRegs`
+   with a per-`WamState` free-list seeded by `truncateChoicePoints`
+   (called from every CP-removal site: indexed/foreign-results
+   exhaustion, TrustMe, CutIte, !-cut). Required `Clone()` to
+   deep-copy each cloned CP's `SavedRegs` so a sub-VM's pool can't
+   recycle a slice the parent VM still references. **Theoretical**:
+   eliminates the per-CP heap alloc, drops `mallocgc`/`gcBgMarkWorker`
+   share. **Real**: ~3% improvement at the 50-seed scale, **~6%
+   regression at full scale-300** (185s vs 175s baseline). Best guess:
+   the deep-copy in `Clone` plus the recycled-slice scanning costs
+   exceed the alloc savings on the longer run, where GC has more
+   headroom to keep up. Reverted.
+
+3. **Pre-sized `Bindings` map** (`make(map[int]Value, 4096)`): no
+   improvement, marginal regression. The map's hash-table overhead
+   dominates over its initial-bucket allocation, which Go's allocator
+   handles cheaply enough that pre-sizing doesn't help.
+
+### Variance observation
+
+Wall-clock at scale-300 / 50 seeds shows ~±10% variance run-to-run
+even with the same binary. Optimisations smaller than ~15% can't be
+distinguished from noise without a longer measurement campaign or
+external CPU isolation. The remaining bottlenecks (snapshot+restore
+copy, write barriers per `Value` store, choicepoint stack copy) are
+all O(N) in the snapshot size, so chipping away at constants probably
+won't deliver a step-change.
+
+### What would actually move the needle
+
+The code paths above all stem from one design choice: the runtime
+treats the env-frame stack and the snapshot-on-CP-push register file
+as deep-copyable. A real WAM keeps env frames alive across choicepoints
+(environment trimming via `B0`) and saves only an `E` pointer / `B`
+mark on CP push, never copying the stack. That removes both
+`copyStack` and the reason `snapshotAllRegs` has to capture Y-regs at
+all (Y-regs are *in* env frames). The `EnvFrame` struct already
+carries `B0`; making `Deallocate` honour it (don't pop while a
+younger choicepoint references the frame) and switching `pushChoicePoint`
+to a length-mark would deliver the structural fix that none of the
+constant-factor patches above could.
+
+A second-order win is dropping the global `Bindings map[int]Value` in
+favour of a slice indexed by `Idx - allocVarIdBase`: `deref` and
+`unwindTrailTo` would become array indexing instead of map ops,
+which the profile's `runtime.mapaccess2`/`mapassign` allocations
+account for ~10% of total. Slice-grow-on-demand handles the rare
+high-Idx case.
+
+Both are non-trivial rewrites and out of scope for the 1-2 commit
+patches in this branch series.
