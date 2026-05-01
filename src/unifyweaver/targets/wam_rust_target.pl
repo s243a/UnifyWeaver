@@ -39,6 +39,22 @@
     kernel_native_call/2
 ]).
 
+rust_safe_function_name(Pred, FuncName) :-
+    atom_string(Pred, PredStr),
+    string_codes(PredStr, Codes),
+    maplist(rust_safe_identifier_code, Codes, SafeCodes),
+    string_codes(FuncStr, SafeCodes),
+    atom_string(FuncName, FuncStr).
+
+rust_safe_identifier_code(C, C) :-
+    (   C >= 0'a, C =< 0'z
+    ;   C >= 0'A, C =< 0'Z
+    ;   C >= 0'0, C =< 0'9
+    ;   C =:= 0'_
+    ),
+    !.
+rust_safe_identifier_code(_, 0'_).
+
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
 % ============================================================================
@@ -2414,6 +2430,7 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -2426,7 +2443,7 @@ pub fn ~w(~w) -> bool {
 ~w
 ~w
     ~w
-}', [PredStr, Arity, PredStr, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+}', [PredStr, Arity, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
@@ -2929,7 +2946,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
 
     % Compile predicates and generate lib.rs
-    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    pairs_keys(DetectedKernels, DetectedKeys),
+    compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode],
@@ -2967,6 +2985,11 @@ fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
         ];
         (code, labels)
     })
+}
+
+pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    let (code, labels) = get_shared_wam();
+    (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
     ;   SharedCode = ""
     ),
@@ -3018,7 +3041,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
             atomic_list_concat(RustLines, '\n', PredCode),
             format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
-            Entry = classified(Module, Pred, Arity, lowered, PredCode)
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode))
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -3041,6 +3064,17 @@ collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     % Count instructions to compute next PC
+    length(InstrParts, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrParts, RestInstrs, AllInstrs),
+    append(LabelParts, RestLabels, AllLabels).
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
     collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
@@ -3069,7 +3103,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Re
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, lowered, PredCode)|Rest],
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
@@ -3088,6 +3122,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
 %  Generates a thin WAM predicate wrapper that references the shared code table.
 compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     format(string(RustCode),
@@ -3101,7 +3136,7 @@ pub fn ~w(~w) -> bool {
     vm.pc = ~w;
 ~w
     vm.run()
-}', [PredStr, Arity, StartPC, PredStr, ArgList, StartPC, ArgSetup]).
+}', [PredStr, Arity, StartPC, FuncName, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-

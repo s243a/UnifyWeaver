@@ -63,11 +63,13 @@ BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_RUST_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
+WAM_RUST_MATRIX_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_rust_matrix_benchmark.pl"
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
 WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
+RUST_MATRIX_EXE = "wam_rust_matrix_bench"
 
 
 def default_scales_csv() -> str:
@@ -575,6 +577,28 @@ def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str) ->
     return build_haskell_project(project_dir, HASKELL_EXE)
 
 
+def build_rust_matrix_effective_distance(root: Path, mode: str, kernel_mode: str) -> list[str]:
+    project_dir = root / f"rust_{mode}_{kernel_mode}"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_RUST_MATRIX_GENERATOR),
+            "--",
+            str(DEFAULT_FACTS),
+            str(project_dir),
+            "accumulated",
+            mode,
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    run_command(["cargo", "build", "--release"], cwd=project_dir)
+    return [str(project_dir / "target" / "release" / RUST_MATRIX_EXE)]
+
+
 def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str, list[str]]:
     commands: dict[str, list[str]] = {}
     for target in targets:
@@ -594,6 +618,10 @@ def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_off")
         elif target == "haskell-lowered-ffi":
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_on")
+        elif target == "rust-interp-ffi":
+            commands[target] = build_rust_matrix_effective_distance(root, "interpreter", "kernels_on")
+        elif target == "rust-lowered-ffi":
+            commands[target] = build_rust_matrix_effective_distance(root, "functions", "kernels_on")
     return commands
 
 

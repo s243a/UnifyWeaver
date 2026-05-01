@@ -180,26 +180,52 @@ rust_safe_code(_, 0'_).
 
 %% lower_predicate_to_rust(+Pred/Arity, +WamCode, +Options, -RustLines)
 %  Emit a Rust function for the predicate.
-lower_predicate_to_rust(PI, WamCode, _Options, RustLines) :-
+lower_predicate_to_rust(PI, WamCode, Options, RustLines) :-
     ( PI = _M:Pred/Arity -> true ; PI = Pred/Arity ),
     rust_lowered_func_name(Pred/Arity, FuncName),
     (   is_list(WamCode) -> Instrs = WamCode
     ;   parse_wam_text(WamCode, Instrs)
     ),
     clause1_instrs(Instrs, C1Instrs),
-    with_output_to(string(Body), emit_instrs(C1Instrs, "    ")),
+    (   member(foreign_pred_keys(ForeignPreds0), Options)
+    ->  maplist(foreign_key_string, ForeignPreds0, ForeignPreds)
+    ;   ForeignPreds = []
+    ),
+    with_output_to(string(Body), emit_instrs(C1Instrs, "    ", ForeignPreds)),
     format(string(Header),
 '// ~w — lowered from ~w/~w
 pub fn ~w(vm: &mut WamState) -> bool {', [FuncName, Pred, Arity, FuncName]),
     format(string(Footer), '}', []),
     RustLines = [Header, Body, Footer].
 
-%% emit_instrs(+Instrs, +Indent)
+%% emit_instrs(+Instrs, +Indent, +ForeignPreds)
 %  Emit Rust code for a list of instructions.
-emit_instrs([], _).
-emit_instrs([Instr|Rest], Ind) :-
-    emit_one(Instr, Ind),
-    emit_instrs(Rest, Ind).
+emit_instrs([], _, _).
+emit_instrs([Instr|Rest], Ind, ForeignPreds) :-
+    emit_one(Instr, Ind, ForeignPreds),
+    emit_instrs(Rest, Ind, ForeignPreds).
+
+emit_one(call(PredStr, NStr), I, ForeignPreds) :-
+    member(PredStr, ForeignPreds), !,
+    format("~w// call ~w via foreign kernel~n", [I, PredStr]),
+    format("~wif !vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w)) { return false; }~n",
+           [I, PredStr, NStr]).
+emit_one(execute(PredStr), I, ForeignPreds) :-
+    member(PredStr, ForeignPreds),
+    sub_atom(PredStr, _, 1, ArityLen, '/'),
+    sub_atom(PredStr, _, ArityLen, 0, ArityAtom),
+    atom_number(ArityAtom, Arity), !,
+    format("~w// execute ~w via foreign kernel~n", [I, PredStr]),
+    format("~wreturn vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w));~n",
+           [I, PredStr, Arity]).
+emit_one(Instr, I, _) :-
+    emit_one(Instr, I).
+
+foreign_key_string(Key, String) :-
+    (   string(Key)
+    ->  String = Key
+    ;   atom_string(Key, String)
+    ).
 
 % --- Terminal instructions ---
 
