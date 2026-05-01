@@ -218,3 +218,53 @@ go build ./... && ./wam-go-effective-distance-bench
 
 Expected probe output (1-hop and 2-hop ancestor return 1 solution
 each; no panics) confirms bugs 2+3 are fixed.
+
+## Followup — `kernels_on` mode regression and the "remaining drift" non-bug
+
+After the Y-reg save/restore landed (`fix/wam-go-depth-completeness`,
+commit `f6620806`), `kernels_off` produced 271 rows matching the
+optimized Prolog target byte-for-byte. The cross-target script
+defaults to **`kernels_on`** though, and that mode was producing only
+31 rows / `tuple_count=0` — i.e. only direct article→Physics seeds
+contributed, every recursive weight query returned no solutions.
+
+Root cause: `collect_wam_predicates(Module, kernels_on, ...)` in
+`generate_wam_go_effective_distance_benchmark.pl` listed the kernel
+predicates and `category_ancestor/4` but **omitted
+`category_parent/2`**. The kernel `category_ancestor$power_sum_bound/3`
+calls `category_ancestor/4`, which calls `category_parent/2` — so
+without the leaf fact predicate compiled into the WAM bytecode,
+recursion has nothing to call and every weight aggregation returns
+`sum=0` (which the kernel rejects via `C > 0`).
+
+Fix: add `Module:category_parent/2` to the kernels_on list. After the
+fix, both modes generate byte-identical bytecode (`cmp lib.go atoms.go
+→ 0`) and produce identical output at dev (19/19 articles, 16 tuples)
+and scale-300 (271/271 articles, 211 tuples).
+
+Separately, the "remaining numerical drift" called out earlier
+(`Brownian_motion 0.993865 vs ref 0.993717`,
+`2008_in_science 4.37 vs ref 3.73`) turned out **not** to be a Go WAM
+bug. The Go output matches the optimized-Prolog-target output
+byte-for-byte at dev scale; the optimized-Prolog output also matches
+running `effective_distance.pl` directly through unoptimized
+SWI-Prolog. All three implementations honour the workload's
+`max_depth(10)`. The reference TSV in `data/benchmark/300/` was
+generated with a much deeper cutoff (matches reference exactly at
+`max_depth ≥ 50`, close-but-not-exact at `max_depth=20`). Bumping
+`max_depth/1` in `examples/benchmark/effective_distance.pl` to ~50
+brings everything back into agreement, but that's a workload-level
+decision affecting all targets and is left as a follow-up.
+
+## Still open
+
+- **Speed at scale-300.** The bench now produces the right answer in
+  both modes but takes ~340 s for 211 tuples (Rust does the same in
+  ~23 ms). Likely culprits unchanged from above: (1) `[100]Value`
+  Y-reg snapshot at every Allocate, (2) per-iteration `Clone()` in
+  `executeAggregate`, (3) atom comparisons that miss pointer identity
+  for non-bytecode atoms.
+- **Workload `max_depth(10)` vs reference `max_depth >= 50`.** Either
+  bump the workload to match the reference, or regenerate the
+  reference at depth 10. Pick one and apply it across all targets so
+  the cross-target diff stays clean.

@@ -107,6 +107,13 @@ parse_kernel_mode(kernels_off, [no_kernels(true)]).
 collect_wam_predicates(Module, kernels_on, [
     Module:dimension_n/1,
     Module:max_depth/1,
+    % category_parent/2 is the leaf fact source. The kernel predicates
+    % below call category_ancestor/4, which in turn calls category_parent/2
+    % — so it must be present in the WAM bytecode in BOTH modes. Without
+    % it the kernel's recursion has nothing to call and every weight
+    % query returns no solutions (article_count=31, tuple_count=0 at the
+    % scale-300 bench).
+    Module:category_parent/2,
     Module:category_ancestor/4,
     Module:'category_ancestor$power_sum_bound'/3,
     Module:'category_ancestor$power_sum_selected'/3,
