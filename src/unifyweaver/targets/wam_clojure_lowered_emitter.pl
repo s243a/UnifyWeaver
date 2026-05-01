@@ -215,6 +215,8 @@ lowered_direct_prefix([Instr|Rest], [Instr|PrefixRest]) :-
     lowered_direct_prefix(Rest, PrefixRest).
 lowered_direct_prefix(_, []).
 
+lowered_direct_instr(allocate).
+lowered_direct_instr(deallocate).
 lowered_direct_instr(proceed).
 lowered_direct_instr(fail).
 lowered_direct_instr(get_constant(_, _)).
@@ -252,6 +254,14 @@ emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
     format(atom(Expr), '(runtime/fail-state ~w)', [S]).
+emit_lowered_expr(allocate, S, Expr) :-
+    format(atom(Expr),
+           '(-> ~w (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points ~w))) runtime/advance)',
+           [S, S]).
+emit_lowered_expr(deallocate, S, Expr) :-
+    format(atom(Expr),
+           '(-> ~w (update :env-stack #(if (seq %) (pop %) %)) runtime/advance)',
+           [S]).
 emit_lowered_expr(get_constant(C, Ai), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
