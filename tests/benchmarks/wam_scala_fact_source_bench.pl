@@ -179,13 +179,56 @@ run_scala_query(ProjectDir, PredKey, Args, Output) :-
     ;   throw(error(scala_run_failed(EC, PredKey, Args, ErrStr), _))
     ).
 
+%% run_scala_bench(+ProjectDir, +Iterations, +PredKey, +Args, -BenchSec)
+%  Runs the generated program with `--bench N` so the JVM amortises
+%  startup over N iterations of the same query. Parses the
+%  "BENCH n=<N> elapsed=<sec>" line from stdout to extract elapsed.
+run_scala_bench(ProjectDir, N, PredKey, Args, BenchSec) :-
+    absolute_file_name(ProjectDir, Abs),
+    directory_file_path(Abs, 'classes', ClassDir),
+    atom_string(PredKey, P),
+    atom_string(N, NStr),
+    maplist([A, S]>>atom_string(A, S), Args, AStrs),
+    append(['-classpath', ClassDir,
+            'generated.wam_scala_bench.core.GeneratedProgram',
+            '--bench', NStr, P], AStrs, ProcArgs),
+    process_create(path(scala), ProcArgs,
+                   [cwd(Abs), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+    read_string(O, _, OutStr), read_string(E, _, ErrStr),
+    close(O), close(E),
+    process_wait(Pid, exit(EC)),
+    (   EC =:= 0
+    ->  parse_bench_line(OutStr, BenchSec)
+    ;   throw(error(scala_bench_failed(EC, PredKey, Args, ErrStr), _))
+    ).
+
+%% parse_bench_line(+String, -Seconds)
+%  Pulls the elapsed= field out of a "BENCH n=N elapsed=X.XXX last=..." line.
+parse_bench_line(Str, Seconds) :-
+    split_string(Str, "\n", "", Lines),
+    member(Line, Lines),
+    sub_string(Line, _, _, _, "BENCH"),
+    sub_string(Line, B, _, _, "elapsed="),
+    Bp is B + 8,
+    sub_string(Line, Bp, _, 0, Tail),
+    split_string(Tail, " \n", "", [SecStr | _]),
+    number_string(Seconds, SecStr), !.
+
 %% ========================================================================
 %% Bench driver
 %% ========================================================================
 
-%% time_bench(+Backend, +Tuples, +Atoms, -GenSec, -CompileSec, -RunSec)
-%  Times the three pipeline phases for one backend on one data set.
-time_bench(Backend, Tuples, Atoms, GenSec, CompileSec, RunSec) :-
+%% time_bench(+Backend, +Tuples, +Atoms, +InnerN,
+%%            -GenSec, -CompileSec, -ColdRunSec, -InnerLoopSec)
+%  Builds the project once and times:
+%    GenSec       — write_wam_scala_project/3
+%    CompileSec   — scalac compile
+%    ColdRunSec   — single-shot scala invocation (cold start)
+%    InnerLoopSec — `--bench InnerN` invocation; elapsed reported by the
+%                   generated program itself, so JVM startup is excluded.
+%                   The per-iteration cost is InnerLoopSec / InnerN.
+time_bench(Backend, Tuples, Atoms, InnerN,
+           GenSec, CompileSec, ColdRunSec, InnerLoopSec) :-
     bench_csv_path(Csv),
     bench_proj_path(Backend, ProjectDir),
     catch(delete_directory_and_contents(ProjectDir), _, true),
@@ -197,10 +240,11 @@ time_bench(Backend, Tuples, Atoms, GenSec, CompileSec, RunSec) :-
     get_time(T2),
     run_scala_query(ProjectDir, 'category_parent/2', ['c0', 'c1'], Out),
     get_time(T3),
+    run_scala_bench(ProjectDir, InnerN, 'category_parent/2',
+                    ['c0', 'c1'], InnerLoopSec),
     GenSec     is T1 - T0,
     CompileSec is T2 - T1,
-    RunSec     is T3 - T2,
-    % Sanity: c0 -> c1 should always succeed.
+    ColdRunSec is T3 - T2,
     (   Out == "true"
     ->  true
     ;   format(user_error,
@@ -222,15 +266,17 @@ cleanup_after(_, ProjectDir, Csv) :-
         catch(delete_file(Csv), _, true)
     ).
 
-run_one_size(N) :-
+run_one_size(N, InnerN) :-
     chain_tuples(N, Tuples),
     all_atoms(Tuples, Atoms),
-    format("[INFO] N=~w (rows=~w, atoms=~w)~n", [N, N, Atoms]),
+    format("[INFO] N=~w rows, inner-loop=~w iterations per backend~n",
+           [N, InnerN]),
     forall(
         member(Backend, [wam, inline, file]),
-        ( time_bench(Backend, Tuples, Atoms, G, C, R),
-          format("RESULT n=~w backend=~w gen=~3f compile=~3f run=~3f total=~3f~n",
-                 [N, Backend, G, C, R, G + C + R])
+        ( time_bench(Backend, Tuples, Atoms, InnerN, G, C, R, I),
+          PerIter is I / InnerN,
+          format("RESULT n=~w backend=~w gen=~3f compile=~3f run=~3f inner_total=~6f per_iter=~9f~n",
+                 [N, Backend, G, C, R, I, PerIter])
         )).
 
 %% ========================================================================
@@ -244,10 +290,19 @@ bench_sizes([N]) :-
     integer(N), N > 0, !.
 bench_sizes([10, 50, 100]).
 
+inner_iterations(I) :-
+    current_prolog_flag(argv, Argv),
+    append(_, ['--inner', IStr], Argv),
+    atom_number(IStr, I),
+    integer(I), I > 0, !.
+inner_iterations(2000).
+
 main :-
     (   scalac_available, scala_available
     ->  bench_sizes(Sizes),
-        format("[INFO] WAM Scala fact-source bench — sizes ~w~n", [Sizes]),
-        forall(member(N, Sizes), run_one_size(N))
+        inner_iterations(InnerN),
+        format("[INFO] WAM Scala fact-source bench — sizes ~w, inner=~w~n",
+               [Sizes, InnerN]),
+        forall(member(N, Sizes), run_one_size(N, InnerN))
     ;   format("[SKIP] scalac/scala not on PATH; skipping bench.~n")
     ).

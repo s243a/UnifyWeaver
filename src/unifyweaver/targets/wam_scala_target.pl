@@ -247,6 +247,16 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(Array(~w))', [CasesStr]).
 
+% --- Switch on term (type-based dispatch) ---
+% First-arg type indexing emitted by the WAM compiler when a predicate
+% mixes constant, list, and compound first-arg shapes. Format:
+%   switch_on_term <CLen> <const_cases...> <SLen> <struct_cases...> <ListLabel>
+% Kept as a no-op in this target — the always-emitted try_me_else chain
+% that immediately follows already produces correct results, just with
+% slightly more clause attempts than necessary. Future optimization can
+% implement the full type discrimination.
+wam_parts_to_scala(["switch_on_term" | _Rest], 'SwitchOnTerm').
+
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
 

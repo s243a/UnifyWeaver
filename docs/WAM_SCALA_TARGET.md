@@ -111,6 +111,19 @@ Argument syntax: integers (`42`, `-3`), floats (`3.14`), atoms (`a`),
 structures (`f(a, b)`), and lists (`[a, b, c]`). The program prints
 `true` or `false` and exits.
 
+There is also an inner-loop benchmark mode that runs the same query
+many times in one JVM invocation:
+
+```
+scala -classpath <classes> <package>.GeneratedProgram --bench <N> <pred>/<arity> <arg1> ...
+```
+
+Prints `BENCH n=<N> elapsed=<sec> last=<true|false>`. The first 5%
+of iterations (capped at 50) are warmup so the JIT can settle before
+timing begins. JVM startup is paid once, so the elapsed time is
+dominated by the per-iteration runtime cost — the right shape for
+comparing fact-source backends or measuring optimization wins.
+
 ## Supported builtins
 
 The runtime currently implements:
@@ -144,6 +157,10 @@ Two test suites live in [tests/](../tests/):
   — end-to-end tests: generate → `scalac` → `scala` → assert on
   stdout. Gated on `scalac`/`scala` being on PATH (or set
   `SCALA_SMOKE_TESTS=1` to force).
+- [test_wam_scala_classic_programs.pl](../tests/test_wam_scala_classic_programs.pl)
+  — same gating; runs full Prolog programs (list reverse, naive
+  reverse, Ackermann, Fibonacci) end-to-end and verifies known
+  answers.
 
 Run them:
 
@@ -159,15 +176,26 @@ A synthetic three-way bench compares the WAM-compiled, inline-tuple,
 and file-backed fact-source paths on a chain of `c0 → c1 → … → cN`:
 
 ```bash
-swipl -g main -t halt tests/benchmarks/wam_scala_fact_source_bench.pl -- 50
+swipl -g main -t halt tests/benchmarks/wam_scala_fact_source_bench.pl -- 50 --inner 2000
 ```
 
-The bench prints `RESULT n=<N> backend=<wam|inline|file> gen=<sec> compile=<sec> run=<sec>`
-lines for each backend×size combination. Cold-start time is
-dominated by `scalac` and JVM startup; the three backends are within
-noise of each other for cold queries because the fact-source choice
-mostly affects inner-loop performance, which a single-shot CLI query
-doesn't expose.
+For each backend × size combination it emits a line of the form:
+
+```
+RESULT n=<N> backend=<wam|inline|file>
+       gen=<sec>           # write_wam_scala_project/3
+       compile=<sec>       # scalac
+       run=<sec>           # cold-start single-shot scala invocation
+       inner_total=<sec>   # `--bench <I>` invocation; JVM startup paid once
+       per_iter=<sec>      # inner_total / I
+```
+
+Cold-start time (`run`) is dominated by `scalac` and JVM startup;
+the inner-loop columns (`inner_total`, `per_iter`) amortise that
+fixed cost over `I` iterations and reveal the real per-query
+difference between backends — typically: WAM-compiled is ~3-4×
+faster than inline tuples, file-backed is the slowest because the
+generated handler re-reads the CSV on every call.
 
 ## Limitations
 

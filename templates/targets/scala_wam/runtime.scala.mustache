@@ -96,6 +96,13 @@ case class UnifyConstant(value: WamTerm)                extends Instruction
 case object TrustMe                                     extends Instruction
 // First-argument indexing
 case class SwitchOnConstant(cases: Array[SwitchCase])   extends Instruction
+// Type-based first-arg discrimination. The WAM compiler emits this
+// when a predicate's clauses mix const, list, and compound first args.
+// Currently implemented as a no-op fall-through — the try_me_else
+// chain that follows produces correct results, just with more clause
+// attempts than the optimal index would. Future work can add the full
+// type discrimination.
+case object SwitchOnTerm                                extends Instruction
 // Builtins and foreign
 case class BuiltinCall(pred: String, arity: Int)        extends Instruction
 case class CallForeign(pred: String, arity: Int)        extends Instruction
@@ -755,6 +762,10 @@ object WamRuntime {
 
       case SwitchOnConstant(cases) =>
         switchTarget(s, cases)
+
+      case SwitchOnTerm =>
+        // No-op fall-through. See ADT comment for rationale.
+        s.pc += 1
 
       // --- Builtins ---
 
