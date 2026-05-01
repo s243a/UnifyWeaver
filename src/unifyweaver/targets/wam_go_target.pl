@@ -1130,7 +1130,7 @@ format_switch_case(Entry, Case) :-
         ),
         format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label])
     ;   % Robustness fallback for malformed entries
-        format(atom(Case), '{Val: &Atom{Name: "malformed"}, Label: "~w"}', [Entry])
+        format(atom(Case), '{Val: internAtom("malformed"), Label: "~w"}', [Entry])
     ).
 
 % --- Register index encoding ---
@@ -1193,7 +1193,13 @@ go_atom_to_literal(A, GoVal) :-
     (   catch(intern_atom_go(A, AtomVar), _, fail)
     ->  GoVal = AtomVar
     ;   escape_go_atom_for_double_quoted(A, EA),
-        format(atom(GoVal), '&Atom{Name: "~w"}', [EA])
+        % Route through internAtom so the runtime intern table
+        % is the single source of pointer identity for atoms.
+        % `Atom.Equals` is now pointer-only (see value.go.mustache);
+        % a raw `&Atom{Name: ...}` here would produce a fresh
+        % pointer that compares unequal against the same-named
+        % atom from atomInternMap.
+        format(atom(GoVal), 'internAtom("~w")', [EA])
     ).
 
 %% escape_go_atom_for_double_quoted(+In, -Out)
@@ -2374,7 +2380,7 @@ func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs [
             continue
         }
         visited[node] = true
-        results = append(results, &Atom{Name: node})
+        results = append(results, internAtom(node))
         queue = append(queue, adjacency[node]...)
     }
     return results
@@ -2397,7 +2403,7 @@ func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs 
             dist[next] = dist[current] + 1
             queue = append(queue, next)
             results = append(results, tupleValue(
-                &Atom{Name: next},
+                internAtom(next),
                 &Integer{Val: int64(dist[next])},
             ))
         }
@@ -2424,8 +2430,8 @@ func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, 
             parent[next] = current
             queue = append(queue, next)
             results = append(results, tupleValue(
-                &Atom{Name: next},
-                &Atom{Name: parent[next]},
+                internAtom(next),
+                internAtom(parent[next]),
                 &Integer{Val: int64(dist[next])},
             ))
         }
@@ -2458,9 +2464,9 @@ func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source stri
             }
             queue = append(queue, next)
             results = append(results, tupleValue(
-                &Atom{Name: next},
-                &Atom{Name: firstStep[next]},
-                &Atom{Name: parent[next]},
+                internAtom(next),
+                internAtom(firstStep[next]),
+                internAtom(parent[next]),
                 &Integer{Val: int64(dist[next])},
             ))
         }
@@ -2507,7 +2513,7 @@ func (vm *WamState) collectNativeWeightedShortestPathResults(source string, trip
         settled[current] = true
         if current != source {
             results = append(results, tupleValue(
-                &Atom{Name: current},
+                internAtom(current),
                 &Float{Val: dist[current]},
             ))
         }

@@ -140,7 +140,15 @@ type WamState struct {
 	// (and snapshotAllRegs's matching alloc) by ~37% per choicepoint
 	// without changing the addressable-slot range.
 	Regs         [320]Value
-	Bindings     map[int]Value
+	// Bindings is a dense slice indexed by Unbound.Idx. nil means
+	// unbound; non-nil is the bound value. The earlier rep was
+	// `map[int]Value`; with allocVarId starting at 1000 and
+	// monotonically incrementing, Idx values pack densely, so a
+	// slice access (~5ns) wins over a map access (~30ns) once the
+	// per-CP work is small enough that map ops show up. The
+	// `setBinding` helper grows the slice on demand (doubling)
+	// for the rare out-of-range write.
+	Bindings []Value
 	Heap         []Value
 	HeapLen      int
 	Stack        []StackEntry
@@ -215,11 +223,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value), E: -1}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -270,12 +278,39 @@ func (vm *WamState) getReg(idx int) Value {
 	return vm.Regs[idx]
 }
 
-func (vm *WamState) trailBinding(addr int) {
-	if vm.Bindings == nil {
-		vm.Bindings = make(map[int]Value)
+// getBinding reads vm.Bindings[addr] safely — returns nil if addr is
+// past the slice's current length (which the runtime treats the same
+// as "unbound"). Hot path; keep tiny.
+func (vm *WamState) getBinding(addr int) Value {
+	if addr < 0 || addr >= len(vm.Bindings) {
+		return nil
 	}
-	old, hadOld := vm.Bindings[addr]
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: hadOld})
+	return vm.Bindings[addr]
+}
+
+// setBinding writes val to vm.Bindings[addr], growing the slice if
+// addr is past the current length. Doubles capacity (with floor 64)
+// to amortise allocs across the dense 1000+ Idx range allocVarId
+// hands out during a query.
+func (vm *WamState) setBinding(addr int, val Value) {
+	if addr >= len(vm.Bindings) {
+		newCap := len(vm.Bindings)
+		if newCap < 64 {
+			newCap = 64
+		}
+		for newCap <= addr {
+			newCap *= 2
+		}
+		newBindings := make([]Value, newCap)
+		copy(newBindings, vm.Bindings)
+		vm.Bindings = newBindings
+	}
+	vm.Bindings[addr] = val
+}
+
+func (vm *WamState) trailBinding(addr int) {
+	old := vm.getBinding(addr)
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
 	vm.TrailLen++
 }
 
@@ -295,7 +330,7 @@ func (vm *WamState) trailBinding(addr int) {
 // happy path and actively harmful when callers don't fill in Idx.
 func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.trailBinding(u.Idx)
-	vm.Bindings[u.Idx] = val
+	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
 			vm.Regs[idx] = val
@@ -455,7 +490,7 @@ func (vm *WamState) Clone() *WamState {
 		Ctx:          vm.Ctx,
 		PC:           vm.PC,
 		CP:           vm.CP,
-		Bindings:     make(map[int]Value, len(vm.Bindings)),
+		Bindings:     make([]Value, len(vm.Bindings)),
 		Heap:         make([]Value, vm.HeapLen),
 		HeapLen:      vm.HeapLen,
 		Stack:        make([]StackEntry, len(vm.Stack)),
@@ -483,9 +518,7 @@ func (vm *WamState) Clone() *WamState {
 		MaxYReg:      vm.MaxYReg,
 	}
 	newState.Regs = vm.Regs
-	for k, v := range vm.Bindings {
-		newState.Bindings[k] = v
-	}
+	copy(newState.Bindings, vm.Bindings)
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
@@ -581,19 +614,26 @@ func isEmptyListValue(v Value) bool {
 	return false
 }
 
+// emptyListAtom is a process-wide singleton for the `[]` terminator,
+// initialised once via internAtom("[]") and reused everywhere a list
+// tail terminator is needed. Avoids the per-call internAtom map
+// lookup from rawListHeadTail / listHeadTail; those run once per list
+// cell in the bench's recursion-heavy paths.
+var emptyListAtom = internAtom("[]")
+
 func rawListHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := list.Elements[1]
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
@@ -604,37 +644,50 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := vm.deref(list.Elements[1])
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
 }
 
+// listToSlice walks a Prolog cons list and collects its elements
+// into a Go slice. Used by `length/2`, `member/2`, `append/3`, etc.
+// Iterative implementation: the previous recursive version did
+// `append([]Value{head}, rest...)` which is O(N²) in allocations
+// (each frame allocates a fresh slice and copies the rest); for
+// the bench's recursion-heavy `\+ member(M, Visited)` calls on
+// 10-deep Visited lists, that was ~4% of post-Phase-G CPU.
 func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
 	v = vm.deref(v)
 	if isEmptyListValue(v) {
 		return []Value{}, true
 	}
-	list, ok := v.(*List)
-	if !ok {
-		return nil, false
+	// Pre-allocate with a small initial capacity; the depth of the
+	// bench's Visited list is bounded by max_depth(10) so 16 covers
+	// the common case without an early grow.
+	out := make([]Value, 0, 16)
+	for {
+		if isEmptyListValue(v) {
+			return out, true
+		}
+		list, ok := v.(*List)
+		if !ok {
+			return nil, false
+		}
+		head, tail, ok := vm.listHeadTail(list)
+		if !ok {
+			return out, true
+		}
+		out = append(out, head)
+		v = vm.deref(tail)
 	}
-	head, tail, ok := vm.listHeadTail(list)
-	if !ok {
-		return []Value{}, true
-	}
-	rest, ok := vm.listToSlice(tail)
-	if !ok {
-		return nil, false
-	}
-	return append([]Value{head}, rest...), true
 }
 
 func decompose(v Value) (string, []Value) {
@@ -666,7 +719,7 @@ func (vm *WamState) deref(v Value) Value {
 			if next == v { return v }
 			v = next
 		case *Unbound:
-			if bound := vm.Bindings[t.Idx]; bound != nil && bound != v {
+			if bound := vm.getBinding(t.Idx); bound != nil && bound != v {
 				v = bound
 			} else {
 				return v
@@ -849,16 +902,59 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return false
 
 	case "length/2":
-		elements, ok := vm.listToSlice(arg1)
-		if !ok { return false }
-		return vm.Unify(arg2, &Integer{Val: int64(len(elements))})
-	case "member/2":
-		elements, ok := vm.listToSlice(arg2)
-		if !ok { return false }
-		for _, e := range elements {
-			if vm.Unify(arg1, e) { return true }
+		// Walk the list counting cells without materialising a
+		// Go slice. listToSlice is recursive-ish + allocates;
+		// length/2 just needs the count, so the bench's
+		// `length(Visited, Depth)` (called per category_ancestor
+		// recursion step) doesn't pay the slice alloc.
+		v := vm.deref(arg1)
+		count := int64(0)
+		for {
+			if isEmptyListValue(v) {
+				break
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				break
+			}
+			_ = head
+			count++
+			v = vm.deref(tail)
 		}
-		return false
+		return vm.Unify(arg2, &Integer{Val: count})
+	case "member/2":
+		// Walk-and-unify; no intermediate slice. The bench's
+		// `\+ member(M, Visited)` is the hot caller — depth-10
+		// Visited × thousands of recursion steps was previously
+		// allocating a 10-element slice per call just to discard
+		// it after the first match (or after a no-match scan).
+		v := vm.deref(arg2)
+		for {
+			if isEmptyListValue(v) {
+				return false
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				return false
+			}
+			// Saving and restoring the trail mark lets a failed
+			// Unify on this element not leak bindings into the
+			// next iteration. (Standard WAM member/2 semantics.)
+			mark := vm.TrailLen
+			if vm.Unify(arg1, head) {
+				return true
+			}
+			vm.unwindTrailTo(mark)
+			v = vm.deref(tail)
+		}
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
@@ -907,7 +1003,16 @@ func (vm *WamState) backtrack() bool {
         return false
     }
     topIdx := len(vm.ChoicePoints) - 1
-    cp := vm.ChoicePoints[topIdx]
+    // Pointer access avoids copying the ~150-byte ChoicePoint struct
+    // value on every backtrack — the post-Phase-E profile flagged
+    // `cp := vm.ChoicePoints[topIdx]` at ~210ms cum / 8.7%. The
+    // pointer stays valid because backtrack only truncates the
+    // ChoicePoints slice (no append), so the underlying array slot
+    // doesn't get reused or moved while we're reading. Mutations to
+    // `cp.IndexedClausePCs` / `cp.ForeignResults` now apply
+    // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
+    // write-back the value-copy version needed.
+    cp := &vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
         vm.restoreSavedRegs(cp.SavedRegs)
@@ -926,8 +1031,6 @@ func (vm *WamState) backtrack() bool {
         cp.IndexedClausePCs = cp.IndexedClausePCs[1:]
         if len(cp.IndexedClausePCs) == 0 {
             vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-        } else {
-            vm.ChoicePoints[topIdx] = cp
         }
         vm.PC = nextPC
         return true
@@ -949,15 +1052,21 @@ func (vm *WamState) backtrack() bool {
             vm.CurrentList = nil
             nextResult := cp.ForeignResults[0]
             cp.ForeignResults = cp.ForeignResults[1:]
+            // Snapshot the fields we still need after truncation —
+            // once `vm.ChoicePoints = vm.ChoicePoints[:topIdx]`
+            // shrinks the slice, `cp` still points at the underlying
+            // array slot but it''s tidier to read the values out
+            // before truncating.
+            predKey := cp.ForeignPredKey
+            resultRegs := cp.ForeignResultRegs
+            resumePC := cp.ResumePC
             if len(cp.ForeignResults) == 0 {
                 vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-            } else {
-                vm.ChoicePoints[topIdx] = cp
             }
-            if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
+            if !vm.applyForeignResult(predKey, resultRegs, nextResult) {
                 continue
             }
-            vm.PC = cp.ResumePC
+            vm.PC = resumePC
             return true
         }
         return false
@@ -982,11 +1091,10 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
-        if entry.HadOld {
-            vm.Bindings[entry.Addr] = entry.Old
-        } else {
-            delete(vm.Bindings, entry.Addr)
-        }
+        // setBinding handles the bookkeeping: writing nil reverts an
+        // address to its unbound state, exactly matching the previous
+        // map-based delete-on-!HadOld for the slice rep.
+        vm.setBinding(entry.Addr, entry.Old)
     }
     vm.Trail = vm.Trail[:mark]
     vm.TrailLen = mark

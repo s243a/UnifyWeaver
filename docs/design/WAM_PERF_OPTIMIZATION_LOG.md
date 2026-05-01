@@ -327,10 +327,136 @@ Two bugs surfaced and were fixed:
    Symptom: `Velocity Physics 1.602159` instead of the
    post-Phase-D `1.601079`. Fix: Clone copies MaxYReg.
 
+### Phase F: ChoicePoint pointer access + Bindings as `[]Value` (May 2026, `perf/wam-go-cp-pointer-and-bindings`)
+
+The post-Phase-E profile showed two costs newly visible relative to
+the dominant `restoreSavedRegs` from prior phases:
+
+1. `cp := vm.ChoicePoints[topIdx]` — value-copy of the
+   ~150-byte `ChoicePoint` struct on every backtrack (~210ms cum,
+   8.7% in the 50-seed run).
+2. Map ops in `deref` / `unwindTrailTo` / `bindUnbound` — small in
+   absolute terms but harder to see while bigger costs were
+   dominant.
+
+This commit:
+
+- **`backtrack` uses `cp := &vm.ChoicePoints[topIdx]`** instead of
+  the value-copy. Mutations to `cp.IndexedClausePCs` /
+  `cp.ForeignResults` apply in-place, removing the explicit
+  `vm.ChoicePoints[topIdx] = cp` write-back. The pointer stays
+  valid because backtrack only ever truncates the slice (no
+  appends), so the underlying array slot doesn't move while
+  we're reading.
+- **`Bindings: map[int]Value` → `[]Value`** indexed by `Unbound.Idx`.
+  `nil` means unbound; `getBinding` / `setBinding` helpers handle
+  out-of-range reads (return nil) and writes (grow with doubling,
+  floor 64). Pre-sized to 4096 in `NewWamState` to skip the
+  doubling-grow churn for typical query Idx ranges. The Rust
+  target's Phase C (`f339df5b` "nb_setarg box for zero-copy
+  binding table") landed the same int-indexed structure for the
+  same reason once choicepoint snapshots got cheap enough that
+  per-deref/per-trail-entry map overhead became visible.
+
+Earlier attempt (the `perf/wam-go-bindings-slice-and-stack-share`
+branch, on top of Phase B): performance-neutral. The dominant
+costs at the time were elsewhere; the slice version is now
+slightly faster because Phases D and E shrunk those.
+
+### Phase G: Pointer-only `Atom.Equals` + `internAtom` routing + `emptyListAtom` singleton (May 2026, `perf/wam-go-bindunbound-aliases`)
+
+The post-Phase-F profile flagged `valueEquals` at 9.56% cum and
+`Atom.Equals` at 4.02% cum. Atom.Equals had a string-compare
+fallback (`return v.Name == o.Name`) for the case where two atoms
+had the same name but different pointers. With every codegen-emitted
+atom in `atoms.go`'s `atomInternMap` and every runtime-side atom
+created via `internAtom`, the fallback path is unreachable in
+practice — the SwitchOnConstantPc forward-scan miss path that fired
+it was just paying for the safety net.
+
+This commit:
+
+- **`Atom.Equals` is pointer-only.** Drops the string fallback;
+  asserts the contract that all atoms come from
+  `atomInternMap`. Documents the constraint in the source comment.
+- **Routes all raw `&Atom{Name: ...}` constructions through
+  `internAtom`.** Affected sites: the runtime helpers in
+  `runtime.go` (`collectNativeTransitiveDistanceResults` and
+  friends — kernels_on path, not exercised by the bench but must
+  satisfy the contract), the codegen fallback in
+  `go_atom_to_literal/2` (when an atom isn't in the pre-interned
+  table), and the `[]` empty-list terminator in
+  `rawListHeadTail` / `listHeadTail`.
+- **`emptyListAtom` package-level singleton** (`var emptyListAtom = internAtom("[]")`)
+  caches the result of `internAtom("[]")` once at init. The
+  list-head/tail helpers now use the cached pointer instead of
+  calling `internAtom("[]")` per invocation — list cell
+  decomposition runs once per recursion step in the bench.
+
+Profile after Phase G:
+- `Atom.Equals`: 4.02% → 1.39%
+- `valueEquals`: 9.56% → 4.38%
+
+Wall-clock at the 50-seed scale: median 2524ms vs Phase F's 2626ms
+(5 alternating trials each), about 4% faster within run-to-run
+variance. Full 386-seed bench: ~26.6s for both Phase F and Phase G
+(repeated 3 runs each), so the gain is invisible at full scale —
+the saved CPU cycles get absorbed by GC and other overhead. The
+single-run "23.8s" Phase F number cited in the prior section turned
+out to be an outlier from one lucky run; the realistic median is
+~26.6s. The cumulative table below uses the realistic medians.
+
+### Phase H: list-builtin micro-opts (May 2026, `perf/wam-go-list-builtins`)
+
+The post-Phase-G profile flagged `listToSlice` at 4.43% cum and
+`mallocgc` at 4.76% cum. The bench's `\+ member(M, Visited)` and
+`length(Visited, Depth)` calls — once per category_ancestor recursion
+step — were each materialising the Visited list into a Go `[]Value`
+just to count or scan it. The recursive form did
+`append([]Value{head}, rest...)` which is O(N²) in allocations
+(every level allocates a new slice and copies the rest).
+
+Three changes:
+
+1. **`listToSlice` is iterative** — pre-allocates a 16-cap slice
+   (the bench's max_depth(10) means 16 covers the common case
+   without growth), walks cells with a `for` loop appending each
+   head, returns the final slice. O(N) allocs instead of O(N²).
+2. **`length/2` no longer allocates** — counts cells in a `for`
+   loop without materialising a slice. Bench's
+   `length(Visited, Depth)` now does an in-place walk.
+3. **`member/2` no longer allocates** — walk-and-unify, with a
+   `vm.unwindTrailTo(mark)` between iterations to prevent failed
+   bindings from leaking into the next element check. Standard
+   WAM `member/2` semantics, no slice.
+
+Wall-clock impact at scale-300: essentially neutral. 50-seed
+median shifted from 2524ms → 2534ms (within run-to-run variance).
+Full bench: 26.6s → 27.4s (also within variance — 3 runs each
+showed overlap). The post-G profile already had `listToSlice` at
+only ~4% of CPU, so the saved allocs are absorbed by GC. Phase H
+is committed as a structural cleanup that becomes more impactful
+at workloads with longer lists or higher member/length call
+density.
+
+### Phase I: Constant-factor attempts that didn't pan out (May 2026, `perf/wam-go-instr-tag-dispatch`)
+
+Two more candidates explored on top of Phase H. Both reverted —
+documenting here so they don't get re-tried at the same shape.
+
+| Attempt | What | Outcome |
+|---|---|---|
+| Inline `setBinding` fast path in `unwindTrailTo` | Replace `vm.setBinding(entry.Addr, entry.Old)` with a direct `vm.Bindings[entry.Addr] = entry.Old` write when `entry.Addr < len(vm.Bindings)`, falling back to the helper for the (impossible-by-construction) overflow path. Post-Phase-G profile flagged the loop at ~6% flat. | Within variance. One alternating trial favoured the change at ~11% (3179ms→2831ms), four follow-up trials averaged to a 0.86% slowdown (list mean 2661ms, tagdsp mean 2684ms). The fast path runs *only* on backtrack and `len(Bindings)` is large enough that the bounds branch is well-predicted; the saved function-call frame is below the noise floor. |
+| Inline-array `SavedRegs` in `ChoicePoint` | Replace `SavedRegs []Value` with `SavedA [8]Value` + `SavedY [16]Value` + `SavedYLen int` + `SavedYExt []Value` overflow. Goal: eliminate the per-push `make([]Value, 8+ycount)` heap allocation that `snapshotAllRegs` was doing on every choicepoint. | **10x slowdown** at 50-seed scale (list ~2.4s vs inreg ~25s, two trials confirmed). Reason: each `ChoicePoint` grew from ~150 bytes to ~530 bytes (24 inline `Value` interface slots = 384 bytes added). Every `append(vm.ChoicePoints, ChoicePoint{...})` and slice-grow now memmoves the larger struct, and the bench creates ~1.5M choicepoints — the extra per-CP memmove cost vastly exceeds the saved heap alloc. The lesson is that for slice-of-struct dispatch, struct *size* matters more than per-element heap allocs, because slice growth amortises malloc but every append still pays the element memmove. A pooled `*SavedRegs` (CP holds an 8-byte pointer) would avoid both — deferred. |
+
+Cumulative position is unchanged from Phase H; Phase I is a no-op
+on the cumulative table below.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
-All medians of 5 alternating trials on the 50-seed sub-bench. Full
-386-seed bench measured once.
+50-seed: median of 5 alternating trials. Full bench: median of 3
+re-runs (the prior section cited single-run numbers; some of those
+were outliers — this section uses re-measured medians).
 
 | Stage | scale-300/50 median | scale-300/full | speedup vs prior | speedup vs original |
 |---|---|---|---|---|
@@ -339,7 +465,10 @@ All medians of 5 alternating trials on the 50-seed sub-bench. Full
 | Phase B (`Regs[320]` + default-label resolve) | n/a | ~178s | 1.91x | 1.91x |
 | Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
 | Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
-| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | **8.85x / 8.85x** |
+| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | 8.85x / 8.85x |
+| Phase F cp-pointer + Bindings slice | 2626ms | 26.6s | 1.38x / 1.44x | 12.9x / 12.8x |
+| Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | 13.5x / 12.8x |
+| Phase H list-builtin micro-opts | 2534ms | ~27.4s | 1.0x / ~1.0x | 13.4x / ~12.4x |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
