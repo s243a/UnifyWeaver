@@ -112,6 +112,33 @@ test(unify_value_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/unify-values")
     )).
 
+test(simple_builtin_equality_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_eq/2:\nbuiltin_call =/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_eq/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_eq/2, WamCode, [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/unify-values")
+    )).
+
+test(simple_builtin_true_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/succeed-state")
+    )).
+
+test(unsupported_builtin_stays_runtime_mediated) :-
+    once((
+        WamCode = "test_atom/1:\nbuiltin_call atom/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_atom/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atom/1, WamCode, [], Code),
+        assertion(\+ has(Code, "builtin-call atom/1")),
+        has(Code, "state")
+    )).
+
 test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
