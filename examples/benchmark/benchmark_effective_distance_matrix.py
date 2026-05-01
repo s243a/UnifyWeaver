@@ -49,6 +49,7 @@ from benchmark_common import (
     run_command,
 )
 from benchmark_target_matrix import (
+    KERNEL_TARGET_PAIRS,
     TARGETS,
     default_target_set_name,
     list_kernel_pairs_text,
@@ -648,6 +649,40 @@ def print_summary(results: list[RunResult], baseline_target: str) -> None:
                 if result.target == baseline_target:
                     continue
                 print_speedup(scale, f"speedup_vs_{baseline_target}_{result.target}", baseline, result)
+    print_kernel_pair_deltas(results)
+
+
+def kernel_pair_delta_rows(scale: str, entries: list[RunResult]) -> list[str]:
+    by_target = {entry.target: entry for entry in entries}
+    rows: list[str] = []
+    for pair in KERNEL_TARGET_PAIRS:
+        kernels = by_target.get(pair.kernels_target)
+        no_kernels = by_target.get(pair.no_kernels_target)
+        if kernels is None or no_kernels is None:
+            continue
+        speedup = no_kernels.median / kernels.median if kernels.median > 0 else float("inf")
+        output_match = kernels.stdout_sha256 == no_kernels.stdout_sha256
+        rows_match = kernels.row_count == no_kernels.row_count
+        rows.append(
+            f"{scale}\t{pair.family}\t{pair.mode}\t{pair.kernels_target}\t"
+            f"{pair.no_kernels_target}\t{kernels.median:.3f}\t{no_kernels.median:.3f}\t"
+            f"{speedup:.3f}\t{str(output_match).lower()}\t{str(rows_match).lower()}"
+        )
+    return rows
+
+
+def print_kernel_pair_deltas(results: list[RunResult]) -> None:
+    rows: list[str] = []
+    for scale, entries in group_results_by_scale(results):
+        rows.extend(kernel_pair_delta_rows(scale, entries))
+    if not rows:
+        return
+    print(
+        "scale\tfamily\tmode\tkernels_target\tno_kernels_target\tkernels_median_s\t"
+        "no_kernels_median_s\tkernels_speedup_vs_no_kernels\toutput_match\trows_match"
+    )
+    for row in rows:
+        print(row)
 
 
 def resolve_requested_targets(args: argparse.Namespace) -> list[str]:

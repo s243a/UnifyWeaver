@@ -295,6 +295,12 @@ The report is TSV with `family`, `mode`, `kernels_target`, and
 `no_kernels_target` columns. It currently covers registered Rust, Go, Clojure,
 and Haskell effective-distance WAM pairings.
 
+When both sides of a registered pair run for the same scale, the benchmark
+summary also emits a paired delta table with median timings, a
+`kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
+ratio above `1.0` means the kernel-enabled target was faster than its
+no-kernel counterpart for that pair.
+
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
 
