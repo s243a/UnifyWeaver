@@ -224,7 +224,108 @@ re-doing the fusion.
 
 ---
 
-## Clojure WAM — current implementation status
+## Go WAM — optimization timeline
+
+The Go hybrid-WAM target landed correctness fixes through April 2026
+(see `benchmarks/go_wam_runtime_findings.md`) and a first round of
+constant-factor perf in May 2026. Scale-300 effective-distance
+benchmark went from ~340s to ~178s (1.91x).
+
+### Phase A: Correctness work (April 2026)
+
+Six runtime bugs found and fixed in sequence; collectively the
+difference between `tuple_count=0` and `tuple_count=211 article_count=271`
+matching the reference output. Documented in
+`benchmarks/go_wam_runtime_findings.md`. Most relevant for future perf
+work:
+
+| Bug | Fix |
+|---|---|
+| `bindUnbound` corrupting A1 when `Idx=0` | Drop unconditional `putReg(u.Idx, val)` |
+| `pushChoicePoint` saving only A-regs, leaving stale heap-Refs | Snapshot full register file (this constraint is what blocks the Rust-style "save only A-regs" optimization later) |
+| `PutVariable` Idx collision across recursive activations | Globally-unique Idx via `allocVarId/0` |
+| `extract_shared_start_pc` taking the wrong digits | Fixed-length `sub_string` |
+| `Atom.Equals` always doing string compare | Pointer-identity short-circuit |
+| Y-regs colliding across nested predicate calls | Save/restore in `EnvFrame.SavedYRegs` at Allocate/Deallocate |
+
+### Phase B: First round of perf (May 2026)
+
+| Commit | What | Why it matters |
+|---|---|---|
+| `4d0dd53e` | Include `category_parent/2` in `kernels_on` predicate list | Without it the kernel's recursion had nothing to call, every weight query returned 0 |
+| `86f6febb` | `Regs[512]` → `Regs[320]` + `resolveInstructions` handles `default` label sentinel | The `default` label kept SwitchOnConstant on the linear-scan runtime path even though SwitchOnConstantPc binary search was available; resolution lets the indexed dispatch fire. Combined with the smaller register file these brought scale-300 from ~340s to ~178s |
+
+### Phase C: Optimizations attempted, did not pan out (May 2026)
+
+These are tracked here so future contributors know not to repeat
+them; the underlying lessons match the Haskell/Rust patterns at the
+bottom of this doc but the constant-factor reductions don't survive
+measurement in the Go runtime as it stands today.
+
+| Attempt | Outcome | Why |
+|---|---|---|
+| `Ctx.SaveRegBound` (compute max-used reg, snapshot only `Regs[:208]`) | No measurable gain | Within ±10% run-to-run variance at full scale-300 |
+| `SavedRegs` pool with `truncateChoicePoints` recycle helper + `Clone()` deep-copy | +3% at 50-seed scale, **−6% at full scale-300** | Clone deep-copy + pool bookkeeping exceeds alloc savings on the longer run, where GC has more headroom |
+| Pre-sized `Bindings` map (`make(map[int]Value, 4096)`) | Consistent ~3-5% regression | Map's hash-table overhead dominates over its initial-bucket allocation; pre-sizing doesn't help |
+| `Bindings []Value` slice indexed by Idx (committed in `perf/wam-go-bindings-slice-and-stack-share`) | Performance-neutral at scale | Theoretical 6x speedup on per-binding ops, but Bindings ops account for ≤10% of total CPU. Real bottleneck is elsewhere. Code change is structural cleanup matching the Rust target's int-indexed binding table; kept because it makes future env-trimming work easier |
+| Save only A-regs at CP push (Rust's `fea72426`-equivalent) + clear Regs[arity..] on backtrack | Broke correctness (tuple_count dropped from 16 to 4 at dev scale) | Go target shares the X/Y register range across caller and callee — outer-predicate state lives there too. Rust's per-clause register liveness analysis is what makes "X-regs are clause-local" a safe assumption; Go target lacks that. Clearing on backtrack drops outer state |
+
+### Phase D: Deferred — requires structural refactor
+
+Both items target the actual dominant cost (`copy(vm.Regs[:N],
+cp.SavedRegs)` at backtrack: 47% of CPU; `copyStack` at backtrack:
+19%). They're out of scope for the constant-factor patches above
+because each requires runtime-design changes, not just instruction
+emit tweaks.
+
+1. **Real WAM environment trimming.** Currently `Allocate` always
+   pushes a fresh `EnvFrame` and `Deallocate` always pops it; the
+   stack is then deep-copied at every `pushChoicePoint`. Standard
+   WAM keeps env frames alive across choicepoints by checking
+   `EnvFrame.B0 < len(ChoicePoints)` at Deallocate (logical pop only;
+   physical pop deferred), and lets `pushChoicePoint` save just
+   `len(vm.Stack)` as a mark instead of `copyStack(vm.Stack)`. That
+   eliminates the per-CP stack alloc + memcpy entirely. The
+   `EnvFrame` struct already carries `B0`; the missing pieces are
+   `WamState.E`, `EnvFrame.PrevE`, and a `Deallocate` that respects
+   the CP barrier.
+
+2. **Save-only-A-regs at CP push, with proper Y-reg-via-frame
+   discipline.** The Rust target gets ~80x reduction in CP snapshot
+   size (4 Values vs 320) by trusting that X-regs are clause-local
+   and Y-regs come from the frame. The Go runtime can match that
+   *if* env trimming is done first (so Y-regs come from
+   `EnvFrame.SavedYRegs` exclusively, not from a global `Regs[200..]`
+   range that's clobbered across activations). Together the two
+   would bring `pushChoicePoint`'s allocation footprint from ~5KB to
+   ~64 bytes.
+
+### Lessons unique to the Go runtime
+
+1. **Variance bands are wide.** Wall-clock at scale-300 / 50 seeds
+   shows ~±10% run-to-run variance on the test host (WSL2). Several
+   commits in Phase C theoretically reduce work by 35%-50% but show
+   up as "slightly faster" or "slightly slower" depending on the run
+   ordering. Attempts smaller than ~15% need either longer benchmark
+   campaigns or CPU isolation to be distinguishable from noise.
+
+2. **GC pressure is the hidden cost.** The post-Phase-B profile
+   shows `runtime.bulkBarrierPreWrite` at 25.6% cum,
+   `runtime.mallocgcSmallScanNoHeader` at 18.1%, and
+   `runtime.gcBgMarkWorker` at 16.4%. These are all driven by
+   per-CP heap allocations of `[]Value` and `[]StackEntry`. Reducing
+   the *size* of these allocations (Phase B) was effective; reducing
+   the *count* (Phase C's pool attempt) wasn't, because the
+   Clone-deep-copy needed to keep the pool safe across `executeAggregate`
+   sub-VMs cancels the savings.
+
+3. **Bench-time variance suggests measurement methodology
+   matters.** The 50-seed sub-bench finished in ~16s with ±5% trial
+   variance; the full 386-seed bench finished in ~178s with similar
+   per-trial variance. Optimizations that "win" at one scale and
+   "regress" at the other are usually inside the noise floor.
+
+
 
 The Clojure hybrid/WAM target is not yet in the same maturity class as
 Haskell or Rust, but the runtime now has the right architectural shape
