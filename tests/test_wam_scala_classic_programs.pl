@@ -51,6 +51,42 @@ user:fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
                   user:fib(N1, R1), user:fib(N2, R2),
                   R is R1 + R2.
 
+% --- N-queens via permutation + safe ---
+% Uses between/3 to build the row list (1..N), permutation/2 to try
+% column assignments, and safe/1 to reject conflicts. Combinatorial
+% test that exercises switch_on_term, multi-solution backtracking,
+% arithmetic comparisons, and recursive predicates all together.
+
+:- dynamic user:numlist_uw/3.
+:- dynamic user:select_uw/3.
+:- dynamic user:permutation_uw/2.
+:- dynamic user:safe_q/1.
+:- dynamic user:safe_q_aux/3.
+:- dynamic user:queens_q/2.
+
+user:numlist_uw(L, H, [L|T]) :- L =< H, L1 is L + 1, user:numlist_uw(L1, H, T).
+user:numlist_uw(L, H, [])    :- L > H.
+
+user:select_uw(H, [H|T], T).
+user:select_uw(H, [X|T], [X|T2]) :- user:select_uw(H, T, T2).
+
+user:permutation_uw([], []).
+user:permutation_uw(L, [H|T]) :- user:select_uw(H, L, Rest), user:permutation_uw(Rest, T).
+
+user:safe_q([]).
+user:safe_q([Q|Qs]) :- user:safe_q_aux(Qs, Q, 1), user:safe_q(Qs).
+user:safe_q_aux([], _, _).
+user:safe_q_aux([Q|Qs], Q0, D0) :-
+    Q =\= Q0 + D0,
+    Q =\= Q0 - D0,
+    D1 is D0 + 1,
+    user:safe_q_aux(Qs, Q0, D1).
+
+user:queens_q(N, Qs) :-
+    user:numlist_uw(1, N, L),
+    user:permutation_uw(L, Qs),
+    user:safe_q(Qs).
+
 % ============================================================
 % scala_available — same gating pattern as the smoke tests
 % ============================================================
@@ -136,6 +172,22 @@ test(fibonacci) :-
             verify_scala_args(TmpDir, 'fib/2', ['10', '55'],   "true"),
             verify_scala_args(TmpDir, 'fib/2', ['15', '610'],  "true"),
             verify_scala_args(TmpDir, 'fib/2', ['10', '54'],   "false")
+        )).
+
+% N-queens — exercises permutation, recursion, comparison, switch_on_term,
+% and multi-solution backtracking. The two valid 4-queens solutions are
+% [2,4,1,3] and [3,1,4,2]; [1,2,3,4] is invalid (queens on same diagonal).
+test(nqueens) :-
+    with_scala_project(
+        [user:numlist_uw/3, user:select_uw/3, user:permutation_uw/2,
+         user:safe_q/1, user:safe_q_aux/3, user:queens_q/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'queens_q/2', ['4', '[2,4,1,3]'], "true"),
+            verify_scala_args(TmpDir, 'queens_q/2', ['4', '[3,1,4,2]'], "true"),
+            verify_scala_args(TmpDir, 'queens_q/2', ['4', '[1,2,3,4]'], "false"),
+            verify_scala_args(TmpDir, 'queens_q/2', ['4', '[1,3,2,4]'], "false")
         )).
 
 :- end_tests(wam_scala_classic_programs).

@@ -96,13 +96,18 @@ case class UnifyConstant(value: WamTerm)                extends Instruction
 case object TrustMe                                     extends Instruction
 // First-argument indexing
 case class SwitchOnConstant(cases: Array[SwitchCase])   extends Instruction
-// Type-based first-arg discrimination. The WAM compiler emits this
-// when a predicate's clauses mix const, list, and compound first args.
-// Currently implemented as a no-op fall-through — the try_me_else
-// chain that follows produces correct results, just with more clause
-// attempts than the optimal index would. Future work can add the full
-// type discrimination.
-case object SwitchOnTerm                                extends Instruction
+// Type-based first-arg discrimination. Emitted when a predicate's
+// clauses mix const, list, and compound first args. Each TermSwitch*
+// case carries a target label resolved to a PC by resolveInstructions.
+// listLabel/listTargetPc routes any cons cell ([|]/2) to a specific
+// clause; "default" labels mean "fall through to the try_me_else chain"
+// (i.e. pc + 1).
+final case class TermSwitchConst(value: WamTerm, label: String, targetPc: Int = -1)
+final case class TermSwitchStruct(functorId: Int, arity: Int, label: String, targetPc: Int = -1)
+case class SwitchOnTerm(constCases:  Array[TermSwitchConst],
+                        structCases: Array[TermSwitchStruct],
+                        listLabel:   String,
+                        listTargetPc: Int = -1) extends Instruction
 // Builtins and foreign
 case class BuiltinCall(pred: String, arity: Int)        extends Instruction
 case class CallForeign(pred: String, arity: Int)        extends Instruction
@@ -204,7 +209,13 @@ final class WamState(
   var pc:        Int,
   var nextVarId: Int,
   var cutBar:    Int,
-  var status:    WamStatus
+  var status:    WamStatus,
+  // Standard WAM read/write mode for the unify_* family. Set by
+  // get_list / get_structure: read when the target reg held a matching
+  // cons/struct (unifyQueue is populated), write when the target reg
+  // held an unbound Ref (a BuildFrame is pushed and the unify_*
+  // instructions append into it). Defaults to read.
+  var unifyMode: Boolean = true
 )
 
 // ============================================================
@@ -247,6 +258,17 @@ object WamRuntime {
           else labels.get(sc.label).map(pc => sc.copy(targetPc = pc)).getOrElse(sc)
         }
         SwitchOnConstant(resolved)
+      case SwitchOnTerm(consts, structs, listLabel, _) =>
+        val rConsts  = consts.map { c =>
+          if (c.label == "default") c
+          else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
+        }
+        val rStructs = structs.map { c =>
+          if (c.label == "default") c
+          else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
+        }
+        val rListPc  = labels.getOrElse(listLabel, -1)
+        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc)
       case other => other
     }
 
@@ -417,6 +439,25 @@ object WamRuntime {
         Struct(f, a, mapped)
       case other => other
     }
+  }
+
+  /** Count consecutive UnifyVariable / UnifyValue / UnifyConstant
+   *  instructions starting at `from`. Used by GetStructure's write-
+   *  mode path: GetStructure carries no explicit arity (only the
+   *  functor id), so we infer it from the trailing unify_* count.
+   *  The WAM compiler always emits exactly `arity` consecutive
+   *  unify_* instructions after a get_structure. */
+  def countTrailingUnifyOps(program: WamProgram, from: Int): Int = {
+    var i = from
+    var count = 0
+    while (i < program.instructions.length) {
+      program.instructions(i) match {
+        case _: UnifyVariable | _: UnifyValue | _: UnifyConstant =>
+          count += 1; i += 1
+        case _ => return count
+      }
+    }
+    count
   }
 
   /** Scan forward from `from` looking for the EndAggregate that
@@ -696,7 +737,25 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, _, args) if f == functorId =>
+            // Read mode — unify against existing args.
+            s.unifyMode  = true
             s.unifyQueue = args.toList
+            s.pc += 1
+          case Ref(_) =>
+            // Write mode — bind reg to a new struct that the
+            // following unify_* instructions will fill in. We don't
+            // know the arity from this opcode alone (PutStructure
+            // carries it; GetStructure historically didn't). The
+            // BuildFrame's sArity is set at finalizeBuild time when
+            // the args list reaches its expected count.
+            //
+            // Workaround: peek ahead to count consecutive unify_*
+            // instructions and use that as the arity. This relies on
+            // the WAM compiler always emitting exactly arity unify_*
+            // ops after a get_structure.
+            val arity = countTrailingUnifyOps(program, s.pc + 1)
+            s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+            s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
         }
@@ -705,36 +764,62 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, 2, args) if f == functorId =>
+            s.unifyMode  = true
             s.unifyQueue = args.toList
+            s.pc += 1
+          case Ref(_) =>
+            // Write mode for a 2-arg cons cell.
+            s.buildStack = BuildFrame(reg, functorId, 2, Nil) :: s.buildStack
+            s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
         }
 
       case UnifyVariable(varReg) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            setReg(s, varReg, item)
-            s.unifyQueue = rest
-            s.pc += 1
+        if (s.unifyMode) {
+          // Read mode: pop unify queue, bind varReg to it.
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              setReg(s, varReg, item)
+              s.unifyQueue = rest
+              s.pc += 1
+          }
+        } else {
+          // Write mode: create fresh ref, store in varReg, append to
+          // the in-progress build frame.
+          val v = freshVar(s)
+          setReg(s, varReg, v)
+          appendBuildArg(s, v)
+          if (s.status == Running) s.pc += 1
         }
 
       case UnifyValue(varReg) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            val ok = unify(s, deref(s.bindings, getReg(s, varReg)), item)
-            s.unifyQueue = rest
-            if (ok) s.pc += 1 else backtrack(s)
+        if (s.unifyMode) {
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              val ok = unify(s, deref(s.bindings, getReg(s, varReg)), item)
+              s.unifyQueue = rest
+              if (ok) s.pc += 1 else backtrack(s)
+          }
+        } else {
+          appendBuildArg(s, deref(s.bindings, getReg(s, varReg)))
+          if (s.status == Running) s.pc += 1
         }
 
       case UnifyConstant(value) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            val ok = unify(s, deref(s.bindings, item), value)
-            s.unifyQueue = rest
-            if (ok) s.pc += 1 else backtrack(s)
+        if (s.unifyMode) {
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              val ok = unify(s, deref(s.bindings, item), value)
+              s.unifyQueue = rest
+              if (ok) s.pc += 1 else backtrack(s)
+          }
+        } else {
+          appendBuildArg(s, value)
+          if (s.status == Running) s.pc += 1
         }
 
       // --- Choice ---
@@ -763,9 +848,39 @@ object WamRuntime {
       case SwitchOnConstant(cases) =>
         switchTarget(s, cases)
 
-      case SwitchOnTerm =>
-        // No-op fall-through. See ADT comment for rationale.
-        s.pc += 1
+      case SwitchOnTerm(consts, structs, _listLabel, listPc) =>
+        // Type-discriminating dispatch on regs(1):
+        //   * Ref       → fall through (variable: any clause may match)
+        //   * Atom/Int/Float → look up in const cases
+        //   * Cons cell ([|]/2) → jump to listPc if set, else fall through
+        //   * Other Struct → look up in struct cases by functorId+arity
+        // "default" labels mean "fall through to the try_me_else chain
+        // at pc + 1" — i.e. the WAM compiler is saying "I don't have a
+        // single direct clause; let the chain enumerate".
+        val v = deref(s.bindings, s.regs(1))
+        v match {
+          case Ref(_) =>
+            s.pc += 1
+          case Atom(_) | IntTerm(_) | FloatTerm(_) =>
+            val mat = consts.find(_.value == v)
+            mat match {
+              case Some(c) if c.label == "default" => s.pc += 1
+              case Some(c) if c.targetPc >= 0      => s.pc = c.targetPc
+              case _                                => s.pc += 1
+            }
+          case Struct(f, arity, _) =>
+            val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+            if (f == consId && arity == 2) {
+              if (listPc >= 0) s.pc = listPc else s.pc += 1
+            } else {
+              val mat = structs.find(c => c.functorId == f && c.arity == arity)
+              mat match {
+                case Some(c) if c.label == "default" => s.pc += 1
+                case Some(c) if c.targetPc >= 0      => s.pc = c.targetPc
+                case _                                => s.pc += 1
+              }
+            }
+        }
 
       // --- Builtins ---
 
@@ -1168,6 +1283,9 @@ object WamRuntime {
     else if (pred == "msort"       && arity == 2)   { sort2(s, program, withReturn, dedup = false); true }
     else if (pred == "bagof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = false); true }
     else if (pred == "setof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = true);  true }
+    else if (pred == "write"       && arity == 1)   { write1(s, program, withReturn); true }
+    else if (pred == "nl"          && arity == 0)   { nl0(s, withReturn); true }
+    else if (pred == "between"     && arity == 3)   { between3(s, program, withReturn); true }
     else false
   }
 
@@ -1266,6 +1384,104 @@ object WamRuntime {
         val len = program.internTable.idToString(id).length
         if (unify(s, s.regs(2), IntTerm(len))) builtinAdvance(s, withReturn)
         else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** write(T): print T to stdout in human-readable Prolog form. Always
+   *  succeeds. Doesn't add a trailing newline (use nl/0 for that). */
+  def write1(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    Predef.print(termToString(program, deref(s.bindings, s.regs(1))))
+    builtinAdvance(s, withReturn)
+  }
+
+  /** nl/0: print a newline. */
+  def nl0(s: WamState, withReturn: Boolean): Unit = {
+    Predef.println()
+    builtinAdvance(s, withReturn)
+  }
+
+  /** Render a term in Prolog-ish syntax for write/1: atoms by their
+   *  interned string, integers/floats as their numeric form, structs as
+   *  `f(a, b)`, cons cells as `[a, b, ...]`, vars as `_<id>`. */
+  def termToString(program: WamProgram, t: WamTerm): String = t match {
+    case Ref(id)       => s"_$id"
+    case Atom(id)      =>
+      if (id >= 0 && id < program.internTable.idToString.length)
+        program.internTable.idToString(id) else s"<atom:$id>"
+    case IntTerm(n)    => n.toString
+    case FloatTerm(d)  => d.toString
+    case st @ Struct(_, _, _) =>
+      val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+      if (st.functor == consId && st.arity == 2) listToString(program, st)
+      else {
+        val name = program.internTable.idToString.lift(st.functor).getOrElse(s"<atom:${st.functor}>")
+        val args = st.args.map(termToString(program, _)).mkString(",")
+        s"$name($args)"
+      }
+  }
+
+  private def listToString(program: WamProgram, head: WamTerm): String = {
+    val emptyId = program.internTable.stringToId.getOrElse("[]", -1)
+    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val sb = new StringBuilder("[")
+    var cur: WamTerm = head
+    var first = true
+    var done = false
+    while (!done) cur match {
+      case Atom(id) if id == emptyId => done = true
+      case Struct(f, 2, args) if f == consId =>
+        if (!first) sb.append(",")
+        sb.append(termToString(program, args(0)))
+        cur = args(1)
+        first = false
+      case other =>
+        sb.append("|").append(termToString(program, other))
+        done = true
+    }
+    sb.append("]")
+    sb.toString
+  }
+
+  /** between(+Low, +High, ?X): X enumerates integers in [Low, High].
+   *  - X already bound to int N: succeeds iff Low <= N <= High.
+   *  - X unbound: yields Low, Low+1, ..., High via ForeignMulti. */
+  def between3(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    (numOf(deref(s.bindings, s.regs(1))),
+     numOf(deref(s.bindings, s.regs(2))),
+     deref(s.bindings, s.regs(3))) match {
+      case (Some(NInt(lo)), Some(NInt(hi)), x) =>
+        x match {
+          case IntTerm(n) =>
+            if (n >= lo && n <= hi) builtinAdvance(s, withReturn)
+            else backtrack(s)
+          case Ref(_) if lo <= hi =>
+            // Enumerate. Reuse ForeignMulti machinery for backtracking.
+            val sols: Seq[Map[Int, WamTerm]] =
+              (lo to hi).map(n => Map(3 -> (IntTerm(n): WamTerm))).toSeq
+            val resumePc = s.pc + 1
+            sols match {
+              case Nil => backtrack(s)
+              case sol +: rest =>
+                if (rest.nonEmpty) {
+                  val cp = ChoicePoint(
+                    pc        = resumePc,
+                    regs      = snapshotRegs(s),
+                    envStack  = s.envStack,
+                    callStack = s.callStack,
+                    trailLen  = s.trail.length,
+                    cutBar    = s.cutBar,
+                    nextVarId = s.nextVarId,
+                    kind      = ForeignCP(rest)
+                  )
+                  s.choicePoints = cp :: s.choicePoints
+                }
+                if (applyBindings(s, sol)) {
+                  if (withReturn) s.pc = resumePc else builtinAdvance(s, withReturn)
+                } else backtrack(s)
+            }
+          case _ => backtrack(s)
+        }
       case _ => backtrack(s)
     }
   }

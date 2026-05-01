@@ -251,11 +251,58 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
 % First-arg type indexing emitted by the WAM compiler when a predicate
 % mixes constant, list, and compound first-arg shapes. Format:
 %   switch_on_term <CLen> <const_cases...> <SLen> <struct_cases...> <ListLabel>
-% Kept as a no-op in this target — the always-emitted try_me_else chain
-% that immediately follows already produces correct results, just with
-% slightly more clause attempts than necessary. Future optimization can
-% implement the full type discrimination.
-wam_parts_to_scala(["switch_on_term" | _Rest], 'SwitchOnTerm').
+% e.g. `switch_on_term 1 []:default 0  L_x_2`  (empty struct cases section)
+%      `switch_on_term 2 0:default []:L_2 2 f/1:L_4 g/2:L_5 L_3`
+% Each const case is `<value>:<label>`; each struct case is
+% `<functor>/<arity>:<label>`. ListLabel routes any cons cell ([|]/2).
+wam_parts_to_scala(["switch_on_term" | Rest], Lit) :-
+    parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit).
+
+parse_switch_on_term_tokens([CLenStr | Rest0], ConstCases, StructCases, ListLabel) :-
+    number_string(CLen, CLenStr),
+    length(CTokens, CLen),
+    append(CTokens, [SLenStr | Rest1], Rest0),
+    number_string(SLen, SLenStr),
+    length(STokens, SLen),
+    append(STokens, [ListLabel], Rest1),
+    maplist(parse_const_case_token, CTokens, ConstCases),
+    maplist(parse_struct_case_token, STokens, StructCases).
+
+%% parse_const_case_token("<value>:<label>", -case(ValueLit, Label))
+parse_const_case_token(Token, case(ValueLit, Label)) :-
+    split_at_first_colon(Token, ValueStr, Label),
+    constant_to_scala_term(ValueStr, ValueLit).
+
+%% parse_struct_case_token("<functor>/<arity>:<label>", -case(FId, Arity, Label))
+parse_struct_case_token(Token, struct(FId, Arity, Label)) :-
+    split_at_first_colon(Token, FAStr, Label),
+    parse_functor_arity(FAStr, FName, Arity),
+    intern_scala_atom(FName, FId).
+
+%% split_at_first_colon(+Token, -Before, -After)
+%  Splits at the first ":" — used by switch_on_term parsers where the
+%  value half ([], 0, f/2) never contains a ":".
+split_at_first_colon(Token, Before, After) :-
+    sub_string(Token, B, 1, _, ":"),
+    !,
+    sub_string(Token, 0, B, _, Before),
+    B1 is B + 1,
+    sub_string(Token, B1, _, 0, After).
+
+format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
+    maplist(const_case_lit, ConstCases, ConstLits),
+    atomic_list_concat(ConstLits, ', ', ConstStr),
+    maplist(struct_case_lit, StructCases, StructLits),
+    atomic_list_concat(StructLits, ', ', StructStr),
+    format(string(Lit),
+           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
+           [ConstStr, StructStr, ListLabel]).
+
+const_case_lit(case(ValueLit, Label), Lit) :-
+    format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
+struct_case_lit(struct(FId, Arity, Label), Lit) :-
+    format(string(Lit), 'TermSwitchStruct(~w, ~w, "~w")', [FId, Arity, Label]).
 
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
@@ -619,11 +666,14 @@ fact_source_spec_to_handler_code(Arity, file(Path), Code) :-
     _ = Arity.
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
+%  The solutions Seq is hoisted to a `val` on the anonymous class so it
+%  is built once at handler construction, not on every apply call. For
+%  large tuple lists this is a notable per-iteration win.
 fact_source_to_handler_code(Arity, Tuples, Code) :-
     maplist(tuple_to_solution_map_lit(Arity), Tuples, SolLits),
     atomic_list_concat(SolLits, ',\n        ', SolBody),
     format(string(Code),
-           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols: Seq[Map[Int, WamTerm]] = Seq(\n        ~w\n        )\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           "new ForeignHandler {\n      private val sols: Seq[Map[Int, WamTerm]] = Seq(\n        ~w\n      )\n      def apply(args: Array[WamTerm]): ForeignResult =\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n    }",
            [SolBody]).
 
 tuple_to_solution_map_lit(Arity, Tuple, Lit) :-
