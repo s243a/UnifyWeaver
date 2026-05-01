@@ -224,6 +224,125 @@ re-doing the fusion.
 
 ---
 
+## Go WAM — optimization timeline
+
+Started from a working but slow runtime (effective-distance bench at
+scale-300 took ~340s after the late-April correctness fixes landed).
+Three rounds of perf brought it to ~53s — a **6.4x cumulative
+speedup** — and aligned the runtime with the Rust target's choicepoint
+and environment-trimming design.
+
+### Phase A: Correctness work (April 2026)
+
+Six runtime bugs found and fixed in sequence; collectively the
+difference between `tuple_count=0` and `tuple_count=211 article_count=271`
+matching the reference output. Documented in
+`benchmarks/go_wam_runtime_findings.md`. Most relevant for future perf
+work:
+
+| Bug | Fix |
+|---|---|
+| `bindUnbound` corrupting A1 when `Idx=0` | Drop unconditional `putReg(u.Idx, val)` |
+| `pushChoicePoint` saving only A-regs, leaving stale heap-Refs | Snapshot full register file (constraint that Phase D would later loosen via env trimming) |
+| `PutVariable` Idx collision across recursive activations | Globally-unique Idx via `allocVarId/0` |
+| `extract_shared_start_pc` taking the wrong digits | Fixed-length `sub_string` |
+| `Atom.Equals` always doing string compare | Pointer-identity short-circuit |
+| Y-regs colliding across nested predicate calls | Save/restore in `EnvFrame.SavedYRegs` at Allocate/Deallocate |
+
+### Phase B: First constant-factor wins (May 2026, `86f6febb`)
+
+| Commit | What | Why it matters |
+|---|---|---|
+| `4d0dd53e` | Include `category_parent/2` in `kernels_on` predicate list | Without it the kernel's recursion had nothing to call, every weight query returned 0 |
+| `86f6febb` | `Regs[512]` → `Regs[320]` + `resolveInstructions` handles `default` label sentinel | The `default` label kept SwitchOnConstant on the linear-scan runtime path even though SwitchOnConstantPc binary search was available; resolution lets the indexed dispatch fire. Combined with the smaller register file these brought scale-300 from ~340s to ~178s (1.91x) |
+
+### Phase C: Constant-factor attempts that didn't pan out (May 2026)
+
+Tracked here so they don't get re-tried; the underlying lessons match
+the Haskell/Rust patterns but the constant-factor reductions aren't
+distinguishable from variance noise (~±10%) at scale-300.
+
+| Attempt | Outcome |
+|---|---|
+| `Ctx.SaveRegBound` (compute max-used reg, snapshot only `Regs[:208]`) | Within variance |
+| `SavedRegs` pool with `truncateChoicePoints` recycle helper + `Clone()` deep-copy | +3% at 50-seed scale, **−6% at full scale-300** — Clone deep-copy + pool bookkeeping exceed alloc savings on the longer run |
+| Pre-sized `Bindings` map (`make(map[int]Value, 4096)`) | Consistent ~3-5% regression |
+| `Bindings []Value` slice indexed by Idx (`perf/wam-go-bindings-slice-and-stack-share`) | Performance-neutral at scale (theoretical 6x speedup on per-binding ops, but Bindings ops are ≤10% of total CPU; real bottleneck was elsewhere). Kept as structural cleanup |
+| Save only A-regs at CP push (Rust's `fea72426`-equivalent, attempted before env trimming) | **Broke correctness** (tuple_count dropped from 16 to 4 at dev): without env trimming, Y-regs at backtrack-time can't be recovered from the env frame because the SavedYRegs there hold *outer* values, not the current Y-regs at TryMeElse time. Re-enabled in Phase D as save-A+Y-skip-X once env trimming was in place |
+
+### Phase D: Structural refactor (May 2026, `perf/wam-go-env-trimming`)
+
+The two patches that delivered most of the Phase B → Phase D
+improvement (178s → 53s = 3.4x at full scale-300; cumulative 6.4x
+from the original 340s baseline):
+
+| Change | What | Why it matters |
+|---|---|---|
+| Environment trimming | Add `WamState.E` (current env-frame stack index) and `EnvFrame.PrevE`. Allocate links via PrevE and updates `vm.E`. Deallocate walks the PrevE chain *logically* (updates vm.E) and only physically pops the frame when both (a) it's at the top of the stack and (b) `env.B0 >= len(ChoicePoints)` (no younger CP references it). Otherwise the frame stays on the stack, dead but harmless, until backtrack truncation sweeps it. `peekEnvFrame` becomes O(1) via vm.E instead of an O(stack) reverse scan. | Prerequisite for the next change — without it, env frames could be physically popped while a younger CP needed them, so `pushChoicePoint` had to deep-copy the stack to capture the frames. With env trimming, the live frames are guaranteed to still be on the stack at backtrack time. |
+| Stack-mark choicepoints | `ChoicePoint.Stack []StackEntry` → `ChoicePoint.StackLen int`. `pushChoicePoint` records `len(vm.Stack)` instead of calling `copyStack`. `backtrack` truncates via `vm.Stack = vm.Stack[:cp.StackLen]`. The `Stack` field on ChoicePoint is gone; `copyStack` is unused. | Eliminates the per-CP `make([]StackEntry, ...)` + memcpy that was ~19% of CPU. Combined with env trimming this brought scale-300/50 from ~20s to ~8.5s (2.4x). |
+| Save-A+Y-skip-X register snapshot | `snapshotAllRegs` now saves 108 elements: `Regs[0..7]` (A-regs) + `Regs[200..299]` (Y-regs). `restoreSavedRegs` reverses the layout. The X-reg range (Regs[8..199]) is intentionally skipped — X-regs are clause-local in the codegen, the next clause's head writes whatever X-regs it needs (PutVariable / GetVariable Xn always writes before the X-reg is read), and stale leftovers from the failed clause never get touched. Y-regs *do* need saving because env trimming stores Y-regs at *Allocate* time; the *current* Y-regs at TryMeElse time only exist in the CP snapshot. | Cuts the per-CP snapshot copy from 320 elements to 108 (≈3x). Combined with the above, scale-300/50 went from ~8.5s to ~5.1s (1.7x more); scale-300/full went from 88.7s to 53s (1.7x more). |
+
+Cross-target precedent: the Rust target's Phase B (`6bec8b7e`,
+`fcc88aca`, `6815f9a3`, `fea72426`, `4a6e374e`) landed the equivalent
+sequence — lightweight choicepoints + Rc-shared stack + save only
+argument regs. The Go runtime can't use `Rc<Vec>` for stack sharing,
+but the `len(vm.Stack)` mark gives the same effect because env
+trimming guarantees the live frames stay reachable until backtrack
+truncates them.
+
+### Cumulative measurement (scale-300, kernels_off, single-thread)
+
+All medians of 5 alternating trials on the 50-seed sub-bench. Full
+386-seed bench measured once.
+
+| Stage | scale-300/50 median | scale-300/full | speedup vs prior | speedup vs original |
+|---|---|---|---|---|
+| Pre-Phase-A (broken — tuple_count=0) | n/a | n/a | n/a | n/a |
+| Phase A (correctness; full-Regs snapshot) | n/a | ~340s | — | 1.0x |
+| Phase B (`Regs[320]` + default-label resolve) | n/a | ~178s | 1.91x | 1.91x |
+| Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
+| Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
+
+Output identical to prior at every stage except for the documented
+`max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
+tie-break (the workload uses `max_depth(10)` while the reference TSV
+was generated with `max_depth >= 50`; tracked in
+`benchmarks/go_wam_runtime_findings.md`).
+
+### Remaining headroom
+
+- **`bindUnbound`'s alias-rewrite loop** (`for idx, reg := range vm.Regs { if reg == u { vm.Regs[idx] = val } }`) is O(320) per binding. With the snapshot/restore work largely defanged, this is the next visible bandwidth cost. Could be replaced by deref-on-read (every reader that takes an `Unbound` derefs through `vm.getBinding`), at the cost of auditing every `vm.Regs[N]` read in the codegen.
+- **`Bindings map[int]Value` → `[]Value`** (the `perf/wam-go-bindings-slice-and-stack-share` branch). Performance-neutral at the moment because it was committed before Phase D and the dominant cost was elsewhere; with the per-CP work now small, the map's per-access cost may show up. Worth re-measuring on top of Phase D.
+- **Heap-trim on backtrack.** `vm.Heap = vm.Heap[:cp.HeapTop]` is fast but allocations to `vm.Heap` still happen via `append`. A pool / arena could eliminate the steady GC churn.
+
+### Lessons unique to the Go runtime
+
+1. **Variance bands stayed wide right up until Phase D.** Phase C's
+   constant-factor attempts couldn't be distinguished from noise;
+   Phase D's structural change shows up as a clean 4x with no overlap
+   between baseline and post-fix trial bands. The lesson isn't "don't
+   profile" — it's "if your patch only moves things by less than the
+   variance, the patch is too small."
+
+2. **Save-only-A-regs is correct in Go too — but only after env
+   trimming.** The Rust precedent (`fea72426`) wasn't directly
+   portable because the Go target had no equivalent of Rust's
+   per-clause register liveness analysis. What made the Rust
+   optimization safe was the same thing that made env trimming work:
+   Y-regs live in the env frame, not in a global register file
+   shared across activations. Once the Go runtime had that property,
+   the same observation applied.
+
+3. **Cumulative speedup ≠ sum of individual speedups.** Phase B was
+   1.91x. Phase D env-trim was 2.0x. Phase D save-A+Y was 1.67x.
+   Multiplied: 6.4x. The structural changes compose because they
+   each remove a different bottleneck — the constant-factor attempts
+   in Phase C didn't compose because they all targeted the same cost
+   (the SavedRegs copy) and the underlying issue was the design, not
+   the constants.
+
+---
+
 ## Clojure WAM — current implementation status
 
 The Clojure hybrid/WAM target is not yet in the same maturity class as
