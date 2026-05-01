@@ -225,6 +225,8 @@ lowered_direct_instr(get_nil(_)).
 lowered_direct_instr(unify_constant(_)).
 lowered_direct_instr(unify_variable(_)).
 lowered_direct_instr(unify_value(_)).
+lowered_direct_instr(builtin_call(Op, Arity)) :-
+    clojure_direct_builtin(Op, Arity).
 lowered_direct_instr(put_constant(_, _)).
 lowered_direct_instr(put_nil(_)).
 lowered_direct_instr(get_variable(_, _)).
@@ -236,6 +238,15 @@ lowered_direct_instr(put_list(_)).
 lowered_direct_instr(set_constant(_)).
 lowered_direct_instr(set_variable(_)).
 lowered_direct_instr(set_value(_)).
+
+clojure_direct_builtin("=/2", "2").
+clojure_direct_builtin("=/2", 2).
+clojure_direct_builtin('=/2', "2").
+clojure_direct_builtin('=/2', 2).
+clojure_direct_builtin("true/0", "0").
+clojure_direct_builtin("true/0", 0).
+clojure_direct_builtin('true/0', "0").
+clojure_direct_builtin('true/0', 0).
 
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
@@ -274,6 +285,18 @@ emit_lowered_expr(unify_value(Xn), S, Expr) :-
     format(atom(Expr),
            '(let [[item next-state] (runtime/pop-unify-item ~w) reg-val (or (runtime/reg-get-raw next-state ~q) ::lowered-unbound) [ok bound-state] (runtime/unify-values next-state reg-val item)] (if ok (runtime/advance bound-state) (runtime/backtrack ~w)))',
            [S, Xn, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "=/2" ; Op == '=/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values ~w left right)] (if ok (runtime/advance next-state) (runtime/backtrack ~w)))',
+           [S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "true/0" ; Op == 'true/0'),
+    !,
+    format(atom(Expr), '(runtime/advance ~w)', [S]).
 emit_lowered_expr(put_constant(C, Ai), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
