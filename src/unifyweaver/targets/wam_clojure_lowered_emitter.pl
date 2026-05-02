@@ -227,11 +227,13 @@ lowered_direct_prefix(_, _, []).
 
 lowered_terminal_direct_instr(call(_, _), allow_control).
 lowered_terminal_direct_instr(execute(_), allow_control).
+lowered_terminal_direct_instr(jump(_), allow_control).
 lowered_terminal_direct_instr(proceed, _).
 lowered_terminal_direct_instr(fail, _).
 
 lowered_direct_instr(call(_, _), allow_control).
 lowered_direct_instr(execute(_), allow_control).
+lowered_direct_instr(jump(_), allow_control).
 lowered_direct_instr(Instr, _) :-
     lowered_data_instr(Instr).
 
@@ -284,6 +286,11 @@ emit_lowered_expr(execute(Pred), S, Expr) :-
     format(atom(Expr),
            '(if-let [target-pc (get (:labels ~w) ~w)] (assoc ~w :pc target-pc) (runtime/backtrack ~w))',
            [S, PredLit, S, S]).
+emit_lowered_expr(jump(Label), S, Expr) :-
+    clj_lowered_string_literal(Label, LabelLit),
+    format(atom(Expr),
+           '(if-let [target-pc (get (:labels ~w) ~w)] (assoc ~w :pc target-pc) (runtime/backtrack ~w))',
+           [S, LabelLit, S, S]).
 emit_lowered_expr(allocate, S, Expr) :-
     format(atom(Expr),
            '(-> ~w (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points ~w))) runtime/advance)',

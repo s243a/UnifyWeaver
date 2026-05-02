@@ -22,11 +22,13 @@ retry() {
 
   local attempt=1
   while true; do
+    local exit_code
     if "$@"; then
       return 0
+    else
+      exit_code=$?
     fi
 
-    local exit_code=$?
     if [ "$attempt" -ge "$attempts" ]; then
       return "$exit_code"
     fi
@@ -70,6 +72,12 @@ remove_ppa_and_refresh() {
   retry 3 5 sudo apt-get update -qq
 }
 
+ppa_source_present() {
+  find /etc/apt/sources.list /etc/apt/sources.list.d \
+    -type f \( -name '*.list' -o -name '*.sources' \) \
+    -exec grep -q 'ppa.launchpadcontent.net/swi-prolog/stable' {} + 2>/dev/null
+}
+
 print_runner_diagnostics
 retry 3 5 sudo apt-get update -qq
 retry 3 5 sudo apt-get install -y --no-install-recommends software-properties-common
@@ -80,6 +88,10 @@ if retry 3 5 timeout 120 sudo apt-add-repository "$PPA" -y; then
   log "Added ${PPA}."
 else
   warn "Could not add ${PPA}; installing SWI-Prolog from default Ubuntu repo."
+  if ppa_source_present; then
+    warn "${PPA} appears to be partially configured; removing it before fallback."
+    remove_ppa_and_refresh
+  fi
 fi
 
 if ! retry 3 5 sudo apt-get update -qq; then
