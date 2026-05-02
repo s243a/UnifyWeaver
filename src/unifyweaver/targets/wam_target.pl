@@ -422,7 +422,7 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
-    (   length(Goals, NG), NG > 1
+    (   (length(Goals, NG), NG > 1 ; member(builtin_call('!/0', _), Goals))
     ->  pre_assign_permanent_vars(Goals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode0),
         compile_goals(Goals, V1, yes, _, GoalsCode),
@@ -673,12 +673,16 @@ compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
             length(Args, Arity),
             compile_put_arguments(Args, 1, V0, Vf, PutCode),
             (   is_builtin_pred(Pred, Arity)
-            ->  format(string(ExecCode), "    builtin_call ~w/~w, ~w~n    proceed", [Pred, Arity, Arity])
-            ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity])
-            ),
-            (   PutCode == ""
-            ->  format(string(Code), "    deallocate~n~w", [ExecCode])
-            ;   format(string(Code), "~w~n    deallocate~n~w", [PutCode, ExecCode])
+            ->  format(string(ExecCode), "    builtin_call ~w/~w, ~w", [Pred, Arity, Arity]),
+                (   PutCode == ""
+                ->  format(string(Code), "~w~n    deallocate~n    proceed", [ExecCode])
+                ;   format(string(Code), "~w~n~w~n    deallocate~n    proceed", [PutCode, ExecCode])
+                )
+            ;   format(string(ExecCode), "    execute ~w/~w", [Pred, Arity]),
+                (   PutCode == ""
+                ->  format(string(Code), "    deallocate~n~w", [ExecCode])
+                ;   format(string(Code), "~w~n    deallocate~n~w", [PutCode, ExecCode])
+                )
             )
         ;   compile_goal_execute(Goal, V0, Vf, Code)
         )

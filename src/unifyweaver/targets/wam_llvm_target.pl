@@ -13,7 +13,7 @@
 % Key LLVM-specific design choices:
 %   - Value = { i32 tag, i64 payload } tagged union (not enum/interface)
 %   - Instruction dispatch via LLVM switch on integer tag
-%   - Registers = [32 x %Value] fixed array (not HashMap/map)
+%   - Registers = [64 x %Value] fixed array (not HashMap/map)
 %   - Run loop uses musttail for constant-stack execution
 %   - Arena-style memory (malloc + backtrack rewind)
 %
@@ -1982,13 +1982,15 @@ uv.read:
 
 uv.write:
   ; Write mode: create unbound var, push on heap, store in reg
-  %uv.var = call %Value @value_unbound(i8* null)
-  %uv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uv.var)
-  %uv.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  %uv.unb = call %Value @value_unbound(i8* null)
+  %uv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uv.unb)
+  %uv.ref = call %Value @value_ref(i32 %uv.addr)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uv.ref)
   call void @wam_trail_binding(%WamState* %vm, i32 %uv.xn)
-  call void @wam_set_reg(%WamState* %vm, i32 %uv.xn, %Value %uv.var)
+  call void @wam_set_reg(%WamState* %vm, i32 %uv.xn, %Value %uv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 
 wam_llvm_case('unify_value',
 '  ; unify_value: op1 = Xn register index
@@ -2028,7 +2030,7 @@ uvl.write:
   ; Write mode: push register value onto heap
   %uvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %uvl.xn)
   %uvl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uvl.val)
-  %uvl.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uvl.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
@@ -2058,14 +2060,15 @@ uc.read_ok:
   ret i1 true
 
 uc.write:
-  ; Write mode: push onto heap
+  ; Write mode: push constant onto heap
   %uc.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %uc.val2)
-  %uc.dec = call i32 @wam_write_ctx_dec(%WamState* %vm)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %uc.val2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
 uc.fail:
   ret i1 false').
+
 
 % --- Body Construction Instructions ---
 
@@ -2078,10 +2081,13 @@ wam_llvm_case('put_constant',
   %pc.tag_i32 = lshr i32 %pc.op2_32, 16
   %pc.val = insertvalue %Value undef, i32 %pc.tag_i32, 0
   %pc.val2 = insertvalue %Value %pc.val, i64 %op1, 1
+  %pc.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_trail_binding(%WamState* %vm, i32 %pc.reg_idx)
   call void @wam_set_reg(%WamState* %vm, i32 %pc.reg_idx, %Value %pc.val2)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pc.old, %Value %pc.val2)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 
 wam_llvm_case('put_variable',
 '  ; op1 = Xn index, op2 = Ai index
@@ -2097,22 +2103,28 @@ wam_llvm_case('put_variable',
   %pv.unb = call %Value @value_unbound(i8* null)
   %pv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pv.unb)
   %pv.ref = call %Value @value_ref(i32 %pv.addr)
+  %pv.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pv.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.xn)
   call void @wam_trail_binding(%WamState* %vm, i32 %pv.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.xn, %Value %pv.ref)
   call void @wam_set_reg(%WamState* %vm, i32 %pv.ai, %Value %pv.ref)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pv.old, %Value %pv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 
 wam_llvm_case('put_value',
 '  ; op1 = Xn index, op2 = Ai index
   %pvl.xn = trunc i64 %op1 to i32
   %pvl.ai = trunc i64 %op2 to i32
   %pvl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.xn)
+  %pvl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pvl.ai)
   call void @wam_trail_binding(%WamState* %vm, i32 %pvl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pvl.ai, %Value %pvl.val)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pvl.old, %Value %pvl.val)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 
 wam_llvm_case('put_structure',
 '  ; put_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
@@ -2142,6 +2154,7 @@ wam_llvm_case('put_structure',
   %ps.val0 = insertvalue %Value undef, i32 3, 0
   %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
   %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
+  call void @wam_trail_binding(%WamState* %vm, i32 %ps.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ps.old, %Value %ps.val)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
@@ -2149,8 +2162,8 @@ wam_llvm_case('put_structure',
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
-  wam_llvm_case('put_list',
-  '  ; put_list: op1 = Ai register index
+wam_llvm_case('put_list',
+'  ; put_list: op1 = Ai register index
   ; Push list marker + 2 unbound cells for [H|T] on heap.
   ; Bind Ai to Ref of marker, push WriteCtx(2) pointing to H slot.
   %pl.ai = trunc i64 %op1 to i32
@@ -2162,6 +2175,7 @@ wam_llvm_case('put_structure',
   %pl.ref = call %Value @value_ref(i32 %pl.addr)
 
   %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
+  call void @wam_trail_binding(%WamState* %vm, i32 %pl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.ref)
   call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.ref)
 
@@ -2174,6 +2188,7 @@ wam_llvm_case('put_structure',
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 wam_llvm_case('set_variable',
 '  ; set_variable: op1 = Xn register index
   ; Allocate a fresh heap cell holding Unbound, then place Ref{addr}
@@ -2187,6 +2202,7 @@ wam_llvm_case('set_variable',
   call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
+
 
 wam_llvm_case('set_value',
 '  ; set_value: op1 = Xn register index
@@ -2230,6 +2246,17 @@ wam_llvm_case('allocate',
   %alloc.cp_ext = zext i32 %alloc.cp to i64
   %alloc.aux_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 1
   store i64 %alloc.cp_ext, i64* %alloc.aux_ptr
+
+  ; Save current cut_barrier into EnvFrame and update it to current cpn
+  %alloc.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  %alloc.old_cb = load i32, i32* %alloc.cb_ptr
+  %alloc.scb_ptr = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 4
+  store i32 %alloc.old_cb, i32* %alloc.scb_ptr
+  
+  %alloc.le_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  %alloc.le_cpn = load i32, i32* %alloc.le_ptr
+  store i32 %alloc.le_cpn, i32* %alloc.cb_ptr
+
   ; Snapshot regs[16..31] (the Y-reg window) into the env frame.
   %alloc.y_src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
   %alloc.y_dst = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 3, i32 0
@@ -2277,6 +2304,13 @@ dealloc.restore:
   %dealloc.saved_cp = load i64, i64* %dealloc.aux_ptr
   %dealloc.cp = trunc i64 %dealloc.saved_cp to i32
   call void @wam_set_cp(%WamState* %vm, i32 %dealloc.cp)
+
+  ; Restore cut_barrier
+  %dealloc.scb_ptr = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 4
+  %dealloc.saved_cb = load i32, i32* %dealloc.scb_ptr
+  %dealloc.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 %dealloc.saved_cb, i32* %dealloc.cb_ptr
+
   ; Restore regs[16..31] (Y-reg window) from the env frame snapshot.
   ; This is what makes Y-regs per-clause-local even though they share
   ; physical slots with X-regs — see allocate for the save side.
@@ -2305,6 +2339,11 @@ call.go:
   %call.pc = call i32 @wam_get_pc(%WamState* %vm)
   %call.next = add i32 %call.pc, 1
   call void @wam_set_cp(%WamState* %vm, i32 %call.next)
+  ; Save cpn for cut_barrier
+  %call.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %call.cpn = load i32, i32* %call.cpn_ptr
+  %call.le_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 %call.cpn, i32* %call.le_ptr
   call void @wam_set_pc(%WamState* %vm, i32 %call.target_pc)
   ret i1 true
 
@@ -2319,6 +2358,11 @@ wam_llvm_case('do_execute',
   br i1 %exec.valid, label %exec.go, label %exec.fail
 
 exec.go:
+  ; Save cpn for cut_barrier
+  %exec.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %exec.cpn = load i32, i32* %exec.cpn_ptr
+  %exec.le_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 %exec.cpn, i32* %exec.le_ptr
   call void @wam_set_pc(%WamState* %vm, i32 %exec.target_pc)
   ret i1 true
 
@@ -2399,7 +2443,13 @@ wam_llvm_case('try_me_else',
   %tme.hs = load i32, i32* %tme.hs_ptr
   %tme.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 11
   store i32 %tme.hs, i32* %tme.sht_ptr
-  ; Increment choice point count
+  ; Save current cpn into ChoicePoint.saved_b (field 12)
+  %tme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 12
+  store i32 %tme.cpn, i32* %tme.saved_b_ptr
+  ; Also set global cut_barrier to this value
+  %tme.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 %tme.cpn, i32* %tme.cb_ptr
+
   %tme.new_cpn = add i32 %tme.cpn, 1
   store i32 %tme.new_cpn, i32* %tme.cpn_ptr
   call void @wam_inc_pc(%WamState* %vm)
@@ -2422,6 +2472,11 @@ rme.update_cp:
   %rme.top = getelementptr %ChoicePoint, %ChoicePoint* %rme.cps, i32 %rme.top_idx
   %rme.npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %rme.top, i32 0, i32 0
   store i32 %rme.next_pc, i32* %rme.npc_ptr
+  ; Restore cut_barrier from choice point
+  %rme.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %rme.top, i32 0, i32 12
+  %rme.saved_b = load i32, i32* %rme.saved_b_ptr
+  %rme.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 %rme.saved_b, i32* %rme.cb_ptr
   br label %rme.done
 
 rme.no_cp:
@@ -2439,6 +2494,16 @@ wam_llvm_case('trust_me',
   br i1 %tm.has_cp, label %tm.pop, label %tm.done
 
 tm.pop:
+  %tm.top_idx = sub i32 %tm.cpn, 1
+  %tm.cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %tm.cps = load %ChoicePoint*, %ChoicePoint** %tm.cps_ptr
+  %tm.top = getelementptr %ChoicePoint, %ChoicePoint* %tm.cps, i32 %tm.top_idx
+  ; Restore cut_barrier from choice point
+  %tm.saved_b_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tm.top, i32 0, i32 12
+  %tm.saved_b = load i32, i32* %tm.saved_b_ptr
+  %tm.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  store i32 %tm.saved_b, i32* %tm.cb_ptr
+
   %tm.new_cpn = sub i32 %tm.cpn, 1
   store i32 %tm.new_cpn, i32* %tm.cpn_ptr
   br label %tm.done
@@ -2884,9 +2949,11 @@ builtin_fail:
   ret i1 false
 
 builtin_cut:
-  ; Clear all choice points
+  ; Set cpn to current cut_barrier
+  %cut.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
+  %cut.cb = load i32, i32* %cut.cb_ptr
   %cut.cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
-  store i32 0, i32* %cut.cpn_ptr
+  store i32 %cut.cb, i32* %cut.cpn_ptr
   ret i1 true
 
 builtin_integer_check:
@@ -3672,6 +3739,8 @@ do_abs:
   ret i64 %abs_r
 
 fail:
+  %f.fmt = getelementptr [26 x i8], [26 x i8]* @.fmt_arith_fail, i32 0, i32 0
+  call i32 (i8*, ...) @printf(i8* %f.fmt)
   ret i64 0
 }'.
 

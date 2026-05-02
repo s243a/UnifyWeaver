@@ -12,7 +12,7 @@
 % to LLVM IR code.
 %
 % LLVM-specific design choices vs Rust/Go:
-%   - Assoc → [32 x %Value] fixed register array (not HashMap/map)
+%   - Assoc → [64 x %Value] fixed register array (not HashMap/map)
 %   - Lists → %Value* heap-allocated arrays (not Vec/slice)
 %   - Type checks → icmp eq on tag field (not matches!/type switch)
 %   - Value → %Value = { i32, i64 } tagged union (not enum/interface)
@@ -44,7 +44,7 @@
 
 %% llvm_wam_type_map(+PrologType, -LLVMType)
 %  Maps Prolog types used in the WAM runtime to LLVM IR types.
-llvm_wam_type_map(assoc, '[32 x %Value]').
+llvm_wam_type_map(assoc, '[64 x %Value]').
 llvm_wam_type_map(list, '%Value*').
 llvm_wam_type_map(value, '%Value').
 llvm_wam_type_map(atom, 'i8*').
@@ -66,10 +66,10 @@ llvm_wam_type_map(wam_state, '%WamState*').
 % ============================================================================
 
 %% reg_name_to_index(+Name, -Index)
-%  Maps WAM register names to fixed array indices in the [32 x %Value] array.
+%  Maps WAM register names to fixed array indices in the [64 x %Value] array.
 %  Register ABI: argument registers A1..A16 occupy slots 0..15,
-%  temporary registers X1..X16 occupy slots 16..31.
-%  A1→0, A2→1, ..., A16→15, X1→16, X2→17, ..., X16→31
+%  temporary registers X1..X48 occupy slots 16..63.
+%  A1→0, A2→1, ..., A16→15, X1→16, X2→17, ..., X48→63
 reg_name_to_index(Name, Index) :-
     atom_string(Name, Str),
     (   string_concat("A", NumStr, Str)

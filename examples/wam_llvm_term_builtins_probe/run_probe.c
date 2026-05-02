@@ -21,6 +21,7 @@ DECL(probe_td_atom_a_v0); DECL(probe_td_atom_a_v1);
 DECL(probe_td_g1_v0); DECL(probe_td_g1_v1); DECL(probe_td_g1_v2);
 DECL(probe_td_g2_v0); DECL(probe_td_g2_v1); DECL(probe_td_g2_v2);
 DECL(probe_sum_med_v10); DECL(probe_sum_med_v9); DECL(probe_sum_med_v0);
+DECL(probe_nested_build); DECL(probe_dbg_sum_fg);
 
 typedef struct { const char *name; int (*fn)(void); } probe_t;
 static probe_t PROBES[] = {
@@ -74,6 +75,8 @@ static probe_t PROBES[] = {
     {"sum_ints(f(1,g(2,3),4),0,?)==10", run_probe_sum_med_v10},
     {"sum_ints(f(1,g(2,3),4),0,?)==9",  run_probe_sum_med_v9},
     {"sum_ints(f(1,g(2,3),4),0,?)==0",  run_probe_sum_med_v0},
+    {"probe_nested_build", run_probe_nested_build},
+    {"probe_dbg_sum_fg", run_probe_dbg_sum_fg},
 };
 
 int main(void) {

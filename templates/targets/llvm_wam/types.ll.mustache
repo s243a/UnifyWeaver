@@ -33,15 +33,15 @@
 
 ; === Stack Entries ===
 ; Type: 0=EnvFrame, 1=UnifyCtx, 2=WriteCtx
-; y_save: for EnvFrame entries, snapshot of regs[16..31] at allocate time.
+; y_save: for EnvFrame entries, snapshot of regs[16..63] at allocate time.
 ; The LLVM target maps both Xn and Yn into the same `n+15` register index
 ; (src/unifyweaver/bindings/llvm_wam_bindings.pl); without save/restore,
 ; an inner predicate's `get_variable Y3, A1` clobbers the outer caller's
-; Y3 slot. allocate now snapshots regs[16..31] into y_save on push;
+; Y3 slot. allocate now snapshots regs[16..63] into y_save on push;
 ; deallocate copies it back before popping. UnifyCtx / WriteCtx entries
 ; do not use y_save but carry it as dead space (same struct type for
 ; uniform pushes/pops).
-%StackEntry = type { i32, i64, %Value*, [48 x %Value] }  ; type, aux, data, y_save
+%StackEntry = type { i32, i64, %Value*, [48 x %Value], i32 }  ; type, aux, data, y_save, cut_barrier
 
 ; === Trail Entry ===
 %TrailEntry = type { i32, %Value }        ; register index, old value
@@ -62,7 +62,8 @@
     i8*,                                   ; 8: foreign_results (ptr to %Value array)
     i32,                                   ; 9: foreign_count (total results)
     i32,                                   ; 10: foreign_cursor (next to yield)
-    i32                                    ; 11: saved heap_top — rewound on backtrack
+    i32,                                   ; 11: saved heap_top — rewound on backtrack
+    i32                                    ; 12: saved_b (backtrack level of caller)
 }
 
 ; === WAM State ===
@@ -89,5 +90,7 @@
     i1,                                    ; 19: halted
     %Value*,                               ; 20: agg_accum (aggregate accumulator)
     i32,                                   ; 21: agg_count
-    i32                                    ; 22: agg_cap
+    i32,                                   ; 22: agg_cap
+    i32,                                   ; 23: cut_barrier
+    i32                                    ; 24: last_entry_cpn
 }
