@@ -217,6 +217,43 @@ test(multi_clause_call_stays_runtime_mediated) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
+test(jump_is_direct_lowered_after_lowered_prefix) :-
+    once((
+        WamCode = "test_jump/1:\nallocate\njump test_jump_done\ntest_jump_done:\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_jump/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_jump/1, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "if-let [target-pc"),
+        has(Code, "(get (:labels"),
+        has(Code, "\"test_jump_done\""),
+        has(Code, ":pc target-pc"),
+        has(Code, "runtime/backtrack"),
+        assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(jump_terminal_stops_lowered_suffix) :-
+    once((
+        WamCode = "test_jump_suffix/1:\njump test_jump_done\ndeallocate\nproceed\ntest_jump_done:\nproceed\n",
+        wam_clojure_lowerable(test_jump_suffix/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_jump_suffix/1, WamCode, [], Code),
+        has(Code, "\"test_jump_done\""),
+        assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(multi_clause_jump_stays_runtime_mediated) :-
+    once((
+        WamCode = "test_choice_jump/1:\ntry_me_else test_choice_jump_alt\njump test_choice_jump_done\ntest_choice_jump_done:\nproceed\ntest_choice_jump_alt:\ntrust_me\nget_constant z, A1\nproceed\n",
+        wam_clojure_lowerable(test_choice_jump/1, WamCode, multi_clause_1),
+        lower_predicate_to_clojure(test_choice_jump/1, WamCode, [], Code),
+        assertion(\+ has(Code, "\"test_choice_jump_done\"")),
+        assertion(\+ has(Code, ":pc target-pc")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
