@@ -7,7 +7,7 @@
 
 **Scope:**
 - Register bindings for register access → `getelementptr` + `load`/`store`
-  on the `[32 x %Value]` array
+  on the `[64 x %Value]` array
 - Register bindings for list operations → runtime helper calls
 - Register bindings for arithmetic → native LLVM instructions
   (`add`, `sub`, `mul`, `sdiv`) on extracted payloads
@@ -241,7 +241,7 @@ functions via native lowering.
 - `run_loop` uses `musttail call i1 @run_loop(...)` for constant-stack
   execution — this is a key advantage over Rust/Go implementations
 - `backtrack` restores choice point registers via bulk `memcpy` of
-  the saved `[32 x %Value]` array
+  the saved `[64 x %Value]` array
 - `unwind_trail` iterates backward through trail entries, restoring
   register values via `getelementptr` + `store`
 - `eval_arith` recurses on `%Value` tag: if integer → return payload;

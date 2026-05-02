@@ -26,7 +26,7 @@
 ; === Choice Point ===
 %ChoicePoint = type {
     i32,                                   ; next_pc
-    [32 x %Value],                         ; saved registers
+    [64 x %Value],                         ; saved registers
     i32,                                   ; trail mark
     i32                                    ; saved cp
 }
@@ -36,7 +36,7 @@
 ; We use a flat struct allocated from the bump allocator.
 %WamState = type {
     i32,                                   ; 0: pc
-    [32 x %Value],                         ; 1: regs
+    [64 x %Value],                         ; 1: regs
     i32,                                   ; 2: stack offset (in linear memory)
     i32,                                   ; 3: stack_size
     i32,                                   ; 4: stack_cap
