@@ -86,7 +86,9 @@ has been lifted out into native code; the quotient is the outer
 workload logic the WAM still interprets. The intuition that
 "factors have zeros" lands here directly — the kernel is what the
 structural map sends to identity, what becomes invisible to it,
-freeing the rest to focus on what varies.
+freeing the rest to focus on what varies. (For the logic-
+programming substrate this is sharper than analogy; see "Why this
+lands so well on logic programming" below.)
 
 **The integral-transform kernel.** In `∫ K(x, y) f(y) dy`, the
 kernel function `K(x, y)` defines the transform — Fourier,
@@ -129,6 +131,143 @@ right structural object. When several independent disciplines
 borrow the same name for "the thing you can factor out," and that
 name fits a fifth domain without strain, the underlying notion is
 probably real.
+
+## Why this lands so well on logic programming
+
+The convergence above is at the level of analogy across domains.
+For our specific substrate — Prolog and the broader logic-
+programming family it represents — the convergence collapses into
+*identity*. The algebraic-kernel reading isn't a metaphor we
+reach for; it is the literal mechanism by which the optimizer
+operates, because the language itself is an algebraic object.
+
+A Prolog program is a set of Horn clauses. Each clause is a
+conjunction of literals; each predicate is the disjunction of its
+defining clauses. The propositional fragment of the program is
+exactly a Boolean expression in (almost) disjunctive normal form,
+extended to first-order via existentially-quantified body
+variables. This means the equational toolkit of Boolean algebra
+applies *directly*, not analogically:
+
+- **Distributivity** — `(A ∧ B) ∨ (A ∧ C) = A ∧ (B ∨ C)`. When
+  `category_ancestor(...)` appears as a subgoal in
+  `effective_distance(...)`, `category_influence(...)`, and any
+  future workload, lifting it into the kernel registry is the
+  application of distributivity at the program-structure level.
+  The "common factor" is literal, not metaphorical.
+- **Idempotence** — `A ∧ A = A`. Common subgoal elimination
+  within a clause body.
+- **Absorption / subsumption** — `A ∨ (A ∧ B) = A`. Clause
+  subsumption: if one clause's head is implied by another's,
+  the redundant clause can be dropped.
+- **De Morgan's laws** — apply to negation-as-failure transforms,
+  including the `\+ member(_, _)` patterns the kernel detector
+  matches on.
+
+These are not analogies the optimizer reaches for. They are the
+identities that govern Horn-clause manipulation. What is true at
+the meta-level *is* true at the program level, because the
+program *is* the algebraic object.
+
+The kernel-of-homomorphism reading collapses cleanly too. Boolean
+algebras are commutative rings (under XOR + AND), so the First
+Isomorphism Theorem applies in its full ring-theoretic strength.
+The kernel of a Boolean-algebra homomorphism is *exactly* the
+elements mapping to ⊥ — bottom, the algebraic zero. The intuition
+that factors have zeros isn't a lay-reader's mnemonic; it's a
+literal statement of the relationship between what the WAM
+dispatcher sees and what the kernel registry stores. The kernel
+is what the dispatcher's structural map sends to identity, which
+is exactly what we factor out into native code.
+
+### Comparison with other substrates
+
+Other paradigms don't have this clean alignment:
+
+- **Imperative languages** (C, Go, Rust) carry implicit state,
+  side effects, and aliasing. An optimizer has to prove an
+  enormous amount of "this rewrite is safe under all possible
+  aliasing scenarios" before it can apply even the simplest
+  Boolean-style identity. Most of what conventional compilers do
+  is loophole-closing around these conservatism barriers — escape
+  analysis, points-to analysis, alias-set computation. The
+  algebra is buried under operational concerns.
+- **Functional languages** (Haskell, ML) get partway there.
+  Referential transparency removes most of the aliasing
+  conservatism, and lambda calculus has its own equational theory
+  (alpha/beta/eta conversion, functor laws, monad laws). But the
+  substrate isn't propositional Boolean algebra — it is a
+  calculus of functions — so Boolean-factoring identities don't
+  apply directly. You get *related* optimizations (let-floating,
+  common subexpression elimination on values) — not the same
+  ones.
+- **Logic-programming languages** are the case where the
+  substrate *is* propositional. Pure Prolog, Datalog, Mercury,
+  Curry, λProlog, Answer Set Programming — all share this
+  property to varying degrees. The equational toolkit of Boolean
+  algebra applies because the program shape *is* a Boolean
+  expression. Of these, Prolog is the practically-used member:
+  the language with the working ecosystem, the bench corpus, the
+  toolchain. The argument here generalises to the family; the
+  reason it matters is that Prolog is where the engineering
+  actually exists.
+
+### The lineage
+
+The optimization techniques that fall out of this substrate
+choice have a direct lineage in digital logic and database
+theory:
+
+- **Espresso, BDDs, and multi-level logic minimization** are
+  Boolean-factoring algorithms applied to gate-level circuits.
+  Common subexpression elimination at the predicate level is the
+  same operation applied one rung up the abstraction ladder.
+- **SAT and SMT solvers** operate on Boolean formulas; a Horn-
+  clause program is a Boolean formula, and entailment in pure
+  Prolog is a SAT-style decision problem on the program's
+  ground instantiation.
+- **Datalog and relational algebra** are the database-theoretic
+  cousins: relational query optimization (magic-set
+  transformation, semi-naive evaluation, indexed-join
+  selection) is essentially the same factoring problem applied
+  to bottom-up evaluation of bounded Horn programs.
+- **Theorem provers and proof assistants** (Coq, Lean) operate on
+  even richer logical substrates, but the pure-propositional core
+  shares the algebraic identity.
+
+UnifyWeaver's `purity_certificate` machinery (referenced in
+`docs/design/WAM_TIERED_LOWERING.md`) is essentially an algebraic
+classifier — it identifies which predicates live in the pure
+Boolean-algebra fragment (no cut, no I/O, no `assert`/`retract`)
+and are therefore safe to manipulate using full algebraic
+identities. Predicates that fail the certificate fall back to
+conservative imperative-style compilation, exactly because the
+algebra no longer holds. The certificate is the runtime evidence
+that the substrate-alignment argument applies.
+
+### What this means in practice
+
+We aren't grafting a Boolean-factoring optimizer onto a language
+that has to fight its substrate to allow it. We are using the
+language's native algebraic structure to do what that structure
+was always going to allow. The kernel detector is specialised
+Boolean factoring; the kernel registry is the factor-out target;
+the FFI dispatch is the factored call site. What looks from the
+outside like a clever pattern-matching trick is, underneath, the
+same thing Espresso does to a gate-level netlist — applied at the
+predicate level instead of the gate level. The 52× Phase K
+speedup isn't just a kernel substitution; it is what happens when
+Boolean factoring on program structure meets a runtime that knows
+how to take advantage of the resulting quotient.
+
+This is also why kernel parity across targets compounds so well.
+Each target's runtime has to handle the same factored quotient —
+the outer workload logic the WAM still interprets. The kernel
+implementations vary per target (Go, Rust, Haskell, Clojure all
+need their own native version of `category_ancestor`), but the
+*factorization* is invariant — it lives in the shared detector,
+not in any one target. One algebraic transformation, N runtimes.
+That is the leverage.
 
 ## When a shape becomes worth a kernel
 
