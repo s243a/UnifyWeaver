@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import sys
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
-from benchmark_effective_distance_matrix import parse_args, resolve_requested_targets  # noqa: E402
+from benchmark_effective_distance_matrix import (  # noqa: E402
+    RunResult,
+    kernel_pair_delta_rows,
+    parse_args,
+    print_kernel_pair_deltas,
+    resolve_requested_targets,
+)
 from benchmark_target_matrix import (  # noqa: E402
     KERNEL_TARGET_PAIRS,
     TARGETS,
@@ -122,6 +130,76 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             self.assertTrue(args.list_kernel_pairs)
         finally:
             sys.argv = original_argv
+
+    def test_kernel_pair_delta_rows_report_matching_pair(self) -> None:
+        rows = kernel_pair_delta_rows(
+            "dev",
+            [
+                RunResult(
+                    "wam-rust-accumulated",
+                    "dev",
+                    [1.0, 1.2, 1.1],
+                    "same",
+                    42,
+                    "",
+                ),
+                RunResult(
+                    "wam-rust-accumulated-no-kernels",
+                    "dev",
+                    [2.0, 2.2, 2.1],
+                    "same",
+                    42,
+                    "",
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                "dev\trust\taccumulated\twam-rust-accumulated\t"
+                "wam-rust-accumulated-no-kernels\t1.100\t2.100\t1.909\ttrue\ttrue"
+            ],
+        )
+
+    def test_kernel_pair_delta_rows_skip_incomplete_pair(self) -> None:
+        rows = kernel_pair_delta_rows(
+            "dev",
+            [
+                RunResult(
+                    "wam-rust-accumulated",
+                    "dev",
+                    [1.0],
+                    "digest",
+                    42,
+                    "",
+                )
+            ],
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_print_kernel_pair_deltas_emits_one_table_for_all_scales(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            print_kernel_pair_deltas(
+                [
+                    RunResult("wam-rust-seeded", "dev", [1.0], "a", 10, ""),
+                    RunResult("wam-rust-seeded-no-kernels", "dev", [2.0], "a", 10, ""),
+                    RunResult("wam-rust-seeded", "10x", [3.0], "b", 20, ""),
+                    RunResult("wam-rust-seeded-no-kernels", "10x", [6.0], "c", 20, ""),
+                ]
+            )
+
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(
+            lines[0],
+            "scale\tfamily\tmode\tkernels_target\tno_kernels_target\tkernels_median_s\t"
+            "no_kernels_median_s\tkernels_speedup_vs_no_kernels\toutput_match\trows_match",
+        )
+        self.assertEqual(len(lines), 3)
+        self.assertIn("dev\trust\tseeded\twam-rust-seeded\twam-rust-seeded-no-kernels", lines[1])
+        self.assertIn("10x\trust\tseeded\twam-rust-seeded\twam-rust-seeded-no-kernels", lines[2])
 
 
 if __name__ == "__main__":
