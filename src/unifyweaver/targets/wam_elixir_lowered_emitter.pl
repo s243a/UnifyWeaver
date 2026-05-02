@@ -1244,6 +1244,18 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
                  # agg frame stays as a sentinel), the branch
                  # contributes nothing.
                  {:fail, _s} -> []
+                 # Phase 4 risk #1: multi-clause helpers called from
+                 # the branchs body use switch_on_constant + throw
+                 # {:return, _} to short-circuit clause dispatch. The
+                 # short-circuited clauses eventual proceed reaches
+                 # the branchs stub cp and produces a
+                 # {:branch_exhausted, accum} result; thats what gets
+                 # wrapped in :return. Unwrap it here so it counts as
+                 # this branchs contribution. Other :return shapes
+                 # (which shouldnt occur in branch context) collapse
+                 # to no contribution.
+                 {:return, {:branch_exhausted, accum}} when is_list(accum) -> accum
+                 {:return, _} -> []
                end
              end,
              on_timeout: :kill_task,
