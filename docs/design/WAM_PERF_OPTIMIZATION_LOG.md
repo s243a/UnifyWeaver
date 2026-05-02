@@ -2375,6 +2375,21 @@ because all three call into the FFI kernel — the WAM-side directive
 choice (intset/lowered/unlowered) doesn't affect kernel behaviour.
 tuple_count=200 across all runs — correctness preserved end-to-end.
 
+#### Scale-1k matrix (real wiki data, max_depth=10) — sanity check
+
+| target | median (s) | rows |
+|---|---:|---:|
+| haskell-interp-ffi | 0.492 | 580 |
+| haskell-lowered-ffi | **0.361** | 580 |
+| rust-interp-ffi | 0.052 | 580 |
+
+580 rows match across targets (sha `4c8841411a2c`). The kernel changes
+hold at the larger wiki scale; lowered-ffi is now ~27% faster than
+interp-ffi at 1k (was a slight regression at scale-300, but the
+scale-300 measurements were noisy below the cabal-startup floor).
+Rust still leads ~7× — the structural gap discussed in Phase L below
+remains.
+
 ### Honest reading
 
 The 10× Haskell-vs-Rust gap at scale-300 is roughly halved (the
@@ -2405,14 +2420,54 @@ What this phase does cleanly close:
 - No changes to executeForeign template or kernel registration metadata
   — the IntSet conversion stays internal to the kernel.
 
+### Phase L appendix: `use_lmdb(auto)` resolver
+
+While the kernel work was in flight, this branch also adds the
+auto-mode resolver previously filed as a follow-up. New predicate
+`resolve_auto_use_lmdb/2` in `wam_haskell_target.pl` normalises
+`use_lmdb(auto)` to a concrete `true`/`false` based on:
+
+1. `ghc-pkg list --simple-output lmdb` — if the Haskell package isn't
+   installed, fall back to `false` with a stderr warning. Cabal's
+   own dependency resolution would also catch this at build time,
+   but pre-checking gives a friendlier error and lets the build
+   complete on the IntMap path.
+2. `option(fact_count(N), ...)` against
+   `option(lmdb_auto_threshold(T), ..., 50000)`. When N > T pick
+   true; else false. The threshold lands between the
+   IntMap-wins-clearly regime (≤10k facts, per the prior crossover
+   study at `project_wam_haskell_fact_access.md`) and the
+   LMDB+cache-wins regime (≥100k); both endpoints are documented
+   memory.
+3. `fact_count` absent → conservatively false. Caller opts into the
+   scale-driven path by passing the count.
+
+Wired in at the top of `write_wam_haskell_project/3` so the four
+existing `option(use_lmdb(true), Options)` checks see the resolved
+value transparently. Explicit `use_lmdb(true)` and `use_lmdb(false)`
+stay unchanged.
+
+Firewall integration is deliberately *not* in this first cut — cabal
+itself fails loudly if lmdb is missing, which is enough of a safety
+gate. A later optional firewall hook (`firewall_check(use_lmdb, R)`
+before step 1) can layer on top without changing the resolver's
+contract.
+
+5 tests in `tests/test_wam_haskell_target.pl` cover the deterministic
+paths: explicit-true passthrough, explicit-false passthrough, absent
+unchanged, auto+low-fact-count→false, auto-without-fact-count→false.
+The "auto + high fact_count + lmdb installed → true" path is
+environment-gated so we don't test it directly here; the resolver's
+guard logic is fully covered by the false-paths.
+
 ### Open follow-ups
 
-1. **Auto-mode for IntMap-vs-LMDB selection** — at large scale (>100k
-   facts) LMDB+cache should win; today the choice is manual via
-   `option(use_lmdb(true))`. A `resolve_auto_use_lmdb/2` predicate
-   driven by fact count + cabal availability would let the bench
-   harness flip storage backends automatically. (Tracked separately
-   on this branch.)
+1. **Bench harness wiring for `use_lmdb(auto)`** — the resolver is
+   in place; the matrix bench harness still passes manual
+   `use_lmdb(true)` only. A future change should pass
+   `use_lmdb(auto), fact_count(N)` and let the resolver decide,
+   ideally with a separate matrix variant for "auto-pick LMDB"
+   alongside the current explicit pair.
 2. **Accumulator-passing rewrite** — replace `map (+1) $ go ...` with
    an explicit depth offset passed down the recursion. Should reduce
    intermediate list allocation. Filed for a follow-up branch since
@@ -2421,3 +2476,8 @@ What this phase does cleanly close:
    structural change that would close more of the residual Rust gap.
    Multi-PR architectural arc; see `project_wam_haskell_st_monad_plan.md`
    notes.
+4. **Optional firewall hook** in the auto-mode resolver — consult
+   `firewall_check(use_lmdb, R)` before the ghc-pkg check, so a
+   strict-mode deployment can refuse LMDB even when it's installable.
+   Requires extending the firewall's tool registry to know about
+   Haskell library packages, not just executables.
