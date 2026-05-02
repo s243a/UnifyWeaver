@@ -274,6 +274,20 @@ The generated project supports two entry modes:
 Larger Clojure benchmark runs should stay configurable because JVM startup and
 memory behavior are noisy in constrained Termux environments.
 
+Scala has a separate effective-distance project generator:
+
+```bash
+swipl -q -s examples/benchmark/generate_wam_scala_effective_distance_benchmark.pl -- \
+  data/benchmark/dev/facts.pl /tmp/wam-scala-effective-distance accumulated kernels_on
+```
+
+It emits a Scala WAM project plus an `EffectiveDistanceRunner` companion that
+prints the standard `article	root_category	effective_distance` table from
+`category_parent.tsv` and `article_category.tsv`. The generator supports
+`kernels_on` via the Scala fact-source handler and `kernels_off` via compiled
+WAM facts, but the targets are not registered in the Python matrix until the
+runner wiring has a dedicated smoke gate.
+
 The configurable benchmark matrix now treats all Clojure WAM effective-distance
 modes as result-producing `hybrid-wam` targets:
 
