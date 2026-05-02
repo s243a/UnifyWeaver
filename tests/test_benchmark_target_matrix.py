@@ -94,6 +94,8 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         expected = {
             ("rust", "seeded"),
             ("rust", "accumulated"),
+            ("rust", "interpreter"),
+            ("rust", "lowered"),
             ("go", "accumulated"),
             ("clojure", "seeded"),
             ("clojure", "accumulated"),
@@ -112,6 +114,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertTrue(text.startswith("family\tmode\tkernels_target\tno_kernels_target\n"))
         self.assertIn(
             "rust\taccumulated\twam-rust-accumulated\twam-rust-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "rust\tlowered\trust-lowered-ffi\trust-lowered-only",
             text,
         )
         self.assertIn(

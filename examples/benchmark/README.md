@@ -292,7 +292,8 @@ python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-
 ```
 
 The report is TSV with `family`, `mode`, `kernels_target`, and
-`no_kernels_target` columns. It currently covers registered Rust, Go, Clojure,
+`no_kernels_target` columns. It currently covers registered Rust
+seeded/accumulated and Rust interpreter/lowered pairings, plus Go, Clojure,
 and Haskell effective-distance WAM pairings.
 
 When both sides of a registered pair run for the same scale, the benchmark
