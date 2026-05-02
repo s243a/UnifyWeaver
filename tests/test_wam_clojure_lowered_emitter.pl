@@ -150,14 +150,40 @@ test(env_framed_equality_reaches_direct_builtin_prefix) :-
         has(Code, "runtime/succeed-state")
     )).
 
-test(execute_stays_runtime_mediated_after_lowered_prefix) :-
+test(execute_is_direct_lowered_after_lowered_prefix) :-
     once((
         WamCode = "test_exec/1:\nallocate\ndeallocate\nexecute test_fact/1\n",
         wam_clojure_lowerable(test_exec/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_exec/1, WamCode, [], Code),
         has(Code, "update :env-stack conj {}"),
         has(Code, "update :env-stack #(if (seq %) (pop %) %)"),
-        assertion(\+ has(Code, "execute test_fact/1")),
+        has(Code, "if-let [target-pc"),
+        has(Code, "(get (:labels"),
+        has(Code, "\"test_fact/1\""),
+        has(Code, "assoc"),
+        has(Code, ":pc target-pc"),
+        has(Code, "runtime/backtrack"),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(execute_terminal_stops_lowered_suffix) :-
+    once((
+        WamCode = "test_exec_suffix/1:\nexecute test_fact/1\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_exec_suffix/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_exec_suffix/1, WamCode, [], Code),
+        has(Code, "\"test_fact/1\""),
+        assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(multi_clause_execute_stays_runtime_mediated) :-
+    once((
+        WamCode = "test_choice_or_z/1:\ntry_me_else test_choice_or_z_alt\nexecute test_fact/1\ntest_choice_or_z_alt:\ntrust_me\nget_constant z, A1\nproceed\n",
+        wam_clojure_lowerable(test_choice_or_z/1, WamCode, multi_clause_1),
+        lower_predicate_to_clojure(test_choice_or_z/1, WamCode, [], Code),
+        assertion(\+ has(Code, "\"test_fact/1\"")),
+        assertion(\+ has(Code, ":pc target-pc")),
         assertion(\+ has(Code, "runtime/step"))
     )).
 
