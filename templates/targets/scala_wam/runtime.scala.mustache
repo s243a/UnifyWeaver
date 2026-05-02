@@ -200,7 +200,10 @@ case class AggregateCP(
 final class WamState(
   val regs:      Array[WamTerm],       // REG_ARRAY_SIZE slots; index via reg_to_int
   var envStack:  List[EnvFrame],       // environment frames (Y-registers)
-  var choicePoints: List[ChoicePoint],
+  // ArrayBuffer (LIFO; last = top) instead of List for O(1) push/pop
+  // with no per-op cons-cell allocation. The ChoicePoint instances
+  // themselves are still the same; only the container changed.
+  var choicePoints: mutable.ArrayBuffer[ChoicePoint],
   var trail:     List[TrailEntry],
   var callStack: List[Int],
   var unifyQueue: List[WamTerm],
@@ -282,7 +285,7 @@ object WamRuntime {
     new WamState(
       regs       = regs,
       envStack   = Nil,
-      choicePoints = Nil,
+      choicePoints = mutable.ArrayBuffer.empty[ChoicePoint],
       trail      = Nil,
       callStack  = Nil,
       unifyQueue = Nil,
@@ -340,16 +343,25 @@ object WamRuntime {
     s.trail = s.trail.drop(toUndo.length)
   }
 
+  /** Unification. Recursive on Struct args (JIT-friendly for typical
+   *  shallow terms) but uses an explicit while loop instead of
+   *  args1.zip(args2).forall(...) so the per-Struct case doesn't
+   *  allocate a Tuple2 array. */
   def unify(s: WamState, a: WamTerm, b: WamTerm): Boolean = {
     val da = deref(s.bindings, a)
     val db = deref(s.bindings, b)
+    if (da == db) return true
     (da, db) match {
-      case _ if da == db => true
       case (r @ Ref(_), _) => bindVar(s, r, db); true
       case (_, r @ Ref(_)) => bindVar(s, r, da); true
-      case (Struct(f1, a1, args1), Struct(f2, a2, args2))
-          if f1 == f2 && a1 == a2 =>
-        args1.zip(args2).forall { case (x, y) => unify(s, x, y) }
+      case (Struct(f1, ar1, args1), Struct(f2, ar2, args2))
+          if f1 == f2 && ar1 == ar2 =>
+        var i = 0
+        while (i < ar1) {
+          if (!unify(s, args1(i), args2(i))) return false
+          i += 1
+        }
+        true
       case _ => false
     }
   }
@@ -377,13 +389,25 @@ object WamRuntime {
       nextVarId = s.nextVarId,
       kind      = WamCP
     )
-    s.choicePoints = cp :: s.choicePoints
+    s.choicePoints += cp
   }
 
-  def backtrack(s: WamState): Unit = s.choicePoints match {
-    case Nil =>
+  /** Remove and return the top CP (last element). */
+  private def popCP(s: WamState): ChoicePoint = {
+    val i = s.choicePoints.length - 1
+    val cp = s.choicePoints(i)
+    s.choicePoints.remove(i)
+    cp
+  }
+
+  def backtrack(s: WamState): Unit = {
+    if (s.choicePoints.isEmpty) {
       s.status = Failed
-    case cp :: rest =>
+    } else {
+      val cp = s.choicePoints.last
+      // Restore the saved snapshot. The CP itself is left on the stack
+      // for ForeignCP(non-empty) / AggregateCP cases that mutate it in
+      // place; the WamCP / ForeignCP(Nil) paths pop it below.
       unwindTrail(s, cp.trailLen)
       System.arraycopy(cp.regs, 0, s.regs, 0, REG_ARRAY_SIZE)
       s.envStack   = cp.envStack
@@ -396,13 +420,17 @@ object WamRuntime {
       s.status     = Running
       cp.kind match {
         case ForeignCP(Nil) =>
-          s.choicePoints = rest
+          popCP(s)
           backtrack(s)
         case ForeignCP(sol +: remaining) =>
-          s.choicePoints = cp.copy(kind = ForeignCP(remaining)) :: rest
+          // Replace the top CP's kind in place with the remaining
+          // solutions. ArrayBuffer doesn't have a copy-on-update like
+          // List did; we mutate the slot directly.
+          s.choicePoints(s.choicePoints.length - 1) =
+            cp.copy(kind = ForeignCP(remaining))
           if (!applyBindings(s, sol)) backtrack(s)
         case WamCP =>
-          s.choicePoints = rest
+          popCP(s)
         case AggregateCP(resumePc, _, bagReg, results, consId, emptyId) =>
           // No more body solutions — finalize. Restore was already done
           // above; build the bag and unify with bagReg, then continue
@@ -412,7 +440,7 @@ object WamRuntime {
           // instruction; that case is degenerate (empty bag with no
           // EndAggregate ever reached) so we use cp.pc as a safe stop
           // — see comment below.
-          s.choicePoints = rest
+          popCP(s)
           val bagList = results.foldLeft[WamTerm](Atom(emptyId)) { (tl, hd) =>
             Struct(consId, 2, Array(hd, tl))
           }
@@ -426,6 +454,7 @@ object WamRuntime {
           // first cut — the WAM compiler always emits matching pairs.
           if (!unify(s, s.regs(bagReg), bagList)) backtrack(s)
       }
+    }
   }
 
   /** Recursively dereferences a term, replacing every Ref-on-Ref chain
@@ -569,7 +598,7 @@ object WamRuntime {
                 nextVarId = s.nextVarId,
                 kind      = ForeignCP(rest)
               )
-              s.choicePoints = cp :: s.choicePoints
+              s.choicePoints += cp
             }
             if (applyBindings(s, sol)) s.pc = resumePc else backtrack(s)
         }
@@ -895,7 +924,10 @@ object WamRuntime {
         case "fail/0" =>
           backtrack(s)
         case "!/0" =>
-          s.choicePoints = s.choicePoints.drop(s.choicePoints.length - s.cutBar)
+          // Trim back to cutBar (drop CPs above the cut frontier).
+          // ArrayBuffer.remove(idx, count) removes a contiguous range.
+          val len = s.choicePoints.length
+          if (len > s.cutBar) s.choicePoints.remove(s.cutBar, len - s.cutBar)
           s.pc += 1
 
         // Arithmetic: A1 is target (assignment) or left operand (comparison),
@@ -947,7 +979,7 @@ object WamRuntime {
                   nextVarId = s.nextVarId,
                   kind      = ForeignCP(rest)
                 )
-                s.choicePoints = cp :: s.choicePoints
+                s.choicePoints += cp
               }
               if (applyBindings(s, sols.head)) s.pc = resumePc
               else backtrack(s)
@@ -1042,7 +1074,7 @@ object WamRuntime {
                         nextVarId = s.nextVarId,
                         kind      = ForeignCP(rest)
                       )
-                      s.choicePoints = cp :: s.choicePoints
+                      s.choicePoints += cp
                     }
                     if (applyBindings(s, splits.head)) s.pc = resumePc
                     else backtrack(s)
@@ -1063,7 +1095,7 @@ object WamRuntime {
 
       case CutIte =>
         if (s.choicePoints.nonEmpty)
-          s.choicePoints = s.choicePoints.tail
+          s.choicePoints.remove(s.choicePoints.length - 1)
         s.pc += 1
 
       // --- Aggregation (findall/3) ---
@@ -1093,7 +1125,7 @@ object WamRuntime {
             emptyId     = program.internTable.stringToId.getOrElse("[]", 2)
           )
         )
-        s.choicePoints = cp :: s.choicePoints
+        s.choicePoints += cp
         s.pc += 1
 
       case EndAggregate(templateReg) =>
@@ -1103,12 +1135,15 @@ object WamRuntime {
         // eventually reaches the AggregateCP itself (no more solutions
         // above it), it finalizes and resumes after this EndAggregate.
         val captured = deepDeref(s, s.regs(templateReg))
-        s.choicePoints = s.choicePoints.map { cp =>
-          cp.kind match {
+        var i = 0
+        while (i < s.choicePoints.length) {
+          s.choicePoints(i).kind match {
             case agg: AggregateCP if agg.templateReg == templateReg =>
-              cp.copy(kind = agg.copy(results = captured :: agg.results))
-            case _ => cp
+              s.choicePoints(i) = s.choicePoints(i).copy(
+                kind = agg.copy(results = captured :: agg.results))
+            case _ =>
           }
+          i += 1
         }
         backtrack(s)
 
@@ -1539,7 +1574,7 @@ object WamRuntime {
                     nextVarId = s.nextVarId,
                     kind      = ForeignCP(rest)
                   )
-                  s.choicePoints = cp :: s.choicePoints
+                  s.choicePoints += cp
                 }
                 if (applyBindings(s, sol)) {
                   if (withReturn) s.pc = resumePc else builtinAdvance(s, withReturn)
@@ -1706,7 +1741,8 @@ object WamRuntime {
     program.dispatch.get(key) match {
       case None => Some(Seq.empty)   // unknown predicate → no solutions
       case Some(startPc) =>
-        // Snapshot outer state.
+        // Snapshot outer state. The choicePoints buffer is swapped out
+        // for a fresh empty buffer (O(1)) and restored by reassignment.
         val savedPc        = s.pc
         val savedCallStack = s.callStack
         val savedTrailLen  = s.trail.length
@@ -1724,7 +1760,7 @@ object WamRuntime {
         java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
         args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
         s.callStack    = Nil
-        s.choicePoints = Nil
+        s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
         s.envStack     = Nil
         s.unifyQueue   = Nil
         s.buildStack   = Nil
@@ -1843,7 +1879,7 @@ object WamRuntime {
         java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
         args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
         s.callStack    = Nil
-        s.choicePoints = Nil
+        s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
         s.envStack     = Nil
         s.unifyQueue   = Nil
         s.buildStack   = Nil
