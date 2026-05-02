@@ -87,6 +87,11 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Scala effective-distance runner with seeded helpers and kernels enabled",
     ),
+    "scala-wam-seeded-artifact": TargetInfo(
+        "scala-wam-seeded-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers, kernels enabled, and file-backed artifact data",
+    ),
     "scala-wam-seeded-no-kernels": TargetInfo(
         "scala-wam-seeded-no-kernels",
         "hybrid-wam",
@@ -96,6 +101,11 @@ TARGETS: dict[str, TargetInfo] = {
         "scala-wam-accumulated",
         "hybrid-wam",
         "Hybrid WAM Scala effective-distance runner with optimized accumulated helpers and kernels enabled",
+    ),
+    "scala-wam-accumulated-artifact": TargetInfo(
+        "scala-wam-accumulated-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with optimized accumulated helpers, kernels enabled, and file-backed artifact data",
     ),
     "scala-wam-accumulated-no-kernels": TargetInfo(
         "scala-wam-accumulated-no-kernels",
@@ -299,6 +309,12 @@ TARGET_SETS: dict[str, list[str]] = {
         "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
+    ],
+    "scala-wam-artifact": [
+        "scala-wam-seeded",
+        "scala-wam-seeded-artifact",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-artifact",
     ],
     "clojure-wam": [
         "clojure-wam-accumulated",

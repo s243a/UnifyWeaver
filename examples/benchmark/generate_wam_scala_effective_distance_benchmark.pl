@@ -1,6 +1,9 @@
 :- module(generate_wam_scala_effective_distance_benchmark,
           [ main/0,
             generate/4,
+            generate/5,
+            parse_benchmark_data_mode/2,
+            benchmark_effective_data_mode/3,
             collect_wam_predicates/2,
             scala_effective_distance_runner_code/2
           ]).
@@ -19,7 +22,7 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_scala_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off]
+%%       <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|auto]
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -30,21 +33,25 @@ main :-
     current_prolog_flag(argv, Argv),
     (   Argv == []
     ->  true
-    ;   Argv = [FactsPath, OutputDir, VariantAtom, KernelModeAtom]
+    ;   Argv = [FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom]
     ->  true
+    ;   Argv = [FactsPath, OutputDir, VariantAtom, KernelModeAtom]
+    ->  DataModeAtom = auto
     ;   Argv = [FactsPath, OutputDir, VariantAtom]
-    ->  KernelModeAtom = kernels_on
+    ->  KernelModeAtom = kernels_on,
+        DataModeAtom = auto
     ;   Argv = [FactsPath, OutputDir]
     ->  VariantAtom = accumulated,
-        KernelModeAtom = kernels_on
+        KernelModeAtom = kernels_on,
+        DataModeAtom = auto
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off]~n',
+            'Usage: ... -- <facts.pl> <output-dir> [accumulated|seeded] [kernels_on|kernels_off] [sidecar|inline|artifact|auto]~n',
             []),
         halt(1)
     ),
     (   Argv == []
     ->  true
-    ;   generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom),
+    ;   generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom),
         halt(0)
     ).
 
@@ -53,6 +60,9 @@ main :-
     halt(1).
 
 generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
+    generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, auto).
+
+generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
     must_exist_file(FactsPath),
     benchmark_workload_path(WorkloadPath),
     reset_benchmark_predicates,
@@ -66,12 +76,13 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     maybe_load_optimized_predicates(VariantAtom, ScriptCode),
     maybe_assert_seeded_helper(VariantAtom),
     collect_wam_predicates(KernelModeAtom, Predicates),
-    scala_options(OutputDir, KernelModeAtom, Options),
+    parse_benchmark_data_mode(DataModeAtom, DataMode),
+    scala_options(OutputDir, KernelModeAtom, DataMode, Options),
     write_wam_scala_project(Predicates, Options, OutputDir),
     append_effective_distance_runner(OutputDir),
     format(user_error,
-           '[WAM-Scala-EffectiveDistance] facts=~w variant=~w kernels=~w output=~w~n',
-           [FactsPath, VariantAtom, KernelModeAtom, OutputDir]).
+           '[WAM-Scala-EffectiveDistance] facts=~w variant=~w kernels=~w data_mode=~w output=~w~n',
+           [FactsPath, VariantAtom, KernelModeAtom, DataMode, OutputDir]).
 
 reset_benchmark_predicates :-
     forall(member(Name/Arity,
@@ -107,18 +118,72 @@ parse_variant(accumulated, [
     seeded_accumulation(auto)
 ]).
 
-scala_options(OutputDir, kernels_on, Options) :-
-    category_parent_csv_path(OutputDir, CsvPath),
-    write_category_parent_csv(CsvPath),
+parse_benchmark_data_mode(sidecar, sidecar).
+parse_benchmark_data_mode(inline, inline).
+parse_benchmark_data_mode(artifact, artifact).
+parse_benchmark_data_mode(auto, Mode) :-
+    (   benchmark_declared_data_mode(DeclaredMode),
+        DeclaredMode \== auto
+    ->  parse_benchmark_data_mode(DeclaredMode, Mode)
+    ;   benchmark_fact_volume(RowCount),
+        (   RowCount >= 128
+        ->  Mode = sidecar
+        ;   Mode = inline
+        )
+    ).
+
+benchmark_declared_data_mode(Mode) :-
+    member(Name,
+           [ wam_scala_benchmark_data_mode,
+             benchmark_data_mode
+           ]),
+    current_predicate(user:Name/1),
+    Goal =.. [Name, DeclaredMode],
+    once(call(user:Goal)),
+    memberchk(DeclaredMode, [auto, sidecar, inline, artifact]),
+    Mode = DeclaredMode.
+
+benchmark_relation_declared_data_mode(Relation, Mode) :-
+    member(Name,
+           [ wam_scala_benchmark_relation_data_mode,
+             benchmark_relation_data_mode
+           ]),
+    current_predicate(user:Name/2),
+    Goal =.. [Name, Relation, DeclaredMode],
+    once(call(user:Goal)),
+    memberchk(DeclaredMode, [auto, sidecar, inline, artifact]),
+    Mode = DeclaredMode.
+
+benchmark_effective_data_mode(Relation, DataMode, RelationMode) :-
+    (   benchmark_relation_declared_data_mode(Relation, DeclaredMode),
+        DeclaredMode \== auto
+    ->  parse_benchmark_data_mode(DeclaredMode, RelationMode)
+    ;   RelationMode = DataMode
+    ).
+
+benchmark_fact_volume(RowCount) :-
+    benchmark_fact_count(user:category_parent/2, ParentCount),
+    benchmark_fact_count(user:article_category/2, ArticleCount),
+    benchmark_fact_count(user:root_category/1, RootCount),
+    RowCount is ParentCount + ArticleCount + RootCount.
+
+benchmark_fact_count(Module:Name/Arity, Count) :-
+    functor(Goal, Name, Arity),
+    findall(Goal, Module:Goal, Goals),
+    length(Goals, Count).
+
+scala_options(OutputDir, kernels_on, DataMode, Options) :-
+    benchmark_effective_data_mode(category_parent, DataMode, ParentMode),
     benchmark_atoms(Atoms),
+    scala_fact_source_for_category_parent(OutputDir, ParentMode, FactSource),
     Options = [
         package('generated.wam_scala_effective_distance.core'),
         runtime_package('generated.wam_scala_effective_distance.core'),
         module_name('wam-scala-effective-distance'),
         intern_atoms(Atoms),
-        scala_fact_sources([source(category_parent/2, file(CsvPath))])
+        scala_fact_sources([FactSource])
     ].
-scala_options(_OutputDir, kernels_off, Options) :-
+scala_options(_OutputDir, kernels_off, _DataMode, Options) :-
     benchmark_atoms(Atoms),
     Options = [
         package('generated.wam_scala_effective_distance.core'),
@@ -126,6 +191,16 @@ scala_options(_OutputDir, kernels_off, Options) :-
         module_name('wam-scala-effective-distance'),
         intern_atoms(Atoms)
     ].
+
+scala_fact_source_for_category_parent(_OutputDir, inline, source(category_parent/2, Tuples)) :-
+    findall([Child, Parent], current_category_parent_fact(Child, Parent), Tuples0),
+    sort(Tuples0, Tuples).
+scala_fact_source_for_category_parent(OutputDir, sidecar, source(category_parent/2, file(CsvPath))) :-
+    category_parent_csv_path(OutputDir, sidecar, CsvPath),
+    write_category_parent_csv(CsvPath).
+scala_fact_source_for_category_parent(OutputDir, artifact, source(category_parent/2, file(CsvPath))) :-
+    category_parent_csv_path(OutputDir, artifact, CsvPath),
+    write_category_parent_csv(CsvPath).
 
 collect_wam_predicates(kernels_on, [
     user:dimension_n/1,
@@ -139,10 +214,14 @@ collect_wam_predicates(kernels_off, [
     user:category_ancestor/4
 ]).
 
-category_parent_csv_path(OutputDir, CsvPath) :-
+category_parent_csv_path(OutputDir, sidecar, CsvPath) :-
     directory_file_path(OutputDir, 'data', DataDir),
     make_directory_path(DataDir),
     directory_file_path(DataDir, 'category_parent.csv', CsvPath).
+category_parent_csv_path(OutputDir, artifact, CsvPath) :-
+    directory_file_path(OutputDir, 'data', DataDir),
+    make_directory_path(DataDir),
+    directory_file_path(DataDir, 'category_parent_artifact.csv', CsvPath).
 
 write_category_parent_csv(CsvPath) :-
     findall(Child-Parent, current_category_parent_fact(Child, Parent), Pairs0),

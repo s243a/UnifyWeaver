@@ -132,8 +132,10 @@ def available_targets(requested: list[str]) -> list[str]:
     }
     scala_matrix_targets = {
         "scala-wam-seeded",
+        "scala-wam-seeded-artifact",
         "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
+        "scala-wam-accumulated-artifact",
         "scala-wam-accumulated-no-kernels",
     }
     for target in requested:

@@ -257,9 +257,11 @@ def scala_sources(project_dir: Path) -> list[str]:
     return sorted(str(path) for path in (project_dir / "src" / "main" / "scala").rglob("*.scala"))
 
 
-def build_wam_scala_effective_distance(root: Path, scale: str, variant: str, kernel_mode: str) -> list[str]:
+def build_wam_scala_effective_distance(
+    root: Path, scale: str, variant: str, kernel_mode: str, data_mode: str = "auto"
+) -> list[str]:
     facts_path = require_file(BENCH_DIR / scale / "facts.pl")
-    project_dir = root / f"wam_scala_{variant}_{kernel_mode}" / scale
+    project_dir = root / f"wam_scala_{variant}_{kernel_mode}_{data_mode}" / scale
     project_dir.mkdir(parents=True, exist_ok=True)
     run_command(
         [
@@ -272,6 +274,7 @@ def build_wam_scala_effective_distance(root: Path, scale: str, variant: str, ker
             str(project_dir),
             variant,
             kernel_mode,
+            data_mode,
         ],
         cwd=ROOT,
     )
@@ -823,10 +826,18 @@ def main() -> int:
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
                 elif target == "scala-wam-seeded":
                     command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_on")
+                elif target == "scala-wam-seeded-artifact":
+                    command = build_wam_scala_effective_distance(
+                        temp_root, scale, "seeded", "kernels_on", "artifact"
+                    )
                 elif target == "scala-wam-seeded-no-kernels":
                     command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_off")
                 elif target == "scala-wam-accumulated":
                     command = build_wam_scala_effective_distance(temp_root, scale, "accumulated", "kernels_on")
+                elif target == "scala-wam-accumulated-artifact":
+                    command = build_wam_scala_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_on", "artifact"
+                    )
                 elif target == "scala-wam-accumulated-no-kernels":
                     command = build_wam_scala_effective_distance(temp_root, scale, "accumulated", "kernels_off")
                 elif target == "clojure-wam-accumulated":
