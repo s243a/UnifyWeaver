@@ -150,6 +150,31 @@ test(env_framed_equality_reaches_direct_builtin_prefix) :-
         has(Code, "runtime/succeed-state")
     )).
 
+test(execute_stays_runtime_mediated_after_lowered_prefix) :-
+    once((
+        WamCode = "test_exec/1:\nallocate\ndeallocate\nexecute test_fact/1\n",
+        wam_clojure_lowerable(test_exec/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_exec/1, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "update :env-stack #(if (seq %) (pop %) %)"),
+        assertion(\+ has(Code, "execute test_fact/1")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(call_stays_runtime_mediated_after_lowered_prefix) :-
+    once((
+        WamCode = "test_call/1:\nallocate\nget_variable Y1, A1\nput_value Y1, A1\ncall test_fact/1, 1\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_call/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_call/1, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "get-variable Y1, A1"),
+        has(Code, "put-value Y1, A1"),
+        assertion(\+ has(Code, "call test_fact/1")),
+        assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
