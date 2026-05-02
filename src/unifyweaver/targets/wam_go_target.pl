@@ -720,12 +720,24 @@ go_supported_shared_kernel(recursive_kernel(transitive_closure2, _, _)).
 go_supported_shared_kernel(recursive_kernel(transitive_distance3, _, _)).
 go_supported_shared_kernel(recursive_kernel(transitive_parent_distance4, _, _)).
 go_supported_shared_kernel(recursive_kernel(transitive_step_parent_distance5, _, _)).
+go_supported_shared_kernel(recursive_kernel(category_ancestor, _, _)).
 go_recursive_kernel_with_facts(Module,
         recursive_kernel(KernelKind, PredIndicator, KernelConfig0),
         recursive_kernel(KernelKind, PredIndicator,
             [edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
     member(KernelKind, [transitive_closure2, transitive_distance3,
         transitive_parent_distance4, transitive_step_parent_distance5]),
+    member(edge_pred(EdgePred/2), KernelConfig0),
+    go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs),
+    FactPairs \= [].
+% category_ancestor carries a max_depth bound in addition to the
+% edge predicate; preserve it so the runtime can stop the recursion
+% at the user-specified depth.
+go_recursive_kernel_with_facts(Module,
+        recursive_kernel(category_ancestor, PredIndicator, KernelConfig0),
+        recursive_kernel(category_ancestor, PredIndicator,
+            [max_depth(MaxDepth), edge_pred(EdgePred/2), fact_pairs(FactPairs)])) :-
+    member(max_depth(MaxDepth), KernelConfig0),
     member(edge_pred(EdgePred/2), KernelConfig0),
     go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs),
     FactPairs \= [].
@@ -752,6 +764,15 @@ go_recursive_kernel_metadata(KernelKind, KernelConfig, NativeKind, ResultLayout,
 
 go_recursive_kernel_config_ops(_PredIndicator, [], []).
 go_recursive_kernel_config_ops(PredIndicator, [edge_pred(EdgePred/2), fact_pairs(FactPairs)], [
+        register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
+        register_indexed_atom_fact2(EdgePred/2, FactPairs)
+    ]).
+% category_ancestor's depth-bounded edge walk needs both the edge-
+% pred adjacency and the user-specified max_depth so the runtime can
+% match the WAM-bytecode semantics exactly.
+go_recursive_kernel_config_ops(PredIndicator,
+        [max_depth(MaxDepth), edge_pred(EdgePred/2), fact_pairs(FactPairs)], [
+        register_foreign_usize_config(PredIndicator, max_depth, MaxDepth),
         register_foreign_string_config(PredIndicator, edge_pred, EdgePred/2),
         register_indexed_atom_fact2(EdgePred/2, FactPairs)
     ]).
@@ -2568,6 +2589,84 @@ func (vm *WamState) collectNativeAstarShortestPathResult(source string, target s
     return nil
 }
 
+// listAsAtomStrings walks a Prolog cons-list and pulls each element
+// out as an atom string. Uses vm.listToSlice rather than listAsSlice
+// because the latter returns the 2-element [head, tail] cons cell,
+// not the full flattened list — `category_ancestor`''s visited list
+// can be many cells deep, and reading just the first cons would
+// silently truncate it (causing the kernel to walk paths through
+// already-visited nodes and produce wrong hop counts).
+func listAsAtomStrings(vm *WamState, v Value) ([]string, bool) {
+    items, ok := vm.listToSlice(v)
+    if !ok {
+        return nil, false
+    }
+    out := make([]string, 0, len(items))
+    for _, item := range items {
+        s, ok := valueAsAtomString(vm, item)
+        if !ok {
+            return nil, false
+        }
+        out = append(out, s)
+    }
+    return out, true
+}
+
+// collectNativeCategoryAncestorHops walks the parent edges of `cat`
+// looking for `root`, emitting one hop count per matching path. Mirrors
+// the Rust implementation at wam_rust_target.pl:1797 — same DFS, same
+// max-depth semantics, same visited-set skip. The adjacency map is
+// built once at the top level and threaded into the recursive helper
+// to avoid rebuilding it per call.
+func (vm *WamState) collectNativeCategoryAncestorHops(cat string, root string, visited []string, maxDepth int, pairs []AtomPair) []int64 {
+    adjacency := atomAdjacency(pairs)
+    var out []int64
+    vm.collectNativeCategoryAncestorHopsRec(cat, root, visited, maxDepth, adjacency, &out)
+    return out
+}
+
+func (vm *WamState) collectNativeCategoryAncestorHopsRec(cat string, root string, visited []string, maxDepth int, adjacency map[string][]string, out *[]int64) {
+    rootSeen := false
+    for _, v := range visited {
+        if v == root {
+            rootSeen = true
+            break
+        }
+    }
+    parents := adjacency[cat]
+    if !rootSeen {
+        for _, p := range parents {
+            if p == root {
+                *out = append(*out, 1)
+                break
+            }
+        }
+    }
+    if len(visited) >= maxDepth {
+        return
+    }
+    for _, parent := range parents {
+        skip := false
+        for _, v := range visited {
+            if v == parent {
+                skip = true
+                break
+            }
+        }
+        if skip {
+            continue
+        }
+        nextVisited := make([]string, 0, len(visited)+1)
+        nextVisited = append(nextVisited, parent)
+        nextVisited = append(nextVisited, visited...)
+        before := len(*out)
+        vm.collectNativeCategoryAncestorHopsRec(parent, root, nextVisited, maxDepth, adjacency, out)
+        for i := before; i < len(*out); i++ {
+            (*out)[i] += 1
+        }
+    }
+}
+
 func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
     predKey := fmt.Sprintf("%s/%d", pred, arity)
     nativeKind, ok := vm.Ctx.ForeignNativeKinds[predKey]
@@ -2638,6 +2737,38 @@ func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
         pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
         results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
         return vm.finishForeignResults(predKey, []int{1, 2, 3, 4}, results)
+    case "category_ancestor":
+        // category_ancestor(Cat, Root, Hops, Visited) — output is Hops
+        // (A3, reg index 2). Cat=A1, Root=A2, Visited=A4. The WAM
+        // semantics: walk parents of Cat up to max_depth hops; emit one
+        // integer hop count per path that reaches Root, skipping any
+        // node already in Visited. See
+        // src/unifyweaver/core/recursive_kernel_detection.pl:135 for the
+        // canonical register layout and call spec.
+        cat, ok := valueAsAtomString(vm, vm.getReg(0))
+        if !ok {
+            return false
+        }
+        root, ok := valueAsAtomString(vm, vm.getReg(1))
+        if !ok {
+            return false
+        }
+        visited, ok := listAsAtomStrings(vm, vm.getReg(3))
+        if !ok {
+            return false
+        }
+        maxDepth := vm.foreignUsizeConfig(predKey, "max_depth")
+        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
+        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
+        hops := vm.collectNativeCategoryAncestorHops(cat, root, visited, maxDepth, pairs)
+        if len(hops) == 0 {
+            return false
+        }
+        results := make([]Value, len(hops))
+        for i, h := range hops {
+            results[i] = &Integer{Val: h}
+        }
+        return vm.finishForeignResults(predKey, []int{2}, results)
     case "weighted_shortest_path3":
         source, ok := valueAsAtomString(vm, vm.getReg(0))
         if !ok {

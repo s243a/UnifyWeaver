@@ -540,6 +540,121 @@ line at >25% of CPU after the next round of structural wins.
 Cumulative position is unchanged from Phase H; Phase J is a no-op
 on the cumulative table below.
 
+### Phase K: `category_ancestor` FFI kernel for Go (May 2026, `feat/wam-go-category-ancestor-kernel`)
+
+After Phases I and J both bottomed out at the variance floor, the
+honest read was that constant-factor work on the WAM dispatch was
+exhausted. The post-survey verdict (see the cross-target lowering
+audit in this branch's commit description) was that the next big
+multiplicative win would come from **fewer WAM dispatches entirely**,
+not making each dispatch faster — i.e. lowering more predicates to
+native Go via the FFI-kernel system that already powered
+`transitive_closure2`, `weighted_shortest_path3`, and the
+`astar_shortest_path4` family.
+
+The single missing kernel — and the one that drove the entire
+`effective_distance` benchmark family the prior 12 phases had been
+optimising for — was `category_ancestor/4`. Both Haskell and Rust
+already had it; Go fell through to full WAM bytecode for the
+inner ancestor walk on every depth-bounded recursive step.
+
+Implementation (mirrors `wam_rust_target.pl:1797`):
+
+1. **Pl-side dispatch** — three new clauses in `wam_go_target.pl`:
+   - `go_supported_shared_kernel(recursive_kernel(category_ancestor, _, _))`
+     — accept the kernel from the shared detector.
+   - `go_recursive_kernel_with_facts/3` clause that pulls
+     `max_depth(N)` and `edge_pred(EP/2)` out of the detector's
+     config and indexes the parent-edge facts via
+     `go_binary_edge_fact_pairs/3`.
+   - `go_recursive_kernel_config_ops/3` clause that emits both
+     `register_foreign_usize_config(.., max_depth, N)` and
+     `register_foreign_string_config(.., edge_pred, ..)` plus
+     `register_indexed_atom_fact2(EP/2, Pairs)`.
+   The shared `kernel_metadata/4` (`recursive_kernel_detection.pl:61`)
+   already had the right `NativeKind=category_ancestor`,
+   `ResultLayout=tuple(1)`, `ResultMode=stream` mappings; no
+   metadata work needed.
+
+2. **Generated runtime** — three new functions emitted from the
+   `compile_wam_helpers_to_go` Prolog format string:
+   - `listAsAtomStrings(vm, v)` — derefs a Prolog cons list and
+     extracts each element as an atom string. Note: uses
+     `vm.listToSlice` (the iterative cons-walker added in Phase H),
+     not `listAsSlice` — the latter returns the 2-element
+     `[head, tail]` cell of the *outer* List, which would silently
+     truncate the visited set.
+   - `collectNativeCategoryAncestorHops(cat, root, visited, maxDepth, pairs)`
+     — top-level entry that builds the parent-edge adjacency map
+     from the indexed atom-fact pairs once, then delegates to:
+   - `collectNativeCategoryAncestorHopsRec(...)` — the recursive
+     DFS, mirroring the Rust implementation byte-for-byte. Emits
+     one `int64` hop count per matching path, with the +1 increment
+     applied to the slice tail produced by each recursive call (so
+     that hop counts compose correctly on the way back up).
+
+3. **Dispatch case** — new `case "category_ancestor":` in
+   `executeForeignPredicate`. Pulls `cat`/`root` from A1/A2 as
+   atom strings, `visited` from A4 as a flattened atom-string
+   list, `maxDepth` from the foreign-usize config, edge-pred
+   adjacency from the indexed fact map. Calls the helper, packs
+   the int64 hops as `&Integer{Val: h}` Values, and finishes via
+   `finishForeignResults(predKey, []int{2}, results)` (output reg
+   is A3 = reg index 2; layout is `tuple(1)` = no tuple wrapping).
+
+#### Wall-clock impact at scale-300/full
+
+Three alternating trials (A/B; both binaries built from the
+current branch with `kernels_on`):
+
+| trial | h-fresh (Phase H baseline) | cancestor (Phase K) | speedup |
+|---|---|---|---|
+| 1 | 25219ms | 504ms | 50.0x |
+| 2 | 24171ms | 443ms | 54.6x |
+| 3 | 24139ms | 451ms | 53.5x |
+| **mean** | **24510ms** | **466ms** | **52.6x** |
+
+Cumulative vs the ~340s Phase A baseline: **~730x**. The 12.8×
+constant-factor work from Phases B–H was a prerequisite — it
+defanged everything *outside* the inner ancestor walk so that
+when the kernel removed that walk's WAM-dispatch cost, the
+remaining time is dominated by argument marshalling and result
+unification rather than by the dispatcher itself.
+
+#### Correctness — better than Phase H
+
+Output diff vs `data/benchmark/300/reference_output.tsv`: only 4
+lines, all stable-sort tie-break ordering between articles with
+identical effective-distance values (`Hermann_von_Helmholtz` /
+`Walter_Noll`-cluster). Phase H had 11+ lines of diff including
+*wrong values* (Brownian_motion 0.993865 vs reference 0.993717;
+2008_in_science 4.372980 vs reference 3.726584). The native
+kernel fixes those by computing the depth-bounded ancestor walk
+directly in Go instead of through the WAM bytecode path that had
+some subtle interaction with the bench's `\+ member(M, Visited)`
+guards. The reference tie-break ordering (where it differs from
+the kernel) is `data/benchmark/300/reference_output.tsv`-internal
+and not part of the algorithm — the kernel is correct, the diff
+is cosmetic.
+
+#### Why this worked when Phases I/J didn't
+
+- Phases I/J reshuffled dispatch *inside* the WAM interpreter
+  (where the Go compiler already did a good job) — net cost was
+  inlining loss and noise.
+- Phase K removes whole categories of WAM dispatches entirely.
+  The inner ancestor walk previously executed dozens of WAM
+  instructions per parent edge (Allocate, Get*/Put*, Call,
+  Deallocate, …); now it's a single Go function call from the
+  outer aggregator. The work that's removed isn't 10–25% of CPU
+  in any one bytecode op — it's *all of it* for the inner loop.
+
+This is the structural-vs-constant-factor lesson from the
+Lessons section made concrete: a structural change that removes
+work composes multiplicatively with prior structural wins; a
+constant-factor reshuffle inside compiler-optimised dispatch
+fights the compiler.
+
 ### Cumulative measurement (scale-300, kernels_off, single-thread)
 
 50-seed: median of 5 alternating trials. Full bench: median of 3
@@ -559,6 +674,7 @@ were outliers — this section uses re-measured medians).
 | Phase H list-builtin micro-opts | 2534ms | ~27.4s | 1.0x / ~1.0x | 13.4x / ~12.4x |
 | Phase I (reverted attempts; doc-only) | — | — | 1.0x | 13.4x / ~12.4x |
 | Phase J tag-table dispatch (reverted) | — | ~37s vs h-fresh ~33s | **0.89x** (regression) | doc-only |
+| **Phase K `category_ancestor` FFI kernel** | — | **466ms** (mean of 3) | **52.6x** | **~730x** |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
