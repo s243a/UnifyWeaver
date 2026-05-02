@@ -107,12 +107,49 @@ reg_to_int(Reg, Int) :-
 %  Converts one WAM assembly text line to a Scala Instruction constructor call.
 %  Returns false for label lines and blank lines.
 wam_line_to_scala_literal(Line, Literal) :-
-    split_string(Line, " \t", " \t,", Parts0),
-    exclude(=(""), Parts0, Parts),
+    tokenize_wam_line(Line, Parts),
     Parts \= [],
     Parts = [First|_],
     \+ sub_string(First, _, 1, 0, ":"),
     wam_parts_to_scala(Parts, Literal).
+
+%% tokenize_wam_line(+Line, -Tokens)
+%  Splits Line on whitespace and commas. Single-quoted segments are
+%  treated as opaque tokens — internal spaces are preserved and the
+%  surrounding quotes are stripped. Required for things like the
+%  format/2 string `'~a is ~w!'` which the simpler `split_string` path
+%  would shred into multiple tokens.
+tokenize_wam_line(Line, Tokens) :-
+    string_chars(Line, Chars),
+    tokenize_wam_chars(Chars, [], [], outside, Tokens).
+
+% tokenize_wam_chars(+Chars, +CurReversed, +TokensReversedAcc, +State, -Tokens)
+tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
+    reverse(Acc, Tokens).
+tokenize_wam_chars([], CurR, Acc, _, Tokens) :- !,
+    reverse(CurR, CurC), string_chars(T, CurC),
+    reverse([T|Acc], Tokens).
+tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
+    (   (C == ' ' ; C == '\t' ; C == ',')
+    ->  (   CurR == []
+        ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
+        ;   reverse(CurR, CurC), string_chars(T, CurC),
+            tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+        )
+    ;   C == '\''
+    ->  (   CurR == []
+        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ;   % Stray quote in the middle of an unquoted token — keep it.
+            tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
+        )
+    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
+    ).
+tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
+    (   C == '\''
+    ->  reverse(CurR, CurC), string_chars(T, CurC),
+        tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
+    ).
 
 % --- Control instructions ---
 % The WAM emitter produces both:
@@ -413,8 +450,7 @@ wam_code_to_scala_data(WamCode, Instructions, LabelMap, LabelEntries) :-
 
 wam_lines_to_data([], _, [], [], []).
 wam_lines_to_data([Line|Rest], PC, Instructions, LabelMap, LabelEntries) :-
-    split_string(Line, " \t", " \t,", Parts0),
-    exclude(=(""), Parts0, Parts),
+    tokenize_wam_line(Line, Parts),
     (   Parts = [First|_], sub_string(First, _, 1, 0, ":")
     ->  % Label line: extract name, no instruction emitted
         sub_string(First, 0, _, 1, LabelName),
@@ -657,12 +693,15 @@ fact_source_spec_to_handler_code(Arity, file(Path), Code) :-
     !,
     atom_string(Path, PathStr),
     scala_string_literal(PathStr, PathLit),
+    % The CSV is read and parsed ONCE at handler-instance init (the
+    % `private val sols`), not on every apply call. Caching this way
+    % closes most of the per-iteration gap with inline tuples.
     format(string(Code),
-           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          val sols: Seq[Map[Int, WamTerm]] = src.getLines().toList.map { line =>\n            val parts = line.split(\",\").map(_.trim)\n            parts.zipWithIndex.map { case (p, i) => (i + 1) -> parseFactArg(p) }.toMap\n          }\n          if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n        } finally { src.close() }\n      }\n    }",
+           "new ForeignHandler {\n      private val sols: Seq[Map[Int, WamTerm]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toList.map { line =>\n            val parts = line.split(\",\").map(_.trim)\n            parts.zipWithIndex.map { case (p, i) => (i + 1) -> parseFactArg(p) }.toMap\n          }\n        } finally { src.close() }\n      }\n      def apply(args: Array[WamTerm]): ForeignResult =\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n    }",
            [PathLit]),
-    % Note: Arity isn't enforced here (each line uses whatever columns are
+    % Arity isn't enforced here (each line uses whatever columns are
     % present); a malformed CSV will simply produce wrong-arity bindings
-    % that the runtime will fail to unify. Acceptable for a first cut.
+    % that the runtime will fail to unify.
     _ = Arity.
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
