@@ -76,6 +76,7 @@ elixir_available :-
 %% Test fixtures.
 
 :- dynamic user:phase4d_inner/1.
+:- dynamic user:phase4d_do_inner/0.
 :- dynamic user:phase4d_outer_p/1.
 :- dynamic user:phase4d_nested/1.
 
@@ -84,13 +85,26 @@ user:phase4d_inner(1).
 user:phase4d_inner(2).
 user:phase4d_inner(3).
 
-% Outer: 3-clause Tier-2-eligible predicate. Each clause body invokes
-% findall over phase4d_inner — that findall's compiled call routes
-% through inner's super-wrapper at runtime, where the parallel_depth
-% gate fires (depth = 1 from outer's fan-out).
-user:phase4d_outer_p('a') :- findall(_, phase4d_inner(_), _).
-user:phase4d_outer_p('b') :- findall(_, phase4d_inner(_), _).
-user:phase4d_outer_p('c') :- findall(_, phase4d_inner(_), _).
+% Indirection helper: single-clause, not Tier-2-eligible itself, but
+% its body invokes findall over phase4d_inner — which routes through
+% inner's super-wrapper at parallel_depth=1, firing the gate.
+%
+% Why the indirection? When the inner findall is placed directly in
+% an outer_p clause body, the WAM register allocator reuses argument
+% register A1 for the inner findall's anonymous template var,
+% clobbering the outer head-bound value before the outer's
+% aggregate_collect runs. Hoisting the inner findall into a
+% zero-arity helper means each outer clause's head-bound value is
+% never live in A1 at the moment the inner findall sets up its
+% template.
+user:phase4d_do_inner :- findall(_, phase4d_inner(_), _).
+
+% Outer: 3-clause Tier-2-eligible predicate. Each clause delegates
+% to phase4d_do_inner so the inner findall doesn't share registers
+% with the outer head binding.
+user:phase4d_outer_p('a') :- phase4d_do_inner.
+user:phase4d_outer_p('b') :- phase4d_do_inner.
+user:phase4d_outer_p('c') :- phase4d_do_inner.
 
 % Top-level: not Tier-2-eligible (1 clause). Its findall routes to
 % outer_p's super-wrapper with parallel_depth = 0 — outer fans out.
@@ -98,6 +112,7 @@ user:phase4d_nested(L) :- findall(X, phase4d_outer_p(X), L).
 
 phase4d_predicates([
     user:phase4d_inner/1,
+    user:phase4d_do_inner/0,
     user:phase4d_outer_p/1,
     user:phase4d_nested/1
 ]).
