@@ -56,10 +56,28 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
 
         self.assertIn("go-wam-accumulated", targets)
         self.assertIn("haskell-interp-ffi", targets)
+        self.assertIn("scala-wam-accumulated", targets)
+        self.assertIn("scala-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-accumulated", targets)
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-seeded", targets)
         self.assertIn("clojure-wam-seeded-no-kernels", targets)
+
+    def test_scala_targets_are_registered(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["scala-wam"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "scala-wam-accumulated",
+                "scala-wam-accumulated-no-kernels",
+            ],
+        )
+        self.assertEqual(TARGETS["scala-wam-accumulated"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-accumulated-no-kernels"].category, "hybrid-wam")
 
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
@@ -73,6 +91,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
             text,
         )
+        self.assertIn("scala-wam\tscala-wam-accumulated,scala-wam-accumulated-no-kernels", text)
         self.assertIn("clojure-wam-scaffold\t", text)
 
     def test_effective_distance_runner_resolves_seeded_clojure_targets(self) -> None:
@@ -97,6 +116,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ("rust", "interpreter"),
             ("rust", "lowered"),
             ("go", "accumulated"),
+            ("scala", "accumulated"),
             ("clojure", "seeded"),
             ("clojure", "accumulated"),
             ("haskell", "interpreter"),
@@ -122,6 +142,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertIn(
             "haskell\tlowered\thaskell-lowered-ffi\thaskell-lowered-only",
+            text,
+        )
+        self.assertIn(
+            "scala\taccumulated\tscala-wam-accumulated\tscala-wam-accumulated-no-kernels",
             text,
         )
 
