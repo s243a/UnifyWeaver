@@ -180,7 +180,11 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     ;   parse_wam_text(WamCode, Instrs)
     ),
     clause1_instrs(Instrs, C1Instrs0),
-    lowered_direct_prefix(C1Instrs0, C1Instrs),
+    (   is_deterministic_pred_clojure(Instrs)
+    ->  ControlLowering = allow_control
+    ;   ControlLowering = runtime_control
+    ),
+    lowered_direct_prefix(C1Instrs0, ControlLowering, C1Instrs),
     with_output_to(string(Body), emit_instrs(C1Instrs, "  ")),
     format(string(ClojureCode),
 ';; ~w — lowered from ~w/~w
@@ -208,38 +212,52 @@ emit_instr_bindings([Instr|Rest], Index, Indent) :-
            [Indent, NextIndex, InState, Expr, InState]),
     emit_instr_bindings(Rest, NextIndex, Indent).
 
-lowered_direct_prefix([], []).
-lowered_direct_prefix([Instr|Rest], [Instr|PrefixRest]) :-
-    lowered_direct_instr(Instr),
-    !,
-    lowered_direct_prefix(Rest, PrefixRest).
-lowered_direct_prefix(_, []).
+lowered_direct_prefix(Instrs, Prefix) :-
+    lowered_direct_prefix(Instrs, allow_control, Prefix).
 
-lowered_direct_instr(allocate).
-lowered_direct_instr(deallocate).
-lowered_direct_instr(proceed).
-lowered_direct_instr(fail).
-lowered_direct_instr(get_constant(_, _)).
-lowered_direct_instr(get_structure(_, _)).
-lowered_direct_instr(get_list(_)).
-lowered_direct_instr(get_integer(_, _)).
-lowered_direct_instr(get_nil(_)).
-lowered_direct_instr(unify_constant(_)).
-lowered_direct_instr(unify_variable(_)).
-lowered_direct_instr(unify_value(_)).
-lowered_direct_instr(builtin_call(Op, Arity)) :-
+lowered_direct_prefix([], _, []).
+lowered_direct_prefix([Instr|_], ControlLowering, [Instr]) :-
+    lowered_terminal_direct_instr(Instr, ControlLowering),
+    !.
+lowered_direct_prefix([Instr|Rest], ControlLowering, [Instr|PrefixRest]) :-
+    lowered_direct_instr(Instr, ControlLowering),
+    !,
+    lowered_direct_prefix(Rest, ControlLowering, PrefixRest).
+lowered_direct_prefix(_, _, []).
+
+lowered_terminal_direct_instr(execute(_), allow_control).
+lowered_terminal_direct_instr(proceed, _).
+lowered_terminal_direct_instr(fail, _).
+
+lowered_direct_instr(execute(_), allow_control).
+lowered_direct_instr(Instr, _) :-
+    lowered_data_instr(Instr).
+
+lowered_data_instr(allocate).
+lowered_data_instr(deallocate).
+lowered_data_instr(proceed).
+lowered_data_instr(fail).
+lowered_data_instr(get_constant(_, _)).
+lowered_data_instr(get_structure(_, _)).
+lowered_data_instr(get_list(_)).
+lowered_data_instr(get_integer(_, _)).
+lowered_data_instr(get_nil(_)).
+lowered_data_instr(unify_constant(_)).
+lowered_data_instr(unify_variable(_)).
+lowered_data_instr(unify_value(_)).
+lowered_data_instr(builtin_call(Op, Arity)) :-
     clojure_direct_builtin(Op, Arity).
-lowered_direct_instr(put_constant(_, _)).
-lowered_direct_instr(put_nil(_)).
-lowered_direct_instr(get_variable(_, _)).
-lowered_direct_instr(put_variable(_, _)).
-lowered_direct_instr(get_value(_, _)).
-lowered_direct_instr(put_value(_, _)).
-lowered_direct_instr(put_structure(_, _)).
-lowered_direct_instr(put_list(_)).
-lowered_direct_instr(set_constant(_)).
-lowered_direct_instr(set_variable(_)).
-lowered_direct_instr(set_value(_)).
+lowered_data_instr(put_constant(_, _)).
+lowered_data_instr(put_nil(_)).
+lowered_data_instr(get_variable(_, _)).
+lowered_data_instr(put_variable(_, _)).
+lowered_data_instr(get_value(_, _)).
+lowered_data_instr(put_value(_, _)).
+lowered_data_instr(put_structure(_, _)).
+lowered_data_instr(put_list(_)).
+lowered_data_instr(set_constant(_)).
+lowered_data_instr(set_variable(_)).
+lowered_data_instr(set_value(_)).
 
 clojure_direct_builtin("=/2", "2").
 clojure_direct_builtin("=/2", 2).
@@ -254,6 +272,11 @@ emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
     format(atom(Expr), '(runtime/fail-state ~w)', [S]).
+emit_lowered_expr(execute(Pred), S, Expr) :-
+    clj_lowered_string_literal(Pred, PredLit),
+    format(atom(Expr),
+           '(if-let [target-pc (get (:labels ~w) ~w)] (assoc ~w :pc target-pc) (runtime/backtrack ~w))',
+           [S, PredLit, S, S]).
 emit_lowered_expr(allocate, S, Expr) :-
     format(atom(Expr),
            '(-> ~w (update :env-stack conj {}) (assoc :cut-bar (count (:choice-points ~w))) runtime/advance)',
@@ -360,6 +383,14 @@ clj_lowered_literal(Value, Literal) :-
     ->  format(atom(Literal), '~w', [Value])
     ;   format(atom(Literal), '~q', [Value])
     ).
+
+clj_lowered_string_literal(Value, Literal) :-
+    (   string(Value) -> S0 = Value ; atom_string(Value, S0) ),
+    split_string(S0, "\\", "", BackslashParts),
+    atomics_to_string(BackslashParts, "\\\\", S1),
+    split_string(S1, "\"", "", QuoteParts),
+    atomics_to_string(QuoteParts, "\\\"", Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
 
 instr_comment(proceed, "proceed").
 instr_comment(fail, "fail").

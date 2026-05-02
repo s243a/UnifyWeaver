@@ -130,6 +130,7 @@ run_smoke :-
         TmpDir),
     assert_lowered_read_unify_prefix_emitted(TmpDir),
     assert_lowered_env_prefix_emitted(TmpDir),
+    assert_lowered_execute_emitted(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -203,6 +204,15 @@ assert_lowered_env_prefix_emitted(ProjectDir) :-
     has(CoreCode, "update :env-stack #(if (seq %) (pop %) %)"),
     has(CoreCode, "runtime/unify-values"),
     has(CoreCode, "runtime/succeed-state").
+
+assert_lowered_execute_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-execute-caller-1"),
+    has(CoreCode, "if-let [target-pc"),
+    has(CoreCode, "(get (:labels"),
+    has(CoreCode, "\"wam_fact/1\""),
+    has(CoreCode, ":pc target-pc").
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),
