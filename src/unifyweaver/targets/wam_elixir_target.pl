@@ -792,6 +792,31 @@ compile_utility_helpers_to_elixir(Code) :-
         v2 = eval_arith(state, get_reg(state, 2))
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         if v1 < v2, do: %{state | pc: new_pc}, else: :fail
+      {">/2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 > v2, do: %{state | pc: new_pc}, else: :fail
+      {"=</2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 <= v2, do: %{state | pc: new_pc}, else: :fail
+      {">=/2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 >= v2, do: %{state | pc: new_pc}, else: :fail
+      {"=:=/2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 == v2, do: %{state | pc: new_pc}, else: :fail
+      {"=\\\\=/2", 2} ->
+        v1 = eval_arith(state, get_reg(state, 1))
+        v2 = eval_arith(state, get_reg(state, 2))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        if v1 != v2, do: %{state | pc: new_pc}, else: :fail
       {"length/2", 2} ->
         # length walks the list. The list may be either a native Elixir
         # list (driver-supplied, e.g. ["Classical_mechanics"]) or a
