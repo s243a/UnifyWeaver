@@ -139,6 +139,17 @@ test(unsupported_builtin_stays_runtime_mediated) :-
         has(Code, "state")
     )).
 
+test(env_framed_equality_reaches_direct_builtin_prefix) :-
+    once((
+        WamCode = "test_env_eq/2:\nallocate\nput_value X1, A1\nput_value X2, A2\nbuiltin_call =/2, 2\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_env_eq/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_env_eq/2, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "update :env-stack #(if (seq %) (pop %) %)"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/succeed-state")
+    )).
+
 test(structure_build_ops_are_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
