@@ -462,7 +462,9 @@ The generator also accepts `sidecar`, `inline`, `artifact`, and `auto`
 benchmark data modes. The first matrix artifact targets are registered
 separately as `scala-wam-seeded-artifact` and
 `scala-wam-accumulated-artifact`; they currently exercise a file-backed
-category-parent artifact, not a memory-mapped or LMDB artifact backend.
+grouped `category_parent_by_child.tsv` artifact with a Scala
+child-to-parents lookup handler, not a memory-mapped or LMDB artifact
+backend.
 
 ## 13. Example Target-Level Declarations
 
