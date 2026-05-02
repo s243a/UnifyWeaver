@@ -1156,6 +1156,35 @@ test_runtime_emits_full_comparison_family :-
     ;   fail_test(Test, 'one or more comparison ops missing from execute_builtin')
     ).
 
+%% Audit follow-up (benchmarks/wam_elixir_builtin_coverage.md): the
+%  runtime now also implements =/2, \\=/2, fail/0, append/3, write/1,
+%  nl/0, format/1, format/2, and hardens the default arm to throw
+%  {:unknown_builtin, op, arity} instead of silently :fail-ing.
+test_runtime_emits_extended_builtin_set :-
+    Test = 'Runtime: execute_builtin covers =/2, \\=/2, fail/0, append/3, write/nl/format',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, '{"=/2", 2}'),
+        sub_string(S, _, _, _, '{"\\\\=/2", 2}'),
+        sub_string(S, _, _, _, '{"fail/0", 0}'),
+        sub_string(S, _, _, _, '{"append/3", 3}'),
+        sub_string(S, _, _, _, '{"write/1", 1}'),
+        sub_string(S, _, _, _, '{"nl/0", 0}'),
+        sub_string(S, _, _, _, '{"format/1", 1}'),
+        sub_string(S, _, _, _, '{"format/2", 2}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more extended builtins missing from execute_builtin')
+    ).
+
+test_runtime_default_arm_throws_unknown_builtin :-
+    Test = 'Runtime: execute_builtin default arm throws {:unknown_builtin, ...} (hardening)',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'throw({:unknown_builtin, op, arity})')
+    ->  pass(Test)
+    ;   fail_test(Test, 'default arm not hardened — throw not emitted')
+    ).
+
 %% Backslash-escape regression: `=\=/2` op name must be emitted as
 %  `"=\\=/2"` in the lowered call site so Elixir parses it as the
 %  runtime string `=\=/2` (5 chars). Without escaping, Elixir 1.14+
@@ -1566,6 +1595,8 @@ run_tests :-
     test_findall_module_qualified_unwrap,
     test_lowered_emits_integer_literals,
     test_runtime_emits_full_comparison_family,
+    test_runtime_emits_extended_builtin_set,
+    test_runtime_default_arm_throws_unknown_builtin,
     test_lowered_escapes_backslash_in_builtin_call,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,

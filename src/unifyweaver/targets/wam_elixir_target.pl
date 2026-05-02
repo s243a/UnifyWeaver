@@ -780,13 +780,49 @@ compile_utility_helpers_to_elixir(Code) :-
         cond do
           match?({:unbound, _}, lhs) ->
             id = case lhs do {:unbound, i} -> i end
-            state 
+            state
             |> trail_binding(id)
             |> put_reg(id, result)
             |> Map.put(:pc, new_pc)
           lhs == result -> %{state | pc: new_pc}
           true -> :fail
         end
+      {"=/2", 2} ->
+        # Body unification: X = Y. Reuses unify/3 — the same machinery
+        # the WAM head-unification instructions call into. On success,
+        # advance pc and keep the bindings; on failure, return :fail
+        # so the surrounding catch can backtrack.
+        v1 = get_reg(state, 1)
+        v2 = get_reg(state, 2)
+        case unify(state, v1, v2) do
+          {:ok, new_state} ->
+            new_pc = if is_integer(new_state.pc), do: new_state.pc + 1, else: new_state.pc
+            %{new_state | pc: new_pc}
+          :fail -> :fail
+        end
+      {"\\\\=/2", 2} ->
+        # Body negation-of-unify (the \\=/2 op). Tests unify without
+        # committing — Elixirs immutability means we just discard the
+        # post-unify state on the success path. If unify succeeds the
+        # two args *would* unify, so the goal fails; if unify fails,
+        # the goal holds and we advance pc with the original
+        # (untouched) state.
+        v1 = get_reg(state, 1)
+        v2 = get_reg(state, 2)
+        case unify(state, v1, v2) do
+          {:ok, _discarded} -> :fail
+          :fail ->
+            new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+            %{state | pc: new_pc}
+        end
+      {"fail/0", 0} ->
+        # Explicit Prolog fail. The default-arm hardening below throws
+        # {:unknown_builtin, ...} for un-handled ops; without an
+        # explicit arm here, fail/0 would have hit the throw arm and
+        # surface as a crash instead of an ordinary backtrack-driving
+        # failure. (Pre-hardening, fail/0 worked accidentally because
+        # the default arm returned :fail — same semantic, wrong reason.)
+        :fail
       {"</2", 2} ->
         v1 = eval_arith(state, get_reg(state, 1))
         v2 = eval_arith(state, get_reg(state, 2))
@@ -881,6 +917,57 @@ compile_utility_helpers_to_elixir(Code) :-
         else
           :fail
         end
+      {"append/3", 3} ->
+        # Deterministic append: walk arg1 + arg2 into a native list,
+        # unify with arg3. Native-list output works against unbound
+        # arg3 (the common case) and against an arg3 that is itself
+        # a native list of the same shape. Doesnt work against arg3
+        # being a heap-built ./2 chain — unify/3 only does shallow
+        # comparison and the structural equality check fails. Filed
+        # as an audit-known limitation; covers the typical usage.
+        l1 = deref_var(state, get_reg(state, 1))
+        l2 = deref_var(state, get_reg(state, 2))
+        case wam_list_to_native(state, l1) do
+          {:ok, n1} ->
+            case wam_list_to_native(state, l2) do
+              {:ok, n2} ->
+                appended = n1 ++ n2
+                case unify(state, get_reg(state, 3), appended) do
+                  {:ok, new_state} ->
+                    new_pc = if is_integer(new_state.pc), do: new_state.pc + 1, else: new_state.pc
+                    %{new_state | pc: new_pc}
+                  :fail -> :fail
+                end
+              :fail -> :fail
+            end
+          :fail -> :fail
+        end
+      {"write/1", 1} ->
+        v = deref_var(state, get_reg(state, 1))
+        IO.write(format_term_for_write(v))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | pc: new_pc}
+      {"nl/0", 0} ->
+        IO.puts("")
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | pc: new_pc}
+      {"format/1", 1} ->
+        # format(Atom) — atom is the format string, no args.
+        fstr = deref_var(state, get_reg(state, 1))
+        IO.write(prolog_format(state, fstr, []))
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | pc: new_pc}
+      {"format/2", 2} ->
+        # format(Atom, Args) — atom is the format string, Args is a list.
+        fstr = deref_var(state, get_reg(state, 1))
+        args = deref_var(state, get_reg(state, 2))
+        case wam_list_to_native(state, args) do
+          {:ok, native_args} ->
+            IO.write(prolog_format(state, fstr, native_args))
+            new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+            %{state | pc: new_pc}
+          :fail -> :fail
+        end
       {"!/0", 0} ->
         # Cut: truncate choice_points back to the barrier set at
         # predicate entry (saved by `allocate` into state.cut_point).
@@ -907,8 +994,78 @@ compile_utility_helpers_to_elixir(Code) :-
             preserved_aggs ++ state.cut_point
           end
         %{state | choice_points: new_cps, pc: new_pc}
+      _ ->
+        # Hardening: surface unimplemented builtins instead of silently
+        # returning :fail. The pre-hardening default arm masked
+        # missing-builtin bugs as ordinary clause failures (see
+        # benchmarks/wam_elixir_builtin_coverage.md). Throw a tagged
+        # tuple so the error catch-all in run/1 reports it clearly
+        # rather than collapsing to :fail. Real Prolog `fail` has its
+        # own explicit `{"fail/0", 0}` arm above; new builtins should
+        # be added rather than relying on the silent-:fail accident.
+        throw({:unknown_builtin, op, arity})
+    end
+  end
+
+  defp wam_list_to_native(_state, []), do: {:ok, []}
+  defp wam_list_to_native(_state, "[]"), do: {:ok, []}
+  defp wam_list_to_native(_state, list) when is_list(list), do: {:ok, list}
+  defp wam_list_to_native(state, {:ref, addr}) do
+    # Cons cells get tagged either `./2` (early put_list emit) or
+    # `[|]/2` (later set_value emit) depending on which lowering arm
+    # produced them. Both shapes appear in lists built inline in a
+    # clause body — the existing wam_list_length/wam_list_member?
+    # check only `./2`, which is a separate audit-noted limitation.
+    # We accept both to make append/3 work end-to-end on inline lists.
+    case Map.get(state.heap, addr) do
+      {:str, cons} when cons in ["./2", "[|]/2"] ->
+        [h, tail] = heap_slice(state, addr + 1, 2)
+        head_val = deref_var(state, h)
+        case wam_list_to_native(state, deref_var(state, tail)) do
+          {:ok, rest} -> {:ok, [head_val | rest]}
+          :fail -> :fail
+        end
       _ -> :fail
     end
+  end
+  defp wam_list_to_native(_state, _), do: :fail
+
+  defp format_term_for_write({:str, name}), do: name
+  defp format_term_for_write({:ref, _} = ref), do: inspect(ref)
+  defp format_term_for_write({:unbound, _}), do: "_"
+  defp format_term_for_write(v) when is_binary(v), do: v
+  defp format_term_for_write(v) when is_number(v), do: to_string(v)
+  defp format_term_for_write(v) when is_atom(v), do: Atom.to_string(v)
+  defp format_term_for_write(v) when is_list(v) do
+    "[" <> Enum.map_join(v, ",", &format_term_for_write/1) <> "]"
+  end
+  defp format_term_for_write(v), do: inspect(v)
+
+  # Minimal Prolog format/2 implementation. Supports `~~w` (write next
+  # arg), `~~a` (atom), `~~d` (integer), `~~s` (string), `~~n` (newline).
+  # Unknown directives pass through verbatim — better to print weird
+  # output than to crash a debug-line.
+  defp prolog_format(state, fmt, args) when is_binary(fmt) do
+    do_format(state, String.graphemes(fmt), args, [])
+    |> Enum.reverse()
+    |> Enum.join("")
+  end
+  defp prolog_format(state, fmt, args) when is_list(fmt) do
+    prolog_format(state, IO.iodata_to_binary(fmt), args)
+  end
+  defp prolog_format(state, fmt, args) do
+    prolog_format(state, format_term_for_write(fmt), args)
+  end
+  defp do_format(_state, [], _args, acc), do: acc
+  defp do_format(state, ["~~", "n" | rest], args, acc) do
+    do_format(state, rest, args, ["\n" | acc])
+  end
+  defp do_format(state, ["~~", d | rest], [arg | args_rest], acc)
+       when d in ["w", "a", "d", "s", "p"] do
+    do_format(state, rest, args_rest, [format_term_for_write(deref_var(state, arg)) | acc])
+  end
+  defp do_format(state, [c | rest], args, acc) do
+    do_format(state, rest, args, [c | acc])
   end
 
   defp wam_list_length(_state, []), do: 0
