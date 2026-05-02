@@ -106,6 +106,9 @@
 :- dynamic user:wam_dup_first_q/2.
 :- dynamic user:wam_between_q/3.
 :- dynamic user:wam_between_collect/3.
+:- dynamic user:wam_format_w/1.
+:- dynamic user:wam_format_combo/2.
+:- dynamic user:wam_format_dn/1.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -272,6 +275,11 @@ user:wam_dup_first_q(X, Y) :- user:wam_dup_first_arg(X, Y).
 % --- between/3 ---
 user:wam_between_q(L, H, X)         :- between(L, H, X).
 user:wam_between_collect(L, H, R)   :- findall(X, between(L, H, X), R).
+
+% --- format/2 ---
+user:wam_format_w(X)            :- format("v=~w", [X]).
+user:wam_format_combo(X, Y)     :- format("~a is ~w!", [X, Y]).
+user:wam_format_dn(X)           :- format("n=~d~n", [X]).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -962,6 +970,54 @@ test(builtin_between) :-
                               ['1','3','[1,2,3,4]'],   "false")
         )).
 
+% format/2 prints to stdout AND returns true. The generated main
+% prints the run result on its own line, so the captured stdout
+% (after normalize_space collapses newline → space) is the format
+% output adjacent to the literal "true"/"false". The expected
+% strings below reflect that.
+test(builtin_format) :-
+    with_scala_project(
+        [user:wam_format_w/1, user:wam_format_combo/2, user:wam_format_dn/1],
+        [ intern_atoms([hello, world]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_format_w/1', '5', "v=5true"),
+            verify_scala_args(TmpDir, 'wam_format_combo/2',
+                              ['hello', 'world'], "hello is world!true"),
+            % ~n inserts a newline, which normalize_space turns into a
+            % single space between the format output and "true".
+            verify_scala(TmpDir, 'wam_format_dn/1', '42', "n=42 true")
+        )).
+
+% Multi-query stream mode: run a batch of queries in a single JVM
+% invocation by pointing --queries at a file. Output is one
+% true/false line per query.
+test(query_stream_runner) :-
+    with_scala_project(
+        [user:wam_fact/1],
+        _Opts,
+        TmpDir,
+        (
+            absolute_file_name(TmpDir, AbsTmp),
+            directory_file_path(AbsTmp, 'queries.txt', QueriesPath),
+            setup_call_cleanup(
+                open(QueriesPath, write, Stream),
+                ( format(Stream, 'wam_fact/1 a~n', []),
+                  format(Stream, 'wam_fact/1 b~n', []),
+                  format(Stream, '# comment line — ignored~n', []),
+                  format(Stream, '~n', []),                    % blank line — also ignored
+                  format(Stream, 'wam_fact/1 a~n', [])
+                ),
+                close(Stream)),
+            run_scala_query_stream(TmpDir, QueriesPath, Output),
+            % normalize_space collapses each line's newline into a
+            % single space, so three queries → "true false true".
+            (   Output == "true false true"
+            ->  true
+            ;   throw(error(query_stream_mismatch(Output), _))
+            )
+        )).
+
 :- end_tests(wam_scala_runtime_smoke).
 
 % ============================================================
@@ -1060,6 +1116,26 @@ unique_scala_tmp_dir(Prefix, TmpDir) :-
     get_time(T),
     Stamp is floor(T * 1000),
     format(atom(TmpDir), '~w_~w', [Prefix, Stamp]).
+
+%% run_scala_query_stream(+ProjectDir, +QueriesPath, -Output)
+%  Invokes the generated program in --queries mode and captures
+%  normalized stdout. Each line of the queries file is one CLI-style
+%  query; the program prints true/false per query.
+run_scala_query_stream(ProjectDir, QueriesPath, Output) :-
+    absolute_file_name(ProjectDir, AbsTmp),
+    directory_file_path(AbsTmp, 'classes', ClassDir),
+    atom_string(QueriesPath, QPathStr),
+    process_create(path(scala),
+        ['-classpath', ClassDir,
+         'generated.wam_scala_smoke.core.GeneratedProgram',
+         '--queries', QPathStr],
+        [cwd(AbsTmp), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, OutStr),
+    read_string(Err, _, _ErrStr),
+    close(Out),
+    close(Err),
+    process_wait(Pid, exit(_)),
+    normalize_space(string(Output), OutStr).
 
 %% write_facts_csv(+Path, +Tuples) is det.
 %  Writes each tuple as a comma-separated line to Path. Used by the

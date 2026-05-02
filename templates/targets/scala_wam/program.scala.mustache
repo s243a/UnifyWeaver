@@ -75,16 +75,47 @@ object GeneratedProgram {
   // ----------------------------------------------------------
 
   def main(args: Array[String]): Unit = {
-    // Two modes:
-    //   single-query  (default): GeneratedProgram <pred>/<arity> <arg> ...
-    //                            prints "true" or "false".
-    //   inner-loop bench:        GeneratedProgram --bench <N> <pred>/<arity> <arg> ...
-    //                            runs the query N times in this JVM,
-    //                            prints "BENCH n=<N> elapsed=<sec> last=<true|false>".
-    //                            JVM startup + classpath are paid once,
-    //                            so the elapsed time is dominated by the
-    //                            per-iteration runtime cost.
+    // Three modes:
+    //   single-query (default): GeneratedProgram <pred>/<arity> <arg> ...
+    //                           prints "true" or "false".
+    //   inner-loop bench:       GeneratedProgram --bench <N> <pred>/<arity> <arg> ...
+    //                           runs the query N times in this JVM,
+    //                           prints "BENCH n=<N> elapsed=<sec> last=<true|false>".
+    //                           JVM startup + classpath are paid once,
+    //                           so the elapsed time is dominated by the
+    //                           per-iteration runtime cost.
+    //   query stream:           GeneratedProgram --queries <file|->
+    //                           reads queries one per line from the file
+    //                           (or stdin if "-"), runs each, prints
+    //                           "true"/"false" per line. JVM startup is
+    //                           paid once across the whole stream.
     args.toList match {
+      case "--queries" :: source :: Nil =>
+        val lines: Iterator[String] =
+          if (source == "-") scala.io.Source.stdin.getLines()
+          else scala.io.Source.fromFile(source).getLines()
+        lines.foreach { raw =>
+          val line = raw.trim
+          if (line.nonEmpty && !line.startsWith("#")) {
+            // Tokenise on whitespace. CLI-style argument parsing — same
+            // as for single-query mode, just one query per line.
+            val tokens = line.split("\\s+").toList
+            tokens match {
+              case key :: rest if rest.nonEmpty =>
+                sharedProgram.dispatch.get(key) match {
+                  case None =>
+                    println(s"unknown:$key")
+                  case Some(startPc) =>
+                    val argRegs = rest.map(parseArg).toArray
+                    val ok = WamRuntime.runPredicate(sharedProgram, startPc, argRegs)
+                    println(ok)
+                }
+              case _ =>
+                System.err.println(s"skipping malformed line: $line")
+            }
+          }
+        }
+
       case "--bench" :: nStr :: key :: rest =>
         val n = try nStr.toInt catch { case _: NumberFormatException => 0 }
         if (n <= 0) {
@@ -128,7 +159,8 @@ object GeneratedProgram {
       case _ =>
         System.err.println(
           "Usage: GeneratedProgram <pred>/<arity> <arg1> [arg2 ...]\n" +
-          "       GeneratedProgram --bench <N> <pred>/<arity> <arg1> [arg2 ...]")
+          "       GeneratedProgram --bench <N> <pred>/<arity> <arg1> [arg2 ...]\n" +
+          "       GeneratedProgram --queries <path|->")
         sys.exit(1)
     }
   }

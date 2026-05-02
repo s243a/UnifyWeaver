@@ -1286,6 +1286,7 @@ object WamRuntime {
     else if (pred == "write"       && arity == 1)   { write1(s, program, withReturn); true }
     else if (pred == "nl"          && arity == 0)   { nl0(s, withReturn); true }
     else if (pred == "between"     && arity == 3)   { between3(s, program, withReturn); true }
+    else if (pred == "format"      && arity == 2)   { format2(s, program, withReturn); true }
     else false
   }
 
@@ -1440,6 +1441,70 @@ object WamRuntime {
         done = true
     }
     sb.append("]")
+    sb.toString
+  }
+
+  /** format(+Fmt, +Args): SWI-style format string with a small subset of
+   *  directives:
+   *    ~w / ~p   — print the next arg via termToString
+   *    ~a        — print the next arg as a bare atom string (or fall
+   *                back to termToString for non-atoms)
+   *    ~d        — print the next arg as an integer (truncates floats)
+   *    ~n        — newline
+   *    ~~        — a literal tilde
+   *  Anything else after a `~` is rendered verbatim. Args list may be
+   *  longer or shorter than directives; mismatch is benign.
+   */
+  def format2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val fmt = deref(s.bindings, s.regs(1)) match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        program.internTable.idToString(id)
+      case other => termToString(program, other)
+    }
+    val args = listToSeq(s, program, s.regs(2)).getOrElse(Seq.empty)
+    Predef.print(renderFormat(program, fmt, args))
+    builtinAdvance(s, withReturn)
+  }
+
+  def renderFormat(program: WamProgram, fmt: String, args: Seq[WamTerm]): String = {
+    val sb = new StringBuilder
+    var i = 0
+    var argIdx = 0
+    val argArr = args.toIndexedSeq
+    while (i < fmt.length) {
+      val ch = fmt(i)
+      if (ch == '~' && i + 1 < fmt.length) {
+        val d = fmt(i + 1)
+        d match {
+          case 'w' | 'p' =>
+            if (argIdx < argArr.length) sb.append(termToString(program, argArr(argIdx)))
+            argIdx += 1; i += 2
+          case 'a' =>
+            if (argIdx < argArr.length) {
+              argArr(argIdx) match {
+                case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+                  sb.append(program.internTable.idToString(id))
+                case other => sb.append(termToString(program, other))
+              }
+            }
+            argIdx += 1; i += 2
+          case 'd' =>
+            if (argIdx < argArr.length) {
+              argArr(argIdx) match {
+                case IntTerm(n)   => sb.append(n.toString)
+                case FloatTerm(d) => sb.append(d.toLong.toString)
+                case other        => sb.append(termToString(program, other))
+              }
+            }
+            argIdx += 1; i += 2
+          case 'n' => sb.append('\n'); i += 2
+          case '~' => sb.append('~');  i += 2
+          case other => sb.append('~').append(other); i += 2
+        }
+      } else {
+        sb.append(ch); i += 1
+      }
+    }
     sb.toString
   }
 
