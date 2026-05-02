@@ -63,6 +63,12 @@ elixir_available :-
 :- dynamic user:phase4c_findall/1.
 :- dynamic user:phase4c_count/1.
 :- dynamic user:phase4c_max/1.
+:- dynamic user:phase4c_r1_helper/1.
+:- dynamic user:phase4c_r1_p/1.
+:- dynamic user:phase4c_r1/1.
+:- dynamic user:phase4c_r6_helper/1.
+:- dynamic user:phase4c_r6_p/1.
+:- dynamic user:phase4c_r6/1.
 
 % Scenario 1: parallel findall over a 3-clause pure predicate.
 % Each clause fans out as a Task.async_stream branch; results are
@@ -86,17 +92,52 @@ user:phase4c_count(N) :- aggregate_all(count, phase4c_pn(X), N).
 % regardless of which branch returned which value.
 user:phase4c_max(M) :- aggregate_all(max(X), phase4c_p(X), M).
 
+% Scenario 4: Phase 4 proposal §6 risk #1 probe — branch return-
+% shape consistency for rule-bodied clauses. Phase 4c's other
+% scenarios use fact-only predicates; rule-bodied clauses exercise
+% the proceed → state.cp.(state) path the risk flags. Each branch
+% must return its local accum cleanly (via the stub cp /
+% :branch_exhausted), not leak any other return shape.
+user:phase4c_r1_helper('a').
+user:phase4c_r1_helper('b').
+user:phase4c_r1_helper('c').
+user:phase4c_r1_p('a') :- phase4c_r1_helper('a').
+user:phase4c_r1_p('b') :- phase4c_r1_helper('b').
+user:phase4c_r1_p('c') :- phase4c_r1_helper('c').
+user:phase4c_r1(L) :- findall(X, phase4c_r1_p(X), L).
+
+% Scenario 5: Phase 4 proposal §6 risk #6 probe — branch failure
+% mode. Clause for 'b' has a body that fails (no matching helper);
+% its branch must contribute [] (via :branch_exhausted from
+% branch_backtrack on the empty CP stack), NOT a dropped exception
+% or leaked return shape. Result: set {a, c}, no 'b'.
+user:phase4c_r6_helper('a').
+% No clause for phase4c_r6_helper('b') — its branch's body fails.
+user:phase4c_r6_helper('c').
+user:phase4c_r6_p('a') :- phase4c_r6_helper('a').
+user:phase4c_r6_p('b') :- phase4c_r6_helper('b').
+user:phase4c_r6_p('c') :- phase4c_r6_helper('c').
+user:phase4c_r6(L) :- findall(X, phase4c_r6_p(X), L).
+
 phase4c_predicates([
     user:phase4c_p/1,
     user:phase4c_pn/1,
     user:phase4c_findall/1,
     user:phase4c_count/1,
-    user:phase4c_max/1
+    user:phase4c_max/1,
+    user:phase4c_r1_helper/1,
+    user:phase4c_r1_p/1,
+    user:phase4c_r1/1,
+    user:phase4c_r6_helper/1,
+    user:phase4c_r6_p/1,
+    user:phase4c_r6/1
 ]).
 
 phase4c_purity_decls([
     user:phase4c_p/1,
-    user:phase4c_pn/1
+    user:phase4c_pn/1,
+    user:phase4c_r1_p/1,
+    user:phase4c_r6_p/1
 ]).
 
 phase4c_driver_invocations([
@@ -105,7 +146,11 @@ phase4c_driver_invocations([
     'r2 = Phase4cSmoke.Phase4cCount.run([{:unbound, make_ref()}])',
     'IO.inspect(r2, label: "SCENARIO_PARALLEL_COUNT", charlists: :as_lists)',
     'r3 = Phase4cSmoke.Phase4cMax.run([{:unbound, make_ref()}])',
-    'IO.inspect(r3, label: "SCENARIO_PARALLEL_MAX", charlists: :as_lists)'
+    'IO.inspect(r3, label: "SCENARIO_PARALLEL_MAX", charlists: :as_lists)',
+    'r4 = Phase4cSmoke.Phase4cR1.run([{:unbound, make_ref()}])',
+    'IO.inspect(r4, label: "SCENARIO_RISK1_RULE_BODY", charlists: :as_lists)',
+    'r5 = Phase4cSmoke.Phase4cR6.run([{:unbound, make_ref()}])',
+    'IO.inspect(r5, label: "SCENARIO_RISK6_BRANCH_FAIL", charlists: :as_lists)'
 ]).
 
 %% tmp_root — same fallback chain as Phase 3.
@@ -223,6 +268,22 @@ assert_scenario_parallel_max(StdOut) :-
     % Lex max of {"a", "b", "c"} = "c". Order-independent.
     sub_string(W, _, _, _, "\"c\"").
 
+%% Risk #1: rule-bodied clauses must return cleanly via :branch_exhausted.
+%  All three branch bodies succeed; result set is {a, b, c}.
+assert_scenario_risk1_rule_body(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_RISK1_RULE_BODY", W),
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"b\""),
+    sub_string(W, _, _, _, "\"c\"").
+
+%% Risk #6: branch whose body fails contributes [] (no leak).
+%  'a' and 'c' must appear; 'b' must NOT (its helper has no clause).
+assert_scenario_risk6_branch_fail(StdOut) :-
+    scope_after_label(StdOut, "SCENARIO_RISK6_BRANCH_FAIL", W),
+    sub_string(W, _, _, _, "\"a\""),
+    sub_string(W, _, _, _, "\"c\""),
+    \+ sub_string(W, _, _, _, "\"b\"").
+
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
 run_scenario(Test, Assertion, StdOut, StdErr, ExitCode) :-
@@ -244,6 +305,12 @@ run_all_scenarios(StdOut, StdErr, ExitCode) :-
                  StdOut, StdErr, ExitCode),
     run_scenario('Phase 4c: parallel aggregate_all(max(X), phase4c_p(X), M) → "c"',
                  assert_scenario_parallel_max,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 4 §6 risk #1: rule-bodied Tier-2 branches return cleanly → set {a, b, c}',
+                 assert_scenario_risk1_rule_body,
+                 StdOut, StdErr, ExitCode),
+    run_scenario('Phase 4 §6 risk #6: branch whose body fails contributes [] → set {a, c}, no b',
+                 assert_scenario_risk6_branch_fail,
                  StdOut, StdErr, ExitCode).
 
 %% Test runner — single project, single elixir invocation.
