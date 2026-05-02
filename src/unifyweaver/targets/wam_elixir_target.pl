@@ -1072,8 +1072,13 @@ compile_utility_helpers_to_elixir(Code) :-
   defp wam_list_length(_state, "[]"), do: 0
   defp wam_list_length(_state, list) when is_list(list), do: length(list)
   defp wam_list_length(state, {:ref, addr}) do
+    # Cons cells get tagged either `./2` (early put_list emit) or
+    # `[|]/2` (later put_structure emit) depending on which lowering
+    # arm produced them. Both shapes appear in inline list literals
+    # built in a clause body. Accept both so list-walking builtins
+    # work end-to-end on the mixed-functor chains.
     case Map.get(state.heap, addr) do
-      {:str, "./2"} ->
+      {:str, cons} when cons in ["./2", "[|]/2"] ->
         [_h, tail] = heap_slice(state, addr + 1, 2)
         case wam_list_length(state, deref_var(state, tail)) do
           :fail -> :fail
@@ -1089,7 +1094,7 @@ compile_utility_helpers_to_elixir(Code) :-
   defp wam_list_member?(_state, item, list) when is_list(list), do: item in list
   defp wam_list_member?(state, item, {:ref, addr}) do
     case Map.get(state.heap, addr) do
-      {:str, "./2"} ->
+      {:str, cons} when cons in ["./2", "[|]/2"] ->
         [h, tail] = heap_slice(state, addr + 1, 2)
         if deref_var(state, h) == item do
           true

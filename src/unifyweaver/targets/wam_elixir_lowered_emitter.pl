@@ -1364,12 +1364,26 @@ wam_elixir_lower_instr(put_structure(F, AiName), _PC, _Labels, _FuncName, _Suffi
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = state.heap_len
+    new_ref = {:ref, addr}
     new_heap = Map.put(state.heap, addr, {:str, "~w"})
+    # If the target reg currently holds an unbound heap_ref (i.e.,
+    # a prior set_variable created a placeholder there), bind that
+    # heap cell to the new structure ref. Without this, an inline
+    # `[1,2,3]` literals tail-of-first-cons stays a self-pointing
+    # unbound and list-walking builtins (length, append, member)
+    # silently terminate at the broken link.
+    prev = Map.get(state.regs, ~w, :not_set)
+    state = case prev do
+      {:unbound, {:heap_ref, link_addr}} ->
+        state
+        |> WamRuntime.trail_binding({:heap_ref, link_addr})
+        |> Map.put(:heap, Map.put(new_heap, link_addr, new_ref))
+      _ -> %{state | heap: new_heap}
+    end
     state = state
     |> WamRuntime.trail_binding(~w)
-    |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
-    |> Map.put(:heap, new_heap)
-    |> Map.put(:heap_len, addr + 1)', [F, Ai, Ai]).
+    |> Map.put(:regs, Map.put(state.regs, ~w, new_ref))
+    |> Map.put(:heap_len, addr + 1)', [F, Ai, Ai, Ai]).
 
 wam_elixir_lower_instr(get_structure(F, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
@@ -1516,12 +1530,23 @@ wam_elixir_lower_instr(put_list(AiName), _PC, _Labels, _FuncName, _Suffix, Code)
     reg_id(AiName, Ai),
     format(string(Code),
 '    addr = state.heap_len
+    new_ref = {:ref, addr}
     new_heap = Map.put(state.heap, addr, {:str, "./2"})
+    # Same heap-link semantics as put_structure: if the target reg
+    # held an unbound heap_ref (placeholder from set_variable),
+    # bind that cell to the new cons-cell ref so chains link up.
+    prev = Map.get(state.regs, ~w, :not_set)
+    state = case prev do
+      {:unbound, {:heap_ref, link_addr}} ->
+        state
+        |> WamRuntime.trail_binding({:heap_ref, link_addr})
+        |> Map.put(:heap, Map.put(new_heap, link_addr, new_ref))
+      _ -> %{state | heap: new_heap}
+    end
     state = state
     |> WamRuntime.trail_binding(~w)
-    |> Map.put(:regs, Map.put(state.regs, ~w, {:ref, addr}))
-    |> Map.put(:heap, new_heap)
-    |> Map.put(:heap_len, addr + 1)', [Ai, Ai]).
+    |> Map.put(:regs, Map.put(state.regs, ~w, new_ref))
+    |> Map.put(:heap_len, addr + 1)', [Ai, Ai, Ai]).
 
 wam_elixir_lower_instr(get_list(AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
