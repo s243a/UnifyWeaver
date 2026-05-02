@@ -51,6 +51,22 @@ user:fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
                   user:fib(N1, R1), user:fib(N2, R2),
                   R is R1 + R2.
 
+% --- Small expression evaluator ---
+% Recursive evaluator for arithmetic expressions built as compound
+% terms (+, *, -). Tests structure pattern matching on heads with
+% non-list compound terms, plus arithmetic via is/2.
+:- dynamic user:wam_eval/2.
+user:wam_eval(N, R)     :- number(N), !, R = N.
+user:wam_eval(A + B, R) :- user:wam_eval(A, RA),
+                           user:wam_eval(B, RB),
+                           R is RA + RB.
+user:wam_eval(A * B, R) :- user:wam_eval(A, RA),
+                           user:wam_eval(B, RB),
+                           R is RA * RB.
+user:wam_eval(A - B, R) :- user:wam_eval(A, RA),
+                           user:wam_eval(B, RB),
+                           R is RA - RB.
+
 % --- N-queens via permutation + safe ---
 % Uses between/3 to build the row list (1..N), permutation/2 to try
 % column assignments, and safe/1 to reject conflicts. Combinatorial
@@ -172,6 +188,23 @@ test(fibonacci) :-
             verify_scala_args(TmpDir, 'fib/2', ['10', '55'],   "true"),
             verify_scala_args(TmpDir, 'fib/2', ['15', '610'],  "true"),
             verify_scala_args(TmpDir, 'fib/2', ['10', '54'],   "false")
+        )).
+
+% Expression evaluator — exercises structure pattern matching with
+% non-list compound terms, recursion, the cut from clause 1, and
+% arithmetic via is/2.
+test(expression_evaluator) :-
+    with_scala_project(
+        [user:wam_eval/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_eval/2', ['5', '5'],          "true"),
+            verify_scala_args(TmpDir, 'wam_eval/2', ['+(2,3)', '5'],     "true"),
+            verify_scala_args(TmpDir, 'wam_eval/2', ['*(+(2,3),4)', '20'], "true"),
+            verify_scala_args(TmpDir, 'wam_eval/2', ['-(10,3)', '7'],    "true"),
+            verify_scala_args(TmpDir, 'wam_eval/2', ['+(2,*(3,4))', '14'], "true"),
+            verify_scala_args(TmpDir, 'wam_eval/2', ['*(+(2,3),4)', '19'], "false")
         )).
 
 % N-queens — exercises permutation, recursion, comparison, switch_on_term,

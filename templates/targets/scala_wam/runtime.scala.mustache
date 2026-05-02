@@ -1322,6 +1322,9 @@ object WamRuntime {
     else if (pred == "nl"          && arity == 0)   { nl0(s, withReturn); true }
     else if (pred == "between"     && arity == 3)   { between3(s, program, withReturn); true }
     else if (pred == "format"      && arity == 2)   { format2(s, program, withReturn); true }
+    else if (pred == "succ"        && arity == 2)   { succ2(s, withReturn); true }
+    else if (pred == "atom_concat" && arity == 3)   { atomConcat3(s, program, withReturn); true }
+    else if (pred == "sub_atom"    && arity == 5)   { subAtom5(s, program, withReturn); true }
     else false
   }
 
@@ -1541,6 +1544,79 @@ object WamRuntime {
       }
     }
     sb.toString
+  }
+
+  /** succ(+X, ?Y) / succ(?X, +Y): Y = X + 1, with both args required to
+   *  be non-negative integers in any solution. Bidirectional. */
+  def succ2(s: WamState, withReturn: Boolean): Unit = {
+    val a = deref(s.bindings, s.regs(1))
+    val b = deref(s.bindings, s.regs(2))
+    (numOf(a), numOf(b)) match {
+      case (Some(NInt(x)), _) if x >= 0 =>
+        if (unify(s, s.regs(2), IntTerm(x + 1))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case (_, Some(NInt(y))) if y > 0 =>
+        if (unify(s, s.regs(1), IntTerm(y - 1))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** atom_concat(+A, +B, ?C): C is the concatenation of A and B as
+   *  strings. Forward mode only (A and B both ground). The reverse
+   *  mode would need to enumerate all (A, B) splits of C and inject
+   *  each substring as an atom in the intern table — which is
+   *  immutable in this runtime — so it's not supported.
+   *
+   *  Numeric A or B are rendered via their toString form.
+   */
+  def atomConcat3(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    def stringOf(t: WamTerm): Option[String] = t match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        Some(program.internTable.idToString(id))
+      case IntTerm(n)   => Some(n.toString)
+      case FloatTerm(d) => Some(d.toString)
+      case _            => None
+    }
+    val a = deref(s.bindings, s.regs(1))
+    val b = deref(s.bindings, s.regs(2))
+    (stringOf(a), stringOf(b)) match {
+      case (Some(sa), Some(sb)) =>
+        val concat = sa + sb
+        // Look up the concatenation in the intern table; if the user
+        // didn't pre-intern it (via intern_atoms), the resulting atom
+        // gets id -1 and unification will fail unless arg3 is unbound.
+        val id = program.internTable.stringToId.getOrElse(concat, -1)
+        if (unify(s, s.regs(3), Atom(id))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** sub_atom(+Atom, +Before, +Length, ?After, ?SubAtom): extracts a
+   *  substring. Atom, Before, Length must all be ground; After and
+   *  SubAtom are derived. Multi-solution modes (any of B/L/A unbound)
+   *  are not supported in this implementation. */
+  def subAtom5(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val atom   = deref(s.bindings, s.regs(1))
+    val before = deref(s.bindings, s.regs(2))
+    val length = deref(s.bindings, s.regs(3))
+    val str = atom match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        program.internTable.idToString(id)
+      case _ => return backtrack(s)
+    }
+    (numOf(before), numOf(length)) match {
+      case (Some(NInt(b)), Some(NInt(l)))
+          if b >= 0 && l >= 0 && b + l <= str.length =>
+        val subStr = str.substring(b, b + l)
+        val after  = str.length - b - l
+        val subId  = program.internTable.stringToId.getOrElse(subStr, -1)
+        val ok = unify(s, s.regs(5), Atom(subId)) &&
+                 unify(s, s.regs(4), IntTerm(after))
+        if (ok) builtinAdvance(s, withReturn) else backtrack(s)
+      case _ => backtrack(s)
+    }
   }
 
   /** between(+Low, +High, ?X): X enumerates integers in [Low, High].

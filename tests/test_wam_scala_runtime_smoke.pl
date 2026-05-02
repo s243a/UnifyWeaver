@@ -109,6 +109,9 @@
 :- dynamic user:wam_format_w/1.
 :- dynamic user:wam_format_combo/2.
 :- dynamic user:wam_format_dn/1.
+:- dynamic user:wam_succ_q/2.
+:- dynamic user:wam_atom_concat_q/3.
+:- dynamic user:wam_sub_atom_q/5.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -280,6 +283,11 @@ user:wam_between_collect(L, H, R)   :- findall(X, between(L, H, X), R).
 user:wam_format_w(X)            :- format("v=~w", [X]).
 user:wam_format_combo(X, Y)     :- format("~a is ~w!", [X, Y]).
 user:wam_format_dn(X)           :- format("n=~d~n", [X]).
+
+% --- succ/2, atom_concat/3, sub_atom/5 ---
+user:wam_succ_q(X, Y)              :- succ(X, Y).
+user:wam_atom_concat_q(A, B, C)    :- atom_concat(A, B, C).
+user:wam_sub_atom_q(A, B, L, At, S):- sub_atom(A, B, L, At, S).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -987,6 +995,54 @@ test(builtin_format) :-
             % ~n inserts a newline, which normalize_space turns into a
             % single space between the format output and "true".
             verify_scala(TmpDir, 'wam_format_dn/1', '42', "n=42 true")
+        )).
+
+test(builtin_succ) :-
+    with_scala_project(
+        [user:wam_succ_q/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['3', '4'], "true"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['0', '1'], "true"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['3', '5'], "false"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['-1', '0'], "false")
+        )).
+
+test(builtin_atom_concat) :-
+    with_scala_project(
+        [user:wam_atom_concat_q/3],
+        % Pre-intern both operands and the expected concat results so
+        % the runtime intern table can match the synthesised "ab" / "hi"
+        % strings against arg3.
+        [ intern_atoms([a, b, ab, hello, world, helloworld]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['a', 'b', 'ab'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['hello', 'world', 'helloworld'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['hello', 'world', 'helloworlds'], "false")
+        )).
+
+test(builtin_sub_atom) :-
+    with_scala_project(
+        [user:wam_sub_atom_q/5],
+        [ intern_atoms([hello, hel, ell, llo, '']) ],
+        TmpDir,
+        (
+            % sub_atom(hello, 0, 3, After, Sub) → After=2, Sub=hel
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '3', '2', 'hel'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '1', '3', '1', 'ell'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '2', '3', '0', 'llo'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '5', '0', 'hello'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '3', '2', 'wrong'], "false")
         )).
 
 % Multi-query stream mode: run a batch of queries in a single JVM

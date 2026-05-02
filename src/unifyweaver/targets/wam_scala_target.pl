@@ -296,51 +296,6 @@ wam_parts_to_scala(["switch_on_term" | Rest], Lit) :-
     parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
     format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit).
 
-parse_switch_on_term_tokens([CLenStr | Rest0], ConstCases, StructCases, ListLabel) :-
-    number_string(CLen, CLenStr),
-    length(CTokens, CLen),
-    append(CTokens, [SLenStr | Rest1], Rest0),
-    number_string(SLen, SLenStr),
-    length(STokens, SLen),
-    append(STokens, [ListLabel], Rest1),
-    maplist(parse_const_case_token, CTokens, ConstCases),
-    maplist(parse_struct_case_token, STokens, StructCases).
-
-%% parse_const_case_token("<value>:<label>", -case(ValueLit, Label))
-parse_const_case_token(Token, case(ValueLit, Label)) :-
-    split_at_first_colon(Token, ValueStr, Label),
-    constant_to_scala_term(ValueStr, ValueLit).
-
-%% parse_struct_case_token("<functor>/<arity>:<label>", -case(FId, Arity, Label))
-parse_struct_case_token(Token, struct(FId, Arity, Label)) :-
-    split_at_first_colon(Token, FAStr, Label),
-    parse_functor_arity(FAStr, FName, Arity),
-    intern_scala_atom(FName, FId).
-
-%% split_at_first_colon(+Token, -Before, -After)
-%  Splits at the first ":" — used by switch_on_term parsers where the
-%  value half ([], 0, f/2) never contains a ":".
-split_at_first_colon(Token, Before, After) :-
-    sub_string(Token, B, 1, _, ":"),
-    !,
-    sub_string(Token, 0, B, _, Before),
-    B1 is B + 1,
-    sub_string(Token, B1, _, 0, After).
-
-format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
-    maplist(const_case_lit, ConstCases, ConstLits),
-    atomic_list_concat(ConstLits, ', ', ConstStr),
-    maplist(struct_case_lit, StructCases, StructLits),
-    atomic_list_concat(StructLits, ', ', StructStr),
-    format(string(Lit),
-           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
-           [ConstStr, StructStr, ListLabel]).
-
-const_case_lit(case(ValueLit, Label), Lit) :-
-    format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
-struct_case_lit(struct(FId, Arity, Label), Lit) :-
-    format(string(Lit), 'TermSwitchStruct(~w, ~w, "~w")', [FId, Arity, Label]).
-
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
 
@@ -433,6 +388,57 @@ last_slash_index(Atom, Index) :-
     findall(B, sub_atom(Atom, B, 1, _, '/'), Bs),
     Bs \= [],
     last(Bs, Index).
+
+% ----------------------------------------------------------
+% switch_on_term parsing helpers
+% ----------------------------------------------------------
+% Lifted out of the wam_parts_to_scala block so that block stays
+% contiguous (no `:- discontiguous` directive needed).
+
+parse_switch_on_term_tokens([CLenStr | Rest0], ConstCases, StructCases, ListLabel) :-
+    number_string(CLen, CLenStr),
+    length(CTokens, CLen),
+    append(CTokens, [SLenStr | Rest1], Rest0),
+    number_string(SLen, SLenStr),
+    length(STokens, SLen),
+    append(STokens, [ListLabel], Rest1),
+    maplist(parse_const_case_token, CTokens, ConstCases),
+    maplist(parse_struct_case_token, STokens, StructCases).
+
+%% parse_const_case_token("<value>:<label>", -case(ValueLit, Label))
+parse_const_case_token(Token, case(ValueLit, Label)) :-
+    split_at_first_colon(Token, ValueStr, Label),
+    constant_to_scala_term(ValueStr, ValueLit).
+
+%% parse_struct_case_token("<functor>/<arity>:<label>", -case(FId, Arity, Label))
+parse_struct_case_token(Token, struct(FId, Arity, Label)) :-
+    split_at_first_colon(Token, FAStr, Label),
+    parse_functor_arity(FAStr, FName, Arity),
+    intern_scala_atom(FName, FId).
+
+%% split_at_first_colon(+Token, -Before, -After)
+%  Splits at the first ":" — used by switch_on_term parsers where the
+%  value half ([], 0, f/2) never contains a ":".
+split_at_first_colon(Token, Before, After) :-
+    sub_string(Token, B, 1, _, ":"),
+    !,
+    sub_string(Token, 0, B, _, Before),
+    B1 is B + 1,
+    sub_string(Token, B1, _, 0, After).
+
+format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
+    maplist(const_case_lit, ConstCases, ConstLits),
+    atomic_list_concat(ConstLits, ', ', ConstStr),
+    maplist(struct_case_lit, StructCases, StructLits),
+    atomic_list_concat(StructLits, ', ', StructStr),
+    format(string(Lit),
+           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
+           [ConstStr, StructStr, ListLabel]).
+
+const_case_lit(case(ValueLit, Label), Lit) :-
+    format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
+struct_case_lit(struct(FId, Arity, Label), Lit) :-
+    format(string(Lit), 'TermSwitchStruct(~w, ~w, "~w")', [FId, Arity, Label]).
 
 % ============================================================================
 % WAM TEXT → SCALA INSTRUCTION ARRAY
