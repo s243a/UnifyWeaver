@@ -68,9 +68,11 @@ WAM_RUST_MATRIX_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_rust
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
 WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
+WAM_SCALA_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_scala_effective_distance_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
 RUST_MATRIX_EXE = "wam_rust_matrix_bench"
+SCALA_EFFECTIVE_DISTANCE_MAIN = "generated.wam_scala_effective_distance.core.EffectiveDistanceRunner"
 
 
 def default_scales_csv() -> str:
@@ -249,6 +251,37 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(project_dir / "hybrid_ed_bench_go")], cwd=project_dir, env=env)
     return [str(project_dir / "hybrid_ed_bench_go")]
+
+
+def scala_sources(project_dir: Path) -> list[str]:
+    return sorted(str(path) for path in (project_dir / "src" / "main" / "scala").rglob("*.scala"))
+
+
+def build_wam_scala_effective_distance(root: Path, scale: str, kernel_mode: str) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_scala_accumulated_{kernel_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_SCALA_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            "accumulated",
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    classes_dir = project_dir / "classes"
+    classes_dir.mkdir(exist_ok=True)
+    sources = scala_sources(project_dir)
+    if not sources:
+        raise RuntimeError(f"no Scala sources generated under {project_dir}")
+    run_command(["scalac", "-d", str(classes_dir), *sources], cwd=project_dir)
+    return ["scala", "-classpath", str(classes_dir), SCALA_EFFECTIVE_DISTANCE_MAIN]
 
 
 def clojure_classpath(project_dir: Path) -> str:
@@ -788,6 +821,10 @@ def main() -> int:
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "go-wam-accumulated-no-kernels":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "scala-wam-accumulated":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "kernels_on")
+                elif target == "scala-wam-accumulated-no-kernels":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "kernels_off")
                 elif target == "clojure-wam-accumulated":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
                 elif target == "clojure-wam-accumulated-no-kernels":

@@ -130,6 +130,10 @@ def available_targets(requested: list[str]) -> list[str]:
         "rust-lowered-only",
         "rust-lowered-ffi",
     }
+    scala_matrix_targets = {
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-no-kernels",
+    }
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
@@ -146,6 +150,11 @@ def available_targets(requested: list[str]) -> list[str]:
             shutil.which("swipl") is None or shutil.which("cargo") is None or shutil.which("rustc") is None
         ):
             print(f"skip {target}: swipl, cargo, or rustc not found", file=sys.stderr)
+            continue
+        if target in scala_matrix_targets and (
+            shutil.which("swipl") is None or shutil.which("scalac") is None or shutil.which("scala") is None
+        ):
+            print(f"skip {target}: swipl, scalac, or scala not found", file=sys.stderr)
             continue
         if target.startswith("rust-") and shutil.which("rustc") is None:
             print(f"skip {target}: rustc not found", file=sys.stderr)
