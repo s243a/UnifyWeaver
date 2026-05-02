@@ -202,11 +202,13 @@ import (
     "math"
     "os"
     "sort"
+    "strconv"
     "time"
 )
 
 const (
     effectiveDistanceWeightStartPC = ~w
+    benchmarkKernelMode = "~w"
 )
 
 var benchmarkArticleCategories = []articleCategoryPair{
@@ -281,6 +283,20 @@ func floatValue(v Value) (float64, bool) {
     }
 }
 
+func benchmarkWamAtomValue(name string) Value {
+    // The current WAM text parser emits quoted numeric Prolog atoms such as
+    // ''1827'' as Integer constants. Bridge host-loaded TSV category strings
+    // through the same representation so pure WAM fact lookup sees the same
+    // value shape as compiled category_parent/2 facts. Kernel mode still
+    // expects atom strings because it bypasses those compiled fact constants.
+    if benchmarkKernelMode == "kernels_off" {
+        if n, err := strconv.ParseInt(name, 10, 64); err == nil {
+            return &Integer{Val: n}
+        }
+    }
+    return internAtom(name)
+}
+
 func weightSumForCategoryRoot(category string, root string) (float64, bool) {
     // The Unbound for the third arg goes into A3 (register slot 2). Its
     // Idx field MUST match that slot — bindUnbound trails the binding
@@ -294,8 +310,8 @@ func weightSumForCategoryRoot(category string, root string) (float64, bool) {
         // atoms share pointer identity with the WAM bytecode literals
         // in lib.go. Without this, every weight query paid a string
         // compare per SwitchOnConstant case.
-        internAtom(category),
-        internAtom(root),
+        benchmarkWamAtomValue(category),
+        benchmarkWamAtomValue(root),
         &Unbound{Name: "weight", Idx: 2},
     )
     if len(rows) == 0 || len(rows[0]) < 3 {
@@ -394,7 +410,7 @@ func main() {
     fmt.Fprintf(os.Stderr, "tuple_count=%d\\n", tupleCount)
     fmt.Fprintf(os.Stderr, "article_count=%d\\n", len(rows))
 }
-', [WeightPC, ArticleCategoriesLiteral, RootsLiteral, DimN, KernelModeAtom]),
+', [WeightPC, KernelModeAtom, ArticleCategoriesLiteral, RootsLiteral, DimN, KernelModeAtom]),
     setup_call_cleanup(
         open(MainPath, write, Stream),
         format(Stream, '~w', [Code]),
