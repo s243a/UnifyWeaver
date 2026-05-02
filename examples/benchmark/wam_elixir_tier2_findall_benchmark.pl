@@ -44,12 +44,18 @@
               [write_wam_elixir_project/3]).
 :- use_module('../../src/unifyweaver/core/clause_body_analysis').
 
-%% Benchmark workload sizes (per-branch iteration depth).
-%  0 = no work beyond head match (overhead-only test).
-%  Larger values exercise per-branch compute that should amortise
-%  Task.async_stream overhead.
-%% K = number of inner_p facts. Per-branch work ~ K dispatch cycles.
-bench_workloads([1, 10, 50, 200, 1000]).
+%% Benchmark workload sizes per shape.
+%  - nested_findall: K = number of inner_p facts. Per-branch cost
+%    ~ K dispatch cycles + K aggregate_collect ops.
+%  - arith: N = depth of recursive countdown via `iterate/1`. Per-
+%    branch cost ~ N WAM-instruction dispatches + N is/2 + N >/2.
+%    Each iteration costs more than a fact-only dispatch in the
+%    nested_findall shape, so the crossover should be lower.
+bench_workloads(nested_findall, [1, 10, 50, 200, 1000]).
+bench_workloads(arith,          [1, 10, 50, 200, 1000]).
+
+%% Shapes to run. Both run by default; comment out to skip.
+bench_shapes([nested_findall, arith]).
 
 %% Number of timed runs per (mode, workload). Median is reported.
 bench_runs(10).
@@ -65,45 +71,46 @@ elixir_available :-
     close(Out),
     process_wait(PID, exit(0)).
 
-%% Test fixture: 8-clause Tier-2-eligible bench_p, where each
-%  clause body does a nested sequential findall over a K-solution
-%  inner_p. Per-branch work scales linearly with K. We use atom-
-%  only constants — no arithmetic — to dodge a separate WAM-Elixir
-%  compiler issue where integer literals in clause heads are
-%  emitted as Elixir strings ("0") instead of integers, breaking
-%  numeric head-match.
-%
-%  Why this shape: the inner findall runs sequentially per branch
-%  (the parallel_depth > 0 gate fires; this is the same pattern
-%  Phase 4d covers). Outer parallel fans 8 branches; each branch's
-%  inner findall enumerates K solutions. So per-branch cost ~ K
-%  WamDispatcher.call cycles + K aggregate_collect ops.
+%% Test fixtures: 8-clause Tier-2-eligible bench_p with two shape
+%  variants — nested_findall (atom-only inner findall per branch)
+%  and arith (recursive integer countdown per branch).
 
 :- dynamic user:bench_p/1.
 :- dynamic user:inner_p/1.
+:- dynamic user:iterate/1.
 
 :- dynamic user:bench/1.
 user:bench(L) :- findall(X, bench_p(X), L).
 
-bench_predicates([
+%% iterate/1 stays the same across arith runs; only bench_p changes.
+%  Pre-installed once at consult time.
+user:iterate(0).
+user:iterate(N) :- N > 0, N1 is N - 1, iterate(N1).
+
+bench_predicates(nested_findall, [
     user:bench_p/1,
     user:inner_p/1,
     user:bench/1
 ]).
-
-%% Tier-2 purity: bench_p (8 clauses, fans out) and inner_p (K
-%  clauses, nested findall inside branches stays sequential due
-%  to the parallel_depth gate, but inner_p still needs purity
-%  for the static gate to consider it).
-bench_purity_decls([
+bench_predicates(arith, [
     user:bench_p/1,
-    user:inner_p/1
+    user:iterate/1,
+    user:bench/1
 ]).
 
-%% Generate K inner_p facts using K-character atom names (a, b, ...).
-%  K small (say 20-200) keeps codegen fast while giving meaningful
-%  per-branch work.
-install_workload(K) :-
+%% Tier-2 purity:
+%  - nested_findall: bench_p (fans out) + inner_p (parallel_depth
+%    gate keeps it sequential per branch, but it's still a Tier-2
+%    candidate the static gate considers).
+%  - arith: bench_p only. iterate/1 is order-DEPENDENT (recursive
+%    countdown), so it must NOT be declared pure — it'd run
+%    sequentially in any case (called from within a branch where
+%    parallel_depth=1 already gates the gate).
+bench_purity_decls(nested_findall, [user:bench_p/1, user:inner_p/1]).
+bench_purity_decls(arith,          [user:bench_p/1]).
+
+%% install_workload(Shape, Size) — set up the dynamic predicates.
+install_workload(nested_findall, K) :-
     retractall(user:bench_p(_)),
     retractall(user:inner_p(_)),
     forall(between(1, K, I), (
@@ -112,6 +119,10 @@ install_workload(K) :-
     )),
     forall(member(C, ['a','b','c','d','e','f','g','h']),
            assertz((user:bench_p(C) :- findall(_, user:inner_p(_), _)))).
+install_workload(arith, N) :-
+    retractall(user:bench_p(_)),
+    forall(member(C, ['a','b','c','d','e','f','g','h']),
+           assertz((user:bench_p(C) :- user:iterate(N)))).
 
 %% tmp_root — same fallback chain as Phase 4c.
 tmp_root_candidate(Root) :-
@@ -130,19 +141,19 @@ writable_tmp_root(Root) :-
     access_file(Root, write),
     !.
 
-unique_project_dir(Mode, Work, Dir) :-
+unique_project_dir(Shape, Mode, Work, Dir) :-
     writable_tmp_root(Root),
     get_time(T),
     Stamp is floor(T * 1000),
-    format(atom(Name), 'uw_elixir_tier2_bench_~w_w~w_~w', [Mode, Work, Stamp]),
+    format(atom(Name), 'uw_elixir_tier2_bench_~w_~w_w~w_~w',
+           [Shape, Mode, Work, Stamp]),
     directory_file_path(Root, Name, Dir).
 
-%% Generate one project for one (mode, work) combination.
-%  Mode: parallel | sequential.
-write_bench_project(Mode, Work, ProjectDir) :-
-    install_workload(Work),
-    bench_predicates(Predicates),
-    bench_purity_decls(PurityDecls),
+%% Generate one project for one (shape, mode, work) combination.
+write_bench_project(Shape, Mode, Work, ProjectDir) :-
+    install_workload(Shape, Work),
+    bench_predicates(Shape, Predicates),
+    bench_purity_decls(Shape, PurityDecls),
     forall(member(Pred, PurityDecls),
            assertz(clause_body_analysis:order_independent(Pred))),
     findall(P/A-WamCode, (
@@ -154,22 +165,23 @@ write_bench_project(Mode, Work, ProjectDir) :-
         emit_mode(lowered)
     ], Mode, Options),
     write_wam_elixir_project(PredWamPairs, Options, ProjectDir),
-    write_bench_driver(ProjectDir, Mode, Work),
-    cleanup_purity_decls.
+    write_bench_driver(ProjectDir, Shape, Mode, Work),
+    cleanup_purity_decls(Shape).
 
 base_options(Base, parallel,   Base) :- !.
 base_options(Base, sequential, [intra_query_parallel(false) | Base]).
 
-cleanup_purity_decls :-
-    bench_purity_decls(PurityDecls),
+cleanup_purity_decls(Shape) :-
+    bench_purity_decls(Shape, PurityDecls),
     forall(member(Pred, PurityDecls),
            ignore(retract(clause_body_analysis:order_independent(Pred)))).
 
-%% Driver: K timed runs, one BENCH line per run.
-write_bench_driver(ProjectDir, Mode, Work) :-
+%% Driver: K timed runs, one BENCH line per run. The shape tag is
+%  emitted into each line so the parser can group by it.
+write_bench_driver(ProjectDir, Shape, Mode, Work) :-
     bench_runs(Runs),
     directory_file_path(ProjectDir, 'smoke_driver.exs', DriverPath),
-    bench_predicates(Predicates),
+    bench_predicates(Shape, Predicates),
     open(DriverPath, write, S),
     format(S, 'Code.require_file("lib/wam_runtime.ex", __DIR__)~n', []),
     format(S, 'Code.require_file("lib/wam_dispatcher.ex", __DIR__)~n', []),
@@ -184,8 +196,8 @@ write_bench_driver(ProjectDir, Mode, Work) :-
     format(S, '  {us, _} = :timer.tc(fn ->~n', []),
     format(S, '    Tier2Bench.Bench.run([{:unbound, make_ref()}])~n', []),
     format(S, '  end)~n', []),
-    format(S, '  IO.puts("BENCH mode=~w work=~w run=#{i} elapsed_us=#{us}")~n',
-           [Mode, Work]),
+    format(S, '  IO.puts("BENCH shape=~w mode=~w work=~w run=#{i} elapsed_us=#{us}")~n',
+           [Shape, Mode, Work]),
     format(S, 'end~n', []),
     close(S).
 
@@ -204,10 +216,11 @@ run_bench_driver(ProjectDir, StdOut, StdErr, ExitCode) :-
     process_wait(PID, exit(ExitCode)).
 
 %% Parse BENCH lines from stdout — return list of microsecond timings
-%  for the given (Mode, Work) tuple.
-parse_bench_us(StdOut, Mode, Work, Timings) :-
+%  for the given (Shape, Mode, Work) tuple.
+parse_bench_us(StdOut, Shape, Mode, Work, Timings) :-
     split_string(StdOut, "\n", "\n", Lines),
-    format(string(Prefix), "BENCH mode=~w work=~w ", [Mode, Work]),
+    format(string(Prefix), "BENCH shape=~w mode=~w work=~w ",
+           [Shape, Mode, Work]),
     findall(Us,
             (member(Line, Lines),
              string_concat(Prefix, Tail, Line),
@@ -234,20 +247,22 @@ median(Xs, Med) :-
         Med is (A + B) / 2
     ).
 
-%% One (mode, work) cell.
-run_one(Mode, Work, MedUs) :-
-    unique_project_dir(Mode, Work, Dir),
+%% One (shape, mode, work) cell.
+run_one(Shape, Mode, Work, MedUs) :-
+    unique_project_dir(Shape, Mode, Work, Dir),
     setup_call_cleanup(
-        write_bench_project(Mode, Work, Dir),
+        write_bench_project(Shape, Mode, Work, Dir),
         (   run_bench_driver(Dir, StdOut, StdErr, ExitCode),
             (   ExitCode == 0
-            ->  parse_bench_us(StdOut, Mode, Work, Timings),
+            ->  parse_bench_us(StdOut, Shape, Mode, Work, Timings),
                 (   Timings == []
-                ->  format(user_error, 'no BENCH lines for ~w/~w; stderr=~w~n',
-                           [Mode, Work, StdErr]),
+                ->  format(user_error,
+                           'no BENCH lines for ~w/~w/~w; stderr=~w~n',
+                           [Shape, Mode, Work, StdErr]),
                     fail
                 ;   median(Timings, MedUs),
-                    format('~w  work=~6|~w~17|  median_us=~w~n', [Mode, Work, MedUs])
+                    format('~w/~w  work=~12|~w~22|  median_us=~w~n',
+                           [Shape, Mode, Work, MedUs])
                 )
             ;   format(user_error, 'driver exit=~w; stderr=~w~n',
                        [ExitCode, StdErr]),
@@ -257,14 +272,18 @@ run_one(Mode, Work, MedUs) :-
         catch(delete_directory_and_contents(Dir), _, true)
     ).
 
-%% Run the full grid and print summary.
+%% Run the full grid (all shapes × workloads × modes) and print summary.
 run_benchmark :-
     format('~n=== WAM-Elixir Tier-2 findall: parallel vs sequential ===~n~n'),
     (   elixir_available
-    ->  bench_workloads(Works),
-        forall(member(W, Works), (
-            run_one(parallel,   W, _),
-            run_one(sequential, W, _)
+    ->  bench_shapes(Shapes),
+        forall(member(Shape, Shapes), (
+            format('--- shape=~w ---~n', [Shape]),
+            bench_workloads(Shape, Works),
+            forall(member(W, Works), (
+                run_one(Shape, parallel,   W, _),
+                run_one(Shape, sequential, W, _)
+            ))
         )),
         format('~n=== Done. Inspect rows above; speedup = seq_us / par_us. ===~n~n')
     ;   format('elixir not on PATH — benchmark skipped.~n')
