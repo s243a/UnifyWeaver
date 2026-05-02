@@ -134,12 +134,13 @@ probably real.
 
 ## Why this lands so well on logic programming
 
-The convergence above is at the level of analogy across domains.
-For our specific substrate — Prolog and the broader logic-
-programming family it represents — the convergence collapses into
-*identity*. The algebraic-kernel reading isn't a metaphor we
-reach for; it is the literal mechanism by which the optimizer
-operates, because the language itself is an algebraic object.
+The senses walked through above converge at the level of analogy
+across domains. For our specific substrate — Prolog and the
+broader logic-programming family it represents — the analogy
+collapses into *identity*. The algebraic-kernel reading isn't a
+metaphor we reach for; it is the literal mechanism by which the
+optimizer operates, because the language itself is an algebraic
+object.
 
 A Prolog program is a set of Horn clauses. Each clause is a
 conjunction of literals; each predicate is the disjunction of its
@@ -160,25 +161,42 @@ applies *directly*, not analogically:
 - **Absorption / subsumption** — `A ∨ (A ∧ B) = A`. Clause
   subsumption: if one clause's head is implied by another's,
   the redundant clause can be dropped.
-- **De Morgan's laws** — apply to negation-as-failure transforms,
-  including the `\+ member(_, _)` patterns the kernel detector
-  matches on.
 
-These are not analogies the optimizer reaches for. They are the
-identities that govern Horn-clause manipulation. What is true at
-the meta-level *is* true at the program level, because the
-program *is* the algebraic object.
+These are the identities of the pure propositional fragment. They
+are not analogies the optimizer reaches for; they are the rules
+that govern Horn-clause manipulation. What is true at the
+meta-level *is* true at the program level, because the program
+*is* the algebraic object.
+
+Negation in Prolog is *negation as failure* (`\+`), not classical
+negation. De Morgan's laws don't transfer into the NAF fragment
+unconditionally — they hold under the closed-world assumption and
+on ground terms, but the qualification is non-trivial. This is
+exactly the boundary the `purity_certificate` machinery
+(`docs/design/WAM_TIERED_LOWERING.md`) was built to police: it
+identifies which predicates live in the fragment where the
+algebraic identities hold without caveat, and which need to fall
+back to conservative operational compilation. NAF is the canonical
+example of an idiom that *looks* algebraic but isn't safely so
+without the cert. The detector at
+`src/unifyweaver/core/recursive_kernel_detection.pl:272` operates
+under this discipline: it matches `\+ member(_, _)` patterns
+specifically, where the NAF subgoal is over a ground list — the
+case where the algebra survives.
 
 The kernel-of-homomorphism reading collapses cleanly too. Boolean
-algebras are commutative rings (under XOR + AND), so the First
-Isomorphism Theorem applies in its full ring-theoretic strength.
-The kernel of a Boolean-algebra homomorphism is *exactly* the
-elements mapping to ⊥ — bottom, the algebraic zero. The intuition
-that factors have zeros isn't a lay-reader's mnemonic; it's a
-literal statement of the relationship between what the WAM
-dispatcher sees and what the kernel registry stores. The kernel
-is what the dispatcher's structural map sends to identity, which
-is exactly what we factor out into native code.
+algebras have two equivalent presentations: the lattice form
+(`∧`, `∨`, `¬`) used above for distributivity and absorption, and
+a commutative-ring form (with XOR as `+`, AND as `·`) that
+satisfies the GF(2)-algebra axioms. The ring presentation is what
+makes the First Isomorphism Theorem apply in its full ring-
+theoretic strength. The kernel of a Boolean-algebra homomorphism
+is *exactly* the elements mapping to ⊥ — bottom, the algebraic
+zero. The intuition that factors have zeros isn't a lay-reader's
+mnemonic; it's a literal statement of the relationship between
+what the WAM dispatcher sees and what the kernel registry stores.
+The kernel is what the dispatcher's structural map sends to
+identity, which is exactly what we factor out into native code.
 
 ### Comparison with other substrates
 
@@ -202,12 +220,20 @@ Other paradigms don't have this clean alignment:
   common subexpression elimination on values) — not the same
   ones.
 - **Logic-programming languages** are the case where the
-  substrate *is* propositional. Pure Prolog, Datalog, Mercury,
-  Curry, λProlog, Answer Set Programming — all share this
-  property to varying degrees. The equational toolkit of Boolean
-  algebra applies because the program shape *is* a Boolean
-  expression. Of these, Prolog is the practically-used member:
-  the language with the working ecosystem, the bench corpus, the
+  substrate *is* propositional. Pure Prolog, Datalog, and Mercury
+  share this property cleanly — each is a first-order Horn-clause
+  language whose pure fragment is straightforwardly Boolean.
+  λProlog (higher-order terms in argument positions), Curry
+  (functional-logic with residuation semantics), and Answer Set
+  Programming (stable-model semantics rather than SLD resolution)
+  *extend* the substrate in ways that weaken the pure-
+  propositional alignment — higher-order quantification and
+  non-monotonic negation both sit outside the equational toolkit
+  this section relies on. A `purity_certificate` adapted for
+  those languages would conservatively reject the extension
+  fragments, exactly as Prolog's does for cut and assert/retract.
+  Of the practically-used members of the family, Prolog is the
+  one with the working ecosystem, the bench corpus, and the
   toolchain. The argument here generalises to the family; the
   reason it matters is that Prolog is where the engineering
   actually exists.
@@ -268,6 +294,11 @@ need their own native version of `category_ancestor`), but the
 *factorization* is invariant — it lives in the shared detector,
 not in any one target. One algebraic transformation, N runtimes.
 That is the leverage.
+
+The discussion above is the *why*. For the *how* — the concrete
+syntactic pattern matching that operationalises this substrate
+alignment — see "What the detector actually matches" below, which
+walks through `detect_category_ancestor/4` clause by clause.
 
 ## When a shape becomes worth a kernel
 
