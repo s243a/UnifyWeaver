@@ -1196,15 +1196,28 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
 
       true ->
         # Phase 4b: branch wrapper rework. Each branch runs with
-        # branch_mode: true so backtrack/1 routes agg-frame CPs to
-        # the {:branch_exhausted, accum} return shape (instead of
-        # finalising on the branchs partial state). See
+        # branch_mode: true so backtrack/1 routes the parents agg-
+        # frame CP to the {:branch_exhausted, accum} return shape
+        # (instead of finalising on the branchs partial state). See
         # WAM_ELIXIR_TIER2_FINDALL_PHASE4.md section 4 for the
         # protocol; #1694 added branch_backtrack/1 substrate.
+        #
+        # Phase 4d: stamp the parents agg CP with branch_sentinel:
+        # true so backtrack/1 only fires :branch_exhausted on THAT
+        # CP — not on nested agg CPs pushed by inner findalls inside
+        # the branchs clause body. Nested aggregates finalise
+        # normally; only the branchs parent agg returns to the
+        # super-wrapper for parent-side merge. Without this, a
+        # nested findall inside a branch would leak its accum up
+        # as the branchs return value.
+        [parent_agg_cp | rest_cps] = state.choice_points
+        stamped_parent = Map.put(parent_agg_cp, :branch_sentinel, true)
+
         branch_state = %{state |
           branch_mode: true,
           cut_point: state.choice_points,
-          parallel_depth: Map.get(state, :parallel_depth, 0) + 1
+          parallel_depth: Map.get(state, :parallel_depth, 0) + 1,
+          choice_points: [stamped_parent | rest_cps]
         }
 
         branches = [~w]

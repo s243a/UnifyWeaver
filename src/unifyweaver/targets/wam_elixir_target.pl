@@ -372,18 +372,25 @@ compile_backtrack_to_elixir(Code) :-
         # :agg_result_reg before resuming via :agg_return_cp.
         #
         # In Tier-2 parallel-branch context (branch_mode: true), the
-        # branch returns its local accum to the parent instead of
-        # finalising — the parent merges branch contributions before
-        # finalising on its own state. See branch_backtrack/1 and
-        # WAM_ELIXIR_TIER2_FINDALL_PHASE4.md section 4.
+        # branchs PARENT agg CP returns its local accum to the parent
+        # instead of finalising — the parent merges branch contributions
+        # before finalising on its own state. The parent agg CP is
+        # tagged with :branch_sentinel at branch entry (Phase 4d);
+        # NESTED agg CPs pushed by inner findalls inside the branchs
+        # clause body lack the sentinel and finalise normally. Without
+        # this distinction, a nested findalls accum would leak up as
+        # the branchs return value. See branch_backtrack/1 and
+        # WAM_ELIXIR_TIER2_FINDALL_PHASE4.md sections 4 and 4.6.
         case Map.get(cp, :agg_type) do
           nil ->
             backtrack_ordinary(state, cp, rest)
           agg_type ->
-            if Map.get(state, :branch_mode, false) do
-              {:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}
-            else
-              finalise_aggregate(state, cp, rest, agg_type)
+            cond do
+              Map.get(state, :branch_mode, false) and
+                  Map.get(cp, :branch_sentinel, false) ->
+                {:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}
+              true ->
+                finalise_aggregate(state, cp, rest, agg_type)
             end
         end
     end
