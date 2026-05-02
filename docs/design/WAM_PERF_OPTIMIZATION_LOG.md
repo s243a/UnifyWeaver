@@ -524,6 +524,19 @@ might recover some of the loss, but it would still pay the
 per-instruction function call. Deferred indefinitely — the type
 switch is the right shape for this language.
 
+**Watch condition — when to revisit.** The conclusion above was
+measured at ~40 instruction types. We expect it to hold as the
+switch grows, because the dominant cost (lost inlining) scales
+with the *number of dispatches* not the *number of cases*. But
+Go's type-switch internals are version-dependent and the hash-
+on-itab approach has a working-set limit; if the instruction set
+crosses ~80–100 types, or if a future Go release changes type-
+switch lowering (e.g. drops the hash-table optimisation in favour
+of binary search on type pointers), the trade-off could flip. Re-
+test with the same A/B harness when (a) the instruction count
+roughly doubles or (b) profile shows the type-switch dispatch
+line at >25% of CPU after the next round of structural wins.
+
 Cumulative position is unchanged from Phase H; Phase J is a no-op
 on the cumulative table below.
 
@@ -544,6 +557,8 @@ were outliers — this section uses re-measured medians).
 | Phase F cp-pointer + Bindings slice | 2626ms | 26.6s | 1.38x / 1.44x | 12.9x / 12.8x |
 | Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | 13.5x / 12.8x |
 | Phase H list-builtin micro-opts | 2534ms | ~27.4s | 1.0x / ~1.0x | 13.4x / ~12.4x |
+| Phase I (reverted attempts; doc-only) | — | — | 1.0x | 13.4x / ~12.4x |
+| Phase J tag-table dispatch (reverted) | — | ~37s vs h-fresh ~33s | **0.89x** (regression) | doc-only |
 
 Output identical to prior at every stage except for the documented
 `max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
@@ -583,6 +598,32 @@ was generated with `max_depth >= 50`; tracked in
    in Phase C didn't compose because they all targeted the same cost
    (the SavedRegs copy) and the underlying issue was the design, not
    the constants.
+
+4. **Don't fight the Go compiler's dispatch — extending the work
+   it can inline beats reshuffling its dispatch shape.** Phase J
+   replaced Step's ~40-case type switch with the textbook O(1)
+   tag-indexed function table; result was a clean ~12% regression
+   across three trials. Two compounding reasons:
+
+   - Go lowers a type switch with many cases to a hash on the
+     interface itab pointer, not a linear scan, so the analytical
+     "O(N) → O(1)" win was already mostly priced in.
+   - The dispatcher path is shorter for the type switch than for
+     the table because each `case *X:` body is *inlinable* into
+     `Step` (and via mid-stack inlining sometimes into `runUntilPC`).
+     A function-table dispatch necessarily forces every body into
+     a separate top-level function with a real call frame, and an
+     extra `Tag()` interface method call besides. The lost
+     inlining costs more than the (already-small) dispatch saving.
+
+   Generalised: when a hot loop's body contains a switch over a
+   compiler-friendly shape (interface type switch, integer switch
+   with dense cases, etc.), the right next move is to *give the
+   compiler more to inline* — not to indirect the dispatch
+   through a level the compiler can't follow. Watch this if the
+   instruction count grows past ~80–100 or if a future Go release
+   changes type-switch lowering; until then, prefer additive
+   structural changes over dispatch rewrites.
 
 ---
 
