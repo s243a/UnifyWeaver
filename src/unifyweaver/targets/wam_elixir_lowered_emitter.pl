@@ -676,6 +676,20 @@ render_index_entry(Key-Tuples, Entry) :-
 % atoms like `A1` or labels like `L_parent_2_2`) as cheap as the previous
 % split_string-based code.
 
+%% elixir_constant_literal(+TokenStr, -ElixirLiteral)
+%  Format a WAM-bytecode constant token (atoms/numbers — quotes already
+%  stripped by the tokenizer) as the Elixir literal that should appear
+%  in lowered code. Numeric tokens emit as bare numbers; everything
+%  else as a double-quoted string. Without this, every constant in the
+%  lowered emitter is force-stringified, which silently breaks numeric
+%  head-match: `iterate(0) :- ...` lowers to `val == "0"` instead of
+%  `val == 0`, so iterate/1 fails for any caller passing an integer.
+elixir_constant_literal(TokenStr, ElixirLiteral) :-
+    (   number_string(_, TokenStr)
+    ->  ElixirLiteral = TokenStr
+    ;   format(string(ElixirLiteral), '"~w"', [TokenStr])
+    ).
+
 %% tokenize_wam_line(+Line, -Tokens)
 %  `Line` is any string or atom; `Tokens` is a list of strings, in order,
 %  with separators removed and quoted regions unquoted/unescaped.
@@ -956,6 +970,7 @@ build_switch_arms(Entries, Suffix, ArmsStr) :-
     atomic_list_concat(Arms, '\n          ', ArmsStr).
 
 build_switch_arm_group(Suffix, Key-Labels, Arm) :-
+    elixir_constant_literal(Key, KeyLit),
     (   Labels = [OnlyLabel],
         OnlyLabel \== "default"
     ->  segment_func_name(OnlyLabel, Suffix, LocalFunc),
@@ -965,9 +980,9 @@ build_switch_arm_group(Suffix, Key-Labels, Arm) :-
         % solution on backtracking. The inline-dispatched clause pushes
         % its own retry CP, which remains correct.
         format(string(Arm),
-               '"~w" -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
-               [Key, LocalFunc])
-    ;   format(string(Arm), '"~w" -> :ok', [Key])
+               '~w -> throw({:return, ~w(%{state | choice_points: tl(state.choice_points)})})',
+               [KeyLit, LocalFunc])
+    ;   format(string(Arm), '~w -> :ok', [KeyLit])
     ).
 
 segment_func_name("clause_start", "clause_main") :- !.
@@ -1318,15 +1333,16 @@ instr_from_parts(Parts, raw(Combined)) :-
 
 wam_elixir_lower_instr(get_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
+    elixir_constant_literal(C, CLit),
     format(string(Code),
 '    val = Map.get(state.regs, ~w)
     state = cond do
-      val == "~w" -> state
+      val == ~w -> state
       match?({:unbound, _}, val) ->
         {:unbound, id} = val
-        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, "~w")
+        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, ~w)
       true -> throw({:fail, state})
-    end', [Ai, C, C]).
+    end', [Ai, CLit, CLit]).
 
 wam_elixir_lower_instr(get_variable(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
@@ -1396,11 +1412,12 @@ wam_elixir_lower_instr(unify_value(XnName), _PC, _Labels, _FuncName, _Suffix, Co
     end', [Xn]).
 
 wam_elixir_lower_instr(unify_constant(C), _PC, _Labels, _FuncName, _Suffix, Code) :-
+    elixir_constant_literal(C, CLit),
     format(string(Code),
-'    state = case WamRuntime.step_unify_constant(state, "~w") do
+'    state = case WamRuntime.step_unify_constant(state, ~w) do
       :fail -> throw({:fail, state})
       s -> s
-    end', [C]).
+    end', [CLit]).
 
 wam_elixir_lower_instr(try_me_else(_L), _PC, _Labels, _FuncName, _Suffix, Code) :-
     Code = '    :ok # Handled by wrap_segment'.
@@ -1453,7 +1470,8 @@ wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, _Suffix, C
 
 wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
-    format(string(Code), '    state = %{state | regs: Map.put(state.regs, ~w, "~w")}', [Ai, C]).
+    elixir_constant_literal(C, CLit),
+    format(string(Code), '    state = %{state | regs: Map.put(state.regs, ~w, ~w)}', [Ai, CLit]).
 
 wam_elixir_lower_instr(put_variable(XnName, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(XnName, Xn), reg_id(AiName, Ai),
@@ -1528,9 +1546,10 @@ wam_elixir_lower_instr(set_value(XnName), _PC, _Labels, _FuncName, _Suffix, Code
     state = %{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}', [Xn]).
 
 wam_elixir_lower_instr(set_constant(C), _PC, _Labels, _FuncName, _Suffix, Code) :-
+    elixir_constant_literal(C, CLit),
     format(string(Code),
 '    addr = state.heap_len
-    state = %{state | heap: Map.put(state.heap, addr, "~w"), heap_len: addr + 1}', [C]).
+    state = %{state | heap: Map.put(state.heap, addr, ~w), heap_len: addr + 1}', [CLit]).
 
 wam_elixir_lower_instr(switch_on_constant(Entries), _PC, _Labels, _FuncName, Suffix, Code) :-
     build_switch_arms(Entries, Suffix, ArmsStr),

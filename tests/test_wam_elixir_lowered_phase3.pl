@@ -522,9 +522,12 @@ assert_scenario_findall_compound(StdOut) :-
     sub_string(W, _, _, _, "\"a\""),
     sub_string(W, _, _, _, "\"b\""),
     sub_string(W, _, _, _, "\"c\""),
-    sub_string(W, _, _, _, "\"1\""),
-    sub_string(W, _, _, _, "\"2\""),
-    sub_string(W, _, _, _, "\"3\"").
+    % Numeric pairs lower as bare integer literals, not strings.
+    % Match within compound-tuple context to avoid spurious hits in
+    % refs/heap addresses.
+    sub_string(W, _, _, _, "\"a\", 1"),
+    sub_string(W, _, _, _, "\"b\", 2"),
+    sub_string(W, _, _, _, "\"c\", 3").
 
 assert_scenario_cut_conj(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_CUT_CONJ", W),
@@ -532,11 +535,14 @@ assert_scenario_cut_conj(StdOut) :-
     % stops enumeration after the first solution. The agg frame
     % must survive cut for end_aggregate's throw fail to find it
     % during backtrack and finalise correctly. Without the cut fix
-    % in this PR, the agg frame would be removed by cut and the
-    % predicate would fail entirely.
-    sub_string(W, _, _, _, "\"1\""),
-    \+ sub_string(W, _, _, _, "\"2\""),
-    \+ sub_string(W, _, _, _, "\"3\"").
+    % in PR #1659/#1661, the agg frame would be removed by cut and
+    % the predicate would fail entirely.
+    %
+    % Match the result list `=> [1]` directly. Integers lower as
+    % bare numeric literals (post integer-quoting fix); naked "1"
+    % would spuriously match ref/heap-addr digits, so anchor on
+    % the `=> [...]` shape that brackets the result list.
+    sub_string(W, _, _, _, "=> [1]").
 
 assert_scenario_cut_subpred(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_CUT_SUBPRED", W),
@@ -544,9 +550,7 @@ assert_scenario_cut_subpred(StdOut) :-
     % first_r(X) :- r(X), !. Each call to first_r succeeds with
     % the first r solution and cuts. findall's enumeration sees
     % first_r as deterministic — only one solution. L = [1].
-    sub_string(W, _, _, _, "\"1\""),
-    \+ sub_string(W, _, _, _, "\"2\""),
-    \+ sub_string(W, _, _, _, "\"3\"").
+    sub_string(W, _, _, _, "=> [1]").
 
 assert_scenario_cut_barrier(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_CUT_BARRIER", W),
@@ -555,25 +559,19 @@ assert_scenario_cut_barrier(StdOut) :-
     % returns L = [1], the second findall must enumerate all 3
     % r/1 solutions independently. Rest = [1, 2, 3].
     %
-    % Both 1, 2, and 3 must appear in the output (as part of Rest).
-    % This is the diagnostic test: if cut leaked through the agg
-    % frame boundary, the second findall would see the cut's
-    % effect and Rest would be missing values.
-    sub_string(W, _, _, _, "\"1\""),
-    sub_string(W, _, _, _, "\"2\""),
-    sub_string(W, _, _, _, "\"3\"").
+    % All three values 1, 2, 3 appear in Rest. With the integer-
+    % quoting fix, lists print as `[1, 2, 3]`; match the full list.
+    sub_string(W, _, _, _, "[1, 2, 3]").
 
 assert_scenario_two_findalls(StdOut) :-
     scope_after_label(StdOut, "SCENARIO_TWO_FINDALLS", W),
-    % Two inline findalls in one body. Without this PR's structural
+    % Two inline findalls in one body. Without PR #1661's structural
     % fix, the second findall's setup ended up as dead code after
     % the first end_aggregate's throw fail. With the fix, both
     % findalls enumerate independently and bind L = Rest = [1, 2, 3].
     % Both lists are present in the IO.inspect output (as separate
     % bindings on regs[1] and regs[2]).
-    sub_string(W, _, _, _, "\"1\""),
-    sub_string(W, _, _, _, "\"2\""),
-    sub_string(W, _, _, _, "\"3\"").
+    sub_string(W, _, _, _, "[1, 2, 3]").
 
 %% Per-scenario test wrappers that share captured StdOut/StdErr/ExitCode.
 
