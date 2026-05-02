@@ -641,6 +641,9 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
         started = time.perf_counter()
         if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
             result = run_command(command, cwd=ROOT)
+        elif target.startswith("haskell-"):
+            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+            result = run_command(command + [str(scale_dir)], cwd=ROOT)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
             edge_path = scale_dir / "category_parent.tsv"
