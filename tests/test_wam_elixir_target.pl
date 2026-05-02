@@ -1135,6 +1135,52 @@ test_findall_phase4b5_branch_skips_cp_push :-
     ).
 
 :- dynamic integer_match_test:int_p/1.
+:- dynamic arith_cmp_test:gt_p/1, arith_cmp_test:neq_p/1.
+
+%% Arithmetic-comparison regression: the runtime must implement the
+%  full comparison family (`<`, `>`, `>=`, `=<`, `=:=`, `=\=`) — pre-
+%  fix only `</2` was implemented, so any predicate body using `>`
+%  silently fell through to execute_builtin's default :fail arm.
+%  Surfaced when iterate(N) :- N > 0, ... returned :fail for any N>0.
+test_runtime_emits_full_comparison_family :-
+    Test = 'Runtime: execute_builtin covers full arithmetic-comparison family',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, '{"</2", 2}'),
+        sub_string(S, _, _, _, '{">/2", 2}'),
+        sub_string(S, _, _, _, '{">=/2", 2}'),
+        sub_string(S, _, _, _, '{"=</2", 2}'),
+        sub_string(S, _, _, _, '{"=:=/2", 2}'),
+        sub_string(S, _, _, _, '{"=\\\\=/2", 2}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more comparison ops missing from execute_builtin')
+    ).
+
+%% Backslash-escape regression: `=\=/2` op name must be emitted as
+%  `"=\\=/2"` in the lowered call site so Elixir parses it as the
+%  runtime string `=\=/2` (5 chars). Without escaping, Elixir 1.14+
+%  drops the unrecognised `\=` escape and the call becomes the
+%  runtime string `==/2` (4 chars), which never matches the
+%  execute_builtin pattern.
+test_lowered_escapes_backslash_in_builtin_call :-
+    Test = 'Lowering: builtin_call escapes backslash so =\\= reaches the runtime intact',
+    setup_call_cleanup(
+        (   retractall(arith_cmp_test:neq_p(_)),
+            assertz((arith_cmp_test:neq_p(X) :- X =\= 0))
+        ),
+        (   wam_target:compile_predicate_to_wam(arith_cmp_test:neq_p/1, [], WamCode),
+            lower_predicate_to_elixir(neq_p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Positive: properly escaped form.
+            sub_string(S, _, _, _, 'execute_builtin(state, "=\\\\=/2"'),
+            % Negative: the buggy unescaped form would parse as ==/2
+            % at runtime; ensure it isn't emitted.
+            \+ sub_string(S, _, _, _, 'execute_builtin(state, "=\\=/2"')
+        ->  pass(Test)
+        ;   fail_test(Test, 'backslash not escaped — =\\= would be misparsed by Elixir')
+        ),
+        retractall(arith_cmp_test:neq_p(_))
+    ).
 
 %% Integer-quoting regression: the lowered emitter must emit numeric
 %  constants as bare Elixir integer literals, not as quoted strings.
@@ -1519,6 +1565,8 @@ run_tests :-
     test_findall_instr_end_to_end_lowering,
     test_findall_module_qualified_unwrap,
     test_lowered_emits_integer_literals,
+    test_runtime_emits_full_comparison_family,
+    test_lowered_escapes_backslash_in_builtin_call,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,

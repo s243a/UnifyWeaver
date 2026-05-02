@@ -1462,11 +1462,33 @@ wam_elixir_lower_instr(execute(P), _PC, _Labels, _FuncName, _Suffix, Code) :-
 '    WamDispatcher.call("~w", state)', [P]).
 
 wam_elixir_lower_instr(builtin_call(Op, Ar), _PC, _Labels, _FuncName, _Suffix, Code) :-
+    escape_backslashes_for_elixir(Op, OpEsc),
     format(string(Code),
 '    state = case WamRuntime.execute_builtin(state, "~w", ~w) do
       :fail -> throw({:fail, state})
       s -> s
-    end', [Op, Ar]).
+    end', [OpEsc, Ar]).
+
+%% escape_backslashes_for_elixir(+Token, -Escaped)
+%  Double backslashes when emitting `Token` into an Elixir double-
+%  quoted string literal. Without this, an op name like `=\=/2`
+%  becomes Elixir source `"=\=/2"` — and Elixir 1.14+ silently
+%  DROPS the unrecognised `\=` escape, producing the runtime string
+%  `==/2` instead of `=\=/2`. The execute_builtin pattern then
+%  never matches and the call falls through to the default :fail
+%  arm. Doubling the backslash gives Elixir source `"=\\=/2"`
+%  which parses as runtime `=\=/2` (5 chars including backslash).
+escape_backslashes_for_elixir(Token, Escaped) :-
+    (   atom(Token) -> atom_string(Token, S) ; S = Token ),
+    string_chars(S, Chars),
+    backslash_double(Chars, DoubledChars),
+    string_chars(Escaped, DoubledChars).
+
+backslash_double([], []).
+backslash_double(['\\' | Rest], ['\\', '\\' | More]) :- !,
+    backslash_double(Rest, More).
+backslash_double([C | Rest], [C | More]) :-
+    backslash_double(Rest, More).
 
 wam_elixir_lower_instr(put_constant(C, AiName), _PC, _Labels, _FuncName, _Suffix, Code) :-
     reg_id(AiName, Ai),
