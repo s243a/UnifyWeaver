@@ -181,10 +181,9 @@ lower_predicate_to_clojure(PI, WamCode, _Options, ClojureCode) :-
     ),
     clause1_instrs(Instrs, C1Instrs0),
     (   is_deterministic_pred_clojure(Instrs)
-    ->  ControlLowering = allow_control
-    ;   ControlLowering = runtime_control
+    ->  lowered_direct_prefix(C1Instrs0, allow_control, C1Instrs)
+    ;   C1Instrs = []
     ),
-    lowered_direct_prefix(C1Instrs0, ControlLowering, C1Instrs),
     with_output_to(string(Body), emit_instrs(C1Instrs, "  ")),
     format(string(ClojureCode),
 ';; ~w — lowered from ~w/~w

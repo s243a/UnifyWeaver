@@ -23,6 +23,18 @@ test(multi_clause_clause1_is_lowerable) :-
     wam_clojure_lowerable(test_choice/1, WamCode, Reason),
     assertion(Reason == multi_clause_1).
 
+test(multi_clause_emits_empty_lowered_prefix) :-
+    once((
+        WamCode = "test_choice/1:\nallocate\ndeallocate\nexecute test_fact/1\ntry_me_else test_choice_alt\nallocate\ndeallocate\nexecute test_fact/1\ntest_choice_alt:\ntrust_me\nget_constant z, A1\nproceed\n",
+        wam_clojure_lowerable(test_choice/1, WamCode, multi_clause_1),
+        lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
+        has(Code, "defn lowered-test-choice-1 [state]"),
+        assertion(\+ has(Code, "update :env-stack conj {}")),
+        assertion(\+ has(Code, "\"test_fact/1\"")),
+        assertion(\+ has(Code, ":pc target-pc")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(switch_on_constant_not_yet_lowerable, [fail]) :-
     unsupported_wam(WamCode),
     wam_clojure_lowerable(test_switch/1, WamCode, _).
@@ -51,13 +63,14 @@ test(lower_predicate_to_clojure_emits_function) :-
         has(Code, "runtime/interned-equal?")
     )).
 
-test(lowered_multi_clause_keeps_clause1_shape) :-
+test(lowered_multi_clause_stays_runtime_mediated) :-
     once((
         multi_clause_wam(WamCode),
         lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
         has(Code, "defn lowered-test-choice-1 [state]"),
-        has(Code, "get-constant a, A1"),
-        \+ has(Code, "get-constant b, A1")
+        assertion(\+ has(Code, "get-constant a, A1")),
+        assertion(\+ has(Code, "get-constant b, A1")),
+        assertion(\+ has(Code, "runtime/step"))
     )).
 
 test(call_foreign_is_part_of_scaffold) :-
