@@ -133,6 +133,7 @@ run_smoke :-
     assert_lowered_execute_emitted(TmpDir),
     assert_lowered_call_emitted(TmpDir),
     assert_lowered_cut_builtin_emitted(TmpDir),
+    assert_multiclause_wrappers_runtime_mediated(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -232,6 +233,30 @@ assert_lowered_cut_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-cut-helper-1"),
     has(CoreCode, "update :choice-points"),
     has(CoreCode, "take (:cut-bar").
+
+assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-fact-1"),
+    assert_empty_lowered_wrapper(CoreCode, "lowered-wam-choice-or-z-1"),
+    assert_empty_lowered_wrapper(CoreCode, "lowered-wam-trail-choice-1").
+
+assert_empty_lowered_wrapper(CoreCode, FuncName) :-
+    (   lowered_wrapper_absent_or_empty(CoreCode, FuncName)
+    ->  true
+    ;   throw(error(multiclause_wrapper_not_runtime_mediated(FuncName), _))
+    ).
+
+lowered_wrapper_absent_or_empty(CoreCode, FuncName) :-
+    format(string(Header), "(defn ~w [state]", [FuncName]),
+    \+ has(CoreCode, Header),
+    !.
+lowered_wrapper_absent_or_empty(CoreCode, FuncName) :-
+    empty_lowered_wrapper(CoreCode, FuncName).
+
+empty_lowered_wrapper(CoreCode, FuncName) :-
+    format(string(Expected), "(defn ~w [state]\n  state\n)", [FuncName]),
+    has(CoreCode, Expected).
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),
