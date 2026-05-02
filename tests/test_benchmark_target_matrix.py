@@ -85,6 +85,24 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertEqual(TARGETS["scala-wam-accumulated"].category, "hybrid-wam")
         self.assertEqual(TARGETS["scala-wam-accumulated-no-kernels"].category, "hybrid-wam")
 
+    def test_scala_artifact_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["scala-wam-artifact"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "scala-wam-seeded",
+                "scala-wam-seeded-artifact",
+                "scala-wam-accumulated",
+                "scala-wam-accumulated-artifact",
+            ],
+        )
+        self.assertEqual(TARGETS["scala-wam-seeded-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-accumulated-artifact"].category, "hybrid-wam")
+
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
 
@@ -100,6 +118,11 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn(
             "scala-wam\tscala-wam-seeded,scala-wam-seeded-no-kernels,"
             "scala-wam-accumulated,scala-wam-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "scala-wam-artifact\tscala-wam-seeded,scala-wam-seeded-artifact,"
+            "scala-wam-accumulated,scala-wam-accumulated-artifact",
             text,
         )
         self.assertIn("clojure-wam-scaffold\t", text)
