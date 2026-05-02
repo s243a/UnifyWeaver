@@ -1134,6 +1134,41 @@ test_findall_phase4b5_branch_skips_cp_push :-
         retract(clause_body_analysis:order_independent(user:small_fact/2))
     ).
 
+:- dynamic integer_match_test:int_p/1.
+
+%% Integer-quoting regression: the lowered emitter must emit numeric
+%  constants as bare Elixir integer literals, not as quoted strings.
+%  Pre-fix, `get_constant 0, A1` lowered to `val == "0"` (string),
+%  silently breaking numeric head-match for any predicate matching
+%  on integer literals (e.g. `iterate(0).` or fact base `r(1).`).
+%  See benchmarks/wam_elixir_tier2_findall.md "Side finding" for the
+%  original surface — and the broader implication that arithmetic-
+%  heavy Prolog code was silently no-op on this target.
+test_lowered_emits_integer_literals :-
+    Test = 'Lowering: integer constants emit as bare Elixir literals (not stringified)',
+    setup_call_cleanup(
+        (   retractall(integer_match_test:int_p(_)),
+            assertz(integer_match_test:int_p(1)),
+            assertz(integer_match_test:int_p(2)),
+            assertz(integer_match_test:int_p(3))
+        ),
+        (   wam_target:compile_predicate_to_wam(integer_match_test:int_p/1, [], WamCode),
+            lower_predicate_to_elixir(int_p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % Positive: bare integer literal in head-match comparison.
+            sub_string(S, _, _, _, 'val == 1'),
+            sub_string(S, _, _, _, 'val == 2'),
+            sub_string(S, _, _, _, 'val == 3'),
+            % Negative: stringified form must NOT appear.
+            \+ sub_string(S, _, _, _, 'val == "1"'),
+            \+ sub_string(S, _, _, _, 'val == "2"'),
+            \+ sub_string(S, _, _, _, 'val == "3"')
+        ->  pass(Test)
+        ;   fail_test(Test, 'integer constants stringified — head-match would silently fail')
+        ),
+        retractall(integer_match_test:int_p(_))
+    ).
+
 test_tier2_purity_gate_rejects_unknown :-
     Test = 'Tier-2 infra: purity gate fails for unknown predicate',
     (   \+ tier2_purity_eligible(no_such_pred, 2, _)
@@ -1483,6 +1518,7 @@ run_tests :-
     test_findall_instr_lowers_end_aggregate,
     test_findall_instr_end_to_end_lowering,
     test_findall_module_qualified_unwrap,
+    test_lowered_emits_integer_literals,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
     test_par_wrap_segment_emits_super_wrapper,
