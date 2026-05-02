@@ -27,6 +27,21 @@ test_wrap(X) :- test_check(pair(X, done)).
 :- dynamic test_color/2.
 test_color(rgb(255, 0, 0), red).
 
+%% Multi-clause body containing a findall — regression for the bug
+%  where compile_clauses_fragments only emitted allocate/deallocate
+%  when goal-count > 1, missing the case where a single surface goal
+%  is itself a findall/aggregate that internally produces a Call.
+%  Without an env frame, the post-end_aggregate continuation has no
+%  saved caller cp to return to; finalise_aggregate's cp chain loops
+%  back into k2 forever. See compile_single_clause_wam/3 for the
+%  same logic that was previously only applied to single-clause.
+:- dynamic test_multi_findall/1, test_multi_inner/1.
+test_multi_inner(1).
+test_multi_inner(2).
+test_multi_findall('a') :- findall(_, test_multi_inner(_), _).
+test_multi_findall('b') :- findall(_, test_multi_inner(_), _).
+test_multi_findall('c') :- findall(_, test_multi_inner(_), _).
+
 %% Nested compound body arg — exercises recursive put_structure
 :- dynamic test_nested_check/1.
 test_nested_check(box(inner(_, _))).
@@ -146,6 +161,32 @@ test_wam_nested_put_structure :-
         fail_test(Test, 'Missing nested put_structure in output')
     ).
 
+%% Multi-clause findall regression: every clause must have an
+%  allocate/deallocate pair so the inner findall's post-end_aggregate
+%  continuation can retrieve the caller cp from the env frame.
+test_wam_multi_clause_findall_emits_allocate :-
+    Test = 'WAM: multi-clause body with findall emits allocate/deallocate per clause',
+    (   wam_target:compile_predicate_to_wam(user:test_multi_findall/1, [], Code),
+        atom_string(Code, S),
+        % Each of the three clause bodies should contain begin_aggregate
+        % surrounded by allocate ... deallocate. Three pairs total.
+        aggsubs_count(S, 'allocate', AllocCount),
+        aggsubs_count(S, 'deallocate', DeallocCount),
+        aggsubs_count(S, 'begin_aggregate', AggCount),
+        AllocCount >= 3,
+        DeallocCount >= 3,
+        AggCount =:= 3
+    ->  pass(Test)
+    ;   wam_target:compile_predicate_to_wam(user:test_multi_findall/1, [], Code2),
+        format(user_error, 'DEBUG: multi-clause findall output:~n~w~n', [Code2]),
+        fail_test(Test, 'Multi-clause findall body missing allocate/deallocate per clause')
+    ).
+
+%% Count non-overlapping occurrences of Sub in S.
+aggsubs_count(S, Sub, N) :-
+    findall(_, sub_string(S, _, _, _, Sub), Occurrences),
+    length(Occurrences, N).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -159,6 +200,7 @@ run_tests :-
     test_wam_nested_put_structure,
     test_wam_compound_head,
     test_wam_module,
+    test_wam_multi_clause_findall_emits_allocate,
     
     format('~n========================================~n'),
     (   test_failed

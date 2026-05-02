@@ -442,8 +442,18 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     Head =.. [_|Args],
     normalize_goals(Body, Goals),
     empty_varmap(V0),
-    (   length(Goals, NG), NG > 1
-    ->  pre_assign_permanent_vars(Goals, V0, V0a),
+    % Force permanent variable allocation when the body contains a Call
+    % or aggregate (findall/aggregate_all), even for single-goal bodies.
+    % Without an env frame, the post-aggregate continuation has nowhere
+    % to retrieve the caller's saved cp from, so finalise_aggregate's
+    % update_topmost_agg_cp + restored.cp.(restored) chain loops back
+    % into k2 forever. The single-clause path applies the same
+    % condition at line ~327; this keeps multi-clause in sync.
+    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
+    (   ( length(ExpandedGoals, NG), NG > 1
+        ; goals_contain_call_or_aggregate(Goals)
+        )
+    ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode0),
         compile_goals(Goals, V1, yes, _, GoalsCode),
         format(string(HeadCode), "    allocate~n~w", [HeadCode0]),
