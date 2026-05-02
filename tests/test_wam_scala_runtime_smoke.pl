@@ -76,6 +76,42 @@
 :- dynamic user:wam_member_or_abc/1.
 :- dynamic user:wam_length_q/2.
 :- dynamic user:wam_append_q/3.
+:- dynamic user:wam_findall_dummy/1.
+:- dynamic user:wam_findall_simple/1.
+:- dynamic user:wam_findall_template/1.
+:- dynamic user:wam_findall_empty/1.
+:- dynamic user:wam_call2/2.
+:- dynamic user:wam_pred1/2.
+:- dynamic user:wam_atom_codes_q/2.
+:- dynamic user:wam_atom_length_q/2.
+:- dynamic user:wam_append_split_q/2.
+:- dynamic user:wam_length_gen_q/2.
+:- dynamic user:wam_var_q/1.
+:- dynamic user:wam_nonvar_q/1.
+:- dynamic user:wam_atom_q/1.
+:- dynamic user:wam_number_q/1.
+:- dynamic user:wam_is_list_q/1.
+:- dynamic user:wam_ground_q/1.
+:- dynamic user:wam_atomic_q/1.
+:- dynamic user:wam_copy_term_q/2.
+:- dynamic user:wam_sort_q/2.
+:- dynamic user:wam_msort_q/2.
+:- dynamic user:wam_bagof_q/1.
+:- dynamic user:wam_setof_q/1.
+:- dynamic user:wam_setof_dups_dummy/1.
+:- dynamic user:wam_setof_dups_q/1.
+:- dynamic user:wam_bagof_empty_q/1.
+:- dynamic user:wam_var_check_then_bind/1.
+:- dynamic user:wam_dup_first_arg/2.
+:- dynamic user:wam_dup_first_q/2.
+:- dynamic user:wam_between_q/3.
+:- dynamic user:wam_between_collect/3.
+:- dynamic user:wam_format_w/1.
+:- dynamic user:wam_format_combo/2.
+:- dynamic user:wam_format_dn/1.
+:- dynamic user:wam_succ_q/2.
+:- dynamic user:wam_atom_concat_q/3.
+:- dynamic user:wam_sub_atom_q/5.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -174,6 +210,84 @@ user:wam_member_q(X, L)     :- member(X, L).
 user:wam_member_or_abc(X)   :- member(X, [a, b, c]).
 user:wam_length_q(L, N)     :- length(L, N).
 user:wam_append_q(A, B, C)  :- append(A, B, C).
+
+% --- findall/3 ---
+user:wam_findall_dummy(a).
+user:wam_findall_dummy(b).
+user:wam_findall_simple(L)    :- findall(X, user:wam_findall_dummy(X), L).
+user:wam_findall_template(L)  :- findall(p(X), user:wam_findall_dummy(X), L).
+user:wam_findall_empty(L)     :- findall(X, user:wam_no_such_pred(X), L).
+
+% --- call/N ---
+user:wam_pred1(X, Y) :- Y = X.
+% call(F, X) — F is the goal-atom; X is the additional arg.
+% Calling wam_call2(wam_pred1, 5) should bind X=5 by calling wam_pred1(5,_)
+user:wam_call2(F, X) :- call(F, X, X).
+
+% --- atom_codes/2 ---
+user:wam_atom_codes_q(A, Cs) :- atom_codes(A, Cs).
+% --- atom_length/2 ---
+user:wam_atom_length_q(A, N) :- atom_length(A, N).
+
+% --- append/3 split mode and length/2 generative ---
+user:wam_append_split_q(A, B) :- append(A, B, [a,b,c]).
+user:wam_length_gen_q(L, N)   :- length(L, N).
+
+% --- Type-check builtins ---
+user:wam_var_q(X)        :- var(X).
+user:wam_nonvar_q(X)     :- nonvar(X).
+user:wam_atom_q(X)       :- atom(X).
+user:wam_number_q(X)     :- number(X).
+user:wam_is_list_q(X)    :- is_list(X).
+user:wam_ground_q(X)     :- ground(X).
+user:wam_atomic_q(X)     :- atomic(X).
+
+% A predicate that exercises var/1 on a fresh variable: succeeds because
+% Y is unbound when var(Y) runs.
+user:wam_var_check_then_bind(X) :- var(Y), Y = X.
+
+% --- copy_term/2 ---
+user:wam_copy_term_q(A, B) :- copy_term(A, B).
+
+% --- Sorting ---
+user:wam_sort_q(L, S)  :- sort(L, S).
+user:wam_msort_q(L, S) :- msort(L, S).
+
+% --- bagof/3, setof/3 ---
+user:wam_bagof_q(L)            :- bagof(X, user:wam_findall_dummy(X), L).
+user:wam_setof_q(L)            :- setof(X, user:wam_findall_dummy(X), L).
+user:wam_bagof_empty_q(L)      :- bagof(X, user:wam_no_such_pred_2(X), L).
+user:wam_setof_dups_dummy(a).
+user:wam_setof_dups_dummy(b).
+user:wam_setof_dups_dummy(a).
+user:wam_setof_dups_dummy(c).
+user:wam_setof_dups_dummy(b).
+user:wam_setof_dups_q(L) :- setof(X, user:wam_setof_dups_dummy(X), L).
+
+% Two clauses with the SAME first argument — exercises the WAM
+% compiler's first-arg indexing for the multi-match case. The
+% switch_on_constant emitted for this predicate has `a` mapped to BOTH
+% a default case (clause 1) AND an L_n case (clause 3). The runtime
+% must enumerate both via the try_me_else chain, not jump directly to
+% one and skip the other.
+user:wam_dup_first_arg(a, b).
+user:wam_dup_first_arg(c, d).
+user:wam_dup_first_arg(a, e).
+user:wam_dup_first_q(X, Y) :- user:wam_dup_first_arg(X, Y).
+
+% --- between/3 ---
+user:wam_between_q(L, H, X)         :- between(L, H, X).
+user:wam_between_collect(L, H, R)   :- findall(X, between(L, H, X), R).
+
+% --- format/2 ---
+user:wam_format_w(X)            :- format("v=~w", [X]).
+user:wam_format_combo(X, Y)     :- format("~a is ~w!", [X, Y]).
+user:wam_format_dn(X)           :- format("n=~d~n", [X]).
+
+% --- succ/2, atom_concat/3, sub_atom/5 ---
+user:wam_succ_q(X, Y)              :- succ(X, Y).
+user:wam_atom_concat_q(A, B, C)    :- atom_concat(A, B, C).
+user:wam_sub_atom_q(A, B, L, At, S):- sub_atom(A, B, L, At, S).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -600,6 +714,366 @@ test(builtin_append) :-
                               ['[a]', '[b]', '[a,c]'], "false")
         )).
 
+% --- findall/3 ---
+test(findall_simple) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_findall_simple/1],
+        _Opts,
+        TmpDir,
+        (
+            % Two clauses: wam_findall_dummy(a) and (b). Bag is [a, b].
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[b,a]', "false"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[]',    "false"),
+            verify_scala(TmpDir, 'wam_findall_simple/1', '[a]',   "false")
+        )).
+
+test(findall_template) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_findall_template/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_findall_template/1', '[p(a),p(b)]', "true"),
+            verify_scala(TmpDir, 'wam_findall_template/1', '[p(a)]',      "false"),
+            verify_scala(TmpDir, 'wam_findall_template/1', '[]',          "false")
+        )).
+
+test(findall_empty) :-
+    with_scala_project(
+        [user:wam_findall_empty/1],
+        _Opts,
+        TmpDir,
+        (
+            % No clauses for the inner goal → bag is [].
+            verify_scala(TmpDir, 'wam_findall_empty/1', '[]',  "true"),
+            verify_scala(TmpDir, 'wam_findall_empty/1', '[a]', "false")
+        )).
+
+% --- call/N ---
+test(call_n_arity_3) :-
+    with_scala_project(
+        [user:wam_pred1/2, user:wam_call2/2],
+        [ intern_atoms([wam_pred1, foo]) ],
+        TmpDir,
+        (
+            % wam_call2(wam_pred1, X) calls wam_pred1(X, X) — succeeds for
+            % any X (X = X by unification).
+            verify_scala_args(TmpDir, 'wam_call2/2', ['wam_pred1', 'foo'], "true"),
+            % If the goal-atom doesn't resolve, expect false.
+            verify_scala_args(TmpDir, 'wam_call2/2', ['no_such_pred', 'foo'], "false")
+        )).
+
+% --- atom_codes/2 ---
+test(builtin_atom_codes) :-
+    with_scala_project(
+        [user:wam_atom_codes_q/2],
+        [ intern_atoms([abc, hi]) ],
+        TmpDir,
+        (
+            % "abc" -> [97, 98, 99]
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['abc', '[97,98,99]'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['hi',  '[104,105]'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_codes_q/2',
+                              ['abc', '[97,98]'], "false")
+        )).
+
+% --- atom_length/2 ---
+test(builtin_atom_length) :-
+    with_scala_project(
+        [user:wam_atom_length_q/2],
+        [ intern_atoms([abc, hi, '']) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['abc', '3'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['hi',  '2'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['abc', '4'], "false")
+        )).
+
+% --- append/3 split mode ---
+test(builtin_append_split) :-
+    with_scala_project(
+        [user:wam_append_split_q/2],
+        [ intern_atoms([a, b, c]) ],
+        TmpDir,
+        (
+            % Splits of [a,b,c]: ([], [a,b,c]) ([a], [b,c]) ([a,b], [c]) ([a,b,c], [])
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[]',     '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a]',    '[b,c]'],   "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a,b]',  '[c]'],     "true"),
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a,b,c]','[]'],      "true"),
+            % Not a valid split:
+            verify_scala_args(TmpDir, 'wam_append_split_q/2', ['[a]',    '[c]'],     "false")
+        )).
+
+% --- length/2 generative mode ---
+% length(L, N) with L unbound and N ground → builds list of N fresh vars.
+% A list of N fresh vars unifies with any concrete list of length N.
+test(builtin_length_generative) :-
+    with_scala_project(
+        [user:wam_length_gen_q/2],
+        [ intern_atoms([x, y, z]) ],
+        TmpDir,
+        (
+            % L=[x,y,z], N=3 → ground both → unify length 3 with 3 → true
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[x,y,z]', '3'], "true"),
+            % L=[x,y], N=3 → 2 != 3 → false
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[x,y]',   '3'], "false"),
+            % We can't easily exercise pure generative mode from CLI
+            % (would need an unbound L), but the round-trip with a
+            % ground list of matching length confirms the deterministic
+            % path; the generative branch is exercised when the WAM
+            % runtime sees an unbound first arg with a bound length.
+            verify_scala_args(TmpDir, 'wam_length_gen_q/2', ['[]',      '0'], "true")
+        )).
+
+% --- Type-check builtins ---
+test(builtin_var_nonvar) :-
+    with_scala_project(
+        [user:wam_var_q/1, user:wam_nonvar_q/1, user:wam_var_check_then_bind/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            % var(a) — atom, not unbound — fails.
+            verify_scala(TmpDir, 'wam_var_q/1',    'a', "false"),
+            verify_scala(TmpDir, 'wam_nonvar_q/1', 'a', "true"),
+            % var(Y) inside a body where Y is locally fresh — succeeds.
+            verify_scala(TmpDir, 'wam_var_check_then_bind/1', 'a', "true")
+        )).
+
+test(builtin_atom_number) :-
+    with_scala_project(
+        [user:wam_atom_q/1, user:wam_number_q/1, user:wam_atomic_q/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_atom_q/1',    'a',    "true"),
+            verify_scala(TmpDir, 'wam_atom_q/1',    '5',    "false"),
+            verify_scala(TmpDir, 'wam_atom_q/1',    'f(a)', "false"),
+            verify_scala(TmpDir, 'wam_number_q/1',  '5',    "true"),
+            verify_scala(TmpDir, 'wam_number_q/1',  '3.14', "true"),
+            verify_scala(TmpDir, 'wam_number_q/1',  'a',    "false"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  'a',    "true"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  '5',    "true"),
+            verify_scala(TmpDir, 'wam_atomic_q/1',  'f(a)', "false")
+        )).
+
+test(builtin_is_list_ground) :-
+    with_scala_project(
+        [user:wam_is_list_q/1, user:wam_ground_q/1],
+        [ intern_atoms([a, b]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_is_list_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_is_list_q/1', '[]',    "true"),
+            verify_scala(TmpDir, 'wam_is_list_q/1', 'a',     "false"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  'a',     "true"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  'f(a)',  "true"),
+            verify_scala(TmpDir, 'wam_ground_q/1',  '[a,b]', "true")
+        )).
+
+% --- copy_term/2 ---
+% Ground terms copy to themselves; copy_term(a, a) succeeds.
+test(builtin_copy_term) :-
+    with_scala_project(
+        [user:wam_copy_term_q/2],
+        [ intern_atoms([a, b, foo]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['a', 'a'],         "true"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['a', 'b'],         "false"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['foo(a)','foo(a)'], "true"),
+            verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['foo(a)','foo(b)'], "false")
+        )).
+
+% --- Sorting ---
+test(builtin_sort) :-
+    with_scala_project(
+        [user:wam_sort_q/2, user:wam_msort_q/2],
+        [ intern_atoms([a, b, c, d]) ],
+        TmpDir,
+        (
+            % sort/2: dedup and order
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b]',     '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b,a]',   '[a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[3,1,2]',     '[1,2,3]'], "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[]',          '[]'],      "true"),
+            verify_scala_args(TmpDir, 'wam_sort_q/2',  ['[c,a,b]',     '[a,c,b]'], "false"),
+            % msort/2: keep duplicates
+            verify_scala_args(TmpDir, 'wam_msort_q/2', ['[c,a,b,a]', '[a,a,b,c]'], "true"),
+            verify_scala_args(TmpDir, 'wam_msort_q/2', ['[c,a,b,a]', '[a,b,c]'],   "false")
+        )).
+
+% --- bagof/3, setof/3 ---
+test(builtin_bagof) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_bagof_q/1, user:wam_bagof_empty_q/1],
+        _Opts,
+        TmpDir,
+        (
+            % wam_findall_dummy(a). wam_findall_dummy(b). → bagof returns [a,b]
+            verify_scala(TmpDir, 'wam_bagof_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_bagof_q/1', '[]',    "false"),
+            % bagof with no solutions FAILS (unlike findall which returns [])
+            verify_scala(TmpDir, 'wam_bagof_empty_q/1', '[]', "false"),
+            verify_scala(TmpDir, 'wam_bagof_empty_q/1', '_',  "false")
+        )).
+
+test(builtin_setof) :-
+    with_scala_project(
+        [user:wam_findall_dummy/1, user:wam_setof_q/1,
+         user:wam_setof_dups_dummy/1, user:wam_setof_dups_q/1],
+        _Opts,
+        TmpDir,
+        (
+            % Two clauses, both unique values → set is [a,b]
+            verify_scala(TmpDir, 'wam_setof_q/1', '[a,b]', "true"),
+            verify_scala(TmpDir, 'wam_setof_q/1', '[a]',   "false"),
+            % wam_setof_dups_dummy has clauses for a, b, a, c, b → set is [a,b,c]
+            verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,b,c]', "true"),
+            verify_scala(TmpDir, 'wam_setof_dups_q/1', '[a,a,b,b,c]', "false")
+        )).
+
+% switch_on_constant with multi-match (two clauses sharing the same
+% first arg constant): the runtime must enumerate every matching
+% clause via the try_me_else chain, not jump directly to one and skip
+% the rest. Without the multi-match fall-through, wam_dup_first_q(a,e)
+% would be unreachable. Regression test for that case.
+test(builtin_switch_dup_first_arg) :-
+    with_scala_project(
+        [user:wam_dup_first_arg/2, user:wam_dup_first_q/2],
+        [ intern_atoms([a, b, c, d, e]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','b'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','e'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['c','d'], "true"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','x'], "false"),
+            verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['b','b'], "false")
+        )).
+
+% --- between/3 ---
+%   bound mode: succeeds iff Low =< X =< High
+%   unbound + findall: enumerates Low..High via the multi-solution path
+test(builtin_between) :-
+    with_scala_project(
+        [user:wam_between_q/3, user:wam_between_collect/3],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','3'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','1'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','5'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','0'], "false"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','6'], "false"),
+            verify_scala_args(TmpDir, 'wam_between_q/3', ['1','5','-1'], "false"),
+            % findall + between exercises the multi-solution path.
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['1','5','[1,2,3,4,5]'], "true"),
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['3','3','[3]'],         "true"),
+            verify_scala_args(TmpDir, 'wam_between_collect/3',
+                              ['1','3','[1,2,3,4]'],   "false")
+        )).
+
+% format/2 prints to stdout AND returns true. The generated main
+% prints the run result on its own line, so the captured stdout
+% (after normalize_space collapses newline → space) is the format
+% output adjacent to the literal "true"/"false". The expected
+% strings below reflect that.
+test(builtin_format) :-
+    with_scala_project(
+        [user:wam_format_w/1, user:wam_format_combo/2, user:wam_format_dn/1],
+        [ intern_atoms([hello, world]) ],
+        TmpDir,
+        (
+            verify_scala(TmpDir, 'wam_format_w/1', '5', "v=5true"),
+            verify_scala_args(TmpDir, 'wam_format_combo/2',
+                              ['hello', 'world'], "hello is world!true"),
+            % ~n inserts a newline, which normalize_space turns into a
+            % single space between the format output and "true".
+            verify_scala(TmpDir, 'wam_format_dn/1', '42', "n=42 true")
+        )).
+
+test(builtin_succ) :-
+    with_scala_project(
+        [user:wam_succ_q/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['3', '4'], "true"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['0', '1'], "true"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['3', '5'], "false"),
+            verify_scala_args(TmpDir, 'wam_succ_q/2', ['-1', '0'], "false")
+        )).
+
+test(builtin_atom_concat) :-
+    with_scala_project(
+        [user:wam_atom_concat_q/3],
+        % Pre-intern both operands and the expected concat results so
+        % the runtime intern table can match the synthesised "ab" / "hi"
+        % strings against arg3.
+        [ intern_atoms([a, b, ab, hello, world, helloworld]) ],
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['a', 'b', 'ab'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['hello', 'world', 'helloworld'], "true"),
+            verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
+                              ['hello', 'world', 'helloworlds'], "false")
+        )).
+
+test(builtin_sub_atom) :-
+    with_scala_project(
+        [user:wam_sub_atom_q/5],
+        [ intern_atoms([hello, hel, ell, llo, '']) ],
+        TmpDir,
+        (
+            % sub_atom(hello, 0, 3, After, Sub) → After=2, Sub=hel
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '3', '2', 'hel'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '1', '3', '1', 'ell'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '2', '3', '0', 'llo'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '5', '0', 'hello'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
+                              ['hello', '0', '3', '2', 'wrong'], "false")
+        )).
+
+% Multi-query stream mode: run a batch of queries in a single JVM
+% invocation by pointing --queries at a file. Output is one
+% true/false line per query.
+test(query_stream_runner) :-
+    with_scala_project(
+        [user:wam_fact/1],
+        _Opts,
+        TmpDir,
+        (
+            absolute_file_name(TmpDir, AbsTmp),
+            directory_file_path(AbsTmp, 'queries.txt', QueriesPath),
+            setup_call_cleanup(
+                open(QueriesPath, write, Stream),
+                ( format(Stream, 'wam_fact/1 a~n', []),
+                  format(Stream, 'wam_fact/1 b~n', []),
+                  format(Stream, '# comment line — ignored~n', []),
+                  format(Stream, '~n', []),                    % blank line — also ignored
+                  format(Stream, 'wam_fact/1 a~n', [])
+                ),
+                close(Stream)),
+            run_scala_query_stream(TmpDir, QueriesPath, Output),
+            % normalize_space collapses each line's newline into a
+            % single space, so three queries → "true false true".
+            (   Output == "true false true"
+            ->  true
+            ;   throw(error(query_stream_mismatch(Output), _))
+            )
+        )).
+
 :- end_tests(wam_scala_runtime_smoke).
 
 % ============================================================
@@ -698,6 +1172,26 @@ unique_scala_tmp_dir(Prefix, TmpDir) :-
     get_time(T),
     Stamp is floor(T * 1000),
     format(atom(TmpDir), '~w_~w', [Prefix, Stamp]).
+
+%% run_scala_query_stream(+ProjectDir, +QueriesPath, -Output)
+%  Invokes the generated program in --queries mode and captures
+%  normalized stdout. Each line of the queries file is one CLI-style
+%  query; the program prints true/false per query.
+run_scala_query_stream(ProjectDir, QueriesPath, Output) :-
+    absolute_file_name(ProjectDir, AbsTmp),
+    directory_file_path(AbsTmp, 'classes', ClassDir),
+    atom_string(QueriesPath, QPathStr),
+    process_create(path(scala),
+        ['-classpath', ClassDir,
+         'generated.wam_scala_smoke.core.GeneratedProgram',
+         '--queries', QPathStr],
+        [cwd(AbsTmp), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, OutStr),
+    read_string(Err, _, _ErrStr),
+    close(Out),
+    close(Err),
+    process_wait(Pid, exit(_)),
+    normalize_space(string(Output), OutStr).
 
 %% write_facts_csv(+Path, +Tuples) is det.
 %  Writes each tuple as a comma-separated line to Path. Used by the

@@ -1034,6 +1034,19 @@ compile_goal_call(\+ member(X, V), V0, Vf, Code) :-
     is_visited_set_var(V),
     !,
     emit_not_member_set_lowering(X, V, V0, Vf, Code).
+%% \+ member(X, [a,b,c,...]) lowering for compile-time-ground atom
+%% lists. Bakes the atoms into a single NotMemberConstAtoms WAM
+%% instruction — zero heap allocation, zero list-walk dispatch. Fires
+%% whenever the second arg is a proper list of ground atoms in the
+%% source, regardless of X's binding state (the runtime checks at
+%% dispatch). Must come BEFORE the var(L) clause so the more specific
+%% case wins.
+compile_goal_call(\+ member(X, L), V0, Vf, Code) :-
+    var(X),
+    is_ground_atom_list(L, Atoms),
+    \+ lowering_disabled(ground_member),
+    !,
+    emit_not_member_const_atoms_lowering(X, Atoms, V0, Vf, Code).
 %% \+ member(X, L) lowering: emits a specialised NotMemberList WAM
 %% instruction that walks L inline and skips both the put_structure
 %% goal-term construction AND the builtin_call dispatch (4 dispatches +
@@ -1120,6 +1133,14 @@ compile_goal_execute(\+ member(X, V), V0, Vf, Code) :-
     is_visited_set_var(V),
     !,
     emit_not_member_set_lowering(X, V, V0, Vf, BodyCode),
+    format(string(Code), "~w~n    proceed", [BodyCode]).
+%% \+ member(X, [a,b,c,...]) ground-list lowering, tail-call form.
+compile_goal_execute(\+ member(X, L), V0, Vf, Code) :-
+    var(X),
+    is_ground_atom_list(L, Atoms),
+    \+ lowering_disabled(ground_member),
+    !,
+    emit_not_member_const_atoms_lowering(X, Atoms, V0, Vf, BodyCode),
     format(string(Code), "~w~n    proceed", [BodyCode]).
 %% \+ member(X, L) lowering, tail-call form.
 compile_goal_execute(\+ member(X, L), V0, Vf, Code) :-
@@ -1591,6 +1612,55 @@ emit_not_member_set_lowering(X, V, V0, Vf, Code) :-
     ),
     format(string(Body), "    not_member_set ~w, ~w", [XReg, VReg]),
     join_nonempty([XPrefix, VPrefix, Body], Code).
+
+%% lowering_disabled(+Tag) is semidet.
+%
+%  Per-process opt-out hook used by benchmarks to compile a baseline
+%  project with a specific lowering turned off. Currently recognised:
+%
+%    ground_member — disables the literal-ground-list `\+ member`
+%                    lowering (NotMemberConstAtoms). Falls through to
+%                    the standard builtin dispatch path.
+%
+%  Default: not disabled. Bench scripts assert
+%  `wam_target:lowering_disabled(ground_member)` before generating an
+%  unlowered baseline project, then retract afterwards.
+:- dynamic(lowering_disabled/1).
+
+%% is_ground_atom_list(+L, -Atoms) is semidet.
+%
+%  Succeeds when L is a proper list of ground atoms, binding Atoms to
+%  the same list. Fails for variables, partial lists, lists containing
+%  numbers, structures, or unbound elements. Used to detect the
+%  literal-list shape of `\+ member(X, [a, b, c])` for codegen lowering.
+is_ground_atom_list(L, Atoms) :-
+    nonvar(L),
+    proper_list(L, Items),
+    Items \== [],
+    maplist(atom, Items),
+    Atoms = Items.
+
+proper_list(T, []) :- T == [], !.
+proper_list([H|T], [H|R]) :- proper_list(T, R).
+
+%% emit_not_member_const_atoms_lowering(+X, +Atoms, +V0, -Vf, -Code)
+%
+%  Emits a single `not_member_const_atoms XReg A1 A2 ... AN` WAM
+%  instruction. Atoms are interned at the WAM-haskell-target stage,
+%  so what we emit here is just the atom names space-separated. X must
+%  resolve to a register; if it doesn't already have one, allocate
+%  fresh.
+emit_not_member_const_atoms_lowering(X, Atoms, V0, Vf, Code) :-
+    (   get_var_reg(X, V0, XReg)
+    ->  Vf = V0,
+        XPrefix = ""
+    ;   next_x_reg(V0, XReg, V_temp),
+        bind_var(X, XReg, V_temp, Vf),
+        format(string(XPrefix), "    put_variable ~w, A1", [XReg])
+    ),
+    atomic_list_concat(Atoms, ' ', AtomsStr),
+    format(string(Body), "    not_member_const_atoms ~w ~w", [XReg, AtomsStr]),
+    join_nonempty([XPrefix, Body], Code).
 
 %% rewrite_visited_set_args(+Pred/+Arity, +Args, -NewArgs, -Code, +V0, -Vf)
 %

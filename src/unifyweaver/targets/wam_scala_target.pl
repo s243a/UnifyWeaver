@@ -107,12 +107,49 @@ reg_to_int(Reg, Int) :-
 %  Converts one WAM assembly text line to a Scala Instruction constructor call.
 %  Returns false for label lines and blank lines.
 wam_line_to_scala_literal(Line, Literal) :-
-    split_string(Line, " \t", " \t,", Parts0),
-    exclude(=(""), Parts0, Parts),
+    tokenize_wam_line(Line, Parts),
     Parts \= [],
     Parts = [First|_],
     \+ sub_string(First, _, 1, 0, ":"),
     wam_parts_to_scala(Parts, Literal).
+
+%% tokenize_wam_line(+Line, -Tokens)
+%  Splits Line on whitespace and commas. Single-quoted segments are
+%  treated as opaque tokens — internal spaces are preserved and the
+%  surrounding quotes are stripped. Required for things like the
+%  format/2 string `'~a is ~w!'` which the simpler `split_string` path
+%  would shred into multiple tokens.
+tokenize_wam_line(Line, Tokens) :-
+    string_chars(Line, Chars),
+    tokenize_wam_chars(Chars, [], [], outside, Tokens).
+
+% tokenize_wam_chars(+Chars, +CurReversed, +TokensReversedAcc, +State, -Tokens)
+tokenize_wam_chars([], [], Acc, _, Tokens) :- !,
+    reverse(Acc, Tokens).
+tokenize_wam_chars([], CurR, Acc, _, Tokens) :- !,
+    reverse(CurR, CurC), string_chars(T, CurC),
+    reverse([T|Acc], Tokens).
+tokenize_wam_chars([C|Rest], CurR, Acc, outside, Tokens) :-
+    (   (C == ' ' ; C == '\t' ; C == ',')
+    ->  (   CurR == []
+        ->  tokenize_wam_chars(Rest, [], Acc, outside, Tokens)
+        ;   reverse(CurR, CurC), string_chars(T, CurC),
+            tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+        )
+    ;   C == '\''
+    ->  (   CurR == []
+        ->  tokenize_wam_chars(Rest, [], Acc, inside, Tokens)
+        ;   % Stray quote in the middle of an unquoted token — keep it.
+            tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
+        )
+    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, outside, Tokens)
+    ).
+tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
+    (   C == '\''
+    ->  reverse(CurR, CurC), string_chars(T, CurC),
+        tokenize_wam_chars(Rest, [], [T|Acc], outside, Tokens)
+    ;   tokenize_wam_chars(Rest, [C|CurR], Acc, inside, Tokens)
+    ).
 
 % --- Control instructions ---
 % The WAM emitter produces both:
@@ -247,8 +284,34 @@ wam_parts_to_scala(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(Array(~w))', [CasesStr]).
 
+% --- Switch on term (type-based dispatch) ---
+% First-arg type indexing emitted by the WAM compiler when a predicate
+% mixes constant, list, and compound first-arg shapes. Format:
+%   switch_on_term <CLen> <const_cases...> <SLen> <struct_cases...> <ListLabel>
+% e.g. `switch_on_term 1 []:default 0  L_x_2`  (empty struct cases section)
+%      `switch_on_term 2 0:default []:L_2 2 f/1:L_4 g/2:L_5 L_3`
+% Each const case is `<value>:<label>`; each struct case is
+% `<functor>/<arity>:<label>`. ListLabel routes any cons cell ([|]/2).
+wam_parts_to_scala(["switch_on_term" | Rest], Lit) :-
+    parse_switch_on_term_tokens(Rest, ConstCases, StructCases, ListLabel),
+    format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit).
+
 % --- ITE soft cut ---
 wam_parts_to_scala(["cut_ite"], 'CutIte').
+
+% --- Aggregation (findall/3 etc.) ---
+% begin_aggregate Kind, TemplateReg, BagReg
+% end_aggregate   TemplateReg
+% These come from the WAM lowering of findall(Template, Goal, Bag).
+% Kind is the aggregation mode ("collect" for findall).
+wam_parts_to_scala(["begin_aggregate", Kind, TemplateReg, BagReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    reg_to_int(BagReg, BIdx),
+    format(string(Lit), 'BeginAggregate("~w", ~w, ~w)', [Kind, TIdx, BIdx]).
+
+wam_parts_to_scala(["end_aggregate", TemplateReg], Lit) :-
+    reg_to_int(TemplateReg, TIdx),
+    format(string(Lit), 'EndAggregate(~w)', [TIdx]).
 
 % --- Fallback ---
 wam_parts_to_scala(Parts, Lit) :-
@@ -326,6 +389,57 @@ last_slash_index(Atom, Index) :-
     Bs \= [],
     last(Bs, Index).
 
+% ----------------------------------------------------------
+% switch_on_term parsing helpers
+% ----------------------------------------------------------
+% Lifted out of the wam_parts_to_scala block so that block stays
+% contiguous (no `:- discontiguous` directive needed).
+
+parse_switch_on_term_tokens([CLenStr | Rest0], ConstCases, StructCases, ListLabel) :-
+    number_string(CLen, CLenStr),
+    length(CTokens, CLen),
+    append(CTokens, [SLenStr | Rest1], Rest0),
+    number_string(SLen, SLenStr),
+    length(STokens, SLen),
+    append(STokens, [ListLabel], Rest1),
+    maplist(parse_const_case_token, CTokens, ConstCases),
+    maplist(parse_struct_case_token, STokens, StructCases).
+
+%% parse_const_case_token("<value>:<label>", -case(ValueLit, Label))
+parse_const_case_token(Token, case(ValueLit, Label)) :-
+    split_at_first_colon(Token, ValueStr, Label),
+    constant_to_scala_term(ValueStr, ValueLit).
+
+%% parse_struct_case_token("<functor>/<arity>:<label>", -case(FId, Arity, Label))
+parse_struct_case_token(Token, struct(FId, Arity, Label)) :-
+    split_at_first_colon(Token, FAStr, Label),
+    parse_functor_arity(FAStr, FName, Arity),
+    intern_scala_atom(FName, FId).
+
+%% split_at_first_colon(+Token, -Before, -After)
+%  Splits at the first ":" — used by switch_on_term parsers where the
+%  value half ([], 0, f/2) never contains a ":".
+split_at_first_colon(Token, Before, After) :-
+    sub_string(Token, B, 1, _, ":"),
+    !,
+    sub_string(Token, 0, B, _, Before),
+    B1 is B + 1,
+    sub_string(Token, B1, _, 0, After).
+
+format_switch_on_term_lit(ConstCases, StructCases, ListLabel, Lit) :-
+    maplist(const_case_lit, ConstCases, ConstLits),
+    atomic_list_concat(ConstLits, ', ', ConstStr),
+    maplist(struct_case_lit, StructCases, StructLits),
+    atomic_list_concat(StructLits, ', ', StructStr),
+    format(string(Lit),
+           'SwitchOnTerm(Array(~w), Array(~w), "~w")',
+           [ConstStr, StructStr, ListLabel]).
+
+const_case_lit(case(ValueLit, Label), Lit) :-
+    format(string(Lit), 'TermSwitchConst(~w, "~w")', [ValueLit, Label]).
+struct_case_lit(struct(FId, Arity, Label), Lit) :-
+    format(string(Lit), 'TermSwitchStruct(~w, ~w, "~w")', [FId, Arity, Label]).
+
 % ============================================================================
 % WAM TEXT → SCALA INSTRUCTION ARRAY
 % ============================================================================
@@ -342,8 +456,7 @@ wam_code_to_scala_data(WamCode, Instructions, LabelMap, LabelEntries) :-
 
 wam_lines_to_data([], _, [], [], []).
 wam_lines_to_data([Line|Rest], PC, Instructions, LabelMap, LabelEntries) :-
-    split_string(Line, " \t", " \t,", Parts0),
-    exclude(=(""), Parts0, Parts),
+    tokenize_wam_line(Line, Parts),
     (   Parts = [First|_], sub_string(First, _, 1, 0, ":")
     ->  % Label line: extract name, no instruction emitted
         sub_string(First, 0, _, 1, LabelName),
@@ -586,20 +699,26 @@ fact_source_spec_to_handler_code(Arity, file(Path), Code) :-
     !,
     atom_string(Path, PathStr),
     scala_string_literal(PathStr, PathLit),
+    % The CSV is read and parsed ONCE at handler-instance init (the
+    % `private val sols`), not on every apply call. Caching this way
+    % closes most of the per-iteration gap with inline tuples.
     format(string(Code),
-           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          val sols: Seq[Map[Int, WamTerm]] = src.getLines().toList.map { line =>\n            val parts = line.split(\",\").map(_.trim)\n            parts.zipWithIndex.map { case (p, i) => (i + 1) -> parseFactArg(p) }.toMap\n          }\n          if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n        } finally { src.close() }\n      }\n    }",
+           "new ForeignHandler {\n      private val sols: Seq[Map[Int, WamTerm]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toList.map { line =>\n            val parts = line.split(\",\").map(_.trim)\n            parts.zipWithIndex.map { case (p, i) => (i + 1) -> parseFactArg(p) }.toMap\n          }\n        } finally { src.close() }\n      }\n      def apply(args: Array[WamTerm]): ForeignResult =\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n    }",
            [PathLit]),
-    % Note: Arity isn't enforced here (each line uses whatever columns are
+    % Arity isn't enforced here (each line uses whatever columns are
     % present); a malformed CSV will simply produce wrong-arity bindings
-    % that the runtime will fail to unify. Acceptable for a first cut.
+    % that the runtime will fail to unify.
     _ = Arity.
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
+%  The solutions Seq is hoisted to a `val` on the anonymous class so it
+%  is built once at handler construction, not on every apply call. For
+%  large tuple lists this is a notable per-iteration win.
 fact_source_to_handler_code(Arity, Tuples, Code) :-
     maplist(tuple_to_solution_map_lit(Arity), Tuples, SolLits),
     atomic_list_concat(SolLits, ',\n        ', SolBody),
     format(string(Code),
-           "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols: Seq[Map[Int, WamTerm]] = Seq(\n        ~w\n        )\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           "new ForeignHandler {\n      private val sols: Seq[Map[Int, WamTerm]] = Seq(\n        ~w\n      )\n      def apply(args: Array[WamTerm]): ForeignResult =\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n    }",
            [SolBody]).
 
 tuple_to_solution_map_lit(Arity, Tuple, Lit) :-

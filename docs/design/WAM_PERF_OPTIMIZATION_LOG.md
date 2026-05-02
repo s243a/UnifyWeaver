@@ -224,6 +224,525 @@ re-doing the fusion.
 
 ---
 
+## Go WAM — optimization timeline
+
+Started from a working but slow runtime (effective-distance bench at
+scale-300 took ~340s after the late-April correctness fixes landed).
+Three rounds of perf brought it to ~53s — a **6.4x cumulative
+speedup** — and aligned the runtime with the Rust target's choicepoint
+and environment-trimming design.
+
+### Phase A: Correctness work (April 2026)
+
+Six runtime bugs found and fixed in sequence; collectively the
+difference between `tuple_count=0` and `tuple_count=211 article_count=271`
+matching the reference output. Documented in
+`benchmarks/go_wam_runtime_findings.md`. Most relevant for future perf
+work:
+
+| Bug | Fix |
+|---|---|
+| `bindUnbound` corrupting A1 when `Idx=0` | Drop unconditional `putReg(u.Idx, val)` |
+| `pushChoicePoint` saving only A-regs, leaving stale heap-Refs | Snapshot full register file (constraint that Phase D would later loosen via env trimming) |
+| `PutVariable` Idx collision across recursive activations | Globally-unique Idx via `allocVarId/0` |
+| `extract_shared_start_pc` taking the wrong digits | Fixed-length `sub_string` |
+| `Atom.Equals` always doing string compare | Pointer-identity short-circuit |
+| Y-regs colliding across nested predicate calls | Save/restore in `EnvFrame.SavedYRegs` at Allocate/Deallocate |
+
+### Phase B: First constant-factor wins (May 2026, `86f6febb`)
+
+| Commit | What | Why it matters |
+|---|---|---|
+| `4d0dd53e` | Include `category_parent/2` in `kernels_on` predicate list | Without it the kernel's recursion had nothing to call, every weight query returned 0 |
+| `86f6febb` | `Regs[512]` → `Regs[320]` + `resolveInstructions` handles `default` label sentinel | The `default` label kept SwitchOnConstant on the linear-scan runtime path even though SwitchOnConstantPc binary search was available; resolution lets the indexed dispatch fire. Combined with the smaller register file these brought scale-300 from ~340s to ~178s (1.91x) |
+
+### Phase C: Constant-factor attempts that didn't pan out (May 2026)
+
+Tracked here so they don't get re-tried; the underlying lessons match
+the Haskell/Rust patterns but the constant-factor reductions aren't
+distinguishable from variance noise (~±10%) at scale-300.
+
+| Attempt | Outcome |
+|---|---|
+| `Ctx.SaveRegBound` (compute max-used reg, snapshot only `Regs[:208]`) | Within variance |
+| `SavedRegs` pool with `truncateChoicePoints` recycle helper + `Clone()` deep-copy | +3% at 50-seed scale, **−6% at full scale-300** — Clone deep-copy + pool bookkeeping exceed alloc savings on the longer run |
+| Pre-sized `Bindings` map (`make(map[int]Value, 4096)`) | Consistent ~3-5% regression |
+| `Bindings []Value` slice indexed by Idx (`perf/wam-go-bindings-slice-and-stack-share`) | Performance-neutral at scale (theoretical 6x speedup on per-binding ops, but Bindings ops are ≤10% of total CPU; real bottleneck was elsewhere). Kept as structural cleanup |
+| Save only A-regs at CP push (Rust's `fea72426`-equivalent, attempted before env trimming) | **Broke correctness** (tuple_count dropped from 16 to 4 at dev): without env trimming, Y-regs at backtrack-time can't be recovered from the env frame because the SavedYRegs there hold *outer* values, not the current Y-regs at TryMeElse time. Re-enabled in Phase D as save-A+Y-skip-X once env trimming was in place |
+
+### Phase D: Structural refactor (May 2026, `perf/wam-go-env-trimming`)
+
+The two patches that delivered most of the Phase B → Phase D
+improvement (178s → 53s = 3.4x at full scale-300; cumulative 6.4x
+from the original 340s baseline):
+
+| Change | What | Why it matters |
+|---|---|---|
+| Environment trimming | Add `WamState.E` (current env-frame stack index) and `EnvFrame.PrevE`. Allocate links via PrevE and updates `vm.E`. Deallocate walks the PrevE chain *logically* (updates vm.E) and only physically pops the frame when both (a) it's at the top of the stack and (b) `env.B0 >= len(ChoicePoints)` (no younger CP references it). Otherwise the frame stays on the stack, dead but harmless, until backtrack truncation sweeps it. `peekEnvFrame` becomes O(1) via vm.E instead of an O(stack) reverse scan. | Prerequisite for the next change — without it, env frames could be physically popped while a younger CP needed them, so `pushChoicePoint` had to deep-copy the stack to capture the frames. With env trimming, the live frames are guaranteed to still be on the stack at backtrack time. |
+| Stack-mark choicepoints | `ChoicePoint.Stack []StackEntry` → `ChoicePoint.StackLen int`. `pushChoicePoint` records `len(vm.Stack)` instead of calling `copyStack`. `backtrack` truncates via `vm.Stack = vm.Stack[:cp.StackLen]`. The `Stack` field on ChoicePoint is gone; `copyStack` is unused. | Eliminates the per-CP `make([]StackEntry, ...)` + memcpy that was ~19% of CPU. Combined with env trimming this brought scale-300/50 from ~20s to ~8.5s (2.4x). |
+| Save-A+Y-skip-X register snapshot | `snapshotAllRegs` now saves 108 elements: `Regs[0..7]` (A-regs) + `Regs[200..299]` (Y-regs). `restoreSavedRegs` reverses the layout. The X-reg range (Regs[8..199]) is intentionally skipped — X-regs are clause-local in the codegen, the next clause's head writes whatever X-regs it needs (PutVariable / GetVariable Xn always writes before the X-reg is read), and stale leftovers from the failed clause never get touched. Y-regs *do* need saving because env trimming stores Y-regs at *Allocate* time; the *current* Y-regs at TryMeElse time only exist in the CP snapshot. | Cuts the per-CP snapshot copy from 320 elements to 108 (≈3x). Combined with the above, scale-300/50 went from ~8.5s to ~5.1s (1.7x more); scale-300/full went from 88.7s to 53s (1.7x more). |
+
+Cross-target precedent: the Rust target's Phase B (`6bec8b7e`,
+`fcc88aca`, `6815f9a3`, `fea72426`, `4a6e374e`) landed the equivalent
+sequence — lightweight choicepoints + Rc-shared stack + save only
+argument regs. The Go runtime can't use `Rc<Vec>` for stack sharing,
+but the `len(vm.Stack)` mark gives the same effect because env
+trimming guarantees the live frames stay reachable until backtrack
+truncates them.
+
+### Phase E: Y-reg snapshot bounded by actually-used range (May 2026, `perf/wam-go-yreg-trail`)
+
+After Phase D the per-CP profile showed `restoreSavedRegs` at ~42%
+of CPU, with the Y-reg copy (100 elements) dominating over the A-reg
+copy (8 elements). Most clauses use only ~10 Y-regs; the snapshot
+was paying for 100.
+
+Tried first: trail-based Y-reg restoration (per-write trail entries,
+no per-CP snapshot). It hung the bench — too many trail entries +
+subtle ordering issues with `bindUnbound`'s alias-rewrite loop and
+the existing `trailBinding(i.Xn)` calls in `GetVariable` /
+`UnifyVariable` (leftovers from when Idx == register slot index, now
+wrong with allocVarId starting at 1000+). Reverted.
+
+Approach that worked: track `vm.MaxYReg` as a high-water mark of the
+highest Y-reg index ever written, bumped inside `putReg`. The
+snapshot copies only `Regs[200..vm.MaxYReg]` instead of the full Y
+range. For the bench's category_ancestor (uses ~10 Y-regs), this
+shrinks the snapshot from 108 elements to ~18 and the per-CP
+memmove proportionally.
+
+Two bugs surfaced and were fixed:
+
+1. **MaxYReg is monotonic but the *failed clause* could grow it
+   past push-time.** If the snapshot was made when MaxYReg was N
+   and the failed clause wrote a higher Y-reg, restore wouldn't
+   touch the slot — it'd stay at the failed value. Fix:
+   `restoreSavedRegs` now clears `Regs[pushMaxY..vm.MaxYReg]` to
+   nil after restoring the snapshot (those slots were nil at push
+   time by construction).
+
+2. **`Clone()` didn't carry MaxYReg.** Sub-VMs in `executeAggregate`
+   started with MaxYReg=0, snapshot omitted Y-regs, backtrack
+   inside the sub-VM lost values the failed clause overwrote.
+   Symptom: `Velocity Physics 1.602159` instead of the
+   post-Phase-D `1.601079`. Fix: Clone copies MaxYReg.
+
+### Phase F: ChoicePoint pointer access + Bindings as `[]Value` (May 2026, `perf/wam-go-cp-pointer-and-bindings`)
+
+The post-Phase-E profile showed two costs newly visible relative to
+the dominant `restoreSavedRegs` from prior phases:
+
+1. `cp := vm.ChoicePoints[topIdx]` — value-copy of the
+   ~150-byte `ChoicePoint` struct on every backtrack (~210ms cum,
+   8.7% in the 50-seed run).
+2. Map ops in `deref` / `unwindTrailTo` / `bindUnbound` — small in
+   absolute terms but harder to see while bigger costs were
+   dominant.
+
+This commit:
+
+- **`backtrack` uses `cp := &vm.ChoicePoints[topIdx]`** instead of
+  the value-copy. Mutations to `cp.IndexedClausePCs` /
+  `cp.ForeignResults` apply in-place, removing the explicit
+  `vm.ChoicePoints[topIdx] = cp` write-back. The pointer stays
+  valid because backtrack only ever truncates the slice (no
+  appends), so the underlying array slot doesn't move while
+  we're reading.
+- **`Bindings: map[int]Value` → `[]Value`** indexed by `Unbound.Idx`.
+  `nil` means unbound; `getBinding` / `setBinding` helpers handle
+  out-of-range reads (return nil) and writes (grow with doubling,
+  floor 64). Pre-sized to 4096 in `NewWamState` to skip the
+  doubling-grow churn for typical query Idx ranges. The Rust
+  target's Phase C (`f339df5b` "nb_setarg box for zero-copy
+  binding table") landed the same int-indexed structure for the
+  same reason once choicepoint snapshots got cheap enough that
+  per-deref/per-trail-entry map overhead became visible.
+
+Earlier attempt (the `perf/wam-go-bindings-slice-and-stack-share`
+branch, on top of Phase B): performance-neutral. The dominant
+costs at the time were elsewhere; the slice version is now
+slightly faster because Phases D and E shrunk those.
+
+### Phase G: Pointer-only `Atom.Equals` + `internAtom` routing + `emptyListAtom` singleton (May 2026, `perf/wam-go-bindunbound-aliases`)
+
+The post-Phase-F profile flagged `valueEquals` at 9.56% cum and
+`Atom.Equals` at 4.02% cum. Atom.Equals had a string-compare
+fallback (`return v.Name == o.Name`) for the case where two atoms
+had the same name but different pointers. With every codegen-emitted
+atom in `atoms.go`'s `atomInternMap` and every runtime-side atom
+created via `internAtom`, the fallback path is unreachable in
+practice — the SwitchOnConstantPc forward-scan miss path that fired
+it was just paying for the safety net.
+
+This commit:
+
+- **`Atom.Equals` is pointer-only.** Drops the string fallback;
+  asserts the contract that all atoms come from
+  `atomInternMap`. Documents the constraint in the source comment.
+- **Routes all raw `&Atom{Name: ...}` constructions through
+  `internAtom`.** Affected sites: the runtime helpers in
+  `runtime.go` (`collectNativeTransitiveDistanceResults` and
+  friends — kernels_on path, not exercised by the bench but must
+  satisfy the contract), the codegen fallback in
+  `go_atom_to_literal/2` (when an atom isn't in the pre-interned
+  table), and the `[]` empty-list terminator in
+  `rawListHeadTail` / `listHeadTail`.
+- **`emptyListAtom` package-level singleton** (`var emptyListAtom = internAtom("[]")`)
+  caches the result of `internAtom("[]")` once at init. The
+  list-head/tail helpers now use the cached pointer instead of
+  calling `internAtom("[]")` per invocation — list cell
+  decomposition runs once per recursion step in the bench.
+
+Profile after Phase G:
+- `Atom.Equals`: 4.02% → 1.39%
+- `valueEquals`: 9.56% → 4.38%
+
+Wall-clock at the 50-seed scale: median 2524ms vs Phase F's 2626ms
+(5 alternating trials each), about 4% faster within run-to-run
+variance. Full 386-seed bench: ~26.6s for both Phase F and Phase G
+(repeated 3 runs each), so the gain is invisible at full scale —
+the saved CPU cycles get absorbed by GC and other overhead. The
+single-run "23.8s" Phase F number cited in the prior section turned
+out to be an outlier from one lucky run; the realistic median is
+~26.6s. The cumulative table below uses the realistic medians.
+
+### Phase H: list-builtin micro-opts (May 2026, `perf/wam-go-list-builtins`)
+
+The post-Phase-G profile flagged `listToSlice` at 4.43% cum and
+`mallocgc` at 4.76% cum. The bench's `\+ member(M, Visited)` and
+`length(Visited, Depth)` calls — once per category_ancestor recursion
+step — were each materialising the Visited list into a Go `[]Value`
+just to count or scan it. The recursive form did
+`append([]Value{head}, rest...)` which is O(N²) in allocations
+(every level allocates a new slice and copies the rest).
+
+Three changes:
+
+1. **`listToSlice` is iterative** — pre-allocates a 16-cap slice
+   (the bench's max_depth(10) means 16 covers the common case
+   without growth), walks cells with a `for` loop appending each
+   head, returns the final slice. O(N) allocs instead of O(N²).
+2. **`length/2` no longer allocates** — counts cells in a `for`
+   loop without materialising a slice. Bench's
+   `length(Visited, Depth)` now does an in-place walk.
+3. **`member/2` no longer allocates** — walk-and-unify, with a
+   `vm.unwindTrailTo(mark)` between iterations to prevent failed
+   bindings from leaking into the next element check. Standard
+   WAM `member/2` semantics, no slice.
+
+Wall-clock impact at scale-300: essentially neutral. 50-seed
+median shifted from 2524ms → 2534ms (within run-to-run variance).
+Full bench: 26.6s → 27.4s (also within variance — 3 runs each
+showed overlap). The post-G profile already had `listToSlice` at
+only ~4% of CPU, so the saved allocs are absorbed by GC. Phase H
+is committed as a structural cleanup that becomes more impactful
+at workloads with longer lists or higher member/length call
+density.
+
+### Phase I: Constant-factor attempts that didn't pan out (May 2026, `perf/wam-go-instr-tag-dispatch`)
+
+Two more candidates explored on top of Phase H. Both reverted —
+documenting here so they don't get re-tried at the same shape.
+
+| Attempt | What | Outcome |
+|---|---|---|
+| Inline `setBinding` fast path in `unwindTrailTo` | Replace `vm.setBinding(entry.Addr, entry.Old)` with a direct `vm.Bindings[entry.Addr] = entry.Old` write when `entry.Addr < len(vm.Bindings)`, falling back to the helper for the (impossible-by-construction) overflow path. Post-Phase-G profile flagged the loop at ~6% flat. | Within variance. One alternating trial favoured the change at ~11% (3179ms→2831ms), four follow-up trials averaged to a 0.86% slowdown (list mean 2661ms, tagdsp mean 2684ms). The fast path runs *only* on backtrack and `len(Bindings)` is large enough that the bounds branch is well-predicted; the saved function-call frame is below the noise floor. |
+| Inline-array `SavedRegs` in `ChoicePoint` | Replace `SavedRegs []Value` with `SavedA [8]Value` + `SavedY [16]Value` + `SavedYLen int` + `SavedYExt []Value` overflow. Goal: eliminate the per-push `make([]Value, 8+ycount)` heap allocation that `snapshotAllRegs` was doing on every choicepoint. | **10x slowdown** at 50-seed scale (list ~2.4s vs inreg ~25s, two trials confirmed). Reason: each `ChoicePoint` grew from ~150 bytes to ~530 bytes (24 inline `Value` interface slots = 384 bytes added). Every `append(vm.ChoicePoints, ChoicePoint{...})` and slice-grow now memmoves the larger struct, and the bench creates ~1.5M choicepoints — the extra per-CP memmove cost vastly exceeds the saved heap alloc. The lesson is that for slice-of-struct dispatch, struct *size* matters more than per-element heap allocs, because slice growth amortises malloc but every append still pays the element memmove. A pooled `*SavedRegs` (CP holds an 8-byte pointer) would avoid both — deferred. |
+
+Cumulative position is unchanged from Phase H; Phase I is a no-op
+on the cumulative table below.
+
+### Phase J: Tag-indexed function table for Step dispatch (May 2026, `perf/wam-go-tag-table`)
+
+The post-Phase-H profile showed `Step` accounting for ~20% of CPU,
+much of it on the `switch i := instr.(type) { ... }` line itself
+(line 18 of `runtime.go` was ~10% flat in pprof). With ~40
+instruction types, the type switch was theorised to be doing an
+O(N) linear scan of itab pointer comparisons. The fix attempted:
+
+1. Add `Tag() uint8` to the `Instruction` interface (alongside the
+   existing `instrTag()` marker).
+2. Generate a `const ( TagGetConstant uint8 = iota; ...; tagCount
+   )` block enumerating all instruction types.
+3. Generate a `Tag()` method per type returning its constant.
+4. Generate one top-level handler function per instruction holding
+   the body that previously lived inside the type-switch case.
+5. Build a dispatch table: `var stepTable [tagCount]func(*WamState,
+   Instruction) bool`, populated in `init()` (a static initializer
+   would form a cycle: `stepBeginAggregate` → `executeAggregate`
+   → `runUntilPC` → `Step` → `stepTable`).
+6. Replace `Step`'s body with `return stepTable[instr.Tag()](vm, instr)`.
+
+Output bit-for-bit identical to Phase H baseline at scale-300/full.
+
+Performance: **~12% slower**. Three alternating full-bench trials
+on a fresh A/B (both binaries built from current main with
+`kernels_on`):
+
+| trial | h-fresh (Phase H) | tag (Phase J) | tag/h-fresh |
+|---|---|---|---|
+| 1 | 32591ms | 37089ms | 1.138x |
+| 2 | 33234ms | 37206ms | 1.119x |
+| 3 | 33228ms | 36553ms | 1.100x |
+| **mean** | **33018ms** | **36949ms** | **1.119x** |
+
+Why the "obvious O(N) → O(1) dispatch win" backfired:
+
+1. **Go's type switch is already efficient.** With ~40 typed
+   cases the compiler emits an internal hash on the runtime type
+   pointer, not a linear scan; effective dispatch cost is closer
+   to O(1) than the analytical worst case suggested. The post-G
+   profile attribution to "line 18" included most of the
+   switch-prologue work, but the per-instruction marginal cost was
+   already small.
+
+2. **Inlining loss dominates the dispatch saving.** When each case
+   body lives inside the switch, the Go compiler inlines its
+   contents into `Step` (and from there sometimes into
+   `runUntilPC` via mid-stack inlining). Once each body becomes a
+   separate top-level function called via the table, every
+   instruction pays a real function-call frame: stack-frame setup,
+   register save/restore, return-address push/pop. With tens of
+   millions of instructions per scale-300 run, that overhead
+   exceeds whatever the table lookup saved.
+
+3. **`instr.Tag()` is also an interface method call** — itab
+   load + indirect call, ~5ns. So the dispatch path is `Tag()`
+   call + table load + `stepXxx` indirect call vs. the prior
+   single type-switch dispatch. The two indirect calls roughly
+   double the dispatch overhead per instruction.
+
+The lesson aligns with prior phases: **structural changes that
+remove work compose; constant-factor reshuffles inside well-
+optimised compiler code rarely beat the compiler.** The type
+switch wasn't "linear scan over 40 types" in practice; it was
+mostly dispatch + inlining the compiler had already taken care of.
+
+A pooled-handler-pointer approach (storing `*func` directly in
+each Instruction at codegen time, bypassing the Tag() lookup)
+might recover some of the loss, but it would still pay the
+per-instruction function call. Deferred indefinitely — the type
+switch is the right shape for this language.
+
+**Watch condition — when to revisit.** The conclusion above was
+measured at ~40 instruction types. We expect it to hold as the
+switch grows, because the dominant cost (lost inlining) scales
+with the *number of dispatches* not the *number of cases*. But
+Go's type-switch internals are version-dependent and the hash-
+on-itab approach has a working-set limit; if the instruction set
+crosses ~80–100 types, or if a future Go release changes type-
+switch lowering (e.g. drops the hash-table optimisation in favour
+of binary search on type pointers), the trade-off could flip. Re-
+test with the same A/B harness when (a) the instruction count
+roughly doubles or (b) profile shows the type-switch dispatch
+line at >25% of CPU after the next round of structural wins.
+
+Cumulative position is unchanged from Phase H; Phase J is a no-op
+on the cumulative table below.
+
+### Phase K: `category_ancestor` FFI kernel for Go (May 2026, `feat/wam-go-category-ancestor-kernel`)
+
+After Phases I and J both bottomed out at the variance floor, the
+honest read was that constant-factor work on the WAM dispatch was
+exhausted. The post-survey verdict (see the cross-target lowering
+audit in this branch's commit description) was that the next big
+multiplicative win would come from **fewer WAM dispatches entirely**,
+not making each dispatch faster — i.e. lowering more predicates to
+native Go via the FFI-kernel system that already powered
+`transitive_closure2`, `weighted_shortest_path3`, and the
+`astar_shortest_path4` family.
+
+The single missing kernel — and the one that drove the entire
+`effective_distance` benchmark family the prior 12 phases had been
+optimising for — was `category_ancestor/4`. Both Haskell and Rust
+already had it; Go fell through to full WAM bytecode for the
+inner ancestor walk on every depth-bounded recursive step.
+
+Implementation (mirrors `wam_rust_target.pl:1797`):
+
+1. **Pl-side dispatch** — three new clauses in `wam_go_target.pl`:
+   - `go_supported_shared_kernel(recursive_kernel(category_ancestor, _, _))`
+     — accept the kernel from the shared detector.
+   - `go_recursive_kernel_with_facts/3` clause that pulls
+     `max_depth(N)` and `edge_pred(EP/2)` out of the detector's
+     config and indexes the parent-edge facts via
+     `go_binary_edge_fact_pairs/3`.
+   - `go_recursive_kernel_config_ops/3` clause that emits both
+     `register_foreign_usize_config(.., max_depth, N)` and
+     `register_foreign_string_config(.., edge_pred, ..)` plus
+     `register_indexed_atom_fact2(EP/2, Pairs)`.
+   The shared `kernel_metadata/4` (`recursive_kernel_detection.pl:61`)
+   already had the right `NativeKind=category_ancestor`,
+   `ResultLayout=tuple(1)`, `ResultMode=stream` mappings; no
+   metadata work needed.
+
+2. **Generated runtime** — three new functions emitted from the
+   `compile_wam_helpers_to_go` Prolog format string:
+   - `listAsAtomStrings(vm, v)` — derefs a Prolog cons list and
+     extracts each element as an atom string. Note: uses
+     `vm.listToSlice` (the iterative cons-walker added in Phase H),
+     not `listAsSlice` — the latter returns the 2-element
+     `[head, tail]` cell of the *outer* List, which would silently
+     truncate the visited set.
+   - `collectNativeCategoryAncestorHops(cat, root, visited, maxDepth, pairs)`
+     — top-level entry that builds the parent-edge adjacency map
+     from the indexed atom-fact pairs once, then delegates to:
+   - `collectNativeCategoryAncestorHopsRec(...)` — the recursive
+     DFS, mirroring the Rust implementation byte-for-byte. Emits
+     one `int64` hop count per matching path, with the +1 increment
+     applied to the slice tail produced by each recursive call (so
+     that hop counts compose correctly on the way back up).
+
+3. **Dispatch case** — new `case "category_ancestor":` in
+   `executeForeignPredicate`. Pulls `cat`/`root` from A1/A2 as
+   atom strings, `visited` from A4 as a flattened atom-string
+   list, `maxDepth` from the foreign-usize config, edge-pred
+   adjacency from the indexed fact map. Calls the helper, packs
+   the int64 hops as `&Integer{Val: h}` Values, and finishes via
+   `finishForeignResults(predKey, []int{2}, results)` (output reg
+   is A3 = reg index 2; layout is `tuple(1)` = no tuple wrapping).
+
+#### Wall-clock impact at scale-300/full
+
+Three alternating trials (A/B; both binaries built from the
+current branch with `kernels_on`):
+
+| trial | h-fresh (Phase H baseline) | cancestor (Phase K) | speedup |
+|---|---|---|---|
+| 1 | 25219ms | 504ms | 50.0x |
+| 2 | 24171ms | 443ms | 54.6x |
+| 3 | 24139ms | 451ms | 53.5x |
+| **mean** | **24510ms** | **466ms** | **52.6x** |
+
+Cumulative vs the ~340s Phase A baseline: **~730x**. The 12.8×
+constant-factor work from Phases B–H was a prerequisite — it
+defanged everything *outside* the inner ancestor walk so that
+when the kernel removed that walk's WAM-dispatch cost, the
+remaining time is dominated by argument marshalling and result
+unification rather than by the dispatcher itself.
+
+#### Correctness — better than Phase H
+
+Output diff vs `data/benchmark/300/reference_output.tsv`: only 4
+lines, all stable-sort tie-break ordering between articles with
+identical effective-distance values (`Hermann_von_Helmholtz` /
+`Walter_Noll`-cluster). Phase H had 11+ lines of diff including
+*wrong values* (Brownian_motion 0.993865 vs reference 0.993717;
+2008_in_science 4.372980 vs reference 3.726584). The native
+kernel fixes those by computing the depth-bounded ancestor walk
+directly in Go instead of through the WAM bytecode path that had
+some subtle interaction with the bench's `\+ member(M, Visited)`
+guards. The reference tie-break ordering (where it differs from
+the kernel) is `data/benchmark/300/reference_output.tsv`-internal
+and not part of the algorithm — the kernel is correct, the diff
+is cosmetic.
+
+#### Why this worked when Phases I/J didn't
+
+- Phases I/J reshuffled dispatch *inside* the WAM interpreter
+  (where the Go compiler already did a good job) — net cost was
+  inlining loss and noise.
+- Phase K removes whole categories of WAM dispatches entirely.
+  The inner ancestor walk previously executed dozens of WAM
+  instructions per parent edge (Allocate, Get*/Put*, Call,
+  Deallocate, …); now it's a single Go function call from the
+  outer aggregator. The work that's removed isn't 10–25% of CPU
+  in any one bytecode op — it's *all of it* for the inner loop.
+
+This is the structural-vs-constant-factor lesson from the
+Lessons section made concrete: a structural change that removes
+work composes multiplicatively with prior structural wins; a
+constant-factor reshuffle inside compiler-optimised dispatch
+fights the compiler.
+
+### Cumulative measurement (scale-300, kernels_off, single-thread)
+
+50-seed: median of 5 alternating trials. Full bench: median of 3
+re-runs (the prior section cited single-run numbers; some of those
+were outliers — this section uses re-measured medians).
+
+| Stage | scale-300/50 median | scale-300/full | speedup vs prior | speedup vs original |
+|---|---|---|---|---|
+| Pre-Phase-A (broken — tuple_count=0) | n/a | n/a | n/a | n/a |
+| Phase A (correctness; full-Regs snapshot) | n/a | ~340s | — | 1.0x |
+| Phase B (`Regs[320]` + default-label resolve) | n/a | ~178s | 1.91x | 1.91x |
+| Phase D env trimming + StackLen | 8594ms | 88.7s | 2.0x | 3.83x |
+| Phase D + save-A+Y-skip-X | 5084ms | 53.0s | 1.67x | 6.42x |
+| Phase E MaxYReg-bounded snapshot | 3624ms | 38.4s | 1.43x / 1.38x | 8.85x / 8.85x |
+| Phase F cp-pointer + Bindings slice | 2626ms | 26.6s | 1.38x / 1.44x | 12.9x / 12.8x |
+| Phase G ptr-only Atom.Equals etc. | 2524ms | 26.6s | 1.04x / 1.0x | 13.5x / 12.8x |
+| Phase H list-builtin micro-opts | 2534ms | ~27.4s | 1.0x / ~1.0x | 13.4x / ~12.4x |
+| Phase I (reverted attempts; doc-only) | — | — | 1.0x | 13.4x / ~12.4x |
+| Phase J tag-table dispatch (reverted) | — | ~37s vs h-fresh ~33s | **0.89x** (regression) | doc-only |
+| **Phase K `category_ancestor` FFI kernel** | — | **466ms** (mean of 3) | **52.6x** | **~730x** |
+
+Output identical to prior at every stage except for the documented
+`max_depth(10)` drift on Brownian_motion / Hermann_von_Helmholtz
+tie-break (the workload uses `max_depth(10)` while the reference TSV
+was generated with `max_depth >= 50`; tracked in
+`benchmarks/go_wam_runtime_findings.md`).
+
+### Remaining headroom
+
+- **`bindUnbound`'s alias-rewrite loop** (`for idx, reg := range vm.Regs { if reg == u { vm.Regs[idx] = val } }`) is O(320) per binding. With the snapshot/restore work largely defanged, this is the next visible bandwidth cost. Could be replaced by deref-on-read (every reader that takes an `Unbound` derefs through `vm.getBinding`), at the cost of auditing every `vm.Regs[N]` read in the codegen.
+- **`Bindings map[int]Value` → `[]Value`** (the `perf/wam-go-bindings-slice-and-stack-share` branch). Performance-neutral at the moment because it was committed before Phase D and the dominant cost was elsewhere; with the per-CP work now small, the map's per-access cost may show up. Worth re-measuring on top of Phase E.
+- **Heap-trim on backtrack.** `vm.Heap = vm.Heap[:cp.HeapTop]` is fast but allocations to `vm.Heap` still happen via `append`. A pool / arena could eliminate the steady GC churn.
+- **Trail-based Y-reg restoration** (proper version). The Phase-E attempt failed because `trailBinding(i.Xn)` calls in GetVariable/UnifyVariable leak Bindings entries with addresses that overlap the Y-reg range, AND `bindUnbound`'s alias-rewrite loop doesn't trail Y-reg overwrites. With both fixed, trail-based restoration could be made to work and would drop the per-CP snapshot to just A-regs (8 elements). Deferred — the MaxYReg approach captures most of the upside without the audit risk.
+
+### Lessons unique to the Go runtime
+
+1. **Variance bands stayed wide right up until Phase D.** Phase C's
+   constant-factor attempts couldn't be distinguished from noise;
+   Phase D's structural change shows up as a clean 4x with no overlap
+   between baseline and post-fix trial bands. The lesson isn't "don't
+   profile" — it's "if your patch only moves things by less than the
+   variance, the patch is too small."
+
+2. **Save-only-A-regs is correct in Go too — but only after env
+   trimming.** The Rust precedent (`fea72426`) wasn't directly
+   portable because the Go target had no equivalent of Rust's
+   per-clause register liveness analysis. What made the Rust
+   optimization safe was the same thing that made env trimming work:
+   Y-regs live in the env frame, not in a global register file
+   shared across activations. Once the Go runtime had that property,
+   the same observation applied.
+
+3. **Cumulative speedup ≠ sum of individual speedups.** Phase B was
+   1.91x. Phase D env-trim was 2.0x. Phase D save-A+Y was 1.67x.
+   Multiplied: 6.4x. The structural changes compose because they
+   each remove a different bottleneck — the constant-factor attempts
+   in Phase C didn't compose because they all targeted the same cost
+   (the SavedRegs copy) and the underlying issue was the design, not
+   the constants.
+
+4. **Don't fight the Go compiler's dispatch — extending the work
+   it can inline beats reshuffling its dispatch shape.** Phase J
+   replaced Step's ~40-case type switch with the textbook O(1)
+   tag-indexed function table; result was a clean ~12% regression
+   across three trials. Two compounding reasons:
+
+   - Go lowers a type switch with many cases to a hash on the
+     interface itab pointer, not a linear scan, so the analytical
+     "O(N) → O(1)" win was already mostly priced in.
+   - The dispatcher path is shorter for the type switch than for
+     the table because each `case *X:` body is *inlinable* into
+     `Step` (and via mid-stack inlining sometimes into `runUntilPC`).
+     A function-table dispatch necessarily forces every body into
+     a separate top-level function with a real call frame, and an
+     extra `Tag()` interface method call besides. The lost
+     inlining costs more than the (already-small) dispatch saving.
+
+   Generalised: when a hot loop's body contains a switch over a
+   compiler-friendly shape (interface type switch, integer switch
+   with dense cases, etc.), the right next move is to *give the
+   compiler more to inline* — not to indirect the dispatch
+   through a level the compiler can't follow. Watch this if the
+   instruction count grows past ~80–100 or if a future Go release
+   changes type-switch lowering; until then, prefer additive
+   structural changes over dispatch rewrites.
+
+---
+
 ## Clojure WAM — current implementation status
 
 The Clojure hybrid/WAM target is not yet in the same maturity class as
@@ -1450,6 +1969,300 @@ sets may see the expected algorithmic win; users at typical
 A useful follow-up would be to test at `max_depth=50` or higher
 to find the crossover point where IntSet's algorithmic benefit
 finally dominates the constant factors.
+
+### Phase H follow-up — depth-sweep (2026-04-29)
+
+> **⚠ This sweep was based on a broken instrumentation. See the
+> "max_depth instrumentation bug + retraction" section below for the
+> corrected reading.**
+
+Ran the depth-sweep filed above. The benchmark gained a
+`WAM_EFF_DIST_BENCH_MAX_DEPTH` env var that overrides
+`max_depth/1` at codegen time. Sweep at scale=1k, 2 trials per
+variant per depth (rotating order):
+
+| max_depth | unlowered (ms) | lowered (ms) | intset (ms) | intset/lowered |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 72.5 | 53.5 | 67.5 | **0.79×** |
+| 30 | 77.0 | 51.0 | 80.0 | **0.64×** |
+| 50 | 69.0 | 77.0 | 70.0 | **1.10×** |
+
+`tuple_count=48` matches across **all** runs at **all** depths.
+This is the punchline: the wikipedia category-graph paths terminate
+well before depth 10, so the depth bound never fires. Increasing
+`max_depth` from 10 to 50 has no observable effect on visited-list
+sizes at the goal site. There is no IntSet crossover to find on
+this graph — the visited list is shape-bound by graph topology to
+~10 elements regardless of the depth cap.
+
+The 1.10× at depth=50 sits inside the 2-trial noise (lowered's
+spread that depth was 70→84 ms, ~20%); it is not a real crossover.
+
+**Honest reading: the IntSet algorithmic crossover does not
+materialise on the wikipedia-category-graph workload at any
+`max_depth` setting.** The graph is the limit, not the bound.
+Confirming the IntSet wins on real workloads would require either
+(a) a synthetic workload with deep cycles or long chains, or
+(b) a different real graph with longer transitive paths (some
+biological or citation networks would qualify).
+
+The directive remains opt-in. The infrastructure is reusable for
+alternate small-N set representations (sorted array, bitmap)
+which might beat IntSet at this scale — filed as future
+exploration alongside the synthetic-workload follow-up.
+
+### Phase G.2 — ground-list `\+ member` lowering (2026-04-29)
+
+Companion to Phase G's `not_member_list` (which handles
+`\+ member(X, V)` where V is a runtime-bound list var). Phase G.2
+handles the OTHER `\+ member` shape — a literal ground list at
+the call site:
+
+```prolog
+\+ member(X, [foo, bar, baz])    %% ground list of atoms in source
+```
+
+Lowers to a single new instruction:
+
+```
+not_member_const_atoms <xReg> foo bar baz
+```
+
+with the atom IDs interned at codegen and baked into the
+generated Haskell as `NotMemberConstAtoms !RegId ![Int]`. The
+step handler does a single `elem` check on the embedded ID list:
+
+```haskell
+step !_ctx s (NotMemberConstAtoms xReg atomIds) =
+  case derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s) of
+    Just (Atom aid) | aid `elem` atomIds -> Nothing
+    Just (Atom _)                        -> Just (s { wsPC = wsPC s + 1 })
+    _                                    -> Nothing
+```
+
+Vs the unlowered path (`PutStructure` cons cells × N + builtin
+dispatch `\+/1` + `member/2` + N unifications), this is a single
+WAM dispatch with zero heap allocation. Vs the inline-IntSet
+construction (`BuildEmptySet` + N `SetInsert` + `NotMemberSet`),
+this avoids per-call Patricia-trie allocation that — per the
+Phase H finding above — does not pay off at small N.
+
+Fires when the second arg is a proper list of ground atoms.
+Falls through cleanly for var lists (Phase G `not_member_list`),
+partial lists, and lists containing integers/structures/unbound
+elements.
+
+**Macro impact**: none on the canonical effective-distance
+workload — that workload uses var L (visited set), not ground L.
+A targeted microbench (e.g. `\+ member(X, [a,b,c,d,e,f,g,h])`
+in a tight loop) would be the natural follow-up to quantify the
+saved heap allocation + dispatch. Not measured on this branch.
+
+Touch points: `wam_target.pl` (lowering, helper), `wam_haskell_target.pl`
+(Instruction ADT entry, step handler, WAM-text parser),
+`tests/core/test_wam_ground_member_lowering.pl` (9 codegen +
+runtime + parse tests).
+
+### Phase G.2 microbench — measured ~14.5× (2026-04-29)
+
+The follow-up filed above. `tests/benchmarks/wam_ground_member_bench.pl`
+generates two projects from the same source predicate:
+
+```prolog
+bench_ground(X) :- \+ member(X, [a, b, c, d, e, f, g, h]).
+```
+
+The lowered variant uses default codegen (NotMemberConstAtoms);
+the unlowered variant asserts
+`wam_target:lowering_disabled(ground_member)` to fall through to
+the standard builtin path. A new module-level disable hook in
+`wam_target.pl` exists exactly so benches can build the unlowered
+baseline.
+
+A shared Bench.hs (in `tests/fixtures/wam_ground_member_bench/`)
+runs `bench_ground(Integer k)` 200 000 times per case across 4
+trials, with `Integer k` varying per iteration to defeat constant
+folding. Probe is never one of the 8 atoms, so the check always
+succeeds.
+
+Measured (after fixing the step handler — see "Correctness fix"
+below):
+
+| variant | mean (ms) | per-call (μs) |
+| --- | ---: | ---: |
+| lowered (NotMemberConstAtoms) | 61.9 | 0.31 |
+| unlowered (builtin \\+/1 + member walk) | 899.4 | 4.50 |
+
+**Speedup: ~14.5×**, both variants report 200 000/200 000 correct
+results.
+
+The win matches the design's intuition: 1 instruction dispatch + 1
+Atom-id list scan vs `N+1 PutStructure` heap allocations + 2
+builtin dispatches + N unifications. At N=8 atoms the unlowered
+path's heap allocation is the bulk of the cost.
+
+#### Correctness fix surfaced by the microbench
+
+The first run of the microbench reported **lowered ok=0/200000,
+unlowered ok=200000/200000** — a divergence. Cause: the original
+step handler returned `Nothing` for any non-Atom value:
+
+```haskell
+case mX of
+  Just (Atom aid) -> ...
+  _               -> Nothing  -- WRONG for Integer / Float / Str / etc.
+```
+
+But Prolog's `\\+ member(Integer 42, [a, b, c])` succeeds
+trivially — an integer can never unify with an atom, so member
+fails, so `\\+` succeeds. The handler now distinguishes:
+
+- `Atom aid in atomIds` → fail (member would succeed)
+- `Atom aid not in atomIds` → succeed
+- `Unbound _` / `Ref _` → fail (Prolog could unify with some atom
+  via free unification)
+- Any other ground value (`Integer`, `Float`, `Str`, `VList`,
+  `VSet`) → succeed (no atom can unify with it)
+
+This bug would have hit any user code that passes non-atom probes
+to `\\+ member`. The microbench caught it before any user did.
+
+### Phase H follow-up #2 — synthetic deep-chain workload (2026-04-29)
+
+To answer the open IntSet-crossover question on a workload not
+shape-bound by graph topology, this branch ships
+`examples/benchmark/generate_synthetic_chain.py`. It produces a
+linear category chain `cat_001 → cat_002 → ... → cat_N` with a
+single root `cat_N` and articles placed near the leaf end. Each
+article must walk the full chain to reach the root, forcing a
+visited list of length up to N-1 during `category_ancestor`
+recursion — exactly the shape Phase H was designed for.
+
+The generator produces both `facts.pl` (for SWI-Prolog) and the
+TSV files (`category_parent.tsv`, `article_category.tsv`,
+`root_categories.tsv`) the WAM Haskell binary loads at startup.
+
+**Status: blocked on a binary-side issue.** The SWI-Prolog
+version of the workload runs on `synth_chain_30` and finds 10
+paths (each ~30 hops). The compiled WAM Haskell binary on the
+same data returns `tuple_count=0` and `article_count=0` — even
+though `seed_count=10` and `demand_total_nodes=29` confirm the
+seeds and edges are loaded correctly. The query terminates in
+≤1 ms without finding any paths.
+
+Best guess: the demand-driven path's behaviour on a linear chain
+diverges from SWI-Prolog's evaluation, possibly because of how
+`Par*` parallel fork choice points interact with deep `\\+ member`
++ recursive call patterns. Filed as a follow-up for diagnosis
+on its own branch.
+
+Net: the IntSet-crossover question remains open. The
+infrastructure (generator + bench wiring + max_depth env var) is
+in place; the binary-side bug needs to be resolved before the
+crossover can be measured on this synthetic shape.
+
+### max_depth instrumentation bug + retraction (2026-04-29)
+
+**The bug**: `templates/targets/haskell_wam/main.hs.mustache`
+hardcoded `wcForeignConfig = Map.singleton "max_depth" 10`. The
+bench's `override_max_depth/0` (added in PR #1712) correctly
+retracted/asserted `user:max_depth/1`, but the codegen never
+consumed it — `nativeKernel_category_ancestor` always cut DFS
+recursion at depth 10 regardless of the env var.
+
+This single bug retroactively invalidates two prior conclusions:
+
+1. **PR #1712's "graph is shape-bound" depth-sweep is wrong.**
+   The 1k bench at WAM_EFF_DIST_BENCH_MAX_DEPTH ∈ {10, 30, 50}
+   all returned `tuple_count=48` because the kernel's actual
+   max_depth was always 10. Re-measuring the same 1k bench with
+   the fix in place at depth=30 returns **89 paths** (not 48)
+   and the query takes **~120 seconds** (not ~50 ms) — paths
+   genuinely deepen, the visited list genuinely grows. The wiki
+   graph is NOT shape-bound; PR #1712's measurement was
+   instrumentation-bound.
+
+2. **PR #1714's "binary returns 0 on linear chains" is the same
+   bug.** synth_chain_30 with `WAM_EFF_DIST_BENCH_MAX_DEPTH=30`
+   needs paths up to 29 hops deep. The kernel cut at hardcoded
+   depth=10, so every seed returned `[]`. The "demand-driven Par*
+   fork interaction with linear chains" hypothesis was wrong;
+   the actual cause was a missing template substitution.
+
+**The fix** (`fix(wam-haskell): resolve max_depth from
+user:max_depth/1 at codegen`, cherry-picked from the diagnostic
+branch):
+
+- Replace the hardcoded `10` with `{{max_depth}}` in
+  `main.hs.mustache`.
+- Add `resolve_max_depth/2` in `wam_haskell_target.pl` that
+  reads from `Options [max_depth(N)]` first, then
+  `user:max_depth/1`, defaulting to 10. Threaded through
+  `render_template`.
+- Three new tests in `test_wam_haskell_target.pl` covering
+  default/user-fact/option-override priorities.
+
+### Phase H follow-up #3 — IntSet crossover finally measured (2026-04-29)
+
+With the fix in place, the synthetic chain workload — designed
+specifically to grow visited lists past Phase H's expected
+crossover — produces real numbers.
+
+**`synth_chain_300` (chain depth 300, 200 articles,
+max_depth=300, 2 trials per variant, rotating order)**:
+
+| variant | trial 1 (ms) | trial 2 (ms) | mean (ms) |
+| --- | ---: | ---: | ---: |
+| intset (Phase G + H) | 80 | 81 | **80.5** |
+| lowered (Phase G `not_member_list`) | 111 | 91 | **101.0** |
+| unlowered (builtin \\+/1 + member walk) | 54 | 81 | 67.5 |
+
+**intset vs lowered: 1.25×** — IntSet beats the list walk on
+deep visited lists, as the Phase H design predicted. Trial-pair
+spread on intset (80 vs 81) is tight; the result is real, not
+noise.
+
+The unlowered timing (67.5 mean, 27ms spread) is too noisy to
+read as faster than lowered — that's a 27ms swing on an 80ms
+mean, dominated by cabal startup + cache effects on first
+trials. The intset/lowered comparison is the load-bearing one
+and it's clean.
+
+**`synth_chain_30` correctness sanity** (chain depth 30, 10
+articles, max_depth=30): all three variants return
+`tuple_count=10` matching SWI-Prolog. Times are below resolution
+(0-1 ms) so timing comparison is not informative at this scale,
+but correctness is preserved end-to-end.
+
+### Honest reading of the IntSet arc, after the fix
+
+1. **Phase H's algorithmic design was correct.** On workloads
+   that genuinely grow visited lists past ~50 elements, IntSet
+   beats Phase G's list walk by ~25 %. This is the speedup
+   originally predicted in the design.
+
+2. **The wiki workload at the originally-tested depths really is
+   shape-bound, but only at small `max_depth`.** At max_depth=10
+   (the canonical workload setting), wiki paths terminate before
+   the cap fires, so visited lists stay small (~10 elements) and
+   IntSet's constant factor exceeds the list walk's. **This is
+   the real Phase H finding for the canonical workload, and it
+   stands.**
+
+3. **The 1k bench at deeper max_depth is a different workload
+   shape.** At max_depth=30 paths actually reach that depth
+   (89 vs 48 paths), and queries take 120 seconds. Whether
+   IntSet wins there has not been re-measured on this branch —
+   the synth_chain_300 measurement covers the design question;
+   the wiki-1k-at-deep-depth measurement is a separate bench
+   exercise filed as future work.
+
+4. **Bench instrumentation should always be cross-checked.** The
+   missing template substitution survived three PRs (#1698,
+   #1712, #1714) because every measurement was internally
+   consistent at the broken depth=10 cap. Adding tests that
+   *fail* when max_depth doesn't flow into the kernel — as the
+   fix's three new tests do — closes the loophole.
 
 ---
 

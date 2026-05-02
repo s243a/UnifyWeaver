@@ -124,6 +124,20 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
 
 def available_targets(requested: list[str]) -> list[str]:
     targets: list[str] = []
+    rust_matrix_targets = {
+        "rust-pure-interp",
+        "rust-interp-ffi",
+        "rust-lowered-only",
+        "rust-lowered-ffi",
+    }
+    scala_matrix_targets = {
+        "scala-wam-seeded",
+        "scala-wam-seeded-artifact",
+        "scala-wam-seeded-no-kernels",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-artifact",
+        "scala-wam-accumulated-no-kernels",
+    }
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
@@ -135,6 +149,16 @@ def available_targets(requested: list[str]) -> list[str]:
             continue
         if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
             print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
+            continue
+        if target in rust_matrix_targets and (
+            shutil.which("swipl") is None or shutil.which("cargo") is None or shutil.which("rustc") is None
+        ):
+            print(f"skip {target}: swipl, cargo, or rustc not found", file=sys.stderr)
+            continue
+        if target in scala_matrix_targets and (
+            shutil.which("swipl") is None or shutil.which("scalac") is None or shutil.which("scala") is None
+        ):
+            print(f"skip {target}: swipl, scalac, or scala not found", file=sys.stderr)
             continue
         if target.startswith("rust-") and shutil.which("rustc") is None:
             print(f"skip {target}: rustc not found", file=sys.stderr)

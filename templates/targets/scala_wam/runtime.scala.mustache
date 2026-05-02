@@ -96,11 +96,29 @@ case class UnifyConstant(value: WamTerm)                extends Instruction
 case object TrustMe                                     extends Instruction
 // First-argument indexing
 case class SwitchOnConstant(cases: Array[SwitchCase])   extends Instruction
+// Type-based first-arg discrimination. Emitted when a predicate's
+// clauses mix const, list, and compound first args. Each TermSwitch*
+// case carries a target label resolved to a PC by resolveInstructions.
+// listLabel/listTargetPc routes any cons cell ([|]/2) to a specific
+// clause; "default" labels mean "fall through to the try_me_else chain"
+// (i.e. pc + 1).
+final case class TermSwitchConst(value: WamTerm, label: String, targetPc: Int = -1)
+final case class TermSwitchStruct(functorId: Int, arity: Int, label: String, targetPc: Int = -1)
+case class SwitchOnTerm(constCases:  Array[TermSwitchConst],
+                        structCases: Array[TermSwitchStruct],
+                        listLabel:   String,
+                        listTargetPc: Int = -1) extends Instruction
 // Builtins and foreign
 case class BuiltinCall(pred: String, arity: Int)        extends Instruction
 case class CallForeign(pred: String, arity: Int)        extends Instruction
 // If-then-else soft cut
 case object CutIte                                      extends Instruction
+// Aggregation (findall/3 et al.). BeginAggregate pushes a marker CP
+// that captures the template register on every body success and is
+// finalized — building the bag list and unifying with the bag register —
+// when backtrack reaches it (i.e. the body has no more solutions).
+case class BeginAggregate(kind: String, templateReg: Int, bagReg: Int) extends Instruction
+case class EndAggregate(templateReg: Int)                              extends Instruction
 // Return
 case object Proceed                                     extends Instruction
 // Fallback for unknown instructions
@@ -162,11 +180,30 @@ final case class ChoicePoint(
 sealed trait CPKind
 case object WamCP                                            extends CPKind
 case class ForeignCP(solutions: Seq[Map[Int, WamTerm]])      extends CPKind
+/** AggregateCP marks a findall-style collection scope. Each successful
+ *  reach of the body's EndAggregate appends a deepDeref'd template to
+ *  `results`. When backtrack reaches this CP (i.e. no more body
+ *  solutions), the runtime builds a list from `results` and unifies it
+ *  with `bagReg`. consId/emptyId are the pre-resolved cons/empty atom
+ *  IDs from the program intern table, baked in so the backtrack path
+ *  can finalize without needing program access.
+ */
+case class AggregateCP(
+  resumePc:    Int,
+  templateReg: Int,
+  bagReg:      Int,
+  results:     List[WamTerm],
+  consId:      Int,
+  emptyId:     Int
+) extends CPKind
 
 final class WamState(
   val regs:      Array[WamTerm],       // REG_ARRAY_SIZE slots; index via reg_to_int
   var envStack:  List[EnvFrame],       // environment frames (Y-registers)
-  var choicePoints: List[ChoicePoint],
+  // ArrayBuffer (LIFO; last = top) instead of List for O(1) push/pop
+  // with no per-op cons-cell allocation. The ChoicePoint instances
+  // themselves are still the same; only the container changed.
+  var choicePoints: mutable.ArrayBuffer[ChoicePoint],
   var trail:     List[TrailEntry],
   var callStack: List[Int],
   var unifyQueue: List[WamTerm],
@@ -175,7 +212,13 @@ final class WamState(
   var pc:        Int,
   var nextVarId: Int,
   var cutBar:    Int,
-  var status:    WamStatus
+  var status:    WamStatus,
+  // Standard WAM read/write mode for the unify_* family. Set by
+  // get_list / get_structure: read when the target reg held a matching
+  // cons/struct (unifyQueue is populated), write when the target reg
+  // held an unbound Ref (a BuildFrame is pushed and the unify_*
+  // instructions append into it). Defaults to read.
+  var unifyMode: Boolean = true
 )
 
 // ============================================================
@@ -218,6 +261,17 @@ object WamRuntime {
           else labels.get(sc.label).map(pc => sc.copy(targetPc = pc)).getOrElse(sc)
         }
         SwitchOnConstant(resolved)
+      case SwitchOnTerm(consts, structs, listLabel, _) =>
+        val rConsts  = consts.map { c =>
+          if (c.label == "default") c
+          else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
+        }
+        val rStructs = structs.map { c =>
+          if (c.label == "default") c
+          else labels.get(c.label).map(pc => c.copy(targetPc = pc)).getOrElse(c)
+        }
+        val rListPc  = labels.getOrElse(listLabel, -1)
+        SwitchOnTerm(rConsts, rStructs, listLabel, rListPc)
       case other => other
     }
 
@@ -231,7 +285,7 @@ object WamRuntime {
     new WamState(
       regs       = regs,
       envStack   = Nil,
-      choicePoints = Nil,
+      choicePoints = mutable.ArrayBuffer.empty[ChoicePoint],
       trail      = Nil,
       callStack  = Nil,
       unifyQueue = Nil,
@@ -289,16 +343,25 @@ object WamRuntime {
     s.trail = s.trail.drop(toUndo.length)
   }
 
+  /** Unification. Recursive on Struct args (JIT-friendly for typical
+   *  shallow terms) but uses an explicit while loop instead of
+   *  args1.zip(args2).forall(...) so the per-Struct case doesn't
+   *  allocate a Tuple2 array. */
   def unify(s: WamState, a: WamTerm, b: WamTerm): Boolean = {
     val da = deref(s.bindings, a)
     val db = deref(s.bindings, b)
+    if (da == db) return true
     (da, db) match {
-      case _ if da == db => true
       case (r @ Ref(_), _) => bindVar(s, r, db); true
       case (_, r @ Ref(_)) => bindVar(s, r, da); true
-      case (Struct(f1, a1, args1), Struct(f2, a2, args2))
-          if f1 == f2 && a1 == a2 =>
-        args1.zip(args2).forall { case (x, y) => unify(s, x, y) }
+      case (Struct(f1, ar1, args1), Struct(f2, ar2, args2))
+          if f1 == f2 && ar1 == ar2 =>
+        var i = 0
+        while (i < ar1) {
+          if (!unify(s, args1(i), args2(i))) return false
+          i += 1
+        }
+        true
       case _ => false
     }
   }
@@ -326,13 +389,25 @@ object WamRuntime {
       nextVarId = s.nextVarId,
       kind      = WamCP
     )
-    s.choicePoints = cp :: s.choicePoints
+    s.choicePoints += cp
   }
 
-  def backtrack(s: WamState): Unit = s.choicePoints match {
-    case Nil =>
+  /** Remove and return the top CP (last element). */
+  private def popCP(s: WamState): ChoicePoint = {
+    val i = s.choicePoints.length - 1
+    val cp = s.choicePoints(i)
+    s.choicePoints.remove(i)
+    cp
+  }
+
+  def backtrack(s: WamState): Unit = {
+    if (s.choicePoints.isEmpty) {
       s.status = Failed
-    case cp :: rest =>
+    } else {
+      val cp = s.choicePoints.last
+      // Restore the saved snapshot. The CP itself is left on the stack
+      // for ForeignCP(non-empty) / AggregateCP cases that mutate it in
+      // place; the WamCP / ForeignCP(Nil) paths pop it below.
       unwindTrail(s, cp.trailLen)
       System.arraycopy(cp.regs, 0, s.regs, 0, REG_ARRAY_SIZE)
       s.envStack   = cp.envStack
@@ -345,14 +420,92 @@ object WamRuntime {
       s.status     = Running
       cp.kind match {
         case ForeignCP(Nil) =>
-          s.choicePoints = rest
+          popCP(s)
           backtrack(s)
         case ForeignCP(sol +: remaining) =>
-          s.choicePoints = cp.copy(kind = ForeignCP(remaining)) :: rest
+          // Replace the top CP's kind in place with the remaining
+          // solutions. ArrayBuffer doesn't have a copy-on-update like
+          // List did; we mutate the slot directly.
+          s.choicePoints(s.choicePoints.length - 1) =
+            cp.copy(kind = ForeignCP(remaining))
           if (!applyBindings(s, sol)) backtrack(s)
         case WamCP =>
-          s.choicePoints = rest
+          popCP(s)
+        case AggregateCP(resumePc, _, bagReg, results, consId, emptyId) =>
+          // No more body solutions — finalize. Restore was already done
+          // above; build the bag and unify with bagReg, then continue
+          // after the EndAggregate. If finalization happens before any
+          // body success (resumePc still -1), fall through to the
+          // BeginAggregate's saved pc, which is the first body
+          // instruction; that case is degenerate (empty bag with no
+          // EndAggregate ever reached) so we use cp.pc as a safe stop
+          // — see comment below.
+          popCP(s)
+          val bagList = results.foldLeft[WamTerm](Atom(emptyId)) { (tl, hd) =>
+            Struct(consId, 2, Array(hd, tl))
+          }
+          if (resumePc >= 0) s.pc = resumePc
+          // resumePc < 0 (body never reached EndAggregate) leaves pc at
+          // cp.pc (= BeginAggregate + 1 = the body's first instruction).
+          // That's wrong for "skip past the aggregate", but it does
+          // mean the runtime still terminates rather than looping; the
+          // caller then sees status=Running with an ununified bag and
+          // typically fails at the next instruction. Acceptable for
+          // first cut — the WAM compiler always emits matching pairs.
+          if (!unify(s, s.regs(bagReg), bagList)) backtrack(s)
       }
+    }
+  }
+
+  /** Recursively dereferences a term, replacing every Ref-on-Ref chain
+   *  with its terminal value and rebuilding Struct args from the deref'd
+   *  components. Used by findall to "freeze" a captured template before
+   *  the trail unwinds. */
+  def deepDeref(s: WamState, t: WamTerm): WamTerm = {
+    deref(s.bindings, t) match {
+      case Struct(f, a, args) =>
+        val mapped = args.map(deepDeref(s, _))
+        Struct(f, a, mapped)
+      case other => other
+    }
+  }
+
+  /** Count consecutive UnifyVariable / UnifyValue / UnifyConstant
+   *  instructions starting at `from`. Used by GetStructure's write-
+   *  mode path: GetStructure carries no explicit arity (only the
+   *  functor id), so we infer it from the trailing unify_* count.
+   *  The WAM compiler always emits exactly `arity` consecutive
+   *  unify_* instructions after a get_structure. */
+  def countTrailingUnifyOps(program: WamProgram, from: Int): Int = {
+    var i = from
+    var count = 0
+    while (i < program.instructions.length) {
+      program.instructions(i) match {
+        case _: UnifyVariable | _: UnifyValue | _: UnifyConstant =>
+          count += 1; i += 1
+        case _ => return count
+      }
+    }
+    count
+  }
+
+  /** Scan forward from `from` looking for the EndAggregate that
+   *  matches a BeginAggregate at `from-1`. Tracks nesting depth so a
+   *  nested BeginAggregate doesn't match the outer EndAggregate.
+   *  Returns the EndAggregate's index, or -1 if none found. */
+  def findMatchingEndAggregate(instrs: Array[Instruction], from: Int): Int = {
+    var depth = 0
+    var i = from
+    while (i < instrs.length) {
+      instrs(i) match {
+        case _: BeginAggregate => depth += 1
+        case _: EndAggregate if depth == 0 => return i
+        case _: EndAggregate => depth -= 1
+        case _ => ()
+      }
+      i += 1
+    }
+    -1
   }
 
   /** Apply a foreign-handler-provided binding map to the current state.
@@ -445,7 +598,7 @@ object WamRuntime {
                 nextVarId = s.nextVarId,
                 kind      = ForeignCP(rest)
               )
-              s.choicePoints = cp :: s.choicePoints
+              s.choicePoints += cp
             }
             if (applyBindings(s, sol)) s.pc = resumePc else backtrack(s)
         }
@@ -458,15 +611,30 @@ object WamRuntime {
 
   def switchTarget(s: WamState, cases: Array[SwitchCase]): Unit = {
     val key = deref(s.bindings, s.regs(1))
-    // Build lookup map (default = label "default")
-    val defaultPc = cases.find(_.label == "default").map(_.targetPc).getOrElse(-1)
-    val defaultFallthrough = cases.exists(c => c.label == "default" && c.targetPc == -1)
-    val caseMap = cases.filter(_.label != "default").map(c => c.value -> c.targetPc).toMap
-    caseMap.get(key) match {
-      case Some(pc) => s.pc = pc
-      case None if defaultPc >= 0 => s.pc = defaultPc
-      case None if defaultFallthrough => s.pc += 1
-      case _ => backtrack(s)
+    // Find every case (including "default"-labeled ones) whose value
+    // matches the key. The WAM compiler emits a "default"-labeled case
+    // for every value whose first matching clause sits at the head of
+    // the try_me_else chain; an additional "L_N"-labeled case for the
+    // same value indicates a *second* matching clause exists. So:
+    //   - 0 matches → backtrack (or fall through if there's a generic
+    //     default case)
+    //   - 1 match   → deterministic jump (or fall through for default)
+    //   - 2+ matches → multi-match: fall through to the try_me_else
+    //     chain at pc+1, which will iterate every clause and let the
+    //     get_constant in each one filter by exact arg.
+    val matches = cases.filter(_.value == key)
+    matches.length match {
+      case 0 =>
+        cases.find(_.label == "default") match {
+          case Some(d) if d.targetPc >= 0 => s.pc = d.targetPc
+          case Some(_)                    => s.pc += 1
+          case None                       => backtrack(s)
+        }
+      case 1 =>
+        val c = matches.head
+        if (c.targetPc >= 0) s.pc = c.targetPc else s.pc += 1
+      case _ =>
+        s.pc += 1
     }
   }
 
@@ -499,11 +667,8 @@ object WamRuntime {
         s.pc = target
 
       case Call(pred, arity) =>
-        // Special case call/1 as a meta-call — unwrap module qualification
-        // ":/2" if present and dispatch on the inner goal.
-        if (pred == "call" && arity == 1) {
-          metaCallInline(s, program, deref(s.bindings, s.regs(1)),
-                         resumePc = s.pc + 1, withReturn = true)
+        if (interceptedExecuteBuiltin(s, program, pred, arity, withReturn = true)) {
+          // dispatched
         } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) =>
             s.callStack = (s.pc + 1) :: s.callStack
@@ -513,10 +678,8 @@ object WamRuntime {
         }
 
       case Execute(pred, arity) =>
-        if (pred == "call" && arity == 1) {
-          // Tail-call meta-call: don't push a return address.
-          metaCallInline(s, program, deref(s.bindings, s.regs(1)),
-                         resumePc = s.pc + 1, withReturn = false)
+        if (interceptedExecuteBuiltin(s, program, pred, arity, withReturn = false)) {
+          // dispatched
         } else program.dispatch.get(s"$pred/$arity") match {
           case Some(pc) => s.pc = pc
           case None     => backtrack(s)
@@ -603,7 +766,25 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, _, args) if f == functorId =>
+            // Read mode — unify against existing args.
+            s.unifyMode  = true
             s.unifyQueue = args.toList
+            s.pc += 1
+          case Ref(_) =>
+            // Write mode — bind reg to a new struct that the
+            // following unify_* instructions will fill in. We don't
+            // know the arity from this opcode alone (PutStructure
+            // carries it; GetStructure historically didn't). The
+            // BuildFrame's sArity is set at finalizeBuild time when
+            // the args list reaches its expected count.
+            //
+            // Workaround: peek ahead to count consecutive unify_*
+            // instructions and use that as the arity. This relies on
+            // the WAM compiler always emitting exactly arity unify_*
+            // ops after a get_structure.
+            val arity = countTrailingUnifyOps(program, s.pc + 1)
+            s.buildStack = BuildFrame(reg, functorId, arity, Nil) :: s.buildStack
+            s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
         }
@@ -612,36 +793,62 @@ object WamRuntime {
         val v = deref(s.bindings, s.regs(reg))
         v match {
           case Struct(f, 2, args) if f == functorId =>
+            s.unifyMode  = true
             s.unifyQueue = args.toList
+            s.pc += 1
+          case Ref(_) =>
+            // Write mode for a 2-arg cons cell.
+            s.buildStack = BuildFrame(reg, functorId, 2, Nil) :: s.buildStack
+            s.unifyMode  = false
             s.pc += 1
           case _ => backtrack(s)
         }
 
       case UnifyVariable(varReg) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            setReg(s, varReg, item)
-            s.unifyQueue = rest
-            s.pc += 1
+        if (s.unifyMode) {
+          // Read mode: pop unify queue, bind varReg to it.
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              setReg(s, varReg, item)
+              s.unifyQueue = rest
+              s.pc += 1
+          }
+        } else {
+          // Write mode: create fresh ref, store in varReg, append to
+          // the in-progress build frame.
+          val v = freshVar(s)
+          setReg(s, varReg, v)
+          appendBuildArg(s, v)
+          if (s.status == Running) s.pc += 1
         }
 
       case UnifyValue(varReg) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            val ok = unify(s, deref(s.bindings, getReg(s, varReg)), item)
-            s.unifyQueue = rest
-            if (ok) s.pc += 1 else backtrack(s)
+        if (s.unifyMode) {
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              val ok = unify(s, deref(s.bindings, getReg(s, varReg)), item)
+              s.unifyQueue = rest
+              if (ok) s.pc += 1 else backtrack(s)
+          }
+        } else {
+          appendBuildArg(s, deref(s.bindings, getReg(s, varReg)))
+          if (s.status == Running) s.pc += 1
         }
 
       case UnifyConstant(value) =>
-        s.unifyQueue match {
-          case Nil => backtrack(s)
-          case item :: rest =>
-            val ok = unify(s, deref(s.bindings, item), value)
-            s.unifyQueue = rest
-            if (ok) s.pc += 1 else backtrack(s)
+        if (s.unifyMode) {
+          s.unifyQueue match {
+            case Nil => backtrack(s)
+            case item :: rest =>
+              val ok = unify(s, deref(s.bindings, item), value)
+              s.unifyQueue = rest
+              if (ok) s.pc += 1 else backtrack(s)
+          }
+        } else {
+          appendBuildArg(s, value)
+          if (s.status == Running) s.pc += 1
         }
 
       // --- Choice ---
@@ -670,6 +877,40 @@ object WamRuntime {
       case SwitchOnConstant(cases) =>
         switchTarget(s, cases)
 
+      case SwitchOnTerm(consts, structs, _listLabel, listPc) =>
+        // Type-discriminating dispatch on regs(1):
+        //   * Ref       → fall through (variable: any clause may match)
+        //   * Atom/Int/Float → look up in const cases
+        //   * Cons cell ([|]/2) → jump to listPc if set, else fall through
+        //   * Other Struct → look up in struct cases by functorId+arity
+        // "default" labels mean "fall through to the try_me_else chain
+        // at pc + 1" — i.e. the WAM compiler is saying "I don't have a
+        // single direct clause; let the chain enumerate".
+        val v = deref(s.bindings, s.regs(1))
+        v match {
+          case Ref(_) =>
+            s.pc += 1
+          case Atom(_) | IntTerm(_) | FloatTerm(_) =>
+            val mat = consts.find(_.value == v)
+            mat match {
+              case Some(c) if c.label == "default" => s.pc += 1
+              case Some(c) if c.targetPc >= 0      => s.pc = c.targetPc
+              case _                                => s.pc += 1
+            }
+          case Struct(f, arity, _) =>
+            val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+            if (f == consId && arity == 2) {
+              if (listPc >= 0) s.pc = listPc else s.pc += 1
+            } else {
+              val mat = structs.find(c => c.functorId == f && c.arity == arity)
+              mat match {
+                case Some(c) if c.label == "default" => s.pc += 1
+                case Some(c) if c.targetPc >= 0      => s.pc = c.targetPc
+                case _                                => s.pc += 1
+              }
+            }
+        }
+
       // --- Builtins ---
 
       case BuiltinCall(pred, _) => pred match {
@@ -683,7 +924,10 @@ object WamRuntime {
         case "fail/0" =>
           backtrack(s)
         case "!/0" =>
-          s.choicePoints = s.choicePoints.drop(s.choicePoints.length - s.cutBar)
+          // Trim back to cutBar (drop CPs above the cut frontier).
+          // ArrayBuffer.remove(idx, count) removes a contiguous range.
+          val len = s.choicePoints.length
+          if (len > s.cutBar) s.choicePoints.remove(s.cutBar, len - s.cutBar)
           s.pc += 1
 
         // Arithmetic: A1 is target (assignment) or left operand (comparison),
@@ -735,30 +979,107 @@ object WamRuntime {
                   nextVarId = s.nextVarId,
                   kind      = ForeignCP(rest)
                 )
-                s.choicePoints = cp :: s.choicePoints
+                s.choicePoints += cp
               }
               if (applyBindings(s, sols.head)) s.pc = resumePc
               else backtrack(s)
           }
 
-        // length(List, N) — deterministic for a ground list.
+        // length(List, N): ground list → unify N with length; unbound list +
+        // ground non-negative N → build a list of N fresh logic variables
+        // and unify with regs(1).
         case "length/2" =>
           listToSeq(s, program, s.regs(1)) match {
             case Some(items) =>
               if (unify(s, s.regs(2), IntTerm(items.length))) s.pc += 1
               else backtrack(s)
-            case None => backtrack(s)
+            case None =>
+              numOf(deref(s.bindings, s.regs(2))) match {
+                case Some(NInt(n)) if n >= 0 =>
+                  val vars = (0 until n).map(_ => freshVar(s): WamTerm).toSeq
+                  if (unify(s, s.regs(1), seqToList(program, vars))) s.pc += 1
+                  else backtrack(s)
+                case _ => backtrack(s)
+              }
           }
 
-        // append(A, B, C) — deterministic concat-mode: A and B ground
-        // (or at least convertible to a list), C unifies with the result.
+        // --- Type checks ---
+        case "var/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Ref(_) => s.pc += 1
+            case _      => backtrack(s)
+          }
+        case "nonvar/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Ref(_) => backtrack(s)
+            case _      => s.pc += 1
+          }
+        case "atom/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case Atom(_) => s.pc += 1
+            case _       => backtrack(s)
+          }
+        case "number/1" =>
+          deref(s.bindings, s.regs(1)) match {
+            case IntTerm(_) | FloatTerm(_) => s.pc += 1
+            case _                         => backtrack(s)
+          }
+        case "is_list/1" =>
+          listToSeq(s, program, s.regs(1)) match {
+            case Some(_) => s.pc += 1
+            case None    => backtrack(s)
+          }
+
+        // copy_term(Term, Copy): unify Copy with a fresh copy of Term in
+        // which every Ref has been consistently replaced by a fresh Ref.
+        case "copy_term/2" =>
+          val (copied, _) = copyTerm(s, s.regs(1), Map.empty)
+          if (unify(s, s.regs(2), copied)) s.pc += 1 else backtrack(s)
+
+        // append(A, B, C):
+        //   * concat-mode (A, B both ground): build C and unify
+        //   * split-mode  (C ground, at least one of A/B unbound):
+        //     enumerate all (prefix, suffix) splits of C as multi-solution
         case "append/3" =>
-          (listToSeq(s, program, s.regs(1)),
-           listToSeq(s, program, s.regs(2))) match {
-            case (Some(a), Some(b)) =>
-              val joined = seqToList(program, a ++ b)
+          val a = listToSeq(s, program, s.regs(1))
+          val b = listToSeq(s, program, s.regs(2))
+          (a, b) match {
+            case (Some(aSeq), Some(bSeq)) =>
+              val joined = seqToList(program, aSeq ++ bSeq)
               if (unify(s, s.regs(3), joined)) s.pc += 1 else backtrack(s)
-            case _ => backtrack(s)
+            case _ =>
+              listToSeq(s, program, s.regs(3)) match {
+                case None => backtrack(s)
+                case Some(cSeq) =>
+                  val splits: Seq[Map[Int, WamTerm]] =
+                    (0 to cSeq.length).map { i =>
+                      val (left, right) = cSeq.splitAt(i)
+                      Map(
+                        1 -> seqToList(program, left),
+                        2 -> seqToList(program, right)
+                      )
+                    }
+                  val resumePc = s.pc + 1
+                  if (splits.isEmpty) backtrack(s)
+                  else {
+                    val rest = splits.tail
+                    if (rest.nonEmpty) {
+                      val cp = ChoicePoint(
+                        pc        = resumePc,
+                        regs      = snapshotRegs(s),
+                        envStack  = s.envStack,
+                        callStack = s.callStack,
+                        trailLen  = s.trail.length,
+                        cutBar    = s.cutBar,
+                        nextVarId = s.nextVarId,
+                        kind      = ForeignCP(rest)
+                      )
+                      s.choicePoints += cp
+                    }
+                    if (applyBindings(s, splits.head)) s.pc = resumePc
+                    else backtrack(s)
+                  }
+              }
           }
 
         case _ =>
@@ -774,8 +1095,57 @@ object WamRuntime {
 
       case CutIte =>
         if (s.choicePoints.nonEmpty)
-          s.choicePoints = s.choicePoints.tail
+          s.choicePoints.remove(s.choicePoints.length - 1)
         s.pc += 1
+
+      // --- Aggregation (findall/3) ---
+
+      case BeginAggregate(_, templateReg, bagReg) =>
+        // Pre-compute resumePc by scanning ahead for the matching
+        // EndAggregate. Doing this at push time means the empty-results
+        // path (body fails on the first try, EndAggregate never runs)
+        // still has a correct resumePc. Nested aggregates are handled
+        // by depth tracking.
+        val endIdx = findMatchingEndAggregate(program.instructions, s.pc + 1)
+        val resumePc = if (endIdx >= 0) endIdx + 1 else s.pc + 1
+        val cp = ChoicePoint(
+          pc        = s.pc + 1,
+          regs      = snapshotRegs(s),
+          envStack  = s.envStack,
+          callStack = s.callStack,
+          trailLen  = s.trail.length,
+          cutBar    = s.cutBar,
+          nextVarId = s.nextVarId,
+          kind      = AggregateCP(
+            resumePc    = resumePc,
+            templateReg = templateReg,
+            bagReg      = bagReg,
+            results     = Nil,
+            consId      = program.internTable.stringToId.getOrElse("[|]", 5),
+            emptyId     = program.internTable.stringToId.getOrElse("[]", 2)
+          )
+        )
+        s.choicePoints += cp
+        s.pc += 1
+
+      case EndAggregate(templateReg) =>
+        // Find the topmost AggregateCP. Capture the current value of
+        // the template register, append it to results, and force a
+        // backtrack to look for more body solutions. When backtrack
+        // eventually reaches the AggregateCP itself (no more solutions
+        // above it), it finalizes and resumes after this EndAggregate.
+        val captured = deepDeref(s, s.regs(templateReg))
+        var i = 0
+        while (i < s.choicePoints.length) {
+          s.choicePoints(i).kind match {
+            case agg: AggregateCP if agg.templateReg == templateReg =>
+              s.choicePoints(i) = s.choicePoints(i).copy(
+                kind = agg.copy(results = captured :: agg.results))
+            case _ =>
+          }
+          i += 1
+        }
+        backtrack(s)
 
       // --- Fallback ---
 
@@ -929,22 +1299,579 @@ object WamRuntime {
     }
   }
 
+  /** Dispatcher for builtin predicates that the WAM compiler emits as
+   *  `Execute name/arity` rather than `BuiltinCall`. Returns true if the
+   *  intercept fired (caller should not continue with normal dispatch). */
+  def interceptedExecuteBuiltin(s: WamState, program: WamProgram,
+                                pred: String, arity: Int,
+                                withReturn: Boolean): Boolean = {
+    if (pred == "call" && arity >= 1) {
+      val goal = deref(s.bindings, s.regs(1))
+      val extras = (2 to arity).map(i => s.regs(i)).toArray
+      metaCallApplied(s, program, goal, extras, s.pc + 1, withReturn)
+      true
+    } else if (pred == "atom_codes" && arity == 2) { atomCodes2(s, program, withReturn); true }
+    else if (pred == "atom_length" && arity == 2)   { atomLength2(s, program, withReturn); true }
+    else if (pred == "ground"      && arity == 1)   { ground1(s, withReturn); true }
+    else if (pred == "atomic"      && arity == 1)   { atomic1(s, withReturn); true }
+    else if (pred == "sort"        && arity == 2)   { sort2(s, program, withReturn, dedup = true);  true }
+    else if (pred == "msort"       && arity == 2)   { sort2(s, program, withReturn, dedup = false); true }
+    else if (pred == "bagof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = false); true }
+    else if (pred == "setof"       && arity == 3)   { bagOrSetof(s, program, withReturn, sorted = true);  true }
+    else if (pred == "write"       && arity == 1)   { write1(s, program, withReturn); true }
+    else if (pred == "nl"          && arity == 0)   { nl0(s, withReturn); true }
+    else if (pred == "between"     && arity == 3)   { between3(s, program, withReturn); true }
+    else if (pred == "format"      && arity == 2)   { format2(s, program, withReturn); true }
+    else if (pred == "succ"        && arity == 2)   { succ2(s, withReturn); true }
+    else if (pred == "atom_concat" && arity == 3)   { atomConcat3(s, program, withReturn); true }
+    else if (pred == "sub_atom"    && arity == 5)   { subAtom5(s, program, withReturn); true }
+    else false
+  }
+
   /** call/1 implementation. Reflects the goal into a real predicate call.
    *  When `withReturn` is true, pushes resumePc onto the callStack so the
    *  goal's Proceed returns to it; otherwise this is a tail call. */
   def metaCallInline(s: WamState, program: WamProgram, goal: WamTerm,
-                     resumePc: Int, withReturn: Boolean): Unit = {
+                     resumePc: Int, withReturn: Boolean): Unit =
+    metaCallApplied(s, program, goal, Array.empty[WamTerm], resumePc, withReturn)
+
+  /** call/N implementation (N >= 1). The goal term is reflected into a
+   *  predicate call with `extras` appended to its argument list, matching
+   *  SWI-Prolog's call/N semantics. */
+  def metaCallApplied(s: WamState, program: WamProgram, goal: WamTerm,
+                      extras: Array[WamTerm], resumePc: Int, withReturn: Boolean): Unit = {
     goalToPredCall(s, program, goal) match {
       case None => backtrack(s)
-      case Some((key, args)) =>
+      case Some((_, baseArgs)) =>
+        val allArgs = if (extras.isEmpty) baseArgs
+                      else baseArgs ++ extras
+        // Re-extract the predicate name; arity is the new total.
+        val unwrapped = unwrapModuleQualification(s, program, goal)
+        val name = unwrapped match {
+          case Atom(f) =>
+            if (f >= 0 && f < program.internTable.idToString.length)
+              program.internTable.idToString(f) else ""
+          case Struct(f, _, _) =>
+            if (f >= 0 && f < program.internTable.idToString.length)
+              program.internTable.idToString(f) else ""
+          case _ => ""
+        }
+        val key = s"$name/${allArgs.length}"
         program.dispatch.get(key) match {
           case None => backtrack(s)
           case Some(startPc) =>
-            // Place args in argument registers.
-            args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
+            allArgs.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
             if (withReturn) s.callStack = resumePc :: s.callStack
             s.pc = startPc
         }
+    }
+  }
+
+  /** Inlined-builtin success continuation. For the Call path the caller's
+   *  return address has been pushed (advance pc to next instr); for the
+   *  Execute path no return address was pushed, so we must do
+   *  Proceed-equivalent (pop the outer caller's return off the call
+   *  stack — or mark Succeeded if the call stack is empty). */
+  private def builtinAdvance(s: WamState, withReturn: Boolean): Unit = {
+    if (withReturn) s.pc += 1
+    else s.callStack match {
+      case Nil       => s.status = Succeeded
+      case ret :: rs => s.callStack = rs; s.pc = ret
+    }
+  }
+
+  /** atom_codes(A, Cs). Mode (+, ?): A is a bound atom; build Cs as a list
+   *  of integer codes. Mode (?, +): Cs is a bound list of codes; build A
+   *  as the atom whose string is those chars. Mixed mode unifies. Numeric
+   *  terms are also stringified for SWI-Prolog compatibility. */
+  def atomCodes2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val a = deref(s.bindings, s.regs(1))
+    val cs = deref(s.bindings, s.regs(2))
+    def advance(ok: Boolean): Unit =
+      if (ok) builtinAdvance(s, withReturn) else backtrack(s)
+    a match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        val str = program.internTable.idToString(id)
+        val codes = str.toCharArray.map(c => IntTerm(c.toInt): WamTerm).toSeq
+        advance(unify(s, s.regs(2), seqToList(program, codes)))
+      case IntTerm(n) =>
+        val codes = n.toString.toCharArray.map(c => IntTerm(c.toInt): WamTerm).toSeq
+        advance(unify(s, s.regs(2), seqToList(program, codes)))
+      case FloatTerm(d) =>
+        val codes = d.toString.toCharArray.map(c => IntTerm(c.toInt): WamTerm).toSeq
+        advance(unify(s, s.regs(2), seqToList(program, codes)))
+      case _ =>
+        listToSeq(s, program, cs) match {
+          case Some(items) =>
+            val chars = items.map {
+              case IntTerm(c) => c.toChar
+              case _          => '?'
+            }.mkString
+            val id = program.internTable.stringToId.getOrElse(chars, -1)
+            advance(unify(s, s.regs(1), Atom(id)))
+          case None => backtrack(s)
+        }
+    }
+  }
+
+  /** atom_length(+A, ?N): unify N with the character length of A's string.
+   *  A must be ground. */
+  def atomLength2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val a = deref(s.bindings, s.regs(1))
+    a match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        val len = program.internTable.idToString(id).length
+        if (unify(s, s.regs(2), IntTerm(len))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** write(T): print T to stdout in human-readable Prolog form. Always
+   *  succeeds. Doesn't add a trailing newline (use nl/0 for that). */
+  def write1(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    Predef.print(termToString(program, deref(s.bindings, s.regs(1))))
+    builtinAdvance(s, withReturn)
+  }
+
+  /** nl/0: print a newline. */
+  def nl0(s: WamState, withReturn: Boolean): Unit = {
+    Predef.println()
+    builtinAdvance(s, withReturn)
+  }
+
+  /** Render a term in Prolog-ish syntax for write/1: atoms by their
+   *  interned string, integers/floats as their numeric form, structs as
+   *  `f(a, b)`, cons cells as `[a, b, ...]`, vars as `_<id>`. */
+  def termToString(program: WamProgram, t: WamTerm): String = t match {
+    case Ref(id)       => s"_$id"
+    case Atom(id)      =>
+      if (id >= 0 && id < program.internTable.idToString.length)
+        program.internTable.idToString(id) else s"<atom:$id>"
+    case IntTerm(n)    => n.toString
+    case FloatTerm(d)  => d.toString
+    case st @ Struct(_, _, _) =>
+      val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+      if (st.functor == consId && st.arity == 2) listToString(program, st)
+      else {
+        val name = program.internTable.idToString.lift(st.functor).getOrElse(s"<atom:${st.functor}>")
+        val args = st.args.map(termToString(program, _)).mkString(",")
+        s"$name($args)"
+      }
+  }
+
+  private def listToString(program: WamProgram, head: WamTerm): String = {
+    val emptyId = program.internTable.stringToId.getOrElse("[]", -1)
+    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val sb = new StringBuilder("[")
+    var cur: WamTerm = head
+    var first = true
+    var done = false
+    while (!done) cur match {
+      case Atom(id) if id == emptyId => done = true
+      case Struct(f, 2, args) if f == consId =>
+        if (!first) sb.append(",")
+        sb.append(termToString(program, args(0)))
+        cur = args(1)
+        first = false
+      case other =>
+        sb.append("|").append(termToString(program, other))
+        done = true
+    }
+    sb.append("]")
+    sb.toString
+  }
+
+  /** format(+Fmt, +Args): SWI-style format string with a small subset of
+   *  directives:
+   *    ~w / ~p   — print the next arg via termToString
+   *    ~a        — print the next arg as a bare atom string (or fall
+   *                back to termToString for non-atoms)
+   *    ~d        — print the next arg as an integer (truncates floats)
+   *    ~n        — newline
+   *    ~~        — a literal tilde
+   *  Anything else after a `~` is rendered verbatim. Args list may be
+   *  longer or shorter than directives; mismatch is benign.
+   */
+  def format2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val fmt = deref(s.bindings, s.regs(1)) match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        program.internTable.idToString(id)
+      case other => termToString(program, other)
+    }
+    val args = listToSeq(s, program, s.regs(2)).getOrElse(Seq.empty)
+    Predef.print(renderFormat(program, fmt, args))
+    builtinAdvance(s, withReturn)
+  }
+
+  def renderFormat(program: WamProgram, fmt: String, args: Seq[WamTerm]): String = {
+    val sb = new StringBuilder
+    var i = 0
+    var argIdx = 0
+    val argArr = args.toIndexedSeq
+    while (i < fmt.length) {
+      val ch = fmt(i)
+      if (ch == '~' && i + 1 < fmt.length) {
+        val d = fmt(i + 1)
+        d match {
+          case 'w' | 'p' =>
+            if (argIdx < argArr.length) sb.append(termToString(program, argArr(argIdx)))
+            argIdx += 1; i += 2
+          case 'a' =>
+            if (argIdx < argArr.length) {
+              argArr(argIdx) match {
+                case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+                  sb.append(program.internTable.idToString(id))
+                case other => sb.append(termToString(program, other))
+              }
+            }
+            argIdx += 1; i += 2
+          case 'd' =>
+            if (argIdx < argArr.length) {
+              argArr(argIdx) match {
+                case IntTerm(n)   => sb.append(n.toString)
+                case FloatTerm(d) => sb.append(d.toLong.toString)
+                case other        => sb.append(termToString(program, other))
+              }
+            }
+            argIdx += 1; i += 2
+          case 'n' => sb.append('\n'); i += 2
+          case '~' => sb.append('~');  i += 2
+          case other => sb.append('~').append(other); i += 2
+        }
+      } else {
+        sb.append(ch); i += 1
+      }
+    }
+    sb.toString
+  }
+
+  /** succ(+X, ?Y) / succ(?X, +Y): Y = X + 1, with both args required to
+   *  be non-negative integers in any solution. Bidirectional. */
+  def succ2(s: WamState, withReturn: Boolean): Unit = {
+    val a = deref(s.bindings, s.regs(1))
+    val b = deref(s.bindings, s.regs(2))
+    (numOf(a), numOf(b)) match {
+      case (Some(NInt(x)), _) if x >= 0 =>
+        if (unify(s, s.regs(2), IntTerm(x + 1))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case (_, Some(NInt(y))) if y > 0 =>
+        if (unify(s, s.regs(1), IntTerm(y - 1))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** atom_concat(+A, +B, ?C): C is the concatenation of A and B as
+   *  strings. Forward mode only (A and B both ground). The reverse
+   *  mode would need to enumerate all (A, B) splits of C and inject
+   *  each substring as an atom in the intern table — which is
+   *  immutable in this runtime — so it's not supported.
+   *
+   *  Numeric A or B are rendered via their toString form.
+   */
+  def atomConcat3(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    def stringOf(t: WamTerm): Option[String] = t match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        Some(program.internTable.idToString(id))
+      case IntTerm(n)   => Some(n.toString)
+      case FloatTerm(d) => Some(d.toString)
+      case _            => None
+    }
+    val a = deref(s.bindings, s.regs(1))
+    val b = deref(s.bindings, s.regs(2))
+    (stringOf(a), stringOf(b)) match {
+      case (Some(sa), Some(sb)) =>
+        val concat = sa + sb
+        // Look up the concatenation in the intern table; if the user
+        // didn't pre-intern it (via intern_atoms), the resulting atom
+        // gets id -1 and unification will fail unless arg3 is unbound.
+        val id = program.internTable.stringToId.getOrElse(concat, -1)
+        if (unify(s, s.regs(3), Atom(id))) builtinAdvance(s, withReturn)
+        else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** sub_atom(+Atom, +Before, +Length, ?After, ?SubAtom): extracts a
+   *  substring. Atom, Before, Length must all be ground; After and
+   *  SubAtom are derived. Multi-solution modes (any of B/L/A unbound)
+   *  are not supported in this implementation. */
+  def subAtom5(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    val atom   = deref(s.bindings, s.regs(1))
+    val before = deref(s.bindings, s.regs(2))
+    val length = deref(s.bindings, s.regs(3))
+    val str = atom match {
+      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
+        program.internTable.idToString(id)
+      case _ => return backtrack(s)
+    }
+    (numOf(before), numOf(length)) match {
+      case (Some(NInt(b)), Some(NInt(l)))
+          if b >= 0 && l >= 0 && b + l <= str.length =>
+        val subStr = str.substring(b, b + l)
+        val after  = str.length - b - l
+        val subId  = program.internTable.stringToId.getOrElse(subStr, -1)
+        val ok = unify(s, s.regs(5), Atom(subId)) &&
+                 unify(s, s.regs(4), IntTerm(after))
+        if (ok) builtinAdvance(s, withReturn) else backtrack(s)
+      case _ => backtrack(s)
+    }
+  }
+
+  /** between(+Low, +High, ?X): X enumerates integers in [Low, High].
+   *  - X already bound to int N: succeeds iff Low <= N <= High.
+   *  - X unbound: yields Low, Low+1, ..., High via ForeignMulti. */
+  def between3(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
+    (numOf(deref(s.bindings, s.regs(1))),
+     numOf(deref(s.bindings, s.regs(2))),
+     deref(s.bindings, s.regs(3))) match {
+      case (Some(NInt(lo)), Some(NInt(hi)), x) =>
+        x match {
+          case IntTerm(n) =>
+            if (n >= lo && n <= hi) builtinAdvance(s, withReturn)
+            else backtrack(s)
+          case Ref(_) if lo <= hi =>
+            // Enumerate. Reuse ForeignMulti machinery for backtracking.
+            val sols: Seq[Map[Int, WamTerm]] =
+              (lo to hi).map(n => Map(3 -> (IntTerm(n): WamTerm))).toSeq
+            val resumePc = s.pc + 1
+            sols match {
+              case Nil => backtrack(s)
+              case sol +: rest =>
+                if (rest.nonEmpty) {
+                  val cp = ChoicePoint(
+                    pc        = resumePc,
+                    regs      = snapshotRegs(s),
+                    envStack  = s.envStack,
+                    callStack = s.callStack,
+                    trailLen  = s.trail.length,
+                    cutBar    = s.cutBar,
+                    nextVarId = s.nextVarId,
+                    kind      = ForeignCP(rest)
+                  )
+                  s.choicePoints += cp
+                }
+                if (applyBindings(s, sol)) {
+                  if (withReturn) s.pc = resumePc else builtinAdvance(s, withReturn)
+                } else backtrack(s)
+            }
+          case _ => backtrack(s)
+        }
+      case _ => backtrack(s)
+    }
+  }
+
+  /** ground(T): true if T contains no unbound variables when fully derefd. */
+  def ground1(s: WamState, withReturn: Boolean): Unit = {
+    if (isGround(s, s.regs(1))) builtinAdvance(s, withReturn) else backtrack(s)
+  }
+  def isGround(s: WamState, t: WamTerm): Boolean = deref(s.bindings, t) match {
+    case Ref(_)             => false
+    case Struct(_, _, args) => args.forall(isGround(s, _))
+    case _                  => true
+  }
+
+  /** atomic(T): true if T is an atom or a number after deref. */
+  def atomic1(s: WamState, withReturn: Boolean): Unit = {
+    deref(s.bindings, s.regs(1)) match {
+      case Atom(_) | IntTerm(_) | FloatTerm(_) => builtinAdvance(s, withReturn)
+      case _                                   => backtrack(s)
+    }
+  }
+
+  /** sort(L, S) / msort(L, S): build a sorted list from a ground list L.
+   *  sort/2 also deduplicates; msort/2 keeps duplicates. */
+  def sort2(s: WamState, program: WamProgram, withReturn: Boolean, dedup: Boolean): Unit = {
+    listToSeq(s, program, s.regs(1)) match {
+      case None => backtrack(s)
+      case Some(items) =>
+        val ordered = items.sortWith(termLessThan(program, _, _))
+        val finalSeq = if (dedup) dedupConsecutive(ordered) else ordered
+        val out = seqToList(program, finalSeq)
+        if (unify(s, s.regs(2), out)) builtinAdvance(s, withReturn)
+        else backtrack(s)
+    }
+  }
+
+  private def dedupConsecutive(xs: Seq[WamTerm]): Seq[WamTerm] = {
+    val buf = scala.collection.mutable.ListBuffer.empty[WamTerm]
+    xs.foreach { x =>
+      if (buf.isEmpty || buf.last != x) buf.append(x)
+    }
+    buf.toSeq
+  }
+
+  /** Standard Prolog term ordering for sort/setof:
+   *    Var < Number < Atom < Compound
+   *  Within numbers: by numeric value (Int/Float promoted).
+   *  Within atoms: by string.
+   *  Within compounds: by (arity, functor-string, args lexicographically). */
+  def termLessThan(program: WamProgram, a: WamTerm, b: WamTerm): Boolean = {
+    def order(t: WamTerm): Int = t match {
+      case Ref(_)                    => 0
+      case IntTerm(_) | FloatTerm(_) => 1
+      case Atom(_)                   => 2
+      case Struct(_, _, _)           => 3
+    }
+    val oa = order(a); val ob = order(b)
+    if (oa != ob) return oa < ob
+    (a, b) match {
+      case (Ref(x), Ref(y))                => x < y
+      case (IntTerm(x), IntTerm(y))        => x < y
+      case (IntTerm(x), FloatTerm(y))      => x.toDouble < y
+      case (FloatTerm(x), IntTerm(y))      => x < y.toDouble
+      case (FloatTerm(x), FloatTerm(y))    => x < y
+      case (Atom(x), Atom(y))              =>
+        atomString(program, x) < atomString(program, y)
+      case (Struct(f1, a1, args1), Struct(f2, a2, args2)) =>
+        if (a1 != a2) a1 < a2
+        else {
+          val s1 = atomString(program, f1)
+          val s2 = atomString(program, f2)
+          if (s1 != s2) s1 < s2
+          else lexLess(program, args1, args2)
+        }
+      case _ => false
+    }
+  }
+  private def atomString(program: WamProgram, id: Int): String =
+    if (id >= 0 && id < program.internTable.idToString.length)
+      program.internTable.idToString(id) else s"<atom:$id>"
+  private def lexLess(program: WamProgram, xs: Array[WamTerm], ys: Array[WamTerm]): Boolean = {
+    val n = math.min(xs.length, ys.length)
+    var i = 0
+    while (i < n) {
+      val x = xs(i); val y = ys(i)
+      if (termLessThan(program, x, y)) return true
+      else if (termLessThan(program, y, x)) return false
+      i += 1
+    }
+    xs.length < ys.length
+  }
+
+  /** copy_term(Term, Copy): build a copy of Term with fresh logic variables
+   *  consistently substituted (same Ref → same fresh Ref). Returns the copy
+   *  and the updated env mapping. */
+  def copyTerm(s: WamState, t: WamTerm, env0: Map[Int, Ref]): (WamTerm, Map[Int, Ref]) = {
+    deref(s.bindings, t) match {
+      case Ref(id) =>
+        env0.get(id) match {
+          case Some(fresh) => (fresh, env0)
+          case None =>
+            val fresh = freshVar(s)
+            (fresh, env0 + (id -> fresh))
+        }
+      case Struct(f, a, args) =>
+        var env = env0
+        val newArgs = args.map { arg =>
+          val (na, env1) = copyTerm(s, arg, env)
+          env = env1
+          na
+        }
+        (Struct(f, a, newArgs), env)
+      case other => (other, env0)
+    }
+  }
+
+  /** bagof(+Template, +Goal, -Bag) / setof(+Template, +Goal, -Bag). The
+   *  goal term is in regs(2); Template in regs(1); Bag in regs(3). Runs
+   *  the goal under backtracking, collecting deepDeref(Template) on each
+   *  success, restores outer state, then unifies the resulting list with
+   *  Bag. Empty result fails (unlike findall, which returns []). For
+   *  setof, results are sorted and deduplicated.
+   *
+   *  Module qualification on the goal (e.g. `user:p(X)`) is unwrapped
+   *  the same way as for `\+`/`call`. Free-variable grouping (the `^`
+   *  operator and bagof's "scattered solutions") is NOT supported in
+   *  this implementation — the goal is treated as a single closed scope. */
+  def bagOrSetof(s: WamState, program: WamProgram, withReturn: Boolean, sorted: Boolean): Unit = {
+    val goal = deref(s.bindings, s.regs(2))
+    val template = s.regs(1)
+    metaCollectAll(s, program, template, goal) match {
+      case None => backtrack(s)
+      case Some(items) =>
+        val finalSeq =
+          if (sorted) dedupConsecutive(items.sortWith(termLessThan(program, _, _)))
+          else items
+        if (finalSeq.isEmpty) backtrack(s)
+        else {
+          val bag = seqToList(program, finalSeq)
+          if (unify(s, s.regs(3), bag)) builtinAdvance(s, withReturn)
+          else backtrack(s)
+        }
+    }
+  }
+
+  /** Run `goal` under backtracking and collect deepDeref(template) for
+   *  each success. Returns None if the goal is unresolvable, otherwise
+   *  Some(seq of captured templates in solution order). Outer state is
+   *  fully restored on exit; bindings made during the goal are undone
+   *  via the trail. */
+  def metaCollectAll(s: WamState, program: WamProgram, template: WamTerm,
+                     goal: WamTerm): Option[Seq[WamTerm]] = {
+    val (key, args) = goalToPredCall(s, program, goal) match {
+      case Some(p) => p
+      case None    => return None
+    }
+    program.dispatch.get(key) match {
+      case None => Some(Seq.empty)   // unknown predicate → no solutions
+      case Some(startPc) =>
+        // Snapshot outer state. The choicePoints buffer is swapped out
+        // for a fresh empty buffer (O(1)) and restored by reassignment.
+        val savedPc        = s.pc
+        val savedCallStack = s.callStack
+        val savedTrailLen  = s.trail.length
+        val savedCPs       = s.choicePoints
+        val savedRegs      = s.regs.clone()
+        val savedEnvStack  = s.envStack
+        val savedNextVarId = s.nextVarId
+        val savedCutBar    = s.cutBar
+        val savedStatus    = s.status
+        val savedUnifyQ    = s.unifyQueue
+        val savedBuildStk  = s.buildStack
+
+        // Set up sub-call. Goal's args go into A1..An; callStack is
+        // empty so Proceed marks Succeeded for the sub-run.
+        java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
+        args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
+        s.callStack    = Nil
+        s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
+        s.envStack     = Nil
+        s.unifyQueue   = Nil
+        s.buildStack   = Nil
+        s.cutBar       = 0
+        s.pc           = startPc
+        s.status       = Running
+
+        val results = scala.collection.mutable.ListBuffer.empty[WamTerm]
+        while (s.status != Failed) {
+          while (s.status == Running) step(s, program)
+          if (s.status == Succeeded) {
+            results.append(deepDeref(s, template))
+            if (s.choicePoints.isEmpty) {
+              s.status = Failed
+            } else {
+              s.status = Running
+              backtrack(s)
+            }
+          }
+        }
+
+        // Restore outer state — bagof/setof never propagate inner bindings.
+        unwindTrail(s, savedTrailLen)
+        System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
+        s.callStack    = savedCallStack
+        s.choicePoints = savedCPs
+        s.envStack     = savedEnvStack
+        s.nextVarId    = savedNextVarId
+        s.cutBar       = savedCutBar
+        s.unifyQueue   = savedUnifyQ
+        s.buildStack   = savedBuildStk
+        s.pc           = savedPc
+        s.status       = savedStatus
+
+        Some(results.toSeq)
     }
   }
 
@@ -1028,7 +1955,7 @@ object WamRuntime {
         java.util.Arrays.fill(s.regs.asInstanceOf[Array[AnyRef]], null)
         args.zipWithIndex.foreach { case (v, i) => s.regs(i + 1) = v }
         s.callStack    = Nil
-        s.choicePoints = Nil
+        s.choicePoints = mutable.ArrayBuffer.empty[ChoicePoint]
         s.envStack     = Nil
         s.unifyQueue   = Nil
         s.buildStack   = Nil

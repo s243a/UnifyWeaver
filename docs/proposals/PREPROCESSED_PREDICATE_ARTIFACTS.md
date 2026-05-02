@@ -479,11 +479,11 @@ Prototype status:
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
   `artifact`, and `artifact-prebuilt` source modes against the existing
   scan-family workloads, including `bound_scan` and `selective_join` modes for
-  indexed parameter probes. The prebuilt mode keeps artifacts in a stable
-  benchmark directory keyed by the current runtime source so runtime
-  measurements can separate query execution from preprocessing cost without
-  reusing stale artifact formats. The benchmark now resolves source-family
-  choices through runtime-owned `RelationSourceMode` and
+  indexed parameter probes. The prebuilt mode keeps artifacts in a per-run
+  benchmark directory keyed by the current runtime source and source mode, so
+  runtime measurements can separate query execution from preprocessing cost
+  without reusing stale artifact formats or colliding with concurrent runs.
+  The benchmark now resolves source-family choices through runtime-owned `RelationSourceMode` and
   `RelationSourceModePolicy` helpers instead of a benchmark-local string switch,
   which is the current seam for moving source selection out of Python-only
   configuration.

@@ -584,6 +584,56 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
                 continue;
             }
         }
+        if i + 10 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+                &code[i + 9],
+                &code[i + 10],
+            ) {
+                (
+                    Instruction::GetConstant(Value::Atom(raw), hops_reg),
+                    Instruction::GetVariable(visited_reg, visited_arg),
+                    Instruction::PutValue(cat_reg, a1),
+                    Instruction::PutValue(target_reg, a2),
+                    Instruction::Call(pred, 2),
+                    Instruction::Deallocate,
+                    Instruction::PutStructure(functor, a1b),
+                    Instruction::SetValue(target_reg2),
+                    Instruction::SetValue(visited_reg2),
+                    Instruction::BuiltinCall(op, 1),
+                    Instruction::Proceed,
+                ) if raw == "1"
+                    && visited_arg == "A4"
+                    && a1 == "A1"
+                    && a2 == "A2"
+                    && pred == "category_parent/2"
+                    && functor == "member/2"
+                    && a1b == "A1"
+                    && target_reg == target_reg2
+                    && visited_reg == visited_reg2
+                    && op == r"\\+/1" =>
+                    Some(Instruction::BaseCategoryAncestorBind(
+                        cat_reg.clone(),
+                        target_reg.clone(),
+                        hops_reg.clone(),
+                        visited_arg.clone(),
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 11;
+                continue;
+            }
+        }
         if i + 8 < code.len() {
             let replacement = match (
                 &code[i],
@@ -734,6 +784,15 @@ fn main() {
     let category_parents = load_tsv_pairs(&format!("{}/category_parent.tsv", facts_dir));
     let article_categories = load_tsv_pairs(&format!("{}/article_category.tsv", facts_dir));
     let roots = load_single_column(&format!("{}/root_categories.tsv", facts_dir));
+    let root = roots[0].clone();
+    let max_depth_limit = 10usize;
+    let reverse_category_parents = build_reverse_fact2(&category_parents);
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
+    let runtime_category_parents: Vec<(String, String)> = category_parents
+        .iter()
+        .filter(|(_, parent)| reachable_to_root.contains(parent))
+        .cloned()
+        .collect();
 
     let load_ms = start.elapsed().as_millis();
 
@@ -749,14 +808,14 @@ fn main() {
 ~w
 
     // --- Runtime fact predicates ---
-    append_fact2(&mut all_code, &mut all_labels, "category_parent", &category_parents);
+    append_fact2(&mut all_code, &mut all_labels, "category_parent", &runtime_category_parents);
     append_fact2(&mut all_code, &mut all_labels, "article_category", &article_categories);
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
     resolve_benchmark_targets(&mut all_code, &all_labels);
 
     // Create VM with merged code
     let mut vm = WamState::new(all_code, all_labels);
-    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&runtime_category_parents));
 
     // Build atom intern table and interned ffi_facts from indexed_atom_fact2
     for (_pred, table) in &vm.indexed_atom_fact2.clone() {
@@ -810,11 +869,7 @@ fn main() {
     }
     let seed_count = seed_cats.len();
 
-    let root = roots[0].clone();
-    let max_depth_limit = 10usize;
     setup_foreign_predicates(&mut vm);
-    let reverse_category_parents = build_reverse_fact2(&category_parents);
-    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
     let mut hop_weights: Vec<f64> = Vec::with_capacity(max_depth_limit + 2);
@@ -901,7 +956,7 @@ fn main() {
                         false
                     }
                 } else {
-                    vm.backtrack()
+                    vm.backtrack() && vm.run()
                 };
                 if !succeeded {
                     break;

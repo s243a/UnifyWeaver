@@ -451,6 +451,19 @@ Clojure/Haskell/Rust strategy:
 The benchmark generator should not become the only place where Scala
 LMDB or artifact behavior exists.
 
+The first result-producing Scala effective-distance generator is now
+registered in the benchmark matrix as `scala-wam-seeded`,
+`scala-wam-seeded-no-kernels`, `scala-wam-accumulated`, and
+`scala-wam-accumulated-no-kernels`. These targets compile the generated
+Scala project with `scalac` and run the common TSV-emitting
+`EffectiveDistanceRunner`, giving the matrix the same seeded/accumulated
+kernel/no-kernel comparison surface used by the other WAM families.
+The generator also accepts `sidecar`, `inline`, `artifact`, and `auto`
+benchmark data modes. The first matrix artifact targets are registered
+separately as `scala-wam-seeded-artifact` and
+`scala-wam-accumulated-artifact`; they currently exercise a file-backed
+category-parent artifact, not a memory-mapped or LMDB artifact backend.
+
 ## 13. Example Target-Level Declarations
 
 Illustrative examples only:

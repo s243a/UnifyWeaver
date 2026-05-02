@@ -75,6 +75,19 @@ ensure_dir(D) :-
 %% Project generation
 %% ========================================================================
 
+%% Override max_depth/1 from the WAM_EFF_DIST_BENCH_MAX_DEPTH env var
+%% (default 10 — the workload's own clause). Useful for the IntSet
+%% crossover sweep: at small depth IntSet's per-call allocation
+%% dominates the tree-descent; at deeper depth the algorithmic
+%% O(log N) should eventually dominate the constant factor.
+override_max_depth :-
+    (   getenv('WAM_EFF_DIST_BENCH_MAX_DEPTH', V), V \== ''
+    ->  atom_number(V, N), integer(N), N >= 1,
+        retractall(user:max_depth(_)),
+        assertz(user:max_depth(N))
+    ;   true
+    ).
+
 generate_project(Variant, Dir) :-
     workload_path(Wp),
     load_files(Wp, [silent(true)]),
@@ -91,6 +104,7 @@ generate_project(Variant, Dir) :-
     ->  assertz(user:visited_set(category_ancestor/4, 4))
     ;   true
     ),
+    override_max_depth,
     ensure_dir(Dir),
     Predicates = [
         user:dimension_n/1,
@@ -186,6 +200,11 @@ main :-
     format("~n========================================~n"),
     format("WAM effective-distance macro benchmark~n"),
     format("========================================~n~n"),
+    (   getenv('WAM_EFF_DIST_BENCH_SCALE', SS), SS \== '' -> Scale = SS ; Scale = '1k' ),
+    (   getenv('WAM_EFF_DIST_BENCH_MAX_DEPTH', MD), MD \== '' -> MaxDepth = MD
+    ;   MaxDepth = '10 (workload default)'
+    ),
+    format("[INFO] scale=~w  max_depth=~w~n~n", [Scale, MaxDepth]),
     (   \+ ghc_available
     ->  format("[SKIP] ghc not on PATH~n"), halt(0)
     ;   \+ cabal_available
@@ -201,7 +220,7 @@ main :-
     build_and_run(lowered,   L2, _),
     build_and_run(intset,    I2, _),
     format("~n========================================~n"),
-    format("Results (1k facts, query_ms)~n"),
+    format("Results (scale=~w max_depth=~w, query_ms)~n", [Scale, MaxDepth]),
     format("========================================~n"),
     format("  trial 1: intset = ~w ms, lowered = ~w ms, unlowered = ~w ms~n",
            [I1, L1, U1]),

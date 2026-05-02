@@ -13,6 +13,14 @@ class TargetInfo:
     description: str
 
 
+@dataclass(frozen=True)
+class KernelPairInfo:
+    family: str
+    mode: str
+    kernels_target: str
+    no_kernels_target: str
+
+
 TARGETS: dict[str, TargetInfo] = {
     "csharp-query": TargetInfo(
         "csharp-query",
@@ -54,6 +62,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Rust benchmark with optimized accumulated helpers",
     ),
+    "wam-rust-seeded-no-kernels": TargetInfo(
+        "wam-rust-seeded-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Rust benchmark with seeded host accumulation and no_kernels(true)",
+    ),
+    "wam-rust-accumulated-no-kernels": TargetInfo(
+        "wam-rust-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Rust benchmark with optimized accumulated helpers and no_kernels(true)",
+    ),
     "go-wam-accumulated": TargetInfo(
         "go-wam-accumulated",
         "hybrid-wam",
@@ -63,6 +81,36 @@ TARGETS: dict[str, TargetInfo] = {
         "go-wam-accumulated-no-kernels",
         "hybrid-wam",
         "Hybrid WAM Go benchmark with optimized accumulated helpers and no_kernels(true)",
+    ),
+    "scala-wam-seeded": TargetInfo(
+        "scala-wam-seeded",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers and kernels enabled",
+    ),
+    "scala-wam-seeded-artifact": TargetInfo(
+        "scala-wam-seeded-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers, kernels enabled, and file-backed artifact data",
+    ),
+    "scala-wam-seeded-no-kernels": TargetInfo(
+        "scala-wam-seeded-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers and no_kernels(true)",
+    ),
+    "scala-wam-accumulated": TargetInfo(
+        "scala-wam-accumulated",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with optimized accumulated helpers and kernels enabled",
+    ),
+    "scala-wam-accumulated-artifact": TargetInfo(
+        "scala-wam-accumulated-artifact",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with optimized accumulated helpers, kernels enabled, and file-backed artifact data",
+    ),
+    "scala-wam-accumulated-no-kernels": TargetInfo(
+        "scala-wam-accumulated-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with optimized accumulated helpers and no_kernels(true)",
     ),
     "clojure-wam-seeded": TargetInfo(
         "clojure-wam-seeded",
@@ -124,7 +172,97 @@ TARGETS: dict[str, TargetInfo] = {
         "optimized-prolog",
         "Optimized Prolog -> lowered Haskell functions with kernels enabled",
     ),
+    "rust-pure-interp": TargetInfo(
+        "rust-pure-interp",
+        "hybrid-wam",
+        "Optimized Prolog -> WAM Rust interpreter with no_kernels(true)",
+    ),
+    "rust-interp-ffi": TargetInfo(
+        "rust-interp-ffi",
+        "hybrid-wam",
+        "Optimized Prolog -> WAM Rust interpreter with kernels enabled",
+    ),
+    "rust-lowered-only": TargetInfo(
+        "rust-lowered-only",
+        "optimized-prolog",
+        "Optimized Prolog -> lowered Rust functions with no_kernels(true)",
+    ),
+    "rust-lowered-ffi": TargetInfo(
+        "rust-lowered-ffi",
+        "optimized-prolog",
+        "Optimized Prolog -> lowered Rust functions with kernels enabled",
+    ),
 }
+
+
+KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
+    KernelPairInfo(
+        "rust",
+        "seeded",
+        "wam-rust-seeded",
+        "wam-rust-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "rust",
+        "accumulated",
+        "wam-rust-accumulated",
+        "wam-rust-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "rust",
+        "interpreter",
+        "rust-interp-ffi",
+        "rust-pure-interp",
+    ),
+    KernelPairInfo(
+        "rust",
+        "lowered",
+        "rust-lowered-ffi",
+        "rust-lowered-only",
+    ),
+    KernelPairInfo(
+        "go",
+        "accumulated",
+        "go-wam-accumulated",
+        "go-wam-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "scala",
+        "seeded",
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "scala",
+        "accumulated",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "clojure",
+        "seeded",
+        "clojure-wam-seeded",
+        "clojure-wam-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "clojure",
+        "accumulated",
+        "clojure-wam-accumulated",
+        "clojure-wam-accumulated-no-kernels",
+    ),
+    KernelPairInfo(
+        "haskell",
+        "interpreter",
+        "haskell-interp-ffi",
+        "haskell-pure-interp",
+    ),
+    KernelPairInfo(
+        "haskell",
+        "lowered",
+        "haskell-lowered-ffi",
+        "haskell-lowered-only",
+    ),
+)
 
 
 TARGET_SETS: dict[str, list[str]] = {
@@ -138,12 +276,20 @@ TARGET_SETS: dict[str, list[str]] = {
         "prolog-accumulated",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+        "rust-lowered-only",
+        "rust-lowered-ffi",
     ],
     "hybrid-wam": [
         "wam-rust-seeded",
         "wam-rust-accumulated",
+        "wam-rust-seeded-no-kernels",
+        "wam-rust-accumulated-no-kernels",
         "go-wam-accumulated",
         "go-wam-accumulated-no-kernels",
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-no-kernels",
         "clojure-wam-accumulated",
         "clojure-wam-accumulated-no-kernels",
         "clojure-wam-seeded",
@@ -152,8 +298,24 @@ TARGET_SETS: dict[str, list[str]] = {
         "haskell-interp-ffi",
         "haskell-lowered-only",
         "haskell-lowered-ffi",
+        "rust-pure-interp",
+        "rust-interp-ffi",
+        "rust-lowered-only",
+        "rust-lowered-ffi",
     ],
     "clojure-wam-scaffold": [],
+    "scala-wam": [
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-no-kernels",
+    ],
+    "scala-wam-artifact": [
+        "scala-wam-seeded",
+        "scala-wam-seeded-artifact",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-artifact",
+    ],
     "clojure-wam": [
         "clojure-wam-accumulated",
         "clojure-wam-seeded",
@@ -218,6 +380,15 @@ def list_targets_text() -> str:
     lines.append("target_set\ttargets")
     for set_name in sorted(TARGET_SETS):
         lines.append(f"{set_name}\t{','.join(TARGET_SETS[set_name])}")
+    return "\n".join(lines)
+
+
+def list_kernel_pairs_text() -> str:
+    lines = ["family\tmode\tkernels_target\tno_kernels_target"]
+    for pair in KERNEL_TARGET_PAIRS:
+        lines.append(
+            f"{pair.family}\t{pair.mode}\t{pair.kernels_target}\t{pair.no_kernels_target}"
+        )
     return "\n".join(lines)
 
 

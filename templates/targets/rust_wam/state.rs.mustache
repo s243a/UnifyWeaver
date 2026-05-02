@@ -549,11 +549,8 @@ impl WamState {
     pub fn deref_heap(&self, val: &Value) -> Value {
         match val {
             Value::Unbound(name) => {
-                if let Some(v) = self.get_reg(name) {
-                    if let Value::Unbound(name2) = &v {
-                        if name2 == name { return val.clone(); }
-                    }
-                    return self.deref_heap(&v);
+                if let Some(v) = self.bindings.get(name) {
+                    return self.deref_heap(v);
                 }
                 val.clone()
             }
@@ -749,6 +746,13 @@ impl WamState {
                     args[0].clone(),
                     args[1].clone(),
                     args[2].clone(),
+                )),
+            "base_category_ancestor_bind" if args.len() == 4 =>
+                Some(Instruction::BaseCategoryAncestorBind(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                    args[3].clone(),
                 )),
             "recurse_category_ancestor" if args.len() == 6 => {
                 let skip = args[5].parse::<usize>().ok()?;

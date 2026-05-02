@@ -363,14 +363,19 @@ class SourceModeSummary:
     mode: str
     best_source_mode: str
     chosen_source_mode: str
+    policy_status: str
+    overlap_status: str
+    auto_median: str
     auto_vs_best: str
     median_summary: str
+    spread_summary: str
     row_summary: str
     source_registration_summary: str
     bucket_strategy_summary: str
 
 
 RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
+CALIBRATION_NEAR_RATIO = 1.10
 
 
 def parse_args() -> argparse.Namespace:
@@ -380,7 +385,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--format", choices=["detail-tsv", "report-tsv", "markdown"], default="detail-tsv")
+    parser.add_argument(
+        "--format",
+        choices=[
+            "detail-tsv",
+            "report-tsv",
+            "markdown",
+            "calibration-tsv",
+            "calibration-markdown",
+            "actionable-tsv",
+            "actionable-markdown",
+        ],
+        default="detail-tsv")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -430,6 +446,50 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     return metrics.get("scan_planner_strategies", "") or operator
 
 
+def format_time_spread(result: BenchResult) -> str:
+    return f"{min(result.times):.3f}-{max(result.times):.3f}"
+
+
+def classify_policy_status(
+    chosen_source_mode: str,
+    best_source_mode: str,
+    auto: BenchResult | None,
+    best: BenchResult | None,
+) -> str:
+    if not chosen_source_mode or not best_source_mode or auto is None or best is None:
+        return ""
+    ratio = auto.median / best.median if best.median else float("inf")
+    if chosen_source_mode == best_source_mode:
+        if ratio <= CALIBRATION_NEAR_RATIO:
+            return "match"
+        return "match-slow"
+
+    if ratio <= CALIBRATION_NEAR_RATIO:
+        return "near"
+    return "mismatch"
+
+
+def classify_overlap_status(auto: BenchResult | None, best: BenchResult | None) -> str:
+    if auto is None or best is None:
+        return ""
+    if len(auto.times) < 2 or len(best.times) < 2:
+        return "single-sample"
+    auto_min = min(auto.times)
+    auto_max = max(auto.times)
+    best_min = min(best.times)
+    best_max = max(best.times)
+    if max(auto_min, best_min) <= min(auto_max, best_max):
+        return "overlap"
+    return "separated"
+
+
+def is_actionable_summary(summary: SourceModeSummary) -> bool:
+    return (
+        summary.overlap_status == "separated" and
+        summary.policy_status in {"mismatch", "match-slow"}
+    )
+
+
 def summarize_by_source_mode(
     results: list[BenchResult],
     scales: list[str],
@@ -460,6 +520,9 @@ def summarize_by_source_mode(
             auto = source_results.get("auto")
             chosen_source_mode = auto.resolved_source_mode if auto is not None else ""
             best_source_mode = best.source_mode if best is not None else ""
+            policy_status = classify_policy_status(chosen_source_mode, best_source_mode, auto, best)
+            overlap_status = classify_overlap_status(auto, best)
+            auto_median = f"{auto.median:.3f}" if auto is not None else ""
             auto_vs_best = ""
             if auto is not None and best is not None:
                 ratio = auto.median / best.median if best.median else float("inf")
@@ -467,6 +530,10 @@ def summarize_by_source_mode(
 
             median_summary = ",".join(
                 f"{source_mode}:{result.median:.3f}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            spread_summary = ",".join(
+                f"{source_mode}:{format_time_spread(result)}"
                 for source_mode, result in sorted(source_results.items())
             )
             row_summary = ",".join(
@@ -487,8 +554,12 @@ def summarize_by_source_mode(
                     mode=mode,
                     best_source_mode=best_source_mode,
                     chosen_source_mode=chosen_source_mode,
+                    policy_status=policy_status,
+                    overlap_status=overlap_status,
+                    auto_median=auto_median,
                     auto_vs_best=auto_vs_best,
                     median_summary=median_summary,
+                    spread_summary=spread_summary,
                     row_summary=row_summary,
                     source_registration_summary=registration_summary,
                     bucket_strategy_summary=bucket_strategy_summary,
@@ -578,8 +649,39 @@ def print_markdown(summaries: list[SourceModeSummary]) -> None:
         )
 
 
+def print_calibration_tsv(summaries: list[SourceModeSummary]) -> None:
+    print("scale	mode	policy_status	overlap_status	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
+    for summary in summaries:
+        print(
+            f"{summary.scale}	{summary.mode}	{summary.policy_status}	{summary.overlap_status}	"
+            f"{summary.chosen_source_mode}	{summary.best_source_mode}	{summary.auto_median}	{summary.auto_vs_best}	"
+            f"{summary.median_summary}	{summary.spread_summary}	{summary.source_registration_summary}"
+        )
+
+
+def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
+    print("| Scale | Mode | Policy | Overlap | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
+    print("| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | {summary.overlap_status} | "
+            f"{summary.chosen_source_mode} | {summary.best_source_mode} | {summary.auto_median} | {summary.auto_vs_best} | "
+            f"`{summary.median_summary}` | `{summary.spread_summary}` | "
+            f"`{summary.source_registration_summary}` |"
+        )
+
+
+def print_actionable_tsv(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_tsv([summary for summary in summaries if is_actionable_summary(summary)])
+
+
+def print_actionable_markdown(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_markdown([summary for summary in summaries if is_actionable_summary(summary)])
+
+
 def benchmark_mode(
     command: list[str],
+    artifact_root: Path,
     scale: str,
     mode: str,
     source_mode: str,
@@ -594,7 +696,7 @@ def benchmark_mode(
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
     env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
     if source_mode in {"artifact-prebuilt", "auto"}:
-        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
+        artifact_dir = artifact_root / f"prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / source_mode / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 
@@ -644,13 +746,21 @@ def main() -> int:
             for mode in modes:
                 for source_mode in source_modes:
                     for strategy in strategies:
-                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
+                        results.append(benchmark_mode(command, temp_root, scale, mode, source_mode, strategy, args.repetitions))
 
         if args.format == "detail-tsv":
             print_detail_tsv(results, scales, modes, source_modes)
         else:
             summaries = summarize_by_source_mode(results, scales, modes)
-            if args.format == "markdown":
+            if args.format == "calibration-tsv":
+                print_calibration_tsv(summaries)
+            elif args.format == "calibration-markdown":
+                print_calibration_markdown(summaries)
+            elif args.format == "actionable-tsv":
+                print_actionable_tsv(summaries)
+            elif args.format == "actionable-markdown":
+                print_actionable_markdown(summaries)
+            elif args.format == "markdown":
                 print_markdown(summaries)
             else:
                 print_report_tsv(summaries)

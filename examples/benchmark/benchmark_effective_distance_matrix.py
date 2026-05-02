@@ -49,8 +49,10 @@ from benchmark_common import (
     run_command,
 )
 from benchmark_target_matrix import (
+    KERNEL_TARGET_PAIRS,
     TARGETS,
     default_target_set_name,
+    list_kernel_pairs_text,
     list_targets_text,
     parse_csv,
     resolve_targets,
@@ -62,11 +64,15 @@ BENCH_DIR = ROOT / "data" / "benchmark"
 GENERATOR = ROOT / "examples" / "benchmark" / "generate_pipeline.py"
 PROLOG_GENERATOR = ROOT / "examples" / "benchmark" / "generate_prolog_effective_distance_benchmark.pl"
 WAM_RUST_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_effective_distance_benchmark.pl"
+WAM_RUST_MATRIX_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_rust_matrix_benchmark.pl"
 WAM_HASKELL_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_haskell_matrix_benchmark.pl"
 WAM_GO_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_go_effective_distance_benchmark.pl"
 WAM_CLOJURE_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_clojure_optimized_benchmark.pl"
+WAM_SCALA_GENERATOR = ROOT / "examples" / "benchmark" / "generate_wam_scala_effective_distance_benchmark.pl"
 DEFAULT_FACTS = BENCH_DIR / "10k" / "facts.pl"
 HASKELL_EXE = "wam-haskell-matrix-bench"
+RUST_MATRIX_EXE = "wam_rust_matrix_bench"
+SCALA_EFFECTIVE_DISTANCE_MAIN = "generated.wam_scala_effective_distance.core.EffectiveDistanceRunner"
 
 
 def default_scales_csv() -> str:
@@ -106,6 +112,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--list-targets", action="store_true")
+    parser.add_argument(
+        "--list-kernel-pairs",
+        action="store_true",
+        help="Print registered kernel/no-kernel WAM target pairings and exit.",
+    )
     parser.add_argument(
         "--allow-large-termux-scales",
         action="store_true",
@@ -240,6 +251,40 @@ def build_wam_go_effective_distance(root: Path, scale: str, kernel_mode: str) ->
     env = dict(os.environ, GOCACHE=str(go_cache))
     run_command(["go", "build", "-o", str(project_dir / "hybrid_ed_bench_go")], cwd=project_dir, env=env)
     return [str(project_dir / "hybrid_ed_bench_go")]
+
+
+def scala_sources(project_dir: Path) -> list[str]:
+    return sorted(str(path) for path in (project_dir / "src" / "main" / "scala").rglob("*.scala"))
+
+
+def build_wam_scala_effective_distance(
+    root: Path, scale: str, variant: str, kernel_mode: str, data_mode: str = "auto"
+) -> list[str]:
+    facts_path = require_file(BENCH_DIR / scale / "facts.pl")
+    project_dir = root / f"wam_scala_{variant}_{kernel_mode}_{data_mode}" / scale
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_SCALA_GENERATOR),
+            "--",
+            str(facts_path),
+            str(project_dir),
+            variant,
+            kernel_mode,
+            data_mode,
+        ],
+        cwd=ROOT,
+    )
+    classes_dir = project_dir / "classes"
+    classes_dir.mkdir(exist_ok=True)
+    sources = scala_sources(project_dir)
+    if not sources:
+        raise RuntimeError(f"no Scala sources generated under {project_dir}")
+    run_command(["scalac", "-d", str(classes_dir), *sources], cwd=project_dir)
+    return ["scala", "-classpath", str(classes_dir), SCALA_EFFECTIVE_DISTANCE_MAIN]
 
 
 def clojure_classpath(project_dir: Path) -> str:
@@ -569,6 +614,28 @@ def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str) ->
     return build_haskell_project(project_dir, HASKELL_EXE)
 
 
+def build_rust_matrix_effective_distance(root: Path, mode: str, kernel_mode: str) -> list[str]:
+    project_dir = root / f"rust_{mode}_{kernel_mode}"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            "swipl",
+            "-q",
+            "-s",
+            str(WAM_RUST_MATRIX_GENERATOR),
+            "--",
+            str(DEFAULT_FACTS),
+            str(project_dir),
+            "accumulated",
+            mode,
+            kernel_mode,
+        ],
+        cwd=ROOT,
+    )
+    run_command(["cargo", "build", "--release"], cwd=project_dir)
+    return [str(project_dir / "target" / "release" / RUST_MATRIX_EXE)]
+
+
 def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str, list[str]]:
     commands: dict[str, list[str]] = {}
     for target in targets:
@@ -588,6 +655,14 @@ def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_off")
         elif target == "haskell-lowered-ffi":
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_on")
+        elif target == "rust-pure-interp":
+            commands[target] = build_rust_matrix_effective_distance(root, "interpreter", "kernels_off")
+        elif target == "rust-interp-ffi":
+            commands[target] = build_rust_matrix_effective_distance(root, "interpreter", "kernels_on")
+        elif target == "rust-lowered-only":
+            commands[target] = build_rust_matrix_effective_distance(root, "functions", "kernels_off")
+        elif target == "rust-lowered-ffi":
+            commands[target] = build_rust_matrix_effective_distance(root, "functions", "kernels_on")
     return commands
 
 
@@ -603,6 +678,9 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
         started = time.perf_counter()
         if target.startswith("prolog-") or target.startswith("wam-") or target.startswith("clojure-wam-"):
             result = run_command(command, cwd=ROOT)
+        elif target.startswith("haskell-"):
+            scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
+            result = run_command(command + [str(scale_dir)], cwd=ROOT)
         else:
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
             edge_path = scale_dir / "category_parent.tsv"
@@ -642,6 +720,40 @@ def print_summary(results: list[RunResult], baseline_target: str) -> None:
                 if result.target == baseline_target:
                     continue
                 print_speedup(scale, f"speedup_vs_{baseline_target}_{result.target}", baseline, result)
+    print_kernel_pair_deltas(results)
+
+
+def kernel_pair_delta_rows(scale: str, entries: list[RunResult]) -> list[str]:
+    by_target = {entry.target: entry for entry in entries}
+    rows: list[str] = []
+    for pair in KERNEL_TARGET_PAIRS:
+        kernels = by_target.get(pair.kernels_target)
+        no_kernels = by_target.get(pair.no_kernels_target)
+        if kernels is None or no_kernels is None:
+            continue
+        speedup = no_kernels.median / kernels.median if kernels.median > 0 else float("inf")
+        output_match = kernels.stdout_sha256 == no_kernels.stdout_sha256
+        rows_match = kernels.row_count == no_kernels.row_count
+        rows.append(
+            f"{scale}\t{pair.family}\t{pair.mode}\t{pair.kernels_target}\t"
+            f"{pair.no_kernels_target}\t{kernels.median:.3f}\t{no_kernels.median:.3f}\t"
+            f"{speedup:.3f}\t{str(output_match).lower()}\t{str(rows_match).lower()}"
+        )
+    return rows
+
+
+def print_kernel_pair_deltas(results: list[RunResult]) -> None:
+    rows: list[str] = []
+    for scale, entries in group_results_by_scale(results):
+        rows.extend(kernel_pair_delta_rows(scale, entries))
+    if not rows:
+        return
+    print(
+        "scale\tfamily\tmode\tkernels_target\tno_kernels_target\tkernels_median_s\t"
+        "no_kernels_median_s\tkernels_speedup_vs_no_kernels\toutput_match\trows_match"
+    )
+    for row in rows:
+        print(row)
 
 
 def resolve_requested_targets(args: argparse.Namespace) -> list[str]:
@@ -672,6 +784,9 @@ def main() -> int:
     if args.list_targets:
         print(list_targets_text())
         return 0
+    if args.list_kernel_pairs:
+        print(list_kernel_pairs_text())
+        return 0
 
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
     validate_termux_scales(scales, args.allow_large_termux_scales)
@@ -701,10 +816,30 @@ def main() -> int:
                     command = build_wam_rust_effective_distance(temp_root, scale, "seeded")
                 elif target == "wam-rust-accumulated":
                     command = build_wam_rust_effective_distance(temp_root, scale, "accumulated")
+                elif target == "wam-rust-seeded-no-kernels":
+                    command = build_wam_rust_effective_distance(temp_root, scale, "seeded_no_kernels")
+                elif target == "wam-rust-accumulated-no-kernels":
+                    command = build_wam_rust_effective_distance(temp_root, scale, "accumulated_no_kernels")
                 elif target == "go-wam-accumulated":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_on")
                 elif target == "go-wam-accumulated-no-kernels":
                     command = build_wam_go_effective_distance(temp_root, scale, "kernels_off")
+                elif target == "scala-wam-seeded":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_on")
+                elif target == "scala-wam-seeded-artifact":
+                    command = build_wam_scala_effective_distance(
+                        temp_root, scale, "seeded", "kernels_on", "artifact"
+                    )
+                elif target == "scala-wam-seeded-no-kernels":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "seeded", "kernels_off")
+                elif target == "scala-wam-accumulated":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "accumulated", "kernels_on")
+                elif target == "scala-wam-accumulated-artifact":
+                    command = build_wam_scala_effective_distance(
+                        temp_root, scale, "accumulated", "kernels_on", "artifact"
+                    )
+                elif target == "scala-wam-accumulated-no-kernels":
+                    command = build_wam_scala_effective_distance(temp_root, scale, "accumulated", "kernels_off")
                 elif target == "clojure-wam-accumulated":
                     command = build_wam_clojure_effective_distance(temp_root, scale, "accumulated", "kernels_on")
                 elif target == "clojure-wam-accumulated-no-kernels":

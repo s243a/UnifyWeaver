@@ -333,6 +333,19 @@ test_haskell_value_nfdata_instance :-
     ;   fail_test(Test, 'NFData Value instance missing')
     ).
 
+test_haskell_hashable_value_handles_intset :-
+    Test = 'WAM-Haskell: HashMap rewrite hashes VSet IntSet explicitly',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        wam_haskell_target:apply_hashmap_rewrite(true, types, TypesCode, HashCode),
+        atom_string(HashCode, S),
+        sub_string(S, _, _, _, "import Data.Hashable (Hashable(..))"),
+        sub_string(S, _, _, _, "instance Hashable Value where"),
+        sub_string(S, _, _, _, "hashWithSalt salt (VSet s) = hashWithSalt salt (4 :: Int, IS.toList s)"),
+        \+ sub_string(S, _, _, _, "deriving (Eq, Ord, Show, Generic)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Hashable Value still relies on derived Generic or misses VSet handling')
+    ).
+
 test_haskell_fork_min_branches_threshold :-
     Test = 'WAM-Haskell: forkMinBranches threshold emitted in runtime',
     (   compile_wam_runtime_to_haskell([], [], Code),
@@ -1385,6 +1398,96 @@ test_b1_lmdb_manifest_wiring_option_present :-
     ;   fail_test(Test, 'Manifest-backed FactSource wiring option not found')
     ).
 
+%% Regression test for the linear-chain-zero-results bug: the FFI kernel's
+%% max_depth must be substituted from user:max_depth/1 (or an option) at
+%% codegen time. Hardcoding 10 in the Main.hs template caused chain-shaped
+%% queries with deeper roots (e.g. cat_001 -> ... -> cat_030) to return
+%% zero results — the kernel cut off recursion at depth 10, never reaching
+%% the root, while SWI-Prolog (using the same workload's max_depth/1 fact
+%% asserted to 30) found the paths.
+test_max_depth_default_10_when_no_user_fact :-
+    Test = 'WAM-Haskell: Main.hs max_depth defaults to 10 when no user:max_depth/1',
+    %% Ensure no stale user:max_depth/1 leaks from other tests.
+    retractall(user:max_depth(_)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Default max_depth=10 not present in Main.hs')
+    ).
+
+test_max_depth_from_user_fact :-
+    Test = 'WAM-Haskell: Main.hs max_depth picks up user:max_depth/1',
+    %% Simulate the workload (effective_distance.pl) asserting a depth bound.
+    retractall(user:max_depth(_)),
+    assertz(user:max_depth(30)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 30"),
+        \+ sub_string(S, _, _, _, "Map.singleton \"max_depth\" 10")
+    ->  pass(Test)
+    ;   fail_test(Test, 'user:max_depth(30) not propagated into Main.hs FFI config')
+    ),
+    retractall(user:max_depth(_)).
+
+test_max_depth_option_overrides_user_fact :-
+    Test = 'WAM-Haskell: max_depth(N) option overrides user:max_depth/1',
+    retractall(user:max_depth(_)),
+    assertz(user:max_depth(30)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [max_depth(50)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "Map.singleton \"max_depth\" 50"),
+        \+ sub_string(S, _, _, _, "Map.singleton \"max_depth\" 30")
+    ->  pass(Test)
+    ;   fail_test(Test, 'max_depth(50) option did not override user:max_depth(30)')
+    ),
+    retractall(user:max_depth(_)).
+
+%% =========================================================================
+%% dimension_n substitution (same instrumentation-bug class as max_depth).
+%%
+%% The aggregation formula d_eff = (sum Hops^(-N))^(-1/N) needs N at
+%% codegen — `n` in Main.hs was historically hardcoded to 5.0. A user
+%% asserting `dimension_n(7).` in the workload would silently still get
+%% N=5 in the FFI aggregation while the WAM-compiled `dimension_n/1`
+%% predicate returned 7. Fix: read `user:dimension_n/1` (or
+%% `dimension_n(N)` option) at codegen and substitute `{{dimension_n}}`.
+test_dimension_n_default_5_when_no_user_fact :-
+    Test = 'WAM-Haskell: Main.hs dimension_n defaults to 5 when no user:dimension_n/1',
+    retractall(user:dimension_n(_)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "fromIntegral (5 :: Int) :: Double")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Default dimension_n=5 not present in Main.hs')
+    ).
+
+test_dimension_n_from_user_fact :-
+    Test = 'WAM-Haskell: Main.hs dimension_n picks up user:dimension_n/1',
+    retractall(user:dimension_n(_)),
+    assertz(user:dimension_n(7)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "fromIntegral (7 :: Int) :: Double"),
+        \+ sub_string(S, _, _, _, "fromIntegral (5 :: Int) :: Double")
+    ->  pass(Test)
+    ;   fail_test(Test, 'user:dimension_n(7) not propagated into Main.hs')
+    ),
+    retractall(user:dimension_n(_)).
+
+test_dimension_n_option_overrides_user_fact :-
+    Test = 'WAM-Haskell: dimension_n(N) option overrides user:dimension_n/1',
+    retractall(user:dimension_n(_)),
+    assertz(user:dimension_n(7)),
+    (   wam_haskell_target:generate_main_hs([], [], [], [dimension_n(11)], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, "fromIntegral (11 :: Int) :: Double"),
+        \+ sub_string(S, _, _, _, "fromIntegral (7 :: Int) :: Double")
+    ->  pass(Test)
+    ;   fail_test(Test, 'dimension_n(11) option did not override user:dimension_n(7)')
+    ),
+    retractall(user:dimension_n(_)).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -1670,6 +1773,7 @@ run_tests :-
     test_haskell_agg_frame_has_merge_strategy,
     test_haskell_infer_merge_strategy,
     test_haskell_value_nfdata_instance,
+    test_haskell_hashable_value_handles_intset,
     test_haskell_fork_min_branches_threshold,
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
@@ -1776,6 +1880,14 @@ run_tests :-
     test_b1_external_source_skips_wam_compilation,
     test_b1_external_source_default_allow_list,
     test_b1_external_source_off_without_use_lmdb,
+    %% max_depth substitution (regression for linear-chain-zero-results)
+    test_max_depth_default_10_when_no_user_fact,
+    test_max_depth_from_user_fact,
+    test_max_depth_option_overrides_user_fact,
+    %% dimension_n substitution (same instrumentation-bug class as max_depth)
+    test_dimension_n_default_5_when_no_user_fact,
+    test_dimension_n_from_user_fact,
+    test_dimension_n_option_overrides_user_fact,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

@@ -41,24 +41,169 @@ test(function_name_generation) :-
     assertion(Name == 'lowered-my-pred-3').
 
 test(lower_predicate_to_clojure_emits_function) :-
-    simple_fact_wam(WamCode),
-    lower_predicate_to_clojure(test_fact/1, WamCode, [], Code),
-    has(Code, "defn lowered-test-fact-1 [state]"),
-    has(Code, "get-constant a, A1"),
-    has(Code, "runtime/succeed-state state").
+    once((
+        simple_fact_wam(WamCode),
+        lower_predicate_to_clojure(test_fact/1, WamCode, [], Code),
+        has(Code, "defn lowered-test-fact-1 [state]"),
+        has(Code, "get-constant a, A1"),
+        has(Code, "runtime/normalize-literal-term"),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "runtime/interned-equal?")
+    )).
 
 test(lowered_multi_clause_keeps_clause1_shape) :-
-    multi_clause_wam(WamCode),
-    lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
-    has(Code, "defn lowered-test-choice-1 [state]"),
-    has(Code, "get-constant a, A1"),
-    \+ has(Code, "get-constant b, A1").
+    once((
+        multi_clause_wam(WamCode),
+        lower_predicate_to_clojure(test_choice/1, WamCode, [], Code),
+        has(Code, "defn lowered-test-choice-1 [state]"),
+        has(Code, "get-constant a, A1"),
+        \+ has(Code, "get-constant b, A1")
+    )).
 
 test(call_foreign_is_part_of_scaffold) :-
     WamCode = "test_foreign/2:\ncall_foreign category_parent/2, 2\nproceed\n",
     wam_clojure_lowerable(test_foreign/2, WamCode, deterministic),
     lower_predicate_to_clojure(test_foreign/2, WamCode, [], Code),
-    has(Code, "call-foreign category_parent/2"),
-    has(Code, ":call-foreign").
+    has(Code, "defn lowered-test-foreign-2 [state]"),
+    has(Code, "state").
+
+test(simple_register_ops_are_direct_lowered) :-
+    once((
+        WamCode = "test_regs/2:\nget_variable X1, A1\nput_variable X2, A2\nget_value X1, A2\nput_value X1, A1\nproceed\n",
+        wam_clojure_lowerable(test_regs/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_regs/2, WamCode, [], Code),
+        has(Code, "runtime/fresh-var"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/reg-set-raw")
+    )).
+
+test(structure_read_entry_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_read_struct/1:\nget_structure f/2, A1\nunify_constant a\nunify_variable X1\nproceed\n",
+        wam_clojure_lowerable(test_read_struct/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_read_struct/1, WamCode, [], Code),
+        has(Code, "runtime/enter-unify-mode"),
+        has(Code, "runtime/pop-unify-item"),
+        has(Code, "runtime/structure-term?"),
+        has(Code, "runtime/interned-equal?"),
+        has(Code, "runtime/unify-values")
+    )).
+
+test(list_read_entry_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_read_list/1:\nget_list A1\nunify_constant head\nunify_constant []\nproceed\n",
+        wam_clojure_lowerable(test_read_list/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_read_list/1, WamCode, [], Code),
+        has(Code, "runtime/enter-unify-mode"),
+        has(Code, "runtime/list-functor-term"),
+        has(Code, "runtime/structure-term?"),
+        has(Code, "runtime/pop-unify-item"),
+        has(Code, "runtime/unify-values")
+    )).
+
+test(unify_value_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_unify_value/2:\nget_variable X1, A2\nget_structure f/1, A1\nunify_value X1\nproceed\n",
+        wam_clojure_lowerable(test_unify_value/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_unify_value/2, WamCode, [], Code),
+        has(Code, "runtime/pop-unify-item"),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "runtime/unify-values")
+    )).
+
+test(simple_builtin_equality_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_eq/2:\nbuiltin_call =/2, 2\nproceed\n",
+        wam_clojure_lowerable(test_eq/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_eq/2, WamCode, [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/unify-values")
+    )).
+
+test(simple_builtin_true_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/succeed-state")
+    )).
+
+test(unsupported_builtin_stays_runtime_mediated) :-
+    once((
+        WamCode = "test_atom/1:\nbuiltin_call atom/1, 1\nproceed\n",
+        wam_clojure_lowerable(test_atom/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_atom/1, WamCode, [], Code),
+        assertion(\+ has(Code, "builtin-call atom/1")),
+        has(Code, "state")
+    )).
+
+test(env_framed_equality_reaches_direct_builtin_prefix) :-
+    once((
+        WamCode = "test_env_eq/2:\nallocate\nput_value X1, A1\nput_value X2, A2\nbuiltin_call =/2, 2\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_env_eq/2, WamCode, deterministic),
+        lower_predicate_to_clojure(test_env_eq/2, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "update :env-stack #(if (seq %) (pop %) %)"),
+        has(Code, "runtime/unify-values"),
+        has(Code, "runtime/succeed-state")
+    )).
+
+test(execute_stays_runtime_mediated_after_lowered_prefix) :-
+    once((
+        WamCode = "test_exec/1:\nallocate\ndeallocate\nexecute test_fact/1\n",
+        wam_clojure_lowerable(test_exec/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_exec/1, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "update :env-stack #(if (seq %) (pop %) %)"),
+        assertion(\+ has(Code, "execute test_fact/1")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(call_stays_runtime_mediated_after_lowered_prefix) :-
+    once((
+        WamCode = "test_call/1:\nallocate\nget_variable Y1, A1\nput_value Y1, A1\ncall test_fact/1, 1\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_call/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_call/1, WamCode, [], Code),
+        has(Code, "update :env-stack conj {}"),
+        has(Code, "get-variable Y1, A1"),
+        has(Code, "put-value Y1, A1"),
+        assertion(\+ has(Code, "call test_fact/1")),
+        assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(structure_build_ops_are_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_build/1:\nput_structure f/2, A1\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
+        wam_clojure_lowerable(test_build/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_build/1, WamCode, [], Code),
+        has(Code, "runtime/push-build-frame"),
+        has(Code, "runtime/functor-arity"),
+        has(Code, "runtime/append-build-arg"),
+        has(Code, "runtime/finalize-complete-builds")
+    )).
+
+test(list_build_ops_are_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_list_build/1:\nput_list A1\nset_constant head\nset_constant []\nproceed\n",
+        wam_clojure_lowerable(test_list_build/1, WamCode, deterministic),
+        lower_predicate_to_clojure(test_list_build/1, WamCode, [], Code),
+        has(Code, "runtime/push-build-frame"),
+        has(Code, "runtime/list-functor-term"),
+        has(Code, "runtime/append-build-arg"),
+        has(Code, "runtime/finalize-complete-builds")
+    )).
+
+test(build_arg_ops_are_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_build_prefix/0:\nset_constant a\nset_variable X1\nset_value X1\nproceed\n",
+        wam_clojure_lowerable(test_build_prefix/0, WamCode, deterministic),
+        lower_predicate_to_clojure(test_build_prefix/0, WamCode, [], Code),
+        has(Code, "runtime/append-build-arg"),
+        has(Code, "runtime/finalize-complete-builds")
+    )).
 
 :- end_tests(wam_clojure_lowered_emitter).

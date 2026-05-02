@@ -30,8 +30,22 @@ type ChoicePoint struct {
 	NextPC    int
 	ResumePC  int
 	CP        int
+	// E captures vm.E (env-frame stack index) at choicepoint push.
+	// Restored at backtrack so the env-trimming-aware Deallocate
+	// continues from the right frame after the failed branch's
+	// changes are undone.
+	E         int
+	// StackLen captures len(vm.Stack) at choicepoint push. Backtrack
+	// truncates the stack to this length; everything pushed during
+	// the failed attempt is dropped. With env trimming in place the
+	// truncation is safe — env frames pushed after the CP are dead
+	// (their PrevE chain has already been walked back), and frames
+	// alive at CP push time are guaranteed to be at indices < StackLen
+	// because Deallocate doesn't physically pop frames whose B0 < the
+	// youngest live CP. Replaces the prior `Stack: copyStack(vm.Stack)`
+	// per-push allocation, which was ~19% of CPU at scale-300.
+	StackLen  int
 	SavedRegs []Value
-	Stack     []StackEntry
 	HeapTop   int
 	TrailMark int
 	IndexedClausePCs []int
@@ -43,6 +57,32 @@ type ChoicePoint struct {
 type EnvFrame struct {
 	CP int
 	B0 int
+	// PrevE is the WamState.E (env-frame stack index) at the moment
+	// this frame was Allocated. Deallocate restores vm.E to PrevE
+	// for the LIFO walk back through nested activations. The "logical
+	// pop only" discipline lets env frames stay physically on the
+	// stack while a younger choicepoint still references them, so
+	// `pushChoicePoint` no longer has to deep-copy the stack — it
+	// just records `len(vm.Stack)` as a mark, and backtrack truncates
+	// to that mark. Stack frames whose B0 makes them "dead" stay
+	// inert until the truncation rolls past them.
+	PrevE int
+	// SavedYRegs is a snapshot of Regs[200..299] (the Y-register range)
+	// taken at Allocate time and restored at Deallocate. Y-regs are
+	// global slots in this runtime, so without per-call save/restore
+	// nested predicates collide on the same slot — symptom: in the
+	// effective-distance bench, power_sum_bound reserved X203 for the
+	// per-iteration Hops accumulator, but the inner category_ancestor's
+	// clause 2 reuses X203 for the parent atom (also via PutVariable),
+	// so when category_ancestor returned, Regs[203] held an atom
+	// instead of the integer the wrapper expected, and the next is/2
+	// in power_sum_bound failed. Restoring at Deallocate gives the
+	// caller's Y-regs back. Bindings-based deref still propagates any
+	// genuine variable binding the callee made on a caller-passed
+	// Unbound — Bindings[Idx] is global and survives the Y-reg
+	// restore, so reading the restored Y-reg dereferences through the
+	// (still-bound) Unbound to the bound value.
+	SavedYRegs [100]Value
 }
 
 type UnifyCtx struct {
@@ -89,8 +129,26 @@ type WamState struct {
 	Ctx          *WamContext
 	PC           int
 	CP           int
-	Regs         [512]Value
-	Bindings     map[int]Value
+	// Regs holds A/X/Y registers in a single flat array.
+	//   * A1..A8: indices 0..7 (argument registers)
+	//   * X-regs: 8..199  (clause-local temporaries)
+	//   * Y-regs: 200..299 (env-frame permanents; saved/restored at
+	//     Allocate/Deallocate via EnvFrame.SavedYRegs)
+	// Beyond 299 is unused space. The size used to be 512 but profiling
+	// at scale-300 showed `copy(vm.Regs[:len(cp.SavedRegs)],
+	// cp.SavedRegs)` was ~37% of CPU; trimming to 320 cuts that copy
+	// (and snapshotAllRegs's matching alloc) by ~37% per choicepoint
+	// without changing the addressable-slot range.
+	Regs         [320]Value
+	// Bindings is a dense slice indexed by Unbound.Idx. nil means
+	// unbound; non-nil is the bound value. The earlier rep was
+	// `map[int]Value`; with allocVarId starting at 1000 and
+	// monotonically incrementing, Idx values pack densely, so a
+	// slice access (~5ns) wins over a map access (~30ns) once the
+	// per-CP work is small enough that map ops show up. The
+	// `setBinding` helper grows the slice on demand (doubling)
+	// for the rare out-of-range write.
+	Bindings []Value
 	Heap         []Value
 	HeapLen      int
 	Stack        []StackEntry
@@ -100,6 +158,50 @@ type WamState struct {
 	Halted       bool
 	CurrentStruct *Structure
 	CurrentList   *List
+	// NextVarId is a monotonically-increasing counter used to give every
+	// new Unbound a globally-unique Idx. Earlier code reused i.Xn (the
+	// X-register slot index) as Idx, which made the Bindings map collide
+	// across activations: a recursive call's PutVariable X207 reused
+	// Idx=207, and the outer call's Unbound{Idx:207} would inherit the
+	// inner call's binding via the shared Bindings[207] entry. Symptom
+	// at depth-3 of category_ancestor: outer-level X206 (which held an
+	// Unbound{Idx:207} carried in via the caller's PutVariable X207)
+	// would deref to the inner-level's bound integer, and the
+	// `OuterHops is RecursiveHops + 1` is/2 call would fail with
+	// `1 is 2`. Start above 1000 so the counter never collides with
+	// the register-slot range that was used pre-fix.
+	NextVarId    int
+	// MaxYReg is the highest Y-register index ever written + 1 (i.e.,
+	// the count of slots the program actually uses in the Y range
+	// 200..299). snapshotAllRegs uses this as the upper bound on the
+	// Y-reg copy: most programs use only a handful of Y-regs (the
+	// effective-distance bench uses ~10 of the 100 available),
+	// shrinking the per-CP snapshot from 108 elements to 8 + actual.
+	// Monotonically grows; never resets. Starts at 200 so 0 means
+	// "no Y-regs used yet" via the formula `MaxYReg - 200`.
+	MaxYReg int
+	// E is the stack index of the currently-active EnvFrame, or -1
+	// when no frame is allocated (e.g., right after NewWamState before
+	// any Allocate). With env trimming, Deallocate moves E back along
+	// the EnvFrame.PrevE chain rather than physically popping; the
+	// frame stays on the stack until either (a) physical pop is safe
+	// (no younger CP referencing it) or (b) backtrack truncates the
+	// stack down past it. peekEnvFrame is now O(1) via this index
+	// instead of an O(stack) reverse scan.
+	E int
+}
+
+// allocVarId returns a fresh, globally-unique Idx for a new logical
+// variable. The 1000 floor reserves the X-register-slot range below
+// (which earlier code used as Idx values) so existing snapshots /
+// trail entries that happened to pre-date this change can't collide.
+func (vm *WamState) allocVarId() int {
+	if vm.NextVarId < 1000 {
+		vm.NextVarId = 1000
+	}
+	id := vm.NextVarId
+	vm.NextVarId++
+	return id
 }
 
 func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
@@ -121,11 +223,11 @@ func NewWamContext(code []Instruction, labels map[string]int) *WamContext {
 
 func NewWamState(code []Instruction, labels map[string]int) *WamState {
 	ctx := NewWamContext(code, labels)
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 func NewWamStateFromCtx(ctx *WamContext) *WamState {
-	return &WamState{Ctx: ctx, Bindings: make(map[int]Value)}
+	return &WamState{Ctx: ctx, Bindings: make([]Value, 4096), E: -1}
 }
 
 // RunParallel executes multiple seeds in parallel, each with their own
@@ -162,30 +264,78 @@ func RunParallel(ctx *WamContext, seeds [][]Value, maxWorkers int) [][]Value {
 
 func (vm *WamState) putReg(idx int, val Value) {
 	vm.Regs[idx] = val
+	// Track the high-water mark of Y-reg writes so snapshotAllRegs
+	// can size its Y-range copy to actually-used slots only. The
+	// extra branch + compare is cheap relative to the snapshot
+	// shrink it enables (per-CP Y-range copy goes from 100
+	// elements to typically ~10).
+	if idx >= 200 && idx >= vm.MaxYReg {
+		vm.MaxYReg = idx + 1
+	}
 }
 
 func (vm *WamState) getReg(idx int) Value {
 	return vm.Regs[idx]
 }
 
-func (vm *WamState) trailBinding(addr int) {
-	if vm.Bindings == nil {
-		vm.Bindings = make(map[int]Value)
+// getBinding reads vm.Bindings[addr] safely — returns nil if addr is
+// past the slice's current length (which the runtime treats the same
+// as "unbound"). Hot path; keep tiny.
+func (vm *WamState) getBinding(addr int) Value {
+	if addr < 0 || addr >= len(vm.Bindings) {
+		return nil
 	}
-	old, hadOld := vm.Bindings[addr]
-	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: hadOld})
+	return vm.Bindings[addr]
+}
+
+// setBinding writes val to vm.Bindings[addr], growing the slice if
+// addr is past the current length. Doubles capacity (with floor 64)
+// to amortise allocs across the dense 1000+ Idx range allocVarId
+// hands out during a query.
+func (vm *WamState) setBinding(addr int, val Value) {
+	if addr >= len(vm.Bindings) {
+		newCap := len(vm.Bindings)
+		if newCap < 64 {
+			newCap = 64
+		}
+		for newCap <= addr {
+			newCap *= 2
+		}
+		newBindings := make([]Value, newCap)
+		copy(newBindings, vm.Bindings)
+		vm.Bindings = newBindings
+	}
+	vm.Bindings[addr] = val
+}
+
+func (vm *WamState) trailBinding(addr int) {
+	old := vm.getBinding(addr)
+	vm.Trail = append(vm.Trail, TrailEntry{Addr: addr, Old: old, HadOld: old != nil})
 	vm.TrailLen++
 }
 
+// bindUnbound binds an unbound variable u to val, recording the change
+// on the trail so backtrack can undo it, and rewriting every register
+// slot that aliases u so subsequent reads see the bound value.
+//
+// The previous implementation also did `vm.putReg(u.Idx, val)` as an
+// unconditional fallback. That was load-bearing only when u.Idx was a
+// valid register index that happened not to be caught by the alias
+// rewrite — but for any caller that constructs an Unbound without
+// setting Idx (e.g. a benchmark driver doing `&Unbound{Name: "weight"}`
+// to ask for an output register), Idx defaults to zero and the line
+// silently overwrites Regs[0] = A1 with the bound value, corrupting
+// the input atom. The for-loop above already handles every register
+// that genuinely aliases u, so the putReg call is redundant in the
+// happy path and actively harmful when callers don't fill in Idx.
 func (vm *WamState) bindUnbound(u *Unbound, val Value) {
 	vm.trailBinding(u.Idx)
-	vm.Bindings[u.Idx] = val
+	vm.setBinding(u.Idx, val)
 	for idx, reg := range vm.Regs {
 		if reg == u {
 			vm.Regs[idx] = val
 		}
 	}
-	vm.putReg(u.Idx, val)
 }
 
 func (vm *WamState) heapPush(v Value) int {
@@ -205,26 +355,83 @@ func (vm *WamState) trailTrimTo(mark int) {
 	vm.TrailLen = mark
 }
 
+// snapshotAllRegs captures the A-register range (Regs[0..7]) plus
+// the actually-used portion of the Y-register range
+// (Regs[200..vm.MaxYReg]). The middle X-register range
+// (Regs[8..199]) is intentionally skipped — X-regs are clause-local
+// in the codegen, so the next clause's head writes whatever X-regs
+// it needs and stale leftovers from the failed clause never get
+// touched. Y-regs *do* need saving because env trimming stores
+// Y-regs at *Allocate* time (caller's outer Y-regs) — at TryMeElse
+// time the caller's *current* Y-regs only exist in the CP snapshot.
+//
+// Layout in the returned slice:
+//   - SavedRegs[0..7]   := vm.Regs[0..7]    (A1..A8)
+//   - SavedRegs[8..8+ycount] := vm.Regs[200..200+ycount]  (used Y-regs)
+//
+// where ycount := max(0, vm.MaxYReg - 200). The bench's
+// category_ancestor uses ~10 Y-regs, so the snapshot is ~18
+// elements vs the prior 108, cutting per-CP memmove ~6x.
+func (vm *WamState) snapshotAllRegs() []Value {
+	ycount := vm.MaxYReg - 200
+	if ycount < 0 {
+		ycount = 0
+	}
+	saved := make([]Value, 8+ycount)
+	copy(saved[:8], vm.Regs[:8])
+	if ycount > 0 {
+		copy(saved[8:], vm.Regs[200:200+ycount])
+	}
+	return saved
+}
+
+// restoreSavedRegs is the dual of snapshotAllRegs. The snapshot
+// captures up to MaxYReg-at-push-time; vm.MaxYReg may have grown
+// since (the failed clause wrote new Y-regs). Those "post-push"
+// Y-regs were nil at push time and need to be cleared back to nil
+// here, otherwise they'd leak failed-clause values into the next
+// clause's body. Without the clear, the bench had Velocity at
+// 1.602159 vs the post-Phase-D 1.601079 — a Y-reg from a longer
+// recursion path was bleeding into a shorter one. The clear loop
+// is bounded by MaxYReg-since-push (typically 0-2 slots), so it's
+// much cheaper than restoring the full 100-element Y range.
+func (vm *WamState) restoreSavedRegs(saved []Value) {
+	if len(saved) < 8 {
+		return
+	}
+	copy(vm.Regs[:8], saved[:8])
+	ycount := len(saved) - 8
+	if ycount > 0 {
+		copy(vm.Regs[200:200+ycount], saved[8:])
+	}
+	// Clear Y-regs that were written between snapshot and now but
+	// weren't captured (they were nil at push time, by definition).
+	pushMaxY := 200 + ycount
+	for i := pushMaxY; i < vm.MaxYReg; i++ {
+		vm.Regs[i] = nil
+	}
+}
+
 func (vm *WamState) pushChoicePoint(nextPC int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		NextPC:    nextPC,
 		CP:        vm.CP,
-		SavedRegs: saved,
-		Stack:     copyStack(vm.Stack),
+		E:         vm.E,
+		StackLen:  len(vm.Stack),
+		SavedRegs: vm.snapshotAllRegs(),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 	})
 }
 
 func (vm *WamState) pushIndexedChoicePoint(pcs []int, arity int) {
-	saved := make([]Value, arity)
-	copy(saved, vm.Regs[:arity])
+	_ = arity
 	vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
 		CP:        vm.CP,
-		SavedRegs: saved,
-		Stack:     copyStack(vm.Stack),
+		E:         vm.E,
+		StackLen:  len(vm.Stack),
+		SavedRegs: vm.snapshotAllRegs(),
 		HeapTop:   vm.HeapLen,
 		TrailMark: vm.TrailLen,
 		IndexedClausePCs: append([]int(nil), pcs...),
@@ -258,10 +465,11 @@ func (vm *WamState) peekWriteCtx() *WriteCtx {
 }
 
 func (vm *WamState) peekEnvFrame() *EnvFrame {
-	for i := len(vm.Stack) - 1; i >= 0; i-- {
-		if f, ok := vm.Stack[i].(*EnvFrame); ok {
-			return f
-		}
+	if vm.E < 0 || vm.E >= len(vm.Stack) {
+		return nil
+	}
+	if f, ok := vm.Stack[vm.E].(*EnvFrame); ok {
+		return f
 	}
 	return nil
 }
@@ -282,7 +490,7 @@ func (vm *WamState) Clone() *WamState {
 		Ctx:          vm.Ctx,
 		PC:           vm.PC,
 		CP:           vm.CP,
-		Bindings:     make(map[int]Value, len(vm.Bindings)),
+		Bindings:     make([]Value, len(vm.Bindings)),
 		Heap:         make([]Value, vm.HeapLen),
 		HeapLen:      vm.HeapLen,
 		Stack:        make([]StackEntry, len(vm.Stack)),
@@ -292,11 +500,25 @@ func (vm *WamState) Clone() *WamState {
 		Halted:       vm.Halted,
 		CurrentStruct: vm.CurrentStruct,
 		CurrentList:   vm.CurrentList,
+		// Carry over the Idx counter so the cloned VM allocates IDs
+		// strictly above what the parent has issued. Without this the
+		// sub-VM (used by executeAggregate) starts at 1000 and reuses
+		// Idx values the parent already bound — its "fresh" Unbounds
+		// then deref through the parent's bindings and silently drop
+		// every solution.
+		NextVarId:    vm.NextVarId,
+		E:            vm.E,
+		// Carry MaxYReg so the sub-VM's snapshotAllRegs sees the
+		// same Y-reg high-water mark as the parent (sub.Regs is a
+		// value-copy of parent.Regs and therefore *contains* those
+		// Y-reg values; without copying MaxYReg the sub-VM thinks
+		// it has 0 Y-regs in use, the snapshot omits them, and
+		// backtrack inside the sub-VM doesn't restore values that
+		// the failed clause overwrote).
+		MaxYReg:      vm.MaxYReg,
 	}
 	newState.Regs = vm.Regs
-	for k, v := range vm.Bindings {
-		newState.Bindings[k] = v
-	}
+	copy(newState.Bindings, vm.Bindings)
 	copy(newState.Heap, vm.Heap)
 	copy(newState.Stack, vm.Stack)
 	copy(newState.Trail, vm.Trail)
@@ -392,19 +614,26 @@ func isEmptyListValue(v Value) bool {
 	return false
 }
 
+// emptyListAtom is a process-wide singleton for the `[]` terminator,
+// initialised once via internAtom("[]") and reused everywhere a list
+// tail terminator is needed. Avoids the per-call internAtom map
+// lookup from rawListHeadTail / listHeadTail; those run once per list
+// cell in the bench's recursion-heavy paths.
+var emptyListAtom = internAtom("[]")
+
 func rawListHeadTail(list *List) (Value, Value, bool) {
 	switch len(list.Elements) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := list.Elements[1]
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
@@ -415,37 +644,50 @@ func (vm *WamState) listHeadTail(list *List) (Value, Value, bool) {
 	case 0:
 		return nil, nil, false
 	case 1:
-		return list.Elements[0], &Atom{Name: "[]"}, true
+		return list.Elements[0], emptyListAtom, true
 	case 2:
 		tail := vm.deref(list.Elements[1])
 		if _, ok := tail.(*List); ok {
 			return list.Elements[0], tail, true
 		}
 		if isEmptyListValue(tail) {
-			return list.Elements[0], &Atom{Name: "[]"}, true
+			return list.Elements[0], emptyListAtom, true
 		}
 	}
 	return list.Elements[0], &List{Elements: list.Elements[1:]}, true
 }
 
+// listToSlice walks a Prolog cons list and collects its elements
+// into a Go slice. Used by `length/2`, `member/2`, `append/3`, etc.
+// Iterative implementation: the previous recursive version did
+// `append([]Value{head}, rest...)` which is O(N²) in allocations
+// (each frame allocates a fresh slice and copies the rest); for
+// the bench's recursion-heavy `\+ member(M, Visited)` calls on
+// 10-deep Visited lists, that was ~4% of post-Phase-G CPU.
 func (vm *WamState) listToSlice(v Value) ([]Value, bool) {
 	v = vm.deref(v)
 	if isEmptyListValue(v) {
 		return []Value{}, true
 	}
-	list, ok := v.(*List)
-	if !ok {
-		return nil, false
+	// Pre-allocate with a small initial capacity; the depth of the
+	// bench's Visited list is bounded by max_depth(10) so 16 covers
+	// the common case without an early grow.
+	out := make([]Value, 0, 16)
+	for {
+		if isEmptyListValue(v) {
+			return out, true
+		}
+		list, ok := v.(*List)
+		if !ok {
+			return nil, false
+		}
+		head, tail, ok := vm.listHeadTail(list)
+		if !ok {
+			return out, true
+		}
+		out = append(out, head)
+		v = vm.deref(tail)
 	}
-	head, tail, ok := vm.listHeadTail(list)
-	if !ok {
-		return []Value{}, true
-	}
-	rest, ok := vm.listToSlice(tail)
-	if !ok {
-		return nil, false
-	}
-	return append([]Value{head}, rest...), true
 }
 
 func decompose(v Value) (string, []Value) {
@@ -477,7 +719,7 @@ func (vm *WamState) deref(v Value) Value {
 			if next == v { return v }
 			v = next
 		case *Unbound:
-			if bound := vm.Bindings[t.Idx]; bound != nil && bound != v {
+			if bound := vm.getBinding(t.Idx); bound != nil && bound != v {
 				v = bound
 			} else {
 				return v
@@ -660,16 +902,59 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 		return false
 
 	case "length/2":
-		elements, ok := vm.listToSlice(arg1)
-		if !ok { return false }
-		return vm.Unify(arg2, &Integer{Val: int64(len(elements))})
-	case "member/2":
-		elements, ok := vm.listToSlice(arg2)
-		if !ok { return false }
-		for _, e := range elements {
-			if vm.Unify(arg1, e) { return true }
+		// Walk the list counting cells without materialising a
+		// Go slice. listToSlice is recursive-ish + allocates;
+		// length/2 just needs the count, so the bench's
+		// `length(Visited, Depth)` (called per category_ancestor
+		// recursion step) doesn't pay the slice alloc.
+		v := vm.deref(arg1)
+		count := int64(0)
+		for {
+			if isEmptyListValue(v) {
+				break
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				break
+			}
+			_ = head
+			count++
+			v = vm.deref(tail)
 		}
-		return false
+		return vm.Unify(arg2, &Integer{Val: count})
+	case "member/2":
+		// Walk-and-unify; no intermediate slice. The bench's
+		// `\+ member(M, Visited)` is the hot caller — depth-10
+		// Visited × thousands of recursion steps was previously
+		// allocating a 10-element slice per call just to discard
+		// it after the first match (or after a no-match scan).
+		v := vm.deref(arg2)
+		for {
+			if isEmptyListValue(v) {
+				return false
+			}
+			list, ok := v.(*List)
+			if !ok {
+				return false
+			}
+			head, tail, ok := vm.listHeadTail(list)
+			if !ok {
+				return false
+			}
+			// Saving and restoring the trail mark lets a failed
+			// Unify on this element not leak bindings into the
+			// next iteration. (Standard WAM member/2 semantics.)
+			mark := vm.TrailLen
+			if vm.Unify(arg1, head) {
+				return true
+			}
+			vm.unwindTrailTo(mark)
+			v = vm.deref(tail)
+		}
 	case "append/3":
 		l1, ok1 := vm.listToSlice(arg1)
 		l2, ok2 := vm.listToSlice(arg2)
@@ -718,11 +1003,23 @@ func (vm *WamState) backtrack() bool {
         return false
     }
     topIdx := len(vm.ChoicePoints) - 1
-    cp := vm.ChoicePoints[topIdx]
+    // Pointer access avoids copying the ~150-byte ChoicePoint struct
+    // value on every backtrack — the post-Phase-E profile flagged
+    // `cp := vm.ChoicePoints[topIdx]` at ~210ms cum / 8.7%. The
+    // pointer stays valid because backtrack only truncates the
+    // ChoicePoints slice (no append), so the underlying array slot
+    // doesn't get reused or moved while we're reading. Mutations to
+    // `cp.IndexedClausePCs` / `cp.ForeignResults` now apply
+    // in-place, removing the explicit `vm.ChoicePoints[topIdx] = cp`
+    // write-back the value-copy version needed.
+    cp := &vm.ChoicePoints[topIdx]
     if len(cp.IndexedClausePCs) > 0 {
         vm.unwindTrailTo(cp.TrailMark)
-        copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-        vm.Stack = copyStack(cp.Stack)
+        vm.restoreSavedRegs(cp.SavedRegs)
+        if cp.StackLen <= len(vm.Stack) {
+            vm.Stack = vm.Stack[:cp.StackLen]
+        }
+        vm.E = cp.E
         if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
             vm.heapTrimTo(cp.HeapTop)
         }
@@ -734,8 +1031,6 @@ func (vm *WamState) backtrack() bool {
         cp.IndexedClausePCs = cp.IndexedClausePCs[1:]
         if len(cp.IndexedClausePCs) == 0 {
             vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-        } else {
-            vm.ChoicePoints[topIdx] = cp
         }
         vm.PC = nextPC
         return true
@@ -743,8 +1038,11 @@ func (vm *WamState) backtrack() bool {
     if len(cp.ForeignResults) > 0 {
         for len(cp.ForeignResults) > 0 {
             vm.unwindTrailTo(cp.TrailMark)
-            copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-            vm.Stack = copyStack(cp.Stack)
+            vm.restoreSavedRegs(cp.SavedRegs)
+            if cp.StackLen <= len(vm.Stack) {
+                vm.Stack = vm.Stack[:cp.StackLen]
+            }
+            vm.E = cp.E
             if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
                 vm.heapTrimTo(cp.HeapTop)
             }
@@ -754,22 +1052,31 @@ func (vm *WamState) backtrack() bool {
             vm.CurrentList = nil
             nextResult := cp.ForeignResults[0]
             cp.ForeignResults = cp.ForeignResults[1:]
+            // Snapshot the fields we still need after truncation —
+            // once `vm.ChoicePoints = vm.ChoicePoints[:topIdx]`
+            // shrinks the slice, `cp` still points at the underlying
+            // array slot but it''s tidier to read the values out
+            // before truncating.
+            predKey := cp.ForeignPredKey
+            resultRegs := cp.ForeignResultRegs
+            resumePC := cp.ResumePC
             if len(cp.ForeignResults) == 0 {
                 vm.ChoicePoints = vm.ChoicePoints[:topIdx]
-            } else {
-                vm.ChoicePoints[topIdx] = cp
             }
-            if !vm.applyForeignResult(cp.ForeignPredKey, cp.ForeignResultRegs, nextResult) {
+            if !vm.applyForeignResult(predKey, resultRegs, nextResult) {
                 continue
             }
-            vm.PC = cp.ResumePC
+            vm.PC = resumePC
             return true
         }
         return false
     }
     vm.unwindTrailTo(cp.TrailMark)
-    copy(vm.Regs[:len(cp.SavedRegs)], cp.SavedRegs)
-    vm.Stack = copyStack(cp.Stack)
+    vm.restoreSavedRegs(cp.SavedRegs)
+    if cp.StackLen <= len(vm.Stack) {
+        vm.Stack = vm.Stack[:cp.StackLen]
+    }
+    vm.E = cp.E
     if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
         vm.heapTrimTo(cp.HeapTop)
     }
@@ -784,11 +1091,10 @@ func (vm *WamState) backtrack() bool {
 func (vm *WamState) unwindTrailTo(mark int) {
     for i := vm.TrailLen - 1; i >= mark; i-- {
         entry := vm.Trail[i]
-        if entry.HadOld {
-            vm.Bindings[entry.Addr] = entry.Old
-        } else {
-            delete(vm.Bindings, entry.Addr)
-        }
+        // setBinding handles the bookkeeping: writing nil reverts an
+        // address to its unbound state, exactly matching the previous
+        // map-based delete-on-!HadOld for the slice rep.
+        vm.setBinding(entry.Addr, entry.Old)
     }
     vm.Trail = vm.Trail[:mark]
     vm.TrailLen = mark

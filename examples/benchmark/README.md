@@ -274,6 +274,20 @@ The generated project supports two entry modes:
 Larger Clojure benchmark runs should stay configurable because JVM startup and
 memory behavior are noisy in constrained Termux environments.
 
+Scala has a separate effective-distance project generator:
+
+```bash
+swipl -q -s examples/benchmark/generate_wam_scala_effective_distance_benchmark.pl -- \
+  data/benchmark/dev/facts.pl /tmp/wam-scala-effective-distance accumulated kernels_on
+```
+
+It emits a Scala WAM project plus an `EffectiveDistanceRunner` companion that
+prints the standard `article	root_category	effective_distance` table from
+`category_parent.tsv` and `article_category.tsv`. The generator supports
+`kernels_on` via the Scala fact-source handler and `kernels_off` via compiled
+WAM facts, but the targets are not registered in the Python matrix until the
+runner wiring has a dedicated smoke gate.
+
 The configurable benchmark matrix now treats all Clojure WAM effective-distance
 modes as result-producing `hybrid-wam` targets:
 
@@ -283,6 +297,24 @@ modes as result-producing `hybrid-wam` targets:
 - `clojure-wam-seeded-no-kernels`
 
 These targets provide both seeded/accumulated and kernel-on/off comparisons.
+
+The matrix CLI can print the currently registered kernel/no-kernel pairings
+without running benchmarks:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-pairs
+```
+
+The report is TSV with `family`, `mode`, `kernels_target`, and
+`no_kernels_target` columns. It currently covers registered Rust
+seeded/accumulated and Rust interpreter/lowered pairings, plus Go, Clojure,
+and Haskell effective-distance WAM pairings.
+
+When both sides of a registered pair run for the same scale, the benchmark
+summary also emits a paired delta table with median timings, a
+`kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
+ratio above `1.0` means the kernel-enabled target was faster than its
+no-kernel counterpart for that pair.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
@@ -438,7 +470,7 @@ Tables:
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
-| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `--format markdown` or `--format report-tsv` with `join,nary_join` to compare source registrations and artifact bucket strategy rows |
+| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `--format markdown` or `--format report-tsv` with `join,nary_join` to compare source registrations and artifact bucket strategy rows; use `--format calibration-tsv` or `--format calibration-markdown` to summarize auto-policy chosen-vs-best status, 10% timing tolerance, overlap confidence, slow matches, auto median, and timing spread; use `--format actionable-tsv` or `--format actionable-markdown` to show only separated timing regressions worth policy review |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |

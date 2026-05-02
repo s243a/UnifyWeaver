@@ -2400,6 +2400,31 @@ step !_ctx s (NotMemberList xReg lReg) =
       in if found then Nothing else Just (s { wsPC = wsPC s + 1 })
     _ -> Nothing
 
+-- Specialized \\+ member(X, [a, b, c]) for compile-time-ground lists.
+-- Atoms are interned at codegen, so the instruction carries [Int] of
+-- atom IDs. Single dispatch, zero heap allocation. Beats both the
+-- unlowered builtin path (N PutStructures + dispatch + N unifications)
+-- and the IntSet inline-build path (N SetInserts allocate Patricia
+-- nodes per call) at small N typical of source-literal lists.
+--
+-- Semantics: succeed when X cannot unify with any atom in the baked-in
+-- list. For an Atom X, that is "aid notElem atomIds". For a non-Atom
+-- ground value (Integer, Float, Str, VList, VSet) X can never unify
+-- with any atom, so the check trivially succeeds. For an Unbound X,
+-- it COULD unify with some atom (Prolog would succeed via
+-- unification), so the check must fail — matches Prolog
+-- \\+ member(X, [a,b,c]) semantics when X is unbound.
+step !_ctx s (NotMemberConstAtoms xReg atomIds) =
+  let mX = derefVar (wsBindings s) <$> IM.lookup xReg (wsRegs s)
+  in case mX of
+    Just (Atom aid)    -> if aid `elem` atomIds
+                            then Nothing
+                            else Just (s { wsPC = wsPC s + 1 })
+    Just (Unbound _)   -> Nothing  -- could unify with some atom
+    Just (Ref _)       -> Nothing  -- unresolved chain — treat as could-unify
+    Just _             -> Just (s { wsPC = wsPC s + 1 })  -- non-atom ground: never in list
+    Nothing            -> Nothing  -- register not set
+
 -- IntSet visited support: write an empty set into the named register.
 -- Used by the WAM compiler at the bootstrap site of a visited-set
 -- argument (e.g. the `[Cat]` literal flowing into category_ancestor)
@@ -2645,15 +2670,17 @@ apply_hashmap_rewrite(true, Module, Code0, Code) :-
     % HashMap has no toAscList — use toList instead (loses ordering, but
     % the only use site builds a SwitchOnConstant which doesn''t need it)
     replace_substr(Code2, "Map.toAscList", "Map.toList", Code3),
-    % For WamTypes, add Hashable instance for Value (needed for HashMap keys)
+    % For WamTypes, add a Hashable instance for Value (needed for HashMap keys).
+    % IntSet does not have a Hashable instance in the older dependency set
+    % used by the local Cabal build, so hash VSet through its stable list form.
     (   Module == types
     ->  replace_substr(Code3,
             "module WamTypes where\n\nimport qualified Data.HashMap.Strict as Map",
-            "{-# LANGUAGE DeriveGeneric #-}\nmodule WamTypes where\n\nimport qualified Data.HashMap.Strict as Map\nimport Data.Hashable (Hashable)\nimport GHC.Generics (Generic)",
+            "module WamTypes where\n\nimport qualified Data.HashMap.Strict as Map\nimport Data.Hashable (Hashable(..))",
             Code4),
         replace_substr(Code4,
             "deriving (Eq, Ord, Show)",
-            "deriving (Eq, Ord, Show, Generic)\ninstance Hashable Value",
+            "deriving (Eq, Ord, Show)\n\ninstance Hashable Value where\n  hashWithSalt salt (Atom n) = hashWithSalt salt (0 :: Int, n)\n  hashWithSalt salt (Integer n) = hashWithSalt salt (1 :: Int, n)\n  hashWithSalt salt (Float f) = hashWithSalt salt (2 :: Int, f)\n  hashWithSalt salt (VList xs) = hashWithSalt salt (3 :: Int, xs)\n  hashWithSalt salt (VSet s) = hashWithSalt salt (4 :: Int, IS.toList s)\n  hashWithSalt salt (Str n args) = hashWithSalt salt (5 :: Int, n, args)\n  hashWithSalt salt (Unbound n) = hashWithSalt salt (6 :: Int, n)\n  hashWithSalt salt (Ref n) = hashWithSalt salt (7 :: Int, n)",
             Code)
     ;   Code = Code3
     ).
@@ -2782,6 +2809,17 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     ->  IntAtomSeeds = true
     ;   IntAtomSeeds = false
     ),
+    % Resolve max_depth at codegen time. Reads user:max_depth/1 (asserted
+    % by the workload or overridden by tests) so the generated FFI kernel
+    % uses the same depth bound SWI-Prolog would. Defaults to 10 to match
+    % the historical hardcoded value when no max_depth/1 fact is present.
+    % See effective_distance.pl line 43 for the workload's default.
+    resolve_max_depth(Options, MaxDepth),
+    % Resolve dimension_n at codegen time. Same instrumentation-bug class
+    % as max_depth: a user-asserted user:dimension_n/1 must reach the
+    % aggregation formula (n in Hops^(-N) and the inverse exponent), not
+    % be silently overridden by a hardcoded 5.0 in the template.
+    resolve_dimension_n(Options, DimN),
     render_template(Template,
         [ foreign_preds=ForeignPredsStr
         , benchmark_mode=Mode
@@ -2795,7 +2833,48 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
         , lmdb_context=LmdbContext
         , lmdb_import=LmdbImport
         , int_atom_seeds=IntAtomSeeds
+        , max_depth=MaxDepth
+        , dimension_n=DimN
         ], Code).
+
+%% resolve_max_depth(+Options, -MaxDepth)
+%  Determine the FFI kernel's depth bound. Priority order:
+%   1. Options list: max_depth(N)
+%   2. user:max_depth/1 fact (asserted by the workload)
+%   3. Default: 10
+%  Always returns a positive integer.
+resolve_max_depth(Options, MaxDepth) :-
+    (   option(max_depth(M), Options),
+        integer(M),
+        M >= 1
+    ->  MaxDepth = M
+    ;   current_predicate(user:max_depth/1),
+        user:max_depth(M),
+        integer(M),
+        M >= 1
+    ->  MaxDepth = M
+    ;   MaxDepth = 10
+    ).
+
+%% resolve_dimension_n(+Options, -DimN)
+%  Determine the aggregation formula's dimensionality (the N in
+%  d_eff = (sum Hops^(-N))^(-1/N)). Priority order:
+%   1. Options list: dimension_n(N)
+%   2. user:dimension_n/1 fact (asserted by the workload)
+%   3. Default: 5
+%  Always returns a positive integer.
+resolve_dimension_n(Options, DimN) :-
+    (   option(dimension_n(N), Options),
+        integer(N),
+        N >= 1
+    ->  DimN = N
+    ;   current_predicate(user:dimension_n/1),
+        user:dimension_n(N),
+        integer(N),
+        N >= 1
+    ->  DimN = N
+    ;   DimN = 5
+    ).
 
 %% generate_inline_facts_wiring(+InlineDefs, -Code)
 %  Generates the Haskell code to populate wcInlineFacts in the WamContext.
@@ -3489,6 +3568,7 @@ data Instruction
   | BuiltinCall String !Int
   | Arg !Int !RegId !RegId            -- specialized arg/3: literal N, term reg, output reg
   | NotMemberList !RegId !RegId       -- specialized \\+ member(X, L): X reg, L reg
+  | NotMemberConstAtoms !RegId ![Int] -- \\+ member(X, [a,b,c,...]): X reg, baked-in interned atom IDs
   | BuildEmptySet !RegId              -- write VSet IS.empty into the named register
   | SetInsert !RegId !RegId !RegId    -- elemReg, inSetReg, outSetReg
   | NotMemberSet !RegId !RegId        -- elemReg, setReg: O(log N) member check
@@ -4106,6 +4186,16 @@ wam_instr_to_haskell(["not_member_list", XReg, LReg], Hs) :-
     clean_comma(XReg, CX), clean_comma(LReg, CL),
     reg_name_to_int(CX, XI), reg_name_to_int(CL, LI),
     format(string(Hs), 'NotMemberList ~w ~w', [XI, LI]).
+%% Variable-arity: not_member_const_atoms XReg Atom1 Atom2 ... AtomN
+wam_instr_to_haskell(["not_member_const_atoms", XReg | AtomTokens], Hs) :-
+    AtomTokens \= [],
+    clean_comma(XReg, CX), reg_name_to_int(CX, XI),
+    maplist([T, Id]>>(
+        clean_comma(T, CT),
+        intern_atom(CT, Id)
+    ), AtomTokens, Ids),
+    atomic_list_concat(Ids, ',', IdsAtom),
+    format(string(Hs), 'NotMemberConstAtoms ~w [~w]', [XI, IdsAtom]).
 wam_instr_to_haskell(["build_empty_set", Reg], Hs) :-
     clean_comma(Reg, CR), reg_name_to_int(CR, RI),
     format(string(Hs), 'BuildEmptySet ~w', [RI]).
