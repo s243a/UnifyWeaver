@@ -2670,15 +2670,17 @@ apply_hashmap_rewrite(true, Module, Code0, Code) :-
     % HashMap has no toAscList — use toList instead (loses ordering, but
     % the only use site builds a SwitchOnConstant which doesn''t need it)
     replace_substr(Code2, "Map.toAscList", "Map.toList", Code3),
-    % For WamTypes, add Hashable instance for Value (needed for HashMap keys)
+    % For WamTypes, add a Hashable instance for Value (needed for HashMap keys).
+    % IntSet does not have a Hashable instance in the older dependency set
+    % used by the local Cabal build, so hash VSet through its stable list form.
     (   Module == types
     ->  replace_substr(Code3,
             "module WamTypes where\n\nimport qualified Data.HashMap.Strict as Map",
-            "{-# LANGUAGE DeriveGeneric #-}\nmodule WamTypes where\n\nimport qualified Data.HashMap.Strict as Map\nimport Data.Hashable (Hashable)\nimport GHC.Generics (Generic)",
+            "module WamTypes where\n\nimport qualified Data.HashMap.Strict as Map\nimport Data.Hashable (Hashable(..))",
             Code4),
         replace_substr(Code4,
             "deriving (Eq, Ord, Show)",
-            "deriving (Eq, Ord, Show, Generic)\ninstance Hashable Value",
+            "deriving (Eq, Ord, Show)\n\ninstance Hashable Value where\n  hashWithSalt salt (Atom n) = hashWithSalt salt (0 :: Int, n)\n  hashWithSalt salt (Integer n) = hashWithSalt salt (1 :: Int, n)\n  hashWithSalt salt (Float f) = hashWithSalt salt (2 :: Int, f)\n  hashWithSalt salt (VList xs) = hashWithSalt salt (3 :: Int, xs)\n  hashWithSalt salt (VSet s) = hashWithSalt salt (4 :: Int, IS.toList s)\n  hashWithSalt salt (Str n args) = hashWithSalt salt (5 :: Int, n, args)\n  hashWithSalt salt (Unbound n) = hashWithSalt salt (6 :: Int, n)\n  hashWithSalt salt (Ref n) = hashWithSalt salt (7 :: Int, n)",
             Code)
     ;   Code = Code3
     ).

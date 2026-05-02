@@ -333,6 +333,19 @@ test_haskell_value_nfdata_instance :-
     ;   fail_test(Test, 'NFData Value instance missing')
     ).
 
+test_haskell_hashable_value_handles_intset :-
+    Test = 'WAM-Haskell: HashMap rewrite hashes VSet IntSet explicitly',
+    (   wam_haskell_target:generate_wam_types_hs(TypesCode),
+        wam_haskell_target:apply_hashmap_rewrite(true, types, TypesCode, HashCode),
+        atom_string(HashCode, S),
+        sub_string(S, _, _, _, "import Data.Hashable (Hashable(..))"),
+        sub_string(S, _, _, _, "instance Hashable Value where"),
+        sub_string(S, _, _, _, "hashWithSalt salt (VSet s) = hashWithSalt salt (4 :: Int, IS.toList s)"),
+        \+ sub_string(S, _, _, _, "deriving (Eq, Ord, Show, Generic)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'Hashable Value still relies on derived Generic or misses VSet handling')
+    ).
+
 test_haskell_fork_min_branches_threshold :-
     Test = 'WAM-Haskell: forkMinBranches threshold emitted in runtime',
     (   compile_wam_runtime_to_haskell([], [], Code),
@@ -1760,6 +1773,7 @@ run_tests :-
     test_haskell_agg_frame_has_merge_strategy,
     test_haskell_infer_merge_strategy,
     test_haskell_value_nfdata_instance,
+    test_haskell_hashable_value_handles_intset,
     test_haskell_fork_min_branches_threshold,
     test_haskell_fork_helpers_present,
     test_haskell_partryme_else_delegates_to_fork,
