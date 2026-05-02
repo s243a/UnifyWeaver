@@ -1897,55 +1897,71 @@ gval.fail:
 % --- Structure/List Head Unification ---
 
 wam_llvm_case('get_structure',
-'  ; get_structure: op2 = Ai register index
-  ; Write mode (unbound): push functor marker on heap, bind Ai to Ref, push WriteCtx
-  ; Read mode (bound): push args onto stack as UnifyCtx
-  %gs.ai = trunc i64 %op2 to i32
-  %gs.val = call %Value @wam_get_reg(%WamState* %vm, i32 %gs.ai)
+'  ; get_structure: op1 = ptrtoint of functor string, op2 = (arity << 16) | reg_idx
+  %gs.op2_32 = trunc i64 %op2 to i32
+  %gs.arity = lshr i32 %gs.op2_32, 16
+  %gs.ai = and i32 %gs.op2_32, 65535
+  %gs.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gs.ai)
+  %gs.tag = extractvalue %Value %gs.val, 0
+  %gs.is_cp = icmp eq i32 %gs.tag, 3
+  br i1 %gs.is_cp, label %gs.read, label %gs.check_unb
+
+gs.check_unb:
   %gs.unb = call i1 @value_is_unbound(%Value %gs.val)
-  br i1 %gs.unb, label %gs.write, label %gs.read
+  br i1 %gs.unb, label %gs.write, label %gs.fail
 
 gs.write:
-  ; Write mode: heap marker + Ref + WriteCtx
+  ; Write mode: push functor marker on heap, bind Ai to Ref, push WriteCtx
   %gs.marker = call %Value @value_atom(i8* null)
   %gs.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gs.marker)
   %gs.ref = call %Value @value_ref(i32 %gs.addr)
   call void @wam_trail_binding(%WamState* %vm, i32 %gs.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %gs.ai, %Value %gs.ref)
-  ; Push WriteCtx with arity (encoded in op1 low bits, default 2)
-  %gs.arity = trunc i64 %op1 to i32
-  %gs.arity_zero = icmp eq i32 %gs.arity, 0
-  %gs.arity_safe = select i1 %gs.arity_zero, i32 2, i32 %gs.arity
-  call void @wam_push_write_ctx(%WamState* %vm, i32 %gs.arity_safe)
+  call void @wam_push_write_ctx(%WamState* %vm, i32 %gs.arity)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
 gs.read:
-  ; Read mode: succeed and advance (args decomposition via step-level context)
+  ; Read mode: extract args from Compound and push UnifyCtx
+  %gs.cp_bits = extractvalue %Value %gs.val, 1
+  %gs.cp_ptr = inttoptr i64 %gs.cp_bits to %Compound*
+  %gs.args_slot = getelementptr %Compound, %Compound* %gs.cp_ptr, i32 0, i32 2
+  %gs.args = load %Value*, %Value** %gs.args_slot
+  call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gs.args, i32 %gs.arity)
   call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+  ret i1 true
+
+gs.fail:
+  ret i1 false').
 
 wam_llvm_case('get_list',
 '  ; get_list: op1 = Ai register index
-  ; Like get_structure but for lists (./2, arity=2)
   %gl.ai = trunc i64 %op1 to i32
-  %gl.val = call %Value @wam_get_reg(%WamState* %vm, i32 %gl.ai)
-  %gl.unb = call i1 @value_is_unbound(%Value %gl.val)
-  br i1 %gl.unb, label %gl.write, label %gl.read
+  %gl.val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gl.ai)
+  %gl.tag = extractvalue %Value %gl.val, 0
+  %gl.is_ref_or_unb = icmp uge i32 %gl.tag, 5 ; Ref(5) or Unbound(6)
+  br i1 %gl.is_ref_or_unb, label %gl.write, label %gl.read
 
 gl.write:
   %gl.marker = call %Value @value_atom(i8* null)
   %gl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gl.marker)
+  %gl.unb = call %Value @value_unbound(i8* null)
+  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
+  call i32 @wam_heap_push(%WamState* %vm, %Value %gl.unb)
   %gl.ref = call %Value @value_ref(i32 %gl.addr)
   call void @wam_trail_binding(%WamState* %vm, i32 %gl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %gl.ai, %Value %gl.ref)
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
+  %gl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %gl.hp = load %Value*, %Value** %gl.hp_ptr
+  %gl.h_addr = add i32 %gl.addr, 1
+  %gl.args = getelementptr %Value, %Value* %gl.hp, i32 %gl.h_addr
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %gl.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true
 
 gl.read:
-  call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true').
+  ret i1 false').
 
 wam_llvm_case('unify_variable',
 '  ; unify_variable: op1 = Xn register index
@@ -2125,31 +2141,50 @@ wam_llvm_case('put_structure',
   %ps.cp_i64 = ptrtoint %Compound* %ps.cp to i64
   %ps.val0 = insertvalue %Value undef, i32 3, 0
   %ps.val = insertvalue %Value %ps.val0, i64 %ps.cp_i64, 1
+  %ps.old = call %Value @wam_get_reg(%WamState* %vm, i32 %ps.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %ps.ai, %Value %ps.val)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ps.old, %Value %ps.val)
   call void @wam_push_write_ctx(%WamState* %vm, i32 %ps.arity)
   call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %ps.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
-wam_llvm_case('put_list',
-'  ; put_list: op1 = Ai register index
-  ; Push list marker on heap, bind Ai to Ref, push WriteCtx(2)
+  wam_llvm_case('put_list',
+  '  ; put_list: op1 = Ai register index
+  ; Push list marker + 2 unbound cells for [H|T] on heap.
+  ; Bind Ai to Ref of marker, push WriteCtx(2) pointing to H slot.
   %pl.ai = trunc i64 %op1 to i32
   %pl.marker = call %Value @value_atom(i8* null)
   %pl.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %pl.marker)
+  %pl.unb = call %Value @value_unbound(i8* null)
+  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
+  call i32 @wam_heap_push(%WamState* %vm, %Value %pl.unb)
   %pl.ref = call %Value @value_ref(i32 %pl.addr)
+
+  %pl.old = call %Value @wam_get_reg(%WamState* %vm, i32 %pl.ai)
   call void @wam_set_reg(%WamState* %vm, i32 %pl.ai, %Value %pl.ref)
+  call void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %pl.old, %Value %pl.ref)
+
   call void @wam_push_write_ctx(%WamState* %vm, i32 2)
+  ; Set WriteCtx args to point to the head slot (pl.addr + 1)
+  %pl.hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
+  %pl.hp = load %Value*, %Value** %pl.hp_ptr
+  %pl.h_addr = add i32 %pl.addr, 1
+  %pl.args = getelementptr %Value, %Value* %pl.hp, i32 %pl.h_addr
+  call void @wam_write_ctx_set_args(%WamState* %vm, %Value* %pl.args)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
-
 wam_llvm_case('set_variable',
 '  ; set_variable: op1 = Xn register index
-  ; Create unbound var, write into compound args via WriteCtx, store in Xn.
+  ; Allocate a fresh heap cell holding Unbound, then place Ref{addr}
+  ; into BOTH the compound args (via WriteCtx) and Xn so they alias.
   %sv.xn = trunc i64 %op1 to i32
-  %sv.var = call %Value @value_unbound(i8* null)
-  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sv.var)
-  call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.var)
+  %sv.unb = call %Value @value_unbound(i8* null)
+  %sv.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %sv.unb)
+  %sv.ref = call %Value @value_ref(i32 %sv.addr)
+  call void @wam_write_ctx_set_arg(%WamState* %vm, %Value %sv.ref)
+  call void @wam_trail_binding(%WamState* %vm, i32 %sv.xn)
+  call void @wam_set_reg(%WamState* %vm, i32 %sv.xn, %Value %sv.ref)
   call void @wam_inc_pc(%WamState* %vm)
   ret i1 true').
 
@@ -2200,7 +2235,7 @@ wam_llvm_case('allocate',
   %alloc.y_dst = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 3, i32 0
   %alloc.y_src_i8 = bitcast %Value* %alloc.y_src to i8*
   %alloc.y_dst_i8 = bitcast %Value* %alloc.y_dst to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 256, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 768, i1 false)
   ; Increment stack size
   %alloc.new_ss = add i32 %alloc.ss, 1
   store i32 %alloc.new_ss, i32* %alloc.ss_ptr
@@ -2249,7 +2284,7 @@ dealloc.restore:
   %dealloc.y_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 16
   %dealloc.y_src_i8 = bitcast %Value* %dealloc.y_src to i8*
   %dealloc.y_dst_i8 = bitcast %Value* %dealloc.y_dst to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 256, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 768, i1 false)
   ; Pop stack down to this frame (exclusive)
   store i32 %dealloc.prev_idx, i32* %dealloc.ss_ptr
   br label %dealloc.done
@@ -2339,7 +2374,7 @@ wam_llvm_case('try_me_else',
   %tme.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %tme.dst_raw = bitcast %Value* %tme.dst_regs to i8*
   %tme.src_raw = bitcast %Value* %tme.src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tme.dst_raw, i8* %tme.src_raw, i64 512, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tme.dst_raw, i8* %tme.src_raw, i64 1024, i1 false)
   ; Save trail mark
   %tme.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %tme.ts = load i32, i32* %tme.ts_ptr
@@ -2464,7 +2499,7 @@ wam_llvm_case('begin_aggregate',
   %ba.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %ba.dst_raw = bitcast %Value* %ba.dst_regs to i8*
   %ba.src_raw = bitcast %Value* %ba.src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ba.dst_raw, i8* %ba.src_raw, i64 512, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ba.dst_raw, i8* %ba.src_raw, i64 1024, i1 false)
 
   ; Save trail mark
   %ba.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
@@ -2658,7 +2693,7 @@ restore:
   %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
   %dst_raw = bitcast %Value* %dst_regs to i8*
   %src_raw = bitcast %Value* %src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 1024, i1 false)
 
   ; Restore PC from choice point next_pc
   %npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 0

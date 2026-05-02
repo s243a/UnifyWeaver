@@ -19,27 +19,23 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   ; accept the bogus IR without complaint.
   %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %regs_raw = bitcast %Value* %regs_ptr to i8*
-  %regs_size = mul i64 32, 16  ; 32 x sizeof(%Value) = 32 x {i32, i64} ≈ 32*16
+  %regs_size = mul i64 64, 16  ; 64 x sizeof(%Value) = 64 x {i32, i64}
   call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
-  ; Allocate stack (initial capacity 256). StackEntry grew from 24 to
-  ; 280 bytes after the Y-save/restore refactor (16 %Value slots per
-  ; entry). Size: 256 * 280 = 71 680 B.
-  %stack_mem = call i8* @malloc(i64 71680)  ; 256 * sizeof(StackEntry)
+  ; Allocate stack (initial capacity 1024 entries)
+  ; StackEntry: 4 + 8 + 8 + (48 * 16) = 20 + 768 = 788 bytes.
+  ; Round up to 800 for alignment.
+  %stack_mem = call i8* @malloc(i64 819200)  ; 1024 * 800
   %stack_typed = bitcast i8* %stack_mem to %StackEntry*
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   store %StackEntry* %stack_typed, %StackEntry** %stack_ptr
   %ss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
   store i32 0, i32* %ss_ptr
   %sc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 4
-  store i32 256, i32* %sc_ptr
+  store i32 1024, i32* %sc_ptr
 
-  ; Allocate heap (initial capacity 65536). Bumped from 4096 to give
-  ; the Ref-based put_variable headroom: each fresh variable consumes a
-  ; heap cell, and recursive predicates can push thousands per
-  ; invocation. No bounds check in wam_heap_push yet, so growing the
-  ; cap pre-emptively beats a silent overrun.
-  %heap_mem = call i8* @malloc(i64 1048576)  ; 65536 * sizeof(Value)
+  ; Allocate heap (initial capacity 65536)
+  %heap_mem = call i8* @malloc(i64 1048576)  ; 65536 * 16
   %heap_typed = bitcast i8* %heap_mem to %Value*
   %hp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 5
   store %Value* %heap_typed, %Value** %hp_ptr
@@ -48,30 +44,22 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
   store i32 65536, i32* %hc_ptr
 
-  ; Allocate trail (initial capacity 16384 entries, ~384 KB).
-  ; Previously 256; increased because the Ref-based put_variable
-  ; landing will cause each binding to produce two trail entries (one
-  ; reg, one heap) under the current trailing discipline, and deep
-  ; recursion (e.g. bench_sum_big) comfortably exceeded 256. Headroom
-  ; here removes trail overflow as a blocker for that work. Still no
-  ; bounds check in wam_trail_binding/wam_trail_heap_binding — if this
-  ; turns out to be insufficient, add a realloc path or a bounds
-  ; check that aborts with a clear diagnostic.
-  %trail_mem = call i8* @malloc(i64 393216)
+  ; Allocate trail (initial capacity 65536 entries, ~1.5 MB).
+  %trail_mem = call i8* @malloc(i64 1572864)  ; 65536 * 24
   %trail_typed = bitcast i8* %trail_mem to %TrailEntry*
   %tp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   store %TrailEntry* %trail_typed, %TrailEntry** %tp_ptr
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   store i32 0, i32* %ts_ptr
   %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
-  store i32 16384, i32* %tc_ptr
+  store i32 65536, i32* %tc_ptr
 
   ; Initialize cp = 0
   %cp_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
   store i32 0, i32* %cp_ptr
 
-  ; Allocate choice points (initial capacity 64)
-  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 64) to i64
+  ; Allocate choice points (initial capacity 1024)
+  %cpp_size = ptrtoint %ChoicePoint* getelementptr (%ChoicePoint, %ChoicePoint* null, i32 1024) to i64
   %cp_mem = call i8* @malloc(i64 %cpp_size)
   %cp_typed = bitcast i8* %cp_mem to %ChoicePoint*
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
@@ -79,7 +67,7 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   store i32 0, i32* %cpn_ptr
   %cpc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 14
-  store i32 64, i32* %cpc_ptr
+  store i32 1024, i32* %cpc_ptr
 
   ; Store code pointer and length
   %code_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
@@ -389,6 +377,27 @@ heap_bind:
   ret void
 reg_bind:
   call void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val)
+  ret void
+}
+
+; Bind through a Ref value if it points to an Unbound heap cell.
+; Does NOT update any register.
+define void @wam_bind_through_if_unbound_ref(%WamState* %vm, %Value %ref_val, %Value %new_val) {
+entry:
+  %tag = extractvalue %Value %ref_val, 0
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %check, label %done
+check:
+  %addr_i64 = extractvalue %Value %ref_val, 1
+  %addr = trunc i64 %addr_i64 to i32
+  %old = call %Value @wam_heap_get(%WamState* %vm, i32 %addr)
+  %is_unb = call i1 @value_is_unbound(%Value %old)
+  br i1 %is_unb, label %bind, label %done
+bind:
+  call void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old)
+  call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %new_val)
+  br label %done
+done:
   ret void
 }
 

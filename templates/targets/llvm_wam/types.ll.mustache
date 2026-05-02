@@ -41,7 +41,7 @@
 ; deallocate copies it back before popping. UnifyCtx / WriteCtx entries
 ; do not use y_save but carry it as dead space (same struct type for
 ; uniform pushes/pops).
-%StackEntry = type { i32, i64, %Value*, [16 x %Value] }  ; type, aux, data, y_save
+%StackEntry = type { i32, i64, %Value*, [48 x %Value] }  ; type, aux, data, y_save
 
 ; === Trail Entry ===
 %TrailEntry = type { i32, %Value }        ; register index, old value
@@ -52,7 +52,7 @@
 ;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
 %ChoicePoint = type {
     i32,                                   ; 0: next_pc
-    [32 x %Value],                         ; 1: saved registers
+    [64 x %Value],                         ; 1: saved registers
     i32,                                   ; 2: trail mark
     i32,                                   ; 3: saved cp
     i32,                                   ; 4: agg_type (-1=normal, -2=foreign iter)
@@ -68,7 +68,7 @@
 ; === WAM State ===
 %WamState = type {
     i32,                                   ; 0: pc
-    [32 x %Value],                         ; 1: regs (A1..A16 → 0..15, X1..X16 → 16..31)
+    [64 x %Value],                         ; 1: regs (A1..A16 → 0..15, X1..X48 → 16..63)
     %StackEntry*,                          ; 2: stack
     i32,                                   ; 3: stack_size
     i32,                                   ; 4: stack_cap
