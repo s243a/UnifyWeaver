@@ -3,14 +3,28 @@ from __future__ import annotations
 
 import sys
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples" / "benchmark"))
 
-from benchmark_effective_distance_matrix import parse_args, resolve_requested_targets  # noqa: E402
-from benchmark_target_matrix import TARGETS, list_targets_text, resolve_targets  # noqa: E402
+from benchmark_effective_distance_matrix import (  # noqa: E402
+    RunResult,
+    kernel_pair_delta_rows,
+    parse_args,
+    print_kernel_pair_deltas,
+    resolve_requested_targets,
+)
+from benchmark_target_matrix import (  # noqa: E402
+    KERNEL_TARGET_PAIRS,
+    TARGETS,
+    list_kernel_pairs_text,
+    list_targets_text,
+    resolve_targets,
+)
 
 
 class BenchmarkTargetMatrixTests(unittest.TestCase):
@@ -42,10 +56,52 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
 
         self.assertIn("go-wam-accumulated", targets)
         self.assertIn("haskell-interp-ffi", targets)
+        self.assertIn("scala-wam-seeded", targets)
+        self.assertIn("scala-wam-seeded-no-kernels", targets)
+        self.assertIn("scala-wam-accumulated", targets)
+        self.assertIn("scala-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-accumulated", targets)
         self.assertIn("clojure-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-seeded", targets)
         self.assertIn("clojure-wam-seeded-no-kernels", targets)
+
+    def test_scala_targets_are_registered(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["scala-wam"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "scala-wam-seeded",
+                "scala-wam-seeded-no-kernels",
+                "scala-wam-accumulated",
+                "scala-wam-accumulated-no-kernels",
+            ],
+        )
+        self.assertEqual(TARGETS["scala-wam-seeded"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-seeded-no-kernels"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-accumulated"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-accumulated-no-kernels"].category, "hybrid-wam")
+
+    def test_scala_artifact_targets_are_registered_separately(self) -> None:
+        targets = resolve_targets(
+            explicit_targets=None,
+            target_set_names=["scala-wam-artifact"],
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "scala-wam-seeded",
+                "scala-wam-seeded-artifact",
+                "scala-wam-accumulated",
+                "scala-wam-accumulated-artifact",
+            ],
+        )
+        self.assertEqual(TARGETS["scala-wam-seeded-artifact"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-accumulated-artifact"].category, "hybrid-wam")
 
     def test_list_targets_includes_clojure_scaffold_set(self) -> None:
         text = list_targets_text()
@@ -57,6 +113,16 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertIn(
             "clojure-wam\tclojure-wam-accumulated,clojure-wam-seeded,"
             "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "scala-wam\tscala-wam-seeded,scala-wam-seeded-no-kernels,"
+            "scala-wam-accumulated,scala-wam-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "scala-wam-artifact\tscala-wam-seeded,scala-wam-seeded-artifact,"
+            "scala-wam-accumulated,scala-wam-accumulated-artifact",
             text,
         )
         self.assertIn("clojure-wam-scaffold\t", text)
@@ -73,6 +139,135 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             self.assertEqual(resolve_requested_targets(args), ["clojure-wam-seeded", "prolog-accumulated"])
         finally:
             sys.argv = original_argv
+
+    def test_kernel_pair_registry_covers_registered_wam_pairs(self) -> None:
+        pairs = {(pair.family, pair.mode): pair for pair in KERNEL_TARGET_PAIRS}
+
+        expected = {
+            ("rust", "seeded"),
+            ("rust", "accumulated"),
+            ("rust", "interpreter"),
+            ("rust", "lowered"),
+            ("go", "accumulated"),
+            ("scala", "seeded"),
+            ("scala", "accumulated"),
+            ("clojure", "seeded"),
+            ("clojure", "accumulated"),
+            ("haskell", "interpreter"),
+            ("haskell", "lowered"),
+        }
+        self.assertEqual(set(pairs), expected)
+
+        for pair in KERNEL_TARGET_PAIRS:
+            self.assertIn(pair.kernels_target, TARGETS)
+            self.assertIn(pair.no_kernels_target, TARGETS)
+
+    def test_list_kernel_pairs_text_is_tsv(self) -> None:
+        text = list_kernel_pairs_text()
+
+        self.assertTrue(text.startswith("family\tmode\tkernels_target\tno_kernels_target\n"))
+        self.assertIn(
+            "rust\taccumulated\twam-rust-accumulated\twam-rust-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "rust\tlowered\trust-lowered-ffi\trust-lowered-only",
+            text,
+        )
+        self.assertIn(
+            "haskell\tlowered\thaskell-lowered-ffi\thaskell-lowered-only",
+            text,
+        )
+        self.assertIn(
+            "scala\taccumulated\tscala-wam-accumulated\tscala-wam-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "scala\tseeded\tscala-wam-seeded\tscala-wam-seeded-no-kernels",
+            text,
+        )
+
+    def test_effective_distance_runner_accepts_kernel_pair_listing(self) -> None:
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "benchmark_effective_distance_matrix.py",
+                "--list-kernel-pairs",
+            ]
+            args = parse_args()
+            self.assertTrue(args.list_kernel_pairs)
+        finally:
+            sys.argv = original_argv
+
+    def test_kernel_pair_delta_rows_report_matching_pair(self) -> None:
+        rows = kernel_pair_delta_rows(
+            "dev",
+            [
+                RunResult(
+                    "wam-rust-accumulated",
+                    "dev",
+                    [1.0, 1.2, 1.1],
+                    "same",
+                    42,
+                    "",
+                ),
+                RunResult(
+                    "wam-rust-accumulated-no-kernels",
+                    "dev",
+                    [2.0, 2.2, 2.1],
+                    "same",
+                    42,
+                    "",
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                "dev\trust\taccumulated\twam-rust-accumulated\t"
+                "wam-rust-accumulated-no-kernels\t1.100\t2.100\t1.909\ttrue\ttrue"
+            ],
+        )
+
+    def test_kernel_pair_delta_rows_skip_incomplete_pair(self) -> None:
+        rows = kernel_pair_delta_rows(
+            "dev",
+            [
+                RunResult(
+                    "wam-rust-accumulated",
+                    "dev",
+                    [1.0],
+                    "digest",
+                    42,
+                    "",
+                )
+            ],
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_print_kernel_pair_deltas_emits_one_table_for_all_scales(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            print_kernel_pair_deltas(
+                [
+                    RunResult("wam-rust-seeded", "dev", [1.0], "a", 10, ""),
+                    RunResult("wam-rust-seeded-no-kernels", "dev", [2.0], "a", 10, ""),
+                    RunResult("wam-rust-seeded", "10x", [3.0], "b", 20, ""),
+                    RunResult("wam-rust-seeded-no-kernels", "10x", [6.0], "c", 20, ""),
+                ]
+            )
+
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(
+            lines[0],
+            "scale\tfamily\tmode\tkernels_target\tno_kernels_target\tkernels_median_s\t"
+            "no_kernels_median_s\tkernels_speedup_vs_no_kernels\toutput_match\trows_match",
+        )
+        self.assertEqual(len(lines), 3)
+        self.assertIn("dev\trust\tseeded\twam-rust-seeded\twam-rust-seeded-no-kernels", lines[1])
+        self.assertIn("10x\trust\tseeded\twam-rust-seeded\twam-rust-seeded-no-kernels", lines[2])
 
 
 if __name__ == "__main__":

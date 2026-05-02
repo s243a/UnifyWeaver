@@ -16,14 +16,23 @@
 :- module(wam_clojure_target, [
     compile_wam_predicate_to_clojure/4,  % +Pred/Arity, +WamCode, +Options, -ClojureCode
     write_wam_clojure_project/3,         % +Predicates, +Options, +ProjectDir
-    clojure_foreign_predicate/3          % +Pred, +Arity, +Options
+    clojure_foreign_predicate/3,         % +Pred, +Arity, +Options
+    prepare_wam_clojure_lmdb_runtime_support/2, % +ProjectDir, +Options
+    clojure_lmdb_reader_open_expr/3,     % +PathLiteral, +Options, -Expr
+    clojure_lmdb_cache_log_snippet/3     % +Context, +Options, -Snippet
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module(library(process), [process_create/3, process_wait/2]).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_clojure_lowered_emitter', [
+    wam_clojure_lowerable/3,
+    lower_predicate_to_clojure/4,
+    clojure_lowered_func_name/2
+]).
 
 %% write_wam_clojure_project(+Predicates, +Options, +ProjectDir)
 %  Generate a minimal hybrid/WAM Clojure project with:
@@ -41,6 +50,7 @@ write_wam_clojure_project(Predicates, Options, ProjectDir) :-
     write_deps_edn(ModuleName, CoreNamespace, ProjectDir),
     write_project_clj(ModuleName, CoreNamespace, ProjectDir),
     write_runtime_namespace(RuntimeNamespace, Date, ProjectDir),
+    maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options),
     compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, CoreCode),
     write_namespace_file(ProjectDir, CoreNamespace, CoreCode),
     format(user_error, '[WAM-Clojure] Generated project at: ~w~n', [ProjectDir]).
@@ -77,9 +87,18 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
   (:require [clojure.edn :as edn]
             [~w :as runtime]))
 
+(def compile-time-atom-seeds [])
+(def compile-time-functor-seeds [])
+(def atom-intern-context
+  (runtime/build-intern-context compile-time-atom-seeds compile-time-functor-seeds))
+(def atom-intern-table (:atom-intern atom-intern-context))
+(def atom-deintern-table (:atom-deintern atom-intern-context))
+(def functor-arity-table (:functor-arity atom-intern-context))
+
 (def shared-wam-code-raw [])
 (def shared-wam-labels {})
-(def shared-wam-code (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+(def shared-wam-code
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 (def foreign-handlers {})
 
 (def predicate-dispatch {})
@@ -88,14 +107,20 @@ compile_predicates_for_project([], _, CoreNamespace, RuntimeNamespace, Code) :-
   false)
 
 (defn -main [& _args]
-  (println false))
+    (println false))
 ', [CoreNamespace, CoreNamespace, RuntimeNamespace]).
 compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, Code) :-
-    collect_wam_entries(Predicates, Options, 0, WamEntries, RawEntries, LabelEntries, DispatchEntries),
+    collect_wam_entries(Predicates, Options, 0,
+                        PredicateBodies, RawEntries, LabelEntries, DispatchEntries,
+                        AtomSeedEntries0, FunctorSeedEntries0),
+    sort(AtomSeedEntries0, AtomSeedEntries),
+    sort(FunctorSeedEntries0, FunctorSeedEntries),
+    emit_clojure_string_vector(AtomSeedEntries, AtomSeedsCode),
+    emit_clojure_string_vector(FunctorSeedEntries, FunctorSeedsCode),
     clojure_foreign_handlers_code(Options, ForeignHandlersCode),
     atomic_list_concat(RawEntries, '\n  ', RawBody0),
     atomic_list_concat(LabelEntries, '\n  ', LabelBody0),
-    atomic_list_concat(WamEntries, '\n\n', WrapperCode),
+    atomic_list_concat(PredicateBodies, '\n\n', WrapperCode),
     atomic_list_concat(DispatchEntries, '\n  ', DispatchBody0),
     (RawBody0 == "" -> RawBody = "" ; format(atom(RawBody), '  ~w', [RawBody0])),
     (LabelBody0 == "" -> LabelBody = "" ; format(atom(LabelBody), '  ~w', [LabelBody0])),
@@ -108,6 +133,14 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
   (:require [clojure.edn :as edn]
             [~w :as runtime]))
 
+(def compile-time-atom-seeds ~w)
+(def compile-time-functor-seeds ~w)
+(def atom-intern-context
+  (runtime/build-intern-context compile-time-atom-seeds compile-time-functor-seeds))
+(def atom-intern-table (:atom-intern atom-intern-context))
+(def atom-deintern-table (:atom-deintern atom-intern-context))
+(def functor-arity-table (:functor-arity atom-intern-context))
+
 (def shared-wam-code-raw [
 ~w
 ])
@@ -117,7 +150,7 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
 })
 
 (def shared-wam-code
-  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 
 (def foreign-handlers {
 ~w
@@ -138,25 +171,48 @@ compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamesp
   (let [[pred-key & pred-args] args]
     (println (invoke-predicate pred-key (mapv edn/read-string pred-args)))))
 
-', [CoreNamespace, CoreNamespace, RuntimeNamespace, RawBody, LabelBody, ForeignHandlersCode, WrapperCode, DispatchBody]).
+', [CoreNamespace, CoreNamespace, RuntimeNamespace,
+    AtomSeedsCode, FunctorSeedsCode,
+    RawBody, LabelBody, ForeignHandlersCode, WrapperCode, DispatchBody]).
 
-collect_wam_entries([], _, _, [], [], [], []).
+collect_wam_entries([], _, _, [], [], [], [], [], []).
 collect_wam_entries([PredIndicator|Rest], Options, PC,
-                    [WrapperCode|RestWrappers], AllInstrs, AllLabels, [DispatchEntry|RestDispatch]) :-
+                    [PredicateCode|RestWrappers], AllInstrs, AllLabels, [DispatchEntry|RestDispatch],
+                    AllAtomSeeds, AllFunctorSeeds) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(PredKey), '~w/~w', [Pred, Arity]),
     (   clojure_foreign_predicate(Pred, Arity, Options)
-    ->  clojure_foreign_stub_data(Pred, Arity, PC, GoLiterals, LabelPairs, NextPC)
+    ->  clojure_foreign_stub_data(Pred, Arity, PC, GoLiterals, LabelPairs, NextPC),
+        compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, PredicateCode),
+        predicate_clojure_name(Pred, DispatchName),
+        LocalAtomSeeds = [PredKey],
+        LocalFunctorSeeds = []
     ;   wam_target:compile_predicate_to_wam(PredIndicator, Options, WamCode),
-        wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC)
+        wam_code_to_clojure_intern_seeds(WamCode, CodeAtomSeeds, CodeFunctorSeeds),
+        (   wam_clojure_lowerable(Pred/Arity, WamCode, _Reason)
+        ->  lower_predicate_to_clojure(Pred/Arity, WamCode, Options, LoweredCode),
+            compile_wam_predicate_to_clojure_lowered(Pred/Arity, PC, WrapperCode),
+            atomics_to_string([LoweredCode, "\n", WrapperCode], PredicateCode0),
+            atom_string(PredicateCode, PredicateCode0),
+            wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
+            predicate_clojure_name(Pred, DispatchName)
+        ;   wam_code_to_clojure_data(WamCode, PC, GoLiterals, LabelPairs, NextPC),
+            compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, PredicateCode),
+            predicate_clojure_name(Pred, DispatchName)
+        ),
+        LocalAtomSeeds = [PredKey|CodeAtomSeeds],
+        LocalFunctorSeeds = CodeFunctorSeeds
     ),
     maplist([Lit, Entry]>>format(atom(Entry), '~w', [Lit]), GoLiterals, InstrEntries),
     maplist([Label-Idx, Entry]>>format(atom(Entry), '~w ~w', [Label, Idx]), LabelPairs, LabelRows),
-    compile_wam_predicate_to_clojure_shared(Pred/Arity, PC, WrapperCode),
-    predicate_clojure_name(Pred, CljName),
-    format(atom(DispatchEntry), '"~w/~w" ~w', [Pred, Arity, CljName]),
-    collect_wam_entries(Rest, Options, NextPC, RestWrappers, RestInstrs, RestLabels, RestDispatch),
+    format(atom(DispatchEntry), '"~w/~w" ~w', [Pred, Arity, DispatchName]),
+    collect_wam_entries(Rest, Options, NextPC,
+                        RestWrappers, RestInstrs, RestLabels, RestDispatch,
+                        RestAtomSeeds, RestFunctorSeeds),
     append(InstrEntries, RestInstrs, AllInstrs),
-    append(LabelRows, RestLabels, AllLabels).
+    append(LabelRows, RestLabels, AllLabels),
+    append(LocalAtomSeeds, RestAtomSeeds, AllAtomSeeds),
+    append(LocalFunctorSeeds, RestFunctorSeeds, AllFunctorSeeds).
 
 %% clojure_foreign_predicate(+Pred, +Arity, +Options) is semidet.
 %  True when a predicate should be represented by a Clojure WAM
@@ -169,8 +225,14 @@ collect_wam_entries([PredIndicator|Rest], Options, PC,
 clojure_foreign_predicate(Pred, Arity, Options) :-
     \+ option(no_kernels(true), Options),
     \+ option(foreign_lowering(false), Options),
+    clojure_foreign_relation_selected(Pred/Arity, Options).
+
+clojure_foreign_relation_selected(Pred/Arity, Options) :-
     option(foreign_predicates(ForeignPreds), Options, []),
     member(Pred/Arity, ForeignPreds).
+clojure_foreign_relation_selected(Pred/Arity, Options) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    member(Pred/Arity-_, Relations).
 
 clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
     format(atom(PredKey), '~w/~w', [Pred, Arity]),
@@ -182,10 +244,37 @@ clojure_foreign_stub_data(Pred, Arity, PC, Literals, LabelPairs, NextPC) :-
     NextPC is PC + 2.
 
 clojure_foreign_handlers_code(Options, Code) :-
-    option(clojure_foreign_handlers(Handlers), Options, []),
+    option(clojure_foreign_handlers(ExplicitHandlers), Options, []),
+    clojure_lmdb_foreign_handlers(Options, LmdbHandlers),
+    append(LmdbHandlers, ExplicitHandlers, Handlers),
     maplist(clojure_foreign_handler_entry, Handlers, Entries),
     atomic_list_concat(Entries, '\n  ', Body),
     (Body == "" -> Code = "" ; format(atom(Code), '  ~w', [Body])).
+
+clojure_lmdb_foreign_handlers(Options, Handlers) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    maplist(clojure_lmdb_foreign_handler(Options), Relations, Handlers).
+
+clojure_lmdb_foreign_handler(Options, Pred/Arity-ArtifactPath, handler(Pred/Arity, HandlerCode)) :-
+    clojure_lmdb_foreign_handler_code(Pred/Arity, ArtifactPath, Options, HandlerCode).
+
+clojure_lmdb_foreign_handler_code(category_parent/2, ArtifactPath, Options, HandlerCode) :-
+    clojure_lmdb_path_literal(ArtifactPath, PathLiteral),
+    clojure_lmdb_reader_open_expr(PathLiteral, Options, ReaderOpenExpr),
+    clojure_lmdb_cache_log_snippet('category_parent/2', Options, LogSnippet),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay ~w)] (fn [args] (let [child (nth args 0) parent (nth args 1) rows (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay child) result (boolean (some (fn [^generated.lmdb.LmdbRow row] (= parent (.value row))) rows))] (do ~w result))))",
+           [ReaderOpenExpr, LogSnippet]).
+clojure_lmdb_foreign_handler_code(category_ancestor/4, ArtifactPath, Options, HandlerCode) :-
+    clojure_lmdb_path_literal(ArtifactPath, PathLiteral),
+    clojure_lmdb_reader_open_expr(PathLiteral, Options, ReaderOpenExpr),
+    clojure_lmdb_cache_log_snippet('category_ancestor/4', Options, LogSnippet),
+    option(clojure_lmdb_ancestor_max_depth(MaxDepth), Options, 10),
+    format(string(HandlerCode),
+           "(let [reader-delay (delay ~w) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) parent-values (fn [category] (mapv (fn [^generated.lmdb.LmdbRow row] (.value row)) (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay category))) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (parent-values category)] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] (do ~w {:solutions (vec solutions)}))))",
+           [ReaderOpenExpr, MaxDepth, LogSnippet]).
+clojure_lmdb_foreign_handler_code(Pred/Arity, _ArtifactPath, _Options, _HandlerCode) :-
+    throw(error(unsupported_clojure_lmdb_foreign_relation(Pred/Arity), _)).
 
 clojure_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :- !,
     clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry).
@@ -194,6 +283,80 @@ clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry) :-
     clj_string_literal(PredKey, PredKeyLit),
     clojure_handler_code_text(HandlerCode, HandlerText),
     format(atom(Entry), '~w ~s', [PredKeyLit, HandlerText]).
+
+maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options) :-
+    clojure_lmdb_runtime_needed(Options),
+    !,
+    prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options).
+maybe_prepare_wam_clojure_lmdb_runtime_support(_, _).
+
+clojure_lmdb_runtime_needed(Options) :-
+    option(clojure_lmdb_runtime_support(true), Options),
+    !.
+clojure_lmdb_runtime_needed(Options) :-
+    option(clojure_lmdb_foreign_relations(Relations), Options, []),
+    Relations \= [].
+
+prepare_wam_clojure_lmdb_runtime_support(ProjectDir, _Options) :-
+    absolute_file_name(ProjectDir, AbsoluteProjectDir),
+    directory_file_path(AbsoluteProjectDir, 'classes', ClassesDir),
+    directory_file_path(AbsoluteProjectDir, 'lib', LibDir),
+    make_directory_path(ClassesDir),
+    make_directory_path(LibDir),
+    clojure_lmdb_helper_java_sources(JavaSources),
+    atomic_list_concat(JavaSources, ' ', SourceArgs),
+    format(atom(JavacCmd),
+           'javac -d "~w" ~w',
+           [ClassesDir, SourceArgs]),
+    run_shell_command_or_throw(AbsoluteProjectDir, JavacCmd, javac_lmdb_helper_failed),
+    format(atom(JarCmd),
+           'jar --create --file "~w/lmdb-artifact-reader.jar" -C "~w" generated/lmdb',
+           [LibDir, ClassesDir]),
+    run_shell_command_or_throw(AbsoluteProjectDir, JarCmd, jar_lmdb_helper_failed),
+    repo_relative_path('examples/scala_lmdb_jni_probe/native/lmdb_artifact_jni.c', NativeSource),
+    format(atom(GccCmd),
+           'JAVAC_REAL=$(readlink -f "$(command -v javac)") && JAVA_HOME_DIR=$(CDPATH= cd -- "$(dirname "$JAVAC_REAL")/.." && pwd) && cat "~w" | gcc -x c -shared -fPIC -include stddef.h -I"$JAVA_HOME_DIR/include" -I"$JAVA_HOME_DIR/include/linux" -I/data/data/com.termux/files/usr/include -L/data/data/com.termux/files/usr/lib -o "~w/liblmdb_artifact_jni.so" - -llmdb',
+           [NativeSource, LibDir]),
+    run_shell_command_or_throw(AbsoluteProjectDir, GccCmd, gcc_lmdb_helper_failed).
+
+clojure_lmdb_reader_open_expr(PathLiteral, Options, Expr) :-
+    option(clojure_lmdb_cache_policy(CachePolicy), Options, none),
+    clojure_lmdb_reader_open_expr_for_policy(PathLiteral, CachePolicy, Expr).
+
+clojure_lmdb_cache_log_snippet(_Context, Options, "nil") :-
+    \+ option(clojure_lmdb_cache_debug(true), Options),
+    !.
+clojure_lmdb_cache_log_snippet(Context, _Options, Snippet) :-
+    format(string(Snippet),
+           "(binding [*out* *err*] (println (str \"lmdb_cache_stats ~w \" (pr-str (.cacheStats ^generated.lmdb.LmdbArtifactReader @reader-delay)))))",
+           [Context]).
+
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, memoize, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openMemoized (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, shared, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openSharedCached (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, two_level, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/openTwoLevel (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+clojure_lmdb_reader_open_expr_for_policy(PathLiteral, none, Expr) :-
+    format(string(Expr),
+           "(generated.lmdb.LmdbArtifactReader/open (java.nio.file.Paths/get ~w (make-array String 0)))",
+           [PathLiteral]).
+
+clojure_lmdb_path_literal(ArtifactPath, PathLiteral) :-
+    string(ArtifactPath),
+    !,
+    clj_string_literal(ArtifactPath, PathLiteral).
+clojure_lmdb_path_literal(ArtifactPath, PathLiteral) :-
+    atom(ArtifactPath),
+    !,
+    clj_string_literal(ArtifactPath, PathLiteral).
+clojure_lmdb_path_literal(path_literal(PathLiteral), PathLiteral).
 
 clojure_handler_code_text(HandlerCode, HandlerCode) :-
     string(HandlerCode), !.
@@ -204,13 +367,27 @@ clojure_handler_code_text(HandlerCode, HandlerText) :-
 compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     wam_code_to_clojure_data(WamCode, 0, RawEntries, LabelPairs, _),
+    wam_code_to_clojure_intern_seeds(WamCode, AtomSeedEntries0, FunctorSeedEntries0),
+    format(atom(PredKey), '~w/~w', [Pred, Arity]),
+    sort([PredKey|AtomSeedEntries0], AtomSeedEntries),
+    sort(FunctorSeedEntries0, FunctorSeedEntries),
+    emit_clojure_string_vector(AtomSeedEntries, AtomSeedsCode),
+    emit_clojure_string_vector(FunctorSeedEntries, FunctorSeedsCode),
     atomic_list_concat(RawEntries, '\n  ', RawBody0),
     atomic_list_concat(LabelPairs, '\n  ', LabelBody0),
     (RawBody0 == "" -> RawBody = "" ; format(atom(RawBody), '  ~w', [RawBody0])),
     (LabelBody0 == "" -> LabelBody = "" ; format(atom(LabelBody), '  ~w', [LabelBody0])),
     compile_wam_predicate_to_clojure_shared(Pred/Arity, 0, WrapperCode),
     format(atom(ClojureCode),
-'(def shared-wam-code-raw [
+'(def compile-time-atom-seeds ~w)
+(def compile-time-functor-seeds ~w)
+(def atom-intern-context
+  (runtime/build-intern-context compile-time-atom-seeds compile-time-functor-seeds))
+(def atom-intern-table (:atom-intern atom-intern-context))
+(def atom-deintern-table (:atom-deintern atom-intern-context))
+(def functor-arity-table (:functor-arity atom-intern-context))
+
+(def shared-wam-code-raw [
 ~w
 ])
 
@@ -219,12 +396,12 @@ compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) 
 })
 
 (def shared-wam-code
-  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels))
+  (runtime/resolve-instructions shared-wam-code-raw shared-wam-labels atom-intern-context))
 
 (def foreign-handlers {})
 
 ~w
-', [RawBody, LabelBody, WrapperCode]).
+', [AtomSeedsCode, FunctorSeedsCode, RawBody, LabelBody, WrapperCode]).
 
 compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
     predicate_clojure_name(Pred, CljName),
@@ -234,13 +411,72 @@ compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
 '(def ~w-start-pc ~w)
 
 (defn ~w [~w]
-  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers))
+  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))
 ', [CljName, StartPC, CljName, ArgList, CljName, RegMap]).
+
+compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
+    predicate_clojure_name(Pred, CljName),
+    clojure_lowered_func_name(Pred/Arity, LoweredName),
+    build_clojure_wam_arg_list(Arity, ArgList),
+    build_clojure_wam_reg_map(Arity, RegMap),
+    format(atom(Code),
+'(def ~w-start-pc ~w)
+
+(defn ~w [~w]
+  (runtime/run-wam
+    (~w
+      (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))))
+', [CljName, StartPC, CljName, ArgList, LoweredName, CljName, RegMap]).
 
 wam_code_to_clojure_data(WamCode, BasePC, Entries, LabelPairs, NextPC) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_clojure_data(Lines, BasePC, Entries, LabelPairs, NextPC).
+
+wam_code_to_clojure_intern_seeds(WamCode, AtomSeeds, FunctorSeeds) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_intern_seeds(Lines, AtomSeeds, FunctorSeeds).
+
+wam_lines_intern_seeds([], [], []).
+wam_lines_intern_seeds([Line|Rest], AtomSeeds, FunctorSeeds) :-
+    normalize_space(string(Trimmed), Line),
+    (   Trimmed == ""
+    ->  wam_lines_intern_seeds(Rest, AtomSeeds, FunctorSeeds)
+    ;   sub_string(Trimmed, _, 1, 0, ":")
+    ->  wam_lines_intern_seeds(Rest, AtomSeeds, FunctorSeeds)
+    ;   split_string(Trimmed, " ", "", [Op|ArgParts]),
+        atomic_list_concat(ArgParts, ' ', ArgText0),
+        normalize_space(string(ArgText), ArgText0),
+        (   Op == "switch_on_constant"
+        ->  switch_case_atom_values(ArgText, LocalAtomSeeds),
+            LocalFunctorSeeds = []
+        ;   wam_args(ArgText, Args),
+            wam_op_intern_seeds(Op, Args, LocalAtomSeeds, LocalFunctorSeeds)
+        ),
+        wam_lines_intern_seeds(Rest, RestAtomSeeds, RestFunctorSeeds),
+        append(LocalAtomSeeds, RestAtomSeeds, AtomSeeds),
+        append(LocalFunctorSeeds, RestFunctorSeeds, FunctorSeeds)
+    ).
+
+switch_case_atom_values(CasesText, AtomSeeds) :-
+    split_string(CasesText, " ", " ", RawCases),
+    findall(Const,
+            ( member(RawCase, RawCases),
+              normalize_space(string(Case), RawCase),
+              split_string(Case, ":", "", [Const|_])
+            ),
+            AtomSeeds).
+
+wam_op_intern_seeds("get_constant", [Const, _], [Const], []).
+wam_op_intern_seeds("put_constant", [Const, _], [Const], []).
+wam_op_intern_seeds("set_constant", [Const], [Const], []).
+wam_op_intern_seeds("unify_constant", [Const], [Const], []).
+wam_op_intern_seeds("put_structure", [Functor, _], [Functor], [Functor]).
+wam_op_intern_seeds("get_structure", [Functor, _], [Functor], [Functor]).
+wam_op_intern_seeds("put_list", [_], ["[|]/2"], ["[|]/2"]).
+wam_op_intern_seeds("get_list", [_], ["[|]/2"], ["[|]/2"]).
+wam_op_intern_seeds(_, _, [], []).
 
 wam_lines_to_clojure_data([], PC, [], [], PC).
 wam_lines_to_clojure_data([Line|Rest], PC0, Entries, Labels, NextPC) :-
@@ -327,7 +563,8 @@ wam_op_to_clojure_literal("put_value", [Var, Reg], _, Literal) :-
 wam_op_to_clojure_literal("put_structure", [Functor, Reg], _, Literal) :-
     clj_string_literal(Functor, FunctorLit),
     clj_string_literal(Reg, RegLit),
-    format(atom(Literal), '{:op :put-structure :functor ~w :reg ~w}', [FunctorLit, RegLit]).
+    functor_arity_string(Functor, FunctorArity),
+    format(atom(Literal), '{:op :put-structure :functor ~w :reg ~w :arity ~w}', [FunctorLit, RegLit, FunctorArity]).
 wam_op_to_clojure_literal("get_structure", [Functor, Reg], _, Literal) :-
     clj_string_literal(Functor, FunctorLit),
     clj_string_literal(Reg, RegLit),
@@ -370,7 +607,7 @@ wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
     format(atom(Literal), '{:op :raw :text ~w}', [LineLit]).
 
 parse_switch_cases(CasesText, CaseEntries) :-
-    split_string(CasesText, ",", " ", RawCases),
+    split_string(CasesText, " ", " ", RawCases),
     maplist(parse_switch_case, RawCases, CaseEntries).
 
 parse_switch_case(RawCase, Entry) :-
@@ -383,6 +620,10 @@ parse_switch_case(RawCase, Entry) :-
         clj_string_literal("malformed", LabelLit),
         format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit])
     ).
+
+functor_arity_string(Functor, Arity) :-
+    split_string(Functor, "/", "", [_Name, ArityStr]),
+    number_string(Arity, ArityStr).
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
@@ -404,6 +645,12 @@ build_clojure_wam_reg_map(Arity, RegMap) :-
     maplist([I, S]>>format(atom(S), '"A~w" a~w', [I, I]), Indices, Parts),
     atomic_list_concat(Parts, ', ', Body),
     format(atom(RegMap), '{~w}', [Body]).
+
+emit_clojure_string_vector([], "[]") :- !.
+emit_clojure_string_vector(Strings, Literal) :-
+    maplist(clj_string_literal, Strings, Quoted),
+    atomic_list_concat(Quoted, ' ', Body),
+    format(atom(Literal), '[~w]', [Body]).
 
 write_namespace_file(ProjectDir, Namespace, Content) :-
     namespace_relative_path(Namespace, RelativePath),
@@ -433,6 +680,41 @@ write_file(Path, Content) :-
     open(Path, write, Stream),
     format(Stream, '~w', [Content]),
     close(Stream).
+
+clojure_lmdb_helper_java_sources(JavaSources) :-
+    maplist(clojure_lmdb_helper_java_source_path,
+            [ 'LmdbRow.java',
+              'LmdbCacheStats.java',
+              'LmdbArtifactManifest.java',
+              'LmdbArtifactStore.java',
+              'LmdbLookupCache.java',
+              'LmdbArtifactReader.java',
+              'LmdbArtifactJNI.java'
+            ],
+            JavaSources).
+
+clojure_lmdb_helper_java_source_path(FileName, QuotedPath) :-
+    repo_relative_path('examples/scala_lmdb_jni_probe/src/main/java/generated/lmdb', JavaDir),
+    directory_file_path(JavaDir, FileName, SourcePath),
+    format(atom(QuotedPath), '"~w"', [SourcePath]).
+
+repo_relative_path(RelativePath, AbsolutePath) :-
+    source_file(wam_clojure_target:repo_relative_path(_, _), ThisFile),
+    file_directory_name(ThisFile, ThisDir),
+    directory_file_path(ThisDir, '..', Parent1),
+    directory_file_path(Parent1, '..', Parent2),
+    directory_file_path(Parent2, '..', RepoRoot),
+    directory_file_path(RepoRoot, RelativePath, Joined),
+    absolute_file_name(Joined, AbsolutePath).
+
+run_shell_command_or_throw(Cwd, Command, ErrorFunctor) :-
+    process_create(path(sh), ['-c', Command], [cwd(Cwd), process(PID)]),
+    process_wait(PID, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   Error =.. [ErrorFunctor, Status, Command],
+        throw(error(Error, _))
+    ).
 
 clj_string_literal(In, Literal) :-
     atom_string(InAtom, In),

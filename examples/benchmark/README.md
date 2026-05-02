@@ -93,9 +93,9 @@ Semantic note:
 - current runs also report `query_vs_prolog_accumulated = match` at
   `300`, `1k`, `5k`, and `10k`
 
-### WAM-Rust Benchmark Variants
+### WAM-Rust and WAM-Haskell Benchmark Variants
 
-The effective-distance harness also includes WAM-Rust benchmark targets:
+The effective-distance harness also includes hybrid WAM benchmark targets:
 
 - `wam-rust-seeded` compiles the base WAM predicates and uses the generated
   Rust benchmark driver to compute per-seed weight sums through the
@@ -106,15 +106,38 @@ The effective-distance harness also includes WAM-Rust benchmark targets:
   the merged WAM code vector. The measured driver still uses the stable
   Rust-side accumulation path until direct WAM aggregate-helper execution
   has separate runtime coverage.
+- `wam-rust-seeded-no-kernels` and `wam-rust-accumulated-no-kernels`
+  use the same generated WAM code but disable native recursive kernels.
+  These are intended for WAM fallback profiling; `total_steps` and
+  `total_backtracks` should be non-zero when the fallback path is exercised.
+  Use `WAM_SEED_LIMIT=<n>` or `WAM_SEED_FILTER=CatA|CatB` for bounded
+  fallback probes before running full-scale comparisons. Seed-limited runs
+  intentionally produce partial output and should not be used for output
+  completeness comparisons. These environment variables apply to the entire
+  benchmark invocation; when either is set, no-kernel parity and speedup lines
+  are treated as seed-subset probes rather than full-output comparisons.
+- `haskell-wam-seeded` and `haskell-wam-accumulated` use the optimized
+  WAM-Haskell generator for the same effective-distance workload. They are
+  intended as a non-Rust hybrid comparison point and use Cabal new-style builds
+  so Hackage dependencies can be resolved when the local package cache is cold.
+- `haskell-wam-seeded-no-kernels` and
+  `haskell-wam-accumulated-no-kernels` mirror the Rust no-kernel targets by
+  passing `no_kernels(true)` to the WAM-Haskell target. Use these for pure-WAM
+  fallback comparisons; use the non-`no-kernels` targets for native-kernel
+  hybrid comparisons.
 
 Example focused run:
 
 ```bash
 python examples/benchmark/benchmark_effective_distance.py \
   --scales dev \
-  --targets prolog-accumulated,wam-rust-seeded,wam-rust-accumulated \
+  --targets prolog-accumulated,wam-rust-accumulated,haskell-wam-accumulated,wam-rust-accumulated-no-kernels,haskell-wam-accumulated-no-kernels \
   --repetitions 1
 ```
+
+Set `HASKELL_RTS` to pass runtime-system options to generated Haskell WAM
+executables, for example `HASKELL_RTS="+RTS -N2 -RTS"` to allow two GHC
+capabilities. Leaving it unset preserves the default single-capability run.
 
 On Termux, the harness chooses a writable temporary parent from `TMPDIR`,
 `TMP`, `TEMP`, `$PREFIX/tmp`, or `output` instead of assuming `/tmp`.
@@ -163,6 +186,59 @@ These are applied on top of `artifact` mode so a workload can, for
 example, keep `category_parent` on the grouped artifact path while
 forcing `article_category` back to row sidecars, or vice versa.
 
+`category_parent` also now accepts an opt-in `lmdb` override. In that
+mode the generator:
+
+- writes a `category_parent/2` LMDB dupsort artifact under
+  `data/generated/wam_clojure_optimized_bench/category_parent_lmdb/`
+- packages the JVM reader helper as
+  `lib/lmdb-artifact-reader.jar`
+- builds the JNI shim as `lib/liblmdb_artifact_jni.so`
+- places that helper jar on the runtime classpath when the benchmark
+  harness launches the generated Clojure project
+
+This keeps the public benchmark target names stable while letting a
+workload compare grouped TSV against LMDB-backed exact arg1 lookups for
+the hottest traversal relation.
+
+LMDB-backed `category_parent` also supports an optional relation-local
+cache policy override:
+
+- `wam_clojure_benchmark_relation_cache_policy(category_parent, memoize).`
+- `benchmark_relation_cache_policy(category_parent, memoize).`
+
+This does not change the storage mode. It keeps `category_parent` on the
+LMDB path, but switches the packaged JVM helper from plain thread-local
+reader reuse to a thread-local L1 `arg1` memoization layer on top of the
+same native store seam. Leaving the predicate unset preserves the
+default `none` policy.
+
+Additional experimental policies are available for the same relation:
+
+- `shared`
+- `two_level`
+
+These keep the same LMDB storage mode but change the JVM-side cache
+composition:
+
+- `shared`: shared `arg1` cache above the thread-local native reader
+- `two_level`: thread-local L1 plus shared L2
+
+Use these as explicit workload overrides for now. The relative value of
+`none`, `memoize`, `shared`, and `two_level` should be measured on a
+desktop JVM rather than treated as settled from Termux timings.
+
+For focused debugging, the generator also accepts a relation-local cache
+stats flag:
+
+- `wam_clojure_benchmark_relation_cache_debug(category_parent, true).`
+- `benchmark_relation_cache_debug(category_parent, true).`
+
+When enabled on the LMDB path, generated Clojure projects emit
+`lmdb_cache_stats ...` lines to `stderr` during predicate/runner cache
+activity. This is intended for targeted probes, not normal benchmark
+runs.
+
 The generator also now honors the shared predicate-preprocessing
 declaration surface from
 `src/unifyweaver/core/predicate_preprocessing.pl`. For the current
@@ -198,6 +274,20 @@ The generated project supports two entry modes:
 Larger Clojure benchmark runs should stay configurable because JVM startup and
 memory behavior are noisy in constrained Termux environments.
 
+Scala has a separate effective-distance project generator:
+
+```bash
+swipl -q -s examples/benchmark/generate_wam_scala_effective_distance_benchmark.pl -- \
+  data/benchmark/dev/facts.pl /tmp/wam-scala-effective-distance accumulated kernels_on
+```
+
+It emits a Scala WAM project plus an `EffectiveDistanceRunner` companion that
+prints the standard `article	root_category	effective_distance` table from
+`category_parent.tsv` and `article_category.tsv`. The generator supports
+`kernels_on` via the Scala fact-source handler and `kernels_off` via compiled
+WAM facts, but the targets are not registered in the Python matrix until the
+runner wiring has a dedicated smoke gate.
+
 The configurable benchmark matrix now treats all Clojure WAM effective-distance
 modes as result-producing `hybrid-wam` targets:
 
@@ -207,6 +297,24 @@ modes as result-producing `hybrid-wam` targets:
 - `clojure-wam-seeded-no-kernels`
 
 These targets provide both seeded/accumulated and kernel-on/off comparisons.
+
+The matrix CLI can print the currently registered kernel/no-kernel pairings
+without running benchmarks:
+
+```bash
+python3 examples/benchmark/benchmark_effective_distance_matrix.py --list-kernel-pairs
+```
+
+The report is TSV with `family`, `mode`, `kernels_target`, and
+`no_kernels_target` columns. It currently covers registered Rust
+seeded/accumulated and Rust interpreter/lowered pairings, plus Go, Clojure,
+and Haskell effective-distance WAM pairings.
+
+When both sides of a registered pair run for the same scale, the benchmark
+summary also emits a paired delta table with median timings, a
+`kernels_speedup_vs_no_kernels` ratio, and output/row-count match flags. A
+ratio above `1.0` means the kernel-enabled target was faster than its
+no-kernel counterpart for that pair.
 
 Artifact-vs-sidecar Clojure comparisons are available through the
 `clojure-wam-artifact` target set, which adds:
@@ -360,8 +468,9 @@ Tables:
 | `benchmark_shortest_path_cross_target.py` | Compare shortest-path-to-root across C# query, seeded Prolog `min`, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_depth_cross_target.py` | Compare synthetic dependency reach-count across C# query, C# DFS, Rust DFS, and Go DFS |
 | `benchmark_dependency_longest_depth_cross_target.py` | Compare true DAG longest dependency-chain depth across C# query, C# DFS, Rust DFS, and Go DFS |
+| `benchmark_csharp_query_source_mode_sweep.py` | Run generated C# query source-mode sweeps across selected workloads and emit a compact TSV/Markdown comparison |
 | `benchmark_path_aware_accumulation.py` | Measure counted-closure vs generalized accumulation overhead |
-| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, join, negation, and aggregate under the scan materialization planner |
+| `benchmark_scan_materialization.py` | Exercise relation scan, pattern scan, binary/n-ary join, negation, and aggregate under the scan materialization planner; use `--format markdown` or `--format report-tsv` with `join,nary_join` to compare source registrations and artifact bucket strategy rows; use `--format calibration-tsv` or `--format calibration-markdown` to summarize auto-policy chosen-vs-best status, 10% timing tolerance, overlap confidence, slow matches, auto median, and timing spread; use `--format actionable-tsv` or `--format actionable-markdown` to show only separated timing regressions worth policy review |
 | `benchmark_closure_materialization.py` | Exercise generic seeded closure and streamed auxiliary accumulation under the closure materialization planner |
 | `benchmark_closure_pair_planning.py` | Exercise seeded and grouped closure-pair workloads under the closure-pair strategy planner |
 | `benchmark_weighted_shortest_path.py` | Measure `PathAwareAccumulationNode` `All` vs `Min` pruning on positive, non-negative, and fallback weighted paths |
@@ -933,6 +1042,32 @@ Comparison note:
 - set `UNIFYWEAVER_BENCH_TRACE=1` when you want the generated
   `csharp-query` longest-depth benchmark to print both per-phase DAG
   timings and DAG retention strategy buckets to `stderr`
+- generated `csharp-query` DAG, weight-sum, and path-min workloads also
+  print concrete artifact bucket join choices as
+  `bucket_strategy_<node>_<strategy>=<count>` when trace data contains
+  `KeyJoinIndexedRelationProviderBucket*` strategies
+- cross-target runners summarize those generated metrics as
+  `csharp-query-bucket-strategies` rows when `UNIFYWEAVER_BENCH_TRACE=1`
+  captures any concrete bucket strategies
+- most generated cross-target workloads use specialized DAG, weight-sum,
+  or path-min runtime nodes rather than direct `KeyJoinNode` plans; forcing
+  `--csharp-query-source-mode artifact-prebuilt` enables artifact-backed
+  relation access but does not by itself guarantee a bucket-join trace row
+- generated `csharp-query` cross-target runners accept
+  `--csharp-query-source-mode auto|preload|delimited|artifact|artifact-prebuilt`;
+  non-`auto` runs include `csharp_query_source_mode=<mode>` in the
+  `csharp-query-metrics` row and use a runner-managed artifact directory
+- generated `csharp-query` metrics also include `source_registration_*`
+  counters that identify the actual storage family used for registered
+  relations, for example `binary_artifact` or `delimited_artifact` by arity
+- use `--csharp-query-source-modes auto,artifact-prebuilt,...` to sweep
+  multiple source modes in one generated cross-target run; the output labels
+  those rows as `csharp-query:<mode>` and prints a
+  `csharp_query_best_source_mode` summary
+- use `benchmark_csharp_query_source_mode_sweep.py` when you want a compact
+  cross-workload TSV or Markdown summary of best source mode, auto-vs-best
+  ratio, output agreement, per-mode medians, and source-registration storage
+  families
 - cache reuse remains disabled for these one-shot generated benchmark
   programs, and trace creation is now opt-in rather than always-on
 - the hand-written C# DFS baseline is still cheaper after its lighter

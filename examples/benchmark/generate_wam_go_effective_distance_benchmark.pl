@@ -48,7 +48,14 @@ main :-
 
 generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     benchmark_workload_path(WorkloadPath),
-    load_files(WorkloadPath, [silent(true)]),
+    % NOTE: this file declares :- module(generate_wam_go_effective_distance_benchmark, ...)
+    % which makes load_files default to loading clauses INTO that module rather
+    % than into user. The Rust and Haskell generators don't have a :- module
+    % directive and so don't hit this. Force module(user) here so the workload
+    % helpers (category_ancestor, etc.) and the benchmark facts (article_category,
+    % category_parent, root_category) end up where collect_wam_predicates and
+    % collect_article_categories look for them.
+    user:load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
     parse_variant(VariantAtom, OptimizationOptions),
@@ -59,9 +66,9 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     tmp_file_stream(text, TmpPath, TmpStream),
     write(TmpStream, ScriptCode),
     close(TmpStream),
-    load_files(TmpPath, [silent(true)]),
+    user:load_files(TmpPath, [silent(true)]),
     delete_file(TmpPath),
-    load_files(FactsPath, [silent(true)]),
+    user:load_files(FactsPath, [silent(true)]),
     collect_wam_predicates(user, KernelModeAtom, Predicates),
     collect_article_categories(user, ArticleCategories),
     collect_roots(user, Roots),
@@ -79,7 +86,10 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom) :-
     extract_shared_start_pc(OutputDir,
         "category_ancestor$effective_distance_sum_selected/3",
         WeightPC),
-    write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots),
+    % Resolve dimension_n at codegen time so user:dimension_n/1 reaches
+    % the generated Go code (was previously hardcoded to 5.0 in main.go).
+    wam_go_target:resolve_dimension_n_go(Options, DimN),
+    write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots, DimN),
     format(user_error,
            '[WAM-Go-EffectiveDistance] variant=~w kernels=~w output=~w~n',
            [VariantAtom, KernelModeAtom, OutputDir]).
@@ -97,6 +107,13 @@ parse_kernel_mode(kernels_off, [no_kernels(true)]).
 collect_wam_predicates(Module, kernels_on, [
     Module:dimension_n/1,
     Module:max_depth/1,
+    % category_parent/2 is the leaf fact source. The kernel predicates
+    % below call category_ancestor/4, which in turn calls category_parent/2
+    % — so it must be present in the WAM bytecode in BOTH modes. Without
+    % it the kernel's recursion has nothing to call and every weight
+    % query returns no solutions (article_count=31, tuple_count=0 at the
+    % scale-300 bench).
+    Module:category_parent/2,
     Module:category_ancestor/4,
     Module:'category_ancestor$power_sum_bound'/3,
     Module:'category_ancestor$power_sum_selected'/3,
@@ -130,8 +147,21 @@ extract_shared_start_pc(OutputDir, Label, PC) :-
     read_file_to_string(LibPath, Content, []),
     format(string(Needle), '"~w":', [Label]),
     sub_string(Content, Start, _, _, Needle),
-    After is Start + string_length(Needle),
-    sub_string(Content, After, _, _, Rest0),
+    % string_length/2 is a predicate, not an arithmetic function — using it
+    % directly inside is/2 made SWI fall back to charcode interpretation and
+    % blew up with `"x" must hold one character` on the multi-char Needle.
+    string_length(Needle, NeedleLen),
+    After is Start + NeedleLen,
+    % Take a fixed-length window after the needle. The previous version
+    % used `_` for length, which made sub_string nondeterministically
+    % enumerate substring lengths starting from 0. The FIRST solution
+    % string_digits_prefix accepted was at length 2 — `" 2"` from the
+    % leading space + first digit of `24145` — giving PC=2 instead of
+    % 24145, and turning the bench into a no-op (it called the WAM
+    % starting at PC=2, which is max_depth/1, and got an immediate
+    % unification failure on every seed). 32 characters is plenty to
+    % cover any plausible label PC.
+    sub_string(Content, After, 32, _, Rest0),
     string_trim_left(Rest0, Rest),
     string_digits_prefix(Rest, Digits),
     number_string(PC, Digits).
@@ -159,7 +189,7 @@ take_digits([C|Rest], [C|Digits]) :-
     take_digits(Rest, Digits).
 take_digits(_, []).
 
-write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots) :-
+write_main_go(OutputDir, WeightPC, KernelModeAtom, ArticleCategories, Roots, DimN) :-
     go_article_categories_literal(ArticleCategories, ArticleCategoriesLiteral),
     go_string_slice_literal(Roots, RootsLiteral),
     make_directory_path(OutputDir),
@@ -172,11 +202,13 @@ import (
     "math"
     "os"
     "sort"
+    "strconv"
     "time"
 )
 
 const (
     effectiveDistanceWeightStartPC = ~w
+    benchmarkKernelMode = "~w"
 )
 
 var benchmarkArticleCategories = []articleCategoryPair{
@@ -200,8 +232,12 @@ func newBenchmarkVM(startPC int, args ...Value) *WamState {
     vm := NewWamState(sharedWamCode, sharedWamLabels)
     setupSharedForeignPredicates(vm)
     vm.PC = startPC
+    // A1..An map to integer register indices 0..n-1 (matches go_reg_idx
+    // in wam_go_lowered_emitter.pl). The earlier version of this loop used
+    // string-keyed indexing into vm.Regs, but Regs is a Value slice, not a
+    // map — Go rejected it with "invalid argument: index ... must be integer".
     for i, arg := range args {
-        vm.Regs[fmt.Sprintf("A%%d", i+1)] = arg
+        vm.Regs[i] = arg
     }
     return vm
 }
@@ -247,12 +283,36 @@ func floatValue(v Value) (float64, bool) {
     }
 }
 
+func benchmarkWamAtomValue(name string) Value {
+    // The current WAM text parser emits quoted numeric Prolog atoms such as
+    // ''1827'' as Integer constants. Bridge host-loaded TSV category strings
+    // through the same representation so pure WAM fact lookup sees the same
+    // value shape as compiled category_parent/2 facts. Kernel mode still
+    // expects atom strings because it bypasses those compiled fact constants.
+    if benchmarkKernelMode == "kernels_off" {
+        if n, err := strconv.ParseInt(name, 10, 64); err == nil {
+            return &Integer{Val: n}
+        }
+    }
+    return internAtom(name)
+}
+
 func weightSumForCategoryRoot(category string, root string) (float64, bool) {
+    // The Unbound for the third arg goes into A3 (register slot 2). Its
+    // Idx field MUST match that slot — bindUnbound trails the binding
+    // by Idx and (in older runtime templates) also writes the bound
+    // value to Regs[Idx]. Leaving Idx at the zero default would alias
+    // A1 and silently corrupt the input category atom on the first
+    // unification.
     rows := collectSolutions(
         effectiveDistanceWeightStartPC,
-        &Atom{Name: category},
-        &Atom{Name: root},
-        &Unbound{Name: "weight"},
+        // Use internAtom (defined in atoms.go) so bench-constructed
+        // atoms share pointer identity with the WAM bytecode literals
+        // in lib.go. Without this, every weight query paid a string
+        // compare per SwitchOnConstant case.
+        benchmarkWamAtomValue(category),
+        benchmarkWamAtomValue(root),
+        &Unbound{Name: "weight", Idx: 2},
     )
     if len(rows) == 0 || len(rows[0]) < 3 {
         return 0, false
@@ -288,7 +348,7 @@ func computeResults(root string, articleCats []articleCategoryPair) ([]resultRow
         }
     }
 
-    n := 5.0
+    n := float64(~w)
     invN := -1.0 / n
     rows := make([]resultRow, 0, len(articleWeightSums))
     for article, weightSum := range articleWeightSums {
@@ -337,20 +397,20 @@ func main() {
 
     fmt.Println("article\\troot_category\\teffective_distance")
     for _, row := range rows {
-        fmt.Printf("%%s\\t%%s\\t%%.6f\\n", row.Article, row.Root, row.Distance)
+        fmt.Printf("%s\\t%s\\t%.6f\\n", row.Article, row.Root, row.Distance)
     }
 
     fmt.Fprintf(os.Stderr, "mode=accumulated_go_wam\\n")
     fmt.Fprintf(os.Stderr, "kernel_mode=~w\\n")
-    fmt.Fprintf(os.Stderr, "load_ms=%%d\\n", loadMs)
-    fmt.Fprintf(os.Stderr, "query_ms=%%d\\n", queryMs)
-    fmt.Fprintf(os.Stderr, "aggregation_ms=%%d\\n", aggregationMs)
-    fmt.Fprintf(os.Stderr, "total_ms=%%d\\n", totalMs)
-    fmt.Fprintf(os.Stderr, "seed_count=%%d\\n", seedCount)
-    fmt.Fprintf(os.Stderr, "tuple_count=%%d\\n", tupleCount)
-    fmt.Fprintf(os.Stderr, "article_count=%%d\\n", len(rows))
+    fmt.Fprintf(os.Stderr, "load_ms=%d\\n", loadMs)
+    fmt.Fprintf(os.Stderr, "query_ms=%d\\n", queryMs)
+    fmt.Fprintf(os.Stderr, "aggregation_ms=%d\\n", aggregationMs)
+    fmt.Fprintf(os.Stderr, "total_ms=%d\\n", totalMs)
+    fmt.Fprintf(os.Stderr, "seed_count=%d\\n", seedCount)
+    fmt.Fprintf(os.Stderr, "tuple_count=%d\\n", tupleCount)
+    fmt.Fprintf(os.Stderr, "article_count=%d\\n", len(rows))
 }
-', [WeightPC, ArticleCategoriesLiteral, RootsLiteral, KernelModeAtom]),
+', [WeightPC, KernelModeAtom, ArticleCategoriesLiteral, RootsLiteral, DimN, KernelModeAtom]),
     setup_call_cleanup(
         open(MainPath, write, Stream),
         format(Stream, '~w', [Code]),
@@ -360,7 +420,12 @@ func main() {
 go_article_categories_literal([], '').
 go_article_categories_literal(Pairs, Literal) :-
     maplist(go_article_category_entry, Pairs, Entries),
-    atomic_list_concat(Entries, ",\n", Literal).
+    % Trailing newline+comma after the last entry: Go's gofmt rule for
+    % multi-line composite literals requires a trailing comma. Without it,
+    % `go build` rejects the file with "unexpected newline in composite
+    % literal; possibly missing comma".
+    atomic_list_concat(Entries, ",\n", Joined),
+    atom_concat(Joined, ",", Literal).
 
 go_article_category_entry(Article-Category, Entry) :-
     escape_go_string(Article, EscArticle),
@@ -376,13 +441,21 @@ go_string_literal(String, Literal) :-
     escape_go_string(String, Escaped),
     format(atom(Literal), '"~w"', [Escaped]).
 
+%% replace_all_atoms(+Input, +Search, +Replace, -Output)
+%
+% Replace every occurrence of Search in Input with Replace. Recurses on
+% the *suffix only* so cases where Replace contains Search (e.g.
+% Search='main :-', Replace='generated_main :-') terminate. The previous
+% implementation recursed on the glued result, which re-found Search
+% inside the Replace text and grew Output by Replace's prefix on every
+% iteration until process OOM.
 replace_all_atoms(Input, Search, Replace, Output) :-
     (   sub_atom(Input, Before, _, After, Search)
     ->  sub_atom(Input, 0, Before, _, Prefix),
         sub_atom(Input, _, After, 0, Suffix),
+        replace_all_atoms(Suffix, Search, Replace, NewSuffix),
         atom_concat(Prefix, Replace, Tmp),
-        atom_concat(Tmp, Suffix, Next),
-        replace_all_atoms(Next, Search, Replace, Output)
+        atom_concat(Tmp, NewSuffix, Output)
     ;   Output = Input
     ).
 

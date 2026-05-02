@@ -52,6 +52,8 @@ pub enum Instruction {
     ListLengthLt(String, String, usize),
     /// Fused base clause for category_ancestor/4 using indexed parent existence.
     BaseCategoryAncestor(String, String, String),
+    /// Fused category_ancestor/4 base clause that also binds the hop register.
+    BaseCategoryAncestorBind(String, String, String, String),
     /// Fused benchmark recursive self-call setup for category_ancestor/4.
     RecurseCategoryAncestor(String, String, String, String, String, usize),
     /// Fused benchmark recursive self-call setup with a resolved target PC.

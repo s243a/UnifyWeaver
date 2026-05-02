@@ -479,11 +479,11 @@ Prototype status:
 - `benchmark_scan_materialization.py` can now compare `preload`, `delimited`,
   `artifact`, and `artifact-prebuilt` source modes against the existing
   scan-family workloads, including `bound_scan` and `selective_join` modes for
-  indexed parameter probes. The prebuilt mode keeps artifacts in a stable
-  benchmark directory keyed by the current runtime source so runtime
-  measurements can separate query execution from preprocessing cost without
-  reusing stale artifact formats. The benchmark now resolves source-family
-  choices through runtime-owned `RelationSourceMode` and
+  indexed parameter probes. The prebuilt mode keeps artifacts in a per-run
+  benchmark directory keyed by the current runtime source and source mode, so
+  runtime measurements can separate query execution from preprocessing cost
+  without reusing stale artifact formats or colliding with concurrent runs.
+  The benchmark now resolves source-family choices through runtime-owned `RelationSourceMode` and
   `RelationSourceModePolicy` helpers instead of a benchmark-local string switch,
   which is the current seam for moving source selection out of Python-only
   configuration.
@@ -493,15 +493,24 @@ Prototype status:
   programs use that helper, and pipeline programs can now take
   `UNIFYWEAVER_RELATION_SOURCE_MODE` plus `UNIFYWEAVER_RELATION_ARTIFACT_DIR`
   without re-implementing artifact registration in each generated template.
+- Termux viability is now less speculative for LMDB than before. A local probe
+  using the native `liblmdb` Termux package plus a Rust client confirmed a real
+  open/write/read round-trip in this environment. The current prototype lives
+  at `examples/lmdb_relation_artifact/` and builds a small exact two-column
+  LMDB artifact with a sidecar `manifest.json`. That does not settle the final
+  cross-target artifact format, but it does confirm that LMDB-backed exact
+  artifact experiments are feasible here without deferring all work to desktop.
 
 ### N-ary delimited artifact direction
 
-The current C# artifact implementation is deliberately binary. Wider
-delimited relations can now use the same runtime-configured source registration
-path, but `artifact` and `artifact-prebuilt` modes fall back to preloaded rows
-for arities other than 2. That is the correct interim behavior: it preserves
-answers and source-mode wiring without pretending the `.uwbr` sidecars support
-general row shapes.
+The original C# artifact implementation was deliberately binary. Wider
+delimited relations now use the same runtime-configured source registration
+path and can use the delimited artifact provider in `artifact` and
+`artifact-prebuilt` modes. Binary relations still use the older `.uwbr`
+provider, while wider relations use the delimited artifact path. Runtime source
+registration reporting distinguishes these paths as `binary_artifact`,
+`delimited_artifact`, `delimited`, or `preloaded`, which keeps benchmark output
+honest about the storage family used for each arity.
 
 A general delimited artifact should be a new format revision, not an implicit
 reinterpretation of the binary files. The row file should keep the existing

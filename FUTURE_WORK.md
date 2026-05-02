@@ -71,12 +71,41 @@ See [docs/RUST_TARGET.md](docs/RUST_TARGET.md) for details.
 
 ## Other Target Ideas
 
-### WebAssembly (WASM)
+### WebAssembly (WASM / WAT) ✅ COMPLETE
 
-Compile predicates to WASM for browser/edge execution:
+UnifyWeaver has four complementary WebAssembly pipelines:
+
+**1. Direct LLVM-IR → WASM** (`src/unifyweaver/targets/llvm_target.pl`)
+- `compile_wasm_module/3` — predicates → WASM-compatible LLVM IR
+- `generate_js_bindings/2` / `generate_ts_bindings/2` — JS/TS host bindings
+- `compile_wasm_string_module/3` + `generate_wasm_string_runtime/1` — string support with alloc/dealloc/memcpy
+- `build_wasm_module/3` — build pipeline commands
+- Examples: `examples/wasm/` (working `.wasm`, `build.sh`, `test.js`)
+
+**2. Direct WAT emission** (`src/unifyweaver/targets/wat_target.pl`)
+- Structured control flow (`if/else/end`) instead of flat basic blocks
+- String tables, multi-page memory, module imports/exports
+- WASI I/O, SIMD helpers, bulk memory, indirect call tables
+- Exception handling (try_table/throw/catch) and GC reference types (struct, array)
+- Falls back to LLVM IR for unsupported patterns
+
+**3. WAM-WAT** — `target(wam_wat)` (`src/unifyweaver/targets/wam_wat_target.pl`)
+- Predicates compile to WAM bytecode, then to a self-contained `.wat` module that interprets the bytecode at runtime
+- 73-instruction set with 8-pass peephole optimizer (arg/3 fast paths, tail-call collapses, first-arg indexing)
+- V8-JIT-friendly `br_table` dispatch
+- See `docs/targets/wam-wat.md` and `docs/design/WAM_WAT_OPTIMIZATION_HISTORY.md`
+- Benchmarks: `examples/wam_term_builtins_bench/bench_suite.wasm`
+
+**4. WAM-LLVM → WASM** (`src/unifyweaver/targets/wam_llvm_target.pl`)
+- WAM bytecode lowered through LLVM IR to WASM
+- 40+ test files under `tests/core/test_wam_llvm_*.pl`
+- See `docs/design/WAM_LLVM_TRANSPILATION_SPECIFICATION.md`
+
+**Use Cases:**
 - JSON processing in browsers
 - Edge computing with Cloudflare Workers
 - Serverless functions
+- Embedding Prolog-derived logic in sandboxed environments
 
 ### Zig
 
@@ -374,7 +403,7 @@ Explore integration with machine learning:
 
 
 **Medium Term (6-12 Months):**
-6. WebAssembly target
+6. ~~WebAssembly target~~ ✅ COMPLETE (see `llvm_target.pl`)
 7. Complete ETL framework
 8. Performance optimization suite
 

@@ -1,9 +1,16 @@
 # Elixir WAM Tier-2 wiring proposal
 
-**Status:** Draft for design review (pre-implementation).
-**Target audience:** Perplexity review + future implementer.
+**Status:** Shipped in PR #1624. This document is preserved as the historical design rationale; for current state see the implementation in `src/unifyweaver/targets/wam_elixir_lowered_emitter.pl` (`render_compiled_module/8`, `par_wrap_segment/4` integration) and the follow-up `WAM_ELIXIR_TIER2_FINDALL.md` proposal which builds on this wiring.
+**Target audience:** historical reference for designers of related target work.
 **Depends on:** PR #1586 (infrastructure), PR #1607 (async_stream probe),
 PR #1608 (`par_wrap_segment/4` emitter).
+**Shipped in:** PR #1624 (wiring activation), follow-up #1643 PR description for review-feedback fixes.
+
+**Deviations from the proposal as written, documented in the activation commit:**
+
+- **§4.2 / §4.3:** the `clause_main_sequential/1` alias was not emitted. The super-wrapper's gate-miss `cond do` arms call `*_impl` directly; the alias would be unreachable code.
+- **§9 Q5:** Tier-2 activation marker is `@tier2_eligible true` module attribute rather than a `@moduledoc` tag. The attribute is more programmatically introspectable.
+- **§4 Suffix threading:** real WAM-compiled predicates produce `clause_<PredCamel><Arity>` as the first segment name, not `clause_main`. The `clause_start → clause_main` rename only fires for hand-built fixtures whose first segment is literally labelled `"clause_start"`. The wiring tests assert structural shape (`cond do` super-wrapper + `_impl` body present) rather than hardcoded names.
 
 ## 1. Context
 

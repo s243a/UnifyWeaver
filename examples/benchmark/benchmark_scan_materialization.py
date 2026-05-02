@@ -10,6 +10,7 @@ relation sources inside a temporary C# project:
 - `bound_scan`: parameterized `RelationScanNode` over one bound column
 - `pattern`: `PatternScanNode` with a bound category
 - `join`: `KeyJoinNode` over article/category and category-parent scans
+- `nary_join`: `KeyJoinNode` over synthetic width-3 delimited relations
 - `selective_join`: parameter seed joined against category-parent
 - `negation`: unary negation over scanned support relations
 - `aggregate`: grouped count aggregate over a scanned relation
@@ -96,6 +97,12 @@ class Program
                 .Select(s => $"{s.NodeType}:{s.Strategy}={s.Count}"));
     }
 
+    static bool IsArtifactBucketStrategy(QueryStrategyTrace strategy)
+    {
+        return strategy.Strategy.StartsWith("KeyJoinIndexedRelationProviderBucket", StringComparison.Ordinal) &&
+               !string.Equals(strategy.Strategy, "KeyJoinIndexedRelationProviderBuckets", StringComparison.Ordinal);
+    }
+
     static string SummarizePhases(QueryExecutionTrace trace, string prefix)
     {
         return string.Join(
@@ -107,11 +114,29 @@ class Program
                 .Select(group => $"{group.Key}:{group.Sum(p => p.Elapsed.TotalMilliseconds).ToString("F3", CultureInfo.InvariantCulture)}"));
     }
 
+    static string SummarizeSourceRegistrations(ConfiguredDelimitedRelationProvider configuredProvider)
+    {
+        return string.Join(
+            "|",
+            configuredProvider.SnapshotRegistrations()
+                .GroupBy(registration => new
+                {
+                    registration.StorageKind,
+                    registration.SourceMode,
+                    registration.Arity
+                })
+                .OrderBy(group => group.Key.StorageKind, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.SourceMode.ToString(), StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Arity)
+                .Select(group =>
+                    $"{group.Key.StorageKind}:{RelationSourceModePolicy.ToConfigValue(group.Key.SourceMode)}:arity{group.Key.Arity}={group.Count()}"));
+    }
+
     static int Main(string[] args)
     {
         if (args.Length < 3)
         {
-            Console.Error.WriteLine("Usage: program <scan|pattern|join|negation|aggregate> <category_parent.tsv> <article_category.tsv>");
+            Console.Error.WriteLine("Usage: program <scan|pattern|join|nary_join|negation|aggregate> <category_parent.tsv> <article_category.tsv>");
             return 1;
         }
 
@@ -137,6 +162,8 @@ class Program
         var edgeId = new PredicateId("category_parent", 2);
         var articleId = new PredicateId("article_category", 2);
         var blockedId = new PredicateId("blocked_article_category", 2);
+        var naryLeftId = new PredicateId("nary_left", 3);
+        var naryRightId = new PredicateId("nary_right", 3);
 
         configuredProvider.RegisterBinaryRelation(edgeId, new DelimitedRelationSource(edgePath, '	', 1, 2), $"{edgeId.Name}_{edgeId.Arity}");
         configuredProvider.RegisterBinaryRelation(articleId, new DelimitedRelationSource(articlePath, '	', 1, 2), $"{articleId.Name}_{articleId.Arity}");
@@ -158,9 +185,32 @@ class Program
             }
         }
 
+        var naryLeftPath = Path.Combine(Path.GetTempPath(), $"uw-scan-nary-left-{Guid.NewGuid():N}.tsv");
+        var naryRightPath = Path.Combine(Path.GetTempPath(), $"uw-scan-nary-right-{Guid.NewGuid():N}.tsv");
+        using (var writer = new StreamWriter(naryLeftPath, false))
+        {
+            writer.WriteLine("key	item	rank");
+            writer.WriteLine("Keyboard	left-keyboard	1");
+            writer.WriteLine("Laptop	left-laptop	2");
+            writer.WriteLine("Mouse	left-mouse	3");
+        }
+
+        using (var writer = new StreamWriter(naryRightPath, false))
+        {
+            writer.WriteLine("key	item	score");
+            writer.WriteLine("Keyboard	right-keyboard	10");
+            writer.WriteLine("Laptop	right-laptop	20");
+            writer.WriteLine("Mouse	right-mouse	30");
+        }
+
         try
         {
             configuredProvider.RegisterBinaryRelation(blockedId, new DelimitedRelationSource(blockedPath, '	', 1, 2), $"{blockedId.Name}_{blockedId.Arity}");
+            if (mode == "nary_join")
+            {
+                configuredProvider.RegisterDelimitedRelation(naryLeftId, new DelimitedRelationSource(naryLeftPath, '	', 1, 3), $"{naryLeftId.Name}_{naryLeftId.Arity}");
+                configuredProvider.RegisterDelimitedRelation(naryRightId, new DelimitedRelationSource(naryRightPath, '	', 1, 3), $"{naryRightId.Name}_{naryRightId.Arity}");
+            }
 
             var scanOutId = new PredicateId("scan_rows", 2);
             var patternOutId = new PredicateId("pattern_rows", 2);
@@ -190,6 +240,16 @@ class Program
                         2,
                         2,
                         4)),
+                "nary_join" => new QueryPlan(
+                    joinOutId,
+                    new KeyJoinNode(
+                        new RelationScanNode(naryLeftId),
+                        new RelationScanNode(naryRightId),
+                        new int[] { 0 },
+                        new int[] { 0 },
+                        3,
+                        3,
+                        6)),
                 "selective_join" => new QueryPlan(
                     joinOutId,
                     new KeyJoinNode(
@@ -238,6 +298,7 @@ class Program
             Console.Error.WriteLine($"pattern_category={patternCategory}");
             Console.Error.WriteLine($"row_count={rows.Count}");
             Console.Error.WriteLine($"elapsed_ms={stopwatch.ElapsedMilliseconds}");
+            Console.Error.WriteLine($"source_registrations={SummarizeSourceRegistrations(configuredProvider)}");
 
             if (traceEnabled && trace is not null)
             {
@@ -257,6 +318,7 @@ class Program
                                     strategy.Strategy.StartsWith("ScanRelationRetention", StringComparison.Ordinal) ||
                                     strategy.Strategy.StartsWith("ScanMaterializationPlan", StringComparison.Ordinal)));
 
+                Console.Error.WriteLine("bucket_strategies=" + SummarizeStrategies(trace, IsArtifactBucketStrategy));
                 Console.Error.WriteLine("scan_phase_summary=" + SummarizePhases(trace, "scan_"));
             }
 
@@ -265,6 +327,8 @@ class Program
         finally
         {
             try { File.Delete(blockedPath); } catch { }
+            try { File.Delete(naryLeftPath); } catch { }
+            try { File.Delete(naryRightPath); } catch { }
             if (sourceMode != RelationSourceMode.ArtifactPrebuilt)
             {
                 if (!string.IsNullOrWhiteSpace(configuredProvider.ArtifactDirectory))
@@ -293,7 +357,25 @@ class BenchResult:
         return statistics.median(self.times)
 
 
+@dataclass
+class SourceModeSummary:
+    scale: str
+    mode: str
+    best_source_mode: str
+    chosen_source_mode: str
+    policy_status: str
+    overlap_status: str
+    auto_median: str
+    auto_vs_best: str
+    median_summary: str
+    spread_summary: str
+    row_summary: str
+    source_registration_summary: str
+    bucket_strategy_summary: str
+
+
 RUNTIME_CACHE_VERSION = hashlib.sha256(QRY_RUNTIME.read_bytes()).hexdigest()[:12]
+CALIBRATION_NEAR_RATIO = 1.10
 
 
 def parse_args() -> argparse.Namespace:
@@ -303,6 +385,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-modes", default="preload,artifact")
     parser.add_argument("--strategies", default="auto,streaming,replayable,external")
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--format",
+        choices=[
+            "detail-tsv",
+            "report-tsv",
+            "markdown",
+            "calibration-tsv",
+            "calibration-markdown",
+            "actionable-tsv",
+            "actionable-markdown",
+        ],
+        default="detail-tsv")
     parser.add_argument("--keep-temp", action="store_true")
     return parser.parse_args()
 
@@ -352,8 +446,242 @@ def select_planner_summary(metrics: dict[str, str]) -> str:
     return metrics.get("scan_planner_strategies", "") or operator
 
 
+def format_time_spread(result: BenchResult) -> str:
+    return f"{min(result.times):.3f}-{max(result.times):.3f}"
+
+
+def classify_policy_status(
+    chosen_source_mode: str,
+    best_source_mode: str,
+    auto: BenchResult | None,
+    best: BenchResult | None,
+) -> str:
+    if not chosen_source_mode or not best_source_mode or auto is None or best is None:
+        return ""
+    ratio = auto.median / best.median if best.median else float("inf")
+    if chosen_source_mode == best_source_mode:
+        if ratio <= CALIBRATION_NEAR_RATIO:
+            return "match"
+        return "match-slow"
+
+    if ratio <= CALIBRATION_NEAR_RATIO:
+        return "near"
+    return "mismatch"
+
+
+def classify_overlap_status(auto: BenchResult | None, best: BenchResult | None) -> str:
+    if auto is None or best is None:
+        return ""
+    if len(auto.times) < 2 or len(best.times) < 2:
+        return "single-sample"
+    auto_min = min(auto.times)
+    auto_max = max(auto.times)
+    best_min = min(best.times)
+    best_max = max(best.times)
+    if max(auto_min, best_min) <= min(auto_max, best_max):
+        return "overlap"
+    return "separated"
+
+
+def is_actionable_summary(summary: SourceModeSummary) -> bool:
+    return (
+        summary.overlap_status == "separated" and
+        summary.policy_status in {"mismatch", "match-slow"}
+    )
+
+
+def summarize_by_source_mode(
+    results: list[BenchResult],
+    scales: list[str],
+    modes: list[str],
+) -> list[SourceModeSummary]:
+    by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
+    for result in results:
+        if result.strategy == "auto":
+            by_source_mode[(result.scale, result.mode, result.source_mode)] = result
+
+    summaries: list[SourceModeSummary] = []
+    for scale in scales:
+        for mode in modes:
+            source_results = {
+                result_source_mode: result
+                for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                if result_scale == scale and result_mode == mode
+            }
+            if not source_results:
+                continue
+
+            concrete = [
+                result
+                for result_source_mode, result in source_results.items()
+                if result_source_mode != "auto"
+            ]
+            best = min(concrete, key=lambda item: item.median) if concrete else None
+            auto = source_results.get("auto")
+            chosen_source_mode = auto.resolved_source_mode if auto is not None else ""
+            best_source_mode = best.source_mode if best is not None else ""
+            policy_status = classify_policy_status(chosen_source_mode, best_source_mode, auto, best)
+            overlap_status = classify_overlap_status(auto, best)
+            auto_median = f"{auto.median:.3f}" if auto is not None else ""
+            auto_vs_best = ""
+            if auto is not None and best is not None:
+                ratio = auto.median / best.median if best.median else float("inf")
+                auto_vs_best = f"{ratio:.2f}x"
+
+            median_summary = ",".join(
+                f"{source_mode}:{result.median:.3f}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            spread_summary = ",".join(
+                f"{source_mode}:{format_time_spread(result)}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            row_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('row_count', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            registration_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('source_registrations', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            bucket_strategy_summary = ",".join(
+                f"{source_mode}:{parse_metrics(result.stderr).get('bucket_strategies', '')}"
+                for source_mode, result in sorted(source_results.items())
+            )
+            summaries.append(
+                SourceModeSummary(
+                    scale=scale,
+                    mode=mode,
+                    best_source_mode=best_source_mode,
+                    chosen_source_mode=chosen_source_mode,
+                    policy_status=policy_status,
+                    overlap_status=overlap_status,
+                    auto_median=auto_median,
+                    auto_vs_best=auto_vs_best,
+                    median_summary=median_summary,
+                    spread_summary=spread_summary,
+                    row_summary=row_summary,
+                    source_registration_summary=registration_summary,
+                    bucket_strategy_summary=bucket_strategy_summary,
+                )
+            )
+
+    return summaries
+
+
+def print_detail_tsv(
+    results: list[BenchResult],
+    scales: list[str],
+    modes: list[str],
+    source_modes: list[str],
+) -> None:
+    print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	source_registrations	planner	bucket_strategies	phases")
+    grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
+    by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
+    for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
+        grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
+        if result.strategy == "auto":
+            by_source_mode[(result.scale, result.mode, result.source_mode)] = result
+        metrics = parse_metrics(result.stderr)
+        planner = select_planner_summary(metrics)
+        bucket_strategies = metrics.get("bucket_strategies", "")
+        phases = metrics.get("scan_phase_summary", "")
+        rows = metrics.get("row_count", "")
+        source_registrations = metrics.get("source_registrations", "")
+        print(
+            f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
+            f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{source_registrations}	{planner}	{bucket_strategies}	{phases}"
+        )
+
+    for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
+        by_strategy = grouped[(scale, mode, source_mode)]
+        auto = by_strategy.get("auto")
+        best = min(by_strategy.values(), key=lambda item: item.median)
+        if auto is not None:
+            print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
+            ratio = auto.median / best.median if best.median else float('inf')
+            print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
+            auto_metrics = parse_metrics(auto.stderr)
+            auto_planner = select_planner_summary(auto_metrics)
+            print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
+
+    if "auto" in source_modes:
+        for scale in scales:
+            for mode in modes:
+                auto = by_source_mode.get((scale, mode, "auto"))
+                if auto is None:
+                    continue
+
+                concrete = [
+                    result
+                    for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
+                    if result_scale == scale and result_mode == mode and result_source_mode != "auto"
+                ]
+                if not concrete:
+                    continue
+
+                best = min(concrete, key=lambda item: item.median)
+                ratio = auto.median / best.median if best.median else float("inf")
+                print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
+                print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
+                print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
+
+
+def print_report_tsv(summaries: list[SourceModeSummary]) -> None:
+    print("scale	mode	best_source_mode	chosen_source_mode	auto_vs_best	median_s_by_source_mode	rows_by_source_mode	source_registrations_by_source_mode	bucket_strategies_by_source_mode")
+    for summary in summaries:
+        print(
+            f"{summary.scale}	{summary.mode}	{summary.best_source_mode}	{summary.chosen_source_mode}	"
+            f"{summary.auto_vs_best}	{summary.median_summary}	{summary.row_summary}	"
+            f"{summary.source_registration_summary}	{summary.bucket_strategy_summary}"
+        )
+
+
+def print_markdown(summaries: list[SourceModeSummary]) -> None:
+    print("| Scale | Mode | Best source mode | Chosen source mode | Auto vs best | Median seconds by source mode | Rows by source mode | Source registrations by source mode | Bucket strategies by source mode |")
+    print("| --- | --- | --- | --- | ---: | --- | --- | --- | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.scale} | {summary.mode} | {summary.best_source_mode} | "
+            f"{summary.chosen_source_mode} | {summary.auto_vs_best} | `{summary.median_summary}` | "
+            f"`{summary.row_summary}` | `{summary.source_registration_summary}` | "
+            f"`{summary.bucket_strategy_summary}` |"
+        )
+
+
+def print_calibration_tsv(summaries: list[SourceModeSummary]) -> None:
+    print("scale	mode	policy_status	overlap_status	chosen_source_mode	best_source_mode	auto_median_s	auto_vs_best	median_s_by_source_mode	spread_s_by_source_mode	source_registrations_by_source_mode")
+    for summary in summaries:
+        print(
+            f"{summary.scale}	{summary.mode}	{summary.policy_status}	{summary.overlap_status}	"
+            f"{summary.chosen_source_mode}	{summary.best_source_mode}	{summary.auto_median}	{summary.auto_vs_best}	"
+            f"{summary.median_summary}	{summary.spread_summary}	{summary.source_registration_summary}"
+        )
+
+
+def print_calibration_markdown(summaries: list[SourceModeSummary]) -> None:
+    print("| Scale | Mode | Policy | Overlap | Chosen source mode | Best source mode | Auto median seconds | Auto vs best | Median seconds by source mode | Spread seconds by source mode | Source registrations by source mode |")
+    print("| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |")
+    for summary in summaries:
+        print(
+            f"| {summary.scale} | {summary.mode} | {summary.policy_status} | {summary.overlap_status} | "
+            f"{summary.chosen_source_mode} | {summary.best_source_mode} | {summary.auto_median} | {summary.auto_vs_best} | "
+            f"`{summary.median_summary}` | `{summary.spread_summary}` | "
+            f"`{summary.source_registration_summary}` |"
+        )
+
+
+def print_actionable_tsv(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_tsv([summary for summary in summaries if is_actionable_summary(summary)])
+
+
+def print_actionable_markdown(summaries: list[SourceModeSummary]) -> None:
+    print_calibration_markdown([summary for summary in summaries if is_actionable_summary(summary)])
+
+
 def benchmark_mode(
     command: list[str],
+    artifact_root: Path,
     scale: str,
     mode: str,
     source_mode: str,
@@ -368,7 +696,7 @@ def benchmark_mode(
     env["UNIFYWEAVER_SCAN_RETENTION_STRATEGY"] = strategy
     env["UNIFYWEAVER_SCAN_SOURCE_MODE"] = source_mode
     if source_mode in {"artifact-prebuilt", "auto"}:
-        artifact_dir = Path(tempfile.gettempdir()) / f"uw-scan-prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / scale
+        artifact_dir = artifact_root / f"prebuilt-artifacts-{RUNTIME_CACHE_VERSION}" / source_mode / scale
         artifact_dir.mkdir(parents=True, exist_ok=True)
         env["UNIFYWEAVER_SCAN_ARTIFACT_DIR"] = str(artifact_dir)
 
@@ -418,56 +746,24 @@ def main() -> int:
             for mode in modes:
                 for source_mode in source_modes:
                     for strategy in strategies:
-                        results.append(benchmark_mode(command, scale, mode, source_mode, strategy, args.repetitions))
+                        results.append(benchmark_mode(command, temp_root, scale, mode, source_mode, strategy, args.repetitions))
 
-        print("scale	mode	source_mode	resolved_source_mode	strategy	median_s	min_s	max_s	rows	planner	phases")
-        grouped: dict[tuple[str, str, str], dict[str, BenchResult]] = {}
-        by_source_mode: dict[tuple[str, str, str], BenchResult] = {}
-        for result in sorted(results, key=lambda item: (scale_sort_key(item.scale), item.mode, item.source_mode, item.strategy)):
-            grouped.setdefault((result.scale, result.mode, result.source_mode), {})[result.strategy] = result
-            if result.strategy == "auto":
-                by_source_mode[(result.scale, result.mode, result.source_mode)] = result
-            metrics = parse_metrics(result.stderr)
-            planner = select_planner_summary(metrics)
-            phases = metrics.get("scan_phase_summary", "")
-            rows = metrics.get("row_count", "")
-            print(
-                f"{result.scale}	{result.mode}	{result.source_mode}	{result.resolved_source_mode}	{result.strategy}	{result.median:.3f}	"
-                f"{min(result.times):.3f}	{max(result.times):.3f}	{rows}	{planner}	{phases}"
-            )
-
-        for scale, mode, source_mode in sorted(grouped.keys(), key=lambda item: (scale_sort_key(item[0]), item[1], item[2])):
-            by_strategy = grouped[(scale, mode, source_mode)]
-            auto = by_strategy.get("auto")
-            best = min(by_strategy.values(), key=lambda item: item.median)
-            if auto is not None:
-                print(f"{scale}	{mode}	{source_mode}	best_strategy	{best.strategy}")
-                ratio = auto.median / best.median if best.median else float('inf')
-                print(f"{scale}	{mode}	{source_mode}	auto_vs_best	{ratio:.2f}x")
-                auto_metrics = parse_metrics(auto.stderr)
-                auto_planner = select_planner_summary(auto_metrics)
-                print(f"{scale}	{mode}	{source_mode}	auto_planner	{auto_planner}")
-
-        if "auto" in source_modes:
-            for scale in scales:
-                for mode in modes:
-                    auto = by_source_mode.get((scale, mode, "auto"))
-                    if auto is None:
-                        continue
-
-                    concrete = [
-                        result
-                        for (result_scale, result_mode, result_source_mode), result in by_source_mode.items()
-                        if result_scale == scale and result_mode == mode and result_source_mode != "auto"
-                    ]
-                    if not concrete:
-                        continue
-
-                    best = min(concrete, key=lambda item: item.median)
-                    ratio = auto.median / best.median if best.median else float("inf")
-                    print(f"{scale}	{mode}	auto	best_source_mode	{best.source_mode}")
-                    print(f"{scale}	{mode}	auto	chosen_source_mode	{auto.resolved_source_mode}")
-                    print(f"{scale}	{mode}	auto	auto_vs_best_source_mode	{ratio:.2f}x")
+        if args.format == "detail-tsv":
+            print_detail_tsv(results, scales, modes, source_modes)
+        else:
+            summaries = summarize_by_source_mode(results, scales, modes)
+            if args.format == "calibration-tsv":
+                print_calibration_tsv(summaries)
+            elif args.format == "calibration-markdown":
+                print_calibration_markdown(summaries)
+            elif args.format == "actionable-tsv":
+                print_actionable_tsv(summaries)
+            elif args.format == "actionable-markdown":
+                print_actionable_markdown(summaries)
+            elif args.format == "markdown":
+                print_markdown(summaries)
+            else:
+                print_report_tsv(summaries)
 
         if args.keep_temp:
             print(f"kept temp build directory: {temp_root}", file=sys.stderr)

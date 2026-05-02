@@ -23,6 +23,8 @@
 :- dynamic user:wam_use_list/1.
 :- dynamic user:wam_make_struct/1.
 :- dynamic user:wam_make_list/1.
+:- dynamic user:wam_double_struct_match/1.
+:- dynamic user:wam_double_list_match/1.
 :- dynamic user:wam_build_backtrack/1.
 :- dynamic user:wam_env_build_backtrack/1.
 :- dynamic user:wam_list_build_backtrack/1.
@@ -34,6 +36,9 @@
 :- dynamic user:wam_soft_cut_outer_ok/1.
 :- dynamic user:wam_cut_helper/1.
 :- dynamic user:wam_hard_cut_outer_ok/1.
+
+has(Code, Substr) :-
+    once(sub_string(Code, _, _, _, Substr)).
 
 user:wam_fact(a).
 user:wam_foreign_pair_query(Y) :- user:wam_foreign_pair(a, Y).
@@ -56,6 +61,8 @@ user:wam_use_struct(X) :- user:wam_struct_fact(X).
 user:wam_use_list(X) :- user:wam_list_fact(X).
 user:wam_make_struct(X) :- X = f(a).
 user:wam_make_list(X) :- X = [a,b].
+user:wam_double_struct_match(X) :- user:wam_struct_fact(X), user:wam_struct_fact(X).
+user:wam_double_list_match(X) :- user:wam_list_fact(X), user:wam_list_fact(X).
 user:wam_build_backtrack(X) :- (X = f(a), fail ; X = f(b)).
 user:wam_env_build_backtrack(X) :- (Y = f(a), fail ; Y = f(b)), X = Y.
 user:wam_list_build_backtrack(X) :- (X = [a,b], fail ; X = [a,c]).
@@ -97,6 +104,8 @@ run_smoke :-
           user:wam_use_list/1,
           user:wam_make_struct/1,
           user:wam_make_list/1,
+          user:wam_double_struct_match/1,
+          user:wam_double_list_match/1,
           user:wam_build_backtrack/1,
           user:wam_env_build_backtrack/1,
           user:wam_list_build_backtrack/1,
@@ -119,6 +128,11 @@ run_smoke :-
           ])
         ],
         TmpDir),
+    assert_lowered_read_unify_prefix_emitted(TmpDir),
+    assert_lowered_env_prefix_emitted(TmpDir),
+    assert_lowered_execute_emitted(TmpDir),
+    assert_lowered_call_emitted(TmpDir),
+    assert_lowered_cut_builtin_emitted(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -146,6 +160,10 @@ run_smoke :-
     verify_output(TmpDir, 'wam_use_struct/1', 'f(b)', "false"),
     verify_output(TmpDir, 'wam_use_list/1', '[a,b]', "true"),
     verify_output(TmpDir, 'wam_use_list/1', '[a,c]', "false"),
+    verify_output(TmpDir, 'wam_double_struct_match/1', 'f(a)', "true"),
+    verify_output(TmpDir, 'wam_double_struct_match/1', 'f(b)', "false"),
+    verify_output(TmpDir, 'wam_double_list_match/1', '[a,b]', "true"),
+    verify_output(TmpDir, 'wam_double_list_match/1', '[a,c]', "false"),
     % Write-mode smoke path. We only assert the generated program runs and
     % succeeds for the canonical constructed term case in this environment.
     verify_output(TmpDir, 'wam_make_struct/1', 'f(a)', "true"),
@@ -169,6 +187,51 @@ run_smoke :-
     verify_output(TmpDir, 'wam_hard_cut_outer_ok/1', b, "true"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
+
+assert_lowered_read_unify_prefix_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-struct-fact-1"),
+    has(CoreCode, "defn lowered-wam-list-fact-1"),
+    has(CoreCode, "runtime/enter-unify-mode"),
+    has(CoreCode, "runtime/pop-unify-item"),
+    has(CoreCode, "runtime/unify-values").
+
+assert_lowered_env_prefix_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-env1-1"),
+    has(CoreCode, "update :env-stack conj {}"),
+    has(CoreCode, "assoc :cut-bar"),
+    has(CoreCode, "update :env-stack #(if (seq %) (pop %) %)"),
+    has(CoreCode, "runtime/unify-values"),
+    has(CoreCode, "runtime/succeed-state").
+
+assert_lowered_execute_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-execute-caller-1"),
+    has(CoreCode, "if-let [target-pc"),
+    has(CoreCode, "(get (:labels"),
+    has(CoreCode, "\"wam_fact/1\""),
+    has(CoreCode, ":pc target-pc").
+
+assert_lowered_call_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-call-caller-1"),
+    has(CoreCode, "if-let [target-pc"),
+    has(CoreCode, "(get (:labels"),
+    has(CoreCode, "\"wam_fact/1\""),
+    has(CoreCode, "update :stack conj (inc (:pc"),
+    has(CoreCode, ":pc target-pc").
+
+assert_lowered_cut_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-cut-helper-1"),
+    has(CoreCode, "update :choice-points"),
+    has(CoreCode, "take (:cut-bar").
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),

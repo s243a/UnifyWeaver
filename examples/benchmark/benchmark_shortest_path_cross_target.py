@@ -19,10 +19,19 @@ from benchmark_common import (
     build_csharp_package,
     build_go_binary,
     build_rust_binary,
+    add_csharp_query_source_mode_arg,
+    append_csharp_query_source_mode_metric,
+    csharp_query_env,
+    csharp_query_results,
+    csharp_query_source_modes_from_args,
+    csharp_query_target_label,
     digest_normalized_output,
     find_result,
+    find_csharp_query_result,
     group_results_by_scale,
     normalize_sorted_lines,
+    print_bucket_strategy_metrics,
+    print_csharp_query_source_mode_summary,
     print_match_status,
     print_pair_match_status,
     print_phase_metrics,
@@ -64,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--keep-temp", action="store_true")
+    add_csharp_query_source_mode_arg(parser)
     return parser.parse_args()
 
 
@@ -123,7 +133,15 @@ def print_head_to_head(scale: str, left: RunResult | None, right: RunResult | No
         print(f"{scale}\t{label}_speedup\t{slower.median / faster.median:.2f}x")
 
 
-def benchmark_target(command: list[str], scale: str, repetitions: int, target: str) -> RunResult:
+def benchmark_target(
+    command: list[str],
+    scale: str,
+    repetitions: int,
+    target: str,
+    csharp_query_source_mode: str = "auto",
+    artifact_dir: Path | None = None,
+    result_target: str | None = None,
+) -> RunResult:
     times: list[float] = []
     stdout = ""
     stderr = ""
@@ -135,14 +153,17 @@ def benchmark_target(command: list[str], scale: str, repetitions: int, target: s
             scale_dir = require_file(BENCH_DIR / scale / "category_parent.tsv").parent
             edge_path = scale_dir / "category_parent.tsv"
             article_path = scale_dir / "article_category.tsv"
-            result = run_command(command + [str(edge_path), str(article_path)])
+            env = csharp_query_env(csharp_query_source_mode, artifact_dir) if target == "csharp-query" else None
+            result = run_command(command + [str(edge_path), str(article_path)], env=env)
         times.append(time.perf_counter() - started)
         stdout = result.stdout
         stderr = result.stderr
+        if target == "csharp-query":
+            stderr = append_csharp_query_source_mode_metric(stderr, csharp_query_source_mode)
 
     normalized = normalize_output(stdout)
     digest, row_count = digest_normalized_output(normalized)
-    return RunResult(target, scale, times, digest, row_count, stderr)
+    return RunResult(result_target or target, scale, times, digest, row_count, stderr)
 
 
 def print_summary(results: list[RunResult]) -> None:
@@ -150,7 +171,7 @@ def print_summary(results: list[RunResult]) -> None:
     for scale, entries in group_results_by_scale(results):
         print_result_table(entries, scale)
 
-        qe = find_result(entries, "csharp-query")
+        qe = find_csharp_query_result(entries)
         csharp_dfs = find_result(entries, "csharp-dfs")
         rust_dfs = find_result(entries, "rust-dfs")
         go_dfs = find_result(entries, "go-dfs")
@@ -165,13 +186,23 @@ def print_summary(results: list[RunResult]) -> None:
         print_speedup(scale, "speedup_vs_rust_dfs", rust_dfs, qe)
         print_speedup(scale, "speedup_vs_go_dfs", go_dfs, qe)
         print_head_to_head(scale, qe, prolog_min, "query_vs_prolog_min")
-        print_phase_metrics(scale, "csharp-query-metrics", qe)
+        for csharp_entry in csharp_query_results(entries):
+            metric_label = f"{csharp_entry.target}-metrics" if csharp_entry.target != "csharp-query" else "csharp-query-metrics"
+            bucket_label = (
+                f"{csharp_entry.target}-bucket-strategies"
+                if csharp_entry.target != "csharp-query"
+                else "csharp-query-bucket-strategies"
+            )
+            print_phase_metrics(scale, metric_label, csharp_entry)
+            print_bucket_strategy_metrics(scale, bucket_label, csharp_entry)
+        print_csharp_query_source_mode_summary(scale, entries)
         print_phase_metrics(scale, "prolog-min-metrics", prolog_min)
 
 
 def main() -> int:
     args = parse_args()
     scales = [part.strip() for part in args.scales.split(",") if part.strip()]
+    csharp_query_source_modes = csharp_query_source_modes_from_args(args)
     targets = available_targets([part.strip() for part in args.targets.split(",") if part.strip()])
     if not targets:
         print("no benchmark targets available", file=sys.stderr)
@@ -205,7 +236,29 @@ def main() -> int:
                     command = build_prolog_min(temp_root, scale)
                 else:
                     command = commands[target]
-                results.append(benchmark_target(command, scale, args.repetitions, target))
+                if target == "csharp-query":
+                    for source_mode in csharp_query_source_modes:
+                        artifact_dir = temp_root / "artifacts" / target / source_mode / scale
+                        results.append(
+                            benchmark_target(
+                                command,
+                                scale,
+                                args.repetitions,
+                                target,
+                                source_mode,
+                                artifact_dir,
+                                csharp_query_target_label(source_mode, csharp_query_source_modes),
+                            )
+                        )
+                else:
+                    results.append(
+                        benchmark_target(
+                            command,
+                            scale,
+                            args.repetitions,
+                            target,
+                        )
+                    )
 
         print_summary(results)
         return 0

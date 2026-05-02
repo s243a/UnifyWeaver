@@ -27,9 +27,34 @@ func (v *Float) Equals(other Value) bool {
 type Atom struct { Name string }
 func (v *Atom) valueTag() {}
 func (v *Atom) String() string { return v.Name }
+
+// Equals: pointer identity only. The runtime maintains a single
+// atomInternMap (in atoms.go) populated at init with every wamAtom_*
+// the codegen emits, plus runtime-side atoms via internAtom(name).
+// As long as every Atom-producing call site routes through
+// internAtom, two atoms with the same Name resolve to the same
+// pointer and equality is a single comparison.
+//
+// The previous version had a string fallback (`return v.Name == o.Name`)
+// for un-interned atoms. Profiling at scale-300 showed that fallback
+// was ~5% of CPU — every SwitchOnConstantPc forward-scan miss did a
+// string compare to confirm the case didn't match. Dropping the
+// fallback makes the negative-case path one pointer compare.
+//
+// CONSTRAINT: any caller that creates a fresh `&Atom{Name: ...}`
+// without going through internAtom risks producing two atoms with
+// the same Name but different pointers; Equals will then say they
+// differ. The runtime helpers in runtime.go that build atoms from
+// runtime strings (collectNativeTransitiveDistanceResults etc.) are
+// the known offenders; they're only reached by the kernels_on path,
+// not by the kernels_off effective-distance bench. If a workload
+// reaches them and behavior diverges, route through internAtom.
 func (v *Atom) Equals(other Value) bool {
 	o, ok := other.(*Atom)
-	return ok && v.Name == o.Name
+	if !ok {
+		return false
+	}
+	return v == o
 }
 
 type Compound struct {

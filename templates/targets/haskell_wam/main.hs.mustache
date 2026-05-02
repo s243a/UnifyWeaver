@@ -7,7 +7,7 @@ import qualified Data.IntSet as IS
 import Data.List (nub, sort, isPrefixOf, intercalate, foldl')
 import qualified Numeric
 import Data.Maybe (fromMaybe, mapMaybe)
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
 import Control.Parallel.Strategies (parMap, rdeepseq)
@@ -26,6 +26,19 @@ loadTsvPairs path = do
     return [(a, b) | l <- ls, let ws = splitOn '\t' l, length ws >= 2, let [a, b] = take 2 ws]
 
 -- | Load single-column TSV.
+-- | Load a column of newline-separated integer IDs (one per line).
+--   Used by the int_atom_seeds path for seed and root files; ignores
+--   blank lines and lines that don't parse as Int.
+loadIntColumn :: FilePath -> IO [Int]
+loadIntColumn path = do
+    content <- readFile path
+    return [ n
+           | l <- lines content
+           , let s = dropWhile (== ' ') l
+           , not (null s)
+           , (n, "") : _ <- [reads s :: [(Int, String)]]
+           ]
+
 loadSingleColumn :: FilePath -> IO [String]
 loadSingleColumn path = do
     content <- readFile path
@@ -37,6 +50,29 @@ splitOn _ [] = [""]
 splitOn d (c:cs)
   | c == d    = "" : splitOn d cs
   | otherwise = let (w:ws) = splitOn d cs in (c:w) : ws
+
+-- | Apply the same seed-subset controls as the Rust WAM benchmark driver.
+applySeedControls :: [String] -> IO ([String], Maybe String, Maybe String)
+applySeedControls seedCats0 = do
+    seedFilter <- lookupEnv "WAM_SEED_FILTER"
+    seedLimit <- lookupEnv "WAM_SEED_LIMIT"
+    let filtered = case seedFilter of
+          Nothing -> seedCats0
+          Just raw ->
+            let wanted = filter (not . null) $ map trim $ splitOn '|' raw
+            in if null wanted then seedCats0 else filter (`elem` wanted) seedCats0
+    limited <- case seedLimit of
+      Nothing -> return filtered
+      Just raw -> case reads raw :: [(Int, String)] of
+        [(limit, "")] | limit > 0 -> return (take limit filtered)
+        [(limit, "")] | limit <= 0 -> return filtered
+        _ -> do
+          hPutStrLn stderr $ "[WAM-Haskell] WARNING: WAM_SEED_LIMIT=" ++ raw ++ " is not a valid Int, ignoring"
+          return filtered
+    return (limited, seedLimit, seedFilter)
+  where
+    trim = f . f
+      where f = reverse . dropWhile (`elem` [' ', '\t', '\r', '\n'])
 
 -- | Build SwitchOnConstant dispatch table from grouped facts.
 buildFactIndex :: [(String, String)] -> Map.Map String [(String, String)]
@@ -90,14 +126,28 @@ main = do
 
     t0 <- getCurrentTime
 
-    -- Load facts from TSV
+{{^int_atom_seeds}}
+    -- Load facts from TSV (string-keyed seeds and edges)
     categoryParents <- loadTsvPairs (factsDir ++ "/category_parent.tsv")
     articleCategories <- loadTsvPairs (factsDir ++ "/article_category.tsv")
     roots <- loadSingleColumn (factsDir ++ "/root_categories.tsv")
+{{/int_atom_seeds}}
+{{#int_atom_seeds}}
+    -- Int-atom-seeds mode: skip TSV loading entirely.  Seeds and roots
+    -- are raw int32 IDs from a file (typically generated from the LMDB
+    -- key set).  Edges live in LMDB; no in-memory category_parent map.
+    seedIds <- loadIntColumn (factsDir ++ "/seed_ids.txt")
+    rootIds <- loadIntColumn (factsDir ++ "/root_ids.txt")
+    -- Stub bindings so downstream code compiles uniformly across modes.
+    let categoryParents = [] :: [(String, String)]
+        articleCategories = [] :: [(String, String)]
+        roots = [] :: [String]
+{{/int_atom_seeds}}
 
     t1 <- getCurrentTime
     let loadMs = round (diffUTCTime t1 t0 * 1000) :: Int
 
+{{^int_atom_seeds}}
     -- Build system-wide atom intern table. Extends the compile-time atom
     -- table (from Predicates.hs) with runtime atoms from TSV data. All
     -- atoms that reach the WAM interpreter or FFI kernels must be interned.
@@ -111,6 +161,16 @@ main = do
             (\tbl s -> snd (internAtom tbl s))
             compileTimeAtomTable atomStrings
         iAtom s = internAtomPure fullInternTable s
+{{/int_atom_seeds}}
+{{#int_atom_seeds}}
+    -- Int-atom-seeds mode: only the compile-time atom table is needed.
+    -- Seed/edge IDs are raw int32 from LMDB ingest; they don't need
+    -- string interning.  iAtom is identity (Int -> Int) so the rest of
+    -- this Main.hs renders identically across modes.
+    let !fullInternTable = compileTimeAtomTable
+        iAtom :: Int -> Int
+        iAtom = id
+{{/int_atom_seeds}}
 
     -- Build merged code: compiled predicates + runtime facts.
     -- When FFI handles fact lookups, the WAM-compiled fact code is pure
@@ -124,15 +184,32 @@ main = do
         foreignPreds = [{{foreign_preds}}]
         mergedCode = resolveCallInstrs mergedLabels foreignPreds mergedCodeRaw
 
-    -- Collect seed categories
-    let seedCats = nub $ sort $ map snd articleCategories
+{{^int_atom_seeds}}
+    -- Collect seed categories from article_category and TSV roots
+    let seedCatsAll = nub $ sort $ map snd articleCategories
         root = head roots
-        n = 5.0 :: Double
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
         negN = -n
+    (seedCats, seedLimitMetric, seedFilterMetric) <- applySeedControls seedCatsAll
 
     -- Build child -> [parents] index in interned form for the FFI fast path.
     let !parentsIndexInterned = IM.fromListWith (++)
             [(iAtom child, [iAtom parent]) | (child, parent) <- categoryParents]
+{{/int_atom_seeds}}
+{{#int_atom_seeds}}
+    -- Int-atom-seeds: seeds and root come from int-id files.  Edges
+    -- live in LMDB (use_lmdb(true) is expected; the in-memory
+    -- parentsIndexInterned is empty as a sentinel).
+    let !seedCats = seedIds
+        !root = case rootIds of
+                  []      -> 0
+                  (r:_)   -> r
+        n = fromIntegral ({{dimension_n}} :: Int) :: Double
+        negN = -n
+        seedLimitMetric  = Nothing :: Maybe String
+        seedFilterMetric = Nothing :: Maybe String
+        !parentsIndexInterned = IM.empty :: IM.IntMap [Int]
+{{/int_atom_seeds}}
 
     -- Demand-driven pruning: compute the backward-reachable set from root,
     -- then filter parentsIndex to only include edges to reachable parents.
@@ -149,7 +226,7 @@ main = do
     -- wcInternTable is the system-wide atom intern table (compile-time +
     -- runtime atoms). wcFfiFacts feeds the FFI kernel path.
     let !ctx = (mkContext mergedCode mergedLabels)
-            { wcForeignConfig = Map.singleton "max_depth" 10
+            { wcForeignConfig = Map.singleton "max_depth" {{max_depth}}
             , wcLoweredPredicates = Lowered.loweredPredicates
             , wcInternTable   = fullInternTable
             , wcFfiFacts      = Map.singleton "category_parent" {{facts_source}}
@@ -180,7 +257,8 @@ main = do
     t3 <- getCurrentTime
     let queryMs = round (diffUTCTime t3 t2 * 1000) :: Int
 
-    -- Aggregate per-article weight sums
+{{^int_atom_seeds}}
+    -- Aggregate per-article weight sums (string-keyed)
     let articleSums = foldl (\m (art, cat) ->
           let ws = if cat == root then 1.0 else 0.0
               catWs = fromMaybe 0.0 (Map.lookup cat seedWeightSums)
@@ -189,6 +267,18 @@ main = do
 
     let invN = -1.0 / n
         results = sort [(ws ** invN, art) | (art, ws) <- Map.toList articleSums, ws > 0]
+{{/int_atom_seeds}}
+{{#int_atom_seeds}}
+    -- Int-atom-seeds: no article aggregation; emit per-seed effective
+    -- distance directly so the output is comparable to the standalone
+    -- enwiki-dfs-benchmark.
+    let invN = -1.0 / n
+        results = sort
+            [ (ws ** invN, show seed)
+            | (seed, ws) <- Map.toList seedWeightSums
+            , ws > 0
+            ]
+{{/int_atom_seeds}}
 
     t4 <- getCurrentTime
     let aggMs = round (diffUTCTime t4 t3 * 1000) :: Int
@@ -196,18 +286,27 @@ main = do
 
     -- Output TSV
     putStrLn "article\troot_category\teffective_distance"
+{{^int_atom_seeds}}
     mapM_ (\(deff, art) ->
         putStrLn (art ++ "\t" ++ root ++ "\t" ++ showFFloat6 deff)
         ) results
+{{/int_atom_seeds}}
+{{#int_atom_seeds}}
+    mapM_ (\(deff, art) ->
+        putStrLn (art ++ "\t" ++ show root ++ "\t" ++ showFFloat6 deff)
+        ) results
+{{/int_atom_seeds}}
     hFlush stdout
 
     -- Metrics to stderr
-    hPutStrLn stderr $ "mode=wam_haskell_accumulated"
+    hPutStrLn stderr $ "mode={{benchmark_mode}}"
     hPutStrLn stderr $ "load_ms=" ++ show loadMs
     hPutStrLn stderr $ "query_ms=" ++ show queryMs
     hPutStrLn stderr $ "aggregation_ms=" ++ show aggMs
     hPutStrLn stderr $ "total_ms=" ++ show totalMs
     hPutStrLn stderr $ "seed_count=" ++ show (length seedCats)
+    maybe (return ()) (\v -> hPutStrLn stderr $ "seed_limit=" ++ v) seedLimitMetric
+    maybe (return ()) (\v -> hPutStrLn stderr $ "seed_filter=" ++ v) seedFilterMetric
     hPutStrLn stderr $ "tuple_count=" ++ show (Map.size seedWeightSums)
     hPutStrLn stderr $ "article_count=" ++ show (length results)
 {{demand_metrics}}

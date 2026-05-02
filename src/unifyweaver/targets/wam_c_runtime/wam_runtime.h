@@ -12,6 +12,8 @@
 #define WAM_ERR_OOB -2
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
+#define WAM_PRED_HASH_SIZE 256
+#define WAM_ATOM_HASH_SIZE 512
 
 /* Value tag enum */
 typedef enum {
@@ -80,6 +82,16 @@ typedef struct {
     int target_pc;
 } HashEntry;
 
+typedef struct {
+    const char *name;
+    int pc;
+} PredEntry;
+
+typedef struct AtomEntry {
+    char *str;
+    struct AtomEntry *next;
+} AtomEntry;
+
 /* Instruction */
 // TODO: Pack these fields into a union keyed on `tag` to reduce memory footprint
 typedef struct {
@@ -98,6 +110,7 @@ typedef struct {
     int hash_size;
     HashEntry *s_hash_table;
     int s_hash_size;
+    int list_target_pc;
 } Instruction;
 
 /* WAM state */
@@ -137,11 +150,18 @@ typedef struct {
     int code_size;
     
     /* Predicate Map (for CALL/EXECUTE) */
-    char **pred_names;
-    int *pred_pcs;
-    int pred_count;
-    int pred_cap;
+    PredEntry pred_hash[WAM_PRED_HASH_SIZE];
+
+    /* Interned dynamic atoms */
+    AtomEntry *atom_table[WAM_ATOM_HASH_SIZE];
 } WamState;
+
+bool step_wam(WamState* state, Instruction* instr);
+int wam_run(WamState* state);
+void wam_state_init(WamState *state);
+void wam_free_state(WamState *state);
+int wam_run_predicate(WamState *state, const char *pred, WamValue *args, int arity);
+bool wam_execute_builtin(WamState *state, const char *op, int arity);
 
 /* Helpers */
 static inline WamValue val_atom(const char *s) {
@@ -154,6 +174,75 @@ static inline WamValue val_int(int n) {
 }
 static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
+}
+
+static inline unsigned int wam_hash_string(const char *name) {
+    unsigned int h = 5381;
+    while (*name) h = ((h << 5) + h) ^ (unsigned char)*name++;
+    return h;
+}
+
+static inline unsigned int wam_pred_hash(const char *name) {
+    return wam_hash_string(name) & (WAM_PRED_HASH_SIZE - 1);
+}
+
+static inline void wam_register_predicate_hash(WamState *state,
+                                                const char *name, int pc) {
+    unsigned int idx = wam_pred_hash(name);
+    unsigned int probes = 0;
+    while (state->pred_hash[idx].name != NULL &&
+           strcmp(state->pred_hash[idx].name, name) != 0 &&
+           probes < WAM_PRED_HASH_SIZE) {
+        idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
+        probes++;
+    }
+    if (probes == WAM_PRED_HASH_SIZE) return;
+    state->pred_hash[idx].name = name;
+    state->pred_hash[idx].pc = pc;
+}
+
+static inline int resolve_predicate_hash(WamState *state, const char *name) {
+    unsigned int idx = wam_pred_hash(name);
+    unsigned int probes = 0;
+    while (state->pred_hash[idx].name != NULL && probes < WAM_PRED_HASH_SIZE) {
+        if (strcmp(state->pred_hash[idx].name, name) == 0)
+            return state->pred_hash[idx].pc;
+        idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
+        probes++;
+    }
+    return -1;
+}
+
+static inline void wam_register_predicate(WamState *state, const char *pred, int pc) {
+    wam_register_predicate_hash(state, pred, pc);
+}
+
+static inline int resolve_predicate(WamState *state, const char *pred) {
+    return resolve_predicate_hash(state, pred);
+}
+
+static inline char *wam_strdup(const char *str) {
+    size_t len = strlen(str) + 1;
+    char *copy = malloc(len);
+    if (copy) memcpy(copy, str, len);
+    return copy;
+}
+
+static inline const char *wam_intern_atom(WamState *state, const char *str) {
+    unsigned int h = wam_hash_string(str) & (WAM_ATOM_HASH_SIZE - 1);
+    for (AtomEntry *e = state->atom_table[h]; e; e = e->next) {
+        if (strcmp(e->str, str) == 0) return e->str;
+    }
+    AtomEntry *e = malloc(sizeof(AtomEntry));
+    if (!e) return str;
+    e->str = wam_strdup(str);
+    if (!e->str) {
+        free(e);
+        return str;
+    }
+    e->next = state->atom_table[h];
+    state->atom_table[h] = e;
+    return e->str;
 }
 // Creates a new unbound reference on the heap.
 // Note: This function allocates a cell in H_array and increments state->H.
@@ -181,9 +270,12 @@ static inline bool val_equal(WamValue v1, WamValue v2) {
     return false;
 }
 static inline WamValue* resolve_reg(WamState *state, int reg_idx, int is_y) {
-    if (is_y) {
+    if (is_y == 1) {
         assert(state->E >= 0 && "Y-register accessed with empty environment stack");
         return &state->E_array[state->E].y_regs[reg_idx];
+    }
+    if (is_y == 2) {
+        return &state->X[reg_idx];
     }
     return &state->A[reg_idx];
 }
@@ -310,25 +402,6 @@ static inline void update_choice_point(WamState *state, int next_pc) {
     if (state->B > 0) {
         state->B_array[state->B - 1].next_pc = next_pc;
     }
-}
-
-static inline void wam_register_predicate(WamState *state, const char *pred, int pc) {
-    if (state->pred_count >= state->pred_cap) {
-        state->pred_cap = state->pred_cap ? state->pred_cap * 2 : WAM_INITIAL_CAP;
-        state->pred_names = realloc(state->pred_names, sizeof(char*) * state->pred_cap);
-        state->pred_pcs = realloc(state->pred_pcs, sizeof(int) * state->pred_cap);
-    }
-    state->pred_names[state->pred_count] = (char*)pred;
-    state->pred_pcs[state->pred_count] = pc;
-    state->pred_count++;
-}
-
-static inline int resolve_predicate(WamState *state, const char *pred) {
-    // TODO: Optimize from O(n) to O(1) or O(log n) via hash map or bsearch
-    for (int i = 0; i < state->pred_count; i++) {
-        if (strcmp(state->pred_names[i], pred) == 0) return state->pred_pcs[i];
-    }
-    return -1;
 }
 
 #endif /* WAM_RUNTIME_H */

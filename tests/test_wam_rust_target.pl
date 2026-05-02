@@ -3,6 +3,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/wam_rust_lowered_emitter',
+              [lower_predicate_to_rust/4]).
 :- use_module('../src/unifyweaver/targets/rust_target').
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/core/template_system', [render_named_template/3]).
@@ -1646,6 +1648,28 @@ test_shared_wam_labels_contain_all_preds :-
         fail_test(Test, 'Shared WAM table missing labels for some predicates')
     ).
 
+test_shared_wam_program_exported :-
+    Test = 'WAM-Rust: shared WAM program is exported for generated runners',
+    TmpDir = 'output/test_wam_rust_shared_program',
+    (   exists_directory(TmpDir)
+    ->  catch(delete_directory_and_contents(TmpDir), _, true)
+    ;   true
+    ),
+    (   once(write_wam_rust_project(
+            [user:test_resistant/3, user:test_caller/2],
+            [module_name('shared_program_test'), wam_fallback(true)],
+            TmpDir)),
+        directory_file_path(TmpDir, 'src', SrcDir),
+        directory_file_path(SrcDir, 'lib.rs', LibPath),
+        read_file_to_string(LibPath, LibStr, []),
+        sub_string(LibStr, _, _, _, 'pub fn shared_wam_program()'),
+        sub_string(LibStr, _, _, _, '(code.clone(), labels.clone())')
+    ->  catch(delete_directory_and_contents(TmpDir), _, true),
+        pass(Test)
+    ;   catch(delete_directory_and_contents(TmpDir), _, true),
+        fail_test(Test, 'shared_wam_program export missing')
+    ).
+
 test_native_wam_mixed_project :-
     Test = 'WAM-Rust: mixed native+WAM project only shares WAM predicates',
     TmpDir = 'output/test_wam_rust_mixed',
@@ -1669,6 +1693,27 @@ test_native_wam_mixed_project :-
         pass(Test)
     ;   catch(delete_directory_and_contents(TmpDir), _, true),
         fail_test(Test, 'Mixed native+WAM project not generated correctly')
+    ).
+
+test_rust_wam_lib_imports_hashset :-
+    Test = 'WAM-Rust: lib template imports HashSet for foreign_pred_keys',
+    (   render_named_template(rust_wam_lib,
+            [module_name='hashset_test', date='test', predicates_code=''],
+            LibStr),
+        sub_string(LibStr, _, _, _, 'use std::collections::{HashMap, HashSet};')
+    ->  pass(Test)
+    ;   fail_test(Test, 'rust_wam_lib template does not import HashSet')
+    ).
+
+test_lowered_calls_detected_kernel_via_callforeign :-
+    Test = 'WAM-Rust: lowered helper calls detected kernel via CallForeign',
+    WamCode = 'put_value X1 A1\ncall category_ancestor/4 4\nproceed\n',
+    (   lower_predicate_to_rust(test_foreign_call/1, WamCode,
+            [foreign_pred_keys(['category_ancestor/4'])], Lines),
+        atomic_list_concat(Lines, '\n', RustCode),
+        sub_string(RustCode, _, _, _, 'CallForeign("category_ancestor/4".to_string(), 4)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Lowered helper did not emit CallForeign for detected kernel')
     ).
 
 %% Run all tests
@@ -1740,7 +1785,10 @@ run_tests :-
     test_cross_predicate_shared_wam,
     test_cross_predicate_distinct_pcs,
     test_shared_wam_labels_contain_all_preds,
+    test_shared_wam_program_exported,
     test_native_wam_mixed_project,
+    test_rust_wam_lib_imports_hashset,
+    test_lowered_calls_detected_kernel_via_callforeign,
 
     format('~n========================================~n'),
     (   test_failed

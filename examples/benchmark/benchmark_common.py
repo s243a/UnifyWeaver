@@ -27,6 +27,79 @@ def run_command(
     )
 
 
+def csharp_query_env(source_mode: str | None = None, artifact_dir: Path | None = None) -> dict[str, str]:
+    env = dict(os.environ)
+    selected_source_mode = source_mode or "auto"
+    env["UNIFYWEAVER_RELATION_SOURCE_MODE"] = selected_source_mode
+    if selected_source_mode in {"artifact", "artifact-prebuilt"} and artifact_dir is not None:
+        env["UNIFYWEAVER_RELATION_ARTIFACT_DIR"] = str(artifact_dir)
+    else:
+        env.pop("UNIFYWEAVER_RELATION_ARTIFACT_DIR", None)
+    return env
+
+
+def csharp_query_source_mode_choices() -> list[str]:
+    return ["auto", "preload", "delimited", "artifact", "artifact-prebuilt"]
+
+
+def split_csv(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def validate_csharp_query_source_modes(value: str) -> list[str]:
+    modes = split_csv(value)
+    if not modes:
+        raise ValueError("expected at least one C# query source mode")
+    choices = set(csharp_query_source_mode_choices())
+    unknown = [mode for mode in modes if mode not in choices]
+    if unknown:
+        raise ValueError(
+            "unknown C# query source mode(s): "
+            + ", ".join(unknown)
+            + "; expected one of "
+            + ", ".join(csharp_query_source_mode_choices())
+        )
+    return modes
+
+
+def add_csharp_query_source_mode_arg(parser) -> None:
+    parser.add_argument(
+        "--csharp-query-source-mode",
+        default="auto",
+        choices=csharp_query_source_mode_choices(),
+        help="Relation source mode for csharp-query runs.",
+    )
+    parser.add_argument(
+        "--csharp-query-source-modes",
+        default=None,
+        help=(
+            "Comma-separated C# query source modes to sweep. "
+            "When set, csharp-query rows are labeled csharp-query:<mode>."
+        ),
+    )
+
+
+def csharp_query_source_modes_from_args(args) -> list[str]:
+    raw_modes = getattr(args, "csharp_query_source_modes", None)
+    if raw_modes:
+        try:
+            return validate_csharp_query_source_modes(raw_modes)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    return [getattr(args, "csharp_query_source_mode", "auto")]
+
+
+def csharp_query_target_label(source_mode: str, source_modes: list[str]) -> str:
+    return f"csharp-query:{source_mode}" if len(source_modes) > 1 else "csharp-query"
+
+
+def append_csharp_query_source_mode_metric(stderr: str, source_mode: str | None) -> str:
+    selected_source_mode = source_mode or "auto"
+    if selected_source_mode == "auto":
+        return stderr
+    return stderr.rstrip() + f"\ncsharp_query_source_mode={selected_source_mode}\n"
+
+
 def require_file(path: Path) -> Path:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -51,12 +124,41 @@ def scale_sort_key(scale: str) -> tuple[int, str]:
 
 def available_targets(requested: list[str]) -> list[str]:
     targets: list[str] = []
+    rust_matrix_targets = {
+        "rust-pure-interp",
+        "rust-interp-ffi",
+        "rust-lowered-only",
+        "rust-lowered-ffi",
+    }
+    scala_matrix_targets = {
+        "scala-wam-seeded",
+        "scala-wam-seeded-artifact",
+        "scala-wam-seeded-no-kernels",
+        "scala-wam-accumulated",
+        "scala-wam-accumulated-artifact",
+        "scala-wam-accumulated-no-kernels",
+    }
     for target in requested:
         if target.startswith("csharp-") and shutil.which("dotnet") is None:
             print(f"skip {target}: dotnet not found", file=sys.stderr)
             continue
+        if target.startswith("haskell-wam-") and (
+            shutil.which("swipl") is None or shutil.which("cabal") is None or shutil.which("ghc") is None
+        ):
+            print(f"skip {target}: swipl, cabal, or ghc not found", file=sys.stderr)
+            continue
         if target.startswith("haskell-") and (shutil.which("cabal") is None or shutil.which("ghc") is None):
             print(f"skip {target}: cabal or ghc not found", file=sys.stderr)
+            continue
+        if target in rust_matrix_targets and (
+            shutil.which("swipl") is None or shutil.which("cargo") is None or shutil.which("rustc") is None
+        ):
+            print(f"skip {target}: swipl, cargo, or rustc not found", file=sys.stderr)
+            continue
+        if target in scala_matrix_targets and (
+            shutil.which("swipl") is None or shutil.which("scalac") is None or shutil.which("scala") is None
+        ):
+            print(f"skip {target}: swipl, scalac, or scala not found", file=sys.stderr)
             continue
         if target.startswith("rust-") and shutil.which("rustc") is None:
             print(f"skip {target}: rustc not found", file=sys.stderr)
@@ -210,12 +312,20 @@ def build_go_binary(
 
 
 def build_haskell_project(project_dir: Path, executable_name: str) -> list[str]:
-    run_command(["cabal", "build", f"exe:{executable_name}"], cwd=project_dir)
-    result = run_command(["cabal", "list-bin", f"exe:{executable_name}"], cwd=project_dir)
-    binary = result.stdout.strip()
-    if not binary:
+    run_command(["cabal", "v2-build", f"exe:{executable_name}"], cwd=project_dir)
+    binary = find_cabal_binary(project_dir, executable_name)
+    return [str(binary)]
+
+
+def find_cabal_binary(project_dir: Path, executable_name: str) -> Path:
+    candidates = [
+        path
+        for path in (project_dir / "dist-newstyle").rglob(executable_name)
+        if path.is_file() and os.access(path, os.X_OK)
+    ]
+    if not candidates:
         raise RuntimeError(f"could not resolve cabal binary for {executable_name}")
-    return [binary]
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def digest_normalized_output(normalized: str) -> tuple[str, int]:
@@ -336,6 +446,43 @@ def find_result(entries: list[object], target: str) -> object | None:
     return next((item for item in entries if item.target == target), None)
 
 
+def csharp_query_results(entries: list[object]) -> list[object]:
+    return [
+        item
+        for item in entries
+        if item.target == "csharp-query" or item.target.startswith("csharp-query:")
+    ]
+
+
+def find_csharp_query_result(entries: list[object]) -> object | None:
+    exact = find_result(entries, "csharp-query")
+    if exact is not None:
+        return exact
+    auto = find_result(entries, "csharp-query:auto")
+    if auto is not None:
+        return auto
+    candidates = csharp_query_results(entries)
+    return candidates[0] if candidates else None
+
+
+def csharp_query_source_mode_from_target(target: str) -> str:
+    if target.startswith("csharp-query:"):
+        return target.split(":", 1)[1]
+    return "auto"
+
+
+def print_csharp_query_source_mode_summary(scale: str, entries: list[object]) -> None:
+    candidates = [item for item in csharp_query_results(entries) if item.target.startswith("csharp-query:")]
+    if len(candidates) < 2:
+        return
+    best = min(candidates, key=lambda item: item.median)
+    auto = find_result(candidates, "csharp-query:auto")
+    print(f"{scale}\tcsharp_query_best_source_mode\t{csharp_query_source_mode_from_target(best.target)}")
+    if auto is not None:
+        ratio = auto.median / best.median if best.median else float("inf")
+        print(f"{scale}\tcsharp_query_auto_vs_best_source_mode\t{ratio:.2f}x")
+
+
 def print_match_status(scale: str, label: str, entries: list[object]) -> None:
     hashes = {item.stdout_sha256 for item in entries}
     print(f"{scale}\t{label}\t{'match' if len(hashes) == 1 else 'MISMATCH'}")
@@ -353,6 +500,25 @@ def print_speedup(scale: str, label: str, faster_baseline: object | None, measur
 
 def print_phase_metrics(scale: str, label: str, result: object | None) -> None:
     if result and result.stderr:
-        phase_lines = [line.strip() for line in result.stderr.splitlines() if "=" in line]
+        phase_lines = [
+            line.strip()
+            for line in result.stderr.splitlines()
+            if "=" in line and not line.startswith("bucket_strategy_")
+        ]
         if phase_lines:
             print(f"{scale}\t{label}\t" + " ".join(phase_lines))
+
+
+def summarize_bucket_strategy_metrics(stderr: str) -> str:
+    return " ".join(
+        line.strip()
+        for line in stderr.splitlines()
+        if line.startswith("bucket_strategy_") and "=" in line
+    )
+
+
+def print_bucket_strategy_metrics(scale: str, label: str, result: object | None) -> None:
+    if result and result.stderr:
+        summary = summarize_bucket_strategy_metrics(result.stderr)
+        if summary:
+            print(f"{scale}\t{label}\t{summary}")

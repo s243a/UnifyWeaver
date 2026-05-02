@@ -27,11 +27,13 @@
 %%
 %% Usage:
 %%   swipl -q -s generate_wam_effective_distance_benchmark.pl -- \
-%%       <facts.pl> <output-dir> [seeded|accumulated]
+%%       <facts.pl> <output-dir> [seeded|accumulated|seeded_no_kernels|accumulated_no_kernels]
 %%
 %% Variants:
-%%   seeded      - base category_ancestor + host-side Rust accumulation
-%%   accumulated - Prolog-generated effective_distance_sum helpers compiled into WAM
+%%   seeded                 - base category_ancestor + host-side Rust accumulation
+%%   accumulated            - Prolog-generated effective_distance_sum helpers compiled into WAM
+%%   seeded_no_kernels      - seeded, with native recursive kernels disabled
+%%   accumulated_no_kernels - accumulated, with native recursive kernels disabled
 
 benchmark_workload_path(Path) :-
     source_file(benchmark_workload_path(_), ThisFile),
@@ -45,7 +47,7 @@ main :-
     ;   Argv = [FactsPath, OutputDir]
     ->  VariantAtom = seeded
     ;   format(user_error,
-            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir> [seeded|accumulated]~n',
+            'Usage: swipl -q -s generate_wam_effective_distance_benchmark.pl -- <facts.pl> <output-dir> [seeded|accumulated|seeded_no_kernels|accumulated_no_kernels]~n',
             []),
         halt(1)
     ),
@@ -57,20 +59,24 @@ main :-
     halt(1).
 
 generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
-    parse_variant(VariantAtom, OptimizationOptions),
+    parse_variant(VariantAtom, BaseVariant, KernelMode, OptimizationOptions),
     % Load the benchmark workload to get predicate definitions
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
     assertz(user:mode(category_ancestor(-, +, -, +))),
 
-    maybe_load_optimized_predicates(VariantAtom, OptimizationOptions),
-    collect_wam_predicates(VariantAtom, WamPredicates),
-    format(user_error, '[WAM-Rust] variant=~w predicates=~w~n',
-           [VariantAtom, WamPredicates]),
+    maybe_load_optimized_predicates(BaseVariant, OptimizationOptions),
+    collect_wam_predicates(BaseVariant, WamPredicates),
+    format(user_error, '[WAM-Rust] variant=~w base_variant=~w kernels=~w predicates=~w~n',
+           [VariantAtom, BaseVariant, KernelMode, WamPredicates]),
 
     % Auto-detect FFI kernels from predicate clauses
-    wam_rust_target:detect_kernels(WamPredicates, DetectedKernels),
+    (   KernelMode == kernels_off
+    ->  DetectedKernels = [],
+        format(user_error, '[WAM-Rust] native kernels disabled; using WAM fallback~n', [])
+    ;   wam_rust_target:detect_kernels(WamPredicates, DetectedKernels)
+    ),
     (   DetectedKernels \= []
     ->  pairs_keys(DetectedKernels, DetectedKeys),
         format(user_error, '[WAM-Rust] detected kernels: ~w~n', [DetectedKeys])
@@ -99,12 +105,23 @@ generate_wam_benchmark(_FactsPath, OutputDir, VariantAtom) :-
 
     format(user_error, '[WAM-Rust] Generated benchmark project at: ~w~n', [OutputDir]).
 
-parse_variant(seeded, [
+parse_variant(seeded, seeded, kernels_on, [
     dialect(swi),
     branch_pruning(false),
     min_closure(false)
 ]).
-parse_variant(accumulated, [
+parse_variant(accumulated, accumulated, kernels_on, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false),
+    seeded_accumulation(auto)
+]).
+parse_variant(seeded_no_kernels, seeded, kernels_off, [
+    dialect(swi),
+    branch_pruning(false),
+    min_closure(false)
+]).
+parse_variant(accumulated_no_kernels, accumulated, kernels_off, [
     dialect(swi),
     branch_pruning(false),
     min_closure(false),
@@ -567,6 +584,56 @@ fn optimize_benchmark_code(code: &mut Vec<Instruction>) {
                 continue;
             }
         }
+        if i + 10 < code.len() {
+            let replacement = match (
+                &code[i],
+                &code[i + 1],
+                &code[i + 2],
+                &code[i + 3],
+                &code[i + 4],
+                &code[i + 5],
+                &code[i + 6],
+                &code[i + 7],
+                &code[i + 8],
+                &code[i + 9],
+                &code[i + 10],
+            ) {
+                (
+                    Instruction::GetConstant(Value::Atom(raw), hops_reg),
+                    Instruction::GetVariable(visited_reg, visited_arg),
+                    Instruction::PutValue(cat_reg, a1),
+                    Instruction::PutValue(target_reg, a2),
+                    Instruction::Call(pred, 2),
+                    Instruction::Deallocate,
+                    Instruction::PutStructure(functor, a1b),
+                    Instruction::SetValue(target_reg2),
+                    Instruction::SetValue(visited_reg2),
+                    Instruction::BuiltinCall(op, 1),
+                    Instruction::Proceed,
+                ) if raw == "1"
+                    && visited_arg == "A4"
+                    && a1 == "A1"
+                    && a2 == "A2"
+                    && pred == "category_parent/2"
+                    && functor == "member/2"
+                    && a1b == "A1"
+                    && target_reg == target_reg2
+                    && visited_reg == visited_reg2
+                    && op == r"\\+/1" =>
+                    Some(Instruction::BaseCategoryAncestorBind(
+                        cat_reg.clone(),
+                        target_reg.clone(),
+                        hops_reg.clone(),
+                        visited_arg.clone(),
+                    )),
+                _ => None,
+            };
+            if let Some(instr) = replacement {
+                code[i] = instr;
+                i += 11;
+                continue;
+            }
+        }
         if i + 8 < code.len() {
             let replacement = match (
                 &code[i],
@@ -717,6 +784,15 @@ fn main() {
     let category_parents = load_tsv_pairs(&format!("{}/category_parent.tsv", facts_dir));
     let article_categories = load_tsv_pairs(&format!("{}/article_category.tsv", facts_dir));
     let roots = load_single_column(&format!("{}/root_categories.tsv", facts_dir));
+    let root = roots[0].clone();
+    let max_depth_limit = 10usize;
+    let reverse_category_parents = build_reverse_fact2(&category_parents);
+    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
+    let runtime_category_parents: Vec<(String, String)> = category_parents
+        .iter()
+        .filter(|(_, parent)| reachable_to_root.contains(parent))
+        .cloned()
+        .collect();
 
     let load_ms = start.elapsed().as_millis();
 
@@ -732,14 +808,14 @@ fn main() {
 ~w
 
     // --- Runtime fact predicates ---
-    append_fact2(&mut all_code, &mut all_labels, "category_parent", &category_parents);
+    append_fact2(&mut all_code, &mut all_labels, "category_parent", &runtime_category_parents);
     append_fact2(&mut all_code, &mut all_labels, "article_category", &article_categories);
     append_fact1(&mut all_code, &mut all_labels, "root_category", &roots);
     resolve_benchmark_targets(&mut all_code, &all_labels);
 
     // Create VM with merged code
     let mut vm = WamState::new(all_code, all_labels);
-    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&category_parents));
+    vm.register_indexed_atom_fact2("category_parent/2", build_indexed_fact2(&runtime_category_parents));
 
     // Build atom intern table and interned ffi_facts from indexed_atom_fact2
     for (_pred, table) in &vm.indexed_atom_fact2.clone() {
@@ -778,13 +854,22 @@ fn main() {
             seed_cats.retain(|cat| wanted.contains(cat));
         }
     }
+    if let Ok(limit_raw) = std::env::var("WAM_SEED_LIMIT") {
+        match limit_raw.parse::<usize>() {
+            Ok(limit) => {
+                if limit > 0 && seed_cats.len() > limit {
+                    seed_cats.truncate(limit);
+                }
+            }
+            Err(_) => eprintln!(
+                "[WAM-Rust] WARNING: WAM_SEED_LIMIT={} is not a valid usize, ignoring",
+                limit_raw,
+            ),
+        }
+    }
     let seed_count = seed_cats.len();
 
-    let root = roots[0].clone();
-    let max_depth_limit = 10usize;
     setup_foreign_predicates(&mut vm);
-    let reverse_category_parents = build_reverse_fact2(&category_parents);
-    let reachable_to_root = compute_reachable_to_root(&root, &reverse_category_parents, max_depth_limit);
     let n: f64 = 5.0;
     let neg_n: f64 = -n;
     let mut hop_weights: Vec<f64> = Vec::with_capacity(max_depth_limit + 2);
@@ -871,7 +956,7 @@ fn main() {
                         false
                     }
                 } else {
-                    vm.backtrack()
+                    vm.backtrack() && vm.run()
                 };
                 if !succeeded {
                     break;
@@ -976,6 +1061,12 @@ fn main() {
     eprintln!("aggregation_ms={}", agg_ms);
     eprintln!("total_ms={}", total_ms);
     eprintln!("seed_count={}", seed_count);
+    if let Ok(seed_limit) = std::env::var("WAM_SEED_LIMIT") {
+        eprintln!("seed_limit={}", seed_limit);
+    }
+    if let Ok(seed_filter) = std::env::var("WAM_SEED_FILTER") {
+        eprintln!("seed_filter={}", seed_filter);
+    }
     eprintln!("tuple_count={}", seed_weight_sums.len());
     eprintln!("article_count={}", results.len());
     eprintln!("total_steps={}", total_steps);

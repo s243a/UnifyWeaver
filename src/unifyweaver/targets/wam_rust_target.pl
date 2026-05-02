@@ -39,6 +39,22 @@
     kernel_native_call/2
 ]).
 
+rust_safe_function_name(Pred, FuncName) :-
+    atom_string(Pred, PredStr),
+    string_codes(PredStr, Codes),
+    maplist(rust_safe_identifier_code, Codes, SafeCodes),
+    string_codes(FuncStr, SafeCodes),
+    atom_string(FuncName, FuncStr).
+
+rust_safe_identifier_code(C, C) :-
+    (   C >= 0'a, C =< 0'z
+    ;   C >= 0'A, C =< 0'Z
+    ;   C >= 0'0, C =< 0'9
+    ;   C =:= 0'_
+    ),
+    !.
+rust_safe_identifier_code(_, 0'_).
+
 % ============================================================================
 % PHASE 2: step_wam/3 → Rust match arms
 % ============================================================================
@@ -413,6 +429,62 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     false
                 }'.
 
+wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, hops_reg, visited_reg)', Body) :-
+    Body = '                let cat = match self.get_reg(cat_reg) {
+                    Some(Value::Atom(s)) => s,
+                    Some(val) => match self.deref_var(&val) {
+                        Value::Atom(s) => s,
+                        _ => return false,
+                    },
+                    None => return false,
+                };
+                let target = match self.get_reg(target_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let target_atom = match &target {
+                    Value::Atom(s) => s.clone(),
+                    _ => return false,
+                };
+                let visited = match self.get_reg(visited_reg) {
+                    Some(val) => self.deref_var(&val),
+                    None => return false,
+                };
+                let already_visited = match &visited {
+                    Value::List(items) => items.iter().any(|item| self.deref_var(item) == target),
+                    _ => false,
+                };
+                if already_visited {
+                    return false;
+                }
+                let parent_matches = self.indexed_atom_fact2
+                    .get("category_parent/2")
+                    .and_then(|table| table.get(&cat))
+                    .map(|values| values.iter().any(|parent| parent == &target_atom))
+                    .unwrap_or(false);
+                if !parent_matches {
+                    return false;
+                }
+                let hops_val = match self.get_reg(hops_reg) {
+                    Some(val) => val,
+                    None => return false,
+                };
+                match hops_val {
+                    Value::Unbound(var_name) => self.bind_var(&var_name, Value::Integer(1)),
+                    Value::Integer(1) => {},
+                    Value::Atom(ref raw) if raw == "1" => {},
+                    _ => return false,
+                }
+                if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
+                    self.cp = old_cp;
+                    let ret = self.cp;
+                    self.cp = 0;
+                    self.pc = ret;
+                    true
+                } else {
+                    false
+                }'.
+
 wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, child_hops_reg, visited_reg, pred, skip)', Body) :-
     Body = '                let Some(&target_pc) = self.labels.get(pred) else { return false; };
                 let instr = Instruction::RecurseCategoryAncestorPc(
@@ -493,8 +565,16 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     Some(val) => val,
                     None => return false,
                 };
-                if !self.unify(&out_val, &result) {
-                    return false;
+                match out_val {
+                    Value::Unbound(var_name) => self.bind_var(&var_name, result),
+                    Value::Integer(n) if result == Value::Integer(n) => {},
+                    Value::Float(f) if result == Value::Float(f) => {},
+                    Value::Atom(ref raw) if result == Value::Atom(raw.clone()) => {},
+                    other => {
+                        if !self.unify(&other, &result) {
+                            return false;
+                        }
+                    }
                 }
                 if let Some(StackEntry::Env(old_cp, _)) = self.smut().pop() {
                     self.cp = old_cp;
@@ -2414,6 +2494,7 @@ compile_wam_runtime_to_rust(Options, RustCode) :-
 %  that creates instruction data and executes it via the WAM runtime.
 compile_wam_predicate_to_rust(Pred/Arity, WamCode, Options, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, ForeignSetup, RunExpr),
@@ -2426,7 +2507,7 @@ pub fn ~w(~w) -> bool {
 ~w
 ~w
     ~w
-}', [PredStr, Arity, PredStr, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
+}', [PredStr, Arity, FuncName, ArgList, InstrSetup, ForeignSetup, ArgSetup, RunExpr]).
 
 foreign_wrapper_setup(Pred/Arity, WamCode, Options, InstrSetup, Setup, RunExpr) :-
     (   option(foreign_lowering(ForeignSpec), Options),
@@ -2929,7 +3010,8 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     generate_setup_foreign_predicates_rust(DetectedKernels, SetupForeignCode),
 
     % Compile predicates and generate lib.rs
-    compile_predicates_for_project(Predicates, Options, PredicatesCode),
+    pairs_keys(DetectedKernels, DetectedKeys),
+    compile_predicates_for_project(Predicates, [foreign_pred_keys(DetectedKeys)|Options], PredicatesCode),
     format(string(FullPredicatesCode), "~w\n\n~w", [SetupForeignCode, PredicatesCode]),
     render_named_template(rust_wam_lib,
         [module_name=ModuleName, date=Date, predicates_code=FullPredicatesCode],
@@ -2967,6 +3049,11 @@ fn get_shared_wam() -> &\'static (Vec<Instruction>, HashMap<String, usize>) {
         ];
         (code, labels)
     })
+}
+
+pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
+    let (code, labels) = get_shared_wam();
+    (code.clone(), labels.clone())
 }', [AllLabels, AllInstrs])
     ;   SharedCode = ""
     ),
@@ -3018,7 +3105,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         ->  lower_predicate_to_rust(Pred/Arity, WamCode, Options, RustLines),
             atomic_list_concat(RustLines, '\n', PredCode),
             format(user_error, '  ~w/~w: lowered (~w)~n', [Pred, Arity, Reason]),
-            Entry = classified(Module, Pred, Arity, lowered, PredCode)
+            Entry = classified(Module, Pred, Arity, lowered, lowered_code(PredCode, WamCode))
         ;   % Standard WAM fallback: will use shared table
             format(user_error, '  ~w/~w: WAM fallback~n', [Pred, Arity]),
             Entry = classified(Module, Pred, Arity, wam, WamCode)
@@ -3041,6 +3128,17 @@ collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC,
     split_string(WamStr, "\n", "", Lines),
     wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     % Count instructions to compute next PC
+    length(InstrParts, InstrCount),
+    NextPC is PC + InstrCount,
+    collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
+    append(InstrParts, RestInstrs, AllInstrs),
+    append(LabelParts, RestLabels, AllLabels).
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode))|Rest], PC,
+                    [wam_entry(Pred, Arity, PC)|RestEntries],
+                    AllInstrs, AllLabels) :-
+    atom_string(WamCode, WamStr),
+    split_string(WamStr, "\n", "", Lines),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
     collect_wam_entries(Rest, NextPC, RestEntries, RestInstrs, RestLabels),
@@ -3069,7 +3167,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Re
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: wam\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, lowered, PredCode)|Rest],
+generate_predicate_codes([classified(_, _Pred, _Arity, lowered, lowered_code(PredCode, _))|Rest],
                          WamEntries, [Code|RestCodes]) :-
     format(string(Code), "// Strategy: lowered\n~w", [PredCode]),
     generate_predicate_codes(Rest, WamEntries, RestCodes).
@@ -3088,6 +3186,7 @@ generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest],
 %  Generates a thin WAM predicate wrapper that references the shared code table.
 compile_wam_predicate_to_rust_shared(Pred/Arity, StartPC, RustCode) :-
     atom_string(Pred, PredStr),
+    rust_safe_function_name(Pred, FuncName),
     build_rust_wam_arg_list(Arity, ArgList),
     build_rust_wam_arg_setup(Arity, ArgSetup),
     format(string(RustCode),
@@ -3101,7 +3200,7 @@ pub fn ~w(~w) -> bool {
     vm.pc = ~w;
 ~w
     vm.run()
-}', [PredStr, Arity, StartPC, PredStr, ArgList, StartPC, ArgSetup]).
+}', [PredStr, Arity, StartPC, FuncName, ArgList, StartPC, ArgSetup]).
 
 %% write_file(+Path, +Content)
 write_file(Path, Content) :-
