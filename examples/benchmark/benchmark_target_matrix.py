@@ -179,6 +179,18 @@ KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
         "wam-rust-accumulated-no-kernels",
     ),
     KernelPairInfo(
+        "rust",
+        "interpreter",
+        "rust-interp-ffi",
+        "rust-pure-interp",
+    ),
+    KernelPairInfo(
+        "rust",
+        "lowered",
+        "rust-lowered-ffi",
+        "rust-lowered-only",
+    ),
+    KernelPairInfo(
         "go",
         "accumulated",
         "go-wam-accumulated",
