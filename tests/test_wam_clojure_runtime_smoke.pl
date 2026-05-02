@@ -132,6 +132,7 @@ run_smoke :-
     assert_lowered_env_prefix_emitted(TmpDir),
     assert_lowered_execute_emitted(TmpDir),
     assert_lowered_call_emitted(TmpDir),
+    assert_lowered_cut_builtin_emitted(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -224,6 +225,13 @@ assert_lowered_call_emitted(ProjectDir) :-
     has(CoreCode, "\"wam_fact/1\""),
     has(CoreCode, "update :stack conj (inc (:pc"),
     has(CoreCode, ":pc target-pc").
+
+assert_lowered_cut_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-cut-helper-1"),
+    has(CoreCode, "update :choice-points"),
+    has(CoreCode, "take (:cut-bar").
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
     run_clojure_predicate(ProjectDir, PredKey, Arg, Actual),

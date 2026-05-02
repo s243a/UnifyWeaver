@@ -130,6 +130,17 @@ test(simple_builtin_true_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/succeed-state")
     )).
 
+test(cut_builtin_is_direct_lowered_in_prefix) :-
+    once((
+        WamCode = "test_cut/0:\nallocate\nbuiltin_call !/0, 0\ndeallocate\nproceed\n",
+        wam_clojure_lowerable(test_cut/0, WamCode, deterministic),
+        lower_predicate_to_clojure(test_cut/0, WamCode, [], Code),
+        has(Code, "update :choice-points"),
+        has(Code, "take (:cut-bar"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/succeed-state")
+    )).
+
 test(unsupported_builtin_stays_runtime_mediated) :-
     once((
         WamCode = "test_atom/1:\nbuiltin_call atom/1, 1\nproceed\n",
