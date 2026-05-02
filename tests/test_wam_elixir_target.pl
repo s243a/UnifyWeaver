@@ -1046,20 +1046,20 @@ test_findall_phase4a_branch_backtrack_distinct_from_backtrack :-
 %% standard finalise.
 
 test_findall_phase4b_backtrack_dispatches_on_branch_mode :-
-    Test = 'Phase 4b: backtrack/1 dispatches agg-frame CPs on branch_mode',
+    Test = 'Phase 4b/4d: backtrack/1 dispatches agg-frame CPs on branch_mode + branch_sentinel',
     (   compile_wam_runtime_to_elixir([], Code),
         atom_string(Code, S),
-        % The new dispatch arm checks Map.get(state, :branch_mode, false)
-        % BEFORE calling finalise_aggregate. When true, returns
-        % {:branch_exhausted, ...} so the parallel-branch case routes
-        % through branch_backtracks return shape (via the same
-        % Enum.reverse(agg_accum) logic).
-        sub_string(S, _, _, _, 'if Map.get(state, :branch_mode, false) do'),
+        % Phase 4b introduced branch_mode dispatch; Phase 4d added the
+        % :branch_sentinel guard so only the branchs PARENT agg CP
+        % returns :branch_exhausted — nested agg CPs (from inner
+        % findalls inside a branch body) finalise normally.
+        sub_string(S, _, _, _, 'Map.get(state, :branch_mode, false) and'),
+        sub_string(S, _, _, _, 'Map.get(cp, :branch_sentinel, false) ->'),
         sub_string(S, _, _, _, '{:branch_exhausted, Enum.reverse(Map.get(cp, :agg_accum, []))}'),
         % And the existing finalise path is preserved as the else branch.
         sub_string(S, _, _, _, 'finalise_aggregate(state, cp, rest, agg_type)')
     ->  pass(Test)
-    ;   fail_test(Test, 'backtrack/1 missing branch_mode dispatch')
+    ;   fail_test(Test, 'backtrack/1 missing branch_mode + branch_sentinel dispatch')
     ).
 
 test_findall_phase4b_wamstate_has_branch_mode_field :-
@@ -1192,6 +1192,15 @@ test_par_wrap_segment_emits_super_wrapper :-
             sub_string(Code, _, _, _, 'branch_mode: true'),
             sub_string(Code, _, _, _, '{:branch_exhausted, accum} when is_list(accum) -> accum'),
             sub_string(Code, _, _, _, '{:fail, _s} -> []'),
+            % Phase 4d: branchs PARENT agg CP is stamped with
+            % :branch_sentinel before fan-out so backtrack/1 only
+            % returns :branch_exhausted on THAT CP — nested agg CPs
+            % from inner findalls inside the branch body finalise
+            % normally. Without the stamp, an inner findalls accum
+            % would leak up as the branchs return value.
+            sub_string(Code, _, _, _, '[parent_agg_cp | rest_cps] = state.choice_points'),
+            sub_string(Code, _, _, _, 'stamped_parent = Map.put(parent_agg_cp, :branch_sentinel, true)'),
+            sub_string(Code, _, _, _, 'choice_points: [stamped_parent | rest_cps]'),
             % Parent merges branch contributions, then throws fail to
             % drive the parents standard finalise flow on the merged
             % accum (parent is NOT in branch_mode so finalise fires).
