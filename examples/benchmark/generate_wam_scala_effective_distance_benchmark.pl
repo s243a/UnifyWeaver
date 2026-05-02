@@ -12,6 +12,7 @@
 :- use_module('../../src/unifyweaver/targets/prolog_target').
 :- use_module('../../src/unifyweaver/targets/wam_scala_target').
 :- use_module(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- use_module(library(pairs), [group_pairs_by_key/2]).
 
 %% generate_wam_scala_effective_distance_benchmark.pl
 %%
@@ -198,9 +199,9 @@ scala_fact_source_for_category_parent(_OutputDir, inline, source(category_parent
 scala_fact_source_for_category_parent(OutputDir, sidecar, source(category_parent/2, file(CsvPath))) :-
     category_parent_csv_path(OutputDir, sidecar, CsvPath),
     write_category_parent_csv(CsvPath).
-scala_fact_source_for_category_parent(OutputDir, artifact, source(category_parent/2, file(CsvPath))) :-
-    category_parent_csv_path(OutputDir, artifact, CsvPath),
-    write_category_parent_csv(CsvPath).
+scala_fact_source_for_category_parent(OutputDir, artifact, source(category_parent/2, grouped_by_first(GroupedPath))) :-
+    category_parent_grouped_path(OutputDir, GroupedPath),
+    write_category_parent_grouped_tsv(GroupedPath).
 
 collect_wam_predicates(kernels_on, [
     user:dimension_n/1,
@@ -218,10 +219,11 @@ category_parent_csv_path(OutputDir, sidecar, CsvPath) :-
     directory_file_path(OutputDir, 'data', DataDir),
     make_directory_path(DataDir),
     directory_file_path(DataDir, 'category_parent.csv', CsvPath).
-category_parent_csv_path(OutputDir, artifact, CsvPath) :-
+
+category_parent_grouped_path(OutputDir, Path) :-
     directory_file_path(OutputDir, 'data', DataDir),
     make_directory_path(DataDir),
-    directory_file_path(DataDir, 'category_parent_artifact.csv', CsvPath).
+    directory_file_path(DataDir, 'category_parent_by_child.tsv', Path).
 
 write_category_parent_csv(CsvPath) :-
     findall(Child-Parent, current_category_parent_fact(Child, Parent), Pairs0),
@@ -230,6 +232,20 @@ write_category_parent_csv(CsvPath) :-
         open(CsvPath, write, Stream),
         forall(member(Child-Parent, Pairs),
                format(Stream, '~w,~w~n', [Child, Parent])),
+        close(Stream)).
+
+write_category_parent_grouped_tsv(Path) :-
+    findall(Child-Parent, current_category_parent_fact(Child, Parent), Pairs0),
+    sort(Pairs0, Pairs),
+    group_pairs_by_key(Pairs, Grouped),
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        forall(member(Child-Parents, Grouped),
+               (   format(Stream, '~w', [Child]),
+                   forall(member(Parent, Parents),
+                          format(Stream, '\t~w', [Parent])),
+                   nl(Stream)
+               )),
         close(Stream)).
 
 benchmark_atoms(Atoms) :-

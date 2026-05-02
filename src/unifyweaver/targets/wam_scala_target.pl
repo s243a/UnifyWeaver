@@ -692,6 +692,8 @@ expand_fact_sources_in_options(Options0, Options) :-
 %  Dispatches on the shape of Spec:
 %    - Spec is a list of tuples → inline handler enumerating them.
 %    - Spec is file('path') → handler that reads CSV at runtime.
+%    - Spec is grouped_by_first('path') → handler that reads TSV rows
+%      shaped as Key<TAB>Value... and probes by the first argument.
 fact_source_spec_to_handler_code(Arity, Spec, Code) :-
     is_list(Spec), !,
     fact_source_to_handler_code(Arity, Spec, Code).
@@ -709,6 +711,13 @@ fact_source_spec_to_handler_code(Arity, file(Path), Code) :-
     % present); a malformed CSV will simply produce wrong-arity bindings
     % that the runtime will fail to unify.
     _ = Arity.
+fact_source_spec_to_handler_code(2, grouped_by_first(Path), Code) :-
+    !,
+    atom_string(Path, PathStr),
+    scala_string_literal(PathStr, PathLit),
+    format(string(Code),
+           "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if id >= 0 && id < internTable.idToString.length => Some(internTable.idToString(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [PathLit]).
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
 %  The solutions Seq is hoisted to a `val` on the anonymous class so it

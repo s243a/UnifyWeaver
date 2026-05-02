@@ -93,15 +93,18 @@ test(generate_artifact_project_emits_distinct_file_backend) :-
     setup_call_cleanup(
         unique_tmp_dir('tmp_wam_scala_effective_distance_artifact', TmpDir),
         (   generate('data/benchmark/dev/facts.pl', TmpDir, seeded, kernels_on, artifact),
-            directory_file_path(TmpDir, 'data/category_parent_artifact.csv', ArtifactPath),
+            directory_file_path(TmpDir, 'data/category_parent_by_child.tsv', ArtifactPath),
             directory_file_path(TmpDir, 'data/category_parent.csv', SidecarPath),
             exists_file(ArtifactPath),
             \+ exists_file(SidecarPath),
+            read_file_to_string(ArtifactPath, Artifact, []),
+            sub_string(Artifact, _, _, _, '\t'),
             directory_file_path(TmpDir,
                                 'src/main/scala/generated/wam_scala_effective_distance/core/GeneratedProgram.scala',
                                 GeneratedPath),
             read_file_to_string(GeneratedPath, Generated, []),
-            sub_string(Generated, _, _, _, 'category_parent_artifact.csv'),
+            sub_string(Generated, _, _, _, 'category_parent_by_child.tsv'),
+            sub_string(Generated, _, _, _, 'parentsByChild'),
             !
         ),
         cleanup_tmp_dir(TmpDir)).
