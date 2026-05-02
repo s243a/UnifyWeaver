@@ -271,6 +271,10 @@ clojure_direct_builtin("true/0", "0").
 clojure_direct_builtin("true/0", 0).
 clojure_direct_builtin('true/0', "0").
 clojure_direct_builtin('true/0', 0).
+clojure_direct_builtin("!/0", "0").
+clojure_direct_builtin("!/0", 0).
+clojure_direct_builtin('!/0', "0").
+clojure_direct_builtin('!/0', 0).
 
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
@@ -344,6 +348,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "true/0" ; Op == 'true/0'),
     !,
     format(atom(Expr), '(runtime/advance ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "!/0" ; Op == '!/0'),
+    !,
+    format(atom(Expr),
+           '(-> ~w (update :choice-points #(vec (take (:cut-bar ~w) %))) runtime/advance)',
+           [S, S]).
 emit_lowered_expr(put_constant(C, Ai), S, Expr) :-
     clj_lowered_literal(C, Lit),
     format(atom(Expr),
