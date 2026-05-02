@@ -43,20 +43,92 @@ Three useful parallels from neighbouring fields:
 shape — depth-bounded graph traversal with a visited set. The
 bench's name is bookkeeping; what's primitive is the shape.
 
-## A note on the word *kernel*
+## The senses of *kernel* — and why they converge here
 
-The "kernel" in our context inherits from the BLAS / GPU /
-compute-kernel tradition: a tight inner-loop primitive that larger
-workloads call many times.
+The word "kernel" carries several technical meanings across
+mathematics and computing, and a number of them line up uncannily
+well with what the detector is doing. Each lens illuminates a
+different facet of why this design works, so it is worth walking
+through them.
 
-There's a satisfying second reading though. In algebra, the *kernel*
-of a homomorphism is what gets factored out — the elements that map
-to identity. By analogy, when we identify a kernel shape in a Prolog
-predicate, we are identifying what *can be factored out* of the WAM
-bytecode stream. What remains is the quotient: the workload-specific
-composition logic above the primitive. Both senses converge — a
-kernel is what the compiler can lift out of the dispatch path
-because the rest is structural overhead around it.
+**The seed-kernel.** Etymologically, "kernel" is Old English
+*cyrnel*, the diminutive of *corn* — the inner seed of a nut or
+fruit. The metaphor distinguishes the dense, hard, valuable inner
+part from the variable surrounding shell. Different shells (apple,
+peach, walnut) wrap around structurally similar seeds. The shell is
+the part that varies between fruits; the kernel is the carrier of
+essential structure. In our case `category_ancestor` is the seed,
+and `effective_distance`, `category_influence`, and any future
+workload that traverses the category graph are different shells.
+The shell varies; the kernel is invariant.
+
+**The compute-kernel (BLAS, CUDA, OS).** In numerical computing,
+BLAS kernels are tight inner loops everything calls into — `dgemm`
+for dense matrix multiply, `dgemv` for matrix-vector. CUDA kernels
+are functions executed in parallel across thousands of threads. An
+OS kernel is the trusted core that every userspace program
+delegates to for primitive operations. The common thread is
+*inversion of control*: the kernel doesn't know about its callers;
+callers know how to invoke it. The kernel is a fixed point in the
+call graph, with everything around it variable. Our
+`category_ancestor` shares this property — once detected and
+lowered, the implementation is fixed across every workload that
+reaches it.
+
+**The algebraic kernel.** In abstract algebra, the kernel of a
+homomorphism `f: G → H` is the set of elements in `G` that map to
+the identity in `H` — the things that get "factored out." The
+First Isomorphism Theorem says `G/ker(f) ≅ image(f)`: once you
+quotient by the kernel, what remains is exactly what the map can
+see. For our purposes the WAM dispatcher is the homomorphism; the
+kernel is what the dispatcher does *not* need to see because it
+has been lifted out into native code; the quotient is the outer
+workload logic the WAM still interprets. The intuition that
+"factors have zeros" lands here directly — the kernel is what the
+structural map sends to identity, what becomes invisible to it,
+freeing the rest to focus on what varies.
+
+**The integral-transform kernel.** In `∫ K(x, y) f(y) dy`, the
+kernel function `K(x, y)` defines the transform — Fourier,
+Laplace, Hilbert. Same operator (the integral), different kernels,
+different transforms. By analogy, the WAM dispatcher is the
+operator; different kernels installed into it give us different
+specialized runtimes for different workload families. A workload
+heavy on transitive closure gets one effective runtime; a workload
+heavy on A\* gets another; the dispatcher is the same.
+
+**The kernel-method (ML) sense.** In machine learning, the kernel
+trick computes inner products in a transformed feature space
+*without materializing the transformed space*. You don't need to
+construct `φ(x)` explicitly — you just need a kernel function
+`K(x, y) = ⟨φ(x), φ(y)⟩`. Our system has the same flavour: we
+don't need to materialize a full native re-implementation of
+`effective_distance` to make it fast. We just need the kernel
+that sits inside it. The composition above the kernel can stay
+in (relatively) slow WAM bytecode because its instruction count
+is small enough that the dispatch cost is bounded. The kernel is
+the *only* place where native code is required.
+
+What unites all these senses is a single structural move: **find
+the invariant under variation, lift it out, express the rest as a
+quotient.** The compute-kernel does this in the call graph. The
+algebraic kernel does it in the homomorphism. The integral
+transform does it across families of operators. The kernel method
+does it between feature spaces. The pattern-matched kernel here
+does it across Prolog workloads.
+
+This convergence is not coincidence. Optimization, almost by
+definition, is the search for the right factorization: what can
+be hoisted, what can be shared, what is genuinely workload-
+specific. "Kernel" is the word that several traditions
+independently arrived at for naming the hoisted part. That all of
+those traditions apply simultaneously to what
+`recursive_kernel_detection.pl` is doing isn't a happy linguistic
+coincidence — it is evidence that the detector is identifying the
+right structural object. When several independent disciplines
+borrow the same name for "the thing you can factor out," and that
+name fits a fifth domain without strain, the underlying notion is
+probably real.
 
 ## When a shape becomes worth a kernel
 
