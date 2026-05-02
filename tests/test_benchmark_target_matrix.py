@@ -56,6 +56,8 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
 
         self.assertIn("go-wam-accumulated", targets)
         self.assertIn("haskell-interp-ffi", targets)
+        self.assertIn("scala-wam-seeded", targets)
+        self.assertIn("scala-wam-seeded-no-kernels", targets)
         self.assertIn("scala-wam-accumulated", targets)
         self.assertIn("scala-wam-accumulated-no-kernels", targets)
         self.assertIn("clojure-wam-accumulated", targets)
@@ -72,10 +74,14 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         self.assertEqual(
             targets,
             [
+                "scala-wam-seeded",
+                "scala-wam-seeded-no-kernels",
                 "scala-wam-accumulated",
                 "scala-wam-accumulated-no-kernels",
             ],
         )
+        self.assertEqual(TARGETS["scala-wam-seeded"].category, "hybrid-wam")
+        self.assertEqual(TARGETS["scala-wam-seeded-no-kernels"].category, "hybrid-wam")
         self.assertEqual(TARGETS["scala-wam-accumulated"].category, "hybrid-wam")
         self.assertEqual(TARGETS["scala-wam-accumulated-no-kernels"].category, "hybrid-wam")
 
@@ -91,7 +97,11 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             "clojure-wam-seeded-no-kernels,clojure-wam-accumulated-no-kernels",
             text,
         )
-        self.assertIn("scala-wam\tscala-wam-accumulated,scala-wam-accumulated-no-kernels", text)
+        self.assertIn(
+            "scala-wam\tscala-wam-seeded,scala-wam-seeded-no-kernels,"
+            "scala-wam-accumulated,scala-wam-accumulated-no-kernels",
+            text,
+        )
         self.assertIn("clojure-wam-scaffold\t", text)
 
     def test_effective_distance_runner_resolves_seeded_clojure_targets(self) -> None:
@@ -116,6 +126,7 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
             ("rust", "interpreter"),
             ("rust", "lowered"),
             ("go", "accumulated"),
+            ("scala", "seeded"),
             ("scala", "accumulated"),
             ("clojure", "seeded"),
             ("clojure", "accumulated"),
@@ -146,6 +157,10 @@ class BenchmarkTargetMatrixTests(unittest.TestCase):
         )
         self.assertIn(
             "scala\taccumulated\tscala-wam-accumulated\tscala-wam-accumulated-no-kernels",
+            text,
+        )
+        self.assertIn(
+            "scala\tseeded\tscala-wam-seeded\tscala-wam-seeded-no-kernels",
             text,
         )
 

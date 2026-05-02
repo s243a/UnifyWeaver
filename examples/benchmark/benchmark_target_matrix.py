@@ -82,6 +82,16 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Hybrid WAM Go benchmark with optimized accumulated helpers and no_kernels(true)",
     ),
+    "scala-wam-seeded": TargetInfo(
+        "scala-wam-seeded",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers and kernels enabled",
+    ),
+    "scala-wam-seeded-no-kernels": TargetInfo(
+        "scala-wam-seeded-no-kernels",
+        "hybrid-wam",
+        "Hybrid WAM Scala effective-distance runner with seeded helpers and no_kernels(true)",
+    ),
     "scala-wam-accumulated": TargetInfo(
         "scala-wam-accumulated",
         "hybrid-wam",
@@ -208,6 +218,12 @@ KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
     ),
     KernelPairInfo(
         "scala",
+        "seeded",
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
+    ),
+    KernelPairInfo(
+        "scala",
         "accumulated",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
@@ -260,6 +276,8 @@ TARGET_SETS: dict[str, list[str]] = {
         "wam-rust-accumulated-no-kernels",
         "go-wam-accumulated",
         "go-wam-accumulated-no-kernels",
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
         "clojure-wam-accumulated",
@@ -277,6 +295,8 @@ TARGET_SETS: dict[str, list[str]] = {
     ],
     "clojure-wam-scaffold": [],
     "scala-wam": [
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
     ],
