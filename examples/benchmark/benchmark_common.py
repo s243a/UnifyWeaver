@@ -131,6 +131,8 @@ def available_targets(requested: list[str]) -> list[str]:
         "rust-lowered-ffi",
     }
     scala_matrix_targets = {
+        "scala-wam-seeded",
+        "scala-wam-seeded-no-kernels",
         "scala-wam-accumulated",
         "scala-wam-accumulated-no-kernels",
     }
