@@ -225,10 +225,12 @@ lowered_direct_prefix([Instr|Rest], ControlLowering, [Instr|PrefixRest]) :-
     lowered_direct_prefix(Rest, ControlLowering, PrefixRest).
 lowered_direct_prefix(_, _, []).
 
+lowered_terminal_direct_instr(call(_, _), allow_control).
 lowered_terminal_direct_instr(execute(_), allow_control).
 lowered_terminal_direct_instr(proceed, _).
 lowered_terminal_direct_instr(fail, _).
 
+lowered_direct_instr(call(_, _), allow_control).
 lowered_direct_instr(execute(_), allow_control).
 lowered_direct_instr(Instr, _) :-
     lowered_data_instr(Instr).
@@ -272,6 +274,11 @@ emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
 emit_lowered_expr(fail, S, Expr) :-
     format(atom(Expr), '(runtime/fail-state ~w)', [S]).
+emit_lowered_expr(call(Pred, _Arity), S, Expr) :-
+    clj_lowered_string_literal(Pred, PredLit),
+    format(atom(Expr),
+           '(if-let [target-pc (get (:labels ~w) ~w)] (-> ~w (update :stack conj (inc (:pc ~w))) (assoc :pc target-pc)) (runtime/backtrack ~w))',
+           [S, PredLit, S, S, S]).
 emit_lowered_expr(execute(Pred), S, Expr) :-
     clj_lowered_string_literal(Pred, PredLit),
     format(atom(Expr),

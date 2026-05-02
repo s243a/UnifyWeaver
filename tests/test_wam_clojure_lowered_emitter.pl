@@ -187,7 +187,7 @@ test(multi_clause_execute_stays_runtime_mediated) :-
         assertion(\+ has(Code, "runtime/step"))
     )).
 
-test(call_stays_runtime_mediated_after_lowered_prefix) :-
+test(call_is_direct_lowered_after_lowered_prefix) :-
     once((
         WamCode = "test_call/1:\nallocate\nget_variable Y1, A1\nput_value Y1, A1\ncall test_fact/1, 1\ndeallocate\nproceed\n",
         wam_clojure_lowerable(test_call/1, WamCode, deterministic),
@@ -195,9 +195,25 @@ test(call_stays_runtime_mediated_after_lowered_prefix) :-
         has(Code, "update :env-stack conj {}"),
         has(Code, "get-variable Y1, A1"),
         has(Code, "put-value Y1, A1"),
-        assertion(\+ has(Code, "call test_fact/1")),
+        has(Code, "if-let [target-pc"),
+        has(Code, "(get (:labels"),
+        has(Code, "\"test_fact/1\""),
+        has(Code, "update :stack conj (inc (:pc"),
+        has(Code, ":pc target-pc"),
+        has(Code, "runtime/backtrack"),
         assertion(\+ has(Code, "update :env-stack #(if (seq %) (pop %) %)")),
         assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
+test(multi_clause_call_stays_runtime_mediated) :-
+    once((
+        WamCode = "test_choice_call/1:\ntry_me_else test_choice_call_alt\ncall test_fact/1, 1\nproceed\ntest_choice_call_alt:\ntrust_me\nget_constant z, A1\nproceed\n",
+        wam_clojure_lowerable(test_choice_call/1, WamCode, multi_clause_1),
+        lower_predicate_to_clojure(test_choice_call/1, WamCode, [], Code),
+        assertion(\+ has(Code, "\"test_fact/1\"")),
+        assertion(\+ has(Code, ":pc target-pc")),
+        assertion(\+ has(Code, "update :stack conj")),
         assertion(\+ has(Code, "runtime/step"))
     )).
 

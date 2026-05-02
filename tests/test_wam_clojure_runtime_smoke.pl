@@ -131,6 +131,7 @@ run_smoke :-
     assert_lowered_read_unify_prefix_emitted(TmpDir),
     assert_lowered_env_prefix_emitted(TmpDir),
     assert_lowered_execute_emitted(TmpDir),
+    assert_lowered_call_emitted(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
     verify_output(TmpDir, 'wam_call_caller/1', 'a', "true"),
@@ -212,6 +213,16 @@ assert_lowered_execute_emitted(ProjectDir) :-
     has(CoreCode, "if-let [target-pc"),
     has(CoreCode, "(get (:labels"),
     has(CoreCode, "\"wam_fact/1\""),
+    has(CoreCode, ":pc target-pc").
+
+assert_lowered_call_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-call-caller-1"),
+    has(CoreCode, "if-let [target-pc"),
+    has(CoreCode, "(get (:labels"),
+    has(CoreCode, "\"wam_fact/1\""),
+    has(CoreCode, "update :stack conj (inc (:pc"),
     has(CoreCode, ":pc target-pc").
 
 verify_output(ProjectDir, PredKey, Arg, Expected) :-
