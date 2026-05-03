@@ -99,6 +99,10 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
   store i32 0, i32* %cb_ptr
 
+  ; Initialize last_entry_cpn = 0
+  %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
+  store i32 0, i32* %lcpn_ptr
+
   ret %WamState* %vm
 }
 
@@ -324,13 +328,13 @@ declare void @exit(i32)
 ; that put_variable uses as shared storage for aliased registers.
 define %Value @wam_heap_get(%WamState* %vm, i32 %addr) {
 entry:
-  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
-  %hc = load i32, i32* %hc_ptr
-  %ok = icmp ult i32 %addr, %hc
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
   br i1 %ok, label %load, label %abort
 
 abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hc)
+  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
   call void @exit(i32 3)
   unreachable
 
@@ -346,13 +350,13 @@ load:
 
 define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) {
 entry:
-  %hc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 7
-  %hc = load i32, i32* %hc_ptr
-  %ok = icmp ult i32 %addr, %hc
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_ptr
+  %ok = icmp ult i32 %addr, %hs
   br i1 %ok, label %store, label %abort
 
 abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_heap_w_bounds, i32 0, i32 0), i32 %addr, i32 %hc)
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_heap_w_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
   call void @exit(i32 3)
   unreachable
 
@@ -455,8 +459,20 @@ done:
 ; register indices (which are always 0-63). unwind_trail reads that
 ; bit to pick reg_set vs heap_set on restore.
 define void @wam_trail_heap_binding(%WamState* %vm, i32 %addr, %Value %old_val) {
+entry:
   %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %ts = load i32, i32* %ts_ptr
+  %tc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 10
+  %tc = load i32, i32* %tc_ptr
+  %ovf = icmp sge i32 %ts, %tc
+  br i1 %ovf, label %abort, label %store
+
+abort:
+  call i32 (i8*, ...) @printf(i8* getelementptr ([42 x i8], [42 x i8]* @.fmt_trail_oom, i32 0, i32 0), i32 %ts, i32 %tc)
+  call void @exit(i32 4)
+  unreachable
+
+store:
   %trail_arr_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 8
   %trail_arr = load %TrailEntry*, %TrailEntry** %trail_arr_ptr
   %entry_ptr = getelementptr %TrailEntry, %TrailEntry* %trail_arr, i32 %ts
@@ -683,6 +699,9 @@ define void @wam_push_unify_ctx(%WamState* %vm, %Value* %args, i32 %count) {
   ; data = args pointer
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   store %Value* %args, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
   ret void
@@ -707,6 +726,9 @@ define void @wam_push_write_ctx(%WamState* %vm, i32 %count) {
   ; data = null (will be set by put_structure after this call)
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   store %Value* null, %Value** %data_ptr
+  ; Initialize cut_barrier = 0
+  %cb_fld_w = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 4
+  store i32 0, i32* %cb_fld_w
   %new_ss = add i32 %ss, 1
   store i32 %new_ss, i32* %ss_ptr
   ret void
@@ -941,7 +963,8 @@ grow:
   %old_raw = bitcast %Value* %old_ptr to i8*
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new_raw, i8* %old_raw, i64 %old_bytes, i1 false)
   store %Value* %new_typed, %Value** %old_ptr_ptr
-  ; Free old (we skip this to avoid use-after-free complications in minimal impl)
+  ; Free old buffer
+  call void @free(i8* %old_raw)
   br label %store
 
 store:
