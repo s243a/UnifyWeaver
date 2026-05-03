@@ -12,6 +12,7 @@
 :- dynamic user:wam_choice_caller/1.
 :- dynamic user:wam_struct_fact/1.
 :- dynamic user:wam_use_struct/1.
+:- dynamic user:wam_pair_lmdb/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X) :- user:wam_fact(X).
@@ -230,6 +231,115 @@ test(runtime_source_components) :-
         assertion(sub_string(Code, _, _, _, 'def step(')),
         assertion(sub_string(Code, _, _, _, 'def run(')),
         assertion(sub_string(Code, _, _, _, 'def runPredicate(')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+% ------------------------------------------------------------------
+% Phase S8: LMDB FactSource (memory-mapped fact source)
+% Mirrors the Elixir test pattern (test_wam_elixir_target.pl):
+% emit-and-grep on the runtime adaptor, indirect class resolution,
+% safe key/value API surface.
+% ------------------------------------------------------------------
+test(lmdb_adaptor_emitted_in_runtime) :-
+    once((
+        unique_scala_tmp_dir('tmp_scala_lmdb_adaptor', TmpDir),
+        write_wam_scala_project(
+            [user:wam_fact/1],
+            [package('generated.wam_scala_lmdb.core'),
+             runtime_package('generated.wam_scala_lmdb.runtime')],
+            TmpDir),
+        directory_file_path(TmpDir,
+            'src/main/scala/generated/wam_scala_lmdb/core/WamRuntime.scala',
+            RuntimePath),
+        read_file_to_string(RuntimePath, Code, []),
+        assertion(sub_string(Code, _, _, _, 'final class LmdbFactSource(')),
+        % Spec parameters every driver needs.
+        assertion(sub_string(Code, _, _, _, 'envPath: String')),
+        assertion(sub_string(Code, _, _, _, 'dbName: String')),
+        assertion(sub_string(Code, _, _, _, 'dupsort: Boolean')),
+        % Three FactSource callbacks (the Elixir behaviour callbacks).
+        assertion(sub_string(Code, _, _, _, 'def streamAll(')),
+        assertion(sub_string(Code, _, _, _, 'def lookupByArg1(')),
+        assertion(sub_string(Code, _, _, _, 'def close(')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(lmdb_adaptor_uses_indirect_class_resolution) :-
+    once((
+        unique_scala_tmp_dir('tmp_scala_lmdb_indirect', TmpDir),
+        write_wam_scala_project(
+            [user:wam_fact/1],
+            [package('generated.wam_scala_lmdb.core'),
+             runtime_package('generated.wam_scala_lmdb.runtime')],
+            TmpDir),
+        directory_file_path(TmpDir,
+            'src/main/scala/generated/wam_scala_lmdb/core/WamRuntime.scala',
+            RuntimePath),
+        read_file_to_string(RuntimePath, Code, []),
+        % Same constraint as the Elixir SQLite/LMDB adaptors: the
+        % runtime must NOT have a literal `import org.lmdbjava._` —
+        % drivers without lmdbjava on the classpath would fail to
+        % compile. Class.forName resolves at runtime instead.
+        assertion(sub_string(Code, _, _, _, 'Class.forName("org.lmdbjava.')),
+        assertion(\+ sub_string(Code, _, _, _, 'import org.lmdbjava')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(lmdb_adaptor_targets_safe_keyvalue_api) :-
+    once((
+        unique_scala_tmp_dir('tmp_scala_lmdb_safeapi', TmpDir),
+        write_wam_scala_project(
+            [user:wam_fact/1],
+            [package('generated.wam_scala_lmdb.core'),
+             runtime_package('generated.wam_scala_lmdb.runtime')],
+            TmpDir),
+        directory_file_path(TmpDir,
+            'src/main/scala/generated/wam_scala_lmdb/core/WamRuntime.scala',
+            RuntimePath),
+        read_file_to_string(RuntimePath, Code, []),
+        % Contract per docs/WAM_TARGET_ROADMAP.md: avoid the raw-
+        % pointer interface that crashed Haskell. Txn.get + cursor
+        % seek/first/next are the safe layer. Reject any pointer-deref
+        % shape (mdb_val, getDirectBufferAddress, nativeAddress).
+        assertion(sub_string(Code, _, _, _, 'txnRead')),
+        assertion(sub_string(Code, _, _, _, 'openCursor')),
+        assertion(sub_string(Code, _, _, _, 'MDB_SET')),
+        assertion(sub_string(Code, _, _, _, 'MDB_NEXT_DUP')),
+        assertion(\+ sub_string(Code, _, _, _, 'MDB_val')),
+        assertion(\+ sub_string(Code, _, _, _, 'getDirectBufferAddress')),
+        assertion(\+ sub_string(Code, _, _, _, 'nativeAddress')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(lmdb_fact_source_emits_handler) :-
+    once((
+        unique_scala_tmp_dir('tmp_scala_lmdb_handler', TmpDir),
+        write_wam_scala_project(
+            [user:wam_pair_lmdb/2],
+            [package('generated.wam_scala_lmdb_h.core'),
+             runtime_package('generated.wam_scala_lmdb_h.runtime'),
+             scala_fact_sources([
+                source(wam_pair_lmdb/2,
+                       lmdb([env_path('/tmp/test_lmdb_env'),
+                             dbi('test_db'),
+                             dupsort(true)]))
+             ])],
+            TmpDir),
+        directory_file_path(TmpDir,
+            'src/main/scala/generated/wam_scala_lmdb_h/core/GeneratedProgram.scala',
+            ProgramPath),
+        read_file_to_string(ProgramPath, Code, []),
+        % The spec should produce a thin handler that delegates to
+        % LmdbFactSource. Driver-supplied env_path / dbi / dupsort
+        % are baked into the handler-instance constructor.
+        assertion(sub_string(Code, _, _, _, 'new LmdbFactSource(')),
+        assertion(sub_string(Code, _, _, _, 'envPath = "/tmp/test_lmdb_env"')),
+        assertion(sub_string(Code, _, _, _, 'dbName  = "test_db"')),
+        assertion(sub_string(Code, _, _, _, 'dupsort = true')),
+        % Dispatch on arg1 ground / unbound — same shape as the
+        % Elixir lookup_by_arg1 vs stream_all callback split.
+        assertion(sub_string(Code, _, _, _, 'source.lookupByArg1(')),
+        assertion(sub_string(Code, _, _, _, 'source.streamAll(')),
         delete_directory_and_contents(TmpDir)
     )).
 
