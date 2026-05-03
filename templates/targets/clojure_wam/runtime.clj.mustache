@@ -802,6 +802,9 @@
           "true/0"
           (advance state)
 
+          "fail/0"
+          (backtrack state)
+
           "!/0"
           (-> state
               (update :choice-points #(vec (take (:cut-bar state) %)))
