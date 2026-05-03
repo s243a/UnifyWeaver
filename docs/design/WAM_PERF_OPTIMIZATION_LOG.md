@@ -2460,24 +2460,71 @@ The "auto + high fact_count + lmdb installed → true" path is
 environment-gated so we don't test it directly here; the resolver's
 guard logic is fully covered by the false-paths.
 
-### Open follow-ups
+### Phase L appendix #2: accumulator-passing kernel rewrite + bench harness wiring (2026-05-03)
 
-1. **Bench harness wiring for `use_lmdb(auto)`** — the resolver is
-   in place; the matrix bench harness still passes manual
-   `use_lmdb(true)` only. A future change should pass
-   `use_lmdb(auto), fact_count(N)` and let the resolver decide,
-   ideally with a separate matrix variant for "auto-pick LMDB"
-   alongside the current explicit pair.
-2. **Accumulator-passing rewrite** — replace `map (+1) $ go ...` with
-   an explicit depth offset passed down the recursion. Should reduce
-   intermediate list allocation. Filed for a follow-up branch since
-   it's a different optimization axis from IntSet visited.
-3. **ST-monad / IORef state** for the Haskell WAM hot loop — the bigger
+Two of the Phase L open follow-ups closed on this branch:
+
+**Accumulator-passing rewrite.** The kernel previously returned
+relative hop counts and post-incremented via `map (+1) $ go ...` in
+the recursion. GHC's list fusion can in principle eliminate that
+extra pass, but `(baseHits ++ recHits)` breaks the build/foldr
+pattern fusion needs — so without fusion, the post-traversal cost
+compounds to O(N²) at depth N. Rewrite passes `acc :: Int` down,
+returning absolute hop counts directly.
+
+Validated at synth_chain_300:
+
+| variant | Phase L only (ms) | + accumulator (ms) | improvement |
+|---|---:|---:|---:|
+| intset | 18.0 | 16.0 | ~12% |
+| lowered | 22.0 | 14.5 | 1.5× |
+| unlowered | 31.0 | 10.5 | ~3.0× |
+
+The intset variant's improvement is small because IntSet visited
+already eliminated most of the inner-loop cost; the accumulator
+mostly helps the lowered/unlowered paths whose visited check is
+unchanged. The 3× on unlowered is the load-bearing measurement —
+shows the post-traversal `map` was a real cost on this shape.
+tuple_count=200 across all variants — correctness preserved.
+
+**Bench harness wiring for `use_lmdb(auto)`.** The resolver from
+Phase L appendix #1 was dormant — no bench fed it `fact_count(N)`
+or set `use_lmdb(auto)`. Wiring now in place:
+
+- `generate_wam_haskell_matrix_benchmark.pl` counts
+  `category_parent/2` clauses in the facts.pl and passes
+  `fact_count(N)` in Options. New optional 6th CLI arg
+  `<lmdb_mode>` ∈ {none, auto, true, false} translates to
+  `use_lmdb(...)` in Options.
+- `benchmark_effective_distance_matrix.py` threads `lmdb_mode`
+  through `build_haskell_effective_distance` and adds a dispatch
+  arm for the new `haskell-interp-ffi-auto` target.
+- `benchmark_target_matrix.py` registers the new target in the
+  `hybrid-wam` category.
+
+Verified at scale-300: `haskell-interp-ffi-auto` produces the same
+output sha (`70bbc9ffa4cf`, 271 rows) as the explicit
+`haskell-interp-ffi` target. In a dev environment without the
+Haskell `lmdb` package installed the resolver falls back to
+`use_lmdb(false)` per the documented contract; the `[WAM-Haskell]
+use_lmdb(auto): ghc-pkg does not list lmdb; falling back to IntMap`
+stderr line confirms the resolver fired.
+
+### Open follow-ups (post-Phase-L appendix #2)
+
+1. **ST-monad / IORef state** for the Haskell WAM hot loop — the bigger
    structural change that would close more of the residual Rust gap.
    Multi-PR architectural arc; see `project_wam_haskell_st_monad_plan.md`
    notes.
-4. **Optional firewall hook** in the auto-mode resolver — consult
+2. **Optional firewall hook** in the auto-mode resolver — consult
    `firewall_check(use_lmdb, R)` before the ghc-pkg check, so a
    strict-mode deployment can refuse LMDB even when it's installable.
    Requires extending the firewall's tool registry to know about
    Haskell library packages, not just executables.
+3. **Run the auto target with the lmdb cabal package installed** to
+   verify the "auto + high fact_count + lmdb available → true" path
+   works end-to-end. Requires environmental setup (cabal install lmdb +
+   LMDB-ingested data); the wiring itself is in place.
+4. **Scale 5k/10k matrix runs** with the kernel changes, to see how
+   the Haskell-vs-Rust gap evolves at larger wiki scales. Each run
+   is ~5-15 min wall time so deferred for budget.
