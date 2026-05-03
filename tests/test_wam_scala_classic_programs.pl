@@ -128,7 +128,7 @@ scala_available :-
 test(list_reverse) :-
     with_scala_project(
         [user:rev_acc/3, user:list_reverse/2],
-        [ intern_atoms([a, b, c, d]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'list_reverse/2',
@@ -146,7 +146,7 @@ test(list_reverse) :-
 test(naive_reverse) :-
     with_scala_project(
         [user:nrev/2],
-        [ intern_atoms([a, b, c, d]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'nrev/2',
