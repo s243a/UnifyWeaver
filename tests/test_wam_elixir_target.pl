@@ -720,6 +720,55 @@ test_sqlite_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'SQLite adaptor has literal Exqlite references — will warn without dep')
     ).
 
+%% LMDB adaptor (memory-mapped fact source — addresses the
+%  materialisation-cost bottleneck documented in
+%  docs/WAM_TARGET_ROADMAP.md). Mirrors the SQLite tests pattern
+%  emit-and-grep + indirect-module-resolution check.
+test_lmdb_adaptor_emitted_in_runtime :-
+    Test = 'LMDB adaptor: runtime assembly emits FactSource.Lmdb',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Lmdb do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defstruct [:env, :dbi, :arity, :dupsort]'),
+        % Three FactSource callbacks present.
+        sub_string(RuntimeCode, _, _, _, 'def stream_all('),
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1('),
+        sub_string(RuntimeCode, _, _, _, 'def close(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor missing expected structure')
+    ).
+
+test_lmdb_adaptor_uses_indirect_module_resolution :-
+    Test = 'LMDB adaptor: uses Module.concat so runtime compiles without an LMDB binding dep',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Same constraint as SQLite: the adaptor must NOT call Elmdb.X
+    % as a literal — that warns in drivers without the LMDB binding.
+    (   sub_string(RuntimeCode, _, _, _, 'Module.concat([Elmdb])'),
+        sub_string(RuntimeCode, _, _, _, 'apply(mod,'),
+        \+ sub_string(RuntimeCode, _, _, _, 'Elmdb.ro_txn_begin'),
+        \+ sub_string(RuntimeCode, _, _, _, 'Elmdb.txn_get(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
+    ).
+
+test_lmdb_adaptor_targets_safe_keyvalue_api :-
+    Test = 'LMDB adaptor: uses safe key/value + cursor API (no raw-pointer ops)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Contract per WAM_TARGET_ROADMAP.md: avoid the raw-pointer
+    % interface that crashed Haskell. txn_get + cursor get/next are
+    % the safe layer; reject any pointer-deref shape.
+    (   sub_string(RuntimeCode, _, _, _, 'txn_get'),
+        sub_string(RuntimeCode, _, _, _, 'ro_txn_cursor_get'),
+        % Dupsort path uses MDB_SET / MDB_NEXT_DUP cursor ops.
+        sub_string(RuntimeCode, _, _, _, ':next_dup'),
+        sub_string(RuntimeCode, _, _, _, ':set'),
+        % No raw pointer / mdb_val references (those are the unsafe layer).
+        \+ sub_string(RuntimeCode, _, _, _, 'mdb_val'),
+        \+ sub_string(RuntimeCode, _, _, _, 'raw_pointer')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor missing safe-API surface or includes raw-pointer ops')
+    ).
+
 %% Tier-2 infrastructure tests (see docs/design/WAM_TIERED_LOWERING.md)
 %% These exercise precondition scaffolding only — PR2 wires
 %% par_wrap_segment/3 on top of them.
@@ -1762,6 +1811,9 @@ run_tests :-
     test_ets_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_uses_indirect_module_resolution,
+    test_lmdb_adaptor_emitted_in_runtime,
+    test_lmdb_adaptor_uses_indirect_module_resolution,
+    test_lmdb_adaptor_targets_safe_keyvalue_api,
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
