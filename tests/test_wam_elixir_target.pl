@@ -1502,6 +1502,70 @@ test_par_wrap_segment_kill_switch :-
         retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
     ).
 
+%% Cost-aware gate (audit-driven follow-up to PRs #1774 / #1778).
+%  par_wrap_segment/4 now consults a `forkMinCost(N)` Option: if the
+%  predicates worst-case clause body scores below N on the static
+%  instruction-weighted cost model, the super-wrapper is suppressed
+%  (Code = "") and the clauses run sequentially. Default MinCost=0
+%  preserves prior behaviour.
+
+%% A high-cost fixture: each clause body has begin_aggregate (10) +
+%  call (5) + put_constant (1) + end_aggregate (5) + proceed (1) +
+%  control (try_me_else / retry_me_else / trust_me, 1 each) → ~22-23
+%  per clause. Above any reasonable forkMinCost threshold.
+heavy_segment_fixture([
+    'clause_start'-[1-try_me_else(l_b), 2-put_constant("x", "A1"),
+                    3-begin_aggregate(":collect", "X2", "X1"),
+                    4-call("inner/1", 1), 5-end_aggregate("X2"), 6-proceed],
+    'l_b'-[7-retry_me_else(l_c), 8-put_constant("y", "A1"),
+           9-begin_aggregate(":collect", "X2", "X1"),
+           10-call("inner/1", 1), 11-end_aggregate("X2"), 12-proceed],
+    'l_c'-[13-trust_me, 14-put_constant("z", "A1"),
+           15-begin_aggregate(":collect", "X2", "X1"),
+           16-call("inner/1", 1), 17-end_aggregate("X2"), 18-proceed]
+]).
+
+test_par_wrap_segment_cost_gate_rejects_low_cost :-
+    Test = 'Tier-2 cost gate: forkMinCost above clause cost forces fall-through',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),  % cost ~3-4 per clause
+            par_wrap_segment(tier2_pure3/2, Segs, [forkMinCost(20)], Code),
+            Code == ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'cost gate did not suppress wrapper for low-cost predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_cost_gate_passes_high_cost :-
+    Test = 'Tier-2 cost gate: forkMinCost below clause cost still emits wrapper',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   heavy_segment_fixture(Segs),  % cost ~22-23 per clause
+            par_wrap_segment(tier2_pure3/2, Segs, [forkMinCost(20)], Code),
+            Code \== "",
+            % Sanity: the emitted wrapper still has the cond/Task.async_stream shape.
+            sub_string(Code, _, _, _, "Task.async_stream")
+        ->  pass(Test)
+        ;   fail_test(Test, 'cost gate wrongly suppressed wrapper for high-cost predicate')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_cost_gate_default_zero :-
+    Test = 'Tier-2 cost gate: default MinCost=0 preserves prior behaviour (low-cost still wraps)',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            Code \== ""
+        ->  pass(Test)
+        ;   fail_test(Test, 'default MinCost=0 incorrectly suppressed wrapper')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
 maybe_abolish_test_predicate(Name/Arity) :-
     (   current_predicate(user:Name/Arity)
     ->  abolish(user:Name/Arity)
@@ -1667,6 +1731,9 @@ run_tests :-
     test_switch_arm_targets_are_segments,
     test_par_wrap_segment_covers_switch_targets,
     test_par_wrap_segment_kill_switch,
+    test_par_wrap_segment_cost_gate_rejects_low_cost,
+    test_par_wrap_segment_cost_gate_passes_high_cost,
+    test_par_wrap_segment_cost_gate_default_zero,
     test_wiring_emits_tier2_eligible_attr,
     test_wiring_clause_main_is_super_wrapper_on_gate_pass,
     test_wiring_gate_reject_preserves_naming,

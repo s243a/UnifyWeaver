@@ -1150,6 +1150,19 @@ par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
     \+ option(intra_query_parallel(false), Options),
     tier2_purity_eligible(Pred, Arity, _Cert),
     length(Segments, N), N >= 3,
+    % Cost-aware gate: opt-in via `forkMinCost(N)` Option. The
+    % per-clause body is statically scored (1 unit baseline, 5 for
+    % calls/builtin_calls, 10 for begin_aggregate, etc.); only the
+    % MAX clause cost has to clear the threshold (worst-case branch
+    % cost dominates the parallel-overhead amortisation). Default
+    % MinCost=0 keeps behaviour unchanged — anything passes — so
+    % existing Tier-2 tests that exercise the parallel arm with
+    % low-cost bodies still fire. Setting `forkMinCost(15)` (or
+    % similar) per the benchmark crossover blocks the parallel-loses
+    % regime documented in benchmarks/wam_elixir_tier2_findall.md.
+    option(forkMinCost(MinCost), Options, 0),
+    predicate_cost(Segments, EstCost),
+    EstCost >= MinCost,
     !,
     Segments = [FirstName-_|_],
     segment_func_name(FirstName, "", EntryFunc),
@@ -1164,6 +1177,45 @@ par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
             Segments, BranchFuncs),
     emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchFuncs, Code).
 par_wrap_segment(_Pred, _Segments, _Options, "").
+
+%% predicate_cost(+Segments, -Cost)
+%  Static per-execution cost estimate for a Tier-2 candidates worst-
+%  case branch. Segments are Name-Instrs pairs; we sum the per-
+%  instruction weights for each clause and take the max — parallel
+%  speedup is bounded by the slowest branch, so the heaviest clause
+%  body is what determines whether parallel-overhead amortises.
+predicate_cost(Segments, Cost) :-
+    maplist([_-Instrs, C]>>clause_cost(Instrs, C), Segments, ClauseCosts),
+    (   ClauseCosts == []
+    ->  Cost = 0
+    ;   max_list(ClauseCosts, Cost)
+    ).
+
+clause_cost(Instrs, Cost) :-
+    % Segments hold PC-Instr pairs (the PC is the source-line index
+    % attached during parsing); strip the PC tag before scoring.
+    maplist([Pair, C]>>(Pair = _-Instr, instr_cost(Instr, C)), Instrs, Costs),
+    sum_list(Costs, Cost).
+
+%% instr_cost(+Instr, -Weight)
+%  Rough static weights for WAM instructions in BEAM-interpreted
+%  Elixir. Calibrated against benchmarks/wam_elixir_tier2_findall.md
+%  crossover data: a fact-only predicate (just `proceed`) scores ~1,
+%  a rule body with one call scores ~7-10, an inline-findall body
+%  scores ~17. forkMinCost values around 10-15 separate the parallel-
+%  loses regime from the parallel-wins regime for typical workloads.
+instr_cost(builtin_call(_, _),    5) :- !.
+instr_cost(call(_, _),            5) :- !.
+instr_cost(execute(_),            5) :- !.
+instr_cost(begin_aggregate(_, _, _), 10) :- !.
+instr_cost(end_aggregate(_),      5) :- !.
+instr_cost(put_structure(_, _),   3) :- !.
+instr_cost(get_structure(_, _),   3) :- !.
+instr_cost(put_list(_),           3) :- !.
+instr_cost(get_list(_),           3) :- !.
+instr_cost(switch_on_constant(_), 2) :- !.
+instr_cost(switch_on_constant_a2(_), 2) :- !.
+instr_cost(_,                     1).
 
 %% emit_par_tier2_wrapper(+EntryFunc, +EntryImplFunc, +BranchImplFuncs, -Code)
 %  Formats the `cond`-based super-wrapper per the template in
