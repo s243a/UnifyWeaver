@@ -2314,22 +2314,21 @@ object WamRuntime {
         (s"$n/$arity", sargs)
       case _ => return None
     }
-    program.dispatch.get(key) match {
-      case None => None
-      case Some(startPc) =>
-        // Snapshot outer state.
-        val savedPc        = s.pc
-        val savedCallStack = s.callStack
-        val savedTrailLen  = s.trail.length
-        val savedCPs       = s.choicePoints
-        val savedRegs      = s.regs.clone()
-        val savedEnvStack  = s.envStack
-        val savedNextVarId = s.nextVarId
-        val savedCutBar    = s.cutBar
-        val savedStatus    = s.status
-        val savedUnifyQ    = s.unifyQueue
-        val savedBuildStk  = s.buildStack
+    // Snapshot outer state before either dispatch or builtin probing.
+    val savedPc        = s.pc
+    val savedCallStack = s.callStack
+    val savedTrailLen  = s.trail.length
+    val savedCPs       = s.choicePoints
+    val savedRegs      = s.regs.clone()
+    val savedEnvStack  = s.envStack
+    val savedNextVarId = s.nextVarId
+    val savedCutBar    = s.cutBar
+    val savedStatus    = s.status
+    val savedUnifyQ    = s.unifyQueue
+    val savedBuildStk  = s.buildStack
 
+    val result = program.dispatch.get(key) match {
+      case Some(startPc) =>
         // Set up the goal's call frame. callStack is empty so Proceed
         // will mark the sub-run as Succeeded rather than try to return
         // to the outer caller.
@@ -2345,23 +2344,44 @@ object WamRuntime {
         s.status       = Running
 
         while (s.status == Running) step(s, program)
-        val ok = s.status == Succeeded
-
-        // Restore — \+ does not propagate any bindings from the goal.
-        unwindTrail(s, savedTrailLen)
-        System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
-        s.callStack    = savedCallStack
-        s.choicePoints = savedCPs
-        s.envStack     = savedEnvStack
-        s.nextVarId    = savedNextVarId
-        s.cutBar       = savedCutBar
-        s.unifyQueue   = savedUnifyQ
-        s.buildStack   = savedBuildStk
-        s.pc           = savedPc
-        s.status       = savedStatus
-
-        Some(ok)
+        Some(s.status == Succeeded)
+      case None =>
+        builtinMetaCallSucceeds(s, program, key, args)
     }
+
+    // Restore — \+ does not propagate any bindings from the goal.
+    unwindTrail(s, savedTrailLen)
+    System.arraycopy(savedRegs, 0, s.regs, 0, REG_ARRAY_SIZE)
+    s.callStack    = savedCallStack
+    s.choicePoints = savedCPs
+    s.envStack     = savedEnvStack
+    s.nextVarId    = savedNextVarId
+    s.cutBar       = savedCutBar
+    s.unifyQueue   = savedUnifyQ
+    s.buildStack   = savedBuildStk
+    s.pc           = savedPc
+    s.status       = savedStatus
+
+    result
+  }
+
+  def builtinMetaCallSucceeds(s: WamState, program: WamProgram,
+                              key: String, args: Array[WamTerm]): Option[Boolean] = key match {
+    case "member/2" if args.length == 2 =>
+      listToSeq(s, program, args(1)) match {
+        case None => Some(false)
+        case Some(items) =>
+          val baseTrail = s.trail.length
+          var ok = false
+          val it = items.iterator
+          while (!ok && it.hasNext) {
+            unwindTrail(s, baseTrail)
+            ok = unify(s, args(0), it.next())
+          }
+          unwindTrail(s, baseTrail)
+          Some(ok)
+      }
+    case _ => None
   }
 
   // ----------------------------------------------------------

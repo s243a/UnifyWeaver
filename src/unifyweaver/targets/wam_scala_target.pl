@@ -152,6 +152,21 @@ tokenize_wam_chars([C|Rest], CurR, Acc, inside, Tokens) :-
 %   "execute wam_fact/1"        — 2 tokens, name/arity in one
 %   "call wam_fact/1, 1"        — 3 tokens after comma stripping, name and arity
 % Either form should yield Call("wam_fact", 1) / Execute("wam_fact", 1).
+wam_parts_to_scala(Parts, Options, Lit) :-
+    wam_parts_to_foreign_call(Parts, Options, Lit), !.
+wam_parts_to_scala(Parts, _Options, Lit) :-
+    wam_parts_to_scala(Parts, Lit).
+
+wam_parts_to_foreign_call(["call", PredArity], Options, Lit) :-
+    parse_functor_arity(PredArity, PredName, Arity),
+    scala_foreign_predicate(PredName, Arity, Options),
+    format(string(Lit), 'CallForeign("~w", ~w)', [PredName, Arity]).
+wam_parts_to_foreign_call(["call", Pred, ArityStr], Options, Lit) :-
+    number_string(Arity, ArityStr),
+    strip_arity_suffix(Pred, PredName),
+    scala_foreign_predicate(PredName, Arity, Options),
+    format(string(Lit), 'CallForeign("~w", ~w)', [PredName, Arity]).
+
 wam_parts_to_scala(["call", PredArity], Lit) :-
     parse_functor_arity(PredArity, PredName, Arity),
     format(string(Lit), 'Call("~w", ~w)', [PredName, Arity]).
@@ -446,12 +461,15 @@ struct_case_lit(struct(FId, Arity, Label), Lit) :-
 %    LabelMap:     list of "label" -> pc pairs (for label resolution)
 %    LabelEntries: list of formatted '"label" -> N' strings
 wam_code_to_scala_data(WamCode, Instructions, LabelMap, LabelEntries) :-
+    wam_code_to_scala_data(WamCode, [], Instructions, LabelMap, LabelEntries).
+
+wam_code_to_scala_data(WamCode, Options, Instructions, LabelMap, LabelEntries) :-
     atom_string(WamCode, Str),
     split_string(Str, "\n", "", Lines),
-    wam_lines_to_data(Lines, 0, Instructions, LabelMap, LabelEntries).
+    wam_lines_to_data(Lines, Options, 0, Instructions, LabelMap, LabelEntries).
 
-wam_lines_to_data([], _, [], [], []).
-wam_lines_to_data([Line|Rest], PC, Instructions, LabelMap, LabelEntries) :-
+wam_lines_to_data([], _, _, [], [], []).
+wam_lines_to_data([Line|Rest], Options, PC, Instructions, LabelMap, LabelEntries) :-
     tokenize_wam_line(Line, Parts),
     (   Parts = [First|_], sub_string(First, _, 1, 0, ":")
     ->  % Label line: extract name, no instruction emitted
@@ -459,15 +477,15 @@ wam_lines_to_data([Line|Rest], PC, Instructions, LabelMap, LabelEntries) :-
         format(string(LEntry), '    "~w" -> ~w', [LabelName, PC]),
         LabelMap  = [LabelName-PC | LM2],
         LabelEntries = [LEntry | LE2],
-        wam_lines_to_data(Rest, PC, Instructions, LM2, LE2)
+        wam_lines_to_data(Rest, Options, PC, Instructions, LM2, LE2)
     ;   Parts = []
     ->  % Blank line
-        wam_lines_to_data(Rest, PC, Instructions, LabelMap, LabelEntries)
+        wam_lines_to_data(Rest, Options, PC, Instructions, LabelMap, LabelEntries)
     ;   % Instruction line
-        wam_parts_to_scala(Parts, Lit),
+        wam_parts_to_scala(Parts, Options, Lit),
         PC1 is PC + 1,
         Instructions = [Lit | Instrs2],
-        wam_lines_to_data(Rest, PC1, Instrs2, LabelMap, LabelEntries)
+        wam_lines_to_data(Rest, Options, PC1, Instrs2, LabelMap, LabelEntries)
     ).
 
 % ============================================================================
@@ -513,7 +531,7 @@ compile_all_predicates([Pred|Rest], Options, BasePC,
         NewAllLabels = [MainEntry | AllLabelAcc]
     ;   % WAM compile
         compile_predicate_to_wam(P/Arity, [], WamCode),
-        wam_code_to_scala_data(WamCode, PredInstrs, _LMap, PredSubLabelEntries0),
+        wam_code_to_scala_data(WamCode, Options, PredInstrs, _LMap, PredSubLabelEntries0),
         length(PredInstrs, PredLen),
         NewPC is BasePC + PredLen,
         % Offset sub-clause labels by BasePC
@@ -609,9 +627,13 @@ string_lower_char(S, L) :-
 %% scala_foreign_predicate(+Pred, +Arity, +Options) is semidet.
 %  True if Pred/Arity should be treated as a foreign predicate stub.
 scala_foreign_predicate(Pred, Arity, Options) :-
+    (   string(Pred)
+    ->  atom_string(PredAtom, Pred)
+    ;   PredAtom = Pred
+    ),
     option(foreign_predicates(FPs), Options, []),
-    (   member(Pred/Arity, FPs)
-    ;   member(_:Pred/Arity, FPs)
+    (   member(PredAtom/Arity, FPs)
+    ;   member(_:PredAtom/Arity, FPs)
     ), !.
 
 %% scala_foreign_handlers_code(+Options, -Code) is det.
@@ -712,7 +734,7 @@ fact_source_spec_to_handler_code(2, grouped_by_first(Path), Code) :-
     atom_string(Path, PathStr),
     scala_string_literal(PathStr, PathLit),
     format(string(Code),
-           "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if internTable.isInRange(id) => Some(internTable.stringAt(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if internTable.isInRange(id) => Some(internTable.stringOf(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [PathLit]).
 fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
     !,
