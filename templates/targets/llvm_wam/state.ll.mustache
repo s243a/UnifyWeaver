@@ -410,11 +410,9 @@ define %Value @wam_get_reg_deref(%WamState* %vm, i32 %idx) {
 ; Bind a register to a value. If the register currently holds a Ref
 ; (put_variable aliasing), write through to the referenced heap cell
 ; AND record a trail entry so a subsequent backtrack unwinds the
-; binding. Caller is expected to have already trailed the register
-; slot itself (via wam_trail_binding) for the case where we write
-; directly to the reg. No Ref-chain following — put_variable creates
-; depth-1 Refs, and more exotic chains would also require the
-; structural-unify path to produce them.
+; binding. No Ref-chain following — put_variable creates depth-1 Refs,
+; and more exotic chains would also require the structural-unify path
+; to produce them.
 define void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val) {
 entry:
   %cur = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
@@ -429,6 +427,7 @@ heap_bind:
   call void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val)
   ret void
 reg_bind:
+  call void @wam_trail_binding(%WamState* %vm, i32 %idx)
   call void @wam_set_reg(%WamState* %vm, i32 %idx, %Value %val)
   ret void
 }
@@ -842,12 +841,8 @@ get_arg:
 pop_arg:
   %data_ptr = getelementptr %StackEntry, %StackEntry* %se, i32 0, i32 2
   %args = load %Value*, %Value** %data_ptr
-  ; Calculate offset: total_args - remaining = index of next arg
-  ; We use a simple scheme: data points to start, aux counts down
-  ; Actually, we need an index. Store consumed count differently.
-  ; Simpler: use aux as index into args, increment after read
-  %idx = sub i32 %count32, %count32  ; start from 0...
-  ; Actually, let's use aux as remaining count and shift the pointer
+  ; We use a simple scheme: data points to the next arg to read,
+  ; aux counts down the remaining number of args.
   %arg_ptr = load %Value, %Value* %args
   ; Advance data pointer
   %next_args = getelementptr %Value, %Value* %args, i32 1
@@ -1012,6 +1007,8 @@ sum_body:
   %next_s = add i32 %i_s, 1
   br label %sum_loop
 sum_done:
+  ; PHI value %acc_s is valid here as %sum_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %s_val = insertvalue %Value undef, i32 1, 0    ; Integer tag
   %s_final = insertvalue %Value %s_val, i64 %acc_s, 1
   ret %Value %s_final
@@ -1042,6 +1039,8 @@ min_body:
   %next_m = add i32 %i_m, 1
   br label %min_loop
 min_done:
+  ; PHI value %best_m is valid here as %min_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %m_val = insertvalue %Value undef, i32 1, 0
   %m_final = insertvalue %Value %m_val, i64 %best_m, 1
   ret %Value %m_final
@@ -1071,6 +1070,8 @@ max_body:
   %next_x = add i32 %i_x, 1
   br label %max_loop
 max_done:
+  ; PHI value %best_x is valid here as %max_done is a direct successor
+  ; of the loop block and the edge carries the final iteration state.
   %x_val = insertvalue %Value undef, i32 1, 0
   %x_final = insertvalue %Value %x_val, i64 %best_x, 1
   ret %Value %x_final
@@ -1142,6 +1143,9 @@ exit:
 ; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory.
 ;
 ; Usage:  mark → alloc … alloc → rewind (restores to mark).
+; NOTE: The arena implementation below uses module-level global state
+; and is NOT thread-safe. Multiple concurrent WamState instances
+; will race on these globals.
 
 @wam_arena_buf = internal global i8* null
 @wam_arena_pos = internal global i64 0
