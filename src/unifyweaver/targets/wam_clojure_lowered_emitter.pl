@@ -266,6 +266,10 @@ clojure_direct_builtin("=/2", "2").
 clojure_direct_builtin("=/2", 2).
 clojure_direct_builtin('=/2', "2").
 clojure_direct_builtin('=/2', 2).
+clojure_direct_builtin("\\=/2", "2").
+clojure_direct_builtin("\\=/2", 2).
+clojure_direct_builtin('\\=/2', "2").
+clojure_direct_builtin('\\=/2', 2).
 clojure_direct_builtin("true/0", "0").
 clojure_direct_builtin("true/0", 0).
 clojure_direct_builtin('true/0', "0").
@@ -342,6 +346,13 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     format(atom(Expr),
            '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound) [ok next-state] (runtime/unify-values ~w left right)] (if ok (runtime/advance next-state) (runtime/backtrack ~w)))',
            [S, S, S, S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "\\=/2" ; Op == '\\=/2'),
+    !,
+    format(atom(Expr),
+           '(let [left (or (runtime/reg-get-raw ~w "A1") ::lowered-unbound) right (or (runtime/reg-get-raw ~w "A2") ::lowered-unbound)] (if (runtime/unifiable? ~w left right) (runtime/backtrack ~w) (runtime/advance ~w)))',
+           [S, S, S, S, S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "true/0" ; Op == 'true/0'),
