@@ -227,6 +227,8 @@ lowered_direct_prefix(_, _, []).
 lowered_terminal_direct_instr(call(_, _), allow_control).
 lowered_terminal_direct_instr(execute(_), allow_control).
 lowered_terminal_direct_instr(jump(_), allow_control).
+lowered_terminal_direct_instr(builtin_call(Op, Arity), _) :-
+    clojure_terminal_builtin(Op, Arity).
 lowered_terminal_direct_instr(proceed, _).
 lowered_terminal_direct_instr(fail, _).
 
@@ -274,10 +276,19 @@ clojure_direct_builtin("true/0", "0").
 clojure_direct_builtin("true/0", 0).
 clojure_direct_builtin('true/0', "0").
 clojure_direct_builtin('true/0', 0).
+clojure_direct_builtin("fail/0", "0").
+clojure_direct_builtin("fail/0", 0).
+clojure_direct_builtin('fail/0', "0").
+clojure_direct_builtin('fail/0', 0).
 clojure_direct_builtin("!/0", "0").
 clojure_direct_builtin("!/0", 0).
 clojure_direct_builtin('!/0', "0").
 clojure_direct_builtin('!/0', 0).
+
+clojure_terminal_builtin("fail/0", "0").
+clojure_terminal_builtin("fail/0", 0).
+clojure_terminal_builtin('fail/0', "0").
+clojure_terminal_builtin('fail/0', 0).
 
 emit_lowered_expr(proceed, S, Expr) :-
     format(atom(Expr), '(runtime/succeed-state ~w)', [S]).
@@ -358,6 +369,11 @@ emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     (Op == "true/0" ; Op == 'true/0'),
     !,
     format(atom(Expr), '(runtime/advance ~w)', [S]).
+emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
+    clojure_direct_builtin(Op, Arity),
+    (Op == "fail/0" ; Op == 'fail/0'),
+    !,
+    format(atom(Expr), '(runtime/backtrack ~w)', [S]).
 emit_lowered_expr(builtin_call(Op, Arity), S, Expr) :-
     clojure_direct_builtin(Op, Arity),
     (Op == "!/0" ; Op == '!/0'),

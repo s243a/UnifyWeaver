@@ -153,6 +153,14 @@ test(simple_builtin_true_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/succeed-state")
     )).
 
+test(simple_builtin_fail_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_fail/0, [builtin_call('fail/0', 0), proceed], [], Code),
+        has(Code, "runtime/backtrack"),
+        assertion(\+ has(Code, "runtime/succeed-state")),
+        assertion(\+ has(Code, "runtime/step"))
+    )).
+
 test(cut_builtin_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_cut/0:\nallocate\nbuiltin_call !/0, 0\ndeallocate\nproceed\n",
