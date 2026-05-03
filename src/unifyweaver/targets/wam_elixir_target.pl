@@ -2224,6 +2224,73 @@ defmodule WamRuntime.FactSource.Lmdb do
   end
 end
 
+defmodule WamRuntime.GraphKernel.TransitiveClosure do
+  @moduledoc """
+  Native transitive-closure kernel — bypasses WAM dispatch for the
+  canonical pattern:
+
+      tc(X, Z) :- edge(X, Z).
+      tc(X, Z) :- edge(X, Y), tc(Y, Z).
+
+  Iterative BFS using a MapSet for visited tracking. Composes with
+  any edge source — the callers neighbors_fn(node) callback returns
+  outgoing edges as `[{from, to}, ...]` tuples (matching the
+  FactSource lookup_by_arg1 contract). For LMDB-backed graphs the
+  callback closes over the FactSource handle; for in-memory ETS or
+  native lists it walks them directly.
+
+  Why bypass WAM: per benchmarks/wam_elixir_tier2_findall.md and
+  docs/WAM_TARGET_ROADMAP.md, kernel-based lowering is the largest
+  unrealised perf lever for graph workloads (Gos category_ancestor
+  FFI kernel hit 52x at scale-300). This is the first such kernel
+  for Elixir. Future work: pattern-recognition pass that detects
+  the tc/2 shape in source Prolog and routes calls here automatically.
+
+  Semantics: returns nodes reachable from `start` via at least one
+  edge step. The starting node itself is NOT included unless reachable
+  via a cycle (matches Prolog tc/2 — same as `findall(Z, tc(X, Z), Zs)`
+  with X bound, Z unbound).
+  """
+
+  @doc """
+  Reachable-set as an Elixir list. Order is not specified.
+
+  `neighbors_fn` is a 1-arity function: given a node, returns a list
+  of `{from, to}` tuples for outgoing edges. The from arg is the
+  query node (kept for FactSource-shape compatibility); only `to`
+  is used.
+  """
+  def reachable_from(neighbors_fn, start) when is_function(neighbors_fn, 1) do
+    seeds =
+      neighbors_fn.(start)
+      |> Enum.map(fn {_from, to} -> to end)
+    bfs(neighbors_fn, seeds, MapSet.new())
+    |> MapSet.to_list()
+  end
+
+  defp bfs(_fn, [], visited), do: visited
+  defp bfs(neighbors_fn, [node | rest], visited) do
+    if MapSet.member?(visited, node) do
+      bfs(neighbors_fn, rest, visited)
+    else
+      next =
+        neighbors_fn.(node)
+        |> Enum.map(fn {_from, to} -> to end)
+      bfs(neighbors_fn, rest ++ next, MapSet.put(visited, node))
+    end
+  end
+
+  @doc """
+  Convenience for callers backed by a FactSource adaptor:
+  `reachable_from_source(source_module, source_handle, start, state)`.
+  Wraps the lookup_by_arg1 callback into a neighbors_fn closure.
+  """
+  def reachable_from_source(source_module, source_handle, start, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    reachable_from(fun, start)
+  end
+end
+
 defmodule WamRuntime.FactSourceRegistry do
   @moduledoc """
   Predicate-indicator → source-handle map. Uses :persistent_term so
