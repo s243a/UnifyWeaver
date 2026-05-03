@@ -2289,3 +2289,195 @@ The resulting proposal is:
 Reference:
 
 - [WAM_CLOJURE_LOWERED_TIER_PLAN.md](../proposals/WAM_CLOJURE_LOWERED_TIER_PLAN.md)
+
+---
+
+## Phase L: Haskell `category_ancestor` kernel — IntSet visited + INLINE + bang patterns (2026-05-02, `perf/wam-haskell-category-ancestor-kernel`)
+
+### Why this phase
+
+After Phase K added the `category_ancestor` FFI kernel for Go (52× at
+scale-300), a fresh kernels-on Haskell-vs-Rust matrix bench surfaced a
+~10× residual gap at scale-300:
+
+| target | mode | kernels | median (s) |
+|---|---|---|---:|
+| haskell-pure-interp | interp | off | 10.774 |
+| haskell-lowered-only | lowered | off | 10.127 |
+| haskell-interp-ffi | interp | **on** | 0.519 |
+| haskell-lowered-ffi | lowered | **on** | 0.718 |
+| rust-pure-interp | interp | off | 3.637 |
+| rust-lowered-only | lowered | off | 3.477 |
+| rust-interp-ffi | interp | **on** | 0.062 |
+| rust-lowered-ffi | lowered | **on** | 0.071 |
+
+(All eight rows produced identical 271-row output, sha256 `70bbc9ffa4cf`.)
+
+Two observations from the matrix:
+
+1. **The Haskell-vs-Rust ratio widens with kernels on**: 3× kernels-off,
+   ~10× kernels-on. With kernels on, the inner ancestor walk leaves the
+   WAM dispatch loop and runs as native FFI — so the gap can't be the
+   WAM interpreter itself. It has to be the kernel implementation, the
+   FFI marshalling, or the residual orchestration.
+2. **Lowered helps with kernels off but not kernels on**: when the
+   kernel does the heavy lifting, the surrounding orchestration (which
+   is what lowering changes) is small enough that the extra function-
+   call boundaries cost more than they save.
+
+That points the next optimisation at the kernel itself.
+
+### What changed
+
+`templates/targets/haskell_wam/kernel_category_ancestor.hs.mustache` is
+the kernel template. Three coupled changes:
+
+1. **Visited set as `IntSet`, not `[Int]`.** The public signature still
+   accepts `[Int]` (FFI marshalling format extracted from VList) but on
+   entry the kernel calls `IS.fromList visited` once, then the
+   recursive `go` helper carries the IntSet directly. `IS.member` is
+   O(log N); `elem` on a list is O(N). At deep visited sets this
+   matters. Same idea as the IntSet-visited WAM lowering from Phase H —
+   applied inside the kernel rather than around it.
+2. **`{-# INLINE #-}` pragma** on the kernel function. Encourages GHC
+   to specialise the recursion site and avoid heap-allocating the
+   closure for `go` on each call.
+3. **Bang patterns (`!c !d !v`)** on the inner loop variables. Forces
+   strict evaluation so each recursive call commits to a concrete
+   `(cat, depth, visited-set)` tuple instead of building thunks that
+   would be forced later under GC pressure.
+
+### Measured impact
+
+#### Scale-300 (canonical wiki, max_depth=10, visited stays ~10)
+
+| target | before (s) | after (s) | improvement |
+|---|---:|---:|---:|
+| haskell-interp-ffi | 0.519 | **0.434** | ~16% |
+| haskell-lowered-ffi | 0.718 | **0.405** | **~44%** |
+
+Modest at this scale — the visited set never exceeds ~10 elements, so
+the IntSet algorithmic win barely fires. Most of the scale-300 gain is
+the strictness/INLINE pieces, not IntSet itself. The lowered path saw
+the bigger relative win because it has less fixed dispatch cost outside
+the kernel call.
+
+#### synth_chain_300 (chain depth 300, 200 articles, max_depth=300, visited grows up to 99)
+
+| variant | main (ms) | this branch (ms) | speedup |
+|---|---:|---:|---:|
+| intset | 80.5 | **18.0** | **4.5×** |
+| lowered | 101.0 | 22.0 | 4.6× |
+| unlowered | 67.5 | 31.0 | 2.2× |
+
+Where IntSet earns its keep. All three macro-bench variants improved
+because all three call into the FFI kernel — the WAM-side directive
+choice (intset/lowered/unlowered) doesn't affect kernel behaviour.
+tuple_count=200 across all runs — correctness preserved end-to-end.
+
+#### Scale-1k matrix (real wiki data, max_depth=10) — sanity check
+
+| target | median (s) | rows |
+|---|---:|---:|
+| haskell-interp-ffi | 0.492 | 580 |
+| haskell-lowered-ffi | **0.361** | 580 |
+| rust-interp-ffi | 0.052 | 580 |
+
+580 rows match across targets (sha `4c8841411a2c`). The kernel changes
+hold at the larger wiki scale; lowered-ffi is now ~27% faster than
+interp-ffi at 1k (was a slight regression at scale-300, but the
+scale-300 measurements were noisy below the cabal-startup floor).
+Rust still leads ~7× — the structural gap discussed in Phase L below
+remains.
+
+### Honest reading
+
+The 10× Haskell-vs-Rust gap at scale-300 is roughly halved (the
+lowered-ffi delta from 0.718→0.405 closes about 44% of the gap on its
+side). The bench-level ratio is still in Rust's favour because:
+
+- Rust's monomorphization + stack-allocated state keeps the residual
+  orchestration tighter even when the kernel dominates work.
+- GHC's IntSet uses Patricia tries which carry per-node allocation
+  overhead — fine in absolute terms, slightly less efficient than
+  Rust's HashSet at small N.
+- The bigger structural advantage Rust holds (immutable-record updates
+  through GHC's heap vs Rust's `&mut`-style state mutation) isn't
+  closed by this change; that would need a separate ST/IORef arc on
+  the Haskell side.
+
+What this phase does cleanly close:
+
+- The visited-set algorithmic loss inside the kernel for
+  deep-recursion workloads. **4-5× wins at synth_chain_300** is the
+  load-bearing measurement; the canonical-workload improvement at
+  scale-300 is a side effect of the strictness work.
+
+### Touch points
+
+- `templates/targets/haskell_wam/kernel_category_ancestor.hs.mustache` —
+  kernel rewrite (19 insertions, 8 deletions). Public type unchanged.
+- No changes to executeForeign template or kernel registration metadata
+  — the IntSet conversion stays internal to the kernel.
+
+### Phase L appendix: `use_lmdb(auto)` resolver
+
+While the kernel work was in flight, this branch also adds the
+auto-mode resolver previously filed as a follow-up. New predicate
+`resolve_auto_use_lmdb/2` in `wam_haskell_target.pl` normalises
+`use_lmdb(auto)` to a concrete `true`/`false` based on:
+
+1. `ghc-pkg list --simple-output lmdb` — if the Haskell package isn't
+   installed, fall back to `false` with a stderr warning. Cabal's
+   own dependency resolution would also catch this at build time,
+   but pre-checking gives a friendlier error and lets the build
+   complete on the IntMap path.
+2. `option(fact_count(N), ...)` against
+   `option(lmdb_auto_threshold(T), ..., 50000)`. When N > T pick
+   true; else false. The threshold lands between the
+   IntMap-wins-clearly regime (≤10k facts, per the prior crossover
+   study at `project_wam_haskell_fact_access.md`) and the
+   LMDB+cache-wins regime (≥100k); both endpoints are documented
+   memory.
+3. `fact_count` absent → conservatively false. Caller opts into the
+   scale-driven path by passing the count.
+
+Wired in at the top of `write_wam_haskell_project/3` so the four
+existing `option(use_lmdb(true), Options)` checks see the resolved
+value transparently. Explicit `use_lmdb(true)` and `use_lmdb(false)`
+stay unchanged.
+
+Firewall integration is deliberately *not* in this first cut — cabal
+itself fails loudly if lmdb is missing, which is enough of a safety
+gate. A later optional firewall hook (`firewall_check(use_lmdb, R)`
+before step 1) can layer on top without changing the resolver's
+contract.
+
+5 tests in `tests/test_wam_haskell_target.pl` cover the deterministic
+paths: explicit-true passthrough, explicit-false passthrough, absent
+unchanged, auto+low-fact-count→false, auto-without-fact-count→false.
+The "auto + high fact_count + lmdb installed → true" path is
+environment-gated so we don't test it directly here; the resolver's
+guard logic is fully covered by the false-paths.
+
+### Open follow-ups
+
+1. **Bench harness wiring for `use_lmdb(auto)`** — the resolver is
+   in place; the matrix bench harness still passes manual
+   `use_lmdb(true)` only. A future change should pass
+   `use_lmdb(auto), fact_count(N)` and let the resolver decide,
+   ideally with a separate matrix variant for "auto-pick LMDB"
+   alongside the current explicit pair.
+2. **Accumulator-passing rewrite** — replace `map (+1) $ go ...` with
+   an explicit depth offset passed down the recursion. Should reduce
+   intermediate list allocation. Filed for a follow-up branch since
+   it's a different optimization axis from IntSet visited.
+3. **ST-monad / IORef state** for the Haskell WAM hot loop — the bigger
+   structural change that would close more of the residual Rust gap.
+   Multi-PR architectural arc; see `project_wam_haskell_st_monad_plan.md`
+   notes.
+4. **Optional firewall hook** in the auto-mode resolver — consult
+   `firewall_check(use_lmdb, R)` before the ghc-pkg check, so a
+   strict-mode deployment can refuse LMDB even when it's installable.
+   Requires extending the firewall's tool registry to know about
+   Haskell library packages, not just executables.

@@ -1488,6 +1488,59 @@ test_dimension_n_option_overrides_user_fact :-
     ),
     retractall(user:dimension_n(_)).
 
+%% =========================================================================
+%% use_lmdb(auto) resolver — picks IntMap-vs-LMDB by fact_count threshold
+%% with a ghc-pkg availability gate. Tests cover the deterministic paths;
+%% the `auto + high fact_count + ghc-pkg has lmdb → true` path is gated
+%% by environment so we test only the always-false branches here.
+test_resolve_use_lmdb_explicit_true_passthrough :-
+    Test = 'WAM-Haskell: resolve_auto_use_lmdb passes use_lmdb(true) unchanged',
+    (   wam_haskell_target:resolve_auto_use_lmdb([use_lmdb(true), other(x)], R),
+        memberchk(use_lmdb(true), R),
+        \+ memberchk(use_lmdb(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'use_lmdb(true) was not preserved')
+    ).
+
+test_resolve_use_lmdb_explicit_false_passthrough :-
+    Test = 'WAM-Haskell: resolve_auto_use_lmdb passes use_lmdb(false) unchanged',
+    (   wam_haskell_target:resolve_auto_use_lmdb([use_lmdb(false)], R),
+        memberchk(use_lmdb(false), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'use_lmdb(false) was not preserved')
+    ).
+
+test_resolve_use_lmdb_absent_unchanged :-
+    Test = 'WAM-Haskell: resolve_auto_use_lmdb leaves Options without use_lmdb unchanged',
+    (   wam_haskell_target:resolve_auto_use_lmdb([fact_count(99999)], R),
+        \+ memberchk(use_lmdb(_), R),
+        memberchk(fact_count(99999), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'absent use_lmdb was modified or fact_count lost')
+    ).
+
+test_resolve_use_lmdb_auto_low_fact_count_false :-
+    %% At fact_count below the threshold, auto resolves to false
+    %% regardless of lmdb availability. Deterministic across environments.
+    Test = 'WAM-Haskell: resolve_auto_use_lmdb(auto) + low fact_count → false',
+    (   wam_haskell_target:resolve_auto_use_lmdb(
+            [use_lmdb(auto), fact_count(1000), lmdb_auto_threshold(50000)], R),
+        memberchk(use_lmdb(false), R),
+        \+ memberchk(use_lmdb(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto + low fact_count did not resolve to false')
+    ).
+
+test_resolve_use_lmdb_auto_no_fact_count_false :-
+    %% Without fact_count we conservatively pick false rather than guessing.
+    Test = 'WAM-Haskell: resolve_auto_use_lmdb(auto) without fact_count → false',
+    (   wam_haskell_target:resolve_auto_use_lmdb([use_lmdb(auto)], R),
+        memberchk(use_lmdb(false), R),
+        \+ memberchk(use_lmdb(auto), R)
+    ->  pass(Test)
+    ;   fail_test(Test, 'auto without fact_count did not resolve to false')
+    ).
+
 test_b1_lmdb_dupsort_per_thread_cursor :-
     Test = 'B1: dupsort layout uses per-thread cursor cache',
     (   compile_wam_runtime_to_haskell(
@@ -1888,6 +1941,12 @@ run_tests :-
     test_dimension_n_default_5_when_no_user_fact,
     test_dimension_n_from_user_fact,
     test_dimension_n_option_overrides_user_fact,
+    %% use_lmdb(auto) resolver — IntMap-vs-LMDB normalisation
+    test_resolve_use_lmdb_explicit_true_passthrough,
+    test_resolve_use_lmdb_explicit_false_passthrough,
+    test_resolve_use_lmdb_absent_unchanged,
+    test_resolve_use_lmdb_auto_low_fact_count_false,
+    test_resolve_use_lmdb_auto_no_fact_count_false,
     format('~n========================================~n'),
     (   test_failed
     ->  format('Tests FAILED~n'), halt(1)

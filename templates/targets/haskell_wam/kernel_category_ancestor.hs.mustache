@@ -2,13 +2,24 @@
 -- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
 -- Atoms are interned at the FFI boundary (see executeForeign) so the
 -- hot loop uses IntMap + Int comparison instead of HashMap String hashing.
+--
+-- The public signature accepts visited as [Int] (the FFI marshalling
+-- format extracted from VList). On entry we convert once to IntSet for
+-- O(log N) membership checks during the recursive descent — replaces
+-- the prior O(N) list `elem`. Bang patterns on the loop variables force
+-- strict evaluation so each recursive call commits to a concrete
+-- (cat, depth, visited-set) tuple instead of building thunks.
+{-# INLINE nativeKernel_category_ancestor #-}
 nativeKernel_category_ancestor :: EdgeLookup -> Int -> Int -> Int -> Int -> [Int] -> [Int]
 nativeKernel_category_ancestor parents cat root maxDepth depth visited =
-  let directParents = parents cat
-      baseHits = [1 | p <- directParents, p == root]
-      recHits = if depth >= maxDepth then [] else
-        concatMap (\mid ->
-          if mid `elem` visited then []
-          else map (+1) $ nativeKernel_category_ancestor parents mid root maxDepth (depth+1) (mid : visited)
-        ) directParents
-  in baseHits ++ recHits
+  go cat depth (IS.fromList visited)
+  where
+    go !c !d !v =
+      let directParents = parents c
+          baseHits = [1 | p <- directParents, p == root]
+          recHits = if d >= maxDepth then [] else
+            concatMap (\mid ->
+              if mid `IS.member` v then []
+              else map (+1) $ go mid (d+1) (IS.insert mid v)
+            ) directParents
+      in baseHits ++ recHits

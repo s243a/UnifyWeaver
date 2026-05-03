@@ -2563,7 +2563,13 @@ callForeign !ctx pred !sc = executeForeign ctx pred sc'.
 %  - WamRuntime.hs: run loop and backtracking
 %  - Predicates.hs: compiled predicates
 %  - Main.hs: benchmark driver
-write_wam_haskell_project(Predicates, Options, ProjectDir) :-
+write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
+    % Resolve `use_lmdb(auto)` (if present) to a concrete true/false
+    % BEFORE any downstream `option(use_lmdb(true), ...)` checks fire.
+    % Auto consults ghc-pkg for the lmdb package + fact_count threshold;
+    % see resolve_auto_use_lmdb/2.
+    resolve_auto_use_lmdb(Options0, Options),
+
     % Initialize the compile-time atom intern table with well-known atoms
     init_atom_intern_table,
     make_directory_path(ProjectDir),
@@ -3943,6 +3949,76 @@ emit_inline_fact_literal(ListName, Tuples, Code) :-
 %  once auto-detection of workload class is added).
 resolve_auto_cache_mode(Mode) :-
     select_cache_mode(none, Mode).
+
+%% resolve_auto_use_lmdb(+Options0, -Options)
+%
+%  Normalize `use_lmdb(auto)` to a concrete `use_lmdb(true)` or
+%  `use_lmdb(false)`. Decision order:
+%
+%    1. Hackage/cabal availability of the `lmdb` package — checked via
+%       `ghc-pkg list --simple-output lmdb`. If not installed, fall
+%       back to `false` with a stderr warning so the user knows why
+%       the auto mode declined LMDB.
+%    2. Fact-count threshold. When `option(fact_count(N), ...)` is in
+%       scope and `N > option(lmdb_auto_threshold(T), ..., 50000)`,
+%       pick `true`; otherwise `false`. The default 50000 lands
+%       between the IntMap-wins-clearly regime (≤10k facts in the
+%       prior crossover study) and the LMDB+cache-wins regime
+%       (≥100k); both endpoints documented in
+%       `project_wam_haskell_fact_access.md`. Override-able per call
+%       site.
+%    3. If `fact_count` is absent (caller doesn't know the size),
+%       conservatively default to `false` so we don't auto-pick the
+%       heavier path without justification.
+%
+%  When `use_lmdb(true)` or `use_lmdb(false)` is explicitly set,
+%  returns Options unchanged. When `use_lmdb` is absent entirely,
+%  returns Options unchanged (downstream defaults to IntMap).
+%
+%  Firewall integration is deliberately *not* in this first cut —
+%  cabal's own dependency resolution is the safety gate. A future
+%  optional firewall hook (consult `firewall_check(use_lmdb, R)`
+%  before step 1) can layer on top without changing the resolver's
+%  contract.
+resolve_auto_use_lmdb(Options0, Options) :-
+    (   select(use_lmdb(auto), Options0, Rest)
+    ->  resolve_auto_use_lmdb_decision(Rest, Decision),
+        Options = [use_lmdb(Decision) | Rest]
+    ;   Options = Options0
+    ).
+
+resolve_auto_use_lmdb_decision(Options, Decision) :-
+    (   \+ lmdb_haskell_package_available
+    ->  format(user_error,
+               '[WAM-Haskell] use_lmdb(auto): ghc-pkg does not list lmdb; falling back to IntMap~n', []),
+        Decision = false
+    ;   option(fact_count(N), Options),
+        integer(N), N >= 1,
+        option(lmdb_auto_threshold(T), Options, 50000),
+        integer(T), T >= 1,
+        N > T
+    ->  Decision = true
+    ;   Decision = false
+    ).
+
+%% lmdb_haskell_package_available
+%
+%  Probe `ghc-pkg list --simple-output lmdb`. Returns true iff the
+%  output mentions `lmdb`. Conservative: any process error or absent
+%  ghc-pkg makes this fail, which propagates through
+%  `resolve_auto_use_lmdb_decision/2` as `Decision=false` —
+%  preferable to crashing the codegen on an environmental issue.
+lmdb_haskell_package_available :-
+    catch(
+        (   process_create(path('ghc-pkg'),
+                ['list', '--simple-output', 'lmdb'],
+                [stdout(pipe(Out)), stderr(null), process(Pid)]),
+            read_string(Out, _, OutStr),
+            close(Out),
+            process_wait(Pid, _),
+            sub_string(OutStr, _, _, _, "lmdb")
+        ),
+        _, fail).
 
 generate_lmdb_functions(Options, Code) :-
     read_kernel_template('lmdb_fact_source.hs.mustache', Template),
