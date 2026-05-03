@@ -1175,7 +1175,20 @@ par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
     % duplicates from Phase 4bs runtime probe.
     maplist([Name-_Instrs, BranchFunc]>>segment_func_name(Name, "_branch", BranchFunc),
             Segments, BranchFuncs),
-    emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchFuncs, Code).
+    % Companion to forkMinCost (static codegen-time gate): if the
+    % user passes runtime_cost_probe(ThresholdUs), emit a probe-
+    % wrapped super-wrapper that measures the first sequential call
+    % and switches subsequent calls to parallel only when measured
+    % us > ThresholdUs. State persists across calls via an ETS table
+    % managed in WamRuntime. Without the option, emit the existing
+    % unconditional-parallel template (default behaviour preserved).
+    format(atom(PredKey), '~w/~w', [Pred, Arity]),
+    (   option(runtime_cost_probe(ThresholdUs), Options),
+        integer(ThresholdUs)
+    ->  emit_par_tier2_wrapper_with_probe(EntryFunc, EntryImplFunc,
+            BranchFuncs, PredKey, ThresholdUs, Code)
+    ;   emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchFuncs, Code)
+    ).
 par_wrap_segment(_Pred, _Segments, _Options, "").
 
 %% predicate_cost(+Segments, -Cost)
@@ -1342,6 +1355,92 @@ emit_par_tier2_wrapper(EntryFunc, EntryImplFunc, BranchImplFuncs, Code) :-
     end
   end',
     [EntryFunc, EntryImplFunc, EntryImplFunc, BranchListInner]).
+
+%% emit_par_tier2_wrapper_with_probe(+EntryFunc, +EntryImplFunc,
+%%   +BranchImplFuncs, +PredKey, +ThresholdUs, -Code)
+%
+%  Probe-wrapped variant of the super-wrapper. The `true ->` arm of
+%  the cond block dispatches to one of three behaviours based on a
+%  per-predicate decision in the WamRuntime ETS table:
+%
+%    :go_parallel    — fan out via Task.async_stream (existing
+%                      parallel-arm code, inlined verbatim).
+%    :go_sequential  — call the sequential _impl directly.
+%    :probe          — measure the sequential call via :timer.tc/1,
+%                      then update the decision table with the
+%                      measured us vs ThresholdUs.
+%
+%  First call is always sequential (probe). Subsequent calls follow
+%  the recorded decision. Decision is sticky.
+emit_par_tier2_wrapper_with_probe(EntryFunc, EntryImplFunc, BranchImplFuncs,
+                                  PredKey, ThresholdUs, Code) :-
+    maplist([F, Ref]>>format(string(Ref), '&~w/1', [F]),
+            BranchImplFuncs, BranchRefs),
+    atomic_list_concat(BranchRefs, ', ', BranchListInner),
+    format(string(Code),
+'  defp ~w(state) do
+    cond do
+      not WamRuntime.in_forkable_aggregate_frame?(state) ->
+        ~w(state)
+
+      Map.get(state, :parallel_depth, 0) > 0 ->
+        ~w(state)
+
+      true ->
+        # Runtime cost probe (PR follow-up to forkMinCost static gate).
+        # Per-predicate decision lives in :tier2_cost_probe ETS table;
+        # see WamRuntime.tier2_probe_decision/1 + tier2_probe_update/3.
+        case WamRuntime.tier2_probe_decision("~w") do
+          :go_sequential ->
+            ~w(state)
+
+          :probe ->
+            {us, result} = :timer.tc(fn -> ~w(state) end)
+            WamRuntime.tier2_probe_update("~w", us, ~w)
+            result
+
+          :go_parallel ->
+            [parent_agg_cp | rest_cps] = state.choice_points
+            stamped_parent = Map.put(parent_agg_cp, :branch_sentinel, true)
+
+            branch_state = %{state |
+              branch_mode: true,
+              cut_point: state.choice_points,
+              parallel_depth: Map.get(state, :parallel_depth, 0) + 1,
+              choice_points: [stamped_parent | rest_cps]
+            }
+
+            branches = [~w]
+
+            branch_results =
+              branches
+              |> Task.async_stream(fn branch ->
+                   try do
+                     case branch.(branch_state) do
+                       {:branch_exhausted, accum} when is_list(accum) -> accum
+                       _ -> []
+                     end
+                   catch
+                     {:fail, _s} -> []
+                     {:return, {:branch_exhausted, accum}} when is_list(accum) -> accum
+                     {:return, _} -> []
+                   end
+                 end,
+                 on_timeout: :kill_task,
+                 ordered: false,
+                 max_concurrency: System.schedulers_online())
+              |> Enum.flat_map(fn
+                {:ok, solutions} when is_list(solutions) -> solutions
+                _ -> []
+              end)
+
+            merged = WamRuntime.merge_into_aggregate(state, branch_results)
+            throw({:fail, merged})
+        end
+    end
+  end',
+    [EntryFunc, EntryImplFunc, EntryImplFunc, PredKey,
+     EntryImplFunc, EntryImplFunc, PredKey, ThresholdUs, BranchListInner]).
 
 % ============================================================================
 % INSTRUCTION PARSING
