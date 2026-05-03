@@ -757,6 +757,48 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
 %  equality and avoid binary copies on hot paths. Non-identifier
 %  constants (whitespace, leading uppercase, etc.) still emit as
 %  quoted strings — `:Foo` would mean a module reference in Elixir.
+%% First graph kernel — transitive closure. Per
+%  docs/WAM_TARGET_ROADMAP.md, kernel-based lowering is the largest
+%  unrealised perf lever for graph workloads. This kernel emits as
+%  WamRuntime.GraphKernel.TransitiveClosure and is callable directly
+%  from driver code; future work adds compile-time pattern recognition
+%  to route source-Prolog tc/2 calls through the kernel automatically.
+test_graph_kernel_tc_emitted_in_runtime :-
+    Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveClosure do'),
+        sub_string(RuntimeCode, _, _, _, 'def reachable_from('),
+        sub_string(RuntimeCode, _, _, _, 'def reachable_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveClosure module missing expected API')
+    ).
+
+test_graph_kernel_tc_uses_visited_tracking :-
+    Test = 'GraphKernel TC: kernel uses MapSet for visited tracking (avoids O(N^2) revisits)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Without visited tracking, transitive closure on a cyclic graph
+    % loops forever. MapSet is the BEAM-native O(log N) set; the
+    % kernel must use it to be correct AND to be faster than WAMs
+    % naive recursive tc/2.
+    (   sub_string(RuntimeCode, _, _, _, 'MapSet.member?'),
+        sub_string(RuntimeCode, _, _, _, 'MapSet.put'),
+        sub_string(RuntimeCode, _, _, _, 'MapSet.new')
+    ->  pass(Test)
+    ;   fail_test(Test, 'TC kernel missing MapSet visited-tracking primitives')
+    ).
+
+test_graph_kernel_tc_factsource_bridge :-
+    Test = 'GraphKernel TC: reachable_from_source bridges to FactSource lookup_by_arg1',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % The bridge function lets callers pass a FactSource
+    % (LMDB / SQLite / ETS / TSV) instead of building the
+    % neighbors_fn closure themselves.
+    (   sub_string(RuntimeCode, _, _, _, 'reachable_from_source(source_module, source_handle, start, state'),
+        sub_string(RuntimeCode, _, _, _, 'source_module.lookup_by_arg1(source_handle, node, state)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'reachable_from_source bridge missing or wrong shape')
+    ).
+
 test_intern_atoms_default_off :-
     Test = 'Atom interning: default (no intern_atoms option) emits constants as binary literals',
     setup_call_cleanup(
@@ -1881,6 +1923,9 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_graph_kernel_tc_emitted_in_runtime,
+    test_graph_kernel_tc_uses_visited_tracking,
+    test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,
     test_intern_atoms_on_emits_atom_literals,
     test_intern_atoms_keeps_non_identifiers_as_strings,
