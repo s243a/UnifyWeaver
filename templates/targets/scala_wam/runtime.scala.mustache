@@ -255,6 +255,7 @@ final class LmdbFactSource(
   private lazy val txnClass    = lmdbClass("Txn")
   private lazy val cursorClass = lmdbClass("Cursor")
   private lazy val seekOpClass = lmdbClass("SeekOp")
+  private lazy val getOpClass  = lmdbClass("GetOp")
 
   // env + dbi opened lazily on first use, then reused for all reads.
   private lazy val env: AnyRef = openEnv()
@@ -262,8 +263,11 @@ final class LmdbFactSource(
 
   private def openEnv(): AnyRef = {
     val builder = envClass.getMethod("create").invoke(null)
-    val openMethod = builder.getClass.getMethod("open", classOf[java.io.File])
-    openMethod.invoke(builder, new java.io.File(envPath)).asInstanceOf[AnyRef]
+    val envFlagsClass = lmdbClass("EnvFlags")
+    val flagArrType = java.lang.reflect.Array.newInstance(envFlagsClass, 0).getClass
+    val flagsArr = java.lang.reflect.Array.newInstance(envFlagsClass, 0).asInstanceOf[AnyRef]
+    val openMethod = builder.getClass.getMethod("open", classOf[java.io.File], flagArrType)
+    openMethod.invoke(builder, new java.io.File(envPath), flagsArr).asInstanceOf[AnyRef]
   }
 
   private def openDbi(envInst: AnyRef): AnyRef = {
@@ -277,8 +281,9 @@ final class LmdbFactSource(
       } else {
         java.lang.reflect.Array.newInstance(flagsClass, 0).asInstanceOf[AnyRef]
       }
+    val effectiveDbName = if (dbName.isEmpty) null else dbName
     val openDbi = envClass.getMethod("openDbi", classOf[String], flagArrType)
-    openDbi.invoke(envInst, dbName, flagsArr).asInstanceOf[AnyRef]
+    openDbi.invoke(envInst, effectiveDbName, flagsArr).asInstanceOf[AnyRef]
   }
 
   /** Full scan via cursor first/next. Used when the caller wants
@@ -308,11 +313,11 @@ final class LmdbFactSource(
         try cursorSeekAndCollectDupSort(cursor, keyStr)
         finally closeCursor(cursor)
       } else {
-        // Unique key path — Txn.get is the safe single-shot lookup.
+        // Unique key path: Dbi.get is the safe single-shot lookup.
         val keyBuf = bufferFromString(keyStr)
-        val getMethod = txnClass.getMethod("get",
-          dbiClass, classOf[java.nio.ByteBuffer])
-        val valBuf = getMethod.invoke(txn, dbi, keyBuf)
+        val getMethod = dbiClass.getMethod("get",
+          txnClass, classOf[Object])
+        val valBuf = getMethod.invoke(dbi, txn, keyBuf)
         if (valBuf == null) Seq.empty
         else Seq(tupleToBindings(keyStr, bufferToString(valBuf.asInstanceOf[java.nio.ByteBuffer])))
       }
@@ -357,7 +362,7 @@ final class LmdbFactSource(
     val firstM = cursorClass.getMethod("first")
     val nextM  = cursorClass.getMethod("next")
     val keyM   = cursorClass.getMethod("key")
-    val valM   = cursorClass.getMethod("`val`")
+    val valM   = cursorClass.getMethod("val")
     val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
     var hasMore = firstM.invoke(cursor).asInstanceOf[java.lang.Boolean].booleanValue()
     while (hasMore) {
@@ -371,24 +376,26 @@ final class LmdbFactSource(
 
   private def cursorSeekAndCollectDupSort(cursor: AnyRef, key: String): Seq[Map[Int, WamTerm]] = {
     val keyBuf = bufferFromString(key)
-    val getM = cursorClass.getMethod("get", classOf[java.nio.ByteBuffer], seekOpClass)
-    val mdbSet     = seekOpClass.getField("MDB_SET").get(null)
+    val getSetM = cursorClass.getMethod("get", classOf[Object], getOpClass)
+    val getNextDupM = cursorClass.getMethod("get", classOf[Object], classOf[Object], seekOpClass)
+    val mdbSet     = getOpClass.getField("MDB_SET").get(null)
     val mdbNextDup = seekOpClass.getField("MDB_NEXT_DUP").get(null)
     val keyM = cursorClass.getMethod("key")
-    val valM = cursorClass.getMethod("`val`")
+    val valM = cursorClass.getMethod("val")
     val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
-    val first = getM.invoke(cursor, keyBuf, mdbSet).asInstanceOf[java.lang.Boolean].booleanValue()
+    val first = getSetM.invoke(cursor, keyBuf, mdbSet).asInstanceOf[java.lang.Boolean].booleanValue()
     if (first) {
       val v = bufferToString(valM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
       buf.append(tupleToBindings(key, v))
-      var more = getM.invoke(cursor, null, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
+      val emptyBuf = java.nio.ByteBuffer.allocateDirect(0)
+      var more = getNextDupM.invoke(cursor, keyBuf, emptyBuf, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
       while (more) {
         val k = bufferToString(keyM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
         if (k != key) more = false
         else {
           val v2 = bufferToString(valM.invoke(cursor).asInstanceOf[java.nio.ByteBuffer])
           buf.append(tupleToBindings(key, v2))
-          more = getM.invoke(cursor, null, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
+          more = getNextDupM.invoke(cursor, keyBuf, emptyBuf, mdbNextDup).asInstanceOf[java.lang.Boolean].booleanValue()
         }
       }
     }
