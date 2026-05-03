@@ -36,6 +36,7 @@
 :- dynamic user:wam_soft_cut_outer_ok/1.
 :- dynamic user:wam_cut_helper/1.
 :- dynamic user:wam_hard_cut_outer_ok/1.
+:- dynamic user:wam_not_b/1.
 
 has(Code, Substr) :-
     once(sub_string(Code, _, _, _, Substr)).
@@ -74,6 +75,7 @@ user:wam_soft_cut_helper(X) :- (X = a -> fail ; true).
 user:wam_soft_cut_outer_ok(X) :- (user:wam_soft_cut_helper(Y), X = Y ; X = b).
 user:wam_cut_helper(X) :- X = a, !, fail.
 user:wam_hard_cut_outer_ok(X) :- (user:wam_cut_helper(Y), X = Y ; X = b).
+user:wam_not_b(X) :- X \= b.
 
 :- initialization(main, main).
 
@@ -116,7 +118,8 @@ run_smoke :-
           user:wam_soft_cut_helper/1,
           user:wam_soft_cut_outer_ok/1,
           user:wam_cut_helper/1,
-          user:wam_hard_cut_outer_ok/1
+          user:wam_hard_cut_outer_ok/1,
+          user:wam_not_b/1
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
@@ -133,6 +136,7 @@ run_smoke :-
     assert_lowered_execute_emitted(TmpDir),
     assert_lowered_call_emitted(TmpDir),
     assert_lowered_cut_builtin_emitted(TmpDir),
+    assert_lowered_not_unify_builtin_emitted(TmpDir),
     assert_multiclause_wrappers_runtime_mediated(TmpDir),
     verify_output(TmpDir, 'wam_execute_caller/1', 'a', "true"),
     verify_output(TmpDir, 'wam_execute_caller/1', 'b', "false"),
@@ -186,6 +190,8 @@ run_smoke :-
     verify_output(TmpDir, 'wam_trail_choice/1', c, "false"),
     verify_output(TmpDir, 'wam_soft_cut_outer_ok/1', b, "true"),
     verify_output(TmpDir, 'wam_hard_cut_outer_ok/1', b, "true"),
+    verify_output(TmpDir, 'wam_not_b/1', a, "true"),
+    verify_output(TmpDir, 'wam_not_b/1', b, "false"),
     delete_directory_and_contents(TmpDir),
     writeln('wam_clojure_runtime_smoke: ok').
 
@@ -233,6 +239,12 @@ assert_lowered_cut_builtin_emitted(ProjectDir) :-
     has(CoreCode, "defn lowered-wam-cut-helper-1"),
     has(CoreCode, "update :choice-points"),
     has(CoreCode, "take (:cut-bar").
+
+assert_lowered_not_unify_builtin_emitted(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
+    read_file_to_string(CorePath, CoreCode, []),
+    has(CoreCode, "defn lowered-wam-not-b-1"),
+    has(CoreCode, "runtime/unifiable?").
 
 assert_multiclause_wrappers_runtime_mediated(ProjectDir) :-
     directory_file_path(ProjectDir, 'src/generated/wam_exec_test/core.clj', CorePath),
