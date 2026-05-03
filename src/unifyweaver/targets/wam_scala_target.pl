@@ -714,6 +714,25 @@ fact_source_spec_to_handler_code(2, grouped_by_first(Path), Code) :-
     format(string(Code),
            "new ForeignHandler {\n      private def termKey(term: WamTerm): Option[String] = term match {\n        case Atom(id) if internTable.isInRange(id) => Some(internTable.stringAt(id))\n        case IntTerm(value) => Some(value.toString)\n        case FloatTerm(value) => Some(value.toString)\n        case _ => None\n      }\n      private val parentsByChild: Map[String, Vector[String]] = {\n        val src = scala.io.Source.fromFile(~w)\n        try {\n          src.getLines().toVector.flatMap { raw =>\n            val line = raw.trim\n            if (line.isEmpty || line.startsWith(\"#\")) None\n            else {\n              val parts = line.split(\"\\\\t\").map(_.trim).filter(_.nonEmpty).toVector\n              if (parts.length >= 2) Some(parts.head -> parts.tail) else None\n            }\n          }.toMap\n        } finally { src.close() }\n      }\n      private val allSols: Vector[Map[Int, WamTerm]] =\n        parentsByChild.toVector.flatMap { case (child, parents) =>\n          parents.map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n        }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = termKey(args(0)) match {\n          case Some(child) => parentsByChild.getOrElse(child, Vector.empty).map(parent => Map(1 -> parseFactArg(child), 2 -> parseFactArg(parent)))\n          case None => allSols\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [PathLit]).
+fact_source_spec_to_handler_code(2, lmdb(SpecOpts), Code) :-
+    !,
+    is_list(SpecOpts),
+    option(env_path(EnvPath), SpecOpts),
+    atom_string(EnvPath, EnvPathStr),
+    scala_string_literal(EnvPathStr, EnvPathLit),
+    option(dbi(DbName), SpecOpts, ''),
+    atom_string(DbName, DbNameStr),
+    scala_string_literal(DbNameStr, DbNameLit),
+    option(dupsort(Dupsort), SpecOpts, false),
+    (Dupsort == true -> DupsortLit = "true" ; DupsortLit = "false"),
+    % The ForeignHandler is a thin delegator: it owns one
+    % LmdbFactSource (constructed at handler-instance init) and
+    % dispatches to lookupByArg1 if arg1 is ground, streamAll
+    % otherwise. Same shape as the Elixir adaptor's open/3 +
+    % lookup_by_arg1/3 + stream_all/2 callback split.
+    format(string(Code),
+           "new ForeignHandler {\n      private val source: LmdbFactSource = new LmdbFactSource(\n        envPath = ~w,\n        dbName  = ~w,\n        arity   = 2,\n        dupsort = ~w,\n        internTable = internTable\n      )\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val sols = args(0) match {\n          case Atom(_) | IntTerm(_) | FloatTerm(_) => source.lookupByArg1(args(0))\n          case _                                   => source.streamAll()\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+           [EnvPathLit, DbNameLit, DupsortLit]).
 
 %% fact_source_to_handler_code(+Arity, +Tuples, -ScalaCode) is det.
 %  The solutions Seq is hoisted to a `val` on the anonymous class so it
