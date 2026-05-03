@@ -469,7 +469,6 @@ test(foreign_boolean) :-
     with_scala_project(
         [user:wam_foreign_yes/1, user:wam_foreign_yes_caller/1],
         [ foreign_predicates([wam_foreign_yes/1]),
-          intern_atoms([a, b]),
           scala_foreign_handlers([handler(wam_foreign_yes/1, YesHandler)]) ],
         TmpDir,
         (
@@ -482,7 +481,6 @@ test(foreign_binding) :-
     with_scala_project(
         [user:wam_foreign_pair/2, user:wam_foreign_pair_query/1],
         [ foreign_predicates([wam_foreign_pair/2]),
-          intern_atoms([a, b, c]),
           scala_foreign_handlers([handler(wam_foreign_pair/2, PairHandler)]) ],
         TmpDir,
         (
@@ -495,7 +493,6 @@ test(foreign_multi) :-
     with_scala_project(
         [user:wam_foreign_multi/2, user:wam_foreign_multi_query/1],
         [ foreign_predicates([wam_foreign_multi/2]),
-          intern_atoms([a, b, c]),
           scala_foreign_handlers([handler(wam_foreign_multi/2, MultiHandler)]) ],
         TmpDir,
         (
@@ -512,7 +509,6 @@ test(cut_after_foreign_multi) :-
     with_scala_project(
         [user:wam_foreign_multi/2, user:wam_cut_obs/1],
         [ foreign_predicates([wam_foreign_multi/2]),
-          intern_atoms([a, b, c]),
           scala_foreign_handlers([handler(wam_foreign_multi/2, MultiHandler)]) ],
         TmpDir,
         (
@@ -649,12 +645,9 @@ test(fact_source_file_backed) :-
         true,
         with_scala_project(
             [user:wam_pair_file/2],
-            % Atoms in the CSV are read at runtime, so they need to be
-            % declared up-front for parseFactArg to find them in the
-            % runtime intern table. Otherwise every atom collapses to id
-            % -1 and the test can't discriminate matches from mismatches.
-            [ intern_atoms([a, b, c, d, x, y]),
-              scala_fact_sources(
+            % parseFactArg auto-interns each CSV cell at runtime, so no
+            % codegen-time atom seeding is required.
+            [ scala_fact_sources(
                   [source(wam_pair_file/2, file(AbsPath))]) ],
             TmpDir,
             forall(member(Args-Expected, Queries),
@@ -679,7 +672,7 @@ test(call_meta) :-
 test(builtin_member) :-
     with_scala_project(
         [user:wam_member_q/2, user:wam_member_or_abc/1],
-        [ intern_atoms([a, b, c, d]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_member_q/2', ['a', '[a,b,c]'], "true"),
@@ -708,7 +701,7 @@ test(builtin_length) :-
 test(builtin_append) :-
     with_scala_project(
         [user:wam_append_q/3],
-        [ intern_atoms([a, b, c]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_append_q/3',
@@ -761,7 +754,7 @@ test(findall_empty) :-
 test(call_n_arity_3) :-
     with_scala_project(
         [user:wam_pred1/2, user:wam_call2/2],
-        [ intern_atoms([wam_pred1, foo]) ],
+        _Opts,
         TmpDir,
         (
             % wam_call2(wam_pred1, X) calls wam_pred1(X, X) — succeeds for
@@ -775,7 +768,7 @@ test(call_n_arity_3) :-
 test(builtin_atom_codes) :-
     with_scala_project(
         [user:wam_atom_codes_q/2],
-        [ intern_atoms([abc, hi]) ],
+        _Opts,
         TmpDir,
         (
             % "abc" -> [97, 98, 99]
@@ -791,7 +784,7 @@ test(builtin_atom_codes) :-
 test(builtin_atom_length) :-
     with_scala_project(
         [user:wam_atom_length_q/2],
-        [ intern_atoms([abc, hi, '']) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_atom_length_q/2', ['abc', '3'], "true"),
@@ -803,7 +796,7 @@ test(builtin_atom_length) :-
 test(builtin_append_split) :-
     with_scala_project(
         [user:wam_append_split_q/2],
-        [ intern_atoms([a, b, c]) ],
+        _Opts,
         TmpDir,
         (
             % Splits of [a,b,c]: ([], [a,b,c]) ([a], [b,c]) ([a,b], [c]) ([a,b,c], [])
@@ -821,7 +814,7 @@ test(builtin_append_split) :-
 test(builtin_length_generative) :-
     with_scala_project(
         [user:wam_length_gen_q/2],
-        [ intern_atoms([x, y, z]) ],
+        _Opts,
         TmpDir,
         (
             % L=[x,y,z], N=3 → ground both → unify length 3 with 3 → true
@@ -840,7 +833,7 @@ test(builtin_length_generative) :-
 test(builtin_var_nonvar) :-
     with_scala_project(
         [user:wam_var_q/1, user:wam_nonvar_q/1, user:wam_var_check_then_bind/1],
-        [ intern_atoms([a, b]) ],
+        _Opts,
         TmpDir,
         (
             % var(a) — atom, not unbound — fails.
@@ -853,7 +846,7 @@ test(builtin_var_nonvar) :-
 test(builtin_atom_number) :-
     with_scala_project(
         [user:wam_atom_q/1, user:wam_number_q/1, user:wam_atomic_q/1],
-        [ intern_atoms([a, b]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala(TmpDir, 'wam_atom_q/1',    'a',    "true"),
@@ -870,7 +863,7 @@ test(builtin_atom_number) :-
 test(builtin_is_list_ground) :-
     with_scala_project(
         [user:wam_is_list_q/1, user:wam_ground_q/1],
-        [ intern_atoms([a, b]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala(TmpDir, 'wam_is_list_q/1', '[a,b]', "true"),
@@ -886,7 +879,7 @@ test(builtin_is_list_ground) :-
 test(builtin_copy_term) :-
     with_scala_project(
         [user:wam_copy_term_q/2],
-        [ intern_atoms([a, b, foo]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_copy_term_q/2', ['a', 'a'],         "true"),
@@ -899,7 +892,7 @@ test(builtin_copy_term) :-
 test(builtin_sort) :-
     with_scala_project(
         [user:wam_sort_q/2, user:wam_msort_q/2],
-        [ intern_atoms([a, b, c, d]) ],
+        _Opts,
         TmpDir,
         (
             % sort/2: dedup and order
@@ -951,7 +944,7 @@ test(builtin_setof) :-
 test(builtin_switch_dup_first_arg) :-
     with_scala_project(
         [user:wam_dup_first_arg/2, user:wam_dup_first_q/2],
-        [ intern_atoms([a, b, c, d, e]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_dup_first_q/2', ['a','b'], "true"),
@@ -993,7 +986,7 @@ test(builtin_between) :-
 test(builtin_format) :-
     with_scala_project(
         [user:wam_format_w/1, user:wam_format_combo/2, user:wam_format_dn/1],
-        [ intern_atoms([hello, world]) ],
+        _Opts,
         TmpDir,
         (
             verify_scala(TmpDir, 'wam_format_w/1', '5', "v=5true"),
@@ -1019,9 +1012,6 @@ test(builtin_succ) :-
 test(builtin_atom_concat) :-
     with_scala_project(
         [user:wam_atom_concat_q/3],
-        % No intern_atoms needed — atom_concat forward mode interns the
-        % concatenation at runtime, parseArg interns CLI args, and the
-        % shared intern table makes them collide on the same id.
         _Opts,
         TmpDir,
         (
