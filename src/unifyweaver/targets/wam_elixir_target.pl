@@ -28,6 +28,9 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_elixir_utils', [camel_case/2]).
+:- use_module('../targets/wam_elixir_kernel_dispatch',
+              [match_transitive_closure_pattern/3]).
 :- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
 :- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
@@ -2545,6 +2548,133 @@ atom_interning_setup(Options) :-
     ;   true
     ).
 
+%% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
+%
+%  Emit a per-predicate dispatch module that routes calls through
+%  WamRuntime.GraphKernel.TransitiveClosure.reachable_from instead
+%  of the WAM-bytecode lower chain. Replaces what lower_predicate_to_-
+%  elixir would have emitted for predicates matching the canonical
+%  TC pattern.
+%
+%  Driver responsibility: register the edge predicate as a FactSource
+%  so the kernel can fetch neighbours. The dispatch module looks the
+%  source up by indicator string (e.g., "edge/2") at call time.
+%
+%  Findall integration: when called from inside a `findall(Z, tc(X, Z),
+%  L)` aggregate frame, the surrounding state.cp does aggregate_collect
+%  + throw fail per result. We iterate the kernels reachable list,
+%  trail-bind reg 2, call state.cp, catch the fail, unwind trail, try
+%  the next. After exhaustion, throw fail to terminate the predicate.
+%
+%  Driver-direct call (state.cp = terminal_cp): the FIRST iteration
+%  returns {:ok, state} without throwing; we halt and propagate.
+compile_tc_kernel_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/2", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/2 (auto-recognised TC pattern over ~w/2).
+  Replaces the WAM-bytecode lowering for this predicate; routes
+  calls through WamRuntime.GraphKernel.TransitiveClosure.
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling. The registered handle
+  must implement the WamRuntime.FactSource behaviour (any of
+  FactSource.Lmdb, FactSource.Sqlite, FactSource.Ets, FactSource.Tsv,
+  or a driver-supplied module).
+  """
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    neighbors_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    reachable =
+      WamRuntime.GraphKernel.TransitiveClosure.reachable_from(
+        neighbors_fn, start_val)
+
+    # Two-mode dispatch:
+    #
+    # (a) Findall / aggregate context — an aggregate frame is on the
+    #     CP stack (gated by in_forkable_aggregate_frame?/1, the same
+    #     check the Tier-2 super-wrapper uses). Dump ALL kernel
+    #     results into the agg_accum in one go via merge_into_-
+    #     aggregate, then throw fail to drive the standard
+    #     backtrack -> finalise_aggregate flow. Avoids iterating
+    #     state.cp per result, which would let the calling clauses
+    #     k1 catch its own fail and finalise after one solution.
+    #
+    # (b) Driver-direct call — no agg frame; return the FIRST
+    #     reachable node bound into result reg 2 as a single solution.
+    #     Subsequent solutions are not enumerable in this mode (no
+    #     choice point to drive backtracking), but the typical
+    #     driver-direct call shape is `findall(Z, tc(X, Z), L)` which
+    #     hits path (a).
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      merged = WamRuntime.merge_into_aggregate(state, reachable)
+      throw({:fail, merged})
+    else
+      case reachable do
+        [first | _] ->
+          case bind_result_reg(state, 2, first) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  defp bind_result_reg(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, value)
+      ^value -> state
+      _ -> nil
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr,
+     EdgeKey,
+     EdgeKey,
+     CamelPred]).
+
 atom_interning_cleanup(Options) :-
     (   option(intern_atoms(true), Options)
     ->  retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
@@ -2568,12 +2698,21 @@ do_write_wam_elixir_project(Predicates, Options, ProjectDir,
         close(DS)
     ;   true
     ),
-    % Generate predicate modules
+    % Generate predicate modules. When kernel_dispatch(true) is set
+    % AND a predicate matches a recognised graph-kernel pattern, route
+    % its emit through the kernel-dispatch path instead of the WAM
+    % lower chain. See wam_elixir_kernel_dispatch.pl for matchers.
+    option(source_module(SourceModule), Options, user),
     forall(
         member(Pred/Arity-WamCode, Predicates),
-        (   (   Mode == lowered
-            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
-            ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+        (   (   option(kernel_dispatch(true), Options),
+                Mode == lowered,
+                match_transitive_closure_pattern(SourceModule, Pred/Arity, EdgeP/_)
+            ->  compile_tc_kernel_dispatch_module(ModuleName, Pred, EdgeP, PredCode)
+            ;   (   Mode == lowered
+                ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+                ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+                )
             ),
             atom_string(Pred, PredStr),
             format(atom(PredFile), '~w.ex', [PredStr]),
