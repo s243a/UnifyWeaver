@@ -1495,9 +1495,12 @@ compile_aggregate_helpers_to_elixir(Code) :-
     :go_parallel    — sequential exceeded threshold; fan out
                       via Task.async_stream from now on.
 
-  See benchmarks/wam_elixir_tier2_findall.md for the crossover data
-  that motivates the threshold default. Recommended threshold is in
-  the 500-2000us range for typical workloads on a 4-core box.
+  See benchmarks/wam_elixir_tier2_findall.md "Calibration" section
+  for the derivation. Both nested_findall and arith workloads
+  converge at a sequential-time crossover near 1500us on a 4-core
+  box; recommended default is `runtime_cost_probe(1500)`. Setting a
+  lower value (e.g. 1000) errs toward fanning out earlier; higher
+  values (e.g. 2000) only fork when confidently above crossover.
   """
   def tier2_probe_decision(pred_key) do
     ensure_tier2_probe_table()
