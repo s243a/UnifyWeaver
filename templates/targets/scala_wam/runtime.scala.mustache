@@ -9,13 +9,74 @@ import scala.collection.mutable
 // ============================================================
 // Atom Intern Table
 // ============================================================
+// Mutable, append-only. The codegen seeds the table with the atoms
+// it discovered while compiling predicate bodies; the runtime adds
+// new atoms on demand (CLI parser for unknown args, atom_codes
+// reverse mode, atom_concat split mode, sub_atom multi-solution).
+// Once an atom is interned its id never changes — atoms are only
+// ever added at the end. Single-threaded execution assumed.
 
-final case class InternTable(
-  stringToId: Map[String, Int],
-  idToString: Array[String]
+final class InternTable private (
+  private val map: scala.collection.mutable.HashMap[String, Int],
+  private val arr: scala.collection.mutable.ArrayBuffer[String]
 ) {
-  def resolve(id: Int): String =
-    if (id >= 0 && id < idToString.length) idToString(id) else s"<atom:$id>"
+  /** Returns the existing id for s, or -1 if not present. */
+  def lookupId(s: String): Int = map.getOrElse(s, -1)
+
+  /** Returns Some(id) if interned, None otherwise. */
+  def lookupOpt(s: String): Option[Int] = map.get(s)
+
+  /** Returns the string for an id, or a placeholder for out-of-range ids. */
+  def stringOf(id: Int): String =
+    if (id >= 0 && id < arr.length) arr(id) else s"<atom:$id>"
+
+  /** Returns the string for an id, or "" for out-of-range. Used in
+   *  the runtime's hot paths where the empty fallback was the existing
+   *  semantics before this refactor. */
+  def stringAt(id: Int): String =
+    if (id >= 0 && id < arr.length) arr(id) else ""
+
+  /** Bounds check for the array-indexed form. */
+  def isInRange(id: Int): Boolean = id >= 0 && id < arr.length
+
+  /** Looks up s; if not present, appends it and returns the new id.
+   *  This is the runtime-mutable side of the table — used wherever
+   *  an atom value is created from data not seen at codegen time. */
+  def intern(s: String): Int = {
+    val existing = map.get(s)
+    if (existing.isDefined) existing.get
+    else {
+      val id = arr.length
+      arr += s
+      map.put(s, id)
+      id
+    }
+  }
+
+  /** Number of currently-interned atoms. */
+  def size: Int = arr.length
+}
+
+object InternTable {
+  /** Build an InternTable from an initial sequence of well-known
+   *  atoms. The order in `initial` defines the ids: index 0 → id 0
+   *  etc. Used by the codegen to seed the table at construction. */
+  def apply(initial: Array[String]): InternTable = {
+    val m = scala.collection.mutable.HashMap.empty[String, Int]
+    val b = scala.collection.mutable.ArrayBuffer.empty[String]
+    var i = 0
+    while (i < initial.length) {
+      val s = initial(i)
+      // If the seed has duplicates, keep the first id (no-op on later
+      // collision so the array index stays in sync).
+      if (!m.contains(s)) {
+        m.put(s, b.length)
+        b += s
+      }
+      i += 1
+    }
+    new InternTable(m, b)
+  }
 }
 
 // ============================================================
@@ -25,7 +86,7 @@ final case class InternTable(
 sealed trait WamTerm
 /** Unbound logic variable — id is a unique integer per query. */
 final case class Ref(id: Int)                               extends WamTerm
-/** Interned atom — id indexes into InternTable.idToString. */
+/** Interned atom — id indexes into InternTable. */
 final case class Atom(id: Int)                              extends WamTerm
 final case class IntTerm(value: Int)                        extends WamTerm
 final case class FloatTerm(value: Double)                   extends WamTerm
@@ -429,6 +490,12 @@ object WamRuntime {
           s.choicePoints(s.choicePoints.length - 1) =
             cp.copy(kind = ForeignCP(remaining))
           if (!applyBindings(s, sol)) backtrack(s)
+          else if (s.pc < 0) {
+            // Tail-call multi-solution dispatched with empty callStack:
+            // pc is a sentinel signalling "Succeeded after applyBindings"
+            // (see dispatchForeignMulti). step() must not fetch from -1.
+            s.status = Succeeded
+          }
         case WamCP =>
           popCP(s)
         case AggregateCP(resumePc, _, bagReg, results, consId, emptyId) =>
@@ -898,7 +965,7 @@ object WamRuntime {
               case _                                => s.pc += 1
             }
           case Struct(f, arity, _) =>
-            val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+            val consId = program.internTable.lookupId("[|]")
             if (f == consId && arity == 2) {
               if (listPc >= 0) s.pc = listPc else s.pc += 1
             } else {
@@ -1121,8 +1188,8 @@ object WamRuntime {
             templateReg = templateReg,
             bagReg      = bagReg,
             results     = Nil,
-            consId      = program.internTable.stringToId.getOrElse("[|]", 5),
-            emptyId     = program.internTable.stringToId.getOrElse("[]", 2)
+            consId      = program.internTable.lookupId("[|]"),
+            emptyId     = program.internTable.lookupId("[]")
           )
         )
         s.choicePoints += cp
@@ -1227,20 +1294,14 @@ object WamRuntime {
       case Some(n) => Some(n)
       case None => v match {
         case Struct(f, 2, args) =>
-          val name =
-            if (f >= 0 && f < program.internTable.idToString.length)
-              program.internTable.idToString(f)
-            else ""
+          val name = program.internTable.stringAt(f)
           for {
             a <- evalArith(s, program, args(0))
             b <- evalArith(s, program, args(1))
             r <- numBinop(name, a, b)
           } yield r
         case Struct(f, 1, args) =>
-          val name =
-            if (f >= 0 && f < program.internTable.idToString.length)
-              program.internTable.idToString(f)
-            else ""
+          val name = program.internTable.stringAt(f)
           evalArith(s, program, args(0)).flatMap { x =>
             name match {
               case "-" => Some(x match { case NInt(n) => NInt(-n); case NDouble(d) => NDouble(-d) })
@@ -1275,8 +1336,7 @@ object WamRuntime {
     val v = deref(s.bindings, t)
     v match {
       case Struct(f, 2, args) =>
-        val name = if (f >= 0 && f < program.internTable.idToString.length)
-                     program.internTable.idToString(f) else ""
+        val name = program.internTable.stringAt(f)
         if (name == ":") unwrapModuleQualification(s, program, args(1))
         else v
       case _ => v
@@ -1288,12 +1348,10 @@ object WamRuntime {
   def goalToPredCall(s: WamState, program: WamProgram, goal: WamTerm): Option[(String, Array[WamTerm])] = {
     unwrapModuleQualification(s, program, goal) match {
       case Atom(f) =>
-        val n = if (f >= 0 && f < program.internTable.idToString.length)
-                  program.internTable.idToString(f) else ""
+        val n = program.internTable.stringAt(f)
         Some((s"$n/0", Array.empty[WamTerm]))
       case Struct(f, arity, args) =>
-        val n = if (f >= 0 && f < program.internTable.idToString.length)
-                  program.internTable.idToString(f) else ""
+        val n = program.internTable.stringAt(f)
         Some((s"$n/$arity", args))
       case _ => None
     }
@@ -1348,13 +1406,9 @@ object WamRuntime {
         // Re-extract the predicate name; arity is the new total.
         val unwrapped = unwrapModuleQualification(s, program, goal)
         val name = unwrapped match {
-          case Atom(f) =>
-            if (f >= 0 && f < program.internTable.idToString.length)
-              program.internTable.idToString(f) else ""
-          case Struct(f, _, _) =>
-            if (f >= 0 && f < program.internTable.idToString.length)
-              program.internTable.idToString(f) else ""
-          case _ => ""
+          case Atom(f)         => program.internTable.stringAt(f)
+          case Struct(f, _, _) => program.internTable.stringAt(f)
+          case _               => ""
         }
         val key = s"$name/${allArgs.length}"
         program.dispatch.get(key) match {
@@ -1382,16 +1436,17 @@ object WamRuntime {
 
   /** atom_codes(A, Cs). Mode (+, ?): A is a bound atom; build Cs as a list
    *  of integer codes. Mode (?, +): Cs is a bound list of codes; build A
-   *  as the atom whose string is those chars. Mixed mode unifies. Numeric
-   *  terms are also stringified for SWI-Prolog compatibility. */
+   *  as the atom whose string is those chars (interning at runtime if it
+   *  doesn't already exist). Numeric terms are also stringified for
+   *  SWI-Prolog compatibility. */
   def atomCodes2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
     val a = deref(s.bindings, s.regs(1))
     val cs = deref(s.bindings, s.regs(2))
     def advance(ok: Boolean): Unit =
       if (ok) builtinAdvance(s, withReturn) else backtrack(s)
     a match {
-      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-        val str = program.internTable.idToString(id)
+      case Atom(id) if program.internTable.isInRange(id) =>
+        val str = program.internTable.stringOf(id)
         val codes = str.toCharArray.map(c => IntTerm(c.toInt): WamTerm).toSeq
         advance(unify(s, s.regs(2), seqToList(program, codes)))
       case IntTerm(n) =>
@@ -1407,7 +1462,9 @@ object WamRuntime {
               case IntTerm(c) => c.toChar
               case _          => '?'
             }.mkString
-            val id = program.internTable.stringToId.getOrElse(chars, -1)
+            // intern (mutable side of the table) so the atom always has
+            // a real id even if codegen never saw this string.
+            val id = program.internTable.intern(chars)
             advance(unify(s, s.regs(1), Atom(id)))
           case None => backtrack(s)
         }
@@ -1419,8 +1476,8 @@ object WamRuntime {
   def atomLength2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
     val a = deref(s.bindings, s.regs(1))
     a match {
-      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-        val len = program.internTable.idToString(id).length
+      case Atom(id) if program.internTable.isInRange(id) =>
+        val len = program.internTable.stringOf(id).length
         if (unify(s, s.regs(2), IntTerm(len))) builtinAdvance(s, withReturn)
         else backtrack(s)
       case _ => backtrack(s)
@@ -1445,24 +1502,22 @@ object WamRuntime {
    *  `f(a, b)`, cons cells as `[a, b, ...]`, vars as `_<id>`. */
   def termToString(program: WamProgram, t: WamTerm): String = t match {
     case Ref(id)       => s"_$id"
-    case Atom(id)      =>
-      if (id >= 0 && id < program.internTable.idToString.length)
-        program.internTable.idToString(id) else s"<atom:$id>"
+    case Atom(id)      => program.internTable.stringOf(id)
     case IntTerm(n)    => n.toString
     case FloatTerm(d)  => d.toString
     case st @ Struct(_, _, _) =>
-      val consId = program.internTable.stringToId.getOrElse("[|]", -1)
+      val consId = program.internTable.lookupId("[|]")
       if (st.functor == consId && st.arity == 2) listToString(program, st)
       else {
-        val name = program.internTable.idToString.lift(st.functor).getOrElse(s"<atom:${st.functor}>")
+        val name = program.internTable.stringOf(st.functor)
         val args = st.args.map(termToString(program, _)).mkString(",")
         s"$name($args)"
       }
   }
 
   private def listToString(program: WamProgram, head: WamTerm): String = {
-    val emptyId = program.internTable.stringToId.getOrElse("[]", -1)
-    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val emptyId = program.internTable.lookupId("[]")
+    val consId  = program.internTable.lookupId("[|]")
     val sb = new StringBuilder("[")
     var cur: WamTerm = head
     var first = true
@@ -1495,8 +1550,8 @@ object WamRuntime {
    */
   def format2(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
     val fmt = deref(s.bindings, s.regs(1)) match {
-      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-        program.internTable.idToString(id)
+      case Atom(id) if program.internTable.isInRange(id) =>
+        program.internTable.stringAt(id)
       case other => termToString(program, other)
     }
     val args = listToSeq(s, program, s.regs(2)).getOrElse(Seq.empty)
@@ -1520,8 +1575,8 @@ object WamRuntime {
           case 'a' =>
             if (argIdx < argArr.length) {
               argArr(argIdx) match {
-                case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-                  sb.append(program.internTable.idToString(id))
+                case Atom(id) if program.internTable.isInRange(id) =>
+                  sb.append(program.internTable.stringAt(id))
                 case other => sb.append(termToString(program, other))
               }
             }
@@ -1562,60 +1617,131 @@ object WamRuntime {
     }
   }
 
-  /** atom_concat(+A, +B, ?C): C is the concatenation of A and B as
-   *  strings. Forward mode only (A and B both ground). The reverse
-   *  mode would need to enumerate all (A, B) splits of C and inject
-   *  each substring as an atom in the intern table — which is
-   *  immutable in this runtime — so it's not supported.
+  /** atom_concat(+A, +B, ?C): forward mode — C is the concatenation
+   *  of A and B as their interned strings.
    *
-   *  Numeric A or B are rendered via their toString form.
+   *  atom_concat(?A, ?B, +C): reverse mode — enumerate all
+   *  (prefix, suffix) splits of C as a multi-solution choice point.
+   *  Each split's prefix/suffix is interned at runtime if not already
+   *  present, so unification produces real atoms.
+   *
+   *  Numeric A or B in forward mode are rendered via their toString
+   *  form. Reverse mode requires C to be ground; an unbound C with
+   *  unbound A and B fails (no instantiation).
    */
   def atomConcat3(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
     def stringOf(t: WamTerm): Option[String] = t match {
-      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-        Some(program.internTable.idToString(id))
+      case Atom(id) if program.internTable.isInRange(id) =>
+        Some(program.internTable.stringAt(id))
       case IntTerm(n)   => Some(n.toString)
       case FloatTerm(d) => Some(d.toString)
       case _            => None
     }
     val a = deref(s.bindings, s.regs(1))
     val b = deref(s.bindings, s.regs(2))
-    (stringOf(a), stringOf(b)) match {
-      case (Some(sa), Some(sb)) =>
-        val concat = sa + sb
-        // Look up the concatenation in the intern table; if the user
-        // didn't pre-intern it (via intern_atoms), the resulting atom
-        // gets id -1 and unification will fail unless arg3 is unbound.
-        val id = program.internTable.stringToId.getOrElse(concat, -1)
+    val c = deref(s.bindings, s.regs(3))
+    (stringOf(a), stringOf(b), stringOf(c)) match {
+      case (Some(sa), Some(sb), _) =>
+        // Forward mode: A and B both ground; intern the concat.
+        val id = program.internTable.intern(sa + sb)
         if (unify(s, s.regs(3), Atom(id))) builtinAdvance(s, withReturn)
         else backtrack(s)
+      case (_, _, Some(sc)) =>
+        // Reverse mode: enumerate splits 0..sc.length of sc.
+        val sols: Seq[Map[Int, WamTerm]] =
+          (0 to sc.length).map { i =>
+            val prefix = sc.substring(0, i)
+            val suffix = sc.substring(i)
+            val pid = program.internTable.intern(prefix)
+            val sid = program.internTable.intern(suffix)
+            Map(1 -> (Atom(pid): WamTerm), 2 -> (Atom(sid): WamTerm))
+          }.toSeq
+        dispatchForeignMulti(s, sols, withReturn)
       case _ => backtrack(s)
     }
   }
 
-  /** sub_atom(+Atom, +Before, +Length, ?After, ?SubAtom): extracts a
-   *  substring. Atom, Before, Length must all be ground; After and
-   *  SubAtom are derived. Multi-solution modes (any of B/L/A unbound)
-   *  are not supported in this implementation. */
+  /** sub_atom(+Atom, ?Before, ?Length, ?After, ?SubAtom): extracts a
+   *  substring. Atom must be ground.
+   *
+   *  - Forward mode (Before, Length both ground): single deterministic
+   *    binding for After and SubAtom.
+   *  - Multi-solution mode (any of Before, Length, After unbound):
+   *    enumerates all (B, L, A) triples with B + L + A = |Atom| via
+   *    ForeignCP, interning each substring on demand.
+   *
+   *  SubAtom can be ground or unbound; ground SubAtom acts as a filter
+   *  on the enumeration.
+   */
   def subAtom5(s: WamState, program: WamProgram, withReturn: Boolean): Unit = {
     val atom   = deref(s.bindings, s.regs(1))
     val before = deref(s.bindings, s.regs(2))
     val length = deref(s.bindings, s.regs(3))
+    val after  = deref(s.bindings, s.regs(4))
+    val sub    = deref(s.bindings, s.regs(5))
     val str = atom match {
-      case Atom(id) if id >= 0 && id < program.internTable.idToString.length =>
-        program.internTable.idToString(id)
+      case Atom(id) if program.internTable.isInRange(id) =>
+        program.internTable.stringAt(id)
       case _ => return backtrack(s)
     }
-    (numOf(before), numOf(length)) match {
-      case (Some(NInt(b)), Some(NInt(l)))
-          if b >= 0 && l >= 0 && b + l <= str.length =>
+    val n = str.length
+    val subStrOpt: Option[String] = sub match {
+      case Atom(id) if program.internTable.isInRange(id) =>
+        Some(program.internTable.stringAt(id))
+      case _ => None
+    }
+    (numOf(before), numOf(length), numOf(after)) match {
+      case (Some(NInt(b)), Some(NInt(l)), _)
+          if b >= 0 && l >= 0 && b + l <= n =>
+        // Forward mode: B and L bound. Single deterministic solution.
         val subStr = str.substring(b, b + l)
-        val after  = str.length - b - l
-        val subId  = program.internTable.stringToId.getOrElse(subStr, -1)
-        val ok = unify(s, s.regs(5), Atom(subId)) &&
-                 unify(s, s.regs(4), IntTerm(after))
+        if (subStrOpt.isDefined && subStrOpt.get != subStr) return backtrack(s)
+        val a = n - b - l
+        val subId = program.internTable.intern(subStr)
+        val ok = unify(s, s.regs(4), IntTerm(a)) &&
+                 unify(s, s.regs(5), Atom(subId))
         if (ok) builtinAdvance(s, withReturn) else backtrack(s)
-      case _ => backtrack(s)
+      case _ =>
+        // Multi-solution: enumerate all (b, l, a) triples respecting
+        // any ground bindings, plus the SubAtom filter when present.
+        val bRange: Range = numOf(before) match {
+          case Some(NInt(bv)) if bv >= 0 && bv <= n => bv to bv
+          case Some(_) => return backtrack(s)
+          case None    => 0 to n
+        }
+        val lFixed: Option[Int] = numOf(length) match {
+          case Some(NInt(lv)) if lv >= 0 => Some(lv)
+          case Some(_) => return backtrack(s)
+          case None    => None
+        }
+        val aFixed: Option[Int] = numOf(after) match {
+          case Some(NInt(av)) if av >= 0 => Some(av)
+          case Some(_) => return backtrack(s)
+          case None    => None
+        }
+        val buf = scala.collection.mutable.ListBuffer.empty[Map[Int, WamTerm]]
+        for (b <- bRange) {
+          val lRange: Range = lFixed match {
+            case Some(lv) => lv to lv
+            case None     => 0 to (n - b)
+          }
+          for (l <- lRange if b + l <= n) {
+            val a = n - b - l
+            if (aFixed.forall(_ == a)) {
+              val subStr = str.substring(b, b + l)
+              if (subStrOpt.forall(_ == subStr)) {
+                val subId = program.internTable.intern(subStr)
+                buf.append(Map(
+                  2 -> (IntTerm(b): WamTerm),
+                  3 -> (IntTerm(l): WamTerm),
+                  4 -> (IntTerm(a): WamTerm),
+                  5 -> (Atom(subId): WamTerm)
+                ))
+              }
+            }
+          }
+        }
+        dispatchForeignMulti(s, buf.toSeq, withReturn)
     }
   }
 
@@ -1635,30 +1761,58 @@ object WamRuntime {
             // Enumerate. Reuse ForeignMulti machinery for backtracking.
             val sols: Seq[Map[Int, WamTerm]] =
               (lo to hi).map(n => Map(3 -> (IntTerm(n): WamTerm))).toSeq
-            val resumePc = s.pc + 1
-            sols match {
-              case Nil => backtrack(s)
-              case sol +: rest =>
-                if (rest.nonEmpty) {
-                  val cp = ChoicePoint(
-                    pc        = resumePc,
-                    regs      = snapshotRegs(s),
-                    envStack  = s.envStack,
-                    callStack = s.callStack,
-                    trailLen  = s.trail.length,
-                    cutBar    = s.cutBar,
-                    nextVarId = s.nextVarId,
-                    kind      = ForeignCP(rest)
-                  )
-                  s.choicePoints += cp
-                }
-                if (applyBindings(s, sol)) {
-                  if (withReturn) s.pc = resumePc else builtinAdvance(s, withReturn)
-                } else backtrack(s)
-            }
+            dispatchForeignMulti(s, sols, withReturn)
           case _ => backtrack(s)
         }
       case _ => backtrack(s)
+    }
+  }
+
+  /** Apply the first of `sols` to `s` and stash the rest as a ForeignCP
+   *  choice point. Used by between/3, atom_concat/3 reverse mode,
+   *  sub_atom/5 multi-solution modes.
+   *
+   *  withReturn=true (called from `Call`): the resume point is the
+   *  instruction after the Call. The CP saves that pc and the unchanged
+   *  callStack.
+   *
+   *  withReturn=false (called from `Execute`, i.e. tail call): there is
+   *  no instruction after the call to resume to. The resume point is
+   *  whatever Proceed would target — top of callStack, or Succeeded if
+   *  the stack is empty. We snapshot the post-Proceed state into the CP
+   *  so backtracking lands on the right pc/stack.
+   */
+  private def dispatchForeignMulti(s: WamState, sols: Seq[Map[Int, WamTerm]],
+                                   withReturn: Boolean): Unit = {
+    // Sentinel: any negative pc on a CP signals "Succeeded after the
+    // next applyBindings"; we check for it at the resume site rather
+    // than letting step() fetch program.instructions(-1).
+    val (resumePc, resumeCallStack) =
+      if (withReturn) (s.pc + 1, s.callStack)
+      else s.callStack match {
+        case Nil       => (-1, Nil)
+        case ret :: rs => (ret, rs)
+      }
+    sols match {
+      case Nil => backtrack(s)
+      case sol +: rest =>
+        if (rest.nonEmpty) {
+          val cp = ChoicePoint(
+            pc        = resumePc,
+            regs      = snapshotRegs(s),
+            envStack  = s.envStack,
+            callStack = resumeCallStack,
+            trailLen  = s.trail.length,
+            cutBar    = s.cutBar,
+            nextVarId = s.nextVarId,
+            kind      = ForeignCP(rest)
+          )
+          s.choicePoints += cp
+        }
+        if (applyBindings(s, sol)) {
+          if (withReturn) s.pc = resumePc
+          else builtinAdvance(s, withReturn)
+        } else backtrack(s)
     }
   }
 
@@ -1736,8 +1890,7 @@ object WamRuntime {
     }
   }
   private def atomString(program: WamProgram, id: Int): String =
-    if (id >= 0 && id < program.internTable.idToString.length)
-      program.internTable.idToString(id) else s"<atom:$id>"
+    program.internTable.stringOf(id)
   private def lexLess(program: WamProgram, xs: Array[WamTerm], ys: Array[WamTerm]): Boolean = {
     val n = math.min(xs.length, ys.length)
     var i = 0
@@ -1884,8 +2037,8 @@ object WamRuntime {
   // intern table; the empty list is the atom `[]`.
 
   def listToSeq(s: WamState, program: WamProgram, list: WamTerm): Option[Seq[WamTerm]] = {
-    val emptyId = program.internTable.stringToId.getOrElse("[]",  -1)
-    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val emptyId = program.internTable.lookupId("[]")
+    val consId  = program.internTable.lookupId("[|]")
     val buf = scala.collection.mutable.ListBuffer.empty[WamTerm]
     var cur = deref(s.bindings, list)
     while (true) {
@@ -1904,8 +2057,8 @@ object WamRuntime {
 
   /** Build a Prolog list term from a Scala Seq. */
   def seqToList(program: WamProgram, items: Seq[WamTerm]): WamTerm = {
-    val emptyId = program.internTable.stringToId.getOrElse("[]",  -1)
-    val consId  = program.internTable.stringToId.getOrElse("[|]", -1)
+    val emptyId = program.internTable.lookupId("[]")
+    val consId  = program.internTable.lookupId("[|]")
     items.foldRight[WamTerm](Atom(emptyId)) { (h, t) =>
       Struct(consId, 2, Array(h, t))
     }
@@ -1924,12 +2077,10 @@ object WamRuntime {
   def metaCallSucceeds(s: WamState, program: WamProgram, goal: WamTerm): Option[Boolean] = {
     val (key, args) = goal match {
       case Atom(f) =>
-        val n = if (f >= 0 && f < program.internTable.idToString.length)
-                  program.internTable.idToString(f) else ""
+        val n = program.internTable.stringAt(f)
         (s"$n/0", Array.empty[WamTerm])
       case Struct(f, arity, sargs) =>
-        val n = if (f >= 0 && f < program.internTable.idToString.length)
-                  program.internTable.idToString(f) else ""
+        val n = program.internTable.stringAt(f)
         (s"$n/$arity", sargs)
       case _ => return None
     }

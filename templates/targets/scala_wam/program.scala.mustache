@@ -10,19 +10,16 @@ import {{runtime_package}}._
 object GeneratedProgram {
 
   // ----------------------------------------------------------
-  // Compile-time atom intern table
+  // Atom intern table
   // ----------------------------------------------------------
-  // Maps atom strings <-> integer IDs. Built at code-generation time.
-  // Well-known atoms: true=0, fail=1, []=2
+  // Seeded with the atoms the codegen discovered while compiling the
+  // program. The runtime appends new atoms on demand (CLI parser for
+  // unknown args, atom_codes reverse mode, atom_concat split mode,
+  // sub_atom multi-solution). Well-known atoms: true=0, fail=1, []=2.
 
-  val internTable: InternTable = InternTable(
-    stringToId = Map(
-{{intern_string_to_id}}
-    ),
-    idToString = Array(
+  val internTable: InternTable = InternTable(Array(
 {{intern_id_to_string}}
-    )
-  )
+  ))
 
   // ----------------------------------------------------------
   // Shared WAM instruction array (all predicates)
@@ -167,8 +164,9 @@ object GeneratedProgram {
 
   // Parse a CLI argument into a WamTerm.
   // Supports integers ("42", "-3"), floats ("3.14", "-1.5"), atoms ("a"),
-  // structures ("f(a,b)"), and lists ("[a,b]"). Unknown atom strings get
-  // id -1 so they fail unification with known atoms.
+  // structures ("f(a,b)"), and lists ("[a,b]"). Unknown atom strings are
+  // interned at runtime and get a real id, so they unify properly with
+  // atoms that are themselves discovered at runtime (e.g. via atom_codes).
   private def parseArg(s: String): WamTerm = {
     val t = s.trim
     // Integers first, then floats; both fall through to atom/list/struct
@@ -220,7 +218,7 @@ object GeneratedProgram {
   }
 
   private def internAtomId(s: String): Int =
-    internTable.stringToId.getOrElse(s, -1)
+    internTable.intern(s)
 
   /** Parse one CSV-cell string into a WamTerm. Used by file-backed
    *  fact-source handlers. Same numeric/atom split as parseArg but

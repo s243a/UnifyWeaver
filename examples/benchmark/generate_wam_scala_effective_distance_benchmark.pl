@@ -417,11 +417,11 @@ object EffectiveDistanceRunner {
   }
 
   private def atom(raw: String): WamTerm =
-    Atom(GeneratedProgram.internTable.stringToId.getOrElse(raw, -1))
+    Atom(GeneratedProgram.internTable.intern(raw))
 
   private def listOf(items: WamTerm*): WamTerm = {
-    val cons = GeneratedProgram.internTable.stringToId("[|]")
-    val empty = GeneratedProgram.internTable.stringToId("[]")
+    val cons = GeneratedProgram.internTable.lookupId("[|]")
+    val empty = GeneratedProgram.internTable.lookupId("[]")
     items.foldRight[WamTerm](Atom(empty)) { (head, tail) =>
       Struct(cons, 2, Array(head, tail))
     }
