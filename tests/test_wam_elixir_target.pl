@@ -1177,6 +1177,21 @@ test_runtime_emits_extended_builtin_set :-
     ;   fail_test(Test, 'one or more extended builtins missing from execute_builtin')
     ).
 
+%% Audit follow-up (benchmarks/wam_elixir_builtin_coverage.md
+%  medium-priority): the runtime now also implements the term meta-
+%  programming primitives functor/3, arg/3, =../2, copy_term/2.
+test_runtime_emits_meta_builtin_set :-
+    Test = 'Runtime: execute_builtin covers functor/3, arg/3, =../2, copy_term/2',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, '{"functor/3", 3}'),
+        sub_string(S, _, _, _, '{"arg/3", 3}'),
+        sub_string(S, _, _, _, '{"=../2", 2}'),
+        sub_string(S, _, _, _, '{"copy_term/2", 2}')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more meta-builtins missing from execute_builtin')
+    ).
+
 test_runtime_default_arm_throws_unknown_builtin :-
     Test = 'Runtime: execute_builtin default arm throws {:unknown_builtin, ...} (hardening)',
     wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
@@ -1638,6 +1653,7 @@ run_tests :-
     test_lowered_emits_integer_literals,
     test_runtime_emits_full_comparison_family,
     test_runtime_emits_extended_builtin_set,
+    test_runtime_emits_meta_builtin_set,
     test_runtime_default_arm_throws_unknown_builtin,
     test_lowered_put_structure_links_unbound_heap_ref,
     test_runtime_list_walkers_accept_both_cons_tags,

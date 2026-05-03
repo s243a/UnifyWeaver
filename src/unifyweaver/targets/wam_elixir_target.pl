@@ -968,6 +968,99 @@ compile_utility_helpers_to_elixir(Code) :-
             %{state | pc: new_pc}
           :fail -> :fail
         end
+      {"functor/3", 3} ->
+        # functor(Term, Name, Arity). Decompose mode: Term is bound,
+        # extract Name and Arity. Build mode (Term unbound, Name +
+        # Arity bound) is not yet implemented — falls through to :fail.
+        # Atomic terms have arity 0; compound terms unpack from their
+        # heap-side `{:str, "F/N"}` cell.
+        term = deref_var(state, get_reg(state, 1))
+        case term_functor_arity(state, term) do
+          {:ok, fname, farity} ->
+            case unify(state, get_reg(state, 2), fname) do
+              {:ok, s1} ->
+                case unify(s1, get_reg(s1, 3), farity) do
+                  {:ok, s2} ->
+                    new_pc = if is_integer(s2.pc), do: s2.pc + 1, else: s2.pc
+                    %{s2 | pc: new_pc}
+                  :fail -> :fail
+                end
+              :fail -> :fail
+            end
+          :fail -> :fail
+        end
+      {"arg/3", 3} ->
+        # arg(N, Term, Arg). Read mode: N must be a bound positive
+        # integer, Term must be a bound compound. heap[Term-addr + N]
+        # is the Nth arg slot; deref + unify with Arg.
+        n = deref_var(state, get_reg(state, 1))
+        term = deref_var(state, get_reg(state, 2))
+        case {n, term} do
+          {n, {:ref, addr}} when is_integer(n) and n >= 1 ->
+            case Map.get(state.heap, addr) do
+              {:str, _fn} ->
+                arg_val = deref_var(state, Map.get(state.heap, addr + n))
+                case unify(state, get_reg(state, 3), arg_val) do
+                  {:ok, s} ->
+                    new_pc = if is_integer(s.pc), do: s.pc + 1, else: s.pc
+                    %{s | pc: new_pc}
+                  :fail -> :fail
+                end
+              _ -> :fail
+            end
+          _ -> :fail
+        end
+      {"=../2", 2} ->
+        # Univ. Decompose mode: Term =.. List builds [Functor | Args]
+        # as a native list. Compose mode (Term unbound, List bound)
+        # is not yet implemented — falls through to :fail.
+        # Atomic Term decomposes to a singleton list [Term].
+        term = deref_var(state, get_reg(state, 1))
+        result =
+          case term do
+            {:ref, addr} ->
+              case Map.get(state.heap, addr) do
+                {:str, fn_name} ->
+                  fname = parse_functor_name(fn_name)
+                  farity = parse_functor_arity(fn_name)
+                  args = if farity > 0 do
+                    Enum.map(heap_slice(state, addr + 1, farity),
+                             &deref_var(state, &1))
+                  else
+                    []
+                  end
+                  [fname | args]
+                _ -> :fail
+              end
+            v when is_number(v) or is_binary(v) or is_atom(v) -> [v]
+            _ -> :fail
+          end
+        case result do
+          :fail -> :fail
+          list ->
+            case unify(state, get_reg(state, 2), list) do
+              {:ok, s} ->
+                new_pc = if is_integer(s.pc), do: s.pc + 1, else: s.pc
+                %{s | pc: new_pc}
+              :fail -> :fail
+            end
+        end
+      {"copy_term/2", 2} ->
+        # copy_term(Original, Copy). Initial impl handles the common
+        # case where Original is fully ground (no unbound vars) — Copy
+        # gets unified with Original directly, which is semantically
+        # equivalent (ground terms are their own copy). Non-ground
+        # terms alias rather than copy — fresh-var renaming is not yet
+        # implemented. Documented as a known limitation; covers the
+        # bulk of meta-programming usage (assert/retract patterns,
+        # ground term comparison).
+        original = deref_var(state, get_reg(state, 1))
+        case unify(state, get_reg(state, 2), original) do
+          {:ok, s} ->
+            new_pc = if is_integer(s.pc), do: s.pc + 1, else: s.pc
+            %{s | pc: new_pc}
+          :fail -> :fail
+        end
       {"!/0", 0} ->
         # Cut: truncate choice_points back to the barrier set at
         # predicate entry (saved by `allocate` into state.cut_point).
@@ -1006,6 +1099,31 @@ compile_utility_helpers_to_elixir(Code) :-
         throw({:unknown_builtin, op, arity})
     end
   end
+
+  # Extract the functor-name part from a "name/arity" string.
+  defp parse_functor_name(fn_name) do
+    case String.split(fn_name, "/") do
+      [name, _arity_str] -> name
+      _ -> fn_name
+    end
+  end
+
+  # Compute (Name, Arity) for a derefd term — used by functor/3.
+  # Atomic values (numbers, strings/atoms) report themselves as the
+  # name with arity 0. Compound terms unpack from the {:str, F/N}
+  # heap cell. Unbound and unrecognised shapes return :fail (build
+  # mode is not yet supported).
+  defp term_functor_arity(state, {:ref, addr}) do
+    case Map.get(state.heap, addr) do
+      {:str, fn_name} ->
+        {:ok, parse_functor_name(fn_name), parse_functor_arity(fn_name)}
+      _ -> :fail
+    end
+  end
+  defp term_functor_arity(_state, v) when is_number(v), do: {:ok, v, 0}
+  defp term_functor_arity(_state, v) when is_binary(v), do: {:ok, v, 0}
+  defp term_functor_arity(_state, v) when is_atom(v) and not is_nil(v), do: {:ok, v, 0}
+  defp term_functor_arity(_state, _), do: :fail
 
   defp wam_list_to_native(_state, []), do: {:ok, []}
   defp wam_list_to_native(_state, "[]"), do: {:ok, []}
