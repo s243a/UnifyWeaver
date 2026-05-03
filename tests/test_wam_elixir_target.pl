@@ -1136,6 +1136,7 @@ test_findall_phase4b5_branch_skips_cp_push :-
 
 :- dynamic integer_match_test:int_p/1.
 :- dynamic arith_cmp_test:gt_p/1, arith_cmp_test:neq_p/1.
+:- dynamic inline_list_test:len_p/1.
 
 %% Arithmetic-comparison regression: the runtime must implement the
 %  full comparison family (`<`, `>`, `>=`, `=<`, `=:=`, `=\=`) — pre-
@@ -1183,6 +1184,47 @@ test_runtime_default_arm_throws_unknown_builtin :-
     (   sub_string(S, _, _, _, 'throw({:unknown_builtin, op, arity})')
     ->  pass(Test)
     ;   fail_test(Test, 'default arm not hardened — throw not emitted')
+    ).
+
+%% Inline-list-build regression: put_list / put_structure must bind
+%  the target reg's previous unbound heap_ref to the new structure
+%  address, so cons-cell tails link to the next cons cell. Without
+%  this link, tail-of-first-cons stays as a self-pointing unbound
+%  and list-walking builtins terminate at the broken link.
+%  Surfaced by the append/3 work in PR #1780 (length/2 had the
+%  same latent bug — verified at the time but out of scope there).
+test_lowered_put_structure_links_unbound_heap_ref :-
+    Test = 'Lowering: put_structure binds previous unbound heap_ref (inline-list link)',
+    setup_call_cleanup(
+        (   retractall(inline_list_test:len_p(_)),
+            assertz((inline_list_test:len_p(N) :- length([1,2,3,4], N)))
+        ),
+        (   wam_target:compile_predicate_to_wam(inline_list_test:len_p/1, [], WamCode),
+            lower_predicate_to_elixir(len_p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            % The fix emits a "link_addr" branch in put_structure /
+            % put_list that detects {:unbound, {:heap_ref, ...}} and
+            % writes the new ref into that heap cell.
+            sub_string(S, _, _, _, 'link_addr'),
+            sub_string(S, _, _, _, 'trail_binding({:heap_ref, link_addr})')
+        ->  pass(Test)
+        ;   fail_test(Test, 'put_structure / put_list does not link unbound heap_ref')
+        ),
+        retractall(inline_list_test:len_p(_))
+    ).
+
+%% Companion runtime check: wam_list_length / wam_list_member? must
+%  walk both `./2` (early put_list) and `[|]/2` (later put_structure)
+%  cons-cell functor tags. Inline lists mix both; pre-fix only `./2`
+%  was accepted, so even with the heap-link fix, length still
+%  terminated when it hit the [|]/2 second-cons.
+test_runtime_list_walkers_accept_both_cons_tags :-
+    Test = 'Runtime: wam_list_length / wam_list_member? walk both ./2 and [|]/2 cons tags',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'cons in ["./2", "[|]/2"]')
+    ->  pass(Test)
+    ;   fail_test(Test, 'list walkers do not accept both cons tags')
     ).
 
 %% Backslash-escape regression: `=\=/2` op name must be emitted as
@@ -1597,6 +1639,8 @@ run_tests :-
     test_runtime_emits_full_comparison_family,
     test_runtime_emits_extended_builtin_set,
     test_runtime_default_arm_throws_unknown_builtin,
+    test_lowered_put_structure_links_unbound_heap_ref,
+    test_runtime_list_walkers_accept_both_cons_tags,
     test_lowered_escapes_backslash_in_builtin_call,
     test_tier2_purity_gate_rejects_unknown,
     test_tier2_purity_gate_accepts_declared,
