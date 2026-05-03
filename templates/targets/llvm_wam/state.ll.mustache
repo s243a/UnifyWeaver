@@ -113,6 +113,7 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
 ; leaks ~85KB per iteration (stack 6KB + heap 64KB + trail 6KB + CPs
 ; ~1.5KB + agg_accum 1KB + state ~200B) and the process aborts on OOM.
 define void @wam_state_free(%WamState* %vm) {
+entry:
   %stack_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 2
   %stack = load %StackEntry*, %StackEntry** %stack_ptr
   %stack_i8 = bitcast %StackEntry* %stack to i8*
@@ -128,8 +129,40 @@ define void @wam_state_free(%WamState* %vm) {
   %trail_i8 = bitcast %TrailEntry* %trail to i8*
   call void @free(i8* %trail_i8)
 
+  ; Iterate over choice points to free any unexhausted multi-result buffers.
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
   %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
   %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  br label %cp_loop
+
+cp_loop:
+  %i = phi i32 [ 0, %entry ], [ %i_next, %cp_cont ]
+  %cp_done = icmp uge i32 %i, %cpn
+  br i1 %cp_done, label %cp_done_label, label %cp_check
+
+cp_check:
+  %cp_entry = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %i
+  %at_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 4
+  %at = load i32, i32* %at_ptr
+  %is_foreign = icmp eq i32 %at, -2
+  br i1 %is_foreign, label %cp_free_fr, label %cp_cont
+
+cp_free_fr:
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %cp_entry, i32 0, i32 8
+  %fr = load i8*, i8** %fr_ptr
+  %fr_null = icmp eq i8* %fr, null
+  br i1 %fr_null, label %cp_cont, label %cp_do_free
+
+cp_do_free:
+  call void @free(i8* %fr)
+  br label %cp_cont
+
+cp_cont:
+  %i_next = add i32 %i, 1
+  br label %cp_loop
+
+cp_done_label:
   %cps_i8 = bitcast %ChoicePoint* %cps to i8*
   call void @free(i8* %cps_i8)
 
@@ -2661,6 +2694,9 @@ build_loop:
   %sl_len_ptr = getelementptr %List, %List* %sl, i32 0, i32 0
   store i32 %rem_len, i32* %sl_len_ptr
   %sl_elems_ptr = getelementptr %List, %List* %sl, i32 0, i32 1
+  ; For an empty input list, elems is null (from @wam_empty_list).
+  ; getelementptr of null+0 is null, resulting in an empty suffix struct
+  ; {len=0, elems=null}, which correctly matches @wam_empty_list.
   %suffix_start = getelementptr %Value, %Value* %elems, i64 %bi
   store %Value* %suffix_start, %Value** %sl_elems_ptr
   ; Create %Value for this suffix (tag=4, payload=ptr to %List).
@@ -2893,10 +2929,9 @@ define double* @wam_build_heuristic_from_table(
     %WeightedFact* %dtable, i64 %dlen,
     i64 %target, i64 %max_atom_id) {
 entry:
-  call void @wam_arena_ensure()
   %n = add i64 %max_atom_id, 1
   %bytes = shl i64 %n, 3
-  %mem = call i8* @wam_arena_alloc(i64 %bytes)
+  %mem = call i8* @malloc(i64 %bytes)
   call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
   %h = bitcast i8* %mem to double*
   br label %scan
