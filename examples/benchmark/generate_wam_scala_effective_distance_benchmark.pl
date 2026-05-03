@@ -373,19 +373,33 @@ object EffectiveDistanceRunner {
     val edgePath = Paths.get(args(0))
     val articlePath = Paths.get(args(1))
     val rootPath = edgePath.getParent.resolve("root_categories.tsv")
+    val totalStart = System.nanoTime()
+    val loadStart = System.nanoTime()
 ~w
     val roots = loadSingleColumn(rootPath)
     val categoriesByArticle = articleCategories.groupMap(_._1)(_._2)
+    val loadMs = elapsedMs(loadStart)
 
-    val rows = (for {
+    val queryStart = System.nanoTime()
+    val unsortedRows = for {
       root <- roots
       article <- categoriesByArticle.keys.toSeq.sorted
       weightSum = categoriesByArticle(article).flatMap(categoryWeights(_, root)).sum
       if weightSum > 0.0
-    } yield ResultRow(article, root, Math.pow(weightSum, inverseDimensionN)))
-      .sortBy(row => (row.distance, row.article, row.root))
+    } yield ResultRow(article, root, Math.pow(weightSum, inverseDimensionN))
+    val queryMs = elapsedMs(queryStart)
+
+    val aggregationStart = System.nanoTime()
+    val rows = unsortedRows.sortBy(row => (row.distance, row.article, row.root))
+    val aggregationMs = elapsedMs(aggregationStart)
+    val totalMs = elapsedMs(totalStart)
 
     Console.err.println("mode=scala_wam_effective_distance")
+    Console.err.println(s"article_source_mode=$articleSourceMode")
+    Console.err.println(s"load_ms=$loadMs")
+    Console.err.println(s"query_ms=$queryMs")
+    Console.err.println(s"aggregation_ms=$aggregationMs")
+    Console.err.println(s"total_ms=$totalMs")
     Console.err.println(s"article_count=${rows.size}")
     println("article\\troot_category\\teffective_distance")
     rows.foreach { row =>
@@ -433,6 +447,9 @@ object EffectiveDistanceRunner {
     case _ => None
   }
 
+  private def elapsedMs(startNanos: Long): Long =
+    (System.nanoTime() - startNanos) / 1000000L
+
   private def loadPairs(path: Path): Vector[(String, String)] =
     withSource(path) { source =>
       source.getLines().drop(1).toVector.flatMap { line =>
@@ -475,11 +492,15 @@ object EffectiveDistanceRunner {
 scala_article_loader_code(artifact, Code) :-
     Code = '    val projectDataPath = Paths.get(GeneratedProgram.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).resolveSibling("data")
     val articleArtifactPath = projectDataPath.resolve("article_category_by_article.tsv")
+    val articleSourceMode =
+      if (java.nio.file.Files.exists(articleArtifactPath)) "artifact"
+      else "tsv"
     val articleCategories =
       if (java.nio.file.Files.exists(articleArtifactPath)) loadGroupedPairs(articleArtifactPath)
       else loadPairs(articlePath)'.
 scala_article_loader_code(_Mode, Code) :-
-    Code = '    val articleCategories = loadPairs(articlePath)'.
+    Code = '    val articleSourceMode = "tsv"
+    val articleCategories = loadPairs(articlePath)'.
 
 must_exist_file(Path) :-
     (   exists_file(Path)
