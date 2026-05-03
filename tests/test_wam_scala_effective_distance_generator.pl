@@ -114,6 +114,11 @@ test(generate_artifact_project_emits_distinct_file_backend) :-
             sub_string(Generated, _, _, _, 'category_parent_by_child.tsv'),
             sub_string(Generated, _, _, _, 'parentsByChild'),
             sub_string(Runner, _, _, _, 'article_category_by_article.tsv'),
+            sub_string(Runner, _, _, _, 'article_source_mode='),
+            sub_string(Runner, _, _, _, 'load_ms='),
+            sub_string(Runner, _, _, _, 'query_ms='),
+            sub_string(Runner, _, _, _, 'aggregation_ms='),
+            sub_string(Runner, _, _, _, 'total_ms='),
             sub_string(Runner, _, _, _, 'loadGroupedPairs'),
             !
         ),
