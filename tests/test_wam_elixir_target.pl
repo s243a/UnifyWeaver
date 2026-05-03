@@ -751,6 +751,72 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
     ).
 
+%% Atom-interning experiment (opt-in via intern_atoms(true) Option):
+%  identifier-shape constants emit as Elixir atom literals (`:foo`)
+%  instead of binaries (`"foo"`). BEAM atoms compare via pointer
+%  equality and avoid binary copies on hot paths. Non-identifier
+%  constants (whitespace, leading uppercase, etc.) still emit as
+%  quoted strings — `:Foo` would mean a module reference in Elixir.
+test_intern_atoms_default_off :-
+    Test = 'Atom interning: default (no intern_atoms option) emits constants as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello'))
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "hello"'),
+            \+ sub_string(S, _, _, _, 'val == :hello')
+        ->  pass(Test)
+        ;   fail_test(Test, 'default mode wrongly emitted atom literal')
+        ),
+        retractall(intern_test:p(_))
+    ).
+
+test_intern_atoms_on_emits_atom_literals :-
+    Test = 'Atom interning: intern_atoms(true) emits identifier constants as :atom literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello')),
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == :hello'),
+            \+ sub_string(S, _, _, _, 'val == "hello"')
+        ->  pass(Test)
+        ;   fail_test(Test, 'intern_atoms mode failed to emit atom literal')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
+test_intern_atoms_keeps_non_identifiers_as_strings :-
+    Test = 'Atom interning: leading-uppercase / non-identifier constants stay as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('Foo')),         % uppercase-leading: would mean module
+            assertz(intern_test:p('hello world')), % whitespace: not an identifier
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "Foo"'),
+            sub_string(S, _, _, _, 'val == "hello world"'),
+            % Sanity: did NOT emit `:Foo` (would parse as a module name).
+            \+ sub_string(S, _, _, _, 'val == :Foo')
+        ->  pass(Test)
+        ;   fail_test(Test, 'non-identifier constants wrongly emitted as atoms')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
 test_lmdb_adaptor_targets_safe_keyvalue_api :-
     Test = 'LMDB adaptor: uses safe key/value + cursor API (no raw-pointer ops)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -1186,6 +1252,7 @@ test_findall_phase4b5_branch_skips_cp_push :-
 :- dynamic integer_match_test:int_p/1.
 :- dynamic arith_cmp_test:gt_p/1, arith_cmp_test:neq_p/1.
 :- dynamic inline_list_test:len_p/1.
+:- dynamic intern_test:p/1.
 
 %% Arithmetic-comparison regression: the runtime must implement the
 %  full comparison family (`<`, `>`, `>=`, `=<`, `=:=`, `=\=`) — pre-
@@ -1814,6 +1881,9 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_intern_atoms_default_off,
+    test_intern_atoms_on_emits_atom_literals,
+    test_intern_atoms_keeps_non_identifiers_as_strings,
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
