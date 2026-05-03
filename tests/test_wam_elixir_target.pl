@@ -1582,6 +1582,58 @@ test_par_wrap_segment_cost_gate_default_zero :-
         retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
     ).
 
+%% Runtime cost probe (companion to forkMinCost static gate).
+%  par_wrap_segment/4 reads `runtime_cost_probe(ThresholdUs)` from
+%  Options. When present, the super-wrappers `true ->` arm is wrapped
+%  in a case statement that dispatches via WamRuntime.tier2_probe_*
+%  helpers — first call goes sequential and measures, subsequent
+%  calls follow the recorded decision.
+test_par_wrap_segment_runtime_probe_emits_dispatch :-
+    Test = 'Tier-2 runtime probe: super-wrapper emits ETS-backed dispatch when option set',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs,
+                             [runtime_cost_probe(1000)], Code),
+            sub_string(Code, _, _, _, "tier2_probe_decision"),
+            sub_string(Code, _, _, _, "tier2_probe_update"),
+            sub_string(Code, _, _, _, ":timer.tc"),
+            sub_string(Code, _, _, _, ":probe ->"),
+            sub_string(Code, _, _, _, ":go_sequential ->"),
+            sub_string(Code, _, _, _, ":go_parallel ->")
+        ->  pass(Test)
+        ;   fail_test(Test, 'probe-dispatch arm not emitted when runtime_cost_probe set')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_par_wrap_segment_runtime_probe_default_unwired :-
+    Test = 'Tier-2 runtime probe: default (no option) keeps the unconditional-parallel template',
+    setup_call_cleanup(
+        assertz(clause_body_analysis:order_independent(user:tier2_pure3/2)),
+        (   three_segment_fixture(Segs),
+            par_wrap_segment(tier2_pure3/2, Segs, [], Code),
+            % Probe markers must NOT appear when option absent.
+            \+ sub_string(Code, _, _, _, "tier2_probe_decision"),
+            \+ sub_string(Code, _, _, _, ":probe ->")
+        ->  pass(Test)
+        ;   fail_test(Test, 'probe-dispatch arm leaked into default code path')
+        ),
+        retract(clause_body_analysis:order_independent(user:tier2_pure3/2))
+    ).
+
+test_runtime_emits_tier2_probe_helpers :-
+    Test = 'Runtime: tier2_probe_decision/1 + tier2_probe_update/3 + ensure_tier2_probe_table available',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'def tier2_probe_decision('),
+        sub_string(S, _, _, _, 'def tier2_probe_update('),
+        sub_string(S, _, _, _, 'defp ensure_tier2_probe_table'),
+        sub_string(S, _, _, _, ':tier2_cost_probe')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more tier2 probe helpers missing from runtime')
+    ).
+
 maybe_abolish_test_predicate(Name/Arity) :-
     (   current_predicate(user:Name/Arity)
     ->  abolish(user:Name/Arity)
@@ -1751,6 +1803,9 @@ run_tests :-
     test_par_wrap_segment_cost_gate_rejects_low_cost,
     test_par_wrap_segment_cost_gate_passes_high_cost,
     test_par_wrap_segment_cost_gate_default_zero,
+    test_par_wrap_segment_runtime_probe_emits_dispatch,
+    test_par_wrap_segment_runtime_probe_default_unwired,
+    test_runtime_emits_tier2_probe_helpers,
     test_wiring_emits_tier2_eligible_attr,
     test_wiring_clause_main_is_super_wrapper_on_gate_pass,
     test_wiring_gate_reject_preserves_naming,

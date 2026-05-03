@@ -1478,6 +1478,55 @@ compile_aggregate_helpers_to_elixir(Code) :-
   end
 
   @doc """
+  Tier-2 runtime cost probe — companion to the static forkMinCost
+  gate. The static gate (par_wrap_segment/4) decides at codegen
+  time whether a predicates worst-case clause body is heavy enough
+  to amortise Task.async_stream overhead. The runtime probe takes a
+  measurement on the FIRST invocation of each Tier-2-eligible
+  predicate, then sticks with that decision for subsequent calls.
+
+  Decision is keyed by predicate-name string and stored in an ETS
+  table created lazily on first call. Three states:
+
+    :probe          — no measurement yet; caller must run sequential
+                      and report elapsed time via tier2_probe_update/3.
+    :go_sequential  — sequential beat or matched threshold; stay
+                      sequential.
+    :go_parallel    — sequential exceeded threshold; fan out
+                      via Task.async_stream from now on.
+
+  See benchmarks/wam_elixir_tier2_findall.md for the crossover data
+  that motivates the threshold default. Recommended threshold is in
+  the 500-2000us range for typical workloads on a 4-core box.
+  """
+  def tier2_probe_decision(pred_key) do
+    ensure_tier2_probe_table()
+    case :ets.lookup(:tier2_cost_probe, pred_key) do
+      [{_, decision}] -> decision
+      [] -> :probe
+    end
+  end
+
+  def tier2_probe_update(pred_key, us, threshold_us) do
+    ensure_tier2_probe_table()
+    decision = if us > threshold_us, do: :go_parallel, else: :go_sequential
+    :ets.insert(:tier2_cost_probe, {pred_key, decision})
+    :ok
+  end
+
+  defp ensure_tier2_probe_table do
+    if :ets.whereis(:tier2_cost_probe) == :undefined do
+      try do
+        :ets.new(:tier2_cost_probe, [:set, :public, :named_table])
+        :ok
+      rescue
+        ArgumentError -> :ok
+      end
+    end
+    :ok
+  end
+
+  @doc """
   Update the topmost aggregate frames :cp field to a new continuation.
   Called by end_aggregate-terminated sub-segments to point the agg
   frame at the post-end_aggregate sub-segment, so finalise tail-calls
