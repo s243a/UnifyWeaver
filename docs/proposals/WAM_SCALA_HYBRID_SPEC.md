@@ -463,8 +463,9 @@ benchmark data modes. The first matrix artifact targets are registered
 separately as `scala-wam-seeded-artifact` and
 `scala-wam-accumulated-artifact`; they currently exercise a file-backed
 grouped `category_parent_by_child.tsv` artifact with a Scala
-child-to-parents lookup handler, not a memory-mapped or LMDB artifact
-backend.
+child-to-parents lookup handler plus grouped
+`article_category_by_article.tsv` runner ingestion, not a memory-mapped
+or LMDB artifact backend.
 
 ## 13. Example Target-Level Declarations
 

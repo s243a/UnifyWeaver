@@ -78,9 +78,11 @@ generate(FactsPath, OutputDir, VariantAtom, KernelModeAtom, DataModeAtom) :-
     maybe_assert_seeded_helper(VariantAtom),
     collect_wam_predicates(KernelModeAtom, Predicates),
     parse_benchmark_data_mode(DataModeAtom, DataMode),
+    benchmark_effective_data_mode(article_category, DataMode, ArticleMode),
+    maybe_write_article_category_artifact(OutputDir, ArticleMode),
     scala_options(OutputDir, KernelModeAtom, DataMode, Options),
     write_wam_scala_project(Predicates, Options, OutputDir),
-    append_effective_distance_runner(OutputDir),
+    append_effective_distance_runner(OutputDir, ArticleMode),
     format(user_error,
            '[WAM-Scala-EffectiveDistance] facts=~w variant=~w kernels=~w data_mode=~w output=~w~n',
            [FactsPath, VariantAtom, KernelModeAtom, DataMode, OutputDir]).
@@ -225,6 +227,17 @@ category_parent_grouped_path(OutputDir, Path) :-
     make_directory_path(DataDir),
     directory_file_path(DataDir, 'category_parent_by_child.tsv', Path).
 
+article_category_grouped_path(OutputDir, Path) :-
+    directory_file_path(OutputDir, 'data', DataDir),
+    make_directory_path(DataDir),
+    directory_file_path(DataDir, 'article_category_by_article.tsv', Path).
+
+maybe_write_article_category_artifact(OutputDir, artifact) :-
+    !,
+    article_category_grouped_path(OutputDir, Path),
+    write_article_category_grouped_tsv(Path).
+maybe_write_article_category_artifact(_OutputDir, _Mode).
+
 write_category_parent_csv(CsvPath) :-
     findall(Child-Parent, current_category_parent_fact(Child, Parent), Pairs0),
     sort(Pairs0, Pairs),
@@ -244,6 +257,20 @@ write_category_parent_grouped_tsv(Path) :-
                (   format(Stream, '~w', [Child]),
                    forall(member(Parent, Parents),
                           format(Stream, '\t~w', [Parent])),
+                   nl(Stream)
+               )),
+        close(Stream)).
+
+write_article_category_grouped_tsv(Path) :-
+    findall(Article-Category, current_article_category_fact(Article, Category), Pairs0),
+    sort(Pairs0, Pairs),
+    group_pairs_by_key(Pairs, Grouped),
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        forall(member(Article-Categories, Grouped),
+               (   format(Stream, '~w', [Article]),
+                   forall(member(Category, Categories),
+                          format(Stream, '\t~w', [Category])),
                    nl(Stream)
                )),
         close(Stream)).
@@ -307,9 +334,10 @@ cleanup_generated_script_entrypoint :-
     ;   true
     ).
 
-append_effective_distance_runner(OutputDir) :-
+append_effective_distance_runner(OutputDir, ArticleMode) :-
     scala_effective_distance_runner_code(
         'generated.wam_scala_effective_distance.core',
+        ArticleMode,
         Code),
     directory_file_path(OutputDir, 'src/main/scala/generated/wam_scala_effective_distance/core', SrcDir),
     make_directory_path(SrcDir),
@@ -320,6 +348,10 @@ append_effective_distance_runner(OutputDir) :-
         close(Stream)).
 
 scala_effective_distance_runner_code(Package, Code) :-
+    scala_effective_distance_runner_code(Package, sidecar, Code).
+
+scala_effective_distance_runner_code(Package, ArticleMode, Code) :-
+    scala_article_loader_code(ArticleMode, ArticleLoaderCode),
     format(string(Code), 'package ~w
 
 import scala.collection.mutable
@@ -341,7 +373,7 @@ object EffectiveDistanceRunner {
     val edgePath = Paths.get(args(0))
     val articlePath = Paths.get(args(1))
     val rootPath = edgePath.getParent.resolve("root_categories.tsv")
-    val articleCategories = loadPairs(articlePath)
+~w
     val roots = loadSingleColumn(rootPath)
     val categoriesByArticle = articleCategories.groupMap(_._1)(_._2)
 
@@ -413,6 +445,18 @@ object EffectiveDistanceRunner {
       }
     }
 
+  private def loadGroupedPairs(path: Path): Vector[(String, String)] =
+    withSource(path) { source =>
+      source.getLines().toVector.flatMap { line =>
+        val trimmed = line.trim
+        if (trimmed.isEmpty || trimmed.startsWith("#")) Vector.empty
+        else {
+          val parts = trimmed.split("\\t").map(_.trim).filter(_.nonEmpty).toVector
+          if (parts.length >= 2) parts.tail.map(parts.head -> _) else Vector.empty
+        }
+      }
+    }
+
   private def loadSingleColumn(path: Path): Vector[String] =
     withSource(path) { source =>
       source.getLines().drop(1).toVector
@@ -426,7 +470,16 @@ object EffectiveDistanceRunner {
     finally source.close()
   }
 }
-', [Package]).
+', [Package, ArticleLoaderCode]).
+
+scala_article_loader_code(artifact, Code) :-
+    Code = '    val projectDataPath = Paths.get(GeneratedProgram.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).resolveSibling("data")
+    val articleArtifactPath = projectDataPath.resolve("article_category_by_article.tsv")
+    val articleCategories =
+      if (java.nio.file.Files.exists(articleArtifactPath)) loadGroupedPairs(articleArtifactPath)
+      else loadPairs(articlePath)'.
+scala_article_loader_code(_Mode, Code) :-
+    Code = '    val articleCategories = loadPairs(articlePath)'.
 
 must_exist_file(Path) :-
     (   exists_file(Path)
