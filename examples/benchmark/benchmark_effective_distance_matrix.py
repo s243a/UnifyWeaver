@@ -593,8 +593,9 @@ func main() {{
     (project_dir / "main.go").write_text(main_code, encoding="utf-8")
 
 
-def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str) -> list[str]:
-    project_dir = root / f"haskell_{mode}_{kernel_mode}"
+def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str,
+                                     lmdb_mode: str = "none") -> list[str]:
+    project_dir = root / f"haskell_{mode}_{kernel_mode}_{lmdb_mode}"
     project_dir.mkdir(parents=True, exist_ok=True)
     run_command(
         [
@@ -608,6 +609,7 @@ def build_haskell_effective_distance(root: Path, mode: str, kernel_mode: str) ->
             "accumulated",
             mode,
             kernel_mode,
+            lmdb_mode,
         ],
         cwd=ROOT,
     )
@@ -651,6 +653,8 @@ def build_scale_independent_commands(root: Path, targets: list[str]) -> dict[str
             commands[target] = build_haskell_effective_distance(root, "interpreter", "kernels_off")
         elif target == "haskell-interp-ffi":
             commands[target] = build_haskell_effective_distance(root, "interpreter", "kernels_on")
+        elif target == "haskell-interp-ffi-auto":
+            commands[target] = build_haskell_effective_distance(root, "interpreter", "kernels_on", "auto")
         elif target == "haskell-lowered-only":
             commands[target] = build_haskell_effective_distance(root, "functions", "kernels_off")
         elif target == "haskell-lowered-ffi":

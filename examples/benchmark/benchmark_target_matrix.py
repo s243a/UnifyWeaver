@@ -162,6 +162,13 @@ TARGETS: dict[str, TargetInfo] = {
         "hybrid-wam",
         "Optimized Prolog -> WAM Haskell interpreter with kernels enabled",
     ),
+    "haskell-interp-ffi-auto": TargetInfo(
+        "haskell-interp-ffi-auto",
+        "hybrid-wam",
+        "Optimized Prolog -> WAM Haskell interpreter, kernels enabled, "
+        "use_lmdb(auto) — resolver picks IntMap or LMDB based on fact_count "
+        "and ghc-pkg availability of the lmdb package",
+    ),
     "haskell-lowered-only": TargetInfo(
         "haskell-lowered-only",
         "optimized-prolog",

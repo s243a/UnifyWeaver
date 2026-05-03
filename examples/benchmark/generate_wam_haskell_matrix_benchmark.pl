@@ -31,21 +31,23 @@ benchmark_workload_path(Path) :-
 
 main :-
     current_prolog_flag(argv, Argv),
-    (   Argv = [_FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
+    (   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom]
     ->  true
+    ;   Argv = [FactsPath, OutputDir, VariantAtom, EmitModeAtom, KernelModeAtom]
+    ->  LmdbModeAtom = none
     ;   format(user_error,
-            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off>~n',
+            'Usage: ... -- <facts.pl> <output-dir> <seeded|accumulated> <interpreter|functions> <kernels_on|kernels_off> [<none|auto|true|false>]~n',
             []),
         halt(1)
     ),
-    generate(VariantAtom, EmitModeAtom, KernelModeAtom, OutputDir),
+    generate(FactsPath, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir),
     halt(0).
 
 main :-
     format(user_error, 'Error: generation failed~n', []),
     halt(1).
 
-generate(VariantAtom, EmitModeAtom, KernelModeAtom, OutputDir) :-
+generate(FactsPath, VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, OutputDir) :-
     benchmark_workload_path(WorkloadPath),
     load_files(WorkloadPath, [silent(true)]),
     retractall(user:mode(category_ancestor(_, _, _, _))),
@@ -53,6 +55,8 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, OutputDir) :-
     parse_variant(VariantAtom, OptimizationOptions),
     parse_emit_mode(EmitModeAtom, EmitMode),
     parse_kernel_mode(KernelModeAtom, KernelOptions),
+    parse_lmdb_mode(LmdbModeAtom, LmdbOptions),
+    count_facts_in_file(FactsPath, FactCount),
     BasePreds = [dimension_n/1, max_depth/1, category_ancestor/4],
     prolog_target:generate_prolog_script(BasePreds, OptimizationOptions, ScriptCode),
     tmp_file_stream(text, TmpPath, TmpStream),
@@ -62,11 +66,49 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, OutputDir) :-
     delete_file(TmpPath),
     collect_wam_predicates(VariantAtom, Predicates),
     query_pred_for_variant(VariantAtom, QueryPredOpts),
-    append([[module_name('wam-haskell-matrix-bench'), emit_mode(EmitMode)], KernelOptions, QueryPredOpts], Options),
+    append([[module_name('wam-haskell-matrix-bench'),
+             emit_mode(EmitMode),
+             fact_count(FactCount)],
+            KernelOptions, LmdbOptions, QueryPredOpts], Options),
     write_wam_haskell_project(Predicates, Options, OutputDir),
     format(user_error,
-           '[WAM-Haskell-Matrix] variant=~w emit_mode=~w kernels=~w output=~w~n',
-           [VariantAtom, EmitMode, KernelModeAtom, OutputDir]).
+           '[WAM-Haskell-Matrix] variant=~w emit_mode=~w kernels=~w lmdb=~w fact_count=~w output=~w~n',
+           [VariantAtom, EmitMode, KernelModeAtom, LmdbModeAtom, FactCount, OutputDir]).
+
+%% count_facts_in_file(+FactsPath, -N)
+%
+%  Count `category_parent/2` clauses in the given facts.pl. Used to
+%  populate `fact_count(N)` in Options so resolve_auto_use_lmdb/2 can
+%  decide based on scale. Falls back to 0 if the file isn't readable
+%  or has no category_parent/2 clauses — the auto resolver then
+%  conservatively picks IntMap.
+count_facts_in_file(FactsPath, N) :-
+    (   exists_file(FactsPath)
+    ->  setup_call_cleanup(
+            open(FactsPath, read, Stream, [encoding(utf8)]),
+            count_category_parent_clauses(Stream, 0, N),
+            close(Stream))
+    ;   N = 0
+    ).
+
+count_category_parent_clauses(Stream, Acc, N) :-
+    catch(read_term(Stream, Term, []), _, (Term = end_of_file)),
+    (   Term == end_of_file
+    ->  N = Acc
+    ;   (   nonvar(Term),
+            (   Term = category_parent(_, _)
+            ;   Term = (category_parent(_, _) :- _)
+            )
+        ->  Acc1 is Acc + 1,
+            count_category_parent_clauses(Stream, Acc1, N)
+        ;   count_category_parent_clauses(Stream, Acc, N)
+        )
+    ).
+
+parse_lmdb_mode(none, []).
+parse_lmdb_mode(auto, [use_lmdb(auto)]).
+parse_lmdb_mode(true, [use_lmdb(true)]).
+parse_lmdb_mode(false, [use_lmdb(false)]).
 
 parse_variant(seeded, [
     dialect(swi),
