@@ -41,7 +41,13 @@
     compile_wam_runtime_to_fsharp/3,     % +Options, +DetectedKernels, -Code
     write_wam_fsharp_project/3,          % +Predicates, +Options, +ProjectDir
     wam_fsharp_resolve_emit_mode/2,      % +Options, -Mode
-    wam_fsharp_partition_predicates/5    % +Mode, +Predicates, +DK, -Interp, -Lowered
+    wam_fsharp_partition_predicates/5,   % +Mode, +Predicates, +DK, -Interp, -Lowered
+    % Fact-shape classification parity with Haskell/Elixir hybrid targets
+    classify_fact_predicate_fs/4,        % +PredIndicator, +WamLines, +Options, -Info
+    fsharp_fact_only/2,                  % +Segments, -Bool
+    fsharp_first_arg_groundness/3,       % +Segments, +Arity, -Status
+    fsharp_pick_layout/5,                % +PredIndicator, +NClauses, +FactOnly, +Options, -Layout
+    split_wam_into_segments_fs/2         % +Lines, -Segments
 ]).
 
 :- use_module(library(lists)).
@@ -232,6 +238,100 @@ lower_all_fs([P|Rest], BasePCMap, DetectedKernels, [Entry|RestEntries]) :-
     lower_predicate_to_fsharp(P, WamCode,
         [base_pc(BasePC), foreign_preds(ForeignKeys)], Entry),
     lower_all_fs(Rest, BasePCMap, DetectedKernels, RestEntries).
+
+
+% ============================================================================
+% FACT SHAPE CLASSIFICATION (parity infra with Haskell/Elixir hybrid targets)
+% ============================================================================
+
+classify_fact_predicate_fs(PredIndicator, WamLines, Options, Info) :-
+    split_wam_into_segments_fs(WamLines, Segments),
+    length(Segments, NClauses),
+    fsharp_fact_only(Segments, FactOnly),
+    (PredIndicator = _:_/Arity -> true ; PredIndicator = _/Arity),
+    fsharp_first_arg_groundness(Segments, Arity, FirstArg),
+    fsharp_pick_layout(PredIndicator, NClauses, FactOnly, Options, Layout),
+    Info = fact_shape_info(NClauses, FactOnly, FirstArg, Layout).
+
+split_wam_into_segments_fs([], []).
+split_wam_into_segments_fs([L0|Rest], Segments) :-
+    normalize_space(string(L), L0),
+    (   L == ""
+    ->  split_wam_into_segments_fs(Rest, Segments)
+    ;   sub_string(L, _, 1, 0, ":")
+    ->  split_wam_into_segments_body_fs(Rest, [], Body, Rem),
+        Segments = [segment(L, Body)|Tail],
+        split_wam_into_segments_fs(Rem, Tail)
+    ;   split_wam_into_segments_body_fs(Rest, [L], Body, Rem),
+        Segments = [segment('<entry>', Body)|Tail],
+        split_wam_into_segments_fs(Rem, Tail)
+    ).
+
+split_wam_into_segments_body_fs([], Acc, Body, []) :-
+    reverse(Acc, Body).
+split_wam_into_segments_body_fs([L0|Rest], Acc, Body, Rem) :-
+    normalize_space(string(L), L0),
+    (   L == ""
+    ->  split_wam_into_segments_body_fs(Rest, Acc, Body, Rem)
+    ;   sub_string(L, _, 1, 0, ":")
+    ->  reverse(Acc, Body),
+        Rem = [L|Rest]
+    ;   split_wam_into_segments_body_fs(Rest, [L|Acc], Body, Rem)
+    ).
+
+fsharp_fact_only([], true).
+fsharp_fact_only([segment(_, Instrs)|Rest], Bool) :-
+    fsharp_segment_fact_only(Instrs, B0),
+    fsharp_fact_only(Rest, BR),
+    (B0 == true, BR == true -> Bool = true ; Bool = false).
+
+fsharp_segment_fact_only([], false).
+fsharp_segment_fact_only(Instrs, Bool) :-
+    exclude(fsharp_nonsemantic_line, Instrs, Sem),
+    (   append(Prefix, ["proceed"], Sem),
+        forall(member(I, Prefix), fsharp_fact_head_instr(I))
+    ->  Bool = true
+    ;   Bool = false
+    ).
+
+fsharp_nonsemantic_line(L) :- sub_string(L, 0, _, _, "%"), !.
+fsharp_nonsemantic_line(_):- fail.
+
+fsharp_fact_head_instr(I) :-
+    member(I, ["allocate", "deallocate"]), !.
+fsharp_fact_head_instr(I) :- sub_string(I, 0, _, _, "get_"), !.
+fsharp_fact_head_instr(I) :- sub_string(I, 0, _, _, "unify_"), !.
+
+fsharp_first_arg_groundness([], _, mixed).
+fsharp_first_arg_groundness(Segments, _Arity, Status) :-
+    maplist(fsharp_seg_first_arg_mode, Segments, Modes),
+    (   Modes \= [], forall(member(M, Modes), M == ground)
+    ->  Status = always_ground
+    ;   Modes \= [], forall(member(M, Modes), M == non_ground)
+    ->  Status = never_ground
+    ;   Status = mixed
+    ).
+
+fsharp_seg_first_arg_mode(segment(_, Instrs), Mode) :-
+    (   member(I, Instrs),
+        (sub_string(I, 0, _, _, "get_constant"), sub_string(I, _, _, 0, ", A1")
+        ;sub_string(I, 0, _, _, "get_structure"), sub_string(I, _, _, 0, ", A1")
+        ;sub_string(I, 0, _, _, "get_list A1"))
+    ->  Mode = ground
+    ;   member(I2, Instrs),
+        (sub_string(I2, 0, _, _, "get_variable"), sub_string(I2, _, _, 0, ", A1")
+        ;sub_string(I2, 0, _, _, "get_value"), sub_string(I2, _, _, 0, ", A1"))
+    ->  Mode = non_ground
+    ;   Mode = mixed
+    ).
+
+fsharp_pick_layout(_PredIndicator, NClauses, FactOnly, Options, Layout) :-
+    option(fact_layout_threshold(T), Options, 32),
+    (   FactOnly == true,
+        NClauses >= T
+    ->  Layout = inline_data
+    ;   Layout = compiled
+    ).
 
 % ============================================================================
 % PHASE 1: WAM Instruction → F# Expression
