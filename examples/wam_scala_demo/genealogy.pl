@@ -69,7 +69,7 @@ age_handler_code(C) :-
 \n  )\
 \n  args(0) match {\
 \n    case Atom(id) =>\
-\n      val name = if (id >= 0 && id < internTable.idToString.length) internTable.idToString(id) else \"\"\
+\n      val name = internTable.stringAt(id)\
 \n      ages.get(name) match {\
 \n        case Some(n) => ForeignBindings(Map(2 -> IntTerm(n)))\
 \n        case None    => ForeignFail\

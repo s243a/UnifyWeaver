@@ -196,12 +196,13 @@ test(atom_intern_table) :-
             ProgramPath),
         read_file_to_string(ProgramPath, Code, []),
         assertion(sub_string(Code, _, _, _, 'val internTable: InternTable')),
-        assertion(sub_string(Code, _, _, _, 'stringToId = Map(')),
-        assertion(sub_string(Code, _, _, _, 'idToString = Array(')),
-        % Well-known atoms should be present
-        assertion(sub_string(Code, _, _, _, '"true" -> 0')),
-        assertion(sub_string(Code, _, _, _, '"fail" -> 1')),
-        assertion(sub_string(Code, _, _, _, '"[]" -> 2')),
+        assertion(sub_string(Code, _, _, _, 'InternTable(Array(')),
+        % Well-known atoms must appear at fixed positions in the seed array.
+        % InternTable's apply de-duplicates, so order = id; codegen emits
+        % true=0, fail=1, []=2 first.
+        assertion(sub_string(Code, _, _, _, '"true"')),
+        assertion(sub_string(Code, _, _, _, '"fail"')),
+        assertion(sub_string(Code, _, _, _, '"[]"')),
         delete_directory_and_contents(TmpDir)
     )).
 

@@ -64,18 +64,14 @@ intern_scala_atom(AtomStr, Id) :-
         assertz(scala_atom_intern_next(Next1))
     ).
 
-%% emit_scala_intern_table(-StringToIdEntries, -IdToStringEntries) is det.
-%  Generates Mustache-substitutable strings for the intern table sections.
-emit_scala_intern_table(StringToIdEntries, IdToStringEntries) :-
+%% emit_scala_intern_table(-IdToStringEntries) is det.
+%  Generates the Mustache-substitutable string for the intern table seed
+%  array. The runtime InternTable is mutable and seeds itself from this
+%  array; ids are positional (index 0 -> id 0, etc.) so the order matters.
+emit_scala_intern_table(IdToStringEntries) :-
     findall(Id-Str, scala_atom_intern_id(Str, Id), Pairs),
     sort(Pairs, Sorted),
-    % stringToId map entries: "atom" -> id
-    maplist([Id-Str, Entry]>>(
-        format(string(Entry), '      "~w" -> ~w', [Str, Id])
-    ), Sorted, SEntries),
-    atomic_list_concat(SEntries, ',\n', StringToIdEntries),
-    % idToString array entries: "atom" (ordered by id)
-    maplist([_Id-Str, E]>>(format(string(E), '      "~w"', [Str])), Sorted, IEntries),
+    maplist([_Id-Str, E]>>(format(string(E), '    "~w"', [Str])), Sorted, IEntries),
     atomic_list_concat(IEntries, ',\n', IdToStringEntries).
 
 % ============================================================================
@@ -783,7 +779,7 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     compile_predicates_for_project(Predicates, Options,
         AllInstrs, TopLevelLabelEntries, AllLabelEntries, WrapperCode),
     % --- Intern table ---
-    emit_scala_intern_table(StringToIdStr, IdToStringStr),
+    emit_scala_intern_table(IdToStringStr),
     % --- Format instruction array body ---
     maplist([I, Line]>>(format(string(Line), '    ~w', [I])), AllInstrs, InstrLines),
     atomic_list_concat(InstrLines, ',\n', InstrBody),
@@ -801,7 +797,7 @@ write_wam_scala_project(Predicates, Options0, ProjectDir) :-
     % --- Render program template ---
     write_program_source(ProjectDir, Pkg, RPkg,
                          InstrBody, LabelBody, DispatchBody,
-                         WrapperCode, StringToIdStr, IdToStringStr,
+                         WrapperCode, IdToStringStr,
                          ForeignHandlersBody).
 
 write_build_sbt(ProjectDir, ModName) :-
@@ -828,7 +824,7 @@ write_runtime_source(ProjectDir, Package, _RuntimePkg) :-
 
 write_program_source(ProjectDir, Package, RuntimePkg,
                      InstrBody, LabelBody, DispatchBody,
-                     WrapperCode, StringToIdStr, IdToStringStr,
+                     WrapperCode, IdToStringStr,
                      ForeignHandlersBody) :-
     find_template('templates/targets/scala_wam/program.scala.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
@@ -840,7 +836,6 @@ write_program_source(ProjectDir, Package, RuntimePkg,
           'labels'=LabelBody,
           'dispatch'=DispatchBody,
           'wrappers'=WrapperCode,
-          'intern_string_to_id'=StringToIdStr,
           'intern_id_to_string'=IdToStringStr,
           'foreign_handlers'=ForeignHandlersBody
         ], Content),

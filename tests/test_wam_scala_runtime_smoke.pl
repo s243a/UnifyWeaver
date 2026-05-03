@@ -112,6 +112,8 @@
 :- dynamic user:wam_succ_q/2.
 :- dynamic user:wam_atom_concat_q/3.
 :- dynamic user:wam_sub_atom_q/5.
+:- dynamic user:wam_atom_concat_split_q/2.
+:- dynamic user:wam_sub_atom_find_q/2.
 
 user:wam_fact(a).
 user:wam_execute_caller(X)    :- user:wam_fact(X).
@@ -288,6 +290,11 @@ user:wam_format_dn(X)           :- format("n=~d~n", [X]).
 user:wam_succ_q(X, Y)              :- succ(X, Y).
 user:wam_atom_concat_q(A, B, C)    :- atom_concat(A, B, C).
 user:wam_sub_atom_q(A, B, L, At, S):- sub_atom(A, B, L, At, S).
+% Reverse-mode harnesses: known prefix / known substring against a
+% bound whole atom. Drives atom_concat/3's split enumeration and
+% sub_atom/5's multi-solution path through the runtime intern table.
+user:wam_atom_concat_split_q(P, C) :- atom_concat(P, _, C).
+user:wam_sub_atom_find_q(A, S)     :- sub_atom(A, _, _, _, S).
 
 % ============================================================
 % Condition: only run if scalac is available
@@ -1012,10 +1019,10 @@ test(builtin_succ) :-
 test(builtin_atom_concat) :-
     with_scala_project(
         [user:wam_atom_concat_q/3],
-        % Pre-intern both operands and the expected concat results so
-        % the runtime intern table can match the synthesised "ab" / "hi"
-        % strings against arg3.
-        [ intern_atoms([a, b, ab, hello, world, helloworld]) ],
+        % No intern_atoms needed — atom_concat forward mode interns the
+        % concatenation at runtime, parseArg interns CLI args, and the
+        % shared intern table makes them collide on the same id.
+        _Opts,
         TmpDir,
         (
             verify_scala_args(TmpDir, 'wam_atom_concat_q/3',
@@ -1026,10 +1033,34 @@ test(builtin_atom_concat) :-
                               ['hello', 'world', 'helloworlds'], "false")
         )).
 
+% atom_concat/3 reverse mode: prefix unbound, suffix unbound, whole
+% atom ground. Driver predicate fixes the prefix to match a known
+% atom; the runtime enumerates every (prefix, suffix) split until
+% one matches.
+test(builtin_atom_concat_split) :-
+    with_scala_project(
+        [user:wam_atom_concat_split_q/2],
+        _Opts,
+        TmpDir,
+        (
+            % "he" is a valid prefix of "hello"
+            verify_scala_args(TmpDir, 'wam_atom_concat_split_q/2',
+                              ['he', 'hello'], "true"),
+            % "hello" itself is a valid prefix (suffix = "")
+            verify_scala_args(TmpDir, 'wam_atom_concat_split_q/2',
+                              ['hello', 'hello'], "true"),
+            % empty prefix is also valid
+            verify_scala_args(TmpDir, 'wam_atom_concat_split_q/2',
+                              ['', 'hello'], "true"),
+            % "xyz" is not a prefix
+            verify_scala_args(TmpDir, 'wam_atom_concat_split_q/2',
+                              ['xyz', 'hello'], "false")
+        )).
+
 test(builtin_sub_atom) :-
     with_scala_project(
         [user:wam_sub_atom_q/5],
-        [ intern_atoms([hello, hel, ell, llo, '']) ],
+        _Opts,
         TmpDir,
         (
             % sub_atom(hello, 0, 3, After, Sub) → After=2, Sub=hel
@@ -1043,6 +1074,25 @@ test(builtin_sub_atom) :-
                               ['hello', '0', '5', '0', 'hello'], "true"),
             verify_scala_args(TmpDir, 'wam_sub_atom_q/5',
                               ['hello', '0', '3', '2', 'wrong'], "false")
+        )).
+
+% sub_atom/5 multi-solution mode: Before, Length, After all unbound;
+% Atom and SubAtom ground. Runtime enumerates all (B, L, A) triples
+% until SubAtom matches the substring at (B, L).
+test(builtin_sub_atom_find) :-
+    with_scala_project(
+        [user:wam_sub_atom_find_q/2],
+        _Opts,
+        TmpDir,
+        (
+            verify_scala_args(TmpDir, 'wam_sub_atom_find_q/2',
+                              ['hello', 'ell'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_find_q/2',
+                              ['hello', 'hello'], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_find_q/2',
+                              ['hello', ''], "true"),
+            verify_scala_args(TmpDir, 'wam_sub_atom_find_q/2',
+                              ['hello', 'xyz'], "false")
         )).
 
 % Multi-query stream mode: run a batch of queries in a single JVM
@@ -1213,10 +1263,10 @@ write_facts_csv(Path, Tuples) :-
 % reference `internTable` directly.
 
 foreign_yes_handler(Code) :-
-    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.stringToId.getOrElse(\"a\", -1)\n        args(0) match {\n          case Atom(id) if id == aId => ForeignSucceed\n          case _                     => ForeignFail\n        }\n      }\n    }".
+    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.lookupId(\"a\")\n        args(0) match {\n          case Atom(id) if id == aId => ForeignSucceed\n          case _                     => ForeignFail\n        }\n      }\n    }".
 
 foreign_pair_handler(Code) :-
-    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.stringToId.getOrElse(\"a\", -1)\n        val bId = internTable.stringToId.getOrElse(\"b\", -1)\n        args(0) match {\n          case Atom(id) if id == aId => ForeignBindings(Map(2 -> Atom(bId)))\n          case _                     => ForeignFail\n        }\n      }\n    }".
+    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.lookupId(\"a\")\n        val bId = internTable.lookupId(\"b\")\n        args(0) match {\n          case Atom(id) if id == aId => ForeignBindings(Map(2 -> Atom(bId)))\n          case _                     => ForeignFail\n        }\n      }\n    }".
 
 foreign_multi_handler(Code) :-
-    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.stringToId.getOrElse(\"a\", -1)\n        val bId = internTable.stringToId.getOrElse(\"b\", -1)\n        args(0) match {\n          case Atom(id) if id == aId =>\n            ForeignMulti(Seq(\n              Map(2 -> Atom(aId)),\n              Map(2 -> Atom(bId))\n            ))\n          case _ => ForeignFail\n        }\n      }\n    }".
+    Code = "new ForeignHandler {\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val aId = internTable.lookupId(\"a\")\n        val bId = internTable.lookupId(\"b\")\n        args(0) match {\n          case Atom(id) if id == aId =>\n            ForeignMulti(Seq(\n              Map(2 -> Atom(aId)),\n              Map(2 -> Atom(bId))\n            ))\n          case _ => ForeignFail\n        }\n      }\n    }".
