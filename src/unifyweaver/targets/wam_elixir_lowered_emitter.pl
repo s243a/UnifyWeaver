@@ -684,11 +684,50 @@ render_index_entry(Key-Tuples, Entry) :-
 %  lowered emitter is force-stringified, which silently breaks numeric
 %  head-match: `iterate(0) :- ...` lowers to `val == "0"` instead of
 %  `val == 0`, so iterate/1 fails for any caller passing an integer.
+%
+%  When intern_atoms_enabled/0 is asserted (set by the
+%  intern_atoms(true) project Option), identifier-shape constants
+%  emit as Elixir atom literals (`:foo`) instead of binaries
+%  (`"foo"`). BEAM atoms compare via pointer equality (cheaper
+%  than binary equality on hot paths) and avoid binary copies in
+%  ETS / process-message-passing, at the cost of pressuring BEAMs
+%  atom table. Bounded by the number of distinct atoms in the
+%  source, which for typical Prolog programs is well below the
+%  default ~1M atom table limit. See the experiment writeup for
+%  measurements.
 elixir_constant_literal(TokenStr, ElixirLiteral) :-
     (   number_string(_, TokenStr)
     ->  ElixirLiteral = TokenStr
+    ;   intern_atoms_enabled,
+        valid_elixir_atom_name(TokenStr)
+    ->  format(string(ElixirLiteral), ':~w', [TokenStr])
     ;   format(string(ElixirLiteral), '"~w"', [TokenStr])
     ).
+
+%% intern_atoms_enabled is asserted by write_wam_elixir_project/3
+%  (in wam_elixir_target.pl) when the project Options include
+%  intern_atoms(true). Set/retract is wrapped in setup_call_cleanup
+%  so a failed lowering doesnt leave the flag asserted across
+%  subsequent generations.
+:- dynamic intern_atoms_enabled/0.
+
+%% valid_elixir_atom_name(+Str)
+%  True if Str matches Elixirs unquoted-atom rule: starts with a
+%  lowercase letter or underscore, rest is alphanumeric or
+%  underscore. Constants that dont match (whitespace, punctuation,
+%  uppercase-leading, etc.) emit as quoted strings even under
+%  intern_atoms — emitting `:Foo` would mean "the module Foo" in
+%  Elixir, not what we want.
+valid_elixir_atom_name(Str) :-
+    string_chars(Str, [First|Rest]),
+    valid_atom_first_char(First),
+    forall(member(C, Rest), valid_atom_rest_char(C)).
+
+valid_atom_first_char(C) :- char_type(C, lower).
+valid_atom_first_char('_').
+
+valid_atom_rest_char(C) :- char_type(C, alnum).
+valid_atom_rest_char('_').
 
 %% tokenize_wam_line(+Line, -Tokens)
 %  `Line` is any string or atom; `Tokens` is a list of strings, in order,

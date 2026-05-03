@@ -28,6 +28,9 @@
 :- use_module('../core/template_system').
 :- use_module('../bindings/elixir_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
+:- use_module('../targets/wam_elixir_utils', [camel_case/2]).
+:- use_module('../core/recursive_kernel_detection',
+              [detect_recursive_kernel/4, kernel_config/2]).
 :- use_module('wam_elixir_lowered_emitter', [lower_predicate_to_elixir/4]).
 :- use_module('wam_elixir_utils', [reg_id/2, clean_comma/2, is_label_part/1, camel_case/2, parse_arity/2]).
 
@@ -2224,6 +2227,164 @@ defmodule WamRuntime.FactSource.Lmdb do
   end
 end
 
+defmodule WamRuntime.GraphKernel.TransitiveClosure do
+  @moduledoc """
+  Native transitive-closure kernel — bypasses WAM dispatch for the
+  canonical pattern:
+
+      tc(X, Z) :- edge(X, Z).
+      tc(X, Z) :- edge(X, Y), tc(Y, Z).
+
+  Iterative BFS using a MapSet for visited tracking. Composes with
+  any edge source — the callers neighbors_fn(node) callback returns
+  outgoing edges as `[{from, to}, ...]` tuples (matching the
+  FactSource lookup_by_arg1 contract). For LMDB-backed graphs the
+  callback closes over the FactSource handle; for in-memory ETS or
+  native lists it walks them directly.
+
+  Why bypass WAM: per benchmarks/wam_elixir_tier2_findall.md and
+  docs/WAM_TARGET_ROADMAP.md, kernel-based lowering is the largest
+  unrealised perf lever for graph workloads (Gos category_ancestor
+  FFI kernel hit 52x at scale-300). This is the first such kernel
+  for Elixir. Future work: pattern-recognition pass that detects
+  the tc/2 shape in source Prolog and routes calls here automatically.
+
+  Semantics: returns nodes reachable from `start` via at least one
+  edge step. The starting node itself is NOT included unless reachable
+  via a cycle (matches Prolog tc/2 — same as `findall(Z, tc(X, Z), Zs)`
+  with X bound, Z unbound).
+  """
+
+  @doc """
+  Reachable-set as an Elixir list. Order is not specified.
+
+  `neighbors_fn` is a 1-arity function: given a node, returns a list
+  of `{from, to}` tuples for outgoing edges. The from arg is the
+  query node (kept for FactSource-shape compatibility); only `to`
+  is used.
+  """
+  def reachable_from(neighbors_fn, start) when is_function(neighbors_fn, 1) do
+    seeds =
+      neighbors_fn.(start)
+      |> Enum.map(fn {_from, to} -> to end)
+    bfs(neighbors_fn, seeds, MapSet.new())
+    |> MapSet.to_list()
+  end
+
+  defp bfs(_fn, [], visited), do: visited
+  defp bfs(neighbors_fn, [node | rest], visited) do
+    if MapSet.member?(visited, node) do
+      bfs(neighbors_fn, rest, visited)
+    else
+      next =
+        neighbors_fn.(node)
+        |> Enum.map(fn {_from, to} -> to end)
+      bfs(neighbors_fn, rest ++ next, MapSet.put(visited, node))
+    end
+  end
+
+  @doc """
+  Convenience for callers backed by a FactSource adaptor:
+  `reachable_from_source(source_module, source_handle, start, state)`.
+  Wraps the lookup_by_arg1 callback into a neighbors_fn closure.
+  """
+  def reachable_from_source(source_module, source_handle, start, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    reachable_from(fun, start)
+  end
+end
+
+defmodule WamRuntime.GraphKernel.CategoryAncestor do
+  @moduledoc """
+  Native bounded-ancestor kernel — path-enumeration variant of TC
+  with hops counter, per-path visited list, and max-depth cutoff.
+  Matches the canonical shape:
+
+      category_ancestor(Cat, Parent, 1, Visited) :-
+          category_parent(Cat, Parent),
+          \\+ member(Parent, Visited).
+      category_ancestor(Cat, Ancestor, Hops, Visited) :-
+          max_depth(MaxD), length(Visited, D), D < MaxD, !,
+          category_parent(Cat, Mid),
+          \\+ member(Mid, Visited),
+          category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+          Hops is H1 + 1.
+
+  Critically, the Visited list is **per-path** (grows as
+  `[Mid|Visited]` on recursion). For a graph A->B->C and A->C the
+  Prolog version enumerates BOTH paths to C with different hop
+  counts — the kernel preserves that semantics rather than the
+  BFS-dedup shortcut, so aggregations like effective_distances
+  `Σ d^(-N)` produce correct results.
+
+  Ported from the Rust kernel `collect_native_category_ancestor_hops`
+  in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm,
+  BEAM idioms.
+  """
+
+  @doc """
+  Collect hop counts for every simple path from `cat` to `root` of
+  length up to `max_depth`. Returns a list of integers — same path
+  may show up multiple times under different routes; aggregations
+  consume this list as-is.
+
+  `neighbors_fn` is a 1-arity function: given a node, returns a list
+  of `{from, to}` tuples (matching the FactSource.lookup_by_arg1
+  contract). For each call, only `to` is read.
+  """
+  def collect_hops(neighbors_fn, cat, root, max_depth)
+      when is_function(neighbors_fn, 1) and is_integer(max_depth) do
+    collect(neighbors_fn, cat, root, [], max_depth, [])
+    |> Enum.reverse()
+  end
+
+  defp collect(neighbors_fn, cat, root, visited, max_depth, acc) do
+    # Direct edge check: only count if root not already on path.
+    edges_at_cat = neighbors_fn.(cat)
+    acc1 =
+      if root in visited do
+        acc
+      else
+        if Enum.any?(edges_at_cat, fn {_from, to} -> to == root end) do
+          [1 | acc]
+        else
+          acc
+        end
+      end
+
+    # Depth bound: stop recursing if visited length already at max.
+    if length(visited) >= max_depth do
+      acc1
+    else
+      # Recurse through each unvisited parent; increment hop counts
+      # added by the recursion. Mirrors the Rust kernels approach
+      # of bumping `out` entries after the recursive call returns.
+      Enum.reduce(edges_at_cat, acc1, fn {_from, parent}, ac ->
+        if parent in visited do
+          ac
+        else
+          next_visited = [parent | visited]
+          before = length(ac)
+          rec_acc = collect(neighbors_fn, parent, root, next_visited, max_depth, ac)
+          # Add 1 to each newly-pushed hop count (the entries beyond
+          # `before`). Matches the Rust impl exactly.
+          {bumped_new, kept_old} = Enum.split(rec_acc, length(rec_acc) - before)
+          Enum.map(bumped_new, &(&1 + 1)) ++ kept_old
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Convenience wrapper for FactSource-backed graphs.
+  """
+  def collect_hops_from_source(source_module, source_handle, cat, root,
+                               max_depth, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    collect_hops(fun, cat, root, max_depth)
+  end
+end
+
 defmodule WamRuntime.FactSourceRegistry do
   @moduledoc """
   Predicate-indicator → source-handle map. Uses :persistent_term so
@@ -2459,6 +2620,295 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'lib', LibDir),
     make_directory_path(LibDir),
+    % Atom-interning experiment: when the user passes intern_atoms(true),
+    % set a process-wide flag that elixir_constant_literal/2 in the
+    % lowered emitter consults. setup_call_cleanup/3 retracts the flag
+    % afterward so a failed lowering doesnt leak the setting into
+    % subsequent generations. Off by default (existing behaviour
+    % preserved — every constant emits as a binary).
+    setup_call_cleanup(
+        atom_interning_setup(Options),
+        do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                                     Mode, ModuleName, LibDir),
+        atom_interning_cleanup(Options)
+    ).
+
+atom_interning_setup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+%% detect_kernel_for_predicate(+Pred, +Arity, -Kernel)
+%  Runs the shared recursive-kernel detector on the user-asserted
+%  clauses for Pred/Arity. The detector is target-neutral (lives in
+%  src/unifyweaver/core/recursive_kernel_detection.pl); same module
+%  Rust uses. Returns the full recursive_kernel(Kind, Pred/Arity,
+%  ConfigOps) term on success.
+detect_kernel_for_predicate(Pred, Arity, Kernel) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    Clauses \= [],
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel).
+
+%% emit_kernel_dispatch_module(+ModuleName, +Pred, +Arity, +Kernel, -Code)
+%  Dispatch by kernel kind to the appropriate emitter. Adding a new
+%  kernel kind requires only adding a new clause here + the runtime
+%  module in compile_wam_runtime_to_elixir.
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(transitive_closure2, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    compile_tc_kernel_dispatch_module(ModuleName, Pred, EdgePred, Code).
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(category_ancestor, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    member(max_depth(MaxDepth), ConfigOps),
+    compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, Code).
+
+%% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
+%
+%  Emit a per-predicate dispatch module that routes calls through
+%  WamRuntime.GraphKernel.TransitiveClosure.reachable_from instead
+%  of the WAM-bytecode lower chain. Replaces what lower_predicate_to_-
+%  elixir would have emitted for predicates matching the canonical
+%  TC pattern.
+%
+%  Driver responsibility: register the edge predicate as a FactSource
+%  so the kernel can fetch neighbours. The dispatch module looks the
+%  source up by indicator string (e.g., "edge/2") at call time.
+%
+%  Findall integration: when called from inside a `findall(Z, tc(X, Z),
+%  L)` aggregate frame, the surrounding state.cp does aggregate_collect
+%  + throw fail per result. We iterate the kernels reachable list,
+%  trail-bind reg 2, call state.cp, catch the fail, unwind trail, try
+%  the next. After exhaustion, throw fail to terminate the predicate.
+%
+%  Driver-direct call (state.cp = terminal_cp): the FIRST iteration
+%  returns {:ok, state} without throwing; we halt and propagate.
+compile_tc_kernel_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/2", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/2 (auto-recognised TC pattern over ~w/2).
+  Replaces the WAM-bytecode lowering for this predicate; routes
+  calls through WamRuntime.GraphKernel.TransitiveClosure.
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling. The registered handle
+  must implement the WamRuntime.FactSource behaviour (any of
+  FactSource.Lmdb, FactSource.Sqlite, FactSource.Ets, FactSource.Tsv,
+  or a driver-supplied module).
+  """
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    neighbors_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    reachable =
+      WamRuntime.GraphKernel.TransitiveClosure.reachable_from(
+        neighbors_fn, start_val)
+
+    # Two-mode dispatch:
+    #
+    # (a) Findall / aggregate context — an aggregate frame is on the
+    #     CP stack (gated by in_forkable_aggregate_frame?/1, the same
+    #     check the Tier-2 super-wrapper uses). Dump ALL kernel
+    #     results into the agg_accum in one go via merge_into_-
+    #     aggregate, then throw fail to drive the standard
+    #     backtrack -> finalise_aggregate flow. Avoids iterating
+    #     state.cp per result, which would let the calling clauses
+    #     k1 catch its own fail and finalise after one solution.
+    #
+    # (b) Driver-direct call — no agg frame; return the FIRST
+    #     reachable node bound into result reg 2 as a single solution.
+    #     Subsequent solutions are not enumerable in this mode (no
+    #     choice point to drive backtracking), but the typical
+    #     driver-direct call shape is `findall(Z, tc(X, Z), L)` which
+    #     hits path (a).
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      merged = WamRuntime.merge_into_aggregate(state, reachable)
+      throw({:fail, merged})
+    else
+      case reachable do
+        [first | _] ->
+          case bind_result_reg(state, 2, first) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  defp bind_result_reg(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, value)
+      ^value -> state
+      _ -> nil
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr,
+     EdgeKey,
+     EdgeKey,
+     CamelPred]).
+
+%% compile_category_ancestor_dispatch_module(+ModuleName, +Pred,
+%%   +EdgePred, +MaxDepth, -Code)
+%
+%  Dispatch module for category_ancestor pattern (4-ary; bounded
+%  ancestor with hops + per-path visited list). Mirrors the TC
+%  dispatchers shape but binds the hops register (A3) per result
+%  rather than the destination register, since the canonical form
+%  is `category_ancestor(StartCat, Root, Hops, Visited)` — Root is
+%  bound on entry (an arg, not a variable to enumerate) and the
+%  enumeration is over distinct path-lengths.
+%
+%  Aggregations like effective_distance call this inside
+%  `aggregate_all(sum(W), (path_to_root(...), W is Hops^(-N)), S)` —
+%  each enumerated Hops produces one W contribution. Faithful path-
+%  enumeration semantics matter because two routes A->B->C and A->C
+%  give DIFFERENT hop counts that both contribute to the sum.
+compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/2", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/4 (auto-recognised category_ancestor pattern
+  over ~w/2; max_depth=~w). Routes calls through
+  WamRuntime.GraphKernel.CategoryAncestor.
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling.
+  """
+
+  @max_depth ~w
+
+  def run(%WamRuntime.WamState{} = state) do
+    cat_val  = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    root_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    neighbors_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    hops_list =
+      WamRuntime.GraphKernel.CategoryAncestor.collect_hops(
+        neighbors_fn, cat_val, root_val, @max_depth)
+
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      merged = WamRuntime.merge_into_aggregate(state, hops_list)
+      throw({:fail, merged})
+    else
+      case hops_list do
+        [first | _] ->
+          case bind_hops_reg(state, 3, first) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  defp bind_hops_reg(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        state |> WamRuntime.trail_binding(id) |> WamRuntime.put_reg(id, value)
+      ^value -> state
+      _ -> nil
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr, MaxDepth,
+     EdgeKey,
+     MaxDepth,
+     EdgeKey,
+     CamelPred]).
+
+atom_interning_cleanup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                             Mode, ModuleName, LibDir) :-
     % Generate runtime module
     compile_wam_runtime_to_elixir(Options, RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
@@ -2474,12 +2924,23 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
         close(DS)
     ;   true
     ),
-    % Generate predicate modules
+    % Generate predicate modules. When kernel_dispatch(true) is set,
+    % run the shared recursive-kernel detector (target-neutral; same
+    % module Rust uses) on each predicate. If a kernel kind is
+    % detected, emit a kernel-dispatch module instead of the WAM
+    % lower chain. Today supports transitive_closure2 and
+    % category_ancestor; adding more kernel kinds is just an Elixir-
+    % runtime port + an emit_kernel_dispatch_module clause.
     forall(
         member(Pred/Arity-WamCode, Predicates),
-        (   (   Mode == lowered
-            ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
-            ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+        (   (   option(kernel_dispatch(true), Options),
+                Mode == lowered,
+                detect_kernel_for_predicate(Pred, Arity, Kernel)
+            ->  emit_kernel_dispatch_module(ModuleName, Pred, Arity, Kernel, PredCode)
+            ;   (   Mode == lowered
+                ->  lower_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+                ;   compile_wam_predicate_to_elixir(Pred/Arity, WamCode, Options, PredCode)
+                )
             ),
             atom_string(Pred, PredStr),
             format(atom(PredFile), '~w.ex', [PredStr]),

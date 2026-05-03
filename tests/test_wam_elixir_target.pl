@@ -8,6 +8,8 @@
               [lower_predicate_to_elixir/4, classify_predicate/4,
                extract_facts/3, extract_arg1_index/3,
                tier2_purity_eligible/3, par_wrap_segment/4]).
+:- use_module('../src/unifyweaver/core/recursive_kernel_detection',
+              [detect_recursive_kernel/4]).
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
@@ -751,6 +753,198 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
     ).
 
+%% Atom-interning experiment (opt-in via intern_atoms(true) Option):
+%  identifier-shape constants emit as Elixir atom literals (`:foo`)
+%  instead of binaries (`"foo"`). BEAM atoms compare via pointer
+%  equality and avoid binary copies on hot paths. Non-identifier
+%  constants (whitespace, leading uppercase, etc.) still emit as
+%  quoted strings — `:Foo` would mean a module reference in Elixir.
+%% First graph kernel — transitive closure. Per
+%  docs/WAM_TARGET_ROADMAP.md, kernel-based lowering is the largest
+%  unrealised perf lever for graph workloads. This kernel emits as
+%  WamRuntime.GraphKernel.TransitiveClosure and is callable directly
+%  from driver code; future work adds compile-time pattern recognition
+%  to route source-Prolog tc/2 calls through the kernel automatically.
+%% Kernel dispatch — uses the shared target-neutral detector
+%  (src/unifyweaver/core/recursive_kernel_detection.pl). The detector
+%  is the same one Rust uses; structural pattern matching against
+%  registered kernel kinds (transitive_closure2, category_ancestor,
+%  transitive_distance3, ...). When a kernel matches AND the project
+%  Options include kernel_dispatch(true), Elixir emits a kernel-
+%  dispatch module that bypasses the WAM lower chain.
+:- dynamic user:kdtc/2, user:kdedge/2.
+:- dynamic user:kdca/4, user:kdcparent/2, user:max_depth/1.
+
+setup_kernel_fixtures :-
+    retractall(user:kdtc(_, _)),
+    retractall(user:kdedge(_, _)),
+    retractall(user:kdca(_, _, _, _)),
+    retractall(user:kdcparent(_, _)),
+    retractall(user:max_depth(_)),
+    assertz((user:kdtc(X, Z) :- user:kdedge(X, Z))),
+    assertz((user:kdtc(X, Z) :- user:kdedge(X, Y), user:kdtc(Y, Z))),
+    assertz(user:max_depth(7)),
+    assertz((user:kdca(C, P, 1, V) :- user:kdcparent(C, P), \+ member(P, V))),
+    assertz((user:kdca(C, A, H, V) :-
+                user:max_depth(MaxD), length(V, D), D < MaxD, !,
+                user:kdcparent(C, M), \+ member(M, V),
+                user:kdca(M, A, H1, [M|V]),
+                H is H1 + 1)).
+
+test_shared_detector_finds_tc :-
+    Test = 'Shared detector: kdtc/2 with canonical TC shape detected as transitive_closure2',
+    setup_kernel_fixtures,
+    functor(Head, kdtc, 2),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdtc, 2, Clauses,
+            recursive_kernel(transitive_closure2, kdtc/2, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'detector did not find transitive_closure2 kernel')
+    ).
+
+test_shared_detector_finds_category_ancestor :-
+    Test = 'Shared detector: kdca/4 with canonical category_ancestor shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdca, 4),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdca, 4, Clauses,
+            recursive_kernel(category_ancestor, kdca/4, ConfigOps)),
+        member(max_depth(7), ConfigOps),
+        member(edge_pred(kdcparent/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'detector did not find category_ancestor kernel')
+    ).
+
+test_kernel_dispatch_emits_tc_module :-
+    Test = 'Kernel dispatch: transitive_closure2 kernel emits Probe.Tc dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdtc/2, [], TcWam),
+    write_wam_elixir_project([kdtc/2-TcWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_tc'),
+    read_file_to_string('/tmp/test_kernel_disp_tc/lib/kdtc.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveClosure"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TC kernel dispatch module not emitted as expected')
+    ).
+
+test_kernel_dispatch_emits_category_ancestor_module :-
+    Test = 'Kernel dispatch: category_ancestor kernel emits Probe.Kdca dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
+    write_wam_elixir_project([kdca/4-CaWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_ca'),
+    read_file_to_string('/tmp/test_kernel_disp_ca/lib/kdca.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.CategoryAncestor"),
+        sub_string(S, _, _, _, "@max_depth 7"),
+        sub_string(S, _, _, _, "collect_hops")
+    ->  pass(Test)
+    ;   fail_test(Test, 'category_ancestor kernel dispatch module not emitted as expected')
+    ).
+
+test_graph_kernel_tc_emitted_in_runtime :-
+    Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveClosure do'),
+        sub_string(RuntimeCode, _, _, _, 'def reachable_from('),
+        sub_string(RuntimeCode, _, _, _, 'def reachable_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveClosure module missing expected API')
+    ).
+
+test_graph_kernel_tc_uses_visited_tracking :-
+    Test = 'GraphKernel TC: kernel uses MapSet for visited tracking (avoids O(N^2) revisits)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Without visited tracking, transitive closure on a cyclic graph
+    % loops forever. MapSet is the BEAM-native O(log N) set; the
+    % kernel must use it to be correct AND to be faster than WAMs
+    % naive recursive tc/2.
+    (   sub_string(RuntimeCode, _, _, _, 'MapSet.member?'),
+        sub_string(RuntimeCode, _, _, _, 'MapSet.put'),
+        sub_string(RuntimeCode, _, _, _, 'MapSet.new')
+    ->  pass(Test)
+    ;   fail_test(Test, 'TC kernel missing MapSet visited-tracking primitives')
+    ).
+
+test_graph_kernel_tc_factsource_bridge :-
+    Test = 'GraphKernel TC: reachable_from_source bridges to FactSource lookup_by_arg1',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % The bridge function lets callers pass a FactSource
+    % (LMDB / SQLite / ETS / TSV) instead of building the
+    % neighbors_fn closure themselves.
+    (   sub_string(RuntimeCode, _, _, _, 'reachable_from_source(source_module, source_handle, start, state'),
+        sub_string(RuntimeCode, _, _, _, 'source_module.lookup_by_arg1(source_handle, node, state)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'reachable_from_source bridge missing or wrong shape')
+    ).
+
+test_intern_atoms_default_off :-
+    Test = 'Atom interning: default (no intern_atoms option) emits constants as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello'))
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "hello"'),
+            \+ sub_string(S, _, _, _, 'val == :hello')
+        ->  pass(Test)
+        ;   fail_test(Test, 'default mode wrongly emitted atom literal')
+        ),
+        retractall(intern_test:p(_))
+    ).
+
+test_intern_atoms_on_emits_atom_literals :-
+    Test = 'Atom interning: intern_atoms(true) emits identifier constants as :atom literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello')),
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == :hello'),
+            \+ sub_string(S, _, _, _, 'val == "hello"')
+        ->  pass(Test)
+        ;   fail_test(Test, 'intern_atoms mode failed to emit atom literal')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
+test_intern_atoms_keeps_non_identifiers_as_strings :-
+    Test = 'Atom interning: leading-uppercase / non-identifier constants stay as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('Foo')),         % uppercase-leading: would mean module
+            assertz(intern_test:p('hello world')), % whitespace: not an identifier
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "Foo"'),
+            sub_string(S, _, _, _, 'val == "hello world"'),
+            % Sanity: did NOT emit `:Foo` (would parse as a module name).
+            \+ sub_string(S, _, _, _, 'val == :Foo')
+        ->  pass(Test)
+        ;   fail_test(Test, 'non-identifier constants wrongly emitted as atoms')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
 test_lmdb_adaptor_targets_safe_keyvalue_api :-
     Test = 'LMDB adaptor: uses safe key/value + cursor API (no raw-pointer ops)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -1186,6 +1380,7 @@ test_findall_phase4b5_branch_skips_cp_push :-
 :- dynamic integer_match_test:int_p/1.
 :- dynamic arith_cmp_test:gt_p/1, arith_cmp_test:neq_p/1.
 :- dynamic inline_list_test:len_p/1.
+:- dynamic intern_test:p/1.
 
 %% Arithmetic-comparison regression: the runtime must implement the
 %  full comparison family (`<`, `>`, `>=`, `=<`, `=:=`, `=\=`) — pre-
@@ -1814,6 +2009,16 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_shared_detector_finds_tc,
+    test_shared_detector_finds_category_ancestor,
+    test_kernel_dispatch_emits_tc_module,
+    test_kernel_dispatch_emits_category_ancestor_module,
+    test_graph_kernel_tc_emitted_in_runtime,
+    test_graph_kernel_tc_uses_visited_tracking,
+    test_graph_kernel_tc_factsource_bridge,
+    test_intern_atoms_default_off,
+    test_intern_atoms_on_emits_atom_literals,
+    test_intern_atoms_keeps_non_identifiers_as_strings,
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
