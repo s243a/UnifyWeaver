@@ -4003,20 +4003,57 @@ resolve_auto_use_lmdb_decision(Options, Decision) :-
 
 %% lmdb_haskell_package_available
 %
-%  Probe `ghc-pkg list --simple-output lmdb`. Returns true iff the
-%  output mentions `lmdb`. Conservative: any process error or absent
-%  ghc-pkg makes this fail, which propagates through
-%  `resolve_auto_use_lmdb_decision/2` as `Decision=false` —
-%  preferable to crashing the codegen on an environmental issue.
+%  True iff the Haskell `lmdb` package is reachable from the current
+%  toolchain. Probes two sources, in order:
+%
+%  1. `ghc-pkg list --simple-output lmdb` — catches global / user
+%     package db installs (the conventional case after
+%     `cabal install --lib lmdb`).
+%
+%  2. `ghc-pkg --package-db ~/.cabal/store/ghc-<ver>/package.db list
+%     --simple-output lmdb` — catches `cabal v2-build` /
+%     `cabal v2-install --lib` installs that land in the cabal store
+%     rather than user db. Common with cabal ≥ 2.4.
+%
+%  Conservative: any process error or absent ghc-pkg makes this fail
+%  (silently), which propagates as `Decision=false` rather than
+%  crashing the codegen on an environmental issue.
 lmdb_haskell_package_available :-
+    ghc_pkg_lists_lmdb([]).
+lmdb_haskell_package_available :-
+    cabal_store_package_db(StoreDb),
+    ghc_pkg_lists_lmdb(['--package-db', StoreDb]).
+
+ghc_pkg_lists_lmdb(ExtraArgs) :-
+    append(ExtraArgs, ['list', '--simple-output', 'lmdb'], Args),
     catch(
-        (   process_create(path('ghc-pkg'),
-                ['list', '--simple-output', 'lmdb'],
+        (   process_create(path('ghc-pkg'), Args,
                 [stdout(pipe(Out)), stderr(null), process(Pid)]),
             read_string(Out, _, OutStr),
             close(Out),
             process_wait(Pid, _),
             sub_string(OutStr, _, _, _, "lmdb")
+        ),
+        _, fail).
+
+%% cabal_store_package_db(-StoreDb) is semidet.
+%
+%  Resolve the path of the cabal store's package db for the user's
+%  current GHC. Fails if `ghc --numeric-version` doesn't run or the
+%  store directory doesn't exist on disk.
+cabal_store_package_db(StoreDb) :-
+    catch(
+        (   process_create(path('ghc'), ['--numeric-version'],
+                [stdout(pipe(GhcOut)), stderr(null), process(GhcPid)]),
+            read_string(GhcOut, _, GhcVerRaw),
+            close(GhcOut),
+            process_wait(GhcPid, _),
+            split_string(GhcVerRaw, "\n", "\n\r", [GhcVer|_]),
+            GhcVer \== "",
+            expand_file_name('~/.cabal/store', [Store]),
+            format(string(StoreDb),
+                   '~w/ghc-~w/package.db', [Store, GhcVer]),
+            exists_directory(StoreDb)
         ),
         _, fail).
 
