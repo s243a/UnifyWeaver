@@ -8,6 +8,8 @@
               [lower_predicate_to_elixir/4, classify_predicate/4,
                extract_facts/3, extract_arg1_index/3,
                tier2_purity_eligible/3, par_wrap_segment/4]).
+:- use_module('../src/unifyweaver/targets/wam_elixir_kernel_dispatch',
+              [match_transitive_closure_pattern/3]).
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
@@ -763,6 +765,64 @@ test_lmdb_adaptor_uses_indirect_module_resolution :-
 %  WamRuntime.GraphKernel.TransitiveClosure and is callable directly
 %  from driver code; future work adds compile-time pattern recognition
 %  to route source-Prolog tc/2 calls through the kernel automatically.
+%% Pattern recognition for kernel dispatch (PR #1799 added the kernel
+%  module; this PR adds compile-time pattern detection + auto-routing).
+:- dynamic kernel_test:tc/2.
+:- dynamic kernel_test:edge/2.
+:- dynamic kernel_test:single_clause/2.
+:- dynamic kernel_test:wrong_arity/3.
+:- dynamic kernel_test:right_rec/2.
+
+setup_kernel_fixtures :-
+    retractall(kernel_test:tc(_, _)),
+    retractall(kernel_test:edge(_, _)),
+    retractall(kernel_test:single_clause(_, _)),
+    retractall(kernel_test:wrong_arity(_, _, _)),
+    retractall(kernel_test:right_rec(_, _)),
+    assertz((kernel_test:tc(X, Z) :- kernel_test:edge(X, Z))),
+    assertz((kernel_test:tc(X, Z) :- kernel_test:edge(X, Y), kernel_test:tc(Y, Z))),
+    assertz((kernel_test:single_clause(X, Z) :- kernel_test:edge(X, Z))),
+    assertz((kernel_test:wrong_arity(X, _, Z) :- kernel_test:edge(X, Z))),
+    assertz((kernel_test:wrong_arity(X, Y, Z) :- kernel_test:edge(X, A), kernel_test:wrong_arity(A, Y, Z))),
+    assertz((kernel_test:right_rec(X, Z) :- kernel_test:edge(X, Z))),
+    assertz((kernel_test:right_rec(X, Z) :- kernel_test:right_rec(Y, Z), kernel_test:edge(X, Y))).
+
+test_kernel_pattern_matches_canonical_tc :-
+    Test = 'Kernel pattern: matches canonical tc/2 shape',
+    setup_kernel_fixtures,
+    (   wam_elixir_kernel_dispatch:match_transitive_closure_pattern(
+            kernel_test, tc/2, edge/2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'matcher failed to recognise canonical tc/2 shape')
+    ).
+
+test_kernel_pattern_rejects_single_clause :-
+    Test = 'Kernel pattern: rejects single-clause predicate',
+    setup_kernel_fixtures,
+    (   wam_elixir_kernel_dispatch:match_transitive_closure_pattern(
+            kernel_test, single_clause/2, _)
+    ->  fail_test(Test, 'matcher wrongly accepted single-clause predicate')
+    ;   pass(Test)
+    ).
+
+test_kernel_pattern_rejects_wrong_arity :-
+    Test = 'Kernel pattern: rejects 3-ary predicate',
+    setup_kernel_fixtures,
+    (   wam_elixir_kernel_dispatch:match_transitive_closure_pattern(
+            kernel_test, wrong_arity/3, _)
+    ->  fail_test(Test, 'matcher wrongly accepted 3-ary predicate')
+    ;   pass(Test)
+    ).
+
+test_kernel_pattern_rejects_right_recursion :-
+    Test = 'Kernel pattern: rejects right-recursive form (out of scope)',
+    setup_kernel_fixtures,
+    (   wam_elixir_kernel_dispatch:match_transitive_closure_pattern(
+            kernel_test, right_rec/2, _)
+    ->  fail_test(Test, 'matcher wrongly accepted right-recursive form')
+    ;   pass(Test)
+    ).
+
 test_graph_kernel_tc_emitted_in_runtime :-
     Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -1923,6 +1983,10 @@ run_tests :-
     test_lmdb_adaptor_emitted_in_runtime,
     test_lmdb_adaptor_uses_indirect_module_resolution,
     test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_kernel_pattern_matches_canonical_tc,
+    test_kernel_pattern_rejects_single_clause,
+    test_kernel_pattern_rejects_wrong_arity,
+    test_kernel_pattern_rejects_right_recursion,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
