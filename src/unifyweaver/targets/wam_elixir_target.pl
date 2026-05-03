@@ -2459,6 +2459,33 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'lib', LibDir),
     make_directory_path(LibDir),
+    % Atom-interning experiment: when the user passes intern_atoms(true),
+    % set a process-wide flag that elixir_constant_literal/2 in the
+    % lowered emitter consults. setup_call_cleanup/3 retracts the flag
+    % afterward so a failed lowering doesnt leak the setting into
+    % subsequent generations. Off by default (existing behaviour
+    % preserved — every constant emits as a binary).
+    setup_call_cleanup(
+        atom_interning_setup(Options),
+        do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                                     Mode, ModuleName, LibDir),
+        atom_interning_cleanup(Options)
+    ).
+
+atom_interning_setup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+atom_interning_cleanup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                             Mode, ModuleName, LibDir) :-
     % Generate runtime module
     compile_wam_runtime_to_elixir(Options, RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
