@@ -136,6 +136,16 @@ test(simple_builtin_equality_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/unify-values")
     )).
 
+test(simple_builtin_not_unify_is_direct_lowered_in_prefix) :-
+    once((
+        lower_predicate_to_clojure(test_not_unify/2, [builtin_call('\\=/2', 2), proceed], [], Code),
+        has(Code, "runtime/reg-get-raw"),
+        has(Code, "\"A1\""),
+        has(Code, "\"A2\""),
+        has(Code, "runtime/unifiable?"),
+        has(Code, "runtime/backtrack")
+    )).
+
 test(simple_builtin_true_is_direct_lowered_in_prefix) :-
     once((
         lower_predicate_to_clojure(test_true/0, [builtin_call('true/0', 0), proceed], [], Code),

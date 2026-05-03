@@ -95,6 +95,7 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, '(defn denormalize-term [ctx term]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn normalize-regs [ctx regs]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(interned-equal? (:functor left*) (:functor right*))')),
+        assertion(sub_string(RuntimeCode, _, _, _, '(defn unifiable? [state left right]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn interned-equal? [left right]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn normalize-dispatch-value [ctx value]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn functor-arity [ctx functor]')),
@@ -105,6 +106,7 @@ test(project_emits_runtime_and_lowered_dispatch_scaffold) :-
         assertion(sub_string(RuntimeCode, _, _, _, ':execute-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':jump-pc')),
         assertion(sub_string(RuntimeCode, _, _, _, ':builtin-call')),
+        assertion(sub_string(RuntimeCode, _, _, _, '"\\\\=/2"')),
         assertion(sub_string(RuntimeCode, _, _, _, ':call-foreign')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-result [state result]')),
         assertion(sub_string(RuntimeCode, _, _, _, '(defn apply-foreign-bindings [state bindings]')),
@@ -295,6 +297,32 @@ test(clojure_lmdb_target_ancestor_foreign_relation_auto_handler,
         assertion(sub_string(CoreCode, _, _, _, '{:solutions (vec solutions)}')),
         assertion(sub_string(CoreCode, _, _, _, '{:bindings {2 ancestor 3 hops}}')),
         assertion(sub_string(CoreCode, _, _, _, '"wam_ancestor_lookup/4" wam-ancestor-lookup')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_lmdb_ancestor_max_depth_falls_back_to_user_fact,
+     [condition(lmdb_helper_toolchain_available),
+      setup((retractall(user:max_depth(_)), assertz(user:max_depth(13)))),
+      cleanup(retractall(user:max_depth(_)))]) :-
+    %% Regression for the instrumentation-bug class fixed in PR #1724
+    %% (Haskell dimension_n/max_depth) and now extended to Clojure:
+    %% when no clojure_lmdb_ancestor_max_depth option is passed,
+    %% resolve_clojure_lmdb_ancestor_max_depth/2 reads from
+    %% user:max_depth/1 instead of silently using the hardcoded 10.
+    once((
+        unique_tmp_dir('tmp_wam_clojure_lmdb_user_max_depth', TmpDir),
+        write_wam_clojure_project([user:category_ancestor/4],
+                                  [ namespace('generated.wam_lmdb_user_max_depth_test'),
+                                    clojure_lmdb_foreign_relations([
+                                        category_ancestor/4-'data/generated/test/category_parent_lmdb'
+                                    ]),
+                                    clojure_lmdb_cache_policy(two_level)
+                                    %% NB: no clojure_lmdb_ancestor_max_depth here
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_lmdb_user_max_depth_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, 'max-depth 13')),
+        assertion(\+ sub_string(CoreCode, _, _, _, 'max-depth 10')),
         delete_directory_and_contents(TmpDir)
     )).
 

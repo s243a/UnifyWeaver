@@ -2525,6 +2525,73 @@ stderr line confirms the resolver fired.
    verify the "auto + high fact_count + lmdb available → true" path
    works end-to-end. Requires environmental setup (cabal install lmdb +
    LMDB-ingested data); the wiring itself is in place.
+   **— validated in Phase L appendix #3 (2026-05-04).**
 4. **Scale 5k/10k matrix runs** with the kernel changes, to see how
    the Haskell-vs-Rust gap evolves at larger wiki scales. Each run
    is ~5-15 min wall time so deferred for budget.
+
+---
+
+## Phase L appendix #3: cross-target audit + auto-resolver true-path validation (2026-05-04)
+
+Two Phase L follow-ups closed:
+
+**Cross-target audit** for the instrumentation-bug class (PR #1724
+fixed `dimension_n` in Haskell; the broader question was whether other
+WAM target backends had analogous hardcoded values that should come
+from user-asserted facts). Surveyed Rust, Elixir, Scala, Clojure, Go:
+
+- **Haskell** — already fixed (#1721 max_depth, #1724 dimension_n).
+- **Go** — already fine; `resolve_dimension_n_go/2` mirrors the
+  Haskell resolver, and `max_depth` flows via the shared kernel
+  registry's detector at `recursive_kernel_detection.pl:289` which
+  reads `user:max_depth/1`.
+- **Rust** — fine; FFI kernel reads `max_depth` from
+  `foreign_usize_config` at runtime, populated at codegen via
+  `register_foreign_usize_config` from the same shared registry.
+- **Elixir, Scala** — no FFI kernel with separate config that could
+  diverge from the WAM-compiled `max_depth/1` predicate; user-asserted
+  values flow via the standard predicate-compilation path.
+- **Clojure — bug found and fixed.** The LMDB foreign handler at
+  `wam_clojure_target.pl:272` read `max_depth` from
+  `option(clojure_lmdb_ancestor_max_depth(M), Options, 10)` —
+  explicit option with a hardcoded default. A user asserting
+  `user:max_depth(30)` in the workload would silently still get 10
+  unless they also passed the clojure-specific option. New
+  `resolve_clojure_lmdb_ancestor_max_depth/2` mirrors the Haskell
+  resolver pattern (option → user-fact → default 10). Regression
+  test in `tests/test_wam_clojure_generator.pl` gated on the LMDB
+  Java toolchain; verifies `user:max_depth(13)` reaches generated
+  Clojure code as `max-depth 13`.
+
+**Auto-resolver true-path validation.** Phase L appendix #1 shipped
+the resolver + 5 deterministic false-path tests; Phase L appendix #2
+wired it through the matrix harness; this appendix validates the
+true-path end-to-end.
+
+Two pieces:
+
+1. `lmdb_haskell_package_available` extended to also probe
+   `~/.cabal/store/ghc-<ver>/package.db`. The previous check only
+   consulted ghc-pkg's user/global db, but `cabal v2-build` /
+   `cabal v2-install --lib` (the cabal ≥ 2.4 norm) installs to the
+   cabal store db, which a bare `ghc-pkg list` doesn't see. With this
+   fix, the resolver finds lmdb in either location.
+
+2. Ran `haskell-interp-ffi-auto` on `100k_cats` (196,900 facts —
+   ~4× the 50,000 default threshold). Generator stderr confirms
+   `lmdb=auto fact_count=196900`; generated cabal includes
+   `lmdb >= 0.2.5` (so the resolver picked `use_lmdb(true)`); binary
+   built and ran in ~406 s, producing 11 rows of output
+   (sha `8b134f6f910e`).
+
+The five deterministic resolver tests still pass — `auto + low
+fact_count` and `auto + no fact_count` continue producing false even
+with lmdb available, because the fact_count gate (step 2) overrides.
+
+### Open follow-ups (still)
+
+The Phase L appendix #2 follow-ups #1, #2, #4 remain — ST-monad arc,
+optional firewall hook for the resolver, and the larger scale 5k/10k
+sweeps. Cross-target audit found one Clojure bug; no other target
+needed fixes.

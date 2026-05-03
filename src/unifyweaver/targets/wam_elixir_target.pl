@@ -2093,6 +2093,137 @@ defmodule WamRuntime.FactSource.Sqlite do
   end
 end
 
+defmodule WamRuntime.FactSource.Lmdb do
+  @moduledoc """
+  LMDB fact source. Memory-mapped key/value store — the response to
+  the materialisation-cost bottleneck above 100k+ facts documented
+  in docs/WAM_TARGET_ROADMAP.md. Mirrors what Haskell uses, with
+  one important caveat: targets the **safe key/value API**, not the
+  raw-pointer interface that caused crashes in the Haskell pipeline.
+  Lookups go through txn_get and cursor get/get-next, never through
+  raw-pointer dereferences.
+
+  Driver responsibility:
+    1. Add an LMDB binding to its mix deps (`:elmdb` is the
+       reference shape; other bindings work if they expose the same
+       function names). To keep this runtime dep-free for drivers
+       that dont use LMDB, the module is referenced indirectly via
+       Module.concat — same trick as the SQLite adaptor uses for
+       :exqlite.
+    2. Open the LMDB env + database handle (dbi). Populate facts.
+    3. Pass env/dbi to this adaptors open/3 via the spec.
+
+  Spec fields:
+    env     — LMDB env handle (required; pre-opened by driver)
+    dbi     — LMDB database handle within env (required)
+    arity   — number of columns per tuple (required; only 2 supported)
+    dupsort — true if a single arg1 maps to multiple arg2s (default
+              false; matches the LMDB MDB_DUPSORT flag the driver
+              should have set when opening the dbi)
+
+  Keying convention: the LMDB key is arg1; the value is arg2 (or
+  one of several arg2s under MDB_DUPSORT). lookup_by_arg1 uses
+  txn_get for unique keys and cursor MDB_SET / MDB_NEXT_DUP for
+  dupsort.
+  """
+  @behaviour WamRuntime.FactSource
+  defstruct [:env, :dbi, :arity, :dupsort]
+
+  defp lmdb_module, do: Module.concat([Elmdb])
+
+  @impl true
+  def open(%{env: env, dbi: dbi, arity: arity} = spec, _pred_arity, _state)
+      when arity == 2 do
+    %__MODULE__{
+      env: env,
+      dbi: dbi,
+      arity: arity,
+      dupsort: Map.get(spec, :dupsort, false)
+    }
+  end
+
+  @impl true
+  def stream_all(%__MODULE__{env: env, dbi: dbi}, _state) do
+    mod = lmdb_module()
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      {:ok, cur} = apply(mod, :ro_txn_cursor_open, [txn, dbi])
+      try do
+        scan_cursor_all(mod, cur, [])
+      after
+        apply(mod, :ro_txn_cursor_close, [cur])
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @impl true
+  def lookup_by_arg1(%__MODULE__{env: env, dbi: dbi, dupsort: dupsort}, key, _state) do
+    mod = lmdb_module()
+    {:ok, txn} = apply(mod, :ro_txn_begin, [env])
+    try do
+      if dupsort do
+        {:ok, cur} = apply(mod, :ro_txn_cursor_open, [txn, dbi])
+        try do
+          collect_dupsort(mod, cur, key)
+        after
+          apply(mod, :ro_txn_cursor_close, [cur])
+        end
+      else
+        case apply(mod, :txn_get, [txn, dbi, key]) do
+          {:ok, val} -> [{key, val}]
+          :not_found -> []
+          _ -> []
+        end
+      end
+    after
+      apply(mod, :ro_txn_commit, [txn])
+    end
+  end
+
+  @impl true
+  def close(%__MODULE__{env: _env}, _state) do
+    # Env lifecycle belongs to the driver — multiple FactSources may
+    # share one env. The driver calls env_close when its done.
+    :ok
+  end
+
+  # Scan the entire database via cursor MDB_FIRST + MDB_NEXT.
+  defp scan_cursor_all(mod, cur, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :first, nil]) do
+      {:ok, k, v} -> scan_cursor_next(mod, cur, [{k, v} | acc])
+      :not_found -> Enum.reverse(acc)
+      _ -> Enum.reverse(acc)
+    end
+  end
+
+  defp scan_cursor_next(mod, cur, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :next, nil]) do
+      {:ok, k, v} -> scan_cursor_next(mod, cur, [{k, v} | acc])
+      :not_found -> Enum.reverse(acc)
+      _ -> Enum.reverse(acc)
+    end
+  end
+
+  # Dupsort scan: position cursor at MDB_SET key, then walk
+  # MDB_NEXT_DUP until exhausted.
+  defp collect_dupsort(mod, cur, key) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :set, key]) do
+      {:ok, ^key, v} -> collect_dupsort_next(mod, cur, key, [{key, v}])
+      :not_found -> []
+      _ -> []
+    end
+  end
+
+  defp collect_dupsort_next(mod, cur, key, acc) do
+    case apply(mod, :ro_txn_cursor_get, [cur, :next_dup, nil]) do
+      {:ok, ^key, v} -> collect_dupsort_next(mod, cur, key, [{key, v} | acc])
+      _ -> Enum.reverse(acc)
+    end
+  end
+end
+
 defmodule WamRuntime.FactSourceRegistry do
   @moduledoc """
   Predicate-indicator → source-handle map. Uses :persistent_term so
@@ -2328,6 +2459,33 @@ write_wam_elixir_project(Predicates, Options, ProjectDir) :-
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'lib', LibDir),
     make_directory_path(LibDir),
+    % Atom-interning experiment: when the user passes intern_atoms(true),
+    % set a process-wide flag that elixir_constant_literal/2 in the
+    % lowered emitter consults. setup_call_cleanup/3 retracts the flag
+    % afterward so a failed lowering doesnt leak the setting into
+    % subsequent generations. Off by default (existing behaviour
+    % preserved — every constant emits as a binary).
+    setup_call_cleanup(
+        atom_interning_setup(Options),
+        do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                                     Mode, ModuleName, LibDir),
+        atom_interning_cleanup(Options)
+    ).
+
+atom_interning_setup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+atom_interning_cleanup(Options) :-
+    (   option(intern_atoms(true), Options)
+    ->  retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+    ;   true
+    ).
+
+do_write_wam_elixir_project(Predicates, Options, ProjectDir,
+                             Mode, ModuleName, LibDir) :-
     % Generate runtime module
     compile_wam_runtime_to_elixir(Options, RuntimeCode),
     directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),

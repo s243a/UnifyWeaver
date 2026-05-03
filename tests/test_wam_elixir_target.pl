@@ -720,6 +720,121 @@ test_sqlite_adaptor_uses_indirect_module_resolution :-
     ;   fail_test(Test, 'SQLite adaptor has literal Exqlite references — will warn without dep')
     ).
 
+%% LMDB adaptor (memory-mapped fact source — addresses the
+%  materialisation-cost bottleneck documented in
+%  docs/WAM_TARGET_ROADMAP.md). Mirrors the SQLite tests pattern
+%  emit-and-grep + indirect-module-resolution check.
+test_lmdb_adaptor_emitted_in_runtime :-
+    Test = 'LMDB adaptor: runtime assembly emits FactSource.Lmdb',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.FactSource.Lmdb do'),
+        sub_string(RuntimeCode, _, _, _, '@behaviour WamRuntime.FactSource'),
+        sub_string(RuntimeCode, _, _, _, 'defstruct [:env, :dbi, :arity, :dupsort]'),
+        % Three FactSource callbacks present.
+        sub_string(RuntimeCode, _, _, _, 'def stream_all('),
+        sub_string(RuntimeCode, _, _, _, 'def lookup_by_arg1('),
+        sub_string(RuntimeCode, _, _, _, 'def close(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor missing expected structure')
+    ).
+
+test_lmdb_adaptor_uses_indirect_module_resolution :-
+    Test = 'LMDB adaptor: uses Module.concat so runtime compiles without an LMDB binding dep',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Same constraint as SQLite: the adaptor must NOT call Elmdb.X
+    % as a literal — that warns in drivers without the LMDB binding.
+    (   sub_string(RuntimeCode, _, _, _, 'Module.concat([Elmdb])'),
+        sub_string(RuntimeCode, _, _, _, 'apply(mod,'),
+        \+ sub_string(RuntimeCode, _, _, _, 'Elmdb.ro_txn_begin'),
+        \+ sub_string(RuntimeCode, _, _, _, 'Elmdb.txn_get(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor has literal Elmdb references — will warn without dep')
+    ).
+
+%% Atom-interning experiment (opt-in via intern_atoms(true) Option):
+%  identifier-shape constants emit as Elixir atom literals (`:foo`)
+%  instead of binaries (`"foo"`). BEAM atoms compare via pointer
+%  equality and avoid binary copies on hot paths. Non-identifier
+%  constants (whitespace, leading uppercase, etc.) still emit as
+%  quoted strings — `:Foo` would mean a module reference in Elixir.
+test_intern_atoms_default_off :-
+    Test = 'Atom interning: default (no intern_atoms option) emits constants as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello'))
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "hello"'),
+            \+ sub_string(S, _, _, _, 'val == :hello')
+        ->  pass(Test)
+        ;   fail_test(Test, 'default mode wrongly emitted atom literal')
+        ),
+        retractall(intern_test:p(_))
+    ).
+
+test_intern_atoms_on_emits_atom_literals :-
+    Test = 'Atom interning: intern_atoms(true) emits identifier constants as :atom literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('hello')),
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == :hello'),
+            \+ sub_string(S, _, _, _, 'val == "hello"')
+        ->  pass(Test)
+        ;   fail_test(Test, 'intern_atoms mode failed to emit atom literal')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
+test_intern_atoms_keeps_non_identifiers_as_strings :-
+    Test = 'Atom interning: leading-uppercase / non-identifier constants stay as binary literals',
+    setup_call_cleanup(
+        (   retractall(intern_test:p(_)),
+            assertz(intern_test:p('Foo')),         % uppercase-leading: would mean module
+            assertz(intern_test:p('hello world')), % whitespace: not an identifier
+            assertz(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        ),
+        (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
+            lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
+            atom_string(Code, S),
+            sub_string(S, _, _, _, 'val == "Foo"'),
+            sub_string(S, _, _, _, 'val == "hello world"'),
+            % Sanity: did NOT emit `:Foo` (would parse as a module name).
+            \+ sub_string(S, _, _, _, 'val == :Foo')
+        ->  pass(Test)
+        ;   fail_test(Test, 'non-identifier constants wrongly emitted as atoms')
+        ),
+        (   retractall(intern_test:p(_)),
+            retractall(wam_elixir_lowered_emitter:intern_atoms_enabled)
+        )
+    ).
+
+test_lmdb_adaptor_targets_safe_keyvalue_api :-
+    Test = 'LMDB adaptor: uses safe key/value + cursor API (no raw-pointer ops)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Contract per WAM_TARGET_ROADMAP.md: avoid the raw-pointer
+    % interface that crashed Haskell. txn_get + cursor get/next are
+    % the safe layer; reject any pointer-deref shape.
+    (   sub_string(RuntimeCode, _, _, _, 'txn_get'),
+        sub_string(RuntimeCode, _, _, _, 'ro_txn_cursor_get'),
+        % Dupsort path uses MDB_SET / MDB_NEXT_DUP cursor ops.
+        sub_string(RuntimeCode, _, _, _, ':next_dup'),
+        sub_string(RuntimeCode, _, _, _, ':set'),
+        % No raw pointer / mdb_val references (those are the unsafe layer).
+        \+ sub_string(RuntimeCode, _, _, _, 'mdb_val'),
+        \+ sub_string(RuntimeCode, _, _, _, 'raw_pointer')
+    ->  pass(Test)
+    ;   fail_test(Test, 'LMDB adaptor missing safe-API surface or includes raw-pointer ops')
+    ).
+
 %% Tier-2 infrastructure tests (see docs/design/WAM_TIERED_LOWERING.md)
 %% These exercise precondition scaffolding only — PR2 wires
 %% par_wrap_segment/3 on top of them.
@@ -1137,6 +1252,7 @@ test_findall_phase4b5_branch_skips_cp_push :-
 :- dynamic integer_match_test:int_p/1.
 :- dynamic arith_cmp_test:gt_p/1, arith_cmp_test:neq_p/1.
 :- dynamic inline_list_test:len_p/1.
+:- dynamic intern_test:p/1.
 
 %% Arithmetic-comparison regression: the runtime must implement the
 %  full comparison family (`<`, `>`, `>=`, `=<`, `=:=`, `=\=`) — pre-
@@ -1762,6 +1878,12 @@ run_tests :-
     test_ets_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_emitted_in_runtime,
     test_sqlite_adaptor_uses_indirect_module_resolution,
+    test_lmdb_adaptor_emitted_in_runtime,
+    test_lmdb_adaptor_uses_indirect_module_resolution,
+    test_lmdb_adaptor_targets_safe_keyvalue_api,
+    test_intern_atoms_default_off,
+    test_intern_atoms_on_emits_atom_literals,
+    test_intern_atoms_keeps_non_identifiers_as_strings,
     test_tier2_wamstate_has_parallel_depth,
     test_tier2_aggregate_helpers_emitted,
     test_tier2_aggregate_forkable_types,
