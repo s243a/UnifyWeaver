@@ -269,12 +269,32 @@ clojure_lmdb_foreign_handler_code(category_ancestor/4, ArtifactPath, Options, Ha
     clojure_lmdb_path_literal(ArtifactPath, PathLiteral),
     clojure_lmdb_reader_open_expr(PathLiteral, Options, ReaderOpenExpr),
     clojure_lmdb_cache_log_snippet('category_ancestor/4', Options, LogSnippet),
-    option(clojure_lmdb_ancestor_max_depth(MaxDepth), Options, 10),
+    resolve_clojure_lmdb_ancestor_max_depth(Options, MaxDepth),
     format(string(HandlerCode),
            "(let [reader-delay (delay ~w) max-depth ~w term-list-values (fn term-list-values [term] (if (and (map? term) (= \"[|]/2\" (:functor term))) (cons (first (:args term)) (term-list-values (second (:args term)))) [])) parent-values (fn [category] (mapv (fn [^generated.lmdb.LmdbRow row] (.value row)) (.lookupArg1 ^generated.lmdb.LmdbArtifactReader @reader-delay category))) ancestor-hops (fn ancestor-hops [category target visited] (let [parents (parent-values category)] (vec (concat (for [parent parents :when (and (not (contains? visited parent)) (or (map? target) (= parent target)))] [parent 1]) (when (< (count visited) max-depth) (apply concat (for [mid parents :when (not (contains? visited mid)) [ancestor hops] (ancestor-hops mid target (conj visited mid))] [[ancestor (inc hops)]])))))))] (fn [args] (let [category (nth args 0) target (nth args 1) visited (set (term-list-values (nth args 3))) solutions (for [[ancestor hops] (ancestor-hops category target visited)] {:bindings {2 ancestor 3 hops}})] (do ~w {:solutions (vec solutions)}))))",
            [ReaderOpenExpr, MaxDepth, LogSnippet]).
 clojure_lmdb_foreign_handler_code(Pred/Arity, _ArtifactPath, _Options, _HandlerCode) :-
     throw(error(unsupported_clojure_lmdb_foreign_relation(Pred/Arity), _)).
+
+%% resolve_clojure_lmdb_ancestor_max_depth(+Options, -MaxDepth) is det.
+%
+%  Same instrumentation-bug class as the Haskell `resolve_max_depth/2`
+%  (PR #1721) — without this resolver the LMDB ancestor handler used
+%  a hardcoded 10 as fallback, silently overriding any user-asserted
+%  `user:max_depth/1`. Priority:
+%    1. Options list: clojure_lmdb_ancestor_max_depth(N)
+%    2. user:max_depth/1 fact (asserted by the workload)
+%    3. Default: 10 (matches the prior hardcoded value)
+resolve_clojure_lmdb_ancestor_max_depth(Options, MaxDepth) :-
+    (   option(clojure_lmdb_ancestor_max_depth(M), Options),
+        integer(M), M >= 1
+    ->  MaxDepth = M
+    ;   current_predicate(user:max_depth/1),
+        user:max_depth(M),
+        integer(M), M >= 1
+    ->  MaxDepth = M
+    ;   MaxDepth = 10
+    ).
 
 clojure_foreign_handler_entry(handler(Pred/Arity, HandlerCode), Entry) :- !,
     clojure_foreign_handler_entry(Pred/Arity-HandlerCode, Entry).
