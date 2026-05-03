@@ -174,6 +174,7 @@ test(foreign_predicate_stub) :-
             ProgramPath),
         read_file_to_string(ProgramPath, Code, []),
         assertion(sub_string(Code, _, _, _, 'CallForeign("wam_fact", 1)')),
+        assertion(\+ sub_string(Code, _, _, _, 'Call("wam_fact", 1)')),
         % The fully WAM-compiled predicate should NOT have a CallForeign
         % for itself — wam_execute_caller should have a Call or CallPc
         assertion(\+ sub_string(Code, _, _, _, 'CallForeign("wam_execute_caller"')),
