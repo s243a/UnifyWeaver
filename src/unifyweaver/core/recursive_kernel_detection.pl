@@ -269,16 +269,16 @@ kernel_template_file(transitive_step_parent_distance5, 'kernel_transitive_step_p
 %% Extracted config: max_depth(N).
 %% =====================================================================
 
-detect_category_ancestor(category_ancestor, 4, Clauses, Kernel) :-
+detect_category_ancestor(Pred, 4, Clauses, Kernel) :-
     % Must have at least two clauses
     Clauses = [_|[_|_]],
     % Find a base clause with \+ member and a binary call (the edge pred)
     member(BaseHead-BaseBody, Clauses),
+    BaseHead =.. [Pred, BaseCat|_],   % verify head functor matches Pred
     BaseBody \= true,
     sub_term(\+ member(_, _), BaseBody),
     % Extract the edge predicate: the first binary call in the base clause
     % that isn't member/2 and shares the first arg with the head.
-    BaseHead =.. [_, BaseCat|_],
     find_edge_pred(BaseBody, BaseCat, EdgePred),
     % Find a recursive clause with \+ member and Hops is _ + 1
     member(_-RecBody, Clauses),
@@ -291,7 +291,7 @@ detect_category_ancestor(category_ancestor, 4, Clauses, Kernel) :-
     user:max_depth(MaxDepth),
     integer(MaxDepth),
     MaxDepth > 0,
-    Kernel = recursive_kernel(category_ancestor, category_ancestor/4,
+    Kernel = recursive_kernel(category_ancestor, Pred/4,
                               [max_depth(MaxDepth), edge_pred(EdgePred/2)]).
 
 %% find_edge_pred(+Body, +HeadArg1, -EdgePredName)
