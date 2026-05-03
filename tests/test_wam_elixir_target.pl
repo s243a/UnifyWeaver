@@ -1192,6 +1192,22 @@ test_runtime_emits_meta_builtin_set :-
     ;   fail_test(Test, 'one or more meta-builtins missing from execute_builtin')
     ).
 
+%% Build-mode follow-up to PR #1782: functor/3 and =../2 now also
+%  support build mode (Term unbound, Name+Arity OR list bound),
+%  and copy_term/2 walks heap structures with fresh-var renaming
+%  (sharing preserved). Emit-and-grep on the runtime confirms the
+%  new helper defps are present.
+test_runtime_emits_meta_builtin_build_mode :-
+    Test = 'Runtime: meta-builtins emit build_functor_term/build_compound_term/deep_copy_with_fresh_vars helpers',
+    wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
+    atom_string(Code, S),
+    (   sub_string(S, _, _, _, 'defp build_functor_term('),
+        sub_string(S, _, _, _, 'defp build_compound_term('),
+        sub_string(S, _, _, _, 'defp deep_copy_with_fresh_vars(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'one or more meta-builtin helpers missing from runtime')
+    ).
+
 test_runtime_default_arm_throws_unknown_builtin :-
     Test = 'Runtime: execute_builtin default arm throws {:unknown_builtin, ...} (hardening)',
     wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
@@ -1718,6 +1734,7 @@ run_tests :-
     test_runtime_emits_full_comparison_family,
     test_runtime_emits_extended_builtin_set,
     test_runtime_emits_meta_builtin_set,
+    test_runtime_emits_meta_builtin_build_mode,
     test_runtime_default_arm_throws_unknown_builtin,
     test_lowered_put_structure_links_unbound_heap_ref,
     test_runtime_list_walkers_accept_both_cons_tags,
