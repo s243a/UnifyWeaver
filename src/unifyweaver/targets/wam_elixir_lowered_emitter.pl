@@ -1157,9 +1157,12 @@ par_wrap_segment(Pred/Arity, Segments, Options, Code) :-
     % cost dominates the parallel-overhead amortisation). Default
     % MinCost=0 keeps behaviour unchanged — anything passes — so
     % existing Tier-2 tests that exercise the parallel arm with
-    % low-cost bodies still fire. Setting `forkMinCost(15)` (or
-    % similar) per the benchmark crossover blocks the parallel-loses
-    % regime documented in benchmarks/wam_elixir_tier2_findall.md.
+    % low-cost bodies still fire.
+    %
+    % Calibrated default for production use is `forkMinCost(10)` —
+    % rejects fact-only Tier-2 predicates (cost ~3-4) while admitting
+    % rule bodies (cost 9+). See the "Calibration" section of
+    % benchmarks/wam_elixir_tier2_findall.md for the derivation.
     option(forkMinCost(MinCost), Options, 0),
     predicate_cost(Segments, EstCost),
     EstCost >= MinCost,
@@ -1211,12 +1214,14 @@ clause_cost(Instrs, Cost) :-
     sum_list(Costs, Cost).
 
 %% instr_cost(+Instr, -Weight)
-%  Rough static weights for WAM instructions in BEAM-interpreted
-%  Elixir. Calibrated against benchmarks/wam_elixir_tier2_findall.md
-%  crossover data: a fact-only predicate (just `proceed`) scores ~1,
-%  a rule body with one call scores ~7-10, an inline-findall body
-%  scores ~17. forkMinCost values around 10-15 separate the parallel-
-%  loses regime from the parallel-wins regime for typical workloads.
+%  Static weights for WAM instructions in BEAM-interpreted Elixir.
+%  Per the calibration in benchmarks/wam_elixir_tier2_findall.md, the
+%  benchmark predicate bodies score: fact-only ~3-4, single-call body
+%  ~9, inline-findall body ~26. forkMinCost(10) is the recommended
+%  production default — rejects fact-only without affecting rule
+%  bodies. The static gate cant predict the runtime crossover by
+%  itself (it only sees the body shape, not the inner-iteration
+%  count); pair it with runtime_cost_probe(1500) for full coverage.
 instr_cost(builtin_call(_, _),    5) :- !.
 instr_cost(call(_, _),            5) :- !.
 instr_cost(execute(_),            5) :- !.
