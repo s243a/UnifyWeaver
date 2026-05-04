@@ -2752,6 +2752,81 @@ defmodule WamRuntime.GraphKernel.TransitiveDistance do
   end
 end
 
+defmodule WamRuntime.GraphKernel.TransitiveParentDistance do
+  @moduledoc """
+  Native transitive-parent-distance kernel — bypasses WAM dispatch
+  for the canonical pattern:
+
+      pd(X, Y, X, 1) :- edge(X, Y).
+      pd(X, Y, P, N) :-
+          edge(X, Mid),
+          pd(Mid, Y, P, N1),
+          N is N1 + 1.
+
+  Returns `[{target, predecessor, distance}, ...]` triples — for every
+  edge encountered during DFS from `start`, records the edge plus the
+  depth at which it was traversed. The predecessor is the immediate
+  source-side of the recorded edge (the node we stepped FROM), which
+  matches the Prolog patterns base-case binding (`pd(X, Y, X, 1)` —
+  parent equals start when one edge connects start to target).
+
+  Ported from the Rust kernel
+  `collect_native_transitive_parent_distance_results` in
+  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
+  iterative DFS via an explicit stack, push `(target, predecessor,
+  next_depth)` per edge.
+
+  WARNING: NO cycle detection. Matches the Rust reference impl which
+  uses a stack-based DFS without a visited list. On cyclic inputs
+  this kernel **loops indefinitely**; callers must either ensure
+  acyclic input (DAGs only — e.g. typical category-parent structures)
+  or wrap with a depth-bound consumer like
+  `findall(P-N, (pd(X, Y, P, N), N < MaxD), Triples)`. If you need
+  cycle-safe behaviour AND the predecessor, the right next step is a
+  separate `transitive_parent_distance4_safe` kernel that adds a
+  visited list — not in this PR.
+  """
+
+  @doc """
+  Returns `[{target, predecessor, distance}, ...]` for every edge
+  encountered during DFS from `start`. `neighbors_fn` follows the
+  FactSource lookup_by_arg1 contract: receives a node, returns
+  `[{from, to}, ...]` tuples.
+
+  Edge-iteration order: matches Rusts `for next in next_nodes.iter().rev()
+  + stack.push` — edges are visited in forward order. We reverse the
+  edge list before reducing onto the stack so the first edge pops
+  first. This preserves the same enumeration order across targets,
+  which matters when callers depend on it for deterministic test
+  output.
+  """
+  def collect_triples(neighbors_fn, start) when is_function(neighbors_fn, 1) do
+    walk(neighbors_fn, [{start, 0}], [])
+    |> Enum.reverse()
+  end
+
+  defp walk(_, [], acc), do: acc
+  defp walk(neighbors_fn, [{node, depth} | rest], acc) do
+    edges = neighbors_fn.(node)
+    next_depth = depth + 1
+    {new_acc, new_stack} =
+      edges
+      |> Enum.reverse()
+      |> Enum.reduce({acc, rest}, fn {_from, target}, {a, s} ->
+        {[{target, node, next_depth} | a], [{target, next_depth} | s]}
+      end)
+    walk(neighbors_fn, new_stack, new_acc)
+  end
+
+  @doc """
+  Convenience for FactSource-backed graphs.
+  """
+  def collect_triples_from_source(source_module, source_handle, start, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    collect_triples(fun, start)
+  end
+end
+
 defmodule WamRuntime.GraphKernel.CategoryAncestor do
   @moduledoc """
   Native bounded-ancestor kernel — path-enumeration variant of TC
@@ -3397,6 +3472,11 @@ emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
                             Code) :-
     member(edge_pred(EdgePred/_), ConfigOps),
     compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code).
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(transitive_parent_distance4, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code).
 
 %% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
 %
@@ -3767,6 +3847,148 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, distance) do
       s2
+    else
+      _ -> nil
+    end
+  end
+
+  defp bind_one(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        {:ok,
+         state
+         |> WamRuntime.trail_binding(id)
+         |> WamRuntime.put_reg(id, value)}
+      ^value -> {:ok, state}
+      _ -> :error
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr,
+     EdgeKey,
+     EdgeKey,
+     CamelPred]).
+
+%% compile_transitive_parent_distance_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
+%
+%  Dispatch module for the transitive_parent_distance4 pattern (4-ary;
+%  detected by detect_transitive_parent_distance/4 in
+%  recursive_kernel_detection.pl). Routes calls through
+%  WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples.
+%
+%  Three enumerated registers per solution: A2 (target), A3 (parent
+%  / immediate predecessor), A4 (distance). The kernel returns
+%  [{target, parent, distance}, ...]; the dispatch wrapper inspects
+%  the active aggregate frames :agg_value_reg at runtime to select
+%  which slice to push:
+%    - val_reg == 2 -> push targets
+%    - val_reg == 3 -> push parents
+%    - val_reg == 4 -> push distances
+%    - otherwise    -> push triple tuples (compound template)
+%
+%  Driver-direct call: bind_three_regs/4 binds A2, A3, A4 to the
+%  first solution.
+%
+%  WARNING (inherited from the kernel): NO cycle detection. Caller
+%  must ensure acyclic input or wrap with a depth-bounded consumer.
+compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/2", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/4 (auto-recognised transitive_parent_distance4
+  pattern over ~w/2). Routes calls through
+  WamRuntime.GraphKernel.TransitiveParentDistance.
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling.
+
+  WARNING: the underlying kernel has NO cycle detection. Use this
+  only on acyclic graphs (DAGs) or wrap calls with a depth-bound
+  consumer.
+  """
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    neighbors_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    triples =
+      WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples(
+        neighbors_fn, start_val)
+
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      # Slice triples based on which register the active aggregate
+      # is capturing. split_at_aggregate_cp/1 walks the cp stack ONCE
+      # so per-pair contribution is O(1) (PR #1814 amortisation).
+      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+      contributions =
+        case agg_cp.agg_value_reg do
+          2 -> Enum.map(triples, fn {t, _p, _d} -> t end)
+          3 -> Enum.map(triples, fn {_t, p, _d} -> p end)
+          4 -> Enum.map(triples, fn {_t, _p, d} -> d end)
+          _ -> triples
+        end
+      new_accum = agg_cp.agg_accum ++ contributions
+      new_agg_cp = %{agg_cp | agg_accum: new_accum}
+      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+      throw({:fail, new_state})
+    else
+      case triples do
+        [{first_target, first_parent, first_dist} | _] ->
+          case bind_three_regs(state, first_target, first_parent, first_dist) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  # Bind A2 (target), A3 (parent), A4 (distance) for driver-direct
+  # single-solution mode. Any binding failure (slot already bound to a
+  # different value) aborts with nil so the caller throws fail.
+  defp bind_three_regs(state, target, parent, distance) do
+    with {:ok, s1} <- bind_one(state, 2, target),
+         {:ok, s2} <- bind_one(s1, 3, parent),
+         {:ok, s3} <- bind_one(s2, 4, distance) do
+      s3
     else
       _ -> nil
     end

@@ -986,6 +986,15 @@ setup_kernel_fixtures :-
     assertz((user:kdtd(X, Y, N) :-
                 user:kdedge(X, Mid),
                 user:kdtd(Mid, Y, N1),
+                N is N1 + 1)),
+    % transitive_parent_distance4 fixture: matches the canonical shape
+    %   pd(X, Y, X, 1) :- edge(X, Y).                  % parent == start, dist == 1
+    %   pd(X, Y, P, N) :- edge(X, Mid), pd(Mid, Y, P, N1), N is N1 + 1.
+    retractall(user:kdpd(_, _, _, _)),
+    assertz((user:kdpd(X, Y, X, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdpd(X, Y, P, N) :-
+                user:kdedge(X, Mid),
+                user:kdpd(Mid, Y, P, N1),
                 N is N1 + 1)).
 
 test_shared_detector_finds_tc :-
@@ -1200,6 +1209,87 @@ test_shared_detector_finds_transitive_distance :-
         member(edge_pred(kdedge/2), ConfigOps)
     ->  pass(Test)
     ;   fail_test(Test, 'kdtd/3 not detected as transitive_distance3 by shared detector')
+    ).
+
+test_graph_kernel_transitive_parent_distance_emitted_in_runtime :-
+    % Second of the five missing kernels (after TransitiveDistance in PR
+    % #1822). Stack-based DFS with no cycle detection — matches Rust's
+    % collect_native_transitive_parent_distance_results reference exactly.
+    Test = 'GraphKernel TransitiveParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveParentDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveParentDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveParentDistance module missing expected API')
+    ).
+
+test_graph_kernel_transitive_parent_distance_no_visited_set :-
+    % Documented contract: NO cycle detection, matches Rust's
+    % stack-based DFS exactly. The walker must NOT carry a visited
+    % list — that would change the per-path enumeration semantics.
+    % Locate the TransitiveParentDistance module body and check it.
+    Test = 'GraphKernel TransitiveParentDistance: walker has no visited list (matches Rust DFS)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Stack-based DFS shape: explicit `[{node, depth} | rest]`
+        % stack pattern in the walker, with the records pushed as
+        % `(target, predecessor, next_depth)` triples.
+        sub_string(Body, _, _, _, "[{node, depth} | rest]"),
+        sub_string(Body, _, _, _, "{[{target, node, next_depth}"),
+        % Negative invariant: no `:lists.member` visited check (would
+        % silently change the semantics from "every edge in DFS" to
+        % "every edge with simple-path constraint").
+        \+ sub_string(Body, _, _, _, ":lists.member"),
+        % Documents the cycle caveat in the moduledoc.
+        sub_string(Body, _, _, _, "NO cycle detection")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveParentDistance walker has wrong shape or missing cycle caveat')
+    ).
+
+test_kernel_dispatch_emits_transitive_parent_distance_module :-
+    % End-to-end: detector recognises kdpd/4 as
+    % transitive_parent_distance4, dispatch wrapper emits with the
+    % correct shape (calls collect_triples, branches on agg_value_reg
+    % across reg 2/3/4 for findall slicing, binds three regs in
+    % driver-direct mode).
+    Test = 'Kernel dispatch: transitive_parent_distance4 kernel emits Probe.Kdpd dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
+    write_wam_elixir_project([kdpd/4-PdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_pd'),
+    read_file_to_string('/tmp/test_kernel_disp_pd/lib/kdpd.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance"),
+        sub_string(S, _, _, _, "collect_triples("),
+        % Aggregate-frame slicing for three registers (2/3/4).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of all three (target, parent, distance).
+        sub_string(S, _, _, _, "bind_three_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_parent_distance4 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_parent_distance :-
+    Test = 'Shared detector: kdpd/4 with canonical transitive_parent_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdpd, 4),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdpd, 4, Clauses,
+            recursive_kernel(transitive_parent_distance4, kdpd/4, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdpd/4 not detected as transitive_parent_distance4 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2372,6 +2462,10 @@ run_tests :-
     test_graph_kernel_transitive_distance_uses_per_path_visited,
     test_kernel_dispatch_emits_transitive_distance_module,
     test_shared_detector_finds_transitive_distance,
+    test_graph_kernel_transitive_parent_distance_emitted_in_runtime,
+    test_graph_kernel_transitive_parent_distance_no_visited_set,
+    test_kernel_dispatch_emits_transitive_parent_distance_module,
+    test_shared_detector_finds_transitive_parent_distance,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,
