@@ -159,6 +159,50 @@ haven't yet hit the kernel-or-LMDB inflection point.
    first two produce meaningful wins on heap-allocation-heavy
    workloads — the kernel-based-lowering data hints they should.
 
+## Paradigm alignment: which target wins on which workload shape
+
+Eight Elixir-kernel PRs (#1809–#1815 plus the parallel-fanout work)
+on the cross-target `effective_distance` benchmark surfaced a
+clear paradigm-alignment story. The underlying observation: **target
+selection should follow workload shape, not target-ranked-by-aggregate-perf**.
+
+| Workload shape | Best target | Reason |
+|---|---|---|
+| Single-process tight numeric recursion (no parallelism) | **Rust** | Native compile, register-allocated floats, LLVM auto-vectorisation. ~1× baseline. |
+| Pure recursive numeric aggregation (compile-time fusion friendly) | **Haskell** | GHC list-comprehension fusion + strictness analysis collapse producer+consumer into one tight loop. Within 1-2× of Rust. |
+| Fanout across many independent subqueries (cores available) | **Elixir** | Lightweight process spawn, no shared mutable state to coordinate, scheduler-aware load balance. Reaches Rust parity at ~1k scale on 4 cores; gap stays ~1.6× at 10k. **Wins outright at very high core counts** (untested in this measurement). |
+| Distributed / fault-tolerant deployments | **Elixir** | OTP supervision, message-passing process model. Other targets need explicit infrastructure for the same. |
+| Relational search with backtracking | **Prolog** | First-class unification, choice points, indexing. The source language for a reason. |
+| Storage above ~100k facts | **any target with LMDB** | Memory-mapped storage amortises load cost. Haskell + C# + Scala have it shipping. Elixir has the FactSource adaptor (PR #1792) but needs runtime validation with `:elmdb`. |
+
+Key surprises from the Elixir kernel work:
+- The biggest single perf lever was not a kernel-internals
+  optimization. It was the **caller-side data representation** —
+  integer IDs in a tuple-as-array gave ~2× over atom-keyed `Map`
+  because `elem/2` is O(1) without hashing (PR #1815). Lesson: profile
+  the FactSource layer before optimising the kernel.
+- The second-biggest lever was **outer-loop parallelism with chunking**
+  (~3.4× on 4 vCPUs). Naive `Task.async_stream` with one task per
+  item is a 1.5-4× regression because per-task spawn overhead exceeds
+  per-item work. Pre-batching into ~`schedulers × 8` chunks amortises
+  it. Lesson: always chunk for fine-grained parallelism on BEAM.
+- **BEAM atom comparison and small-int comparison are equivalent**
+  per-call (both immediate-word compare). The 10-15% delta between
+  atom-Map and int-Map at scale is the `Map.get` hash path
+  (atom-table precomputed hashes vs `:erlang.phash2` per call), not
+  the comparison.
+- BEAM has no Go-style compiled-switch jump table for free
+  constant-time dispatch. Choice-point-stack walks for aggregate
+  frames are O(D) by construction; the right BEAM idiom is "walk
+  once at entry, thread through, reassemble at exit" rather than
+  "walk every push" (PR #1814).
+- Producer/consumer fusion on BEAM is best expressed as
+  **callback-fold** — pass the consumer's fold INTO the producer
+  (PR #1812). `Stream.unfold` is runtime laziness via closure
+  trampolining and is *slower* than a materialised list for tight
+  numeric inner loops. This is the BEAM analogue of GHC
+  deforestation / Rust iterator monomorphization.
+
 ## Implications for Elixir's next work
 
 In rough order of expected payoff:
@@ -168,17 +212,55 @@ In rough order of expected payoff:
    facts; Haskell and C# both have it shipping. This is the highest-
    value next step. Pattern to follow: Haskell's safe key/value API
    (the raw-pointer interface caused crashes — design doc note).
+   Bonus: LMDB-derived integer keys for free, matching the int-tuple
+   FactSource pattern (PR #1815) that turned out to be the single
+   biggest perf lever. The Haskell target uses LMDB IDs directly as
+   comparison keys; Elixir can do the same.
 
 2. **Hot-path graph kernels.** Pick one or two graph operations
    (transitive closure, effective-distance) and emit them as Elixir
    modules that bypass WAM dispatch entirely, mirroring the
-   Go/Rust kernel approach.
+   Go/Rust kernel approach. Done for `transitive_closure2` and
+   `category_ancestor`; the shared kernel detector
+   (`recursive_kernel_detection.pl`) recognises 5 more kinds Elixir
+   does not yet emit (`transitive_distance3`,
+   `weighted_shortest_path3`, `transitive_parent_distance4`,
+   `astar_shortest_path4`, `transitive_step_parent_distance5`).
+   Port the simplest first.
 
-3. **Atom interning experiment.** The Haskell + Scala approaches
+3. **Tier-2 outer-loop parallelism, but emitter-driven.** The
+   parallel-fanout numbers in `benchmarks/wam_effective_distance_cross_target.md`
+   came from a hand-written caller-side bench. The same pattern
+   should be auto-emitted by the WAM-Elixir target when it
+   recognises an outer `forall` / `findall` / multi-pair query
+   shape. Existing Tier-2 super-wrapper scaffolding (PR #1799 et seq.)
+   is the starting point; the chunking heuristic (~`schedulers × 8`)
+   needs to make it into the codegen.
+
+4. **Transform-aware emitter pass for fold dispatch.** Recognise
+   `aggregate_all(sum(W), (KernelGoal, W is f(Hops)), R)` shapes
+   in the WAM IR, compile the per-solution arithmetic into an
+   Elixir closure, route through `fold_hops/6`. Current dispatch
+   handles only the bare case where the value register IS the
+   kernel hop (PR #1814). Generalisation requires
+   Prolog-arithmetic-to-Elixir compilation. Deferred because the
+   parallel-fanout result moves the wall-clock more than this would
+   on real workloads.
+
+5. **Atom interning experiment.** The Haskell + Scala approaches
    are different; either could be ported. Measure on the existing
-   Tier-2 benchmark grid before committing.
+   Tier-2 benchmark grid before committing. Lower priority now that
+   the int-tuple FactSource path (PR #1815) gives equivalent perf
+   without atom-table pressure.
 
-4. **Cross-target parity automation** (Phase 4 proposal §9 Q5):
+6. **NIF-backed kernels (Rustler / Zigler).** Largest single perf
+   lever theoretically — port `collect_native_category_ancestor_hops`
+   to native code, dispatch through the same FactSource contract.
+   Closes the BEAM-vs-native gap entirely. Untested in this session
+   because the sandbox cannot reach Hex.pm; viable in environments
+   that can install Rustler.
+
+7. **Cross-target parity automation** (Phase 4 proposal §9 Q5):
    compile the same Prolog through Haskell + Elixir, assert
    set-equal results in CI. Catches the kind of shared-WAM-compiler
    regressions that landed throughout this session.
