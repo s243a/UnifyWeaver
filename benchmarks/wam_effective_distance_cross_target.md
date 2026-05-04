@@ -33,12 +33,12 @@ Wall-clock for the full pipeline (read TSVs, compute all
 `(article, root, distance)` rows, output). Single-machine, 4-vCPU
 Intel Xeon @ 2.10 GHz.
 
-| Scale | Prolog (SWI, direct) | Rust (WAM + FFI kernel) | Elixir kernel (original)² | Elixir + structural fix² | Elixir + bare-dests path³ |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | **0.5 ms¹** |
-| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | **76 ms** |
-| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | **258 ms** |
-| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | **3,089 ms** |
+| Scale | Prolog (SWI) | Rust (WAM + FFI) | Elixir orig.² | + structural fix² | + bare-dests path³ | + walker fusion⁴ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | 0.5 ms¹ | **0.3 ms¹** |
+| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | 76 ms | **38 ms** |
+| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | 258 ms | **146 ms** |
+| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | 3,089 ms | **1,624 ms** |
 
 ¹ Elixir timings exclude script startup; Prolog timings include
 SWI startup (~10 ms); Rust includes binary startup (~1 ms). At dev
@@ -46,28 +46,38 @@ scale the startup dominates; at larger scales the work dominates.
 
 ² All Elixir columns measured on the same hardware. "Original" is
 the kernel as initially shipped (PR #1799); "structural fix" is
-post-PR #1809 (collect/7 hot-path cleanup + bound semantics fix);
-"bare-dests path" is this PR.
+post-PR #1809; "bare-dests path" is post-PR #1810; "walker fusion"
+is this PR.
 
 ³ The bare-dests column uses three composable wins (any one alone
-helps; together they compound to ~3× over the structural-fix kernel
-and ~16-20× over the original):
-- `collect_hops_with_dests/4` — new kernel API where `dests_fn`
+helps; together they compound to ~3× over the structural-fix kernel):
+- `collect_hops_with_dests/4` — kernel API where `dests_fn`
   returns bare destinations `[to1, to2, ...]` instead of
   `{from, to}` tuples. Saves the per-neighbor tuple wrap+unwrap
   that was ~22% of runtime under the neighbors_fn API.
 - Atom-interned keys at FactSource load time — atom-compare is
   pointer-compare on BEAM (vs binary byte-compare). Cuts member-check
   cost on the visited list by ~40%.
-- Direct `Map` (or `:persistent_term`) for the edge index instead of
-  `:ets.lookup` — eliminates ETS message-passing overhead per
-  neighbor query.
+- Direct `Map` for the edge index instead of `:ets.lookup` —
+  eliminates ETS message-passing overhead per neighbor query.
 
-The first is a kernel API change shipped here; the latter two are
-caller-side recommendations the bench harness now demonstrates. The
-existing `collect_hops/4` neighbors_fn API still works for callers
-that can't restructure (FactSource adaptors emitting tuples), and it
-also gained ~3-5% from a `:lists.member/2` substitution.
+⁴ The walker-fusion column adds three more compounding wins (~1.8×
+over bare-dests):
+- Drop the invariant `root_blocked? = :lists.member(root, visited)`
+  check. Recursion never adds `root` to `visited` (the `to == root`
+  branch pushes a hop and stops without recursing), so `root_blocked?`
+  was always false. Saves ~6.5% (halves the lists:member call count).
+- Replace `Enum.reduce` with hand-recursive `walk_*_recurse/N` and
+  `walk_*_leaf/N`. The `can_recurse?` check is invariant for the
+  whole dests list at one recursion level, so it's hoisted ABOVE the
+  loop (recurse-phase walker can descend; leaf-phase walker only
+  counts direct hits). Eliminates the `Enum.reduce` closure
+  allocation + per-call dispatch (~22% of runtime in the post-bare-dests
+  profile, plus ~14% on the closure body).
+- Fuse the `collect_d/7` recursion-step trampoline into the
+  `walk_d_recurse/7` rec branch. The trampoline (compute next_depth,
+  branch on bound, dispatch to walker) was ~20% of runtime per
+  recursion step. Inlining saves one function dispatch per step.
 
 **Structural-fix changes** (PR #1809) — see
 `WamRuntime.GraphKernel.CategoryAncestor.collect_n/7`
@@ -90,7 +100,7 @@ in `src/unifyweaver/targets/wam_elixir_target.pl`:
    (e.g., 621 rows at scale-1k vs 580 in Rust/Prolog/`reference_output.tsv`).
    The fix uses `next_depth < max_depth`, restoring exact agreement.
 
-**Bare-dests path changes** (this PR):
+**Bare-dests path changes** (PR #1810):
 
 5. Add `collect_hops_with_dests/4` and `collect_d/7` — a parallel API
    where `dests_fn` returns bare destinations. Profile-driven: at
@@ -102,6 +112,28 @@ in `src/unifyweaver/targets/wam_elixir_target.pl`:
    skipping the `Enum.member?` protocol-dispatch overhead (~6-7% of
    runtime at 1k-scale on top of the underlying `:lists.member` call).
 
+**Walker-fusion changes** (this PR — see footnote ⁴ for the perf
+breakdown). After PR #1810 the eprof profile showed two structurally
+removable costs: `Enum.reduce/3 lists^foldl/2-0` at ~22% (closure
+machinery) plus the closure body at ~14%, and `collect_d/7`
+recursion entry at ~20% (a thin trampoline). Together that was ~56%
+of runtime spent on dispatch and iteration overhead, not on the
+algorithm itself. The walker-fusion changes hand-roll the loop and
+inline the trampoline:
+
+7. Replace each `Enum.reduce(dests, acc, fn ... end)` with
+   tail-recursive `walk_n_recurse/7` + `walk_n_leaf/4` (and the same
+   for `walk_d_*`). Each pair splits the per-element conditional:
+   recurse-phase iterates and may descend; leaf-phase only counts
+   direct hits at depth==max_depth. That hoists the
+   `next_depth < max_depth` check ABOVE the loop instead of paying
+   it per neighbor.
+8. Drop the invariant `root_blocked?` check — recursion never adds
+   `root` to `visited`, so it was always false.
+9. Fuse the `collect_d/7` recursion-step trampoline directly into the
+   `walk_d_recurse/7` "true" branch. One function dispatch per
+   recursion step instead of two.
+
 **Output cross-validation**: at every scale (dev/300/1k/10k) the
 patched kernel produces identical row counts AND identical
 effective_distance values (max delta < 1e-4) to
@@ -111,15 +143,17 @@ matches across Rust, Prolog, and patched Elixir at dev. The off-by-one
 correctness bug was masked at dev (no paths hit the boundary) and
 only became visible at scale.
 
-eprof on the bare-dests + atoms + Map path at scale=1k shows the
-remaining hot path: `Enum.reduce/3` foldl machinery at ~22%,
-`:lists.member/2` (now without `Enum.member?` wrapper) at ~13%,
-`collect_d/7` recursion entry at ~17%, reduce-body lambda at ~14%,
-`Map.get/3` at ~6%. The kernel-side wins are largely exhausted —
-roughly 56% of runtime is now on the recursion + iteration loop
-itself. The next perf lever is BEAM-external: NIF-backed kernels
-(Rustler-bound port of `collect_native_category_ancestor_hops` from
-the Rust target).
+eprof on the walker-fusion path at scale=1k shows the residual hot
+spots are now in the algorithm itself: `walk_d_recurse/7` at ~50%
+(the inner cond+pattern-match loop), `lists:member/2` at ~14%
+(visited-list scan), `Map.get/3` at ~13% (closure-dispatched),
+compiler closure glue at ~11%, `walk_d_leaf/4` at ~12%. The
+remaining ~24% in `Map.get` + closure dispatch is the cost of the
+`dests_fn` abstraction; eliminating it would mean either (a) a
+third kernel variant specialised on a Map-typed source (~30 more
+lines of near-duplicate walker code, ~10% headroom) or (b) NIF-backed
+kernels via Rustler. The kernel-side BEAM-only wins are essentially
+exhausted at this point.
 
 ## Reading the gap
 
@@ -134,12 +168,12 @@ the Rust target).
   cost by `O(num_simple_paths)`, so the constant-factor difference
   blows up.
 - **Elixir kernel scales poorly on path-enumeration**. Stacking
-  the structural fix + bare-dests + atom interning + Map index
-  closes the gap from ~343× over Rust at 10k (original) to ~17×
-  (this PR). BEAM-interpreted recursion still loses to Rust's
-  native code on the same algorithm — final gap is dominated by
-  the recursion-and-reduce loop itself, not by member-check or
-  ETS overhead anymore.
+  the structural fix + bare-dests + atom interning + Map index +
+  walker fusion closes the gap from ~343× over Rust at 10k (original)
+  to ~9× (this PR). BEAM-interpreted recursion still loses to
+  Rust's native code on the same algorithm — final gap is
+  dominated by the recursion+iteration loop itself and the
+  closure-dispatched `Map.get`.
 
 ## Why the kernel still matters for Elixir
 
@@ -149,10 +183,12 @@ measured kernel-Elixir vs **WAM-Elixir-emitted** `tc/2` and got
 implementations**, which is a different yardstick:
 
 - vs WAM-Elixir-emitted: kernel ≈ 1000× faster (chain graph, n=1000)
-- vs Prolog-direct: bare-dests path ≈ 0.45× as fast (effective_distance, 1k)
-  — was ≈ 0.13× with structural-fix only, ≈ 0.02× original
-- vs Rust-native-kernel: bare-dests path ≈ 0.057× as fast (10k)
-  — was ≈ 0.018× with structural-fix only, ≈ 0.003× original
+- vs Prolog-direct: walker-fusion path ≈ 0.79× as fast (effective_distance, 1k)
+  — was ≈ 0.45× with bare-dests, ≈ 0.13× with structural-fix only,
+  ≈ 0.02× original
+- vs Rust-native-kernel: walker-fusion path ≈ 0.11× as fast (10k)
+  — was ≈ 0.057× with bare-dests, ≈ 0.018× with structural-fix only,
+  ≈ 0.003× original
 
 Useful framing: the kernel makes the BEAM-deployed Elixir version
 competitive with itself, not with native targets. For applications
@@ -245,12 +281,15 @@ What the kernel DOES achieve:
    on chain graph).
 4. Pattern-recognition auto-routing: user writes the canonical
    shape, the kernel fires.
-5. Constant-factor cleanup: ~16-20× over the original kernel
+5. Constant-factor cleanup: ~37× over the original kernel
    stacking the structural fix (PR #1809 — eliminating
-   `length/1`/`Enum.split`/`++` and fusing the direct-edge check)
-   with the bare-destinations API path (PR #1810 — `collect_hops_with_dests/4`,
+   `length/1`/`Enum.split`/`++` and fusing the direct-edge check),
+   the bare-destinations API path (PR #1810 — `collect_hops_with_dests/4`,
    atom-interned keys, `Map`-backed FactSource, and `:lists.member/2`
-   subst). Final gap to Rust at 10k: ~17×, down from ~343×.
+   subst), and walker fusion (this PR — hand-recursive
+   `walk_*_recurse` + `walk_*_leaf` replacing `Enum.reduce`, dropped
+   invariant `root_blocked?` check, and inlined `collect_d/7` into
+   the rec branch). Final gap to Rust at 10k: ~9×, down from ~343×.
 
 For BEAM-targeted deployments at scale, the next perf lever is
 likely **NIF-backed kernels** (Rustler or Zigler) — port the same
