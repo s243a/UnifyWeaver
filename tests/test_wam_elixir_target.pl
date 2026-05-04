@@ -13,6 +13,11 @@
 % For Tier-2 purity-gate tests — user-annotation producer reads
 % clause_body_analysis:order_independent/1 dynamic facts.
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
+% For test_lmdb_int_ids_mock_e2e: subprocess-invokes elixir against
+% the runtime + the mock-Elmdb test fixture in tests/elixir_e2e/.
+% Skips gracefully if elixir is not installed.
+:- use_module(library(process)).
+:- use_module(library(filesex)).
 
 :- dynamic test_failed/0.
 
@@ -840,6 +845,81 @@ test_lmdb_int_ids_ingest_pairs_emitted :-
         sub_string(RuntimeCode, _, _, _, ':next_id')
     ->  pass(Test)
     ;   fail_test(Test, 'ingest_pairs/3 missing or has wrong API surface')
+    ).
+
+test_lmdb_int_ids_mock_e2e :-
+    % End-to-end exercise of WamRuntime.FactSource.LmdbIntIds against
+    % a fake `Elmdb` module backed by an in-memory Agent. Validates:
+    % - encode_id/decode_id round-trips on integer IDs.
+    % - ingest_pairs idempotent re-ingest reuses existing IDs.
+    % - lookup_by_arg1_id with dupsort returns all values for a key.
+    % - lookup_by_arg1 (binary entry) round-trips through ID translation.
+    % - lookup_id/lookup_key on missing keys return nil cleanly.
+    % - stream_all returns ordered (int_key_id, int_value_id) pairs.
+    % - migrate_from_string_keyed transfers all source pairs.
+    %
+    % Skips if `elixir` is not on PATH. Fails if elixir runs but a test
+    % fails or stderr contains a syntax/compile error.
+    Test = 'LmdbIntIds: end-to-end against MockElmdb (encode/ingest/lookup/migrate)',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, _)
+    ->  run_lmdb_int_ids_mock_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_lmdb_int_ids_mock_e2e(Test) :-
+    % Set up a fresh tempdir, emit the runtime, copy the mock + test.
+    TmpDir = '/tmp/test_lmdb_int_ids_mock_e2e',
+    (   exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true ),
+    make_directory(TmpDir),
+    directory_file_path(TmpDir, 'lib', LibDir),
+    make_directory(LibDir),
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    directory_file_path(LibDir, 'wam_runtime.ex', RuntimePath),
+    open(RuntimePath, write, RS),
+    write(RS, RuntimeCode),
+    close(RS),
+    % Copy the mock + test fixture into the project.
+    source_file(test_lmdb_int_ids_mock_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir, 'elixir_e2e/mock_elmdb.exs', MockSrc),
+    directory_file_path(TestsDir, 'elixir_e2e/lmdb_int_ids_mock_test.exs', TestSrc),
+    directory_file_path(TmpDir, 'mock_elmdb.exs', MockDst),
+    directory_file_path(TmpDir, 'lmdb_int_ids_mock_test.exs', TestDst),
+    copy_file(MockSrc, MockDst),
+    copy_file(TestSrc, TestDst),
+    % Run elixir.
+    process_create(path(elixir),
+                   ['-r', 'mock_elmdb.exs', 'lmdb_int_ids_mock_test.exs'],
+                   [cwd(TmpDir),
+                    stdout(pipe(Out)), stderr(pipe(Err)),
+                    process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    % Parse PASS/FAIL markers.
+    split_string(StdOut, "\n", "", Lines),
+    findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
+    findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
+    length(PassLines, NPass),
+    length(FailLines, NFail),
+    % Expected: 7 PASS, 0 FAIL.
+    (   Status = exit(0), NPass >= 7, NFail = 0
+    ->  format('[PASS] ~w (~w sub-tests via elixir subprocess)~n', [Test, NPass])
+    ;   format('[FAIL] ~w: status=~w pass=~w fail=~w~n', [Test, Status, NPass, NFail]),
+        (   FailLines = [_|_]
+        ->  forall(member(F, FailLines), format('  ~s~n', [F]))
+        ;   true
+        ),
+        (   StdErr \= ""
+        ->  format('  stderr:~n~s~n', [StdErr])
+        ;   true
+        ),
+        assertz(test_failed)
     ).
 
 test_lmdb_int_ids_migrate_from_string_keyed_emitted :-
@@ -2187,6 +2267,7 @@ run_tests :-
     test_lmdb_int_ids_design_proposal_referenced,
     test_lmdb_int_ids_ingest_pairs_emitted,
     test_lmdb_int_ids_migrate_from_string_keyed_emitted,
+    test_lmdb_int_ids_mock_e2e,
     test_shared_detector_finds_tc,
     test_shared_detector_finds_category_ancestor,
     test_kernel_dispatch_emits_tc_module,
