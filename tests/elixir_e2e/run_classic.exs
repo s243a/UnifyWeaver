@@ -27,9 +27,19 @@ Code.require_file("lib/wam_dispatcher.ex", __DIR__)
 pred_camel = Macro.camelize(pred_name)
 pred_module = Module.concat([mod_camel, pred_camel])
 
-# Load the per-predicate Elixir module. Module name camelisation
-# follows the same convention `wam_elixir_target.pl`s emitter uses.
-Code.require_file("lib/#{pred_name}.ex", __DIR__)
+# Load every per-predicate Elixir module the project emitted. The
+# entrypoint may call helper predicates whose modules also live in
+# lib/ (eg. list_reverse/2 calls rev_acc/3). wam_runtime.ex and
+# wam_dispatcher.ex are already required above and are skipped here.
+lib_dir = Path.join(__DIR__, "lib")
+{:ok, lib_files} = File.ls(lib_dir)
+
+lib_files
+|> Enum.filter(&String.ends_with?(&1, ".ex"))
+|> Enum.reject(&(&1 in ["wam_runtime.ex", "wam_dispatcher.ex"]))
+|> Enum.each(fn fname ->
+  Code.require_file("lib/#{fname}", __DIR__)
+end)
 
 defmodule ParseArg do
   def parse(s) do

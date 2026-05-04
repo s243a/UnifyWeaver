@@ -49,6 +49,23 @@ user:ack(M, N, R)  :- M > 0, N > 0,
                      user:ack(M, N1, R1),
                      user:ack(M1, R1, R).
 
+% --- Pythagoras (multi-predicate arithmetic chain) ---
+% Tests: cross-predicate dispatch via WamDispatcher (the driver loads
+% every emitted module from lib/, not just the entrypoints). Each
+% sum_of_squares call dispatches into square/2 twice.
+%
+% List-shaped programs (list_reverse, naive_reverse) are deferred —
+% their 2-clause heads `([], ...)` and `([H|T], ...)` compile to
+% switch_on_term, which the WAM-Elixir lowered emitter currently raises
+% as a TODO (wam_elixir_lowered_emitter.pl:1873). Implementing
+% switch_on_term is the concrete blocker for porting those Scala tests.
+:- dynamic user:square/2.
+:- dynamic user:sum_of_squares/3.
+user:square(X, Y) :- Y is X * X.
+user:sum_of_squares(A, B, S) :- user:square(A, A2),
+                                user:square(B, B2),
+                                S is A2 + B2.
+
 % ============================================================
 % elixir_available — same gating pattern as the Scala suite
 % ============================================================
@@ -105,6 +122,28 @@ test(ackermann) :-
             verify_elixir_args(TmpDir, 'ack/3', ['3', '3', '61'],  "true"),
             % Wrong answer -> false
             verify_elixir_args(TmpDir, 'ack/3', ['3', '3', '60'],  "false")
+        )).
+
+test(pythagoras) :-
+    with_elixir_project(
+        [user:square/2, user:sum_of_squares/3],
+        _Opts,
+        TmpDir,
+        (
+            % 3^2 + 4^2 = 25 -> true
+            verify_elixir_args(TmpDir, 'sum_of_squares/3',
+                               ['3', '4', '25'], "true"),
+            % 5^2 + 12^2 = 169 -> true (5-12-13 triple)
+            verify_elixir_args(TmpDir, 'sum_of_squares/3',
+                               ['5', '12', '169'], "true"),
+            % 8^2 + 15^2 = 289 -> true (8-15-17 triple)
+            verify_elixir_args(TmpDir, 'sum_of_squares/3',
+                               ['8', '15', '289'], "true"),
+            % Wrong answer -> false
+            verify_elixir_args(TmpDir, 'sum_of_squares/3',
+                               ['3', '4', '24'], "false"),
+            % square direct: 7^2 = 49 -> true
+            verify_elixir_args(TmpDir, 'square/2', ['7', '49'], "true")
         )).
 
 :- end_tests(wam_elixir_classic_programs).
