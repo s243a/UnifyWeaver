@@ -2356,6 +2356,42 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
     |> Enum.reverse()
   end
 
+  @doc """
+  Same tree walk as `collect_hops_with_dests/4` but folds each hop count
+  through `hop_fn.(hop, acc)` instead of consing onto a list. The walker
+  never materialises an intermediate list — `init_acc` threads through
+  every call directly.
+
+  `hop_fn :: (hop_count :: integer, acc) -> acc`. Called once per simple
+  path from `cat` to `root` of length up to `max_depth`. Hop counts are
+  delivered in DFS post-order (the same sequence `collect_hops_with_dests/4`
+  would prepend, just without the cons cells).
+
+  This is the BEAM-native analogue of Rust iterator `fold` /
+  Haskell list-comprehension fusion: passing the consumer fold INTO
+  the producer eliminates the intermediate sequence allocation
+  entirely. Use this when the consumer is `sum`, `count`, `max`,
+  power-sum aggregation, etc. Use `collect_hops_with_dests/4` only
+  when the consumer needs the materialised list (multi-pass or
+  random-access).
+
+  Example — power-sum aggregation as in `effective_distance/3`:
+
+      fold_hops_with_dests(dests_fn, cat, root, 10, 0.0, fn hop, acc ->
+        acc + :math.pow(hop + 1, -n)
+      end)
+
+  No list of hops is ever built; the BEAM stays in the recursion frame
+  and accumulates the float directly. Equivalent to the GHC
+  deforestation that `wam_haskell_target.pl` relies on for the same
+  workload.
+  """
+  def fold_hops_with_dests(dests_fn, cat, root, max_depth, init_acc, hop_fn)
+      when is_function(dests_fn, 1) and is_integer(max_depth)
+       and is_function(hop_fn, 2) do
+    fold_d(dests_fn, cat, root, [], max_depth, init_acc, 0, hop_fn)
+  end
+
   # `depth` is the number of edges already taken to reach `cat`; pushed hop
   # counts are `depth + 1` for any direct edge `cat -> root` we discover.
   # That replaces the original post-recursion split/map/++ bump pattern
@@ -2470,6 +2506,49 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   defp walk_d_leaf([to | rest], root, nd, acc) do
     ac = if to == root, do: [nd | acc], else: acc
     walk_d_leaf(rest, root, nd, ac)
+  end
+
+  # === fold variant ===
+  # Same recursion shape as collect_d / walk_d_recurse / walk_d_leaf, but
+  # threads `acc` through `hop_fn.(nd, acc)` on each direct hit instead of
+  # prepending to a list. Kept as a separate set of defps so the
+  # collect_hops_with_dests/4 (list-building) path keeps its inlined
+  # `[nd | acc]` and pays no closure dispatch — the fold path pays one
+  # closure call per HIT (much rarer than per-recursion-step), which is
+  # vastly cheaper than the cons-cell allocation + GC that the list path
+  # would trigger across thousands of paths. Bodies tagged "keep in sync
+  # with walk_d_*" — the only structural difference is the action on a
+  # direct hit (cons vs hop_fn).
+  defp fold_d(dests_fn, cat, root, visited, max_depth, acc, depth, hop_fn) do
+    next_depth = depth + 1
+    if next_depth < max_depth do
+      fold_d_recurse(dests_fn.(cat), dests_fn, root, visited, max_depth, next_depth, acc, hop_fn)
+    else
+      fold_d_leaf(dests_fn.(cat), root, next_depth, acc, hop_fn)
+    end
+  end
+
+  defp fold_d_recurse([], _, _, _, _, _, acc, _), do: acc
+  defp fold_d_recurse([to | rest], df, root, vis, mx, nd, acc, hop_fn) do
+    ac =
+      cond do
+        to == root -> hop_fn.(nd, acc)
+        :lists.member(to, vis) -> acc
+        true ->
+          new_nd = nd + 1
+          if new_nd < mx do
+            fold_d_recurse(df.(to), df, root, [to | vis], mx, new_nd, acc, hop_fn)
+          else
+            fold_d_leaf(df.(to), root, new_nd, acc, hop_fn)
+          end
+      end
+    fold_d_recurse(rest, df, root, vis, mx, nd, ac, hop_fn)
+  end
+
+  defp fold_d_leaf([], _, _, acc, _), do: acc
+  defp fold_d_leaf([to | rest], root, nd, acc, hop_fn) do
+    ac = if to == root, do: hop_fn.(nd, acc), else: acc
+    fold_d_leaf(rest, root, nd, ac, hop_fn)
   end
 
   @doc """
