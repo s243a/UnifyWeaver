@@ -211,15 +211,34 @@ for the original Lmdb adaptor.
   an existing PR #1792 `Lmdb` env, batches into `ingest_pairs/3` calls,
   populates the destination's three sub-databases with sequential
   IDs in encounter order. — this PR.
+- [x] **Mock-`Elmdb` end-to-end test** that exercises the adaptor's
+  logic (id encoding/decoding, dupsort cursor walk, round-trip)
+  without requiring real `:elmdb`. Shipped in
+  `tests/elixir_e2e/mock_elmdb.exs` (~290 lines, in-memory Agent-backed
+  fake) and `tests/elixir_e2e/lmdb_int_ids_mock_test.exs` (~250 lines,
+  7 sub-tests). Wired into the Prolog test suite via
+  `test_lmdb_int_ids_mock_e2e/0` which subprocess-invokes elixir; skips
+  gracefully when elixir is not installed. Validates: encode/decode
+  round-trip, ingest_pairs idempotency, ingest_pairs new-ID allocation,
+  lookup_by_arg1_id with dupsort, lookup_by_arg1 binary round-trip,
+  lookup_id/lookup_key on missing returns nil cleanly, stream_all
+  ordered int-pair output, migrate_from_string_keyed correctness.
 - [ ] `:elmdb`-backed integration test (requires Hex.pm reachability).
+  Caveats vs the mock test that shipped:
+  - Real `:elmdb` cursor :next on dupsort tables walks ALL (key, value)
+    pairs including duplicates (MDB_NEXT). The mock now matches this
+    after a fix during the test build (the first cut had `:next` skip
+    to next unique key, which broke `stream_all` and migration).
+  - Real `:elmdb` byte comparator is memcmp by default. For BE u64
+    keys/values that matches integer order, which is what LmdbIntIds
+    relies on. The mock uses Erlang term comparison on binaries —
+    same for fixed-width binaries.
+  - Real `:elmdb` enforces transaction lifecycle: rw_txn cannot
+    coexist with concurrent ro_txn from same env, etc. The mock has
+    no isolation. Tests that rely on transaction semantics still need
+    real `:elmdb`.
 - [ ] Cross-target benchmark with the int-id LMDB FactSource against
   the in-memory int-tuple recipe (requires the integration test).
-- [ ] Mock-`Elmdb` end-to-end test that exercises the adaptor's logic
-  (id encoding/decoding, dupsort cursor walk, round-trip) without
-  requiring real `:elmdb`. ~300 lines of Elixir for a fake module
-  backed by an in-memory map; would catch the kinds of bugs
-  emit-and-grep can't (encoding off-by-ones, dupsort comparator
-  ordering, txn lifecycle). Deferred.
 
 ## Driver-side recipe
 
