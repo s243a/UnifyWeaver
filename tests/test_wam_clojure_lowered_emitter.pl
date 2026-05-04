@@ -172,13 +172,15 @@ test(cut_builtin_is_direct_lowered_in_prefix) :-
         has(Code, "runtime/succeed-state")
     )).
 
-test(unsupported_builtin_stays_runtime_mediated) :-
+test(simple_builtin_atom_is_direct_lowered_in_prefix) :-
     once((
         WamCode = "test_atom/1:\nbuiltin_call atom/1, 1\nproceed\n",
         wam_clojure_lowerable(test_atom/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_atom/1, WamCode, [], Code),
-        assertion(\+ has(Code, "builtin-call atom/1")),
-        has(Code, "state")
+        has(Code, "runtime/deref-value"),
+        has(Code, "runtime/atom-term?"),
+        has(Code, "runtime/advance"),
+        has(Code, "runtime/backtrack")
     )).
 
 test(env_framed_equality_reaches_direct_builtin_prefix) :-
