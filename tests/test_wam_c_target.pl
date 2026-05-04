@@ -217,6 +217,21 @@ test_builtin_call_generation :-
     ;   fail_test(Test, 'builtin_call parser/runtime delegation missing')
     ).
 
+test_unsupported_instruction_fails_loudly :-
+    Test = 'WAM-C: unsupported instructions fail loudly',
+    BadWamCode = 'foo/1:\n    unknown_opcode A1\n    proceed',
+    (   catch(wam_instruction_to_c_literal(unknown_opcode('A1'), _),
+              error(wam_c_target_error(unsupported_instruction(unknown_opcode('A1'))), _),
+              TermThrows = true),
+        catch(compile_wam_predicate_to_c(user:foo/1, BadWamCode, [], _),
+              error(wam_c_target_error(unsupported_instruction_tokens(["unknown_opcode", "A1"])), _),
+              LineThrows = true),
+        TermThrows == true,
+        LineThrows == true
+    ->  pass(Test)
+    ;   fail_test(Test, 'unsupported instruction was silently emitted')
+    ).
+
 test_list_target_pc_emission :-
     Test = 'WAM-C: list-headed clauses emit list_target_pc',
     assertz((user:wam_c_list_case([_|_]) :- true)),
@@ -928,6 +943,7 @@ run_tests_once :-
     test_c_while_loop,
     test_predicate_hash_registration,
     test_builtin_call_generation,
+    test_unsupported_instruction_fails_loudly,
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
