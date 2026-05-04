@@ -850,7 +850,7 @@ test_kernel_dispatch_emits_category_ancestor_module :-
     ).
 
 test_kernel_dispatch_uses_fold_form_in_aggregate_frame :-
-    Test = 'Kernel dispatch: category_ancestor wrapper uses fold_hops + aggregate_push_one when in aggregate frame',
+    Test = 'Kernel dispatch: category_ancestor wrapper uses fold_hops + split_at_aggregate_cp when in aggregate frame',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdca/4, [], CaWam),
     write_wam_elixir_project([kdca/4-CaWam],
@@ -861,7 +861,9 @@ test_kernel_dispatch_uses_fold_form_in_aggregate_frame :-
     read_file_to_string('/tmp/test_kernel_disp_ca_fold/lib/kdca.ex', S, []),
     (   sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
         sub_string(S, _, _, _, "fold_hops("),
-        sub_string(S, _, _, _, "aggregate_push_one(st, hop)"),
+        % Fix for PR #1813's per-hit cp-walk regression: extract the
+        % aggregate cp once and thread agg_accum directly through the fold.
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)"),
         % Fall-through (backtracking) path still uses collect_hops.
         sub_string(S, _, _, _, "collect_hops(")
     ->  pass(Test)
@@ -885,6 +887,14 @@ test_runtime_emits_aggregate_push_one :-
     (   sub_string(RuntimeCode, _, _, _, 'def aggregate_push_one(state, value)')
     ->  pass(Test)
     ;   fail_test(Test, 'aggregate_push_one/2 helper missing from runtime')
+    ).
+
+test_runtime_emits_split_at_aggregate_cp :-
+    Test = 'WamRuntime: runtime emits split_at_aggregate_cp/1 helper for one-pass cp-stack walk',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'def split_at_aggregate_cp(state)')
+    ->  pass(Test)
+    ;   fail_test(Test, 'split_at_aggregate_cp/1 helper missing from runtime')
     ).
 
 test_graph_kernel_tc_emitted_in_runtime :-
@@ -2054,6 +2064,7 @@ run_tests :-
     test_kernel_dispatch_uses_fold_form_in_aggregate_frame,
     test_runtime_emits_fold_hops,
     test_runtime_emits_aggregate_push_one,
+    test_runtime_emits_split_at_aggregate_cp,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,

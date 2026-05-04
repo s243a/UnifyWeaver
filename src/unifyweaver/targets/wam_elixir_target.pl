@@ -1492,6 +1492,13 @@ compile_aggregate_helpers_to_elixir(Code) :-
   This is *different* from `merge_into_aggregate/2`, which appends a
   pre-built list. If the same kernel run uses both helpers in the
   same call, ordering will be inconsistent — pick one path per call.
+
+  Cost note: each call walks `state.choice_points` to find the
+  aggregate frame (O(D) where D is the cp-stack depth). For folds
+  that emit many values per kernel call, prefer
+  `split_at_aggregate_cp/1` — extract the agg cp once, thread its
+  `:agg_accum` directly through the fold, reassemble at the end. The
+  dispatch wrapper does that.
   """
   def aggregate_push_one(state, value) do
     {updated_cps, _pushed} =
@@ -1505,6 +1512,32 @@ compile_aggregate_helpers_to_elixir(Code) :-
         end
       end)
     %{state | choice_points: updated_cps}
+  end
+
+  @doc """
+  One-pass cp-stack walk that extracts the topmost aggregate frame.
+  Returns `{above, agg_cp, below}` where `above` are the cps before
+  the aggregate frame (in original order) and `below` are the cps
+  after it. Returns `nil` if no aggregate frame is on the stack.
+
+  Use to amortise the cp-stack walk across many fold steps: walk once
+  to extract, fold against `agg_cp.agg_accum` directly (avoids one cp
+  walk per push), then reassemble via
+  `above ++ [updated_agg_cp | below]`. Without this, a fold that
+  emits N values into a stack of depth D would do O(N×D) cp walks via
+  `aggregate_push_one/2`; with it, the total cp work is O(D).
+  """
+  def split_at_aggregate_cp(state) do
+    split_at_aggregate_cp_loop(state.choice_points, [])
+  end
+
+  defp split_at_aggregate_cp_loop([], _above), do: nil
+  defp split_at_aggregate_cp_loop([cp | rest], above) do
+    if Map.has_key?(cp, :agg_type) do
+      {Enum.reverse(above), cp, rest}
+    else
+      split_at_aggregate_cp_loop(rest, [cp | above])
+    end
   end
 
   @doc """
@@ -3093,21 +3126,30 @@ compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, 
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
       # Fold-form path: stream each hop directly into the aggregate
-      # frame. Skips the intermediate hops list and the subsequent
-      # merge_into_aggregate iteration. Equivalent semantics to the
-      # legacy collect+merge path for findall/sum/count/max aggregates
-      # whose value register IS the kernel hop output. Transform-aware
-      # shapes — `aggregate_all(sum(W), (Goal, W is f(Hops)), R)` —
-      # are NOT yet handled here: the dispatch wrapper does not see
-      # `f`, so it would push raw hops where Hops^(-N) values are
-      # expected. Those queries currently bypass kernel dispatch and
-      # run on plain WAM; the follow-up emitter pass will recognise
-      # them at compile time.
-      new_state =
+      # frames :agg_accum. Skips both the intermediate hops list AND
+      # the per-hit cp-stack walk that aggregate_push_one/2 would do —
+      # split_at_aggregate_cp/1 walks the cp stack ONCE and exposes
+      # :agg_accum, the fold prepends in O(1) per hit, and the
+      # reassembled state is thrown back up to finalise_aggregate.
+      # Total cp work is O(D) for the dispatch instead of O(N×D).
+      #
+      # Equivalent semantics to the legacy collect+merge path for
+      # findall/sum/count/max aggregates whose value register IS the
+      # kernel hop output. Transform-aware shapes —
+      # `aggregate_all(sum(W), (Goal, W is f(Hops)), R)` — are NOT
+      # yet handled: the dispatch wrapper does not see `f`, so it
+      # would push raw hops where f(Hops) values are expected. Those
+      # queries currently bypass kernel dispatch and run on plain
+      # WAM; the follow-up emitter pass will recognise them at
+      # compile time and compile the arithmetic into hop_fn.
+      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+      new_accum =
         WamRuntime.GraphKernel.CategoryAncestor.fold_hops(
-          neighbors_fn, cat_val, root_val, @max_depth, state,
-          fn hop, st -> WamRuntime.aggregate_push_one(st, hop) end
+          neighbors_fn, cat_val, root_val, @max_depth, agg_cp.agg_accum,
+          fn hop, accum -> [hop | accum] end
         )
+      new_agg_cp = %{agg_cp | agg_accum: new_accum}
+      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
       hops_list =
