@@ -232,6 +232,21 @@ test_unsupported_instruction_fails_loudly :-
     ;   fail_test(Test, 'unsupported instruction was silently emitted')
     ).
 
+test_no_zero_instruction_fallback :-
+    Test = 'WAM-C: unsupported pass-2 instructions never emit zero fallback',
+    BadWamCode = 'foo/1:\n    definitely_unknown A1\n    proceed',
+    (   catch(compile_wam_predicate_to_c(user:foo/1, BadWamCode, [], CCode),
+              error(wam_c_target_error(unsupported_instruction_tokens(["definitely_unknown", "A1"])), _),
+              Throws = true),
+        Throws == true,
+        \+ ( nonvar(CCode),
+             atom_string(CCode, S),
+             sub_string(S, _, _, _, '(Instruction){0}')
+           )
+    ->  pass(Test)
+    ;   fail_test(Test, 'unsupported pass-2 instruction emitted {0}')
+    ).
+
 test_list_target_pc_emission :-
     Test = 'WAM-C: list-headed clauses emit list_target_pc',
     assertz((user:wam_c_list_case([_|_]) :- true)),
@@ -944,6 +959,7 @@ run_tests_once :-
     test_predicate_hash_registration,
     test_builtin_call_generation,
     test_unsupported_instruction_fails_loudly,
+    test_no_zero_instruction_fallback,
     test_list_target_pc_emission,
     test_generated_runtime_executable_smoke,
     test_cross_predicate_executable_smoke,
