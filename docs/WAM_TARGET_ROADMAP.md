@@ -230,13 +230,25 @@ In rough order of expected payoff:
 2. **Hot-path graph kernels.** Pick one or two graph operations
    (transitive closure, effective-distance) and emit them as Elixir
    modules that bypass WAM dispatch entirely, mirroring the
-   Go/Rust kernel approach. Done for `transitive_closure2` and
-   `category_ancestor`; the shared kernel detector
-   (`recursive_kernel_detection.pl`) recognises 5 more kinds Elixir
-   does not yet emit (`transitive_distance3`,
-   `weighted_shortest_path3`, `transitive_parent_distance4`,
-   `astar_shortest_path4`, `transitive_step_parent_distance5`).
-   Port the simplest first.
+   Go/Rust kernel approach. Coverage status as of this writing:
+
+   | Kernel kind | Rust | Haskell | Elixir |
+   |---|:-:|:-:|:-:|
+   | `transitive_closure2` | ✓ | ✓ | ✓ (PR #1799) |
+   | `category_ancestor` | ✓ | ✓ | ✓ (PR #1803, optimised through #1817) |
+   | `transitive_distance3` | ✓ | ✓ | ✓ (PR #1822) |
+   | `weighted_shortest_path3` | ✓ | ✓ | — |
+   | `transitive_parent_distance4` | ✓ | ✓ | — |
+   | `astar_shortest_path4` | ✓ | ✓ | — |
+   | `transitive_step_parent_distance5` | ✓ | ✓ | — |
+
+   Remaining 4 kernels in rough order of implementation difficulty:
+   `transitive_parent_distance4` (DFS, no cycle check, 3-tuple output —
+   simplest); `transitive_step_parent_distance5` (DFS + first-step
+   tracking — small extension of #1822); `weighted_shortest_path3`
+   (Dijkstra over weighted edges — needs priority queue); 
+   `astar_shortest_path4` (A* with heuristic — most complex, goal-
+   directed instead of full enumeration).
 
 3. **Tier-2 outer-loop parallelism, but emitter-driven.** The
    parallel-fanout numbers in `benchmarks/wam_effective_distance_cross_target.md`
