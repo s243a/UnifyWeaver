@@ -415,14 +415,14 @@ object EffectiveDistanceRunner {
     val startPc = GeneratedProgram.sharedProgram.dispatch("category_ancestor/4")
     val categoryTerm = atom(category)
     val rootTerm = atom(root)
-    val hopsRef = Ref(0)
+    val hopsRef = Ref(-1)
     val visited = listOf(categoryTerm)
     val state = WamRuntime.newState(startPc, Array(categoryTerm, rootTerm, hopsRef, visited))
     val results = mutable.ListBuffer.empty[Int]
     if (WamRuntime.run(state, GeneratedProgram.sharedProgram)) {
       var keepGoing = true
       while (keepGoing) {
-        valueToInt(WamRuntime.deref(state.bindings, state.regs(3))).foreach(results += _)
+        valueToInt(WamRuntime.deref(state.bindings, hopsRef)).foreach(results += _)
         WamRuntime.backtrack(state)
         keepGoing = WamRuntime.run(state, GeneratedProgram.sharedProgram)
       }

@@ -490,8 +490,27 @@ compile_predicates_for_project(Predicates, Options, AllInstrs, TopLevelLabelEntr
     option(intern_atoms(ExtraAtoms), Options, []),
     forall(member(A, ExtraAtoms),
            (atom_string(A, S), intern_scala_atom(S, _))),
-    compile_all_predicates(Predicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
+    option(foreign_predicates(ForeignPredicates), Options, []),
+    append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates),
+    compile_all_predicates(CompilePredicates, Options, 0, [], [], [], [], AllInstrs, TopLevelLabelEntries, AllLabelEntries, Wrappers),
     atomic_list_concat(Wrappers, '\n', WrapperCode).
+
+append_missing_foreign_predicates(Predicates, ForeignPredicates, CompilePredicates) :-
+    findall(Foreign,
+            (   member(Foreign, ForeignPredicates),
+                \+ ( member(Pred, Predicates),
+                     same_predicate_indicator(Pred, Foreign)
+                   )
+            ),
+            MissingForeignPredicates),
+    append(Predicates, MissingForeignPredicates, CompilePredicates).
+
+same_predicate_indicator(Pred0, Pred1) :-
+    predicate_indicator_key(Pred0, Key),
+    predicate_indicator_key(Pred1, Key).
+
+predicate_indicator_key(_Module:Pred/Arity, Pred/Arity) :- !.
+predicate_indicator_key(Pred/Arity, Pred/Arity).
 
 compile_all_predicates([], _, _, Instrs, TopLabels, AllLabels, Wrappers,
                        Instrs, TopLabels, AllLabels, Wrappers).
