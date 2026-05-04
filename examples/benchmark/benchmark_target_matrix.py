@@ -258,6 +258,18 @@ KERNEL_TARGET_PAIRS: tuple[KernelPairInfo, ...] = (
         "clojure-wam-accumulated-no-kernels",
     ),
     KernelPairInfo(
+        "clojure",
+        "seeded-artifact",
+        "clojure-wam-seeded-artifact",
+        "clojure-wam-seeded-no-kernels-artifact",
+    ),
+    KernelPairInfo(
+        "clojure",
+        "accumulated-artifact",
+        "clojure-wam-accumulated-artifact",
+        "clojure-wam-accumulated-no-kernels-artifact",
+    ),
+    KernelPairInfo(
         "haskell",
         "interpreter",
         "haskell-interp-ffi",
