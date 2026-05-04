@@ -968,6 +968,7 @@ setup_kernel_fixtures :-
     retractall(user:kdedge(_, _)),
     retractall(user:kdca(_, _, _, _)),
     retractall(user:kdcparent(_, _)),
+    retractall(user:kdtd(_, _, _)),
     retractall(user:max_depth(_)),
     assertz((user:kdtc(X, Z) :- user:kdedge(X, Z))),
     assertz((user:kdtc(X, Z) :- user:kdedge(X, Y), user:kdtc(Y, Z))),
@@ -977,7 +978,15 @@ setup_kernel_fixtures :-
                 user:max_depth(MaxD), length(V, D), D < MaxD, !,
                 user:kdcparent(C, M), \+ member(M, V),
                 user:kdca(M, A, H1, [M|V]),
-                H is H1 + 1)).
+                H is H1 + 1)),
+    % transitive_distance3 fixture: matches the canonical shape
+    %   td(X, Y, 1) :- edge(X, Y).
+    %   td(X, Y, N) :- edge(X, Mid), td(Mid, Y, N1), N is N1 + 1.
+    assertz((user:kdtd(X, Y, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdtd(X, Y, N) :-
+                user:kdedge(X, Mid),
+                user:kdtd(Mid, Y, N1),
+                N is N1 + 1)).
 
 test_shared_detector_finds_tc :-
     Test = 'Shared detector: kdtc/2 with canonical TC shape detected as transitive_closure2',
@@ -1110,6 +1119,87 @@ test_graph_kernel_tc_emitted_in_runtime :-
         sub_string(RuntimeCode, _, _, _, 'def reachable_from_source(')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveClosure module missing expected API')
+    ).
+
+test_graph_kernel_transitive_distance_emitted_in_runtime :-
+    % First of the five kernel kinds Rust+Haskell have but Elixir was missing
+    % (per the audit in benchmarks/wam_effective_distance_cross_target.md
+    % footnote about kernel coverage). This fills the simplest of the five —
+    % shape ports cleanly from the existing CategoryAncestor walker.
+    Test = 'GraphKernel TransitiveDistance: runtime assembly emits WamRuntime.GraphKernel.TransitiveDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_pairs('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_pairs_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveDistance module missing expected API')
+    ).
+
+test_graph_kernel_transitive_distance_uses_per_path_visited :-
+    % Per-path visited list (matches Rust collect_native_transitive_distance_results).
+    % Without it the recursion would loop on cyclic graphs. The walker should
+    % use :lists.member for the visited check (consistent with PR #1817 where
+    % the explicit :lists.member call beats `Enum.member?` on the hot path).
+    Test = 'GraphKernel TransitiveDistance: kernel uses per-path visited list with :lists.member',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    % Locate the TransitiveDistance module body and check its walker
+    % uses :lists.member — anchored to the module to avoid matching
+    % CategoryAncestors visited check.
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        sub_string(Body, _, _, _, ":lists.member(target, visited)"),
+        sub_string(Body, _, _, _, "[target | visited]")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveDistance walker missing :lists.member visited check')
+    ).
+
+test_kernel_dispatch_emits_transitive_distance_module :-
+    % End-to-end: detector recognises kdtd/3 as transitive_distance3,
+    % the dispatch wrapper emits with the correct shape (calls
+    % collect_pairs, branches on agg_value_reg for findall slicing,
+    % binds two regs in driver-direct mode).
+    Test = 'Kernel dispatch: transitive_distance3 kernel emits Probe.Kdtd dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdtd/3, [], TdWam),
+    write_wam_elixir_project([kdtd/3-TdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_td'),
+    read_file_to_string('/tmp/test_kernel_disp_td/lib/kdtd.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveDistance"),
+        sub_string(S, _, _, _, "collect_pairs("),
+        % Aggregate-frame slicing logic: pick targets/distances/pairs
+        % based on which register the active aggregate is capturing.
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of both target (reg 2) and distance (reg 3).
+        sub_string(S, _, _, _, "bind_two_regs(state, "),
+        % Falls through to collect_pairs (no separate fold variant yet —
+        % future work; for now the dispatch matches the TC shape
+        % structurally).
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_distance3 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_distance :-
+    % Sanity check that the shared detector recognises the canonical
+    % td/3 shape. Same form as test_shared_detector_finds_tc.
+    Test = 'Shared detector: kdtd/3 with canonical transitive_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdtd, 3),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdtd, 3, Clauses,
+            recursive_kernel(transitive_distance3, kdtd/3, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdtd/3 not detected as transitive_distance3 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2278,6 +2368,10 @@ run_tests :-
     test_runtime_emits_split_at_aggregate_cp,
     test_kernel_docstring_documents_integer_id_path,
     test_graph_kernel_tc_emitted_in_runtime,
+    test_graph_kernel_transitive_distance_emitted_in_runtime,
+    test_graph_kernel_transitive_distance_uses_per_path_visited,
+    test_kernel_dispatch_emits_transitive_distance_module,
+    test_shared_detector_finds_transitive_distance,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,

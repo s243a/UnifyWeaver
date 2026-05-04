@@ -2684,6 +2684,74 @@ defmodule WamRuntime.GraphKernel.TransitiveClosure do
   end
 end
 
+defmodule WamRuntime.GraphKernel.TransitiveDistance do
+  @moduledoc """
+  Native transitive-distance kernel — bypasses WAM dispatch for the
+  canonical pattern:
+
+      trans_dist(X, Y, 1) :- edge(X, Y).
+      trans_dist(X, Y, N) :-
+          edge(X, Mid),
+          trans_dist(Mid, Y, N1),
+          N is N1 + 1.
+
+  Returns all `(target, distance)` pairs reachable from `start` via
+  simple paths (per-path visited set, A->B->C and A->C are DIFFERENT
+  paths to C with distance 2 and 1, both yielded — same convention
+  CategoryAncestor uses).
+
+  Ported from the Rust kernel `collect_native_transitive_distance_results`
+  in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
+  recursive DFS with explicit per-path visited list, push (target,
+  next_depth) on every edge to an unvisited node, recurse with the
+  target appended to visited.
+
+  Termination: each recursive step adds the target to `visited`,
+  blocking re-entry. The recursion bottoms out when the current
+  nodes neighbours are all in visited (i.e. we have walked every
+  simple path from `start`).
+
+  Why bypass WAM: same reasoning as TransitiveClosure / CategoryAncestor.
+  Adding more kernel kinds is the second-largest perf lever after
+  walker tuning (per docs/WAM_TARGET_ROADMAP.md). This kernel was
+  the simplest of the five Rust+Haskell kinds Elixir was missing —
+  shape mirrors CategoryAncestor (per-path enumeration) but without
+  the explicit Visited-list arg or max_depth bound.
+  """
+
+  @doc """
+  Returns `[{target, distance}, ...]` for every distinct simple path
+  from `start`. `neighbors_fn` receives a node, returns a list of
+  `{from, to}` tuples (FactSource lookup_by_arg1 contract); only `to`
+  is read.
+  """
+  def collect_pairs(neighbors_fn, start) when is_function(neighbors_fn, 1) do
+    walk(neighbors_fn, start, [start], 0, [])
+    |> Enum.reverse()
+  end
+
+  defp walk(neighbors_fn, node, visited, depth, acc) do
+    edges = neighbors_fn.(node)
+    next_depth = depth + 1
+    Enum.reduce(edges, acc, fn {_from, target}, ac ->
+      if :lists.member(target, visited) do
+        ac
+      else
+        ac1 = [{target, next_depth} | ac]
+        walk(neighbors_fn, target, [target | visited], next_depth, ac1)
+      end
+    end)
+  end
+
+  @doc """
+  Convenience for FactSource-backed graphs.
+  """
+  def collect_pairs_from_source(source_module, source_handle, start, state \\\\ nil) do
+    fun = fn node -> source_module.lookup_by_arg1(source_handle, node, state) end
+    collect_pairs(fun, start)
+  end
+end
+
 defmodule WamRuntime.GraphKernel.CategoryAncestor do
   @moduledoc """
   Native bounded-ancestor kernel — path-enumeration variant of TC
@@ -3324,6 +3392,11 @@ emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
     member(edge_pred(EdgePred/_), ConfigOps),
     member(max_depth(MaxDepth), ConfigOps),
     compile_category_ancestor_dispatch_module(ModuleName, Pred, EdgePred, MaxDepth, Code).
+emit_kernel_dispatch_module(ModuleName, Pred, _Arity,
+                            recursive_kernel(transitive_distance3, _, ConfigOps),
+                            Code) :-
+    member(edge_pred(EdgePred/_), ConfigOps),
+    compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code).
 
 %% compile_tc_kernel_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
 %
@@ -3580,6 +3653,141 @@ end
      PredStr, EdgePredStr, MaxDepth,
      EdgeKey,
      MaxDepth,
+     EdgeKey,
+     CamelPred]).
+
+%% compile_transitive_distance_dispatch_module(+ModuleName, +Pred, +EdgePred, -Code)
+%
+%  Dispatch module for the transitive_distance3 pattern (3-ary; the
+%  shape detected by detect_transitive_distance/4 in
+%  recursive_kernel_detection.pl). Routes calls through
+%  WamRuntime.GraphKernel.TransitiveDistance.collect_pairs.
+%
+%  Unlike TC (where reg 2 alone is enumerated) or category_ancestor
+%  (where reg 2 is bound on entry and only reg 3 is enumerated), here
+%  BOTH reg 2 (target) and reg 3 (distance) get bound per solution.
+%  The kernel returns [{target, distance}, ...]; the dispatch wrapper
+%  inspects the active aggregate frames :agg_value_reg at runtime to
+%  decide which slice of the pair to contribute:
+%    - val_reg == 2 -> push targets       (`findall(T, td(s, T, _), Ts)`)
+%    - val_reg == 3 -> push distances     (`findall(D, td(s, _, D), Ds)`)
+%    - otherwise    -> push pair tuples   (`findall(T-D, ...)` etc.)
+%
+%  Driver-direct call (no aggregate frame): binds A2 and A3 to the
+%  first solutions target and distance.
+compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
+    atom_string(ModuleName, ModName),
+    camel_case(ModName, CamelMod),
+    atom_string(Pred, PredStr),
+    camel_case(PredStr, CamelPred),
+    atom_string(EdgePred, EdgePredStr),
+    format(string(EdgeKey), "~w/2", [EdgePredStr]),
+    format(string(Code),
+'defmodule ~w.~w do
+  @moduledoc """
+  Kernel-dispatched ~w/3 (auto-recognised transitive_distance3
+  pattern over ~w/2). Routes calls through
+  WamRuntime.GraphKernel.TransitiveDistance.
+
+  Edge source must be registered via WamRuntime.FactSourceRegistry
+  under the indicator "~w" before calling.
+  """
+
+  def run(%WamRuntime.WamState{} = state) do
+    start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
+    neighbors_fn = fn node ->
+      WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
+    end
+    pairs =
+      WamRuntime.GraphKernel.TransitiveDistance.collect_pairs(
+        neighbors_fn, start_val)
+
+    if WamRuntime.in_forkable_aggregate_frame?(state) do
+      # Slice the pairs based on which register the active aggregate
+      # is capturing. split_at_aggregate_cp/1 walks the cp stack ONCE
+      # so the per-pair contribution is O(1) (no per-push cp walk,
+      # same fix-shape as PR #1814 used for category_ancestor).
+      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+      contributions =
+        case agg_cp.agg_value_reg do
+          2 -> Enum.map(pairs, fn {t, _d} -> t end)
+          3 -> Enum.map(pairs, fn {_t, d} -> d end)
+          _ -> pairs
+        end
+      # merge_into_aggregate appends; preserve encounter order.
+      new_accum = agg_cp.agg_accum ++ contributions
+      new_agg_cp = %{agg_cp | agg_accum: new_accum}
+      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+      throw({:fail, new_state})
+    else
+      case pairs do
+        [{first_target, first_dist} | _] ->
+          case bind_two_regs(state, first_target, first_dist) do
+            nil -> throw({:fail, state})
+            bound -> {:ok, bound}
+          end
+        [] -> throw({:fail, state})
+      end
+    end
+  end
+
+  def run(args) when is_list(args) do
+    state = %WamRuntime.WamState{code: {}, labels: %{}, pc: 1}
+    {state, arg_vars} =
+      Enum.with_index(args, 1)
+      |> Enum.reduce({state, []}, fn {arg, i}, {s, vars} ->
+        case arg do
+          {:unbound, _} ->
+            v = {:unbound, make_ref()}
+            {%{s | regs: Map.put(s.regs, i, v)}, [{i, v} | vars]}
+          other ->
+            {%{s | regs: Map.put(s.regs, i, other)}, vars}
+        end
+      end)
+    state = %{state | arg_vars: arg_vars, cp: &WamRuntime.terminal_cp/1}
+    try do
+      case run(state) do
+        {:ok, final} -> {:ok, WamRuntime.materialise_args(final)}
+        other -> other
+      end
+    catch
+      {:fail, _} -> :fail
+      {:return, result} -> result
+      error ->
+        IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
+        :fail
+    end
+  end
+
+  # Bind both A2 (target) and A3 (distance) for the driver-direct
+  # single-solution path. Either binding failure (slot already bound
+  # to a different value) returns nil so the caller throws fail.
+  defp bind_two_regs(state, target, distance) do
+    with {:ok, s1} <- bind_one(state, 2, target),
+         {:ok, s2} <- bind_one(s1, 3, distance) do
+      s2
+    else
+      _ -> nil
+    end
+  end
+
+  defp bind_one(state, reg_idx, value) do
+    case Map.get(state.regs, reg_idx) do
+      {:unbound, id} ->
+        {:ok,
+         state
+         |> WamRuntime.trail_binding(id)
+         |> WamRuntime.put_reg(id, value)}
+      ^value -> {:ok, state}
+      _ -> :error
+    end
+  end
+end
+',
+    [CamelMod, CamelPred,
+     PredStr, EdgePredStr,
+     EdgeKey,
      EdgeKey,
      CamelPred]).
 
