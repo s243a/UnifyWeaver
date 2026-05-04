@@ -33,21 +33,21 @@ Wall-clock for the full pipeline (read TSVs, compute all
 `(article, root, distance)` rows, output). Single-machine, 4-vCPU
 Intel Xeon @ 2.10 GHz.
 
-| Scale | Prolog (SWI) | Rust | Elixir orig.² | + struct fix² | + bare-dests³ | + walker fusion⁴ | + fold⁵ |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | 0.5 ms¹ | 0.3 ms¹ | **0.2 ms¹** |
-| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | 76 ms | 38 ms | **31 ms** |
-| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | 258 ms | 146 ms | **125 ms** |
-| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | 3,089 ms | 1,624 ms | **1,400 ms** |
+| Scale | Prolog (SWI) | Rust | Elixir orig.² | + struct² | + bare-dests³ | + walker⁴ | + fold⁵ | + int-tuple⁶ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| dev (~200 edges) | 20 ms | 3 ms | 4 ms¹ | 2 ms¹ | 0.5 ms¹ | 0.3 ms¹ | 0.2 ms¹ | **0.15 ms¹** |
+| 300 (~6k edges) | 111 ms | 23 ms | 680 ms | 213 ms | 76 ms | 38 ms | 31 ms | **18 ms** |
+| 1k (~7k edges) | 115 ms | 28 ms | 5,078 ms | 886 ms | 258 ms | 146 ms | 125 ms | **68 ms** |
+| 10k | 567 ms | 177 ms | 60,710 ms | 9,806 ms | 3,089 ms | 1,624 ms | 1,400 ms | **764 ms** |
 
 ¹ Elixir timings exclude script startup; Prolog timings include
 SWI startup (~10 ms); Rust includes binary startup (~1 ms). At dev
 scale the startup dominates; at larger scales the work dominates.
 
 ² All Elixir columns measured on the same hardware. "Original" is
-the kernel as initially shipped (PR #1799); "struct fix" is
-post-PR #1809; "bare-dests" is post-PR #1810; "walker fusion" is
-post-PR #1811; "fold" is this PR.
+the kernel as initially shipped (PR #1799); "struct" is post-PR
+#1809; "bare-dests" is post-PR #1810; "walker" is post-PR #1811;
+"fold" is post-PR #1812; "int-tuple" is this PR.
 
 ³ The bare-dests column uses three composable wins (any one alone
 helps; together they compound to ~3× over the structural-fix kernel):
@@ -87,11 +87,34 @@ No intermediate hop list is ever allocated. Modest perf win
 (~5-15% across scales — most of the bench timing is in the kernel
 walk itself, not the aggregation), but the structural significance
 is larger: this is the BEAM analogue of Rust iterator monomorphization
-and Haskell GHC deforestation, restoring symmetry with how those
-targets handle the producer-consumer composition. The follow-up is
-an emitter pass in the WAM-Elixir codegen that auto-routes
-`findall + sum_list` / `aggregate_all(sum/count/max, ...)` patterns
-to fold-form lowering.
+and Haskell GHC deforestation.
+
+⁶ The int-tuple column changes the FactSource representation, not
+the kernel. The kernel itself is term-agnostic — `==`, `:lists.member`,
+and `Map.get` all work on whatever the caller supplies. Three
+patterns measured:
+
+| Scale | atom (Map) | int (Map) | int (tuple) |
+| ---: | ---: | ---: | ---: |
+| dev | 247 μs | 317 μs | **151 μs** |
+| 300 | 34,814 μs | 34,009 μs | **18,410 μs** |
+| 1k | 127,761 μs | 139,312 μs | **68,103 μs** |
+| 10k | 1,505,144 μs | 1,659,082 μs | **763,930 μs** |
+
+Atom-Map and int-Map are within 10-15% of each other (atom-table
+hash precomputation gives atoms a small per-call edge that
+disappears as Map lookups dominate). Int-tuple wins ~2× over both
+because `elem(cp_tuple, id)` is O(1) without hashing — the
+contiguous integer IDs from a one-shot intern pass (or from an
+LMDB-backed FactSource that already keys nodes by integer ID, the
+shape the Haskell target uses) let us replace the HAMT with a flat
+indexed structure.
+
+Why this matters beyond perf: BEAM's atom table is bounded
+(~1M default, shared with the rest of the VM). Production-scale
+Wikipedia category data has ~1M unique categories — atom-interning
+is not viable there. The int-tuple path is the recommended scale-up
+recipe AND happens to be the fastest path at our measured scales.
 
 **Structural-fix changes** (PR #1809) — see
 `WamRuntime.GraphKernel.CategoryAncestor.collect_n/7`
@@ -317,12 +340,14 @@ measured kernel-Elixir vs **WAM-Elixir-emitted** `tc/2` and got
 implementations**, which is a different yardstick:
 
 - vs WAM-Elixir-emitted: kernel ≈ 1000× faster (chain graph, n=1000)
-- vs Prolog-direct: fold path ≈ 0.92× as fast (effective_distance, 1k)
-  — was ≈ 0.79× with walker-fusion, ≈ 0.45× with bare-dests,
-  ≈ 0.13× with structural-fix only, ≈ 0.02× original
-- vs Rust-native-kernel: fold path ≈ 0.13× as fast (10k)
-  — was ≈ 0.11× with walker-fusion, ≈ 0.057× with bare-dests,
-  ≈ 0.018× with structural-fix only, ≈ 0.003× original
+- vs Prolog-direct: int-tuple path ≈ 1.7× as fast (effective_distance, 1k)
+  — was ≈ 0.92× with fold, ≈ 0.79× with walker-fusion,
+  ≈ 0.45× with bare-dests, ≈ 0.13× with structural-fix only,
+  ≈ 0.02× original
+- vs Rust-native-kernel: int-tuple path ≈ 0.23× as fast (10k)
+  — was ≈ 0.13× with fold, ≈ 0.11× with walker-fusion,
+  ≈ 0.057× with bare-dests, ≈ 0.018× with structural-fix only,
+  ≈ 0.003× original
 
 Useful framing: the kernel makes the BEAM-deployed Elixir version
 competitive with itself, not with native targets. For applications
@@ -420,14 +445,20 @@ What the kernel DOES achieve:
    on chain graph).
 4. Pattern-recognition auto-routing: user writes the canonical
    shape, the kernel fires.
-5. Constant-factor cleanup: ~43× over the original kernel
+5. Constant-factor cleanup: ~80× over the original kernel
    stacking the structural fix (PR #1809), the bare-destinations
-   API path (PR #1810), walker fusion (PR #1811), and the fold path
-   (this PR — `fold_hops_with_dests/6` BEAM-native producer/consumer
-   fusion). Final gap to Rust at 10k: ~8×, down from ~343×.
+   API path (PR #1810), walker fusion (PR #1811), the fold path
+   (PR #1812), and the int-tuple FactSource pattern (this PR —
+   integer node IDs in a tuple-as-array, O(1) `elem/2` reads,
+   no atom-table pressure). **Final gap to Rust at 10k: ~4.3×,
+   down from ~343×.**
 6. Architectural symmetry with Rust + Haskell on producer/consumer
    composition: `fold_hops_with_dests/6` is the BEAM analogue of
    Rust iterator monomorphization and Haskell GHC deforestation.
+7. Production-scale viability: integer-keyed FactSource path
+   matches the architecture the Haskell target uses (LMDB-derived
+   integer IDs as comparison keys). Scales to ~1M unique nodes
+   without atom-table cap concerns.
 
 For BEAM-targeted deployments at scale, the remaining perf levers
 are (a) a WAM-Elixir emitter pass to auto-route `findall + sum_list`

@@ -2380,6 +2380,33 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   Ported from the Rust kernel `collect_native_category_ancestor_hops`
   in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm,
   BEAM idioms.
+
+  Node identifier types — the kernel is term-agnostic. `cat`, `root`,
+  visited-list members, and dests-list members are compared with `==`
+  and `:lists.member/2`; any term with sensible equality works. In
+  practice three patterns are common:
+
+  * **Atoms** (e.g. `:Physics`). Atom comparison is immediate-word
+    compare on BEAM, plus atom-table entries carry precomputed hashes
+    so `Map.get` lookups are fast. Best per-call latency at workloads
+    up to ~~50k unique nodes. Above that, the global atom table cap
+    (~~1M default, shared with the rest of the VM) makes atoms
+    unsuitable.
+
+  * **Integers** with `Map`-backed FactSource. Required for production
+    scale (e.g. full Wikipedia category data ~~1M unique categories).
+    `Map.get` on integer keys recomputes `:erlang.phash2` per call
+    (~~10-15% slower than atoms at the scales we measured), but no
+    table cap.
+
+  * **Integers with tuple-as-array FactSource** (RECOMMENDED at
+    scale). When integer IDs are contiguous (`0..N-1`, e.g. produced
+    by an LMDB key-id mapping or a one-shot intern pass), store
+    `cat -> [parent_id, ...]` as a tuple of length N+1. `dests_fn` is
+    `fn n -> elem(cp_tuple, n) end` — O(1) read, no hashing. About
+    2x faster than atom-Map and 2.2x faster than int-Map at 10k.
+    Same architectural shape the Haskell target uses: LMDB-derived
+    integer IDs as the comparison key, no separate intern step.
   """
 
   @doc """
