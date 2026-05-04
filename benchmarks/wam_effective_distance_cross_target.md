@@ -107,10 +107,15 @@ Atom-Map and int-Map are within 10-15% of each other (atom-table
 hash precomputation gives atoms a small per-call edge that
 disappears as Map lookups dominate). Int-tuple wins ~2× over both
 because `elem(cp_tuple, id)` is O(1) without hashing — the
-contiguous integer IDs from a one-shot intern pass (or from an
-LMDB-backed FactSource that already keys nodes by integer ID, the
-shape the Haskell target uses) let us replace the HAMT with a flat
-indexed structure.
+contiguous integer IDs from a one-shot intern pass at TSV-load
+time let us replace the HAMT with a flat indexed structure.
+(Earlier versions of this doc claimed Haskell gets the same shape
+"for free" from LMDB — that's incorrect. Haskell maintains a
+compile-time atom-intern table; LMDB stores binary keys. The same
+holds for Scala. The
+`docs/proposals/wam_elixir_lmdb_int_id_factsource.md` proposal
+describes the LMDB-native design that would actually use storage
+record IDs as the interning key.)
 
 Why this matters beyond perf: BEAM's atom table is bounded
 (~1M default, shared with the rest of the VM). Production-scale
@@ -539,9 +544,11 @@ What the kernel DOES achieve:
    composition: `fold_hops_with_dests/6` is the BEAM analogue of
    Rust iterator monomorphization and Haskell GHC deforestation.
 7. Production-scale viability: integer-keyed FactSource path
-   matches the architecture the Haskell target uses (LMDB-derived
-   integer IDs as comparison keys). Scales to ~1M unique nodes
-   without atom-table cap concerns.
+   scales to ~1M unique nodes without atom-table cap concerns. The
+   LMDB-native design that would push interning into the storage
+   layer (rather than a separate codegen/runtime pass, as Haskell
+   and Scala do today) is captured in
+   `docs/proposals/wam_elixir_lmdb_int_id_factsource.md`.
 8. BEAM-native paradigm fit: outer-loop parallelism via
    `Task.async_stream` (with chunking) is the angle where BEAM is
    genuinely the right tool. The single-process kernel walk will

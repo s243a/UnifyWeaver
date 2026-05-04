@@ -212,10 +212,20 @@ In rough order of expected payoff:
    facts; Haskell and C# both have it shipping. This is the highest-
    value next step. Pattern to follow: Haskell's safe key/value API
    (the raw-pointer interface caused crashes — design doc note).
-   Bonus: LMDB-derived integer keys for free, matching the int-tuple
-   FactSource pattern (PR #1815) that turned out to be the single
-   biggest perf lever. The Haskell target uses LMDB IDs directly as
-   comparison keys; Elixir can do the same.
+
+   Note: an earlier version of this doc claimed Haskell uses LMDB's
+   storage IDs directly as the interning key. That's not what the
+   Haskell target actually does — it maintains a compile-time
+   `atom_intern_id` table (see `wam_haskell_target.pl` ~line 75) and
+   stores facts in LMDB with binary keys. Scala uses a runtime
+   `InternTable` per FactSource lookup. **Neither pushes interning
+   into LMDB itself.** The LMDB-native design — three sub-databases
+   (facts, key→id, id→key) within one env, with insert-time ID
+   assignment — is captured in
+   `docs/proposals/wam_elixir_lmdb_int_id_factsource.md` and a code
+   stub of `WamRuntime.FactSource.LmdbIntIds` is shipped alongside
+   it for emit-and-grep validation. Real runtime testing requires
+   `:elmdb`, which the sandbox cannot install.
 
 2. **Hot-path graph kernels.** Pick one or two graph operations
    (transitive closure, effective-distance) and emit them as Elixir
