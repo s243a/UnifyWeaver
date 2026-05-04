@@ -2434,6 +2434,130 @@ defmodule WamRuntime.FactSource.LmdbIntIds do
     end
   end
 
+  @doc """
+  Driver-side ingestion helper. Populates all three sub-databases
+  consistently for a list of `{arg1_str, arg2_str}` pairs:
+
+  - `key_to_id_dbi`: assigns sequential integer IDs (starting at
+    `:start_id`, default 0) to each unique string in encounter order.
+  - `id_to_key_dbi`: reverse map, written atomically alongside.
+  - `facts_dbi`: writes the `(arg1_id, arg2_id)` pair as 8-byte BE
+    u64 keys/values.
+
+  Idempotent for previously-seen strings — looks up the existing ID
+  before allocating a new one.
+
+  Options:
+    `:start_id` (integer, default 0) — ID to assign to the first
+      unseen string. For batch ingestion across multiple calls,
+      pass the previous calls returned `:next_id`.
+    `:txn` (LMDB rw_txn handle, default nil) — if set, run all
+      writes inside the caller-supplied transaction. If nil, this
+      function opens its own rw_txn and commits at the end.
+
+  Returns `{:ok, %{pairs_seen: integer, new_ids: integer, next_id: integer}}`
+  on success. The `next_id` is `start_id + new_ids` and should be
+  persisted (e.g. via the callers metadata DB or a sentinel key in
+  `id_to_key_dbi`) for the next batch.
+
+  Stub status: bodies wired through Module.concat; runtime exercise
+  requires `:elmdb`.
+  """
+  def ingest_pairs(%__MODULE__{} = handle, pairs, opts \\\\ [])
+      when is_list(pairs) do
+    start_id = Keyword.get(opts, :start_id, 0)
+    user_txn = Keyword.get(opts, :txn, nil)
+    mod = lmdb_module()
+
+    {txn, owns_txn} =
+      if user_txn do
+        {user_txn, false}
+      else
+        {:ok, t} = apply(mod, :rw_txn_begin, [handle.env])
+        {t, true}
+      end
+
+    try do
+      {next_id, pairs_seen, new_ids} =
+        Enum.reduce(pairs, {start_id, 0, 0}, fn {a1, a2}, {nid, seen, allocated} ->
+          {a1_id, nid, allocated} = intern_one(handle, mod, txn, a1, nid, allocated)
+          {a2_id, nid, allocated} = intern_one(handle, mod, txn, a2, nid, allocated)
+          :ok = apply(mod, :txn_put, [txn, handle.facts_dbi,
+                                      encode_id(a1_id), encode_id(a2_id)])
+          {nid, seen + 1, allocated}
+        end)
+
+      if owns_txn, do: :ok = apply(mod, :txn_commit, [txn])
+      {:ok, %{pairs_seen: pairs_seen, new_ids: new_ids, next_id: next_id}}
+    catch
+      kind, reason ->
+        if owns_txn, do: apply(mod, :txn_abort, [txn])
+        {:error, {kind, reason}}
+    end
+  end
+
+  # Look up or allocate an ID for one string.
+  # Returns {id, updated_next_id, updated_allocated_count}.
+  defp intern_one(handle, mod, txn, str, next_id, allocated) when is_binary(str) do
+    case apply(mod, :txn_get, [txn, handle.key_to_id_dbi, str]) do
+      {:ok, bin_id} ->
+        {decode_id(bin_id), next_id, allocated}
+      :not_found ->
+        bin_id = encode_id(next_id)
+        :ok = apply(mod, :txn_put, [txn, handle.key_to_id_dbi, str, bin_id])
+        :ok = apply(mod, :txn_put, [txn, handle.id_to_key_dbi, bin_id, str])
+        {next_id, next_id + 1, allocated + 1}
+    end
+  end
+
+  @doc """
+  Migration helper: convert an existing PR #1792 string-keyed `Lmdb`
+  env to an int-id-keyed `LmdbIntIds` env. Cursor-walks the source
+  envs facts DB, assigns sequential IDs to unique strings in
+  encounter order, and populates the destination envs three
+  sub-databases consistently.
+
+  Arguments:
+    `source_handle` — `%WamRuntime.FactSource.Lmdb{}` pointing at the
+      existing string-keyed env (PR #1792 shape).
+    `dest_handle` — freshly opened `%WamRuntime.FactSource.LmdbIntIds{}`
+      with empty `facts_dbi` / `key_to_id_dbi` / `id_to_key_dbi`.
+
+  Options:
+    `:start_id` (default 0) — first ID to assign.
+    `:batch_size` (default 10_000) — commit per-batch to bound the
+      rw_txns dirty-page memory at large scale.
+
+  Returns `{:ok, %{pairs_migrated: integer, ids_assigned: integer,
+  next_id: integer}}`.
+
+  Stub status: bodies wired through Module.concat; runtime exercise
+  requires `:elmdb`.
+  """
+  def migrate_from_string_keyed(source_handle, %__MODULE__{} = dest_handle, opts \\\\ []) do
+    start_id = Keyword.get(opts, :start_id, 0)
+    batch_size = Keyword.get(opts, :batch_size, 10_000)
+
+    # Stream the source envs (key, value) pairs (binaries from PR #1792)
+    # then batch into ingest_pairs/3 calls.
+    all_pairs = WamRuntime.FactSource.Lmdb.stream_all(source_handle, nil)
+
+    {final_next_id, total_pairs, total_new_ids} =
+      all_pairs
+      |> Enum.chunk_every(batch_size)
+      |> Enum.reduce({start_id, 0, 0}, fn batch, {nid, total_p, total_n} ->
+        case ingest_pairs(dest_handle, batch, start_id: nid) do
+          {:ok, %{pairs_seen: p, new_ids: n, next_id: new_nid}} ->
+            {new_nid, total_p + p, total_n + n}
+          {:error, reason} ->
+            throw({:migrate_failed, reason})
+        end
+      end)
+
+    {:ok, %{pairs_migrated: total_pairs, ids_assigned: total_new_ids,
+            next_id: final_next_id}}
+  end
+
   @impl true
   def stream_all(%__MODULE__{env: env, facts_dbi: dbi}, _state) do
     mod = lmdb_module()
