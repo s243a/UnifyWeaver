@@ -2382,53 +2382,94 @@ defmodule WamRuntime.GraphKernel.CategoryAncestor do
   # to `Enum.member?` outside guards). Skips the Enum protocol dispatch — at
   # scale-1k this is ~~6-7% of total runtime that goes to dispatch overhead
   # before falling through to the same lists.member call.
+  # Invariant: `root` is never in `visited`. Both public entry points
+  # (`collect_hops/4`, `collect_hops_with_dests/4`) seed visited = []; the
+  # `to == root` branch below pushes a hop and stops without recursing, so
+  # only non-root nodes ever enter visited via the `true ->` branch. The
+  # `root_blocked? = :lists.member(root, visited)` check that earlier
+  # versions ran on every recursion step was therefore always false. Removed
+  # — saves ~~6.5% of runtime at 1k by halving the lists:member call count.
+  # If a future caller needs to seed visited with root pre-included, that
+  # contract should be made explicit (e.g., a separate entry point).
+  #
+  # `can_recurse?` is also constant for the entire dests list at one
+  # recursion level (depends only on `depth`, not on the dest), so we
+  # split into two walkers — `walk_*_recurse/N` may descend, `walk_*_leaf/N`
+  # only counts direct hits. That hoists the per-element conditional out
+  # of the inner loop.
+  #
+  # Hand-recursive walkers replace `Enum.reduce` to avoid per-call closure
+  # allocation + dispatch (which was the largest cost block in the post-PR-#1810
+  # profile: `Enum.reduce/3 lists^foldl/2-0` at ~~22% combined with the
+  # closure body at ~~14%).
+  # `collect_n/7` and `collect_d/7` are kept only as the public-API entries
+  # that establish the initial state. The per-recursion-step trampoline they
+  # used to be (compute next_depth, branch on bound, dispatch to walker) is
+  # now inlined into walk_*_recurse below — saves one function dispatch per
+  # recursion step (was ~~20% of runtime in `collect_d/7` alone in the
+  # post-Lever-A+B profile at 1k).
   defp collect_n(neighbors_fn, cat, root, visited, max_depth, acc, depth) do
-    edges_at_cat = neighbors_fn.(cat)
     next_depth = depth + 1
-    root_blocked? = :lists.member(root, visited)
-    can_recurse? = next_depth < max_depth
+    if next_depth < max_depth do
+      walk_n_recurse(neighbors_fn.(cat), neighbors_fn, root, visited, max_depth, next_depth, acc)
+    else
+      walk_n_leaf(neighbors_fn.(cat), root, next_depth, acc)
+    end
+  end
 
-    Enum.reduce(edges_at_cat, acc, fn {_from, to}, ac ->
+  defp walk_n_recurse([], _, _, _, _, _, acc), do: acc
+  defp walk_n_recurse([{_from, to} | rest], nf, root, vis, mx, nd, acc) do
+    ac =
       cond do
-        to == root ->
-          # Recursing through `root` itself contributes nothing: the next
-          # step would have `root in visited`, blocking every downstream
-          # direct-edge hit. Count the path here and stop.
-          if root_blocked?, do: ac, else: [next_depth | ac]
-
-        not can_recurse? ->
-          ac
-
-        :lists.member(to, visited) ->
-          ac
-
+        to == root -> [nd | acc]
+        :lists.member(to, vis) -> acc
         true ->
-          collect_n(neighbors_fn, to, root, [to | visited], max_depth, ac, next_depth)
+          new_nd = nd + 1
+          if new_nd < mx do
+            walk_n_recurse(nf.(to), nf, root, [to | vis], mx, new_nd, acc)
+          else
+            walk_n_leaf(nf.(to), root, new_nd, acc)
+          end
       end
-    end)
+    walk_n_recurse(rest, nf, root, vis, mx, nd, ac)
+  end
+
+  defp walk_n_leaf([], _, _, acc), do: acc
+  defp walk_n_leaf([{_from, to} | rest], root, nd, acc) do
+    ac = if to == root, do: [nd | acc], else: acc
+    walk_n_leaf(rest, root, nd, ac)
   end
 
   defp collect_d(dests_fn, cat, root, visited, max_depth, acc, depth) do
-    dests = dests_fn.(cat)
     next_depth = depth + 1
-    root_blocked? = :lists.member(root, visited)
-    can_recurse? = next_depth < max_depth
+    if next_depth < max_depth do
+      walk_d_recurse(dests_fn.(cat), dests_fn, root, visited, max_depth, next_depth, acc)
+    else
+      walk_d_leaf(dests_fn.(cat), root, next_depth, acc)
+    end
+  end
 
-    Enum.reduce(dests, acc, fn to, ac ->
+  defp walk_d_recurse([], _, _, _, _, _, acc), do: acc
+  defp walk_d_recurse([to | rest], df, root, vis, mx, nd, acc) do
+    ac =
       cond do
-        to == root ->
-          if root_blocked?, do: ac, else: [next_depth | ac]
-
-        not can_recurse? ->
-          ac
-
-        :lists.member(to, visited) ->
-          ac
-
+        to == root -> [nd | acc]
+        :lists.member(to, vis) -> acc
         true ->
-          collect_d(dests_fn, to, root, [to | visited], max_depth, ac, next_depth)
+          new_nd = nd + 1
+          if new_nd < mx do
+            walk_d_recurse(df.(to), df, root, [to | vis], mx, new_nd, acc)
+          else
+            walk_d_leaf(df.(to), root, new_nd, acc)
+          end
       end
-    end)
+    walk_d_recurse(rest, df, root, vis, mx, nd, ac)
+  end
+
+  defp walk_d_leaf([], _, _, acc), do: acc
+  defp walk_d_leaf([to | rest], root, nd, acc) do
+    ac = if to == root, do: [nd | acc], else: acc
+    walk_d_leaf(rest, root, nd, ac)
   end
 
   @doc """
