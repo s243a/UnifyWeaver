@@ -995,6 +995,15 @@ setup_kernel_fixtures :-
     assertz((user:kdpd(X, Y, P, N) :-
                 user:kdedge(X, Mid),
                 user:kdpd(Mid, Y, P, N1),
+                N is N1 + 1)),
+    % transitive_step_parent_distance5 fixture: matches the canonical shape
+    %   sp(X, Y, Y, X, 1) :- edge(X, Y).                       % step==target==Y, parent==start, dist==1
+    %   sp(X, Y, Mid, P, N) :- edge(X, Mid), sp(Mid, Y, _, P, N1), N is N1 + 1.
+    retractall(user:kdsp(_, _, _, _, _)),
+    assertz((user:kdsp(X, Y, Y, X, 1) :- user:kdedge(X, Y))),
+    assertz((user:kdsp(X, Y, Mid, P, N) :-
+                user:kdedge(X, Mid),
+                user:kdsp(Mid, Y, _IgnoredStep, P, N1),
                 N is N1 + 1)).
 
 test_shared_detector_finds_tc :-
@@ -1290,6 +1299,85 @@ test_shared_detector_finds_transitive_parent_distance :-
         member(edge_pred(kdedge/2), ConfigOps)
     ->  pass(Test)
     ;   fail_test(Test, 'kdpd/4 not detected as transitive_parent_distance4 by shared detector')
+    ).
+
+test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime :-
+    % Third missing kernel after PRs #1822/#1823. Reuses
+    % TransitiveParentDistance for the inner walk; tags every result
+    % with the FIRST hop taken from start. Same no-cycle-detection
+    % contract as transitive_parent_distance4.
+    Test = 'GraphKernel TransitiveStepParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveStepParentDistance',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do'),
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads('),
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source(')
+    ->  pass(Test)
+    ;   fail_test(Test, 'GraphKernel.TransitiveStepParentDistance module missing expected API')
+    ).
+
+test_graph_kernel_tspd_reuses_parent_distance_walker :-
+    % Documents the implementation strategy: instead of writing a
+    % third walker, this kernel reuses TransitiveParentDistance's
+    % collect_triples and decorates results with the first-hop step.
+    % Negative invariant: there should NOT be a separate `walk` defp
+    % inside TSPD module body — it shouldnt have its own DFS walker.
+    Test = 'GraphKernel TransitiveStepParentDistance: reuses TransitiveParentDistance.collect_triples',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    (   sub_string(RuntimeCode, Start, _, _, Pattern),
+        sub_string(RuntimeCode, End, _, _, EndPattern),
+        End > Start,
+        BodyLen is End - Start,
+        sub_string(RuntimeCode, Start, BodyLen, _, Body),
+        % Calls TransitiveParentDistance.collect_triples for the inner walk.
+        sub_string(Body, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples"),
+        % Emits the depth-1 base case: {next, next, start, 1}.
+        sub_string(Body, _, _, _, "{next, next, start, 1}"),
+        % Bumps inner triples by 1 (dist + 1).
+        sub_string(Body, _, _, _, "dist + 1"),
+        % Documents the cycle caveat (inherited from
+        % TransitiveParentDistance).
+        sub_string(Body, _, _, _, "NO cycle detection")
+    ->  pass(Test)
+    ;   fail_test(Test, 'TransitiveStepParentDistance does not reuse the parent_distance walker correctly')
+    ).
+
+test_kernel_dispatch_emits_transitive_step_parent_distance_module :-
+    % End-to-end: detector recognises kdsp/5 as
+    % transitive_step_parent_distance5, dispatch wrapper emits
+    % FOUR-register binding (target, step, parent, distance).
+    Test = 'Kernel dispatch: transitive_step_parent_distance5 kernel emits Probe.Kdsp dispatch module',
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdsp/5, [], SpWam),
+    write_wam_elixir_project([kdsp/5-SpWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        '/tmp/test_kernel_disp_sp'),
+    read_file_to_string('/tmp/test_kernel_disp_sp/lib/kdsp.ex', S, []),
+    (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveStepParentDistance"),
+        sub_string(S, _, _, _, "collect_quads("),
+        % Aggregate-frame slicing for FOUR registers (2/3/4/5).
+        sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
+        sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Driver-direct binding of all four (target, step, parent, distance).
+        sub_string(S, _, _, _, "bind_four_regs(state, "),
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+    ->  pass(Test)
+    ;   fail_test(Test, 'transitive_step_parent_distance5 dispatch module missing expected shape')
+    ).
+
+test_shared_detector_finds_transitive_step_parent_distance :-
+    Test = 'Shared detector: kdsp/5 with canonical transitive_step_parent_distance shape detected',
+    setup_kernel_fixtures,
+    functor(Head, kdsp, 5),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    (   detect_recursive_kernel(kdsp, 5, Clauses,
+            recursive_kernel(transitive_step_parent_distance5, kdsp/5, ConfigOps)),
+        member(edge_pred(kdedge/2), ConfigOps)
+    ->  pass(Test)
+    ;   fail_test(Test, 'kdsp/5 not detected as transitive_step_parent_distance5 by shared detector')
     ).
 
 test_graph_kernel_tc_uses_visited_tracking :-
@@ -2466,6 +2554,10 @@ run_tests :-
     test_graph_kernel_transitive_parent_distance_no_visited_set,
     test_kernel_dispatch_emits_transitive_parent_distance_module,
     test_shared_detector_finds_transitive_parent_distance,
+    test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
+    test_graph_kernel_tspd_reuses_parent_distance_walker,
+    test_kernel_dispatch_emits_transitive_step_parent_distance_module,
+    test_shared_detector_finds_transitive_step_parent_distance,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
     test_intern_atoms_default_off,

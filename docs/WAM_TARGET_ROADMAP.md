@@ -238,16 +238,16 @@ In rough order of expected payoff:
    | `category_ancestor` | ✓ | ✓ | ✓ (PR #1803, optimised through #1817) |
    | `transitive_distance3` | ✓ | ✓ | ✓ (PR #1822) |
    | `transitive_parent_distance4` | ✓ | ✓ | ✓ (PR #1823) |
+   | `transitive_step_parent_distance5` | ✓ | ✓ | ✓ (PR #1824) |
    | `weighted_shortest_path3` | ✓ | ✓ | — |
    | `astar_shortest_path4` | ✓ | ✓ | — |
-   | `transitive_step_parent_distance5` | ✓ | ✓ | — |
 
-   Remaining 3 kernels in rough order of implementation difficulty:
-   `transitive_step_parent_distance5` (DFS + first-step tracking —
-   small extension of `transitive_parent_distance4`);
+   Remaining 2 kernels (both weighted-graph) in order of difficulty:
    `weighted_shortest_path3` (Dijkstra over weighted edges — needs
-   priority queue); `astar_shortest_path4` (A* with heuristic — most
-   complex, goal-directed instead of full enumeration).
+   priority queue, and the detector + dispatch wrapper need the
+   weight argument plumbed through); `astar_shortest_path4` (A*
+   with heuristic — most complex; goal-directed search instead of
+   full enumeration, optional direct-distance heuristic predicate).
 
 3. **Tier-2 outer-loop parallelism, but emitter-driven.** The
    parallel-fanout numbers in `benchmarks/wam_effective_distance_cross_target.md`
