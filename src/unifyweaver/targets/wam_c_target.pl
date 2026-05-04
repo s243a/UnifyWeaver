@@ -132,8 +132,8 @@ wam_instruction_to_c_literal(trust_me, '{ .tag = INSTR_TRUST_ME }').
 wam_instruction_to_c_literal(proceed, '{ .tag = INSTR_PROCEED }').
 wam_instruction_to_c_literal(allocate, '{ .tag = INSTR_ALLOCATE }').
 wam_instruction_to_c_literal(deallocate, '{ .tag = INSTR_DEALLOCATE }').
-wam_instruction_to_c_literal(Instr, Code) :-
-    format(atom(Code), '// TODO: ~w', [Instr]).
+wam_instruction_to_c_literal(Instr, _) :-
+    throw(error(wam_c_target_error(unsupported_instruction(Instr)), _)).
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
@@ -260,9 +260,8 @@ wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
 wam_line_to_c_instr(["allocate"], _, '{ .tag = INSTR_ALLOCATE }').
 wam_line_to_c_instr(["deallocate"], _, '{ .tag = INSTR_DEALLOCATE }').
-wam_line_to_c_instr(Parts, _, Instr) :-
-    atomic_list_concat(Parts, ' ', Combined),
-    format(atom(Instr), '/* TODO: ~w */ {0}', [Combined]).
+wam_line_to_c_instr(Parts, _, _) :-
+    throw(error(wam_c_target_error(unsupported_instruction_tokens(Parts)), _)).
 
 clean_comma(S, Clean) :-
     (   sub_string(S, _, 1, 0, ",")
