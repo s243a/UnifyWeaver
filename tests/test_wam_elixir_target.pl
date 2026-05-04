@@ -897,6 +897,20 @@ test_runtime_emits_split_at_aggregate_cp :-
     ;   fail_test(Test, 'split_at_aggregate_cp/1 helper missing from runtime')
     ).
 
+test_kernel_docstring_documents_integer_id_path :-
+    % Production-scale workloads (e.g. full Wikipedia category data
+    % ~1M unique categories) exceed the BEAM atom table cap. The kernel
+    % itself is term-agnostic; the docstring must surface integer-id
+    % usage so a future maintainer doesn't add an atom-only assumption.
+    Test = 'GraphKernel CategoryAncestor: docstring documents integer-id scale-up path (atoms < 50k, int-tuple > 50k)',
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    (   sub_string(RuntimeCode, _, _, _, 'kernel is term-agnostic'),
+        sub_string(RuntimeCode, _, _, _, 'Integers with tuple-as-array'),
+        sub_string(RuntimeCode, _, _, _, 'no separate intern step')
+    ->  pass(Test)
+    ;   fail_test(Test, 'CategoryAncestor moduledoc missing the integer-id scale-up note')
+    ).
+
 test_graph_kernel_tc_emitted_in_runtime :-
     Test = 'GraphKernel TC: runtime assembly emits WamRuntime.GraphKernel.TransitiveClosure',
     compile_wam_runtime_to_elixir([], RuntimeCode),
@@ -2065,6 +2079,7 @@ run_tests :-
     test_runtime_emits_fold_hops,
     test_runtime_emits_aggregate_push_one,
     test_runtime_emits_split_at_aggregate_cp,
+    test_kernel_docstring_documents_integer_id_path,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_tc_uses_visited_tracking,
     test_graph_kernel_tc_factsource_bridge,
